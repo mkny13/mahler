@@ -220,7 +220,7 @@ if __name__ == "__main__":
     with open(settings_path, "w") as f:
         json.dump(settings, f, indent=2)
     
-    print(f"Hooks installed in {{claude_dir}}")
+    print(f"Hooks installed in {claude_dir}")
     return 0
 
 
