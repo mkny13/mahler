@@ -563,16 +563,23 @@ doesn't rely on that and stops on its own thresholds regardless.
 - **Pause all** (console, `mahler pause`)
 - per-project opt-in (as in dispatch)
 
-**Machine backups: GitHub + Backblaze, no Time Machine** (decided 2026-09-12):
+**Machine backups** (updated 2026-09-12, after you re-included `scripts/` in Time Machine):
 
-- **GitHub** holds everything committed and pushed. Mahler keeps it that way: runs push their
-  branches continuously, and every managed project has a private remote.
-- **Backblaze** (continuous, offsite, verified to cover `/Volumes/ExtSSD160`) holds what GitHub
-  never sees: gitignored files (`.env`, `local.properties`, tokens, `config.ini`), local
-  databases, uncommitted work, and non-git folders. Backblaze is the reason Time Machine isn't
-  needed. It must stay enabled for the SSD.
-- **App data** (hosted databases) is covered by neither, which is why the nightly dumps above
-  exist.
+- **GitHub** holds everything committed and pushed. Runs push their branches continuously.
+- **Time Machine** now includes `/Volumes/ExtSSD160/scripts`: fast local restore of files.
+- **Backblaze** (continuous, offsite) covers the whole SSD, including gitignored files,
+  local databases and non-git folders.
+- **Hosted databases are covered by none of those.** That's the job of `mahler/backup.py`,
+  built 2026-09-12:
+  - a nightly `pg_dump --format=custom` per declared store, verified with
+    `pg_restore --list`
+  - kept 14 daily / 8 weekly / 12 monthly, in `/Volumes/ExtSSD160/mahler-backups/`
+    (files 0600), which Time Machine and Backblaze then copy
+  - credentials read from the project's env file at run time and passed as `PG*`
+    environment variables, never on a command line or in a log
+  - a failure pings you, then retries hourly
+  - it's a Mahler job, not an agent, so agents never need production credentials to
+    make backups happen
 - `mahler.db` is copied nightly with `.backup` into the backups folder.
 
 ### D13 — Autonomy

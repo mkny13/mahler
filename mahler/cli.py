@@ -339,6 +339,22 @@ def cmd_labels(a, cfg, led):
     return 0
 
 
+def cmd_backup(a, cfg, led):
+    from . import backup
+    ctx = scheduler.Ctx(cfg, led)
+    specs = [(p["name"], s) for p in config.enabled_projects(cfg)
+             for s in p.get("backups") or [] if not a.project or p["name"] == a.project]
+    if not specs:
+        print("no backups configured (add [[projects.<name>.backups]] to ~/.mahler/config.toml)")
+        return 1
+    ok = True
+    for project, spec in specs:
+        ok &= backup.run(ctx, project, spec, force=True) is not None
+    for line in ctx.lines:
+        print(line)
+    return 0 if ok else 1
+
+
 def cmd_log(a, cfg, led):
     run = led.run(a.run_id)
     if not run:
@@ -424,6 +440,10 @@ def main(argv=None):
     s = sub.add_parser("labels", help="create Mahler's labels on a project's repo")
     s.add_argument("project")
     s.set_defaults(fn=cmd_labels)
+
+    s = sub.add_parser("backup", help="back up project databases now")
+    s.add_argument("project", nargs="?")
+    s.set_defaults(fn=cmd_backup)
 
     s = sub.add_parser("log", help="summarise a run's output")
     s.add_argument("run_id", type=int)
