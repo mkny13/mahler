@@ -38,6 +38,10 @@ DEFAULTS = {
         # carrying scope_label (for repos with a big pre-Mahler backlog)
         "scope": "all",
         "scope_label": "mahler",
+        "worktree_root": "",           # default: ~/.mahler/worktrees
+        "link": [],                    # untracked files to symlink from the primary checkout
+        "setup": "",                   # shell run in a new worktree before the agent starts
+        "rules": "",                   # extra project rules appended to build/sort prompts
     },
     "concurrency": {"total": 2},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},

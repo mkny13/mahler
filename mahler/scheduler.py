@@ -238,7 +238,8 @@ def finalize(ctx, run):
     led.update_run(run["id"], status="ended", outcome=outcome, exit_code=code,
                    ended_at=iso(led.now()))
     if not keep_worktree:
-        runner.remove_worktree(pol["path"], run["worktree"], run["branch"])
+        runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
+                               runner.worktree_root(pol))
 
 
 def _retry_or_fail(ctx, project, n, item, reason, outcome):

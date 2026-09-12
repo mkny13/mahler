@@ -32,7 +32,7 @@ Rules:
    with `STATUS: NEEDS-YOU`.
 8. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
-
+$rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
 End your final message with exactly one of these lines:

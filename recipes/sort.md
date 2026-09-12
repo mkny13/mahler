@@ -30,7 +30,7 @@ personal data, accounts, credentials or money.
 5. If it is `size:l`, split it: create sub-issues small enough for one agent run each
    (same body shape, a `Part of #$number` line, `Depends on: #N` where order matters),
    then relabel this one `type:goal`.
-
+$rules
 Every issue comment you post must begin with the line `<!-- mahler:agent -->`.
 
 End your final message with exactly one of these lines:

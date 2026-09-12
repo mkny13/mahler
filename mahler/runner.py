@@ -94,7 +94,7 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     pconf = ctx.cfg["platforms"][platform]
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     os.makedirs(run_dir, exist_ok=True)
-    wt = os.path.join(config.WORKTREES, project, f"{item['number']}-run{run_id}")
+    wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")
     os.makedirs(os.path.dirname(wt), exist_ok=True)
 
     git(repo, "fetch", "--quiet", "--prune", "origin")
@@ -110,6 +110,11 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
             branch = f"{branch}-r{run_id}"
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
 
+    for name in pol.get("link") or []:          # e.g. .env pointing at *local* services only
+        src, dst = os.path.join(repo, name), os.path.join(wt, name)
+        if os.path.exists(src) and not os.path.lexists(dst):
+            os.symlink(src, dst)
+
     handoff = ""
     if role == "build" and start != f"origin/{base}":
         handoff = (f"- earlier work on this item is already in your branch (started from "
@@ -118,7 +123,9 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     prompt = render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                     worktree=wt, branch=branch or "", base=base, platform=platform,
                     verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
-                    mahler=MAHLER_BIN, handoff=handoff)
+                    mahler=MAHLER_BIN, handoff=handoff,
+                    rules=("\nProject rules (from Mahler's config — these override anything else):\n"
+                           + pol["rules"].strip() + "\n") if pol.get("rules") else "")
     argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
     if not argv[0]:
         raise RuntimeError(f"{platform} CLI not found")
@@ -136,6 +143,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         fh.write(prompt)
     shell = (f"{shlex.join(argv)} > {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
+    if pol.get("setup"):                    # e.g. dependency install; runs detached too
+        setup_log = shlex.quote(os.path.join(run_dir, "setup.log"))
+        shell = (f"( {pol['setup']} ) > {setup_log} 2>&1 || "
+                 f"{{ echo 97 > {shlex.quote(status_path)}; exit 97; }}; " + shell)
     proc = subprocess.Popen(["/bin/sh", "-c", shell], cwd=wt, env=env,
                             start_new_session=True, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -206,8 +217,12 @@ def snapshot(repo, wt, run_id, number, base):
             os.remove(idx)
 
 
-def remove_worktree(repo, wt, branch=None):
-    if wt and os.path.isdir(wt) and os.path.abspath(wt).startswith(config.WORKTREES):
+def worktree_root(pol):
+    return os.path.expanduser(pol.get("worktree_root") or config.WORKTREES)
+
+
+def remove_worktree(repo, wt, branch=None, root=None):
+    if wt and os.path.isdir(wt) and os.path.abspath(wt).startswith(root or config.WORKTREES):
         git(repo, "worktree", "remove", "--force", wt, check=False)
         shutil.rmtree(wt, ignore_errors=True)
     git(repo, "worktree", "prune", check=False)
