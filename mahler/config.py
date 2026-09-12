@@ -48,7 +48,9 @@ DEFAULTS = {
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
-        "sort": ["claude", "agy-claude", "agy-gemini"],
+        # sorting is light: when Claude is over its reserve, spend Gemini, and
+        # keep Antigravity's scarcer Claude/Opus pool for building
+        "sort": ["claude", "agy-gemini", "agy-claude"],
         "build": ["agy-claude", "agy-gemini", "cline-free", "claude"],
     },
     "platforms": {
