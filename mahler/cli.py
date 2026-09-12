@@ -196,6 +196,15 @@ def cmd_log(a, cfg, led):
     return 0
 
 
+def cmd_version(a, cfg, led):
+    from .version import format_version, version_info
+    app_dir = config.REPO_ROOT
+    home_dir = config.STATE
+    info = version_info(app_dir, home_dir)
+    print(format_version(info))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -256,6 +265,9 @@ def main(argv=None):
     s = sub.add_parser("log", help="summarise a run's output")
     s.add_argument("run_id", type=int)
     s.set_defaults(fn=cmd_log)
+
+    sub.add_parser("version", help="show commit, known-good status, behind-count"
+                   ).set_defaults(fn=cmd_version)
 
     a = ap.parse_args(argv)
     cfg = config.load()
