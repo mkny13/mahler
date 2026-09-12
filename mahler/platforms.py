@@ -1,0 +1,245 @@
+"""Platform adapters: how to launch each CLI headless, and how to read its quota.
+
+Verified against the real CLIs on 2026-09-12 (DESIGN D8):
+  * claude -p --output-format stream-json --verbose emits `rate_limit_event`
+    lines carrying unifiedWindows.five_hour / seven_day utilization (0..1).
+    A lean probe (haiku, no tools, no MCP, no settings) costs ~700 tokens.
+    NOT --bare: bare mode skips OAuth and silently does nothing.
+  * agy -p ignores its cwd unless given --add-dir; `agy -p /usage
+    --output-format json` reports remaining_fraction per pool and window, for
+    free. --print-timeout defaults to 5m, so runs must raise it.
+"""
+
+import json
+import os
+import subprocess
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~")
+
+# Guardrails for Claude runs — a safety net, not the plan (DESIGN D12).
+CLAUDE_DENY = [
+    "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(git push --force-with-lease:*)",
+    "Bash(gh repo delete:*)", "Bash(gh release delete:*)", "Bash(git worktree remove:*)",
+    "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)",
+]
+
+
+def which(binary, fallbacks=()):
+    for d in os.environ.get("PATH", "").split(os.pathsep) + list(fallbacks):
+        p = os.path.join(d, binary)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
+
+def claude_exe():
+    return which("claude", [os.path.join(HOME, ".local/bin")])
+
+
+def agy_exe():
+    return which("agy", [os.path.join(HOME, ".local/bin")])
+
+
+def _epoch_iso(secs):
+    return datetime.fromtimestamp(int(secs), timezone.utc).isoformat() if secs else None
+
+
+# ---------- argv builders ----------
+
+def claude_argv(pconf, prompt, worktree, role):
+    model = pconf.get("sort_model") if role == "sort" else pconf.get("build_model")
+    argv = [claude_exe(), "-p", prompt, "--output-format", "stream-json", "--verbose",
+            "--permission-mode", "bypassPermissions", "--disallowedTools", *CLAUDE_DENY]
+    if model:
+        argv += ["--model", model]
+    return argv
+
+
+def agy_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    argv = [agy_exe(), "-p", prompt, "--add-dir", worktree,
+            "--dangerously-skip-permissions", "--output-format", "stream-json",
+            "--print-timeout", f"{int(timeout_minutes)}m"]
+    if pconf.get("model"):
+        argv += ["--model", pconf["model"]]
+    return argv
+
+
+def argv_for(pconf, prompt, worktree, role, timeout_minutes):
+    if pconf["kind"] == "claude":
+        return claude_argv(pconf, prompt, worktree, role)
+    if pconf["kind"] == "agy":
+        return agy_argv(pconf, prompt, worktree, role, timeout_minutes)
+    raise ValueError(f"unknown platform kind {pconf['kind']!r}")
+
+
+def available(pconf):
+    exe = claude_exe() if pconf["kind"] == "claude" else agy_exe()
+    return exe is not None
+
+
+# ---------- quota ----------
+
+def claude_samples_from_event(ev):
+    """rate_limit_event -> [(window, used_pct, resets_at_iso)]"""
+    info = ev.get("rate_limit_info") or {}
+    wins = info.get("unifiedWindows") or {}
+    out = []
+    for src, dst in (("five_hour", "5h"), ("seven_day", "weekly")):
+        w = wins.get(src)
+        if w and w.get("utilization") is not None:
+            out.append((dst, round(100 * float(w["utilization"]), 1), _epoch_iso(w.get("resetsAt"))))
+    if info.get("status") == "rejected":           # hit the wall: treat as exhausted
+        window = "5h" if info.get("rateLimitType") == "five_hour" else "weekly"
+        out.append((window, 100.0, _epoch_iso(info.get("resetsAt"))))
+    return out
+
+
+def oauth_usage():
+    """Zero-token Claude reading — the same endpoint Claude Code's /usage and the
+    Claude Usage menu-bar app use: GET api.anthropic.com/api/oauth/usage with
+    Claude Code's own OAuth access token from the login keychain.
+
+    The token is read fresh each time, held only in memory, sent only to
+    Anthropic, and never logged or written anywhere. Mahler never refreshes it
+    (that would race Claude Code's own refresh); an expired token just means
+    this source is skipped until Claude Code next refreshes it.
+    -> [(window, used_pct, resets_iso)] or [] if unavailable."""
+    import urllib.error
+    import urllib.request
+    try:
+        raw = subprocess.run(["security", "find-generic-password", "-s",
+                              "Claude Code-credentials", "-w"],
+                             capture_output=True, text=True, timeout=10)
+        oauth = json.loads(raw.stdout).get("claudeAiOauth") or {}
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return []
+    token, expires = oauth.get("accessToken"), oauth.get("expiresAt")
+    if not token or (expires and expires / 1000 < datetime.now(timezone.utc).timestamp()):
+        return []
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
+        "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "mahler"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = json.load(r)
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    out = []
+    for src, dst in (("five_hour", "5h"), ("seven_day", "weekly")):
+        w = body.get(src) or {}
+        if w.get("utilization") is not None:
+            out.append((dst, float(w["utilization"]), w.get("resets_at")))
+    return out
+
+
+def probe_claude():
+    exe = claude_exe()
+    if not exe:
+        return []
+    try:
+        r = subprocess.run(
+            [exe, "-p", "ok", "--model", "claude-haiku-4-5-20251001", "--tools", "",
+             "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
+             "--system-prompt", "Reply ok.", "--output-format", "stream-json", "--verbose"],
+            capture_output=True, text=True, timeout=90, cwd=HOME)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    samples = []
+    for line in r.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") == "rate_limit_event":
+            samples = claude_samples_from_event(ev)
+    return samples
+
+
+def parse_agy_usage(data):
+    """`agy -p /usage --output-format json` -> {pool_name: [(window, used_pct, resets)]}"""
+    out = {}
+    groups = (((data or {}).get("command") or {}).get("data") or {}).get("groups") or []
+    for g in groups:
+        rows = []
+        for b in g.get("buckets", []):
+            window = {"5h": "5h", "weekly": "weekly"}.get(b.get("window"))
+            if window and b.get("remaining_fraction") is not None:
+                rows.append((window, round(100 * (1 - float(b["remaining_fraction"])), 1),
+                             b.get("reset_time")))
+        out[g.get("name")] = rows
+    return out
+
+
+def probe_agy():
+    exe = agy_exe()
+    if not exe:
+        return {}
+    try:
+        r = subprocess.run([exe, "-p", "/usage", "--output-format", "json", "--print-timeout", "1m"],
+                           capture_output=True, text=True, timeout=90, cwd=HOME)
+        return parse_agy_usage(json.loads(r.stdout))
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return {}
+
+
+# ---------- run logs ----------
+
+def read_log(path, kind):
+    """Summarise a run's stream-json log.
+
+    Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
+             'quota_hit': bool, 'last_text': str}
+    """
+    res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "last_text": ""}
+    try:
+        fh = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return res
+    texts = []
+    with fh:
+        for line in fh:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                if line.strip():
+                    texts.append(line.strip())
+                continue
+            if kind == "claude":
+                t = ev.get("type")
+                if t == "rate_limit_event":
+                    res["usage"] = claude_samples_from_event(ev)
+                    if (ev.get("rate_limit_info") or {}).get("status") == "rejected":
+                        res["quota_hit"] = True
+                elif t == "assistant":
+                    for block in (ev.get("message") or {}).get("content") or []:
+                        if block.get("type") == "text" and block.get("text"):
+                            texts.append(block["text"])
+                elif t == "result":
+                    res["final"] = ev.get("result")
+                    res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
+            else:  # agy
+                if ev.get("event") == "result":
+                    r = ev.get("result") or {}
+                    res["final"] = r.get("response")
+                    res["ok"] = r.get("status") == "SUCCESS"
+                    if not res["ok"] and "quota" in json.dumps(r).lower():
+                        res["quota_hit"] = True
+                elif ev.get("event") == "step_update":
+                    su = ev.get("step_update") or {}
+                    if su.get("text_delta"):
+                        texts.append(su["text_delta"])
+    joined = "".join(texts) if kind == "agy" else "\n".join(texts)
+    res["last_text"] = (res["final"] or joined)[-1500:]
+    return res
+
+
+def status_line(text):
+    """Last `STATUS: ...` line an agent printed -> (verb, rest) or (None, None)."""
+    for line in reversed((text or "").splitlines()):
+        line = line.strip().strip("`*")
+        if line.upper().startswith("STATUS:"):
+            body = line.split(":", 1)[1].strip()
+            verb, _, rest = body.partition(" ")
+            return verb.upper(), rest.strip()
+    return None, None

@@ -5,133 +5,138 @@ has a concrete "done when." Later phases are planned in full but will be refined
 the earlier ones teach. The POC is deliberately rough. Polish comes after it proves the hard
 parts.
 
-**Pilot project:** `groundwork`. It's a Next.js app on Vercel + Neon, with CI, Playwright and
-preview deploys already in place, so it has the fastest feedback loop. It also has real
-personal data, so backups get tested properly.
+**Bootstrap first (re-sequenced 2026-09-12 at your request).** The fastest route out of
+hand-driving Claude Code is a small kernel that can work through its *own* GitHub issues.
+From Phase B onward, every later phase is a set of issues in the Mahler repo, and Mahler
+builds them. You steer by filing issues (GitHub app, any chat), answering pings and doing UAT.
 
-**Dogfooding:** Mahler's own backlog moves into GitHub Issues on a private `Mahler` repo in
-Phase 0. From Phase 3 onward, Mahler builds Mahler.
+**First real app:** `groundwork` (Phase 1). It's a Next.js app on Vercel + Neon, with CI,
+Playwright and preview deploys already in place, and it has real personal data.
 
 ```
-0 Prep & spikes → 1 POC core loop → ◆ checkpoint → 2 Claude Design (Mahler's screens)
-→ 3 Intake + UAT loop → 4 Safety hardening → 5 Cutover & rollout
-→ 6 Deeper feedback loop → 7 Cross-product review → 8 Extras
+0 Spikes (mostly done) → B Bootstrap: Mahler builds Mahler → 1 POC on groundwork
+→ ◆ checkpoint → 2 Claude Design (Mahler's screens) → 3 Intake + UAT loop
+→ 4 Safety hardening → 5 Cutover & rollout → 6 Deeper feedback loop
+→ 7 Cross-product review → 8 Extras
 ```
 
 ---
 
-## Phase 0 — Prep and spikes (no Mahler code)
+## Phase 0 — Spikes
 
-Answer the unknowns that could change the design before building on them. Each spike is
-time-boxed and ends with a short write-up in `NOTES.md`: what was tried, what's true, and
-what it changes.
-
-- [ ] **Mahler repo on GitHub** (private). Move BACKLOG ideas into issues. Add labels (D4).
-- [ ] **S1 — Claude usage in headless runs.** Does `claude -p --output-format stream-json`
-      expose rate-limit state? Install the statusline sidecar (writes `rate_limits` to
-      `~/.mahler/usage/claude.json`). Confirm the values match `/usage`.
-- [ ] **S2 — Antigravity CLI (`agy`).** Install. Test:
-  - headless auth on the free account
-  - running in a chosen directory
-  - `--dangerously-skip-permissions`
-  - `/usage` output
-  - what quota exhaustion looks like (exit code, message)
-  - whether the IDE and the CLI share a quota pool
-
-  If it can't be automated, Antigravity stays manual-handoff and the router treats it as
-  opportunistic.
-- [ ] **S3 — Cline CLI on free models.** Test:
-  - model selection flags
-  - headless completion and exit signals
-  - rate-limit error shape
-  - whether `cline hook` can deliver a yield or denylist (this settles dispatch's open
-    `backend_cline()` gated question)
-  - one real small task, to judge quality
-- [ ] **S4 — Reach from the phone.** `tailscale serve` a hello-world page from the Mac mini.
-      Open it on the Pixel. POST to it from a page on a `vercel.app` origin (CORS, mixed
-      origins).
-- [ ] **S5 — GitHub polling.** Conditional requests (ETag) across the pilot repo's issues,
-      comments and PR checks. Confirm near-zero rate-limit cost.
-- [ ] **ntfy:** install the app on the Pixel and subscribe to a random topic. Send a test
-      push.
-- [ ] **groundwork prep:**
-  - write `.mahler/project.toml` (verify.fast, verify.full, preview, smoke, release, data)
-  - move open TASKS.md items and groundwork's Cline Kanban cards into issues
-  - note in TASKS.md/CLAUDE.md that the backlog now lives in Issues
-- [ ] **groundwork data baseline:**
-  - `pg_dump` the Neon database
-  - restore it into a scratch Neon branch and verify row counts
-  - confirm Neon's restore window on your plan
-
-**Done when:** all five spikes have a written answer. groundwork's backlog is in Issues. A
-Neon backup has been restored successfully once. Any spike result that contradicts DESIGN.md
-has been folded back into it.
+- [x] **S1 — Claude usage in headless runs.** Every `claude -p --output-format stream-json
+      --verbose` run emits `rate_limit_event` with the 5-hour and weekly utilization. A lean
+      probe costs ~700 tokens. (DESIGN D8)
+- [x] **S2 — Antigravity CLI.** `agy` 1.1.23 is installed and signed in; headless edit, run
+      and commit work. `--add-dir` is required. `/usage` gives JSON quota for free across
+      **two pools** (Gemini; Claude/GPT). (DESIGN D8)
+- [ ] **S3 — Cline CLI on free models.** Filed as a Mahler issue in Phase B.
+- [ ] **S4 — Reach from the phone** (`tailscale serve`, CORS from app origins). Filed as an
+      issue.
+- [ ] **S5 — GitHub polling cost with ETags.** Filed as an issue. The bootstrap polls
+      plainly at a low rate meanwhile.
+- [ ] **You:** install **ntfy** on the Pixel and subscribe to the topic printed at the end of
+      Phase B.
 
 ---
 
-## Phase 1 — POC: the core loop on groundwork
+## Phase B — Bootstrap: Mahler builds Mahler
 
-Prove the parts nobody else sells: leases, handoff across platforms, quota-aware routing,
-and you pre-empting a robot. This phase has no UI beyond a status page and pings. It is
-command-line and plain HTML.
+A standard-library-only Python kernel, run by launchd every 60 seconds, that manages one
+project: Mahler itself.
 
-1. **Ledger + leases.**
-   - SQLite schema (D5)
-   - `mahler` CLI: `sync`, `list`, `claim`, `heartbeat`, `release`, `handoff`, `next-id`
-   - compare-and-set claims with epochs
-   - tests that simulate the clock: expiry, zombie runs fenced by the epoch, interactive
-     pre-empting auto, auto-vs-auto contention (it must be impossible)
+**In the kernel:**
+- **Ledger** (SQLite): items, **leases with compare-and-set claims and epochs**, runs, events,
+  usage samples, counters, pause flag. The lease semantics get real unit tests.
+- **GitHub sync** through `gh`:
+  - open issues → items
+  - closed issues → release and stop
+  - comment commands: `/mahler go`, `/mahler park`, `/mahler platform <name>`
+  - a plain reply on a `needs-you` item is taken as the answer
+- **Router** (D8 policy):
+  - sorting → Claude Code (falls back to Antigravity's Claude pool)
+  - building → Antigravity Claude pool → Antigravity Gemini pool → Claude Code (under the
+    60% / 70% reserve)
+  - never extra usage; unknown usage is treated as over the line
+- **Runners** for `claude` and `agy`:
+  - one worktree per run on `mahler/<issue>-<slug>`
+  - detached, with a status file
+  - `MAHLER_*` environment
+  - pre-push epoch fence, injected via `GIT_CONFIG_*`, which chains to the repo's own hooks
+- **Watchdog:**
+  - heartbeat while the process lives
+  - 20-minute no-progress and 60-minute wall-clock limits
+  - a quota hard line or pre-emption → stop, snapshot, handoff
+- **Handoff:**
+  - automatic note on any exit that didn't merge
+  - non-destructive snapshot of the worktree to `mahler/snapshot/*`
+  - attempts cap → `needs-you`
+- **Presence-lite:** recent Claude Code transcript activity in the project → a hot hold on
+  new starts, and renewal of interactive leases.
+- **CLI for interactive sessions:** `mahler claim | heartbeat | release | lease-check |
+  next-id`, plus `status`, `usage`, `add`, `pause`, `resume`, `tick`.
+- **Recipes:** `sort` and `build`.
+- **ntfy** pings: needs-you, shipped, handoff, failed.
+- **Self-hosting** (D17): `~/.mahler/app` clone at known-good, the tiny launcher with CI-gated
+  self-update and rollback, launchd `com.mike.mahler`.
+- **Mahler repo:** private GitHub remote, CI (unit tests), labels, `CLAUDE.md`/`AGENTS.md`
+  with the agent rules, `.mahler/project.toml`.
 
-   This is the one part that gets serious tests at POC stage.
-2. **Runner, single platform (Claude, for reliability).**
-   - worktree on `mahler/<issue>-<slug>`, launch, heartbeat, stream-json log, 60-minute
-     limit
-   - on exit: automatic snapshot + handoff note
-   - PR with `Fixes #N`, CI wait with the failing log tail, merge, close, register the Vercel
-     deploy
-   - the epoch `pre-push` hook
-3. **Scheduler.**
-   - ready items by priority; settle delay; concurrency caps; hot hold
-   - `mahlerd` under launchd (`com.mike.mahler`)
-   - `mahler pause`
-4. **Sorting recipe.** Claude turns a raw issue into the template, sizes it, and either marks
-   it `ready` or asks one `needs-you` question.
-5. **Second and third platforms.**
-   - add Antigravity and/or Cline, whichever S2/S3 cleared
-   - add the usage probes and routing policy (free tiers first; Claude under 60% / 70%)
-   - **forced handoff test:** lower a threshold mid-run and watch the item finish on another
-     platform from the same branch
-6. **Interactive participation.**
-   - a minimal MCP server (`add_item`, `claim`, `heartbeat`, `handoff`, `list_items`)
-   - Claude `SessionStart` + `PreToolUse` hooks
-   - the Mahler section in groundwork's CLAUDE.md
-   - **pre-emption test:** open a chat (from the phone, via Remote Control) on an item an
-     agent holds; confirm the agent yields and the chat continues its branch
-7. **Pings + status page.** ntfy for needs-you / shipped / handoff / failed. A read-only
-   status page over `tailscale serve`: running work, quota gauges, recent events.
+**Deliberately not in the kernel** (filed as issues for Mahler to build):
+- the MCP server
+- the console
+- Claude session hooks
+- the Cline backend
+- the thread sensor
+- the UAT loop
+- backups
+- the statusline sidecar
+- groundwork onboarding
+
+**Done when:** you file an issue on `mkny13/mahler` from your phone, and Mahler sorts it,
+builds it on a free platform, gets CI green, merges it, updates itself to the new known-good,
+and pings you. No Claude Code session involved.
+
+---
+
+## Phase 1 — POC on groundwork (built by Mahler)
+
+Prove the hard parts on a real app. Each bullet is an issue in the Mahler repo.
+
+1. **Interactive participation:**
+   - Claude `SessionStart` + `PreToolUse` hooks (claim nudges, heartbeat, yield delivery,
+     fence on `gh pr merge`)
+   - Mahler section in groundwork's CLAUDE.md/AGENTS.md
+   - a minimal **MCP server** (`add_item`, `claim`, `heartbeat`, `handoff`, `list_items`), so
+     Cline and Antigravity chats participate too
+2. **S3 Cline spike → Cline backend** (free models, `s` items).
+3. **groundwork onboarding:**
+   - `.mahler/project.toml` (verify, preview, smoke, release, data, environments)
+   - backlog migrated from TASKS.md and Cline Kanban into issues
+   - a Neon backup restored once
+   - groundwork disabled in `dispatch.toml`
+4. **Deploy tracking:** register each Vercel deploy as a build; run the smoke check; `shipped`
+   only when independent signals agree (D11).
+5. **Status page** over `tailscale serve` (S4 first): running work, quota gauges, recent
+   events.
 
 **Done when**, on groundwork over one real week:
 
-- at least 5 items go issue → sorted → built → CI green → merged → deployed with no manual
-  steps
-- at least 1 item completes after a cross-platform handoff
-- at least 1 pre-emption by a phone chat, with no lost work
+- at least 5 items shipped hands-off
+- at least 1 item completed after a cross-platform handoff
+- at least 1 pre-emption by a phone chat (Remote Control) with no lost work
 - zero double assignments
 - zero autonomous extra-usage spend
-- Pause all works
-
-dispatch keeps running for all other projects throughout. groundwork is disabled in
-`dispatch.toml` for the duration.
+- Pause works
 
 ### ◆ Checkpoint after the POC
 
-A short review session before investing in UI:
+A short review before investing in UI:
 
 - What broke? What were the real quota numbers?
 - Were the free models good enough, and how often did work escalate to Claude?
 - Were the lease TTLs right?
 - Does anything push toward adopting Gas City or keeping Cline Kanban after all?
-  (Re-evaluate honestly with real data.)
 
 DESIGN.md gets updated with the answers.
 
@@ -139,9 +144,7 @@ DESIGN.md gets updated with the answers.
 
 ## Phase 2 — Claude Design: Mahler's own screens
 
-Your request: a design phase after the POC for Mahler's own interfaces. The POC's status
-page is functional and ugly on purpose. This phase decides what the real thing looks like
-before anyone builds it.
+Your request: a design phase after the POC for Mahler's own interfaces.
 
 - [ ] **Console, phone-first:**
   - **Capture:** text, voice via the keyboard, photo or screenshot, project picker
@@ -152,140 +155,122 @@ before anyone builds it.
   - **History:** with Undo
   - **Pause all**
   - the same console on the Mac's larger screen
-- [ ] **In-app UAT panel:** the web overlay (what's new in this build; pass/fail/note;
-      screenshot; report a problem here). Then the Android and macOS equivalents, based on the
-      existing Feedback buttons.
-- [ ] **Notification copy:** what each ntfy ping says, and where tapping lands.
+- [ ] **In-app UAT panel:** the web overlay first. Then the Android and macOS equivalents,
+      based on the existing Feedback buttons, plus the **test-app vs real-app** distinction
+      from D16.
+- [ ] **Notification copy:** what each ping says, and where tapping lands.
 - [ ] Built as a Claude Design canvas (`/design`), revised with you until you're happy.
-      Output: the approved canvas + a short component spec the build phases follow.
+      Output: the approved canvas + a short component spec, filed as issues for Phase 3.
 
-**Done when:** you've approved the console and the web UAT panel designs. Android/macOS panel
-designs can trail into Phase 5.
+**Done when:** you've approved the console and the web UAT panel designs.
 
 ---
 
-## Phase 3 — Intake and the UAT loop (first "real" version)
+## Phase 3 — Intake and the UAT loop
 
-Close the loop so you can run a project from your phone without opening a laptop. Mahler
-starts building itself: its own issues are in scope from here.
-
-- [ ] Console built to the Phase 2 designs, served over Tailscale. Capture creates issues
-      (with photo attachments), and "Needs you" answers post as issue comments.
+- [ ] The console, built to the Phase 2 designs, served over Tailscale. It needs `uv`-managed
+      dependencies; this is the kernel's first step beyond the standard library.
 - [ ] Full MCP tool set (`ask_user`, `report_progress`, `next_id`, `get_context`), registered
       in Claude Code, Cline and Antigravity. `/mahler` skill. The `handoff`/`pickup` skills
       become Mahler-aware.
-- [ ] GitHub comment commands: `/mahler go | park | platform <x> | undo`.
-- [ ] Build registration on each deploy. The `uat-author` recipe turns each shipped issue's
+- [ ] `/mahler undo`.
+- [ ] Build registration on each deploy. A `uat-author` recipe turns each shipped issue's
       "needs a human to check" section into UAT items.
-- [ ] `mahler-uat.js` web panel in groundwork previews. A fail reopens the issue or opens a
-      linked p1 bug with your note and screenshot. Offline queue + GitHub-URL fallback.
-- [ ] Daily digest ping: what shipped, what's waiting on you, quota left.
+- [ ] `mahler-uat.js` web panel in groundwork's staging/preview builds. A fail reopens the
+      issue or opens a linked p1 bug with your note and screenshot. Offline queue +
+      GitHub-URL fallback.
+- [ ] Daily digest ping.
 
-**Done when:** you log a groundwork bug from your phone, it gets fixed and deployed, the ping
-arrives, you check it in the in-app panel and mark it passed, all without touching a laptop.
-Also, a failed UAT check has turned into a fix at least once, with no action from you beyond
-tapping "fails".
+**Done when:** you log a groundwork bug from your phone, it gets fixed and deployed, you check
+it in the in-app panel and mark it passed, all without touching a laptop. A failed UAT check
+has turned into a fix with no action from you beyond tapping "fails".
 
 ---
 
-## Phase 4 — Safety hardening (before any second project)
-
-Make "fast and unreviewed" safe to spread across the portfolio.
+## Phase 4 — Safety hardening (before any second app)
 
 - [ ] Data inventory format and nightly backup jobs (`pg_dump`, `wrangler d1 export`,
       `sqlite3 .backup`) into `/Volumes/ExtSSD160/mahler-backups/`, with retention. Monthly
-      automated restore drills, whose results appear in the digest.
-- [ ] **Backup receipt before risky deploys:** a PR touching migrations, schema or
-      data-writing scripts can't deploy until a fresh backup has been proven to restore.
-- [ ] Migrations tested against a copy of real data (Neon branch; restored D1 copy).
-- [ ] Guardrail hooks: Claude `PreToolUse` denylist, agy permission rules, Cline equivalent
-      per S3.
-- [ ] **Undo:** a revert PR plus the platform rollback recorded in `project.toml`, from the
-      console or `/mahler undo`.
-- [ ] Time Machine: include `/Volumes/ExtSSD160/scripts`, exclude `node_modules` and build
-      output. Exclude `.mahler-worktrees` from Backblaze. `mahler.db` nightly `.backup`.
-- [ ] Secrets audit: no secrets in prompts, issues, pings or logs. Keychain/.env only.
+      automated restore drills.
+- [ ] **Staging seeded from backups** (D16). Every seed doubles as a restore drill.
+- [ ] **Backup receipt before risky deploys.**
+- [ ] Migrations tested against a copy of real data.
+- [ ] Guardrail hooks for Claude, agy and Cline.
+- [ ] **Undo:** revert + platform rollback, end to end.
+- [ ] Exclude `.mahler-worktrees` from Backblaze. Confirm Backblaze still covers the SSD
+      (it's now the only non-GitHub file backup; Time Machine is dropped).
+- [ ] Secrets audit.
 
-**Done when:** a deliberately bad migration on groundwork is caught before it can deploy, or
-rolled back with its data intact. One-tap Undo has reverted a real change end to end. A
-restore drill has passed for every groundwork data store.
+**Done when:** a deliberately bad migration on groundwork is caught or rolled back with its
+data intact. Undo has reverted a real change. A restore drill has passed for every groundwork
+store.
 
 ---
 
 ## Phase 5 — Cutover and rollout
 
-Retire the old tools and bring the portfolio in, one project at a time.
-
-- [ ] **thread as a sensor:** anomaly flags become `type:anomaly` issues, deduped by
-      fingerprint.
+- [ ] **thread as a sensor:** anomaly flags become `type:anomaly` issues.
 - [ ] Per-project onboarding checklist, run by an agent:
   - private GitHub repo
   - labels
-  - `.mahler/project.toml` (verify/data/release/canary)
-  - backlog migration (TASKS.md Now/Next, ROADMAP build order, UAT `[!]`, Kanban cards)
-  - Mahler section in CLAUDE.md/AGENTS.md
+  - `project.toml` (verify, data, release, environments, canary)
+  - backlog migration
+  - CLAUDE.md/AGENTS.md section
   - data inventory + first restore drill
   - disable in `dispatch.toml`
 - [ ] Onboard in this order:
-  1. **mental-jukebox** (local Python; "deploy" = fast-forward the primary checkout)
-  2. **puppy-growth-chart** (Vite + Cloudflare Worker)
-  3. **movebreak** (macOS menu-bar app; GitHub Releases auto-update)
-  4. **phish-in-app / Couch Tour** (Android + macOS + D1 sync backend; lift the `gated`
-     tier; decide its beta → production handling; local Xcode/Gradle verify with canary
-     checks)
+  1. **mental-jukebox**
+  2. **puppy-growth-chart**
+  3. **movebreak**
+  4. **phish-in-app / Couch Tour**:
+     - single release channel, with manual promotion dropped
+     - **a staging sync backend + side-by-side test app** so UAT listening stays out of your
+       real history (D16)
+     - `gated` lifted
+     - local Xcode/Gradle verify with canary checks
   5. Non-git projects, as you choose to activate them
-- [ ] Android + macOS UAT panels (from the Phase 2 designs; evolve the existing Feedback
-      buttons). Migrate phish-in-app's `UAT.md` history into Mahler.
-- [ ] Retire the `com.mike.dispatch` launchd timer and Cline Kanban. Point ThreadBar at
-      Mahler's API, or retire it.
-- [ ] Update `~/ai-tools/NOTES.md` and TASKS.md to say dispatch is superseded, and why.
+- [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
+- [ ] Retire the dispatch launchd timer and Cline Kanban. Point ThreadBar at Mahler, or
+      retire it. Update `~/ai-tools` NOTES/TASKS.
 
-**Done when:** every active project runs through Mahler, dispatch and Kanban are off, and
-there's one backlog view across all projects.
+**Done when:** every active project runs through Mahler, and dispatch and Kanban are off.
 
 ---
 
 ## Phase 6 — A deeper feedback loop
 
 - [ ] Playwright screenshot checks against preview URLs, attached to PRs and handoffs.
-- [ ] Android emulator + `adb` screencaps; Maestro flows for key screens.
-- [ ] Runtime error capture (Vercel/Worker logs or Sentry free tier) → auto-filed issues.
-- [ ] **Your decision:** allow an unlocked, logged-in GUI session on the Mac mini so agents can
-      click through macOS apps (XCUITest). This is a home-security trade-off.
-- [ ] Decide on a self-hosted GitHub Actions runner on the Mac mini, versus local-only
-      verify, for Apple/Android jobs.
-
-**Done when:** agents catch at least one visual or runtime regression before you do.
+- [ ] Android emulator + `adb` screencaps; Maestro flows.
+- [ ] Runtime error capture → auto-filed issues.
+- [ ] **Spike:** can offscreen SwiftUI snapshot tests render while the Mac mini is locked?
+      If yes, macOS UI gets agent-visible regression checks. If not, macOS UI stays UAT-only
+      (the screen stays locked; decided).
+- [ ] Self-hosted GitHub Actions runner vs local-only verify for Apple/Android. (couch-tour is
+      a public repo, so its GitHub-hosted macOS minutes are free.)
 
 ---
 
 ## Phase 7 — Adversarial cross-product review
 
-The second BACKLOG idea. Phase 1–3 review is "a different platform glances at the diff."
-This phase makes review adversarial: the reviewer is prompted to break the change, not
-approve it.
-
-- [ ] Resolve the BACKLOG's open questions:
-  - "product" = platform
-  - trigger: default for `m`/`l` items and anything touching data; opt-in otherwise
-  - findings feed back to the same item as a fix round
-  - verdict precedence against verify results
-- [ ] Measure: defects caught vs quota spent. Keep it only where it pays for itself.
+The second BACKLOG idea: "product" = platform. The trigger is the default for `m`/`l` items
+and anything touching data. Findings feed back as a fix round. Keep it only where it pays for
+itself.
 
 ---
 
-## Phase 8 — Extras (pull in when wanted)
+## Phase 8 — Extras
 
-- Claude cloud sessions / claude-code-action as extra workers for GitHub-hosted repos.
-- More backends: OpenCode free models, GitHub Copilot CLI.
-- Goals → automatic breakdown into sub-issues, with a weekly "is this still the plan?" check.
-- Quota analytics: which platform delivers the most shipped items per unit of quota.
-- Self-hosted ntfy; home-screen console with Android Chrome notifications as a second channel.
+- Claude cloud sessions / claude-code-action as extra workers.
+- More backends: OpenCode, Copilot CLI.
+- Goals → automatic breakdown into sub-issues.
+- Quota analytics.
+- Self-hosted ntfy.
 
 ---
 
-## Still open (not blocking the POC)
+## Still open (not blocking)
 
-- **macOS UI automation / unlocked session:** Phase 6, your call.
-- **phish-in-app beta vs production** once its gate is lifted: at its Phase 5 onboarding.
-- **Antigravity fallback mode:** depends on S2.
+- **Antigravity IDE quota:** whether it shares the CLI's pools. It only matters if you also
+  use the IDE interactively.
+- **Couch Tour staging data:** what exactly counts as "listening history" (sync backend
+  only, or also phish.in account likes), settled at its onboarding.

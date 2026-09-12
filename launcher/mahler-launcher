@@ -1,0 +1,65 @@
+#!/bin/sh
+# mahler-launcher — the stable entry point launchd runs every 60s (DESIGN D17).
+#
+# Deliberately tiny, and installed by *copying* it to ~/.mahler/bin: the code it
+# runs (~/.mahler/app) updates itself, this script never does. Edit it by hand,
+# then re-run launcher/install.sh.
+#
+#   1. run one tick from the pinned app clone
+#   2. clean tick  -> that commit becomes known-good
+#      2 bad ticks -> roll back to known-good and ping
+#   3. advance to origin/main only if CI on that commit is green and the unit
+#      tests pass here; otherwise stay put
+set -u
+M="${MAHLER_HOME:-$HOME/.mahler}"
+APP="$M/app"
+LOG="$M/logs"
+mkdir -p "$LOG"
+cd "$APP" || exit 1
+
+# keep the tick log from growing forever
+if [ -f "$LOG/tick.log" ] && [ "$(wc -c < "$LOG/tick.log")" -gt 5000000 ]; then
+  mv "$LOG/tick.log" "$LOG/tick.log.1"
+fi
+
+{ echo "--- $(date '+%F %T')"; "$APP/bin/mahler" tick; } >> "$LOG/tick.log" 2>&1
+rc=$?
+head=$(git -C "$APP" rev-parse HEAD)
+
+if [ "$rc" -eq 0 ]; then
+  echo "$head" > "$M/known_good"
+  echo 0 > "$M/tick_failures"
+else
+  n=$(( $(cat "$M/tick_failures" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$M/tick_failures"
+  good=$(cat "$M/known_good" 2>/dev/null || true)
+  if [ "$n" -ge 2 ] && [ -n "$good" ] && [ "$head" != "$good" ]; then
+    git -C "$APP" checkout -q --detach "$good"
+    echo 0 > "$M/tick_failures"
+    echo "$(date -u +%FT%TZ) rolled back $head -> $good" >> "$LOG/update.log"
+    "$APP/bin/mahler" notify "Mahler rolled itself back" \
+      "Two ticks failed on $(echo "$head" | cut -c1-7); back on $(echo "$good" | cut -c1-7)." \
+      >/dev/null 2>&1
+  fi
+  exit 0
+fi
+
+# self-update
+git -C "$APP" fetch -q origin main 2>/dev/null || exit 0
+new=$(git -C "$APP" rev-parse origin/main)
+[ "$new" = "$head" ] && exit 0
+repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || exit 0
+ci=$(gh api "repos/$repo/commits/$new/check-runs" --jq '
+  [.check_runs[].conclusion] |
+  if length == 0 then "none"
+  elif all(. == "success" or . == "skipped" or . == "neutral") then "green"
+  else "wait" end' 2>/dev/null)
+[ "$ci" = "green" ] || exit 0
+git -C "$APP" checkout -q --detach "$new"
+if python3 -m unittest discover -s "$APP/tests" >> "$LOG/update.log" 2>&1; then
+  echo "$(date -u +%FT%TZ) updated $head -> $new" >> "$LOG/update.log"
+else
+  git -C "$APP" checkout -q --detach "$head"
+  echo "$(date -u +%FT%TZ) tests failed on $new; stayed on $head" >> "$LOG/update.log"
+fi
+exit 0

@@ -341,17 +341,27 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 
 ### D8 — Platforms, quota sensing and routing
 
-| Platform | Headless runner | Usage signal | Role |
+| Platform | Headless runner | Usage signal (verified 2026-09-12) | Role |
 |---|---|---|---|
-| **Claude Code** (Pro, extra usage ON) | `claude -p --output-format stream-json --permission-mode bypassPermissions` (+ denylist) | `rate_limits.five_hour` / `seven_day` % (statusline sidecar; headless source confirmed in a spike) + limit errors | **Planner** (sorting, specs, splitting, hard-bug diagnosis) always. **Builder** only after the free tiers are spent, and under the reserve |
-| **Antigravity** (free) | `agy -p … --output-format stream-json --dangerously-skip-permissions` (spike: install, auth, cwd, quota behaviour) | `agy -p "/usage"` probe + quota errors; weekly-capped free tier | **First-choice builder** for `m` items and below |
-| **Cline** (free models) | `cline --cwd <worktree> --auto-approve true …` | None (rate-limit errors only) | Builder for `s` items and chores; review partner (D11) |
-| Antigravity IDE (manual) | clipboard prompt, as in dispatch today | — | Fallback if `agy` can't be automated |
+| **Claude Code** (Pro) | `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions` (+ denylist) | Every headless run emits a `rate_limit_event` with `unifiedWindows.five_hour` / `seven_day.utilization`. When no run is live, a lean probe gives the same reading for ~700 tokens (`--model haiku --tools "" --strict-mcp-config --setting-sources ""`). Not `--bare`: it skips OAuth | **Planner** (sorting, specs, splitting, hard-bug diagnosis) always. **Builder** only after the free tiers are spent, and under the reserve |
+| **Antigravity: Claude/GPT pool** (free) | `agy -p … --add-dir <worktree> --model claude-opus-4-6-thinking --dangerously-skip-permissions --output-format stream-json` | `agy -p /usage --output-format json`, which costs nothing and reports `remaining_fraction` + `reset_time` per pool and window | **First-choice builder** |
+| **Antigravity: Gemini pool** (free) | same, `--model gemini-3.1-pro-high` or `gemini-3.8-flash-high` | same probe, separate pool | Second-choice builder |
+| **Cline** (free models) | `cline --cwd <worktree> --auto-approve true …` | None (rate-limit errors only) | Builder for `s` items and chores; review partner (D11). Not yet tested (S3) |
 | OpenCode, Copilot CLI | — | — | Later backends (Phase 8) |
 
-**Found during design:** Antigravity now ships a CLI, `agy` (May 2026, the successor to
-Gemini CLI), with a documented headless mode. The "Antigravity must be started by hand"
-limitation in NOTES.md predates it. Phase 0 checks whether it works on your free account.
+**Antigravity test results (2026-09-12).**
+- `agy` 1.1.23 was already installed at `~/.local/bin/agy` and signed in. dispatch only
+  searched the app bundle, which is why NOTES.md says Antigravity has no CLI.
+- Headless runs edit, run commands and commit unattended, and exit 0 with `status: SUCCESS`.
+- **Trap:** without `--add-dir <path>`, agy ignores the directory it's started in and works in
+  `~/.gemini/antigravity-cli/scratch`. Every Mahler invocation passes `--add-dir` and names
+  the worktree in the prompt.
+- The free account has **two independent quota pools**: Gemini models, and Claude
+  Opus/Sonnet 4.6 + GPT-OSS. Each has a 5-hour and a weekly window. So Antigravity counts as
+  two platforms for routing.
+- Not yet observed: what quota exhaustion looks like mid-run. Mahler probes before starting,
+  and treats any result `status` other than `SUCCESS` as a failed run.
+- Manual clipboard handoff to the Antigravity IDE is no longer needed.
 
 **Routing policy** (your answer: *Claude plans; use up the two free tiers first; after that
 Claude may build, but keep headroom for me*):
@@ -359,8 +369,9 @@ Claude may build, but keep headroom for me*):
 1. **Sorting and planning runs go to Claude.** They're short and high-leverage. If Claude is
    over the reserve, sorting falls back to Antigravity rather than waiting.
 2. **Build runs, in order:**
-   - Antigravity, then Cline-free, each while it has headroom and fits the item's size (`s` →
-     any; `m` → Antigravity or Claude; `l` → split first).
+   - Antigravity's Claude/GPT pool, then its Gemini pool, then Cline-free. Each is used while
+     it has headroom and fits the item's size (`s` → any; `m` → Antigravity or Claude; `l` →
+     split first).
    - Then Claude, only while the **5-hour window is under 60% and the weekly under 70%**.
    - A `platform:` label overrides the order.
 3. **Nothing autonomous ever runs into paid extra usage.** At or above 100%, Claude is marked
@@ -381,12 +392,13 @@ Platforms without a usage percentage are treated as 100% on the first quota erro
 unavailable until the reset time, parsed or with a backoff default. All of these numbers live in
 `~/.mahler/config.toml`.
 
-**Sensing Claude:** a statusline script (you have none today) passes through a normal status
-line and writes `rate_limits` to `~/.mahler/usage/claude.json` whenever any interactive session
-renders. For headless runs, the Phase 0 spike checks whether `stream-json` carries rate-limit
-events. The fallback is conservative estimation from run minutes, plus reacting to limit errors.
-Usage samples older than 15 minutes count as "unknown", and the router treats unknown as
-"over soft".
+**Sensing Claude:** every Mahler Claude run's log is scanned for `rate_limit_event`. When no
+run has reported in 15 minutes and a Claude run is about to start, Mahler takes a lean probe
+first. A statusline sidecar (writing `rate_limits` from your own interactive sessions to
+`~/.mahler/usage/claude.json`) is an optional extra source. Samples older than 15 minutes
+count as "unknown", and the router treats unknown as "over soft". The probe showed
+`overageStatus: rejected`, so extra usage is currently refused at the account level. Mahler
+doesn't rely on that and stops on its own thresholds regardless.
 
 ### D9 — Handoff protocol
 
@@ -489,8 +501,12 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
   GitHub Actions stays authoritative for web and Linux jobs. A self-hosted runner is a Phase 6
   decision.
 - **Eyes for agents.** Playwright screenshots of preview URLs for web. An Android emulator
-  plus `adb` screencaps (Maestro flows later). macOS UI automation needs an unlocked GUI
-  session on the Mac mini; that's flagged as a later decision for you (ROADMAP Phase 6).
+  plus `adb` screencaps (Maestro flows later).
+- **The Mac mini's screen is locked, and that's a given** (your call, 2026-09-12). Agents
+  never get click-through automation of macOS apps. macOS UI is verified by headless tests
+  (package tests, plus offscreen SwiftUI snapshot rendering if a spike shows it works while
+  the screen is locked) and by your UAT. That's what phish-in-app already learned the hard way
+  (D208).
 - **Review by a different platform.** Before merge, a short review run on a *different*
   platform than the builder. Free tiers are preferred; Claude is used when an item touches
   data or migrations, or the free tiers are exhausted. This is where the BACKLOG's
@@ -547,12 +563,16 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
 - **Pause all** (console, `mahler pause`)
 - per-project opt-in (as in dispatch)
 
-**Machine backups** (verified today):
+**Machine backups: GitHub + Backblaze, no Time Machine** (decided 2026-09-12):
 
-- Backblaze covers `/Volumes/ExtSSD160` continuously.
-- **Time Machine excludes `/Volumes/ExtSSD160/scripts`**, so there's no fast local restore of
-  any project. The roadmap fixes that: include `scripts/`, exclude `node_modules`/build output.
-- Every managed project pushes to a private GitHub repo.
+- **GitHub** holds everything committed and pushed. Mahler keeps it that way: runs push their
+  branches continuously, and every managed project has a private remote.
+- **Backblaze** (continuous, offsite, verified to cover `/Volumes/ExtSSD160`) holds what GitHub
+  never sees: gitignored files (`.env`, `local.properties`, tokens, `config.ini`), local
+  databases, uncommitted work, and non-git folders. Backblaze is the reason Time Machine isn't
+  needed. It must stay enabled for the SSD.
+- **App data** (hosted databases) is covered by neither, which is why the nightly dumps above
+  exist.
 - `mahler.db` is copied nightly with `.backup` into the backups folder.
 
 ### D13 — Autonomy
@@ -563,8 +583,8 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
 - **Default tier for every project: `autonomous`.** Merge on green verify + review, deploy or
   release to your devices, UAT afterwards. You confirmed no app has users besides you, so
   phish-in-app's `gated` setting (premised on "ships to real users") is lifted when it
-  onboards. Its beta → production split becomes a project-level choice at that point, not a
-  Mahler rule.
+  onboards. Its manual beta → production *promotion* goes too (D16), but its test
+  *environment* stays.
 - A `gated` tier remains available per project, since you said it "depends on the project."
 - **What always pauses:**
   - product decisions only you can make
@@ -606,6 +626,47 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
   `recipes/`: `sort`, `build`, `fix-ci`, `review`, `release`, `uat-author`. Each has the same
   checkpoint/handoff boilerplate.
 
+### D16 — Environments: testing never touches your real data
+
+Release gating and data isolation are separate questions. Mahler drops the first (no manual
+promotion) but keeps the second wherever testing would pollute real use.
+
+- Each project's `project.toml` declares `[environments]`: `prod` (your daily use) and, where
+  needed, `staging`. Staging means separate backend resources, like a Worker environment, its
+  own D1/Neon database or branch, and its own API keys. It also means a **side-by-side
+  install** where the platform allows it: a different Android `applicationId` suffix and a
+  different macOS bundle id, so the test app and the real app coexist on your devices.
+- **Agents' automated tests and your UAT builds always run against staging.** Merges ship to
+  prod automatically, with no promotion step.
+- **Staging is seeded from the latest prod backup** (D12). So you test against realistic data
+  without writing into the real thing, and every seed is also a free restore drill.
+- **Couch Tour** (your call, 2026-09-12): a single release channel, with no beta → production
+  promotion. But a staging sync backend and a separately-installed test app, so UAT listening
+  never lands in your real listening history.
+- Projects where testing can't pollute anything (a read-only script, a static page) just
+  declare `prod`.
+
+### D17 — Self-hosting: Mahler builds Mahler
+
+Mahler's own repo is its first managed project (ROADMAP Phase B). A conductor that edits
+itself needs a stable place to stand:
+
+- The daemon runs from its own clone at `~/.mahler/app`, **never** from `~/Mahler` (where
+  sessions and agents work). The clone is pinned to a **known-good** commit.
+- A tiny, rarely-changing launcher script (`~/.mahler/bin/mahler-launcher`, installed by
+  copying it, not run from the updating tree) does four things:
+  1. runs the tick
+  2. advances `~/.mahler/app` to the new `origin/main` only when CI on that commit is green,
+     and the unit tests pass in the clone
+  3. records the new known-good after a clean tick
+  4. rolls back to the previous known-good, and pings you, after two consecutive crashed
+     ticks
+- Mahler's own repo runs with `max_parallel = 1`, so changes to the conductor land one at a
+  time.
+- The bootstrap is **Python standard library only**, like thread and dispatch. The web
+  console and the MCP server (which need `uv`-managed dependencies) are later issues Mahler
+  builds for itself.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
@@ -619,12 +680,12 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
 
 ## Risks and unknowns (answered by Phase 0 spikes unless noted)
 
-1. **agy on the free tier:** can it authenticate headlessly, run in a given directory, and
-   report quota? What does quota exhaustion look like? Does it share a quota pool with the
-   Antigravity IDE? If automation fails, Antigravity stays a manual-handoff platform.
-2. **Claude usage during headless runs:** does `stream-json` expose rate-limit state? If not,
-   the statusline sidecar and conservative estimation have to do. Mahler must never cross into
-   extra usage because of a stale reading. Unknown readings count as over the line.
+1. ~~agy on the free tier~~ **Answered 2026-09-12:** it works headless, with `--add-dir`
+   required and quota readable for free (D8). Still open: exhaustion behaviour mid-run, and
+   whether the Antigravity IDE shares the same pools. That matters only if you also use the
+   IDE interactively.
+2. ~~Claude usage during headless runs~~ **Answered 2026-09-12:** `rate_limit_event` in
+   `stream-json`, plus a ~700-token lean probe (D8).
 3. **Cline free-model quality and CLI control:** model selection, a completion signal, and
    whether hooks can deliver yields or a denylist. dispatch's open `backend_cline()`
    gated/auto question resolves here.
@@ -637,8 +698,11 @@ Usage samples older than 15 minutes count as "unknown", and the router treats un
    gracefully to "fewer runs", never to "paid runs".
 7. **The Mac mini is a single point of failure.** If it's down, nothing runs, but nothing is
    lost either. Items live in GitHub, code is pushed, and data is backed up.
-8. **(Phase 6) macOS UI automation** needs an unlocked, logged-in session on the Mac mini.
-   That's a home-security trade-off only you can make.
+8. **macOS UI can't be automated.** The Mac mini stays locked, so macOS UI regressions are
+   caught by headless tests and your UAT, not by agents clicking through (D11).
+9. **A self-modifying conductor:** a bad merge to Mahler could stop the daemon that would fix
+   it. The known-good launcher and rollback (D17) are the mitigation. The launcher itself is
+   deliberately tiny, and it's updated only by hand.
 
 ## Glossary
 

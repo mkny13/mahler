@@ -1,0 +1,16 @@
+# Mahler's own verify/release contract (DESIGN D11). Agents read this.
+
+[verify]
+fast = "python3 -m unittest discover -s tests"
+full = "python3 -m unittest discover -s tests -v"
+
+[release]
+# Merging to main is the release: the launcher on the Mac mini picks up a
+# main commit once its CI is green and the unit tests pass in ~/.mahler/app.
+how = "merge to main"
+
+[environments]
+prod = "~/.mahler (the live daemon's state)"   # tests must never touch it: use Ledger(':memory:') or tmp dirs
+
+[data]
+# ~/.mahler/mahler.db — execution state only; items and handoffs live in GitHub.

@@ -1,0 +1,12 @@
+# ~/.mahler/config.toml — only what differs from the defaults in mahler/config.py.
+# Nothing is managed until a project here says enabled = true.
+
+[ntfy]
+topic = "mahler-change-me"      # subscribe to this topic in the ntfy app
+
+[projects.mahler]
+enabled = true
+repo = "mkny13/mahler"
+path = "/Users/mike/Mahler"
+max_parallel = 1                # the conductor changes one thing at a time (DESIGN D17)
+verify = "python3 -m unittest discover -s tests"

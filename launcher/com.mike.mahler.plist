@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: install.sh replaces __HOME__. launchd jobs don't inherit a shell
+     PATH (the trap ThreadBar and dispatch both hit), so it's spelled out. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mike.mahler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__HOME__/.mahler/bin/mahler-launcher</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.mahler/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.mahler/logs/launchd.err.log</string>
+</dict>
+</plist>
