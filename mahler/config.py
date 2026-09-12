@@ -28,6 +28,7 @@ DEFAULTS = {
         "max_attempts": 3,             # failed runs before needs-you
         "run_timeout_minutes": 60,
         "progress_timeout_minutes": 20,
+        "startup_timeout_minutes": 10,  # agent started but printed nothing (mahler#12)
         "auto_lease_minutes": 10,
         "interactive_lease_minutes": 30,
         "hot_hold": True,

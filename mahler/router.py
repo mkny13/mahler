@@ -11,6 +11,7 @@ from datetime import timedelta
 from .ledger import parse
 
 WINDOWS = ("5h", "weekly")
+HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
 
 
 SIZES = {"s": 1, "m": 2, "l": 3}
@@ -20,6 +21,11 @@ def usage_state(led, name, pconf):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins."""
     now = led.now()
     usage = led.usage(name)
+    hold = usage.pop(HOLD, None)
+    if hold and parse(hold["resets_at"]) and parse(hold["resets_at"]) > now:
+        # not a quota reading: the platform can't start runs right now (a run
+        # sat silent at startup). Soft, so a run already making progress keeps going.
+        return "soft", f"on hold until {parse(hold['resets_at']).astimezone():%H:%M} (a run never started)"
     if not pconf.get("metered", True):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():
