@@ -31,24 +31,35 @@ def cmd_tick(a, cfg, led):
 def cmd_status(a, cfg, led):
     now = led.now()
     if a.json:
+        runs = [dict(r) for r in led.active_runs()]
+        items = [dict(i) for i in led.items() if i["state"] != "done"]
+        leases = [dict(l) for l in led.q("SELECT * FROM leases")]
+        if getattr(a, "project", None):
+            runs = [r for r in runs if r["project"] == a.project]
+            items = [i for i in items if i["project"] == a.project]
+            leases = [l for l in leases if l["project"] == a.project]
         print(json.dumps({
             "paused": led.paused(),
-            "runs": [dict(r) for r in led.active_runs()],
-            "items": [dict(i) for i in led.items() if i["state"] != "done"],
+            "runs": runs,
+            "items": items,
+            "leases": leases,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
         }, indent=2, default=str))
         return 0
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
     runs = led.active_runs()
+    if getattr(a, "project", None):
+        runs = [r for r in runs if r["project"] == a.project]
     print(f"Running ({len(runs)})")
     for r in runs:
         mins = int((now - parse(r["started_at"])).total_seconds() // 60)
         print(f"  • run {r['id']:<4} {r['project']}#{r['number']:<5} {r['role']:<5} "
               f"{r['platform']:<11} {mins:>3} min  {r['status']}")
     print("\nItems")
-    for i in led.items():
-        if i["state"] == "done":
-            continue
+    items = [i for i in led.items() if i["state"] != "done"]
+    if getattr(a, "project", None):
+        items = [i for i in items if i["project"] == a.project]
+    for i in items:
         lease = led.lease(i["project"], i["number"])
         held = f"  held by {lease['holder']}" if lease else ""
         tries = f"  tries {i['attempts']}" if i["attempts"] else ""
@@ -63,6 +74,153 @@ def cmd_status(a, cfg, led):
         when = parse(e["at"]).astimezone().strftime("%m-%d %H:%M")
         where = f"{e['project']}#{e['number']}" if e["project"] else ""
         print(f"  {when} {e['kind']:<8} {where:<14} {(e['detail'] or '')[:80]}")
+    return 0
+
+def cmd_hooks(a, cfg, led):
+    project = a.project
+    pol = config.project_policy(cfg, project)
+    if not pol.get("path"):
+        print(f"Project {project} has no configured path")
+        return 1
+    
+    repo_path = os.path.expanduser(pol["path"])
+    claude_dir = os.path.join(repo_path, ".claude")
+    hooks_dir = os.path.join(claude_dir, "hooks")
+    os.makedirs(hooks_dir, exist_ok=True)
+    
+    settings_path = os.path.join(claude_dir, "settings.json")
+    settings = {}
+    if os.path.exists(settings_path):
+        with open(settings_path) as f:
+            settings = json.load(f)
+    
+    if "hooks" not in settings:
+        settings["hooks"] = {}
+    
+    hooks = settings["hooks"]
+    
+    # 1. SessionStart
+    hooks["SessionStart"] = [{"command": f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}"}]
+    with open(os.path.join(hooks_dir, "session_start.py"), "w") as f:
+        f.write(f"""#!/usr/bin/env python3
+import json
+import subprocess
+import sys
+
+def main():
+    try:
+        out = subprocess.check_output(["mahler", "status", "--project", "{project}", "--json"], text=True)
+        d = json.loads(out)
+        held = []
+        for r in d.get('runs', []):
+            held.append(f'#{{r["number"]}} ({{r["role"]}} on {{r["platform"]}})')
+        if held:
+            print('Items currently held by autonomous runs in this project:')
+            for h in held:
+                print(f'  - {{h}}')
+            print('')
+        print('If you work on a backlog item, claim it with `mahler claim {project}#N`.')
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    main()
+""")
+
+    # 2. PreToolUse
+    hooks["PreToolUse"] = [{"command": f"python3 {os.path.join('.claude', 'hooks', 'pre_tool_use.py')}", "tools": ["Edit", "Write", "Bash"]}]
+    with open(os.path.join(hooks_dir, "pre_tool_use.py"), "w") as f:
+        f.write(f"""#!/usr/bin/env python3
+import sys
+import os
+import json
+import subprocess
+
+def main():
+    project = "{project}"
+    run_id = os.environ.get("MAHLER_RUN_ID")
+    
+    if run_id:
+        yield_file = os.path.expanduser(f"~/.mahler/runs/{{run_id}}/yield")
+        if os.path.exists(yield_file):
+            print("yield delivered: commit your work, push the branch, and end with STATUS: YIELDED")
+            sys.exit(1)
+            
+    tool_args = {{}}
+    if not sys.stdin.isatty():
+        try:
+            tool_args = json.load(sys.stdin)
+        except Exception:
+            pass
+            
+    if run_id:
+        command = tool_args.get("command", "")
+        if command and "gh pr merge" in command:
+            res = subprocess.run(["mahler", "lease-check"], capture_output=True, text=True)
+            if res.returncode != 0:
+                print(res.stdout.strip())
+                sys.exit(1)
+                
+    if not run_id:
+        # Nudge once per session if unclaimed
+        session_id = os.environ.get("CLAUDE_SESSION_ID", str(os.getpid()))
+        state_file = f"/tmp/mahler_nudge_{{session_id}}"
+        if not os.path.exists(state_file):
+            try:
+                out = subprocess.check_output(["mahler", "status", "--project", project, "--json"], text=True)
+                d = json.loads(out)
+                holds_claim = any(l.get("holder", "").startswith("interactive:") for l in d.get("leases", []))
+                if not holds_claim:
+                    print(f"If this work relates to a backlog item, run `mahler claim {{project}}#N`.")
+                    with open(state_file, "w") as f:
+                        f.write("1")
+            except Exception:
+                pass
+
+if __name__ == "__main__":
+    main()
+""")
+
+    # 3. PostToolUse / UserPromptSubmit (heartbeat)
+    heartbeat_cmd = {"command": f"python3 {os.path.join('.claude', 'hooks', 'heartbeat.py')}"}
+    hooks["PostToolUse"] = [heartbeat_cmd]
+    hooks["UserPromptSubmit"] = [heartbeat_cmd]
+    
+    with open(os.path.join(hooks_dir, "heartbeat.py"), "w") as f:
+        f.write(f"""#!/usr/bin/env python3
+import json
+import subprocess
+import os
+
+def main():
+    if os.environ.get("MAHLER_RUN_ID"):
+        return
+    try:
+        out = subprocess.check_output(["mahler", "status", "--project", "{project}", "--json"], text=True)
+        d = json.loads(out)
+        for l in d.get("leases", []):
+            if l.get("holder", "").startswith("interactive:"):
+                # Call mahler heartbeat in background
+                subprocess.Popen(
+                    ["mahler", "heartbeat", f"{{l['project']}}#{{l['number']}}"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+    except Exception:
+        pass
+
+if __name__ == "__main__":
+    main()
+""")
+
+    # Make them executable
+    for script in ["session_start.py", "pre_tool_use.py", "heartbeat.py"]:
+        os.chmod(os.path.join(hooks_dir, script), 0o755)
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+    
+    print(f"Hooks installed in {{claude_dir}}")
     return 0
 
 
@@ -217,7 +375,12 @@ def main(argv=None):
 
     s = sub.add_parser("status", help="running work, items, quota, recent events")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--project", help="filter by project")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("hooks", help="install Claude Code session hooks")
+    s.add_argument("project")
+    s.set_defaults(fn=cmd_hooks)
 
     s = sub.add_parser("usage", help="quota per platform")
     s.add_argument("--probe", action="store_true", help="take fresh readings now")
