@@ -346,7 +346,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Claude Code** (Pro) | `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions` (+ denylist) | Every headless run emits a `rate_limit_event` with `unifiedWindows.five_hour` / `seven_day.utilization`. When no run is live, a lean probe gives the same reading for ~700 tokens (`--model haiku --tools "" --strict-mcp-config --setting-sources ""`). Not `--bare`: it skips OAuth | **Planner** (sorting, specs, splitting, hard-bug diagnosis) always. **Builder** only after the free tiers are spent, and under the reserve |
 | **Antigravity: Claude/GPT pool** (free) | `agy -p … --add-dir <worktree> --model claude-opus-4-6-thinking --dangerously-skip-permissions --output-format stream-json` | `agy -p /usage --output-format json`, which costs nothing and reports `remaining_fraction` + `reset_time` per pool and window | **First-choice builder** |
 | **Antigravity: Gemini pool** (free) | same, `--model gemini-3.1-pro-high` or `gemini-3.8-flash-high` | same probe, separate pool | Second-choice builder |
-| **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off for an hour after any rate-limit error | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3) when launched from a shell; **paused** in `~/.mahler/config.toml` because runs launched by the launchd daemon hang (mahler#12) |
+| **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off for an hour after any rate-limit error | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3). Daemon-launched runs need macOS Documents access (see below) |
 | OpenCode, Copilot CLI | — | — | Later backends (Phase 8) |
 
 **Antigravity test results (2026-09-12).**
@@ -362,6 +362,24 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 - Not yet observed: what quota exhaustion looks like mid-run. Mahler probes before starting,
   and treats any result `status` other than `SUCCESS` as a failed run.
 - Manual clipboard handoff to the Antigravity IDE is no longer needed.
+
+**Cline and macOS privacy (mahler#12, 2026-09-12).** Cline reads `~/Documents/Cline/` (global
+rules, hooks, workflows) every time it starts, and nothing relocates it except `HOME`. When
+the launchd daemon starts it, macOS holds the daemon's Homebrew `python3.14` responsible for
+that access. The first time, macOS showed an Allow/Don't Allow dialog on the Mac mini, and every
+Cline process blocked on it without printing anything. Runs 20–23 sat for up to 73 minutes
+until someone clicked Allow over Screen Sharing. From a terminal the test passed, because the
+terminal app already had access. Consequences:
+- The grant belongs to that exact Python build. **A Homebrew Python upgrade brings the dialog
+  back**, and it can hit any platform that touches a protected folder.
+- A run whose log is still empty `startup_timeout_minutes` (10) after the agent started is
+  stopped as `silent`. It doesn't count as an attempt. Its platform goes on hold for
+  `backoff_minutes`, meaning no new runs start there. You get a high-priority ping saying to
+  look for a permission dialog.
+- A SIGTERM that lands while a process is blocked like this can be acted on late or never.
+  So the watchdog SIGKILLs a run's whole process group before finalizing it, even after the
+  shell has exited. Before this fix, runs 20–22 woke up after their worktrees were deleted,
+  and crashed.
 
 **Routing policy** (your answer: *Claude plans; use up the two free tiers first; after that
 Claude may build, but keep headroom for me*):
@@ -491,7 +509,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   - `data`: stores and backup/restore commands (D12)
   - `canary`: an optional "break a file, confirm the build fails" check, for stacks where
     worktree builds can silently compile the wrong checkout (phish-in-app D206/D207)
-- **Trust but verify.** An agent's "done" is a claim. Mahler moves an item to `shipped` only
+- **Trust but verify** (made concrete by D18). An agent's "done" is a claim. Mahler moves an item to `shipped` only
   after independent signals agree: CI green on the PR, `verify.full` green, the deploy
   succeeded, and smoke green. On failure, Mahler feeds the failing log tail (generalised from
   `ci-wait.sh`) back to the live run. If the run has ended, it starts a fix run from the
@@ -673,6 +691,32 @@ itself needs a stable place to stand:
 - The bootstrap is **Python standard library only**, like thread and dispatch. The web
   console and the MCP server (which need `uv`-managed dependencies) are later issues Mahler
   builds for itself.
+
+### D18 — Agents build; the conductor ships
+
+Decided 2026-09-12, after weak free models kept finishing the code and then dropping the tail
+of the build recipe. Gemini skipped the PR and STATUS steps on groundwork#81 (run 17). Cline
+on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:".
+
+- **A run does one job that needs judgment,** then ends:
+  - **build:** implement, run `verify`, commit and push, then end with `STATUS: DONE <one-line
+    summary>`. `NEEDS-YOU` and `BLOCKED` stay.
+  - **fix:** CI failed on the PR; the run gets the failing log tail and starts from the branch.
+  - **review:** D11's review by a different platform, when it lands.
+- **Mahler does the mechanical steps in code** (Principle 7). It pushes the branch, then opens
+  the PR with `Fixes #N`, the agent's summary and the issue's "Needs a human to check" list.
+  It watches CI across ticks, checks the lease, squash-merges, deletes the branch and comments
+  on the issue. These steps need no model, cost no tokens and can't be forgotten.
+- **Not more agents.** A separate "PR agent" would be the same failure mode aimed at work
+  that needs no judgment.
+- **A missing STATUS line isn't the end of the story.** If the branch has commits ahead of
+  base and the project's `verify` passes when Mahler runs it, the build counts as done. The PR
+  goes up with a note that the agent didn't confirm it had finished; CI and review decide
+  from there. Otherwise it's a failed attempt, as before.
+- Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
+  (D8) applies as before.
+- Shorter recipes also mean fewer tokens on every run, and a smaller surface for the model to
+  lose track of.
 
 ### D15 — Deliberately not doing
 

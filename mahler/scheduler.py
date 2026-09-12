@@ -17,7 +17,7 @@ from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of
 from .ledger import iso, parse
 
 STOP_NOW = ("parked",)                               # no grace period
-NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease")
+NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent")
 
 
 class Ctx:
@@ -104,6 +104,10 @@ def watchdog(ctx):
     for run in led.active_runs():
         pol = ctx.policy(run["project"])
         if not runner.alive(run["pid"]):
+            # The shell is gone, but a child can outlive it: a SIGTERM that lands
+            # while the agent is blocked in a syscall is only acted on later, if
+            # at all (mahler#12). Nothing of a run may outlive the run.
+            runner.kill(run["pid"])
             finalize(ctx, run)
             continue
         if run["status"] == "stopping":
@@ -136,7 +140,13 @@ def _health(ctx, run, pol, now):
     if now - parse(run["started_at"]) > timedelta(minutes=pol["run_timeout_minutes"]):
         return "timeout"
     try:
-        idle = now.timestamp() - os.path.getmtime(run["log_path"])
+        st = os.stat(run["log_path"])
+        idle = now.timestamp() - st.st_mtime
+        # The log exists once the agent command starts (after any setup step).
+        # Still empty long after that: the agent never got going. Seen when a
+        # macOS permission dialog blocks it at startup (mahler#12).
+        if st.st_size == 0 and idle > pol["startup_timeout_minutes"] * 60:
+            return "silent"
     except OSError:
         idle = (now - parse(run["started_at"])).total_seconds()
     if idle > pol["progress_timeout_minutes"] * 60:
@@ -189,6 +199,8 @@ def finalize(ctx, run):
             f"{outcome}{f' [{reason}]' if reason else ''}")
     if ctx.dry_run:
         return
+    if reason == "silent":
+        _hold_platform(ctx, run)
 
     gh = ctx.gh(project)
     keep_worktree = False
@@ -251,6 +263,21 @@ def finalize(ctx, run):
                                runner.worktree_root(pol))
 
 
+def _hold_platform(ctx, run):
+    """A run that never printed anything says more about the machine than the
+    task: the next run on that platform would most likely block the same way.
+    Stop starting runs there for a while and tell the owner what to look for."""
+    pconf = ctx.cfg["platforms"][run["platform"]]
+    until = ctx.led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60))
+    ctx.led.record_usage(run["platform"], router.HOLD, 100.0, iso(until))
+    ctx.ping(f"Mahler: {run['platform']} runs are stuck at startup",
+             f"Run {run['id']} printed nothing for {ctx.policy(run['project'])['startup_timeout_minutes']} "
+             "min. Usually a macOS permission dialog is waiting on the Mac mini (e.g. Documents "
+             "access for python3 after a Homebrew upgrade): click Allow. "
+             f"{run['platform']} is on hold until {until.astimezone():%H:%M}.",
+             run["project"], run["number"], priority="high", tags="warning")
+
+
 def _retry_or_fail(ctx, project, n, item, reason, outcome):
     led = ctx.led
     if reason in NO_ATTEMPT:
@@ -272,6 +299,7 @@ def _retry_or_fail(ctx, project, n, item, reason, outcome):
 REASON_TEXT = {
     "quota": "quota line reached", "preempted": "you took over in a session",
     "hung": "no progress for too long", "timeout": "hit the time limit",
+    "silent": "never started — printed nothing",
     "closed": "the issue was closed", "parked": "parked", "lost-lease": "lost its lease",
 }
 
