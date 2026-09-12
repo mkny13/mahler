@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import timedelta
 
-from . import backup, config, notify, platforms, presence, router, runner
+from . import backup, config, digest, notify, platforms, presence, router, runner
 from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  label_names, parse_command, pin_of, priority_of)
 from .ledger import iso, parse
@@ -84,6 +84,7 @@ def tick(ctx):
         for p in config.enabled_projects(ctx.cfg):     # backups run even while paused
             for spec in p.get("backups") or []:
                 backup.run(ctx, p["name"], spec)
+    digest.maybe_send(ctx)                  # informational: also runs while paused
     return ctx.lines
 
 

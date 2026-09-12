@@ -50,6 +50,9 @@ DEFAULTS = {
     # to 127.0.0.1 — exposure to the tailnet is a `tailscale serve` machine
     # setting the owner turns on
     "serve": {"port": 8787},
+    # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
+    # tick at/after `hour` local time; once-only via the ledger kv table
+    "digest": {"hour": 8},
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
