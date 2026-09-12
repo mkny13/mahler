@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS items (
     pin              TEXT,
     branch           TEXT,
     attempts         INTEGER NOT NULL DEFAULT 0,
+    setup_fails      INTEGER NOT NULL DEFAULT 0,
     epoch            INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT,
     sorted_at        TEXT,
@@ -127,6 +128,9 @@ class Ledger:
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA busy_timeout=10000")
         self.con.executescript(SCHEMA)
+        cols = {r[1] for r in self.con.execute("PRAGMA table_info(items)")}
+        if "setup_fails" not in cols:   # ledgers created before setup-failure tracking (#8)
+            self.con.execute("ALTER TABLE items ADD COLUMN setup_fails INTEGER NOT NULL DEFAULT 0")
         self.clock = clock
 
     def now(self):
@@ -331,6 +335,23 @@ class Ledger:
     def usage(self, platform):
         return {r["window"]: dict(r) for r in
                 self.q("SELECT * FROM usage WHERE platform=?", (platform,))}
+
+    # ---------- setup failures (issue #8) ----------
+
+    def bump_setup_fails(self, project, number):
+        """Count one more consecutive setup failure (exit 97); return the new count."""
+        with self._tx():
+            self.con.execute(
+                "UPDATE items SET setup_fails=setup_fails+1 WHERE project=? AND number=?",
+                (project, number))
+        r = self.item(project, number)
+        return r["setup_fails"] if r else 0
+
+    def reset_setup_fails(self, project, number):
+        """Setup succeeded (or you said go) — the consecutive count starts over."""
+        self.con.execute(
+            "UPDATE items SET setup_fails=0 WHERE project=? AND number=? AND setup_fails<>0",
+            (project, number))
 
     # ---------- counters ----------
 

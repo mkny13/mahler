@@ -188,6 +188,17 @@ def exit_code(run):
         return None
 
 
+def setup_tail(run, lines=20):
+    """The last `lines` lines of the run's setup.log ('' when there isn't one) —
+    surfaced in handoffs and `mahler status` when setup failed (issue #8)."""
+    path = os.path.join(os.path.dirname(run["log_path"]), "setup.log")
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-lines:]).strip()
+    except OSError:
+        return ""
+
+
 def snapshot(repo, wt, run_id, number, base):
     """Save everything a run left — commits *and* uncommitted/untracked files —
     to refs/heads/mahler/snapshot/<n>-run<id>, without touching the worktree,
