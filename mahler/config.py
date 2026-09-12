@@ -34,6 +34,10 @@ DEFAULTS = {
         "hot_hold_minutes": 20,
         "yield_grace_seconds": 120,
         "verify": "",
+        # which open issues Mahler manages: "all", or "label" = only those
+        # carrying scope_label (for repos with a big pre-Mahler backlog)
+        "scope": "all",
+        "scope_label": "mahler",
     },
     "concurrency": {"total": 2},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},
@@ -41,7 +45,7 @@ DEFAULTS = {
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
         "sort": ["claude", "agy-claude", "agy-gemini"],
-        "build": ["agy-claude", "agy-gemini", "claude"],
+        "build": ["agy-claude", "agy-gemini", "cline-free", "claude"],
     },
     "platforms": {
         "claude": {
@@ -67,6 +71,16 @@ DEFAULTS = {
         },
     },
     "projects": {},
+}
+
+# Cline's free models report no quota at all (verified 2026-09-12): it is
+# "unmetered" — available until a rate-limit/quota error, then backed off.
+# Its free models are weaker, so it only takes small items.
+DEFAULTS["platforms"]["cline-free"] = {
+    "enabled": True, "kind": "cline", "model": "",
+    "metered": False, "backoff_minutes": 60, "max_size": "s",
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
 }
 
 

@@ -63,6 +63,18 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "agy-gemini",
                                             self.cfg["platforms"]["agy-gemini"])[0], "hard")
 
+    def test_cline_is_unmetered_but_small_items_only(self):
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "cline-free")
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "claude")
+
+    def test_cline_backs_off_after_a_quota_error(self):
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (80, 5)})
+        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        name, reasons = router.pick(self.cfg, led, "build", size="s")
+        self.assertIsNone(name)
+        self.assertTrue(any("backing off" in r for r in reasons))
+
     def test_pin_overrides_order(self):
         led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
         self.assertEqual(router.pick(self.cfg, led, "build", pin="agy-gemini")[0], "agy-gemini")

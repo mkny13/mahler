@@ -41,6 +41,10 @@ def agy_exe():
     return which("agy", [os.path.join(HOME, ".local/bin")])
 
 
+def cline_exe():
+    return which("cline", ["/opt/homebrew/bin"])
+
+
 def _epoch_iso(secs):
     return datetime.fromtimestamp(int(secs), timezone.utc).isoformat() if secs else None
 
@@ -65,16 +69,26 @@ def agy_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv
 
 
+def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
+            "-t", str(int(timeout_minutes) * 60)]
+    if pconf.get("model"):
+        argv += ["-m", pconf["model"]]
+    return argv + [prompt]
+
+
 def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
     if pconf["kind"] == "agy":
         return agy_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "cline":
+        return cline_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
 
 
 def available(pconf):
-    exe = claude_exe() if pconf["kind"] == "claude" else agy_exe()
+    exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -218,6 +232,17 @@ def read_log(path, kind):
                 elif t == "result":
                     res["final"] = ev.get("result")
                     res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
+            elif kind == "cline":
+                if ev.get("type") == "run_result":
+                    res["final"] = ev.get("text")
+                    res["ok"] = ev.get("finishReason") == "completed"
+                    if not res["ok"] and any(w in json.dumps(ev).lower()
+                                             for w in ("rate limit", "429", "quota")):
+                        res["quota_hit"] = True
+                elif ev.get("type") == "error" or ev.get("error"):
+                    blob = json.dumps(ev).lower()
+                    if any(w in blob for w in ("rate limit", "429", "quota")):
+                        res["quota_hit"] = True
             else:  # agy
                 if ev.get("event") == "result":
                     r = ev.get("result") or {}

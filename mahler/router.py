@@ -13,10 +13,20 @@ from .ledger import parse
 WINDOWS = ("5h", "weekly")
 
 
+SIZES = {"s": 1, "m": 2, "l": 3}
+
+
 def usage_state(led, name, pconf):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins."""
     now = led.now()
     usage = led.usage(name)
+    if not pconf.get("metered", True):
+        # no meter: fine unless a quota error put it in the penalty box
+        for u in usage.values():
+            until = parse(u["resets_at"])
+            if u["used_pct"] >= 100 and until and until > now:
+                return "hard", f"backing off until {until.astimezone():%H:%M}"
+        return "ok", "unmetered"
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
@@ -48,12 +58,16 @@ def candidates(cfg, role, pin=None):
     return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")]
 
 
-def pick(cfg, led, role, pin=None, busy=()):
+def pick(cfg, led, role, pin=None, busy=(), size=None):
     """First platform in routing order with headroom. -> (name|None, reasons)."""
     reasons = []
     for name in candidates(cfg, role, pin):
         if name in busy:
             reasons.append(f"{name}: busy")
+            continue
+        limit = cfg["platforms"][name].get("max_size")
+        if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
+            reasons.append(f"{name}: only takes size:{limit}")
             continue
         state, detail = usage_state(led, name, cfg["platforms"][name])
         if state == "ok":

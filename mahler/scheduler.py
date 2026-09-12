@@ -168,8 +168,10 @@ def finalize(ctx, run):
     for w, pct, resets in log["usage"]:
         led.record_usage(run["platform"], w, pct, resets)
     if log["quota_hit"]:
+        pconf = ctx.cfg["platforms"][run["platform"]]
+        until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
         for w in router.WINDOWS:
-            led.record_usage(run["platform"], w, 100.0)
+            led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
     reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None)
@@ -292,12 +294,16 @@ def _handoff_comment(ctx, run, item, reason, outcome, saved, log, kept):
 
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
+    pol = ctx.policy(project)
     issues = gh.open_issues()
     open_nums = set()
     for iss in issues:
         n = iss["number"]
-        open_nums.add(n)
         labels = label_names(iss)
+        if pol.get("scope") == "label" and led.item(project, n) is None and not (
+                pol["scope_label"] in labels or any(l in LABEL_STATES for l in labels)):
+            continue                      # not (yet) handed to Mahler
+        open_nums.add(n)
         ctx._labels[(project, n)] = labels
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
                       depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels))
@@ -495,7 +501,10 @@ def schedule(ctx, p):
         busy = {k for k, v in per_platform.items()
                 if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
         busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
-        platform, reasons = router.pick(cfg, led, role, it["pin"] if role == "build" else None, busy)
+        size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
+                     if l.startswith("size:")), None)
+        platform, reasons = router.pick(cfg, led, role, it["pin"] if role == "build" else None,
+                                        busy, size=size)
         if not platform:
             ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
             continue
