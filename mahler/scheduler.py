@@ -110,6 +110,11 @@ def watchdog(ctx):
                                    pol["auto_lease_minutes"])
         reason = None
         if run["yield_at"]:
+            if ctx.cfg["platforms"][run["platform"]]["kind"] == "claude":
+                yield_file = os.path.join(config.RUNS_DIR, str(run["id"]), "yield")
+                if not os.path.exists(yield_file):
+                    os.makedirs(os.path.dirname(yield_file), exist_ok=True)
+                    open(yield_file, "w").close()
             preset = run["stop_reason"]
             grace = timedelta(seconds=0 if preset in STOP_NOW else pol["yield_grace_seconds"])
             if now >= parse(run["yield_at"]) + grace:
