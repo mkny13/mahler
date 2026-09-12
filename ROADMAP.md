@@ -30,7 +30,8 @@ Playwright and preview deploys already in place, and it has real personal data.
 - [x] **S2 — Antigravity CLI.** `agy` 1.1.23 is installed and signed in; headless edit, run
       and commit work. `--add-dir` is required. `/usage` gives JSON quota for free across
       **two pools** (Gemini; Claude/GPT). (DESIGN D8)
-- [ ] **S3 — Cline CLI on free models.** Filed as a Mahler issue in Phase B.
+- [x] **S3 — Cline CLI on free models.** `cline --cwd --json` works unattended at $0 with no
+      quota reporting → routed as unmetered, `size:s` only. (DESIGN D8)
 - [ ] **S4 — Reach from the phone** (`tailscale serve`, CORS from app origins). Filed as an
       issue.
 - [ ] **S5 — GitHub polling cost with ETags.** Filed as an issue. The bootstrap polls
@@ -92,6 +93,12 @@ project: Mahler itself.
 - backups
 - the statusline sidecar
 - groundwork onboarding
+
+**Status (2026-09-12):** kernel built and running under launchd (`com.mike.mahler`).
+First pipeline run: issue mahler#1 sorted by Claude, built by Antigravity's Claude pool.
+groundwork was brought in early at your request, scoped to issues labelled `mahler`
+(#80, #81), with production data off-limits until Phase 4. Phase 1 items are filed as
+mahler#3–#8.
 
 **Done when:** you file an issue on `mkny13/mahler` from your phone, and Mahler sorts it,
 builds it on a free platform, gets CI green, merges it, updates itself to the new known-good,

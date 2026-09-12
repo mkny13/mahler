@@ -143,7 +143,7 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         fh.write(prompt)
     shell = (f"{shlex.join(argv)} > {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
-    if pol.get("setup"):                    # e.g. dependency install; runs detached too
+    if pol.get("setup") and role == "build":   # e.g. dependency install; runs detached too
         setup_log = shlex.quote(os.path.join(run_dir, "setup.log"))
         shell = (f"( {pol['setup']} ) > {setup_log} 2>&1 || "
                  f"{{ echo 97 > {shlex.quote(status_path)}; exit 97; }}; " + shell)

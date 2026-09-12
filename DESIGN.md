@@ -1,6 +1,6 @@
 # Mahler — Design
 
-Status: design agreed 2026-09-12, no code yet. Build order lives in [ROADMAP.md](ROADMAP.md).
+Status: design agreed 2026-09-12; the Phase B bootstrap kernel is built and running. Build order lives in [ROADMAP.md](ROADMAP.md).
 Gustav Mahler was a conductor. This tool conducts: it decides who plays which part, and when.
 
 ---
@@ -346,7 +346,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Claude Code** (Pro) | `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions` (+ denylist) | Every headless run emits a `rate_limit_event` with `unifiedWindows.five_hour` / `seven_day.utilization`. When no run is live, a lean probe gives the same reading for ~700 tokens (`--model haiku --tools "" --strict-mcp-config --setting-sources ""`). Not `--bare`: it skips OAuth | **Planner** (sorting, specs, splitting, hard-bug diagnosis) always. **Builder** only after the free tiers are spent, and under the reserve |
 | **Antigravity: Claude/GPT pool** (free) | `agy -p … --add-dir <worktree> --model claude-opus-4-6-thinking --dangerously-skip-permissions --output-format stream-json` | `agy -p /usage --output-format json`, which costs nothing and reports `remaining_fraction` + `reset_time` per pool and window | **First-choice builder** |
 | **Antigravity: Gemini pool** (free) | same, `--model gemini-3.1-pro-high` or `gemini-3.8-flash-high` | same probe, separate pool | Second-choice builder |
-| **Cline** (free models) | `cline --cwd <worktree> --auto-approve true …` | None (rate-limit errors only) | Builder for `s` items and chores; review partner (D11). Not yet tested (S3) |
+| **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off for an hour after any rate-limit error | Builder for `size:s` items only (default model: GLM-5.3-flash, free); review partner (D11). Verified 2026-09-12 (S3): unattended edit, run, commit and STATUS line all work |
 | OpenCode, Copilot CLI | — | — | Later backends (Phase 8) |
 
 **Antigravity test results (2026-09-12).**
