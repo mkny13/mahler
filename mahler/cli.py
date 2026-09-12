@@ -449,6 +449,9 @@ def main(argv=None):
     s.add_argument("run_id", type=int)
     s.set_defaults(fn=cmd_log)
 
+    s = sub.add_parser("mcp", help="run MCP server over stdio")
+    s.set_defaults(fn=lambda a, cfg, led: __import__('mahler.mcp', fromlist=['']).serve(cfg, led) or 0)
+
     sub.add_parser("version", help="show commit, known-good status, behind-count"
                    ).set_defaults(fn=cmd_version)
 
