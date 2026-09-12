@@ -18,7 +18,8 @@ Open questions to resolve when this gets picked up:
 - How this composes with existing single-agent review flows (avoid double
   work / conflicting verdicts).
 
-Status: not started — logged 2026-09-12 for future design work.
+Status: not started — logged 2026-09-12. Slotted as ROADMAP Phase 7; its hook point is
+the different-platform review step in DESIGN.md D11.
 
 ## Proactive backlog execution (this is Mahler's actual reason to exist)
 
@@ -53,4 +54,7 @@ design, not a bolt-on flag:
   purely reactive. If Mahler does what dispatch's name implies, it should be
   named for that.
 
-Status: not started — logged 2026-09-12, the session that discovered the gap.
+Status: designed 2026-09-12 — see [DESIGN.md](DESIGN.md) (D2 supersede/absorb, D6
+ownership/locking, D7 staleness clocks; the name "Mahler" is kept — a conductor, which is
+what it now does) and
+[ROADMAP.md](ROADMAP.md) for the build order.
