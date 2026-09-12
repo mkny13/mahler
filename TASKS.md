@@ -1,25 +1,39 @@
 # TASKS.md
 
-Last updated by: Claude (bootstrap session), 2026-09-12
+Last updated by: Claude (bootstrap session handoff), 2026-09-12
 
 ## Now
 
 ## Status
-Phase B bootstrap kernel is built, pushed (`mkny13/mahler`, private) and running under
-launchd (`com.mike.mahler`, every 60s, from the pinned clone `~/.mahler/app`). Managed
-projects: `mahler` (all issues) and `groundwork` (only issues labelled `mahler`: #80, #81;
-production data off-limits by config rule until Phase 4). groundwork is disabled in
-`~/ai-tools/dispatch.toml`. The backlog lives in GitHub Issues now, not in this file.
+Mahler's Phase B kernel is live under launchd (`com.mike.mahler`, every 60s, self-updating
+from `~/.mahler/app` on green CI). It has shipped its own issues (#1 version command, #3
+session hooks, #4 MCP server) and groundwork#80 on free Antigravity quota. Nightly verified
+Neon backups for groundwork are running. The groundwork production hold was lifted by the
+owner (backup-first rule in config). Cline is paused in routing (mahler#12). The backlog
+lives in GitHub Issues, not here.
 
 ## Next steps
-- Watch the first end-to-end runs: mahler#1 (build on agy-claude → PR #2), groundwork#80/#81.
-- Mahler works mahler#3–#8 itself (hooks, MCP server, status page, digest, janitor, setup errors).
-- Owner: subscribe to the ntfy topic in `~/.mahler/config.toml`; rotate the groundwork Neon
-  password (it was printed in a local session transcript on 2026-09-12).
+1. Fix mahler#12 (Cline hangs under launchd), then set `enabled = true` under
+   `[platforms.cline-free]` in `~/.mahler/config.toml`. `max_size = "l"` and the
+   build order (agy-claude → cline-free → agy-gemini → claude) are already set.
+2. Confirm groundwork#81 finishes: `/mahler go` was posted, and the next run should run
+   `mahler backup groundwork`, migrate and seed production (`drizzle/0010_*`), then merge
+   PR #93. It waits for free quota (Antigravity's 5-hour windows were spent at handoff).
+3. Mahler's own queue: #5 status page, #6 daily digest, #7 janitor (retried), #8 setup
+   errors, #9 scheduler fairness.
+4. ROADMAP Phase 1 remainder: deploy tracking/smoke checks for groundwork; `tailscale serve`
+   for the status page once #5 lands (owner turns that on).
 
 ## Context
-- `mahler status` / `mahler usage --probe` / `mahler pause` are the controls; `mahler log <run>`
-  summarises a run. Tick output: `~/.mahler/logs/tick.log`; self-updates: `logs/update.log`.
-- Don't edit `~/.mahler/app` by hand — merge to main; the launcher updates on green CI.
-- Claude usage is read for free from the OAuth usage endpoint (Claude Code's keychain token);
-  agy from `agy -p /usage`; Cline is unmetered (backs off on rate-limit errors).
+- Controls: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
+  `mahler log <run>`, `mahler backup [project]`. Logs are in `~/.mahler/logs/`
+  (`tick.log`, `update.log`).
+- Config that isn't in git lives in `~/.mahler/config.toml`: projects, ntfy topic, groundwork
+  rules, Cline pause, routing overrides.
+- Weak-model failure mode seen: Gemini sometimes finishes the code but skips the PR and
+  STATUS steps. The snapshot + handoff + retry path recovers it (groundwork#81 run 17 → 19).
+- Antigravity's Claude pool (Opus 4.6) exhausted its 5-hour window after roughly 3 runs.
+  Sorting was moved to the Gemini pool for that reason.
+- groundwork scope is label-based: only issues labelled `mahler` are managed.
+- The owner should rotate the groundwork Neon password (it was printed in this session's
+  local transcript on 2026-09-12).
