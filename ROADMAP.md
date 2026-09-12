@@ -196,9 +196,12 @@ has turned into a fix with no action from you beyond tapping "fails".
 
 ## Phase 4 — Safety hardening (before any second app)
 
-- [ ] Data inventory format and nightly backup jobs (`pg_dump`, `wrangler d1 export`,
-      `sqlite3 .backup`) into `/Volumes/ExtSSD160/mahler-backups/`, with retention. Monthly
-      automated restore drills.
+- [x] Nightly verified backup job (`mahler/backup.py`, pulled forward 2026-09-12):
+      groundwork's Neon production database (Postgres 18.6, dumped with Homebrew `libpq`
+      18.6) → `/Volumes/ExtSSD160/mahler-backups/`, 14/8/12 retention. First dump taken
+      2026-09-12 17:02.
+- [ ] Other store kinds (`wrangler d1 export`, `sqlite3 .backup`) as projects onboard.
+      Monthly automated restore drills.
 - [ ] **Staging seeded from backups** (D16). Every seed doubles as a restore drill.
 - [ ] **Backup receipt before risky deploys.**
 - [ ] Migrations tested against a copy of real data.
