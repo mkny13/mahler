@@ -46,6 +46,10 @@ DEFAULTS = {
     },
     "concurrency": {"total": 2},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},
+    # the read-only status page (`mahler serve`, DESIGN D10); always bound
+    # to 127.0.0.1 — exposure to the tailnet is a `tailscale serve` machine
+    # setting the owner turns on
+    "serve": {"port": 8787},
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {

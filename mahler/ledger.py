@@ -119,10 +119,15 @@ def parse(s):
 
 
 class Ledger:
-    def __init__(self, path, clock=utcnow):
+    def __init__(self, path, clock=utcnow, thread_safe=False):
         if path != ":memory:":
             os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.con = sqlite3.connect(path, isolation_level=None, timeout=10)
+        # thread_safe=True lets a server thread use a connection made on the
+        # main thread (the status page does this); callers must then serialise
+        # access around one connection, which mahler.serve does with a lock.
+        self.path = path
+        self.con = sqlite3.connect(path, isolation_level=None, timeout=10,
+                                   check_same_thread=not thread_safe)
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA busy_timeout=10000")

@@ -76,6 +76,15 @@ def cmd_status(a, cfg, led):
         print(f"  {when} {e['kind']:<8} {where:<14} {(e['detail'] or '')[:80]}")
     return 0
 
+def cmd_serve(a, cfg, led):
+    from . import serve
+    from .ledger import Ledger
+    port = a.port or cfg.get("serve", {}).get("port", 8787)
+    # request threads must be able to use this connection, so re-open the
+    # same database thread-safe; serve serialises access with a lock
+    return serve.serve(cfg, Ledger(led.path, thread_safe=True), port)
+
+
 def cmd_hooks(a, cfg, led):
     project = a.project
     pol = config.project_policy(cfg, project)
@@ -393,6 +402,11 @@ def main(argv=None):
     s.add_argument("--json", action="store_true")
     s.add_argument("--project", help="filter by project")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("serve", help="read-only status page on http://127.0.0.1 (D10)")
+    s.add_argument("--port", type=int, default=None,
+                   help="port to bind (default: serve.port in config, else 8787)")
+    s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("hooks", help="install Claude Code session hooks")
     s.add_argument("project")

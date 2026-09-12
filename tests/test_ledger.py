@@ -97,6 +97,49 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.led.next_id("q", "D"), 1)
 
 
+class ConnectionTests(unittest.TestCase):
+    """The status page (mahler serve) opens the ledger with thread_safe=True
+    so a server thread can query the connection made on the main thread
+    (mahler.serve serialises access with a lock)."""
+
+    def test_thread_safe_ledger_usable_from_another_thread(self):
+        import threading
+        led = Ledger(":memory:", thread_safe=True)
+        result = {}
+
+        def work():
+            led.upsert_item("p", 1, title="x")
+            result["title"] = led.item("p", 1)["title"]
+
+        t = threading.Thread(target=work)
+        t.start()
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(result.get("title"), "x")
+
+    def test_default_ledger_stays_main_thread_only(self):
+        # without the flag sqlite3 still guards the connection: the guard is
+        # the default, thread_safe must be a deliberate opt-in
+        import sqlite3
+        import threading
+        led = Ledger(":memory:")
+        outcome = []
+
+        def work():
+            try:
+                led.item("p", 1)
+                outcome.append("unguarded")
+            except sqlite3.ProgrammingError:
+                outcome.append("guarded")
+
+        t = threading.Thread(target=work)
+        t.start()
+        t.join(timeout=5)
+        self.assertEqual(outcome, ["guarded"])
+
+
+
+
 class StateTests(unittest.TestCase):
     def test_set_state_logs_transition(self):
         led = Ledger(":memory:")

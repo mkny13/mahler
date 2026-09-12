@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TEMPLATE — not installed automatically. The read-only status page
+     (`mahler serve`, DESIGN D10) as a launchd job.
+
+     To install (a machine decision, like `tailscale serve` below):
+
+       sed "s|__HOME__|$HOME|g" launcher/com.mike.mahler.serve.plist \
+         > ~/Library/LaunchAgents/com.mike.mahler.serve.plist
+       launchctl load ~/Library/LaunchAgents/com.mike.mahler.serve.plist
+
+     The server binds to 127.0.0.1 only. To view it from your phone on the
+     tailnet, run ONCE by hand (do not put this in a script or repo hook):
+
+       tailscale serve --bg http://127.0.0.1:8787
+
+     then open https://<this-machine>.<tailnet>.ts.net/ on the phone.
+     Undo with `tailscale serve --https=443 off`. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mike.mahler.serve</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.mahler/app/bin/mahler</string>
+    <string>serve</string>
+    <string>--port</string>
+    <string>8787</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.mahler/logs/serve.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.mahler/logs/serve.err.log</string>
+</dict>
+</plist>
