@@ -112,9 +112,11 @@ class TestHooks(unittest.TestCase):
         
         # No item in DB, so lease-check fails.
         try:
+            env = os.environ.copy()
+            env["PATH"] = os.path.abspath("bin") + os.pathsep + env.get("PATH", "")
             # We mock the call by actually passing JSON to stdin
             stdin_data = json.dumps({"command": "gh pr merge -s"})
-            res = subprocess.run(["python3", pre_tool_script], input=stdin_data, capture_output=True, text=True)
+            res = subprocess.run(["python3", pre_tool_script], input=stdin_data, capture_output=True, text=True, env=env)
             self.assertEqual(res.returncode, 1)
             self.assertIn("STALE", res.stdout)
         finally:
