@@ -1,5 +1,6 @@
 """Routing policy (DESIGN D8) and platform output parsing."""
 
+import copy
 import json
 import os
 import subprocess
@@ -8,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, platforms, router
+from mahler import cli, config, platforms, router, scheduler
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -305,6 +306,54 @@ class ParseTests(unittest.TestCase):
                              "statusCode": 401}}}) + "\n")
             r = platforms.read_log(k, "kilo")
             self.assertFalse(r["quota_hit"])
+
+
+class ClaudeUsageSharingTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["p"] = {"path": "/tmp/test", "repo": "o/r"}
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        # Ensure there is an inbox item so routing platforms are wanted
+        self.led.upsert_item("p", 1, state="inbox", title="Task", priority=2)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def test_refresh_usage_mirrors_oauth_to_claude_and_opus(self):
+        sample = [("5h", 35.0, iso(NOW + timedelta(hours=3))),
+                  ("weekly", 55.0, iso(NOW + timedelta(days=5)))]
+        with mock.patch("mahler.platforms.oauth_usage", return_value=sample):
+            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+
+        c_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")[0]["used_pct"]
+        o_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h'")[0]["used_pct"]
+        self.assertEqual(c_5h, 35.0)
+        self.assertEqual(o_5h, 35.0)
+
+    def test_refresh_usage_mirrors_probe_to_both_and_sets_kv(self):
+        sample = [("5h", 42.0, iso(NOW + timedelta(hours=2)))]
+        with mock.patch("mahler.platforms.oauth_usage", return_value=[]), \
+             mock.patch("mahler.platforms.probe_claude", return_value=sample):
+            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+
+        c_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")[0]["used_pct"]
+        o_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h'")[0]["used_pct"]
+        self.assertEqual(c_5h, 42.0)
+        self.assertEqual(o_5h, 42.0)
+        self.assertIsNotNone(self.led.get_kv("probe:claude"))
+        self.assertIsNotNone(self.led.get_kv("probe:claude-opus"))
+
+    def test_cli_cmd_usage_probe_mirrors_to_both(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(probe=True)
+        sample = [("5h", 25.0, iso(NOW + timedelta(hours=4)))]
+        with mock.patch("mahler.platforms.probe_agy", return_value={}), \
+             mock.patch("mahler.platforms.oauth_usage", return_value=sample), \
+             mock.patch("mahler.platforms.probe_copilot", return_value=[]):
+            cli.cmd_usage(args, self.cfg, self.led)
+
+        c_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")[0]["used_pct"]
+        o_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h'")[0]["used_pct"]
+        self.assertEqual(c_5h, 25.0)
+        self.assertEqual(o_5h, 25.0)
 
 
 if __name__ == "__main__":

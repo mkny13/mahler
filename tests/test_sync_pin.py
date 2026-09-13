@@ -33,13 +33,17 @@ class FakeGH:
         self.edits = []                # (number, want, current_labels)
 
     def open_issues(self):
-        return [{"number": n, "title": i["title"], "body": "",
+        return [{"number": n, "title": i["title"], "body": i.get("body", ""),
                  "createdAt": t(-60), "updatedAt": t(0),
                  "url": f"https://github.com/x/y/issues/{n}",
                  "labels": [{"name": l} for l in i["labels"]],
                  "comments": [{"createdAt": at, "body": body}
-                              for at, body in i["comments"]]}
+                              for at, body in i.get("comments", [])]}
                 for n, i in sorted(self.issues.items())]
+
+    def add_label(self, number, label):
+        if label not in self.issues[number]["labels"]:
+            self.issues[number]["labels"].append(label)
 
     def issue_state(self, number):
         return "OPEN"
@@ -138,6 +142,80 @@ class PinTests(unittest.TestCase):
         self.sync()
         self.assertEqual(self.led.item("x", 5)["pin"], "agy-gemini")
         self.assertEqual(self.gh.edits, [])
+
+
+class SubIssueScopeTests(unittest.TestCase):
+    def test_part_of_parsing(self):
+        from mahler.gh import part_of
+        self.assertEqual(part_of("Part of #16"), 16)
+        self.assertEqual(part_of("part of #16"), 16)
+        self.assertEqual(part_of("Part of: #42"), 42)
+        self.assertEqual(part_of("**Part of:** #107"), 107)
+        self.assertEqual(part_of("  Part of #5\nSome details"), 5)
+        self.assertIsNone(part_of("No parent here"))
+        self.assertIsNone(part_of(None))
+
+    def test_sub_issues_inherit_scope_label(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["defaults"]["scope"] = "label"
+        cfg["defaults"]["scope_label"] = "mahler"
+        cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y"}
+
+        # Issue 1 has the mahler label.
+        # Issue 2 has no labels, but body says Part of #1.
+        # Issue 3 has no labels, but body says Part of #2.
+        # Issue 4 has no labels and no Part of line.
+        issues = {
+            1: {"title": "Parent task", "labels": ["mahler"], "body": "Parent"},
+            2: {"title": "Child task", "labels": [], "body": "Part of #1\nDo step 1"},
+            3: {"title": "Grandchild task", "labels": [], "body": "**Part of:** #2\nDo step 2"},
+            4: {"title": "Unrelated backlog issue", "labels": [], "body": "Not in mahler"},
+        }
+        gh = FakeGH(issues)
+        led = Ledger(":memory:", clock=lambda: NOW)
+        ctx = scheduler.Ctx(cfg, led)
+
+        with mock.patch.object(ctx, "gh", return_value=gh):
+            scheduler.sync(ctx, "proj")
+
+        # 1, 2, and 3 should be synced into the ledger
+        self.assertIsNotNone(led.item("proj", 1))
+        self.assertIsNotNone(led.item("proj", 2))
+        self.assertIsNotNone(led.item("proj", 3))
+        # 4 should not be in the ledger
+        self.assertIsNone(led.item("proj", 4))
+
+        # GitHub issues 2 and 3 should have gained the 'mahler' label
+        self.assertIn("mahler", gh.issues[2]["labels"])
+        self.assertIn("mahler", gh.issues[3]["labels"])
+        self.assertNotIn("mahler", gh.issues[4]["labels"])
+
+    def test_sub_issue_inherits_scope_from_closed_parent_in_ledger(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["defaults"]["scope"] = "label"
+        cfg["defaults"]["scope_label"] = "mahler"
+        cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y"}
+
+        led = Ledger(":memory:", clock=lambda: NOW)
+        # Parent issue 10 is already completed in ledger
+        led.upsert_item("proj", 10, state="done", title="Completed parent", priority=2)
+
+        # Child issue 20 arrives referencing #10
+        issues = {
+            20: {"title": "Followup sub-issue", "labels": [], "body": "Part of #10"},
+        }
+        gh = FakeGH(issues)
+        ctx = scheduler.Ctx(cfg, led)
+
+        with mock.patch.object(ctx, "gh", return_value=gh):
+            scheduler.sync(ctx, "proj")
+
+        self.assertIsNotNone(led.item("proj", 20))
+        self.assertIn("mahler", gh.issues[20]["labels"])
 
 
 if __name__ == "__main__":
