@@ -250,7 +250,8 @@ def kill(pid):
 
 def exit_code(run):
     try:
-        return int(open(run["status_path"]).read().strip())
+        with open(run["status_path"]) as fh:
+            return int(fh.read().strip())
     except (OSError, ValueError, TypeError):
         return None
 

@@ -1509,7 +1509,10 @@ def main_tick(cfg, led, dry_run=False, hot_hold=True):
         print("mahler: another tick is running; exiting")
         return 0
     ctx = Ctx(cfg, led, dry_run=dry_run, hot_hold=hot_hold)
-    tick(ctx)
+    try:
+        tick(ctx)
+    finally:
+        led.close()
     for line in ctx.lines:
         print(line)
     sys.stdout.flush()
