@@ -11,13 +11,14 @@ import subprocess
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
     "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
-    "parked": "mahler:parked", "failed": "mahler:failed", "tracking": "mahler:tracking",
+    "parked": "mahler:parked", "failed": "mahler:failed", "parent": "mahler:parent",
 }
 LABEL_STATES = {v: k for k, v in STATE_LABELS.items()}
+LABEL_STATES["mahler:tracking"] = "parent"  # backward compatibility
 LABEL_COLORS = {
     "mahler:inbox": "ededed", "mahler:ready": "0e8a16", "mahler:working": "1d76db",
     "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5",
-    "mahler:failed": "b60205", "mahler:tracking": "5319e7",
+    "mahler:failed": "b60205", "mahler:parent": "5319e7",
     "type:bug": "d73a4a", "type:feature": "a2eeef", "type:chore": "fef2c0",
     "type:goal": "7057ff", "type:uat": "fbca04", "type:anomaly": "e99695",
     "size:s": "c2e0c6", "size:m": "bfd4f2", "size:l": "f9d0c4",

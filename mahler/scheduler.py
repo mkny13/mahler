@@ -220,7 +220,7 @@ def finalize(ctx, run):
         if verb == "READY":
             led.set_state(project, n, "ready", "sorted", sorted_at=iso(led.now()))
         elif verb == "SPLIT":
-            led.set_state(project, n, "tracking", "split into sub-issues")
+            led.set_state(project, n, "parent", "split into sub-issues")
         elif verb == "NEEDS-YOU":
             led.set_state(project, n, "needs_you", rest)
             ctx.ping(f"Mahler needs you — {project} #{n}", rest or item["title"],
