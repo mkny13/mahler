@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS runs (
     yield_at    TEXT,
     nudged      INTEGER NOT NULL DEFAULT 0,
     model       TEXT,                    -- the modelID a stateless route actually used (mahler#141)
+    est_mins    REAL,                    -- predicted duration at launch (mahler#59)
+    actual_mins REAL,                    -- actual duration on completion (mahler#59)
     started_at  TEXT NOT NULL,
     ended_at    TEXT
 );
@@ -174,6 +176,10 @@ class Ledger:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
         if "model" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+        if "est_mins" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN est_mins REAL")
+        if "actual_mins" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN actual_mins REAL")
         lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
         if "capacity" not in lease_cols:
             self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
@@ -350,6 +356,25 @@ class Ledger:
                          state_changed_at=iso(self.now()), **extra)
         self.event("state", project, number,
                    f"{cur['state'] if cur else None} -> {state}" + (f" ({why})" if why else ""))
+        if state == "done" and (cur is None or cur["state"] != "done"):
+            runs = self.q("SELECT actual_mins, started_at, ended_at FROM runs WHERE project=? AND number=? AND status='ended'",
+                          (project, number))
+            total_mins = 0.0
+            for r in runs:
+                if r["actual_mins"] is not None:
+                    total_mins += r["actual_mins"]
+                elif r["started_at"] and r["ended_at"]:
+                    st = parse(r["started_at"])
+                    en = parse(r["ended_at"])
+                    if st and en:
+                        total_mins += max(0.0, (en - st).total_seconds() / 60.0)
+            ests = self.estimates()
+            est = self.issue_estimate(ests, project)
+            self.event("issue_done_stats", project, number, {
+                "total_actual_mins": round(total_mins, 2),
+                "predicted_issue_mins": round(est, 2),
+                "runs_count": len(runs),
+            })
         return self.item(project, number)
 
     # ---------- leases ----------
@@ -509,6 +534,9 @@ class Ledger:
     def create_run(self, **cols):
         cols.setdefault("status", "running")
         cols.setdefault("started_at", iso(self.now()))
+        if "est_mins" not in cols and cols.get("platform") and cols.get("role"):
+            ests = self.estimates()
+            cols["est_mins"] = round(self.run_estimate(ests, cols["platform"], cols["role"]), 2)
         keys = list(cols)
         cur = self.con.execute(
             f"INSERT INTO runs ({','.join(keys)}) VALUES ({','.join('?' * len(keys))})",
@@ -516,6 +544,13 @@ class Ledger:
         return cur.lastrowid
 
     def update_run(self, run_id, **cols):
+        if cols.get("ended_at") and "actual_mins" not in cols:
+            r = self.run(run_id)
+            if r and r["started_at"]:
+                started = parse(r["started_at"])
+                ended = parse(cols["ended_at"])
+                if started and ended:
+                    cols["actual_mins"] = round(max(0.0, (ended - started).total_seconds() / 60.0), 2)
         sets = ",".join(f"{k}=?" for k in cols)
         self.con.execute(f"UPDATE runs SET {sets} WHERE id=?", (*cols.values(), run_id))
 
@@ -583,19 +618,79 @@ class Ledger:
         """)
         global_issue = global_issue_row["avg_mins"] if (global_issue_row and global_issue_row["avg_mins"]) else 30.0
 
+        factor = self.calibration_factor()
+
         return {
             "run_avg": by_pr,
             "plat_avg": by_p,
             "global_run_avg": global_avg,
             "proj_issue_avg": proj_issue_avg,
             "global_issue_avg": global_issue,
+            "calibration_factor": factor,
         }
 
+    def calibration_factor(self):
+        cal = self.get_kv("estimate_calibration")
+        if cal:
+            try:
+                data = json.loads(cal)
+                return float(data.get("factor", 1.0))
+            except Exception:
+                pass
+        return 1.0
+
+    def calibration_stats(self):
+        cal = self.get_kv("estimate_calibration")
+        if cal:
+            try:
+                return json.loads(cal)
+            except Exception:
+                pass
+        return None
+
+    def calibrate_estimates(self, window=20):
+        """Compare recent predicted vs actual durations and calculate a calibration factor.
+        Clamps the factor between 0.5 and 2.0 to guard against wild outliers (mahler#59).
+        """
+        rows = self.q("""
+            SELECT est_mins, actual_mins, platform, role
+            FROM runs
+            WHERE status = 'ended' AND est_mins IS NOT NULL AND actual_mins IS NOT NULL AND est_mins > 0
+            ORDER BY ended_at DESC, id DESC
+            LIMIT ?
+        """, (window,))
+        if not rows:
+            return None
+
+        total_est = sum(r["est_mins"] for r in rows)
+        total_act = sum(r["actual_mins"] for r in rows)
+        count = len(rows)
+
+        if total_est <= 0 or count == 0:
+            return None
+
+        raw_factor = total_act / total_est
+        factor = max(0.5, min(2.0, raw_factor))
+        mae = sum(abs(r["actual_mins"] - r["est_mins"]) for r in rows) / count
+
+        stats = {
+            "factor": round(factor, 3),
+            "raw_factor": round(raw_factor, 3),
+            "mae": round(mae, 2),
+            "samples": count,
+            "calibrated_at": iso(self.now()),
+        }
+        self.set_kv("estimate_calibration", json.dumps(stats))
+        self.event("estimate_calibration", detail=stats)
+        return stats
+
     def run_estimate(self, ests, platform, role):
-        return ests["run_avg"].get((platform, role)) or ests["plat_avg"].get(platform) or ests["global_run_avg"]
+        raw = ests["run_avg"].get((platform, role)) or ests["plat_avg"].get(platform) or ests["global_run_avg"]
+        return raw * ests.get("calibration_factor", 1.0)
 
     def issue_estimate(self, ests, project):
-        return ests["proj_issue_avg"].get(project) or ests["global_issue_avg"]
+        raw = ests["proj_issue_avg"].get(project) or ests["global_issue_avg"]
+        return raw * ests.get("calibration_factor", 1.0)
 
 
     # ---------- setup failures (issue #8) ----------

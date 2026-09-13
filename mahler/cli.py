@@ -72,6 +72,10 @@ def cmd_status(a, cfg, led):
             "items": items,
             "leases": leases,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
+            "estimates": {
+                "calibration": led.calibration_stats(),
+                "calibration_factor": led.calibration_factor(),
+            },
         }, indent=2, default=str))
         return 0
     def item_url(project, number, it=None):
