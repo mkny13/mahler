@@ -1,12 +1,14 @@
+import contextlib
+import io
 import unittest
 import os
 import json
 import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from mahler import cli, config, scheduler, runner
-from mahler.ledger import Ledger
+from mahler.ledger import Ledger, iso
 
 class TestHooks(unittest.TestCase):
     def setUp(self):
@@ -124,3 +126,70 @@ class TestHooks(unittest.TestCase):
             del os.environ["MAHLER_PROJECT"]
             del os.environ["MAHLER_ISSUE"]
             del os.environ["MAHLER_EPOCH"]
+
+
+class TestSessionIdentity(unittest.TestCase):
+    """mahler#33: two interactive sessions must not both show up as the same
+    'interactive:you', and a session should learn another one is active."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.led = Ledger(os.path.join(self.tmp.name, "mahler.db"))
+        self.cfg = {"defaults": config.DEFAULTS["defaults"], "platforms": {},
+                    "projects": {"testproj": {"enabled": True}}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_default_holder_uses_the_session_id(self):
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "00a45724-4546-442f-a508-x"}):
+            self.assertEqual(cli.default_holder(), "00a45724")
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(cli.default_holder(), "you")
+
+    def test_other_interactive_holders_excludes_self_and_expired(self):
+        now = self.led.now()
+        self.led.con.execute(
+            "INSERT INTO leases (project, number, holder, kind, epoch, acquired_at, "
+            "heartbeat_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("testproj", 1, "interactive:aaaaaaaa", "interactive", 1,
+             iso(now), iso(now), iso(now + timedelta(minutes=30))))
+        self.led.con.execute(
+            "INSERT INTO leases (project, number, holder, kind, epoch, acquired_at, "
+            "heartbeat_at, expires_at) VALUES (?,?,?,?,?,?,?,?)",
+            ("testproj", 2, "interactive:bbbbbbbb", "interactive", 1,
+             iso(now), iso(now), iso(now - timedelta(minutes=1))))  # expired
+        others = cli.other_interactive_holders(self.led, "testproj", "interactive:aaaaaaaa")
+        self.assertEqual(others, [])  # only the caller's own live lease exists
+        others = cli.other_interactive_holders(self.led, "testproj", "interactive:zzzzzzzz")
+        self.assertEqual(others, ["interactive:aaaaaaaa"])  # sees the other live one, not the expired one
+
+    def test_claim_nudges_about_another_active_session(self):
+        class Args:
+            item = ("testproj", 1)
+            holder = "aaaaaaaa"
+            steal = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.cmd_claim(Args(), self.cfg, self.led)
+
+        class Args2:
+            item = ("testproj", 2)
+            holder = "bbbbbbbb"
+            steal = False
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            cli.cmd_claim(Args2(), self.cfg, self.led)
+        self.assertIn("interactive:aaaaaaaa", out2.getvalue())
+        self.assertIn("own worktree", out2.getvalue())
+        self.assertNotIn("Note:", out.getvalue())  # first claimant, nobody else active yet
+
+    def test_session_start_script_flags_other_sessions(self):
+        class Args:
+            project = "testproj"
+        with tempfile.TemporaryDirectory() as repo_dir:
+            self.cfg["projects"]["testproj"]["path"] = repo_dir
+            cli.cmd_hooks(Args(), self.cfg, self.led)
+            script = open(os.path.join(repo_dir, ".claude", "hooks", "session_start.py")).read()
+            self.assertIn("CLAUDE_CODE_SESSION_ID", script)
+            self.assertIn("Another interactive session", script)

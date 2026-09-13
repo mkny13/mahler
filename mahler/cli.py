@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from . import config, notify, router, scheduler
 from .gh import GH, GHError
-from .ledger import Ledger, parse
+from .ledger import Ledger, iso, parse
 
 
 def ref(s):
@@ -22,6 +22,22 @@ def ref(s):
         raise argparse.ArgumentTypeError("use <project>#<issue>, e.g. mahler#12")
     p, n = s.split("#", 1)
     return p, int(n)
+
+
+def default_holder():
+    """A per-session default for `--as`, so two concurrent interactive sessions
+    don't both show up as the same 'interactive:you' in the ledger (mahler#33).
+    Falls back to 'you' outside a Claude Code session (e.g. a bare shell)."""
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    return sid[:8] if sid else "you"
+
+
+def other_interactive_holders(led, project, holder):
+    """Other sessions' live `interactive:*` leases in this project right now —
+    the signal that would have caught mahler#27 before a git reset did."""
+    rows = led.q("SELECT DISTINCT holder FROM leases WHERE project=? AND holder LIKE 'interactive:%' "
+                 "AND holder != ? AND expires_at > ?", (project, holder, iso(led.now())))
+    return sorted(r["holder"] for r in rows)
 
 
 def cmd_tick(a, cfg, led):
@@ -113,10 +129,12 @@ def cmd_hooks(a, cfg, led):
     with open(os.path.join(hooks_dir, "session_start.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
 import json
+import os
 import subprocess
 import sys
 
 def main():
+    my_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")[:8]
     try:
         out = subprocess.check_output(["mahler", "status", "--project", "{project}", "--json"], text=True)
         d = json.loads(out)
@@ -128,6 +146,13 @@ def main():
             for h in held:
                 print(f'  - {{h}}')
             print('')
+        others = sorted({{l['holder'] for l in d.get('leases', [])
+                          if l.get('holder', '').startswith('interactive:')
+                          and l.get('holder') != f'interactive:{{my_id}}'}})
+        if others:
+            print(f'Another interactive session ({{", ".join(others)}}) is active in this '
+                  'project right now. Work in your own worktree, not by switching branches '
+                  'in the shared checkout (see CLAUDE.md).')
         print('If you work on a backlog item, claim it with `mahler claim {project}#N`.')
     except Exception:
         pass
@@ -172,13 +197,14 @@ def main():
                 
     if not run_id:
         # Nudge once per session if unclaimed
-        session_id = os.environ.get("CLAUDE_SESSION_ID", str(os.getpid()))
+        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID", str(os.getpid()))
         state_file = f"/tmp/mahler_nudge_{{session_id}}"
         if not os.path.exists(state_file):
             try:
                 out = subprocess.check_output(["mahler", "status", "--project", project, "--json"], text=True)
                 d = json.loads(out)
-                holds_claim = any(l.get("holder", "").startswith("interactive:") for l in d.get("leases", []))
+                my_holder = f"interactive:{{session_id[:8]}}"
+                holds_claim = any(l.get("holder") == my_holder for l in d.get("leases", []))
                 if not holds_claim:
                     print(f"If this work relates to a backlog item, run `mahler claim {{project}}#N`.")
                     with open(state_file, "w") as f:
@@ -204,14 +230,16 @@ import os
 def main():
     if os.environ.get("MAHLER_RUN_ID"):
         return
+    my_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")[:8] or "you"
+    my_holder = f"interactive:{{my_id}}"
     try:
         out = subprocess.check_output(["mahler", "status", "--project", "{project}", "--json"], text=True)
         d = json.loads(out)
         for l in d.get("leases", []):
-            if l.get("holder", "").startswith("interactive:"):
-                # Call mahler heartbeat in background
+            if l.get("holder") == my_holder:
+                # Renew only this session's own claim(s) in the background
                 subprocess.Popen(
-                    ["mahler", "heartbeat", f"{{l['project']}}#{{l['number']}}"],
+                    ["mahler", "heartbeat", f"{{l['project']}}#{{l['number']}}", "--as", my_id],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     start_new_session=True
                 )
@@ -270,6 +298,10 @@ def cmd_claim(a, cfg, led):
               "been told to step aside; within ~2 minutes its work is pushed to a "
               f"mahler/snapshot/{n}-* branch and summarised in a handoff comment on the issue. "
               "Continue from that branch.")
+    others = other_interactive_holders(led, project, f"interactive:{a.holder}")
+    if others:
+        print(f"Note: {', '.join(others)} also active in {project} right now — work in your "
+              "own worktree, not by switching branches in the shared checkout (CLAUDE.md).")
     return 0
 
 
@@ -421,7 +453,7 @@ def main(argv=None):
                           ("release", cmd_release, "give an item back")):
         s = sub.add_parser(name, help=hlp)
         s.add_argument("item", type=ref, help="<project>#<issue>")
-        s.add_argument("--as", dest="holder", default="you")
+        s.add_argument("--as", dest="holder", default=default_holder())
         if name == "claim":
             s.add_argument("--steal", action="store_true")
         s.set_defaults(fn=fn)
