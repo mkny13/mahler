@@ -33,6 +33,15 @@ Rules:
    push what you have and end with `STATUS: BLOCKED <reason>`.
 7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
+8. **No macOS UI automation.** The Mac mini screen is locked. You must not attempt macOS UI
+   click automation.
+9. **No protected folders.** Do not read or write protected folders like `~/Documents` to
+   prevent hanging on macOS privacy dialogs.
+10. **Use `mahler next-id`.** When allocating shared sequential IDs, use the
+    `mahler next-id <project> <prefix>` command to avoid collisions.
+11. **Stay in your worktree.** You are explicitly forbidden from running `git reset` or
+    `git checkout` in any directory outside your assigned worktree (to prevent wiping other
+    sessions' work).
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
