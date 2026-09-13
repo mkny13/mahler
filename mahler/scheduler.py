@@ -442,11 +442,30 @@ def _apply_instruction(ctx, project, item, verb, arg):
     elif verb == "inbox":
         led.set_state(project, n, "inbox", "back to inbox", sorted_at=None)
     elif verb == "platform" and arg:
-        if arg in ctx.cfg["platforms"]:
-            led.upsert_item(project, n, pin=arg)
+        if arg in ("none", "auto"):
+            _set_pin(ctx, project, n, None)
+        elif arg in ctx.cfg["platforms"]:
+            _set_pin(ctx, project, n, arg)
         else:
             ctx.say(f"{project}#{n}: unknown platform {arg!r}")
     ctx.say(f"{project}#{n}: instruction '{verb}{' ' + arg if arg else ''}'")
+
+
+def _set_pin(ctx, project, n, platform):
+    """`platform:*` labels on GitHub are the pin's store of record (mahler#20):
+    sync() re-derives pin=pin_of(labels) on every tick, so a ledger-only pin
+    lasted exactly one tick. The command edits the labels instead, then mirrors
+    the change into the ledger so it takes effect in this tick's schedule."""
+    current = ctx._labels.get((project, n)) or []
+    if not ctx.dry_run:
+        try:
+            ctx.gh(project).set_pin_labels(n, platform, current)
+        except GHError as e:
+            ctx.say(f"{project}#{n}: platform label update failed — {e}")
+        keep = f"platform:{platform}" if platform else None
+        ctx._labels[(project, n)] = [l for l in current
+                                     if not l.startswith("platform:") or l == keep]
+    ctx.led.upsert_item(project, n, pin=platform)
 
 
 # ---------- leases that ran out ----------
