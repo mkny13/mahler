@@ -34,6 +34,10 @@ def snapshot(cfg, led):
     runs = [dict(r) for r in led.active_runs()]
     for r in runs:
         r["est"] = int(led.run_estimate(ests, r["platform"], r["role"]))
+        # fetch parent info for this run's issue
+        item = led.item(r["project"], r["number"])
+        if item:
+            r["parent"] = item["parent"] if "parent" in item.keys() else None
 
     items = [dict(i) for i in led.items() if i["state"] != "done"]
     by_state = {s: [] for s in PAGE_STATES}
@@ -173,13 +177,39 @@ def _render_rest(out, snap, cfg):
                 run_label = f'<a href="{_esc(run_url)}">{ref}</a>'
             else:
                 run_label = ref
+            parent_str = ""
+            if r.get("parent"):
+                parent_ref = f"{_esc(r['project'])}#{r['parent']}"
+                if repo:
+                    parent_url = f"https://github.com/{repo}/issues/{r['parent']}"
+                    parent_str = f' &middot; part of <a href="{_esc(parent_url)}">{parent_ref}</a>'
+                else:
+                    parent_str = f' &middot; part of {parent_ref}'
             w(f"<div class=\"card run\">"
               f"<div><b>{run_label}</b> "
               f"<span class=\"muted\">{_esc(r['role'])}</span></div>"
               f"<div><span class=\"mono\">{time_str}</span> on "
-              f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}</div></div>")
+              f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}{parent_str}</div></div>")
     else:
         w('<div class="muted">nothing running</div>')
+
+    w("<h2>Quota</h2>")
+    for q in snap["quota"]:
+        cls = _esc(q["state"])
+        label = "unknown limit" if not q["metered"] else f"{q['pct']:.0f}%"
+        warn = q["state"] in ("soft", "hard")
+        chips = "".join(
+            f'<span class="chip{" chip-warn" if warn else ""}">{_esc(w_label)} {_esc(cd)}</span>'
+            for w_label, cd in q["chips"])
+        chips_html = f'<div class="chips">{chips}</div>' if chips else ""
+        w(f"<div class=\"card\">"
+          f"<div class=\"q-head\"><div><b>{_esc(q['name'])}</b> <span class=\"q-state-{cls}\">{_esc(q['state'])}</span>"
+          f" <span class=\"muted\">{_esc(q['detail'])}</span></div>{chips_html}</div>"
+          f"<div class=\"gauge\"><div class=\"fill fill-{cls}\" "
+          f"style=\"width:{q['pct']:.0f}%\"></div>"
+          f"<div class=\"meta\" style=\"position:absolute;inset:0;display:flex;"
+          f"align-items:center;padding:0 .5rem;line-height:1.15rem\">"
+          f"<span class=\"mono\">{_esc(label)}</span></div></div></div>")
 
     w("<h2>Items</h2>")
     any_items = False
@@ -203,28 +233,18 @@ def _render_rest(out, snap, cfg):
             tries = f' &middot; tries {i["attempts"]}' if i["attempts"] else ""
             est = i["est"]
             est_str = f' &middot; ~{est}m'
+            parent_str = ""
+            if i.get("parent"):
+                parent_ref = f"{_esc(i['project'])}#{i['parent']}"
+                if repo:
+                    parent_url = f"https://github.com/{repo}/issues/{i['parent']}"
+                    parent_str = f' &middot; part of <a href="{_esc(parent_url)}">{parent_ref}</a>'
+                else:
+                    parent_str = f' &middot; part of {parent_ref}'
             w(f"<div class=\"card item\"><div>{label}</div>"
-              f"<div class=\"meta\">p{i['priority']}{held}{tries}{est_str}</div></div>")
+              f"<div class=\"meta\">p{i['priority']}{held}{tries}{est_str}{parent_str}</div></div>")
     if not any_items:
         w('<div class="muted">nothing open</div>')
-
-    w("<h2>Quota</h2>")
-    for q in snap["quota"]:
-        cls = _esc(q["state"])
-        label = "unknown limit" if not q["metered"] else f"{q['pct']:.0f}%"
-        warn = q["state"] in ("soft", "hard")
-        chips = "".join(
-            f'<span class="chip{" chip-warn" if warn else ""}">{_esc(w_label)} {_esc(cd)}</span>'
-            for w_label, cd in q["chips"])
-        chips_html = f'<div class="chips">{chips}</div>' if chips else ""
-        w(f"<div class=\"card\">"
-          f"<div class=\"q-head\"><div><b>{_esc(q['name'])}</b> <span class=\"q-state-{cls}\">{_esc(q['state'])}</span>"
-          f" <span class=\"muted\">{_esc(q['detail'])}</span></div>{chips_html}</div>"
-          f"<div class=\"gauge\"><div class=\"fill fill-{cls}\" "
-          f"style=\"width:{q['pct']:.0f}%\"></div>"
-          f"<div class=\"meta\" style=\"position:absolute;inset:0;display:flex;"
-          f"align-items:center;padding:0 .5rem;line-height:1.15rem\">"
-          f"<span class=\"mono\">{_esc(label)}</span></div></div></div>")
 
     w(f"<h2>Events <span class=\"count\">(last {EVENTS_SHOWN})</span></h2>")
     if snap["events"]:

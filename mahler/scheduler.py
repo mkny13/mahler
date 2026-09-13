@@ -828,7 +828,8 @@ def sync(ctx, project):
         open_nums.add(n)
         ctx._labels[(project, n)] = labels
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
-                      depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels))
+                      depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels),
+                      parent=part_of(iss.get("body")))
         item = led.item(project, n)
         if item is None:
             state = _state_from_labels(labels) or "inbox"

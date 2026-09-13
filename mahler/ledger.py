@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS items (
     attempts         INTEGER NOT NULL DEFAULT 0,
     setup_fails      INTEGER NOT NULL DEFAULT 0,
     epoch            INTEGER NOT NULL DEFAULT 0,
+    parent           INTEGER,             -- parent issue number if part of a sub-issue
     created_at       TEXT,
     sorted_at        TEXT,
     state_changed_at TEXT,
@@ -140,7 +141,7 @@ class Ledger:
         self.con.executescript(SCHEMA)
         # columns added after the daemon's DB already existed
         cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
-        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"), ("setup_fails", "INTEGER NOT NULL DEFAULT 0")):
+        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"), ("setup_fails", "INTEGER NOT NULL DEFAULT 0"), ("parent", "INTEGER")):
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
