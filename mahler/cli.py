@@ -66,10 +66,11 @@ def cmd_status(a, cfg, led):
         repo = config.project_policy(cfg, project).get("repo")
         if not repo:
             return ""
-        if not it:
+        if it is None:
             it = led.item(project, number)
-        if it and it.get("pr"):
-            return f" https://github.com/{repo}/pull/{it['pr']}"
+        pr = dict(it).get("pr") if it else None
+        if pr:
+            return f" https://github.com/{repo}/pull/{pr}"
         return f" https://github.com/{repo}/issues/{number}"
 
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
