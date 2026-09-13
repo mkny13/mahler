@@ -186,6 +186,13 @@ class GH:
         log = _gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
         return run_id, "\n".join(log.splitlines()[-tail:])
 
+    def close_issue(self, number, comment=None):
+        """Close an issue, optionally with a comment."""
+        args = ["issue", "close", str(number), "-R", self.repo]
+        if comment:
+            args += ["--comment", comment]
+        _gh(*args)
+
 
 def label_names(issue):
     return [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]
