@@ -16,6 +16,10 @@ personal data, accounts, credentials or money.
        > **Original request:** <their words, quoted>
 
        ## Problem / goal
+       ## Plan
+       - files to change
+       - ordered steps
+       - test that proves it
        ## Done when
        - [ ] concrete, checkable acceptance checks an agent can verify
        ## Needs a human to check
@@ -27,10 +31,14 @@ personal data, accounts, credentials or money.
 4. Labels (`gh issue edit … --add-label`): exactly one of `type:bug` `type:feature`
    `type:chore` `type:goal`; exactly one of `size:s` `size:m` `size:l`; and `p2` unless a
    p-label is already present. Never add or remove `mahler:*` labels — Mahler owns those.
-5. If it is `size:l`, split it: create sub-issues small enough for one agent run each
-   (same body shape, a `Part of #$number` line, `Depends on: #N` where order matters;
-   if this repo uses a scope label like `area:name`, add it to each sub-issue),
-   then relabel this one `type:goal`.
+5. If it is `size:l`, split it into 2–5 sub-issues, each small enough for one
+   agent run and one mergeable PR with its own test. Never split below that. Give
+   each sub-issue the full body shape above, including a concrete `## Plan` and
+   `## Done when`, a `Part of #$number` line, `Depends on: #N` where order matters,
+   exactly one `size:s` or `size:m` label (never `size:l`), a `type:` label, and
+   this repo's scope label if it uses one. Then relabel this one `type:goal`.
+6. If this issue has a `Part of #N` line, it was already planned. Do not split it.
+   If it is too big, keep it `size:m`, write the best Plan you can, and end `READY`.
 
 $rules
 Every issue comment you post must begin with the line `<!-- mahler:agent -->`.
