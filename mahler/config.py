@@ -52,6 +52,9 @@ DEFAULTS = {
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
     # tick at/after `hour` local time; once-only via the ledger kv table
     "digest": {"hour": 8},
+    # daily janitor (mahler#7, DESIGN D12): prune worktrees of ended runs and
+    # old mahler/snapshot|abandoned branches; once-only via the ledger kv table
+    "janitor": {"retention_days": 14, "worktree_grace_hours": 24},
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
