@@ -60,7 +60,8 @@ def usage_state(led, name, pconf):
 
 
 def candidates(cfg, role, pin=None):
-    order = [pin] if pin else cfg["routing"][role]
+    # a fix run routes like a build (DESIGN D18): same platforms, same order
+    order = [pin] if pin else cfg["routing"].get(role) or cfg["routing"]["build"]
     return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")]
 
 

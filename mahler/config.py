@@ -26,6 +26,7 @@ DEFAULTS = {
         "max_parallel": 1,
         "settle_minutes": 10,          # sorted -> eligible to build (DESIGN D7)
         "max_attempts": 3,             # failed runs before needs-you
+        "verify_timeout_minutes": 60,  # CI pending longer than this -> needs-you (mahler#18)
         "run_timeout_minutes": 60,
         "progress_timeout_minutes": 20,
         "startup_timeout_minutes": 10,  # agent started but printed nothing (mahler#12)

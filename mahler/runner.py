@@ -14,7 +14,7 @@ import string
 import subprocess
 import sys
 
-from . import config, platforms
+from . import config, gh as gh_module, platforms
 
 MAHLER_BIN = os.path.join(config.REPO_ROOT, "bin", "mahler")
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
@@ -113,6 +113,32 @@ def fence_hooks(repo, run_dir):
     return hooks
 
 
+def ci_handoff(ctx, project, item, branch, tail=150):
+    """The fix prompt's CI context (D18, mahler#18): the failing-log tail of
+    the latest failed run on the branch — or the commands to fetch it, when
+    that lookup fails right now."""
+    gh = ctx.gh(project)
+    run_id, log = None, ""
+    try:
+        run_id, log = gh.failed_run_log(branch, tail)
+    except gh_module.GHError as e:
+        ctx.say(f"{project}#{item['number']}: couldn't fetch the CI log for the fix "
+                f"run — {e}")
+    lines = [f"- the PR (#{item['pr']})'s CI is red, and this branch is the PR's head "
+             "branch: push your fixes to it, and each push re-runs CI"]
+    if run_id:
+        lines.append(f"- run {run_id} is the latest failed one "
+                     f"(full log: `gh run view {run_id} -R {gh.repo} --log-failed`)")
+        if log:
+            lines += ["- its failing-log tail:", "", "```", log, "```"]
+    else:
+        lines += [f"- find the latest failed run and its failing-log tail:",
+                  f"  `gh run list -R {gh.repo} --branch {branch} --status failure "
+                  f"--limit 1 --json databaseId`",
+                  f"  `gh run view <run-id> -R {gh.repo} --log-failed | tail -{tail}`"]
+    return "\n".join(lines)
+
+
 def launch(ctx, project, item, role, platform, run_id, epoch):
     """Create the worktree, render the recipe, start the CLI detached."""
     pol = ctx.policy(project)
@@ -128,7 +154,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     if role == "sort":
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
-        branch = f"mahler/{item['number']}-{slug(item['title'])}"
+        # a fix run works on the PR's head branch itself (D18): its pushes
+        # re-trigger CI. A build gets the item's canonical branch name.
+        branch = (item["branch"] if role == "fix" and item["branch"]
+                  else f"mahler/{item['number']}-{slug(item['title'])}")
         start = start_ref(repo, base, item["branch"], branch)
         try:
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
@@ -142,7 +171,9 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
             os.symlink(src, dst)
 
     handoff = ""
-    if role == "build" and start != f"origin/{base}":
+    if role == "fix":
+        handoff = ci_handoff(ctx, project, item, branch)
+    elif role == "build" and start != f"origin/{base}":
         kept = catch_up(wt, branch, base, item["number"], run_id)
         if kept is None:
             handoff = (f"- earlier work on this item is already in your branch, replayed onto "
