@@ -55,6 +55,62 @@ class Ctx:
                     priority=priority, tags=tags)
 
 
+MAINTENANCE_TEXT = {
+    "security": ("Security & Surface Area Audit", "Security & Surface Area Audit — credential boundaries (`.env` leaks, unpooled URLs), subshell executions (`subprocess.run` argument sanitization), permission boundaries, denial list checks, dependency scans."),
+    "health": ("Codebase Health & Refactoring Pass", "Codebase Health & Refactoring Pass — unclosed resource leaks (DB connections, file descriptors), dead code / orphaned helpers, cyclomatic complexity hotspots."),
+    "drift": ("Architecture & Specification Drift Audit", "Architecture & Specification Drift Audit — comparing implementation against `DESIGN.md` / `ARCHITECTURE.md` / `ROADMAP.md`, cleaning up zombie abstractions."),
+    "tests": ("Test Suite Health & Flakiness Audit", "Test Suite Health & Flakiness Audit — test isolation, false-green tests, execution time creep, `ResourceWarning` checks."),
+    "token-economy": ("Token Economy/Quota & Performance Hygiene", "Token Economy/Quota & Performance Hygiene — prompt context bloat in recipes/rules, run duration outliers, excessive polling overhead, DB query efficiency."),
+    "guidance": ("Agent Guidance & Rule Calibration", "Agent Guidance & Rule Calibration — reviewing `AGENTS.md` / `CLAUDE.md` / `recipes` against observed failure modes, pruning obsolete instructions."),
+}
+
+
+def queue_maintenance(ctx, projects):
+    """File due maintenance passes as issues (deduped)."""
+    led, now = ctx.led, ctx.led.now()
+    for p in projects:
+        pol = config.maintenance_policy(ctx.cfg, p["name"])
+        if not pol["enabled"]:
+            continue
+        passes = pol["passes"]
+        if not passes:
+            continue
+        
+        items = led.items(p["name"])
+        for pass_name in passes:
+            label = f"pass:{pass_name}"
+            skip = False
+            for it in items:
+                labels = json.loads(it["labels"] or "[]")
+                if label not in labels:
+                    continue
+                if it["state"] != "done":
+                    skip = True
+                    break
+                changed_at = parse(it["state_changed_at"])
+                if changed_at and now - changed_at < timedelta(days=pol["cooldown_days"]):
+                    skip = True
+                    break
+            
+            if skip:
+                continue
+            
+            if not led.maintenance_due(p["name"], pass_name, policy=pol):
+                continue
+            
+            title, body = MAINTENANCE_TEXT[pass_name]
+            issue_labels = ["type:chore", "size:l", "p2", label]
+            
+            ctx.say(f"{p['name']}: queuing {pass_name} pass")
+            if not ctx.dry_run:
+                try:
+                    ctx.gh(p["name"]).ensure_pass_label(pass_name)
+                    ctx.gh(p["name"]).create_issue(title, body, issue_labels)
+                    led.reset_maintenance(p["name"], pass_name)
+                except GHError as e:
+                    ctx.say(f"{p['name']}: failed to file {pass_name} pass — {e}")
+
+
 # ---------- entry ----------
 
 def take_lock():
@@ -80,6 +136,7 @@ def tick(ctx):
         ctx.say("paused — not starting anything (mahler resume)")
     else:
         refresh_usage(ctx, projects)
+        queue_maintenance(ctx, projects)
         schedule(ctx, projects)
         ship(ctx, projects)
     for p in projects:

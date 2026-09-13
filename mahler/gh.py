@@ -109,6 +109,10 @@ class GH:
         for name, color in LABEL_COLORS.items():
             _gh("label", "create", name, "-R", self.repo, "--color", color, "--force")
 
+    def ensure_pass_label(self, pass_name):
+        label = f"pass:{pass_name}"
+        _gh("label", "create", label, "-R", self.repo, "--color", PIN_COLOR, "--force")
+
     def create_issue(self, title, body="", labels=()):
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]
         for l in labels:
