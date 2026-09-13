@@ -1,6 +1,6 @@
 """The read-only status page (DESIGN D10, ROADMAP Phase 1 item 5).
 
-A standard-library HTTP server bound to 127.0.0.1 that renders what
+A standard-library HTTP server that renders what
 `mahler status` shows as a single phone-friendly HTML page: running work,
 items by state with links to their issues, quota gauges per platform, and
 the last 30 events. It auto-refreshes every 30 seconds and follows the OS
@@ -259,15 +259,13 @@ class _Handler(BaseHTTPRequestHandler):
         sys.stderr.write("serve: %s %s\n" % (self.address_string(), fmt % args))
 
 
-def serve(cfg, led, port=8787):
+def serve(cfg, led, host="127.0.0.1", port=8787):
     """Start the read-only status server. Blocks until interrupted."""
     import threading
     handler = type("Handler", (_Handler,),
                    {"cfg": cfg, "led": led, "lock": threading.Lock()})
-    # localhost only, always: putting the page on the tailnet is the owner's
-    # `tailscale serve` call (README), never ours.
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
-    print(f"mahler status page: http://127.0.0.1:{port}/ (read-only, Ctrl-C to stop)")
+    httpd = ThreadingHTTPServer((host, port), handler)
+    print(f"mahler status page: http://{host}:{port}/ (read-only, Ctrl-C to stop)")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

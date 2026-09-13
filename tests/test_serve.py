@@ -161,15 +161,27 @@ class TestServer(unittest.TestCase):
 
 
 class TestCliWiring(unittest.TestCase):
-    def test_serve_subcommand_passes_port(self):
+    def test_serve_subcommand_passes_args(self):
         from mahler import cli
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(cli.config, "DB_PATH",
                                    os.path.join(tmp, "mahler.db")), \
                  mock.patch("mahler.serve.serve", return_value=0) as mock_serve:
-                rc = cli.main(["serve", "--port", "9111"])
+                rc = cli.main(["serve", "--host", "0.0.0.0", "--port", "9111"])
         self.assertEqual(rc, 0)
-        self.assertEqual(mock_serve.call_args.args[2], 9111)
+        self.assertEqual(mock_serve.call_args.args[2], "0.0.0.0")
+        self.assertEqual(mock_serve.call_args.args[3], 9111)
+
+    def test_serve_subcommand_defaults(self):
+        from mahler import cli
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(cli.config, "DB_PATH",
+                                   os.path.join(tmp, "mahler.db")), \
+                 mock.patch("mahler.serve.serve", return_value=0) as mock_serve:
+                rc = cli.main(["serve"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(mock_serve.call_args.args[2], "127.0.0.1")
+        self.assertEqual(mock_serve.call_args.args[3], 8787)
 
 
 if __name__ == "__main__":
