@@ -45,7 +45,7 @@ def snapshot(cfg, led):
         state, detail = router.usage_state(led, name, pconf)
         # gauge width: worst window's percentage (unmetered platforms show 0)
         windows = [u["used_pct"] for u in led.usage(name).values()
-                   if u["window"] in router.WINDOWS]
+                   if u["window"] in pconf.get("windows", router.WINDOWS)]
         pct = max(min(max(windows, default=0), 100), 0)
         quota.append({"name": name, "state": state, "detail": detail,
                       "pct": pct, "metered": pconf.get("metered", True)})

@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from .ledger import parse
 
-WINDOWS = ("5h", "weekly")
+WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
 
 
@@ -36,7 +36,7 @@ def usage_state(led, name, pconf):
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
-    for w in WINDOWS:
+    for w in pconf.get("windows", WINDOWS):
         u = usage.get(w)
         if u is None:
             state = "stale"

@@ -97,26 +97,35 @@ DEFAULTS["platforms"]["cline-free"] = {
     "stale_minutes": 60,
 }
 
-# Copilot (GitHub Education license) and Kilo (kilo.ai account, needs `kilo
-# auth login` once) report no account-wide quota either (mahler#25): both are
-# "unmetered" like cline-free, backed off for an hour after a rate-limit/quota
-# error. Copilot goes first: its Education license runs real frontier models
-# (verified: claude-sonnet-5) even though the monthly allowance behind it is
-# small. Kilo's default model needs an explicit `:free` route (mahler#29) —
-# without one, every run 402s on "add credits" — and kilo-auto/free draws
-# from a grab-bag of smaller/niche models of unverified quality, so it's kept
-# last among the free builders and capped to size s like the others.
+# Kilo (kilo.ai account, needs `kilo auth login` once) reports no account-wide
+# quota (mahler#25): "unmetered", backed off for an hour after a
+# rate-limit/quota error. Its default model needs an explicit `:free` route
+# (mahler#29) — without one, every run 402s on "add credits" — and
+# kilo-auto/free draws from a grab-bag of smaller/niche models of unverified
+# quality, so it's kept last among the free builders and capped to size s
+# like the others.
 DEFAULTS["platforms"]["kilo"] = {
     "enabled": True, "kind": "kilo", "model": "kilo/kilo-auto/free",
     "metered": False, "backoff_minutes": 60, "max_size": "s",
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
 }
+
+# Copilot (GitHub Education license) is unlike Cline/Kilo: it has a real,
+# checkable cap, and it runs real frontier models (verified: claude-sonnet-5)
+# — which is why it goes ahead of Kilo despite the smaller monthly allowance.
+# GitHub bills Copilot in "AI Credits" (mahler#38); Pro/Education include
+# 1500/month. There's no cheap CLI-level probe, but the billing API (`gh api
+# /users/<login>/settings/billing/ai_credit/usage`, needs the `user` OAuth
+# scope) reports this month's consumption, so Copilot gets a single "monthly"
+# window instead of the usual 5h/weekly pair (see router.py's per-platform
+# `windows` override).
 DEFAULTS["platforms"]["copilot"] = {
     "enabled": True, "kind": "copilot", "model": "",
-    "metered": False, "backoff_minutes": 60, "max_size": "s",
-    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
-    "stale_minutes": 60,
+    "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
+    "backoff_minutes": 60, "max_size": "s",
+    "soft": {"monthly": 80}, "hard": {"monthly": 95},
+    "stale_minutes": 360,
 }
 
 
