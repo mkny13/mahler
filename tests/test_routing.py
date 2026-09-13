@@ -626,6 +626,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["p"] = {"path": "/tmp/test", "repo": "o/r"}
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         # Ensure there is an inbox item so routing platforms are wanted
         self.led.upsert_item("p", 1, state="inbox", title="Task", priority=2)
         self.ctx = scheduler.Ctx(self.cfg, self.led)

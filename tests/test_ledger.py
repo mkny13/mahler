@@ -28,6 +28,7 @@ class LeaseTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
 
     def test_auto_vs_auto_never_double_assigns(self):
         a, _ = self.led.claim("p", 1, "run:1", "auto", 10)
@@ -197,6 +198,8 @@ class RemoteLedgerTests(unittest.TestCase):
         self.clock = Clock()
         self.canonical = Ledger(":memory:", clock=self.clock)
         self.local = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.canonical.close)
+        self.addCleanup(self.local.close)
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"] = {
             "mahler": {
@@ -428,6 +431,7 @@ class MaintenanceCheckpointTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
 
     def test_threshold_due(self):
         self.led.set_maintenance_checkpoint("p", "security", merged_since=20)

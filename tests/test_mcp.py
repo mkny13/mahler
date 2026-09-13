@@ -16,6 +16,7 @@ class DummyConfig:
 class TestMCP(unittest.TestCase):
     def setUp(self):
         self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
         self.cfg = {
             "defaults": {"interactive_lease_minutes": 30},
             "projects": {"mahler": {"repo": "mkny13/mahler"}}

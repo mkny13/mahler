@@ -15,6 +15,7 @@ class StatusCliTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmp.name, "mahler.db")
         self.led = Ledger(self.db_path)
+        self.addCleanup(self.led.close)
         self.cfg = {
             "defaults": {},
             "platforms": {},

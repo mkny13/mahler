@@ -17,6 +17,7 @@ def proj(**over):
 class MaintenanceQueueTests(unittest.TestCase):
     def setUp(self):
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh_mock = mock.Mock()

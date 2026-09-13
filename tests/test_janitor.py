@@ -54,6 +54,7 @@ class Base(unittest.TestCase):
         sh(self.repo, "git", "push", "-q", "origin", "main")
         self.wtroot = os.path.join(t, "worktrees")
         self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["t"] = {
             "enabled": True, "repo": "mkny13/t", "path": self.repo,

@@ -38,6 +38,7 @@ class RunTests(unittest.TestCase):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["x"] = {"path": self.tmp, "repo": "x/y"}
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         self.led.upsert_item("x", 5, state="working", priority=2, sorted_at=iso(NOW))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = FakeGH()

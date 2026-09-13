@@ -77,6 +77,7 @@ class ShipTests(unittest.TestCase):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["x"] = {"path": self.tmp, "repo": "x/y"}
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         later = iso(NOW + timedelta(hours=2))
         for name in ("agy-claude", "agy-gemini", "claude"):   # live usage samples,
             self.led.record_usage(name, "5h", 10, later)   # so routing has something
