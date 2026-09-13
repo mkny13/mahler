@@ -249,11 +249,14 @@ class TestCliWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(cli.config, "DB_PATH",
                                    os.path.join(tmp, "mahler.db")), \
+                 mock.patch.object(cli.config, "CONFIG_PATH",
+                                   os.path.join(tmp, "nonexistent.toml")), \
                  mock.patch("mahler.serve.serve", return_value=0) as mock_serve:
                 rc = cli.main(["serve"])
         self.assertEqual(rc, 0)
         self.assertEqual(mock_serve.call_args.args[2], "127.0.0.1")
         self.assertEqual(mock_serve.call_args.args[3], 8787)
+
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ PIN_COLOR = "d4c5f9"        # platform:* labels, created on the fly (mahler#20)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
 DEPENDS_RE = re.compile(r"^\s*Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+PART_OF_RE = re.compile(r"^\s*(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+)", re.IGNORECASE | re.MULTILINE)
+
 
 
 class GHError(RuntimeError):
@@ -104,6 +106,9 @@ class GH:
             args += ["--add-label", keep]
         if len(args) > 5:
             _gh(*args)
+
+    def add_label(self, number, label):
+        _gh("issue", "edit", str(number), "-R", self.repo, "--add-label", label)
 
     def ensure_labels(self):
         for name, color in LABEL_COLORS.items():
@@ -205,6 +210,13 @@ def depends_of(body):
     for m in DEPENDS_RE.finditer(body or ""):
         deps += [int(n) for n in re.findall(r"#(\d+)", m.group(1))]
     return deps
+
+
+def part_of(body):
+    """Parent issue number if body has 'Part of #N' (case-insensitive), or None."""
+    m = PART_OF_RE.search(body or "")
+    return int(m.group(1)) if m else None
+
 
 
 COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform)\b\s*(\S*)", re.IGNORECASE | re.MULTILINE)

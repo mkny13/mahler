@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import backup, config, digest, janitor, notify, platforms, presence, router, runner
 from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, checks_state,
-                 depends_of, label_names, needs_human_of, parse_command, pin_of,
+                 depends_of, label_names, needs_human_of, parse_command, part_of, pin_of,
                  pr_body, pr_summary_of, priority_of)
 from .ledger import iso, parse
 
@@ -198,6 +198,19 @@ def watchdog(ctx):
             stop(ctx, run, reason)
 
 
+def _record_claude_usage(ctx, samples, backoff_until=None):
+    """Record usage across all configured platforms that share the Claude account."""
+    claude_platforms = [pname for pname, pconf in ctx.cfg["platforms"].items()
+                        if pconf.get("kind") == "claude"]
+    for pname in claude_platforms:
+        for w, pct, resets in samples:
+            ctx.led.record_usage(pname, w, pct, resets)
+        if backoff_until:
+            pconf = ctx.cfg["platforms"][pname]
+            for w in pconf.get("windows", router.WINDOWS):
+                ctx.led.record_usage(pname, w, 100.0, backoff_until)
+
+
 def _health(ctx, run, pol, now):
     pconf = ctx.cfg["platforms"][run["platform"]]
     if now - parse(run["started_at"]) > timedelta(minutes=pol["run_timeout_minutes"]):
@@ -215,8 +228,7 @@ def _health(ctx, run, pol, now):
     if idle > pol["progress_timeout_minutes"] * 60:
         return "hung"
     if pconf["kind"] == "claude":
-        for w, pct, resets in platforms.read_log(run["log_path"], "claude")["usage"]:
-            ctx.led.record_usage(run["platform"], w, pct, resets)
+        _record_claude_usage(ctx, platforms.read_log(run["log_path"], "claude")["usage"])
     state, detail = router.usage_state(ctx.led, run["platform"], pconf)
     if state == "hard":
         ctx.say(f"#{run['number']}: {run['platform']} over its hard line ({detail})")
@@ -247,13 +259,20 @@ def finalize(ctx, run):
     item = led.item(project, n)
     kind = ctx.cfg["platforms"][run["platform"]]["kind"]
     log = platforms.read_log(run["log_path"], kind)
-    for w, pct, resets in log["usage"]:
-        led.record_usage(run["platform"], w, pct, resets)
-    if log["quota_hit"]:
-        pconf = ctx.cfg["platforms"][run["platform"]]
-        until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
-        for w in pconf.get("windows", router.WINDOWS):
-            led.record_usage(run["platform"], w, 100.0, until)
+    if kind == "claude":
+        until = None
+        if log["quota_hit"]:
+            pconf = ctx.cfg["platforms"][run["platform"]]
+            until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
+        _record_claude_usage(ctx, log["usage"], backoff_until=until)
+    else:
+        for w, pct, resets in log["usage"]:
+            led.record_usage(run["platform"], w, pct, resets)
+        if log["quota_hit"]:
+            pconf = ctx.cfg["platforms"][run["platform"]]
+            until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
+            for w in pconf.get("windows", router.WINDOWS):
+                led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup step failed before the agent ran
@@ -770,13 +789,42 @@ def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
     issues = gh.open_issues()
+
+    if pol.get("scope") == "label":
+        scope_label = pol["scope_label"]
+        in_scope_nums = {
+            iss["number"] for iss in issues
+            if scope_label in label_names(iss)
+            or any(l in LABEL_STATES for l in label_names(iss))
+            or led.item(project, iss["number"]) is not None
+        }
+        # If child issues reference an in-scope parent via "Part of #N", inherit scope
+        changed = True
+        while changed:
+            changed = False
+            for iss in issues:
+                n = iss["number"]
+                if n not in in_scope_nums:
+                    parent_n = part_of(iss.get("body"))
+                    if parent_n and (parent_n in in_scope_nums or led.item(project, parent_n) is not None):
+                        in_scope_nums.add(n)
+                        changed = True
+    else:
+        in_scope_nums = None
+
     open_nums = set()
     for iss in issues:
         n = iss["number"]
         labels = label_names(iss)
-        if pol.get("scope") == "label" and led.item(project, n) is None and not (
-                pol["scope_label"] in labels or any(l in LABEL_STATES for l in labels)):
+        if in_scope_nums is not None and n not in in_scope_nums:
             continue                      # not (yet) handed to Mahler
+        if pol.get("scope") == "label" and pol["scope_label"] not in labels:
+            labels.append(pol["scope_label"])
+            if not ctx.dry_run:
+                try:
+                    gh.add_label(n, pol["scope_label"])
+                except GHError:
+                    pass
         open_nums.add(n)
         ctx._labels[(project, n)] = labels
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
@@ -951,16 +999,17 @@ def refresh_usage(ctx, projects):
         if pconf.get("kind") != "claude":
             continue
         free = platforms.oauth_usage()                     # zero tokens
-        for w, pct, resets in free:
-            led.record_usage(name, w, pct, resets)
         if free:
+            _record_claude_usage(ctx, free)
             continue
         last = parse(led.get_kv(f"probe:{name}"))
         if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
             continue
-        led.set_kv(f"probe:{name}", iso(led.now()))
-        for w, pct, resets in platforms.probe_claude():
-            led.record_usage(name, w, pct, resets)
+        for cname in [cn for cn, cp in cfg["platforms"].items() if cp.get("kind") == "claude"]:
+            led.set_kv(f"probe:{cname}", iso(led.now()))
+        probed = platforms.probe_claude()
+        if probed:
+            _record_claude_usage(ctx, probed)
 
 
 # ---------- schedule ----------

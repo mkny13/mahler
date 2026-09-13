@@ -293,13 +293,15 @@ def cmd_usage(a, cfg, led):
     if a.probe:
         from . import platforms
         pools = platforms.probe_agy()
+        claude_samples = None
         for name, pconf in cfg["platforms"].items():
             if pconf["kind"] == "agy":
                 for w, pct, resets in pools.get(pconf.get("pool"), []):
                     led.record_usage(name, w, pct, resets)
             elif pconf["kind"] == "claude":
-                samples = platforms.oauth_usage() or platforms.probe_claude()
-                for w, pct, resets in samples:
+                if claude_samples is None:
+                    claude_samples = platforms.oauth_usage() or platforms.probe_claude()
+                for w, pct, resets in claude_samples:
                     led.record_usage(name, w, pct, resets)
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)

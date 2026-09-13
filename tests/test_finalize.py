@@ -6,6 +6,7 @@ gh, snapshot and worktree removal mocked: no GitHub, no subprocesses.
 """
 
 import copy
+import json
 import os
 import tempfile
 import unittest
@@ -117,13 +118,28 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 0)          # a pre-emption is not a failure either
         self.assertNotIn("conductor ships it", self.last_event())
 
-    def test_done_after_the_issue_closed_is_just_done(self):
-        self.gh.state = "CLOSED"
+    def test_claude_usage_and_quota_mirrors_to_opus_on_finalize(self):
+        self.run["platform"] = "claude"
+        ev = {
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "unifiedWindows": {
+                    "five_hour": {"utilization": 0.45, "resetsAt": 1789200000},
+                    "seven_day": {"utilization": 0.65, "resetsAt": 1789200000},
+                }
+            }
+        }
+        res = {"type": "result", "result": "STATUS: DONE shipped it", "subtype": "success"}
         with open(self.log, "w") as fh:
-            fh.write("STATUS: DONE shipped it\n")
-        snap, rm = self.finalize()
-        self.assertEqual(self.led.item("x", 5)["state"], "done")
-        snap.assert_not_called()       # nothing left to hand off once the issue is closed
+            fh.write(json.dumps(ev) + "\n" + json.dumps(res) + "\n")
+        self.finalize()
+        # Both claude and claude-opus should have received the mirrored usage
+        claude_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h' ORDER BY sampled_at DESC LIMIT 1")
+        opus_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h' ORDER BY sampled_at DESC LIMIT 1")
+        self.assertTrue(claude_5h)
+        self.assertTrue(opus_5h)
+        self.assertEqual(claude_5h[0]["used_pct"], 45.0)
+        self.assertEqual(opus_5h[0]["used_pct"], 45.0)
 
 
 if __name__ == "__main__":

@@ -28,8 +28,10 @@ personal data, accounts, credentials or money.
    `type:chore` `type:goal`; exactly one of `size:s` `size:m` `size:l`; and `p2` unless a
    p-label is already present. Never add or remove `mahler:*` labels — Mahler owns those.
 5. If it is `size:l`, split it: create sub-issues small enough for one agent run each
-   (same body shape, a `Part of #$number` line, `Depends on: #N` where order matters),
+   (same body shape, a `Part of #$number` line, `Depends on: #N` where order matters;
+   if this repo uses a scope label like `mahler`, add it to each sub-issue),
    then relabel this one `type:goal`.
+
 $rules
 Every issue comment you post must begin with the line `<!-- mahler:agent -->`.
 
