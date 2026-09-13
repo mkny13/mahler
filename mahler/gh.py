@@ -138,7 +138,8 @@ class GH:
 
     def pr_view(self, number):
         return json.loads(_gh("pr", "view", str(number), "-R", self.repo, "--json",
-                              "state,body,statusCheckRollup,headRefName,baseRefName"))
+                              "state,body,statusCheckRollup,mergeable,headRefName,"
+                              "baseRefName"))
 
     def pr_merge(self, number):
         _gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")

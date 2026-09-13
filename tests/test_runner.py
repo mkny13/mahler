@@ -65,6 +65,74 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(saved["ahead"], 1)
 
 
+class CatchUpTests(unittest.TestCase):
+    """Resumed work starts on current base (DESIGN D19, mahler#27)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.remote = os.path.join(t, "remote.git")
+        self.repo = os.path.join(t, "repo")
+        sh(t, "git", "init", "-q", "--bare", "-b", "main", self.remote)
+        sh(t, "git", "clone", "-q", self.remote, self.repo)
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            sh(self.repo, "git", "config", k, v)
+        self.commit("a.txt", "one\n", "init")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        # an earlier run's saved work on the item's branch...
+        sh(self.repo, "git", "checkout", "-qb", "mahler/7-x")
+        self.commit("a.txt", "one\nitem seven\n", "item work")
+        sh(self.repo, "git", "push", "-q", "origin", "mahler/7-x")
+        self.old = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "checkout", "-q", "main")
+        self.wt = os.path.join(t, "wt")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def commit(self, name, text, msg):
+        write(os.path.join(self.repo, name), text)
+        sh(self.repo, "git", "add", ".")
+        sh(self.repo, "git", "commit", "-qm", msg)
+
+    def main_moves(self, name, text):
+        """...and then main moves on without it."""
+        self.commit(name, text, "someone else's change")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        sh(self.repo, "git", "fetch", "-q", "origin")
+        sh(self.repo, "git", "worktree", "add", "-q", "-B", "mahler/7-x", self.wt,
+           "origin/mahler/7-x")
+
+    def test_saved_work_is_replayed_onto_current_main(self):
+        self.main_moves("b.txt", "unrelated\n")
+        self.assertIsNone(runner.catch_up(self.wt, "mahler/7-x", "main", 7, 9))
+        tip = sh(self.remote, "git", "rev-parse", "mahler/7-x")
+        self.assertEqual(tip, sh(self.wt, "git", "rev-parse", "HEAD"))
+        sh(self.remote, "git", "merge-base", "--is-ancestor", "main", "mahler/7-x")
+        self.assertEqual(sh(self.wt, "git", "show", "HEAD:a.txt"), "one\nitem seven")
+        self.assertEqual(sh(self.wt, "git", "show", "HEAD:b.txt"), "unrelated")
+
+    def test_work_already_on_main_drops_the_branch(self):
+        self.main_moves("a.txt", "one\nitem seven\n")          # the same change landed
+        self.assertIsNone(runner.catch_up(self.wt, "mahler/7-x", "main", 7, 9))
+        self.assertEqual(sh(self.wt, "git", "rev-parse", "HEAD"),
+                         sh(self.remote, "git", "rev-parse", "main"))
+        self.assertEqual(sh(self.remote, "git", "branch", "--list", "mahler/7-x"), "")
+
+    def test_work_that_no_longer_applies_starts_fresh_and_is_kept(self):
+        self.main_moves("a.txt", "one\nsomething else\n")
+        kept = runner.catch_up(self.wt, "mahler/7-x", "main", 7, 9)
+        self.assertEqual(kept, "mahler/snapshot/7-stale-run9")
+        self.assertEqual(sh(self.remote, "git", "rev-parse", kept), self.old)
+        main = sh(self.remote, "git", "rev-parse", "main")
+        self.assertEqual(sh(self.wt, "git", "rev-parse", "HEAD"), main)
+        # a head at main's tip would read as merged on an open PR: the branch is dropped
+        self.assertEqual(sh(self.remote, "git", "branch", "--list", "mahler/7-x"), "")
+        self.assertEqual(sh(self.wt, "git", "status", "--porcelain"), "")
+        # the agent can read the old work from its worktree, as the prompt says
+        self.assertIn("item work", sh(self.wt, "git", "log", f"origin/main..origin/{kept}"))
+
+
 class ParsingTests(unittest.TestCase):
     def test_commands(self):
         self.assertEqual(parse_command("/mahler go"), ("go", None))

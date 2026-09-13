@@ -117,6 +117,33 @@ class FairnessTests(unittest.TestCase):
                           "b#5: would build on agy-claude"])
         self.assertIn("a: at capacity (2 running)", ctx.lines)
 
+    def test_unmerged_change_holds_the_build_slot(self):
+        """The live failure (mahler#27): with max_parallel 1, three builds ran
+        back to back while none had merged, each on a base missing the others."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=1), "b": proj()}, total=4, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, state="verifying", age_minutes=40)
+        item(led, "a", 2, age_minutes=30)
+        item(led, "b", 5, age_minutes=20)
+        self.assertEqual(plan(ctx, led), ["b#5: would build on agy-claude"])
+        self.assertIn("a: builds wait — 1 finished change(s) not merged yet", ctx.lines)
+
+    def test_unmerged_change_does_not_hold_sorts(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=1)}, total=2, max_runs=2)
+        seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
+        item(led, "a", 1, state="verifying", age_minutes=40)
+        item(led, "a", 2, age_minutes=30)
+        item(led, "a", 3, state="inbox", age_minutes=20)
+        self.assertEqual(plan(ctx, led), ["a#3: would sort on claude"])
+
+    def test_room_beside_an_unmerged_change(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, state="verifying", age_minutes=40)
+        item(led, "a", 2, age_minutes=30)
+        item(led, "a", 3, age_minutes=20)
+        self.assertEqual(plan(ctx, led), ["a#2: would build on agy-claude"])
+
     def test_per_platform_max_runs_still_applies(self):
         ctx, led = mk_ctx({"a": proj(), "b": proj()}, total=4, max_runs=1)
         seed(led, **{"agy-claude": (10, 10), "agy-gemini": (10, 10)})

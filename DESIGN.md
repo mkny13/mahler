@@ -275,9 +275,9 @@ Two rules use this:
   The first PR to merge wins and closes the issue. The other holder's next heartbeat returns
   `item_closed`: it stops, and its branch is kept as `mahler/abandoned/<issue>-<run>` for
   14 days. The cost is bounded by how often runs check the lease: a few minutes of tokens.
-- **Parallel items in one project** also resolve at merge: the later run rebases, which agents do
-  well. Items sharing an `area:` label aren't run concurrently. Per-project `max_parallel`
-  defaults to 2.
+- **Parallel items in one project** start on current base and hold their slot until they merge
+  (D19), so they rarely collide; when one does, the conductor sends it back for a rebuild. Items
+  sharing an `area:` label aren't run concurrently. Per-project `max_parallel` defaults to 2.
 - **Shared counters** (like phish-in-app's `Dnnn` decision IDs, which collided in D208) are
   handed out by Mahler: `mahler next-id <project> D` is atomic. That removes a whole category of
   merge-time collision git can't detect.
@@ -446,7 +446,8 @@ doesn't rely on that and stops on its own thresholds regardless.
   automatic handoff note. The note contains the branch and diffstat, the last verify result,
   and the tail of the run transcript.
 - **Successor prompt** = the item + project goals + the latest handoff note +
-  `git log main..branch` + the verify contract. The successor starts from the branch.
+  `git log main..branch` + the verify contract. The successor starts from the branch, replayed
+  onto current `main` first (D19).
 - The existing `handoff`/`pickup` skills become Mahler-aware. They write and read this comment,
   and they record `#N` in TASKS.md Now items.
 
@@ -720,6 +721,33 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   (D8) applies as before.
 - Shorter recipes also mean fewer tokens on every run, and a smaller surface for the model to
   lose track of.
+
+### D19 — A change is in flight until it merges
+
+Decided 2026-09-12 (mahler#27). With `max_parallel = 1`, mahler#16, #20 and #8 still built
+back to back with none of them merged, so each started on a `main` that was missing the
+others. #8's run also resumed a branch saved 2½ hours earlier, 9 commits behind. Two of the
+three had to be re-run. D6 had counted on "the later run rebases" at merge time, but D18 took
+merging away from agents, and nobody took the rebase over.
+
+Throughput counts merged changes, not finished runs. So:
+
+- **The slot is held until merge.** A `verifying` item counts against its project's
+  `max_parallel` for builds. Sorts don't write code, so they don't wait. A red PR keeps holding
+  the slot until it's fixed (D18 fix runs) or closed, and pings once, because that project's
+  builds stop behind it.
+- **Every build starts on current base.** Resumed work is rebased onto `origin/<base>` at
+  launch, and the run's branch is force-pushed to match. If the rebase doesn't apply cleanly,
+  the old tip is kept on `mahler/snapshot/<n>-stale-run<id>`, the branch starts fresh from base,
+  and the prompt points the agent at the old work. A branch left with nothing beyond base is
+  deleted rather than pushed, because a PR head at base's tip reads as merged and would close
+  the issue.
+- **A PR that stops merging goes back.** If GitHub reports the PR `CONFLICTING`, the conductor
+  returns the item to `ready`, with no attempt counted. If the rebuild's rebase applies, it
+  updates the same PR. If not, dropping the branch closes that PR, and the conductor opens a
+  new one.
+- Snapshot diffstats are measured from the merge base, so a stale branch no longer looks like
+  it deletes everything that landed after it.
 
 ### D15 — Deliberately not doing
 
