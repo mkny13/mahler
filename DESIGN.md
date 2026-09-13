@@ -358,7 +358,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Claude Code** (Pro) | `claude -p --output-format stream-json --verbose --permission-mode bypassPermissions` (+ denylist) | Every headless run emits a `rate_limit_event` with `unifiedWindows.five_hour` / `seven_day.utilization`. When no run is live, a lean probe gives the same reading for ~700 tokens (`--model haiku --tools "" --strict-mcp-config --setting-sources ""`). Not `--bare`: it skips OAuth | **Planner** (sorting, specs, splitting, hard-bug diagnosis) always. **Builder** only after the free tiers are spent, and under the reserve |
 | **Antigravity: Claude/GPT pool** (free) | `agy -p … --add-dir <worktree> --model claude-opus-4-6-thinking --dangerously-skip-permissions --output-format stream-json` | `agy -p /usage --output-format json`, which costs nothing and reports `remaining_fraction` + `reset_time` per pool and window | **First-choice builder** |
 | **Antigravity: Gemini pool** (free) | same, `--model gemini-3.1-pro-high` or `gemini-3.8-flash-high` | same probe, separate pool | Second-choice builder |
-| **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off for an hour after any rate-limit error | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3). Daemon-launched runs need macOS Documents access (see below) |
+| **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off after any rate-limit error. The model is GLM-5.3-flash (`z-ai/glm-5.3-flash` in every run log). It has a **daily free cap**: a 429 `INFERENCE_CAP_ERROR` that says when to "try again", and Mahler waits until then (2026-09-13; before that it retried hourly) | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3). Daemon-launched runs need macOS Documents access (see below) |
 | **Copilot CLI** (`@github/copilot`, GitHub Education license) | `copilot -p <prompt> -C <worktree> --allow-all-tools --output-format json` | Unlike Cline/Kilo, has a real cap: GitHub bills Copilot in **AI Credits** (mahler#38), Pro/Education include 1500/month. No cheap CLI-level probe, but `gh api /users/<login>/settings/billing/ai_credit/usage` (needs the `user` OAuth scope) reports the month's consumption, so it's routed as a normal **metered** platform with a single `monthly` window instead of 5h/weekly | Builder, size `s` only, ahead of Kilo — it runs real frontier models (verified: `claude-sonnet-5`), despite the smaller monthly allowance. CLI flags verified end-to-end 2026-09-13 (mahler#25); the AI-credits billing probe verified 2026-09-12 (mahler#38) |
 | **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do). The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | OpenCode | — | — | Later backend (Phase 8) |
@@ -399,7 +399,8 @@ terminal app already had access. Consequences:
 Claude may build, but keep headroom for me*):
 
 1. **Sorting and planning runs go to Claude.** They're short and high-leverage. If Claude is
-   over the reserve, sorting falls back to Antigravity rather than waiting.
+   over the reserve, sorting falls back to Antigravity rather than waiting. Planning goals,
+   audits and `size:l` items is the exception: it waits for Opus (D21).
 2. **Build runs, in order:**
    - Antigravity's Claude/GPT pool, then its Gemini pool, then Cline-free, then Copilot CLI,
      then Kilo. Each is used while it has headroom and fits the item's size (`s` → any;
@@ -419,8 +420,9 @@ work yields):
 | Platform | Soft (stop starting) | Hard (running work yields) |
 |---|---|---|
 | Antigravity | 85% | 90% (your figure) |
-| Cline-free | — | on the first quota or rate-limit error |
+| Cline-free | — | on the first quota or rate-limit error; its free model has a daily cap, and Mahler waits until the reset time the error names |
 | Claude, autonomous | 5 h 60% / 7 d 70% | 5 h 70% / 7 d 80% |
+| Claude Opus | 5 h 45% / 7 d 70% (D21) | same account and hard lines as Claude |
 
 Platforms without a usage percentage are treated as 100% on the first quota error, and stay
 unavailable until the reset time, parsed or with a backoff default. All of these numbers live in
@@ -775,6 +777,67 @@ is due immediately before its first checkpoint, then when either the cadence has
 merged-PR threshold is reached. Filing the maintenance issue resets the checkpoint. Merged-PR
 volume is the throughput signal, not raw agent-run count, so the trigger follows work that
 actually reached the project.
+
+What the first night taught (2026-09-13): all six passes were due at once, so every project
+filed six `size:l` audits in one tick. On `scope = "label"` projects they were filed without the
+scope label, so Mahler never saw them (groundwork #104–#109), yet their checkpoints were reset. A
+split pass stays a `parent` forever, so it never becomes due again. So: pass issues carry the
+project's scope label; a project has **at most one pass in flight** (a new one is filed only when
+no `pass:*` item of that project is open); and a goal closes once all its sub-issues are done
+(D21), which is what lets a pass recur.
+
+### D21 — Opus plans; the free tiers build what it planned
+
+Decided 2026-09-13. The research agrees on the split and on its limits:
+
+- **Planner/executor works when the plan is concrete.** Aider's architect/editor pairs set its
+  benchmark records at a fraction of the cost, and Claude Code ships the same idea as `opusplan`.
+  A weak planner hurts results more than a weak executor (PEAR, 2026).
+- **Success falls with task length**, and sooner for weaker models (METR's time horizons). So
+  pieces should fit the builder, not be as small as possible.
+- **Splitting has a cost.** Pieces lose each other's context, and coordination multiplies
+  tokens. In Mahler every piece also pays a sort, a worktree and setup, the agent reading the
+  repo, a PR, CI and a merge, one after another (D19).
+
+What the ledger showed: 99 sort runs against 51 builds, because every sub-issue was sorted
+again, and some were split again. The first audits, meant for Opus, were planned by Gemini:
+Opus was reached only through the size limits, and a config routing list left it out. Opus had
+never run.
+
+- **Planning is a route, not a side effect.** Goals (`type:goal`), maintenance passes (`pass:*`)
+  and `size:l` items are sorted only by `routing.plan` (default: `claude-opus`). With no headroom
+  (the weekly reserve, or the peak window, D22) they wait; they never fall back to a free tier.
+  `max_size`/`min_size` are builder limits and don't apply to sorting.
+- **The plan is the product.** A planning run writes into each sub-issue a `## Plan` (the files,
+  the ordered steps, the test that proves it), a `## Done when`, and a size of `s` or `m`.
+- **Planned sub-issues are born ready.** A new issue with `Part of #P`, where P is a `parent`,
+  with a `## Plan`, a `## Done when` and a size of `s` or `m`, skips sorting. Sub-issues are never
+  split again.
+- **The smallest useful piece is one mergeable PR with its own test.** Don't split below it.
+- **Opus builds only by escalation** (D8 rule 4, now built): two failed attempts on a tier move
+  the item up a tier. Each platform has a `tier`: Cline and Kilo 1, Antigravity and Copilot 2,
+  Claude 3, Claude Opus 4. Fix runs never route to Opus by size alone.
+- **Haiku is not a builder.** It draws on the same Claude windows as Opus and Sonnet. The free
+  tiers are Mahler's small models.
+- **One Claude account, one run slot.** `claude` and `claude-opus` share the same 5-hour and
+  weekly windows (there is no separate Opus window on Pro, and `--model opus` runs
+  `claude-opus-5` inside the plan, not on overage; checked 2026-09-13). So they count together
+  against `max_runs`, and an Opus run starts only below 5h 45%, leaving room to finish under the
+  70% hard line. A planning run stopped halfway starts over, so this matters.
+- **A goal closes when all its sub-issues are done.**
+
+### D22 — Claude's peak window
+
+Decided 2026-09-13 (your call). On weekdays from 5 to 11am Pacific (8am–2pm Eastern), Mahler
+starts no Claude runs (`claude`, `claude-opus`). Running work continues, and the hard lines still
+apply. To override: `mahler peak off [--for 2h]`, or pin an item to a Claude platform. The window
+lives in `[claude_peak]` in the config, and can be switched off.
+
+Why: from March 2026 Anthropic cut 5-hour limits in that window, and the Claude Usage menu-bar
+app marks it with a flame. Reporting says the cut was lifted for Claude Code on Pro and Max on
+2026-05-06, so the window may no longer cost more per token for Mahler's runs. It stays as a
+headroom rule, because it's when you're most likely using Claude yourself. Revisit if the
+evidence settles.
 
 ### D15 — Deliberately not doing
 
