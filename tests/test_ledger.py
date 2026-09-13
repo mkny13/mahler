@@ -193,6 +193,29 @@ class ConnectionTests(unittest.TestCase):
             led.con.close()
 
 
+class CloseTests(unittest.TestCase):
+    """issue #68: Ledger owns a sqlite3 connection; close() is the explicit
+    shutdown hook, and a discarded Ledger must not leak the handle."""
+
+    def test_close_is_idempotent_and_fences_further_use(self):
+        import sqlite3
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.upsert_item("p", 1, title="x")
+        led.close()
+        led.close()                     # second close is a no-op
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+            led.q("SELECT 1")
+
+    def test_routed_ledger_closes_its_local_ledger(self):
+        import sqlite3
+        local = Ledger(":memory:")
+        routed = RoutedLedger(local, copy.deepcopy(config.DEFAULTS))
+        routed.close()
+        with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+            local.q("SELECT 1")
+
+
 class RemoteLedgerTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()

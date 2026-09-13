@@ -234,7 +234,10 @@ class TestServer(unittest.TestCase):
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, dict(r.headers), r.read().decode()
         except urllib.error.HTTPError as e:
-            return e.code, dict(e.headers), e.read().decode()
+            try:
+                return e.code, dict(e.headers), e.read().decode()
+            finally:
+                e.close()
 
     def test_binds_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
