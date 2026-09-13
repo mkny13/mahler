@@ -80,7 +80,7 @@ class TestRender(unittest.TestCase):
         self.assertIn("claude", html)
         self.assertIn("42%", html)          # gauge label
         self.assertIn("width:42%", html)    # gauge fill
-        self.assertIn("unmetered", html)    # cline-free
+        self.assertIn("unknown limit", html)    # cline-free
 
     def test_paused_banner(self):
         self.led.set_kv("paused", "1")

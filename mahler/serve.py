@@ -185,7 +185,7 @@ def _render_rest(out, snap, cfg):
     w("<h2>Quota</h2>")
     for q in snap["quota"]:
         cls = _esc(q["state"])
-        label = "unmetered" if not q["metered"] else f"{q['pct']:.0f}%"
+        label = "unknown limit" if not q["metered"] else f"{q['pct']:.0f}%"
         w(f"<div class=\"card\">"
           f"<div><b>{_esc(q['name'])}</b> <span class=\"q-state-{cls}\">{_esc(q['state'])}</span>"
           f" <span class=\"muted\">{_esc(q['detail'])}</span></div>"
