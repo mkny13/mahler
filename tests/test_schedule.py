@@ -164,6 +164,35 @@ class FairnessTests(unittest.TestCase):
         self.assertEqual(plan(ctx, led),
                          ["a#4: would build on agy-claude"])
 
+    def test_mahler_project_prioritized_over_other_projects_all_else_equal(self):
+        """All else being equal (same priority, both builds), mahler work is
+        prioritized over other projects even if the other project has older items."""
+        ctx, led = mk_ctx({"other": proj(), "mahler": proj()}, total=1)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "other", 1, priority=2, age_minutes=60)   # older item in other project
+        item(led, "mahler", 42, priority=2, age_minutes=10)  # younger item in mahler
+        self.assertEqual(plan(ctx, led),
+                         ["mahler#42: would build on agy-claude"])
+
+    def test_higher_priority_in_other_project_still_beats_mahler(self):
+        """When not equal (p1 vs p2), issue priority still wins."""
+        ctx, led = mk_ctx({"other": proj(), "mahler": proj()}, total=1)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "other", 1, priority=1, age_minutes=10)   # p1 in other project
+        item(led, "mahler", 42, priority=2, age_minutes=60)  # p2 in mahler
+        self.assertEqual(plan(ctx, led),
+                         ["other#1: would build on agy-claude"])
+
+    def test_custom_priority_projects_configuration(self):
+        ctx, led = mk_ctx({"other": proj(), "mahler": proj(), "custom": proj()}, total=1)
+        ctx.cfg["scheduling"]["priority_projects"] = ["custom", "mahler"]
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "other", 1, priority=2, age_minutes=60)
+        item(led, "mahler", 2, priority=2, age_minutes=40)
+        item(led, "custom", 3, priority=2, age_minutes=10)
+        self.assertEqual(plan(ctx, led),
+                         ["custom#3: would build on agy-claude"])
+
 
 if __name__ == "__main__":
     unittest.main()
