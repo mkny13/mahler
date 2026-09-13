@@ -17,6 +17,8 @@ def make_cfg():
     # same shape config.load() returns: defaults + platforms + projects
     return {
         "defaults": {},
+        "burst": {"enabled": True, "weekly_lead_hours": 5,
+                  "session_lead_minutes": 60, "soft": 90, "hard": 97},
         "platforms": {
             "claude": {"enabled": True, "kind": "claude",
                        "soft": {"5h": 60, "weekly": 70},
@@ -109,6 +111,20 @@ class TestRender(unittest.TestCase):
         self.led.set_kv("paused", "1")
         html = render(self.led, self.cfg)
         self.assertIn("PAUSED", html)
+
+    def test_burst_indicator_in_quota(self):
+        """D23: during a burst, the status page shows a burst banner."""
+        from datetime import timedelta
+        from mahler.ledger import iso
+        led = make_led()
+        five_reset = iso(led.now() + timedelta(minutes=30))
+        weekly_reset = iso(led.now() + timedelta(hours=2))
+        led.record_usage("claude", "5h", 85.0, five_reset)
+        led.record_usage("claude", "weekly", 85.0, weekly_reset)
+        html = render(led, self.cfg)
+        self.assertIn("burst active", html)
+        snap = serve.snapshot(self.cfg, led)
+        self.assertEqual(snap["burst"], "weekly")
 
     def test_events_capped_at_30(self):
         for j in range(40):

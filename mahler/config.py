@@ -117,6 +117,19 @@ DEFAULTS = {
         },
     },
     "projects": {},
+    # Burst before a Claude window resets (D23): in the last lead-time before a
+    # window rolls over, Claude's soft/hard lines rise to these burst lines so
+    # the expiring reserve turns into work instead of going unused. "soft" and
+    # "hard" are percentages (0..100). Burst lines stay below 100% so no burst
+    # ever spends paid overage. `enabled = false` turns the burst off entirely.
+    "burst": {
+        "enabled": True,
+        "weekly_lead_hours": 5,       # before the weekly reset
+        "session_lead_minutes": 60,   # before the 5-hour reset
+        "soft": 90,
+        "hard": 97,
+        "human_quiet_minutes": 20,    # suppress burst after human use (D23)
+    },
 }
 
 # Cline's free models report no quota at all (verified 2026-09-12): it is

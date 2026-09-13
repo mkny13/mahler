@@ -31,6 +31,7 @@ class Ctx:
         self.lines = []
         self._gh = {}
         self._labels = {}          # (project, number) -> labels from this tick's sync
+        self.burst_lines = None    # D23: set by _compute_burst during this tick
 
     def policy(self, project):
         return config.project_policy(self.cfg, project)
@@ -125,7 +126,8 @@ def take_lock():
 
 def tick(ctx):
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
-    watchdog(ctx)
+    _compute_burst(ctx, projects)   # D23: before watchdog so running runs
+    watchdog(ctx)                   #   see burst lines too
     for p in projects:
         try:
             sync(ctx, p["name"])
@@ -198,12 +200,25 @@ def watchdog(ctx):
             stop(ctx, run, reason)
 
 
-def _record_claude_usage(ctx, samples, backoff_until=None):
-    """Record usage across all configured platforms that share the Claude account."""
+def _record_claude_usage(ctx, samples, backoff_until=None, check_human=False):
+    """Record usage across all configured platforms that share the Claude account.
+
+    When check_human is True (the periodic probe path, not a run's own log), a
+    5h usage increase with no live Claude run is treated as human use of the
+    account elsewhere (Claude app on phone, the web UI, another session) and
+    sets a kv flag that suppresses the D23 burst for half an hour (D23).
+    """
     claude_platforms = [pname for pname, pconf in ctx.cfg["platforms"].items()
                         if pconf.get("kind") == "claude"]
     for pname in claude_platforms:
+        prev_5h = ctx.led.usage(pname).get("5h", {}).get("used_pct")
         for w, pct, resets in samples:
+            if check_human and w == "5h" and prev_5h is not None and pct > prev_5h:
+                active_claude = any(
+                    ctx.cfg["platforms"].get(r["platform"], {}).get("kind") == "claude"
+                    for r in ctx.led.active_runs())
+                if not active_claude:
+                    ctx.led.set_kv("human:claude", iso(ctx.led.now()))
             ctx.led.record_usage(pname, w, pct, resets)
         if backoff_until:
             pconf = ctx.cfg["platforms"][pname]
@@ -240,7 +255,9 @@ def _health(ctx, run, pol, now):
                          "at once so nothing autonomous eats into paid overage (DESIGN D8).",
                          run["project"], run["number"], priority="high", tags="warning")
             return "quota"
-    state, detail = router.usage_state(ctx.led, run["platform"], pconf)
+    claude_lines = ctx.burst_lines if pconf.get("kind") == "claude" else None
+    state, detail = router.usage_state(ctx.led, run["platform"], pconf,
+                                        burst_lines=claude_lines)
     if state == "hard":
         ctx.say(f"#{run['number']}: {run['platform']} over its hard line ({detail})")
         return "quota"
@@ -744,7 +761,8 @@ def _red_ci(ctx, project, item, pr, view):
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
-    platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy, size=size)
+    platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy,
+                                    size=size, burst_lines=ctx.burst_lines)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -1013,9 +1031,9 @@ def refresh_usage(ctx, projects):
             continue
         if pconf.get("kind") != "claude":
             continue
-        free = platforms.oauth_usage()                     # zero tokens
+        free = platforms.oauth_usage()                 # zero tokens
         if free:
-            _record_claude_usage(ctx, free)
+            _record_claude_usage(ctx, free, check_human=True)
             continue
         last = parse(led.get_kv(f"probe:{name}"))
         if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
@@ -1024,7 +1042,7 @@ def refresh_usage(ctx, projects):
             led.set_kv(f"probe:{cname}", iso(led.now()))
         probed = platforms.probe_claude()
         if probed:
-            _record_claude_usage(ctx, probed)
+            _record_claude_usage(ctx, probed, check_human=True)
 
 
 # ---------- schedule ----------
@@ -1050,16 +1068,19 @@ def _candidates(ctx, projects):
     return work
 
 
-def _headroom(ctx, role, per_platform, busy):
+def _headroom(ctx, role, per_platform, busy, burst_lines=None):
     """Routing platforms for `role` that could take a new run right now:
-    enabled, under per-platform max_runs, reachable and under its soft lines."""
+    enabled, under per-platform max_runs, reachable and under its soft lines.
+    Burst lines (D23) raise Claude's soft lines when a window is about to reset.
+    """
     cfg, led = ctx.cfg, ctx.led
     free = []
-    for name in router.candidates(cfg, role):
+    for name in router.candidates(cfg, role, burst_lines=burst_lines):
         pc = cfg["platforms"][name]
         if name in busy or per_platform.get(name, 0) >= pc.get("max_runs", 1):
             continue
-        if router.usage_state(led, name, pc)[0] != "ok":
+        claude_lines = burst_lines if pc.get("kind") == "claude" else None
+        if router.usage_state(led, name, pc, burst_lines=claude_lines)[0] != "ok":
             continue
         free.append(name)
     return free
@@ -1076,6 +1097,38 @@ def needs_plan(labels_json):
         if label == "type:goal" or label == "size:l" or label.startswith("pass:"):
             return True
     return False
+
+
+def _compute_burst(ctx, projects):
+    """D23 burst lines for Claude routing (cached per tick).
+
+    In the last lead-time before a window resets, Claude's reserve expires
+    unused, so burst lines (default 90%/97%) let Claude build first with higher
+    headroom. Suppressed while you're actively using Claude: the 5h-usage-rise
+    flag set by _record_claude_usage during the probe, or recent Claude Code
+    transcript activity in a managed project. Returns the cached value on
+    repeated calls within one tick. Logs the burst state once per tick.
+    """
+    if ctx.burst_lines is not None:
+        return ctx.burst_lines
+    lines = router.burst_status(ctx.cfg, ctx.led)
+    suppressed = None
+    if lines and ctx.hot_hold:
+        flag = ctx.led.get_kv("human:claude")
+        if flag and parse(flag) and ctx.led.now() - parse(flag) < timedelta(minutes=ctx.cfg["burst"].get("human_quiet_minutes", 20)):
+            suppressed = "5h usage rose with no live Claude run"
+            lines = None
+        elif presence.human_claude_active(projects):
+            suppressed = "Claude in use (recent transcript activity)"
+            lines = None
+    if suppressed:
+        ctx.say(f"D23: burst window open — deferring ({suppressed})")
+    elif lines:
+        kind = router.burst_kind(lines)
+        scope = "5h and weekly" if kind == "weekly" else "5h only"
+        ctx.say(f"D23: {kind} burst active — Claude builds first, lines 90/97 (scope: {scope})")
+    ctx.burst_lines = lines
+    return lines
 
 
 def schedule(ctx, projects):
@@ -1110,8 +1163,13 @@ def schedule(ctx, projects):
             last = presence.last_claude_activity(p["path"])
             hot[p["name"]] = bool(last and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
 
+    # Burst before a Claude window resets (D23): in the last lead-time before a
+    # window rolls over, Claude's reserve expires unused, so burst lines let
+    # Claude build first with higher headroom. Never while you're using Claude.
+    burst_lines = _compute_burst(ctx, projects)
+
     work = _candidates(ctx, projects)
-    sorts_wait = len(_headroom(ctx, "sort", per_platform, busy)) <= 1
+    sorts_wait = len(_headroom(ctx, "sort", per_platform, busy, burst_lines)) <= 1
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
     def key(c):
@@ -1162,7 +1220,7 @@ def schedule(ctx, projects):
                 routing_role = role
             platform, reasons = router.pick(cfg, led, routing_role,
                                             it["pin"] if role == "build" else None,
-                                            busy, size=size)
+                                            busy, size=size, burst_lines=burst_lines)
             if not platform:
                 if routing_role == "plan":
                     ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")

@@ -82,11 +82,36 @@ class StatusCliTests(unittest.TestCase):
 
         buf = io.StringIO()
         with patch("sys.stdout", buf):
-            ret = cli.cmd_status(Args(), cfg, self.led)
+               ret = cli.cmd_status(Args(), cfg, self.led)
 
         self.assertEqual(ret, 0)
         output = buf.getvalue()
         self.assertRegex(output, r"\[5h in 1h 2[0-9]m\]")
+
+    def test_status_shows_burst_note(self):
+        """D23: during a burst, `mahler status` prints a burst note."""
+        import copy
+        from datetime import timedelta
+        from mahler import config
+        from mahler.ledger import iso
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["projects"] = {}
+        # Claude usage within the weekly burst lead (2h), at 85%
+        five_reset = iso(self.led.now() + timedelta(minutes=30))
+        weekly_reset = iso(self.led.now() + timedelta(hours=2))
+        self.led.record_usage("claude", "5h", 85.0, five_reset)
+        self.led.record_usage("claude", "weekly", 85.0, weekly_reset)
+
+        class Args:
+            json = False
+            project = None
+
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            cli.cmd_status(Args(), cfg, self.led)
+        output = buf.getvalue()
+        self.assertIn("D23", output)
+        self.assertIn("burst", output)
 
 
 if __name__ == "__main__":
