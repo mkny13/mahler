@@ -240,6 +240,16 @@ def finalize(ctx, run):
                 led.set_state(project, n, "needs_you", rest)
                 ctx.ping(f"Mahler needs you — {project} #{n}", rest or item["title"],
                          project, n, priority="high", tags="question")
+            elif verb == "DONE" and reason in (None, "quota"):
+                # D18: the run's own job is finished. The conductor (code, not
+                # another agent) opens the PR and ships it from here; a DONE
+                # build is a success, not a failed attempt — no attempt is
+                # counted, and the item waits out of the ready queue instead of
+                # being re-run.
+                led.set_state(project, n, "working", "build finished — the conductor ships it")
+                ctx.ping(f"Build finished — {project} #{n}",
+                         f"{run['platform']} ended DONE; the conductor opens the PR next",
+                         project, n, priority="low")
             elif reason == "parked":
                 led.set_state(project, n, "parked", "parked while running")
             elif reason == "preempted":

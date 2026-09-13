@@ -122,6 +122,11 @@ class ParseTests(unittest.TestCase):
             self.assertEqual(platforms.status_line(r["final"]), ("NEEDS-YOU", "Which colour?"))
         self.assertEqual(platforms.status_line("no status here"), (None, None))
         self.assertEqual(platforms.status_line("**STATUS: READY**"), ("READY", ""))
+        # mahler#15: a build run ends at STATUS: DONE <summary>
+        self.assertEqual(platforms.status_line("STATUS: DONE wired the exporter"),
+                         ("DONE", "wired the exporter"))
+        self.assertEqual(platforms.status_line("all green\nSTATUS: DONE pushed; summary here"),
+                         ("DONE", "pushed; summary here"))
 
 
 if __name__ == "__main__":
