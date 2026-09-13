@@ -108,7 +108,9 @@ def cmd_status(a, cfg, led):
     print("\nQuota")
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)
-        print(f"  {name:<11} {state:<6} {detail}")
+        chips = router.window_countdowns(led, name, pconf)
+        tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
+        print(f"  {name:<11} {state:<6} {detail}{tags}")
     print("\nRecent")
     for e in led.q("SELECT * FROM events ORDER BY id DESC LIMIT 10")[::-1]:
         when = parse(e["at"]).astimezone().strftime("%m-%d %H:%M")
@@ -301,7 +303,9 @@ def cmd_usage(a, cfg, led):
                     led.record_usage(name, w, pct, resets)
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)
-        print(f"{name:<11} {state:<6} {detail}")
+        chips = router.window_countdowns(led, name, pconf)
+        tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
+        print(f"{name:<11} {state:<6} {detail}{tags}")
     return 0
 
 

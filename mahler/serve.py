@@ -53,8 +53,10 @@ def snapshot(cfg, led):
         windows = [u["used_pct"] for u in led.usage(name).values()
                    if u["window"] in pconf.get("windows", router.WINDOWS)]
         pct = max(min(max(windows, default=0), 100), 0)
+        chips = router.window_countdowns(led, name, pconf)
         quota.append({"name": name, "state": state, "detail": detail,
-                      "pct": pct, "metered": pconf.get("metered", True)})
+                      "pct": pct, "metered": pconf.get("metered", True),
+                      "chips": chips})
 
     events = [dict(e) for e in
               led.q("SELECT * FROM events ORDER BY id DESC LIMIT ?", (EVENTS_SHOWN,))][::-1]
@@ -136,6 +138,13 @@ td.t {{ text-align: right; white-space: nowrap; color: var(--muted); }}
 .fill-soft {{ background: var(--soft); }}
 .fill-hard {{ background: var(--hard); }}
 .fill-stale {{ background: var(--stale); }}
+.q-head {{ display: flex; justify-content: space-between; align-items: flex-start; gap: .4rem; }}
+.chips {{ display: flex; gap: .3rem; flex-wrap: wrap; justify-content: flex-end; }}
+.chip {{
+  font-size: .72rem; padding: .1rem .4rem; border-radius: .4rem;
+  background: var(--bar); color: var(--muted); white-space: nowrap;
+}}
+.chip-warn {{ background: var(--hard); color: #fff; }}
 </style>
 </head>
 <body>
@@ -196,9 +205,14 @@ def _render_rest(out, snap, cfg):
     for q in snap["quota"]:
         cls = _esc(q["state"])
         label = "unknown limit" if not q["metered"] else f"{q['pct']:.0f}%"
+        warn = q["state"] in ("soft", "hard")
+        chips = "".join(
+            f'<span class="chip{" chip-warn" if warn else ""}">{_esc(w_label)} {_esc(cd)}</span>'
+            for w_label, cd in q["chips"])
+        chips_html = f'<div class="chips">{chips}</div>' if chips else ""
         w(f"<div class=\"card\">"
-          f"<div><b>{_esc(q['name'])}</b> <span class=\"q-state-{cls}\">{_esc(q['state'])}</span>"
-          f" <span class=\"muted\">{_esc(q['detail'])}</span></div>"
+          f"<div class=\"q-head\"><div><b>{_esc(q['name'])}</b> <span class=\"q-state-{cls}\">{_esc(q['state'])}</span>"
+          f" <span class=\"muted\">{_esc(q['detail'])}</span></div>{chips_html}</div>"
           f"<div class=\"gauge\"><div class=\"fill fill-{cls}\" "
           f"style=\"width:{q['pct']:.0f}%\"></div>"
           f"<div class=\"meta\" style=\"position:absolute;inset:0;display:flex;"

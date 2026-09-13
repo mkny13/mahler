@@ -70,6 +70,31 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "agy-gemini",
                                             self.cfg["platforms"]["agy-gemini"])[0], "hard")
 
+    def test_fmt_countdown_units(self):
+        self.assertEqual(router.fmt_countdown(timedelta(minutes=35)), "35m")
+        self.assertEqual(router.fmt_countdown(timedelta(hours=1, minutes=26)), "1h 26m")
+        self.assertEqual(router.fmt_countdown(timedelta(days=2, hours=5)), "2d 5h")
+        self.assertEqual(router.fmt_countdown(timedelta(minutes=-5)), "0m")   # already past
+
+    def test_window_countdowns_reports_each_fresh_window(self):
+        led = led_with(**{"claude": (55, 60)})   # led_with resets both windows 3h out
+        chips = router.window_countdowns(led, "claude", self.cfg["platforms"]["claude"])
+        self.assertEqual([label for label, _ in chips], ["5h", "wk"])
+        self.assertTrue(all(cd.startswith("in ") for _, cd in chips))
+
+    def test_window_countdowns_skips_rolled_over_or_missing_windows(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        led.record_usage("claude", "5h", 50.0, iso(NOW - timedelta(minutes=1)))  # rolled over
+        chips = router.window_countdowns(led, "claude", self.cfg["platforms"]["claude"])
+        self.assertEqual(chips, [])   # weekly has no sample, 5h already reset
+
+    def test_backing_off_detail_includes_countdown(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=35)))
+        state, detail = router.usage_state(led, "cline-free", self.cfg["platforms"]["cline-free"])
+        self.assertEqual(state, "hard")
+        self.assertIn("(in 35m)", detail)
+
     def test_cline_is_unmetered_but_small_items_only(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
         self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "cline-free")
