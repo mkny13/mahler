@@ -158,10 +158,23 @@ class GH:
     def pr_view(self, number):
         return json.loads(_gh("pr", "view", str(number), "-R", self.repo, "--json",
                               "state,body,statusCheckRollup,mergeable,headRefName,"
-                              "baseRefName"))
+                              "headRefOid,baseRefName"))
 
     def pr_merge(self, number):
         _gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")
+
+    def failed_run_log(self, branch, tail=150):
+        """The latest failed CI run on a branch: (run id, tail of its failing
+        log) — (None, '') when no failed run is there. This is what a fix
+        run's prompt diagnoses from (DESIGN D18, mahler#18)."""
+        out = _gh("run", "list", "-R", self.repo, "--branch", branch, "--status", "failure",
+                  "--limit", "1", "--json", "databaseId")
+        runs = json.loads(out or "[]")
+        if not runs:
+            return None, ""
+        run_id = runs[0]["databaseId"]
+        log = _gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
+        return run_id, "\n".join(log.splitlines()[-tail:])
 
 
 def label_names(issue):

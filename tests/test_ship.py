@@ -11,10 +11,10 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, gh as gh_module, scheduler
+from mahler import config, gh as gh_module, platforms, runner, scheduler
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -31,6 +31,7 @@ class FakeGH:
                                            "- the new ping arrives")
         self.rollup = [{"state": "SUCCESS"}]
         self.mergeable = "MERGEABLE"
+        self.head_sha = "abc123"
         self.pushed, self.created, self.merged, self.comments = [], [], [], []
         self.fail_view = set()
 
@@ -53,8 +54,11 @@ class FakeGH:
             raise gh_module.GHError("github down")
         return {"state": self.view_state, "body": self.view_body,
                 "statusCheckRollup": self.rollup, "mergeable": self.mergeable,
-                "headRefName": "mahler/5-x",
+                "headRefName": "mahler/5-x", "headRefOid": self.head_sha,
                 "baseRefName": "main"}
+
+    def issue_state(self, number):
+        return "OPEN"
 
     def pr_merge(self, number):
         self.merged.append(number)
@@ -73,12 +77,19 @@ class ShipTests(unittest.TestCase):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["x"] = {"path": self.tmp, "repo": "x/y"}
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        later = iso(NOW + timedelta(hours=2))
+        for name in ("agy-claude", "agy-gemini", "claude"):   # live usage samples,
+            self.led.record_usage(name, "5h", 10, later)   # so routing has something
+            self.led.record_usage(name, "weekly", 10, later)
         self.led.upsert_item("x", 5, state="verifying", priority=2,
                              title="Wired the exporter",
                              branch="mahler/snapshot/5-run7",
                              summary="wired the exporter", sorted_at=iso(NOW))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = FakeGH()
+        avail = mock.patch.object(platforms, "available", return_value=True)
+        avail.start()
+        self.addCleanup(avail.stop)
 
     def item(self, n=5):
         return self.led.item("x", n)
@@ -151,17 +162,177 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")
         ping.assert_not_called()
 
-    def test_red_ci_waits_for_the_fix_path_and_says_so_once(self):
-        """Red CI holds the project's build slot (D19), so the owner hears
-        about it — once, not every tick."""
+    def patch_start(self):
+        """A start() stand-in: claims the fix run's lease as the real one would,
+        but launches nothing."""
+        led = self.led
+
+        def fake_start(ctx, project, it, role, platform):
+            led.claim(project, it["number"], "run:14", "auto", 30,
+                      platform=platform, run_id=14)
+            led.set_state(project, it["number"], "working")
+            ctx.gh(project).comment(it["number"],
+                                    f"🔁 **{platform}** started a fix run (run 14) on "
+                                    f"branch `{it['branch']}` — CI was red.")
+            return True
+
+        patcher = mock.patch.object(scheduler, "start", side_effect=fake_start)
+        started = patcher.start()
+        self.addCleanup(patcher.stop)
+        return started
+
+    def test_red_ci_pings_once_and_starts_a_fix_run(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.rollup = [{"state": "FAILURE"}]
+        self.gh.head_sha = "red1"
+        start = self.patch_start()
         ping = self.ship()
-        self.assertEqual(self.gh.merged, [])
-        self.assertEqual(self.item()["state"], "verifying")
+        start.assert_called_once()
+        (it, role) = start.call_args[0][2:4]
+        self.assertEqual((it["branch"], role), ("mahler/5-x", "fix"))
+        self.assertEqual(self.item()["state"], "working")        # the fix run's lease
+        self.assertEqual(self.item()["attempts"], 1)             # a red cycle counts
+        self.assertEqual(self.led.lease("x", 5)["holder"], "run:14")
+        body = self.gh.comments[-1]
+        self.assertIn("fix run", body)
+        self.assertTrue(body.startswith("<!-- mahler:agent -->"))
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "CI red — x #5")
-        self.assertEqual(self.ship().call_count, 0)
+
+    def test_red_ci_ping_is_not_repeated_per_sha(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        self.gh.head_sha = "red1"
+        self.ship()
+        self.ship()
+        self.gh.head_sha = "red2"          # the fix pushed, CI failed again
+        p3 = self.ship()
+        reds = [c for c in p3.call_args_list if c[0][0] == "CI red — x #5"]
+        self.assertEqual(len(reds), 1)     # once per failing head SHA
+
+    def test_red_ci_with_no_free_slot_waits_for_the_next_tick(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(platforms, "available", return_value=False):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+
+    def test_red_ci_gives_up_after_max_attempts(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        start = self.patch_start()
+        ping = self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertIsNone(self.led.lease("x", 5))               # the slot is given back
+        ping.assert_called_once()
+        self.assertIn("Stuck", ping.call_args[0][0])
+
+    # ---------- a fix run's lifecycle in finalize (mahler#18) ----------
+
+    def fix_run(self, role="fix"):
+        """A live fix run on the item, like test_finalize's, with the run's
+        lease held."""
+        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-wired")
+        rid = self.led.create_run(project="x", number=5, role=role, platform="cline-free",
+                                  epoch=1, status="running")
+        self.led.claim("x", 5, f"run:{rid}", "auto", 30, platform="cline-free", run_id=rid)
+        self.log = os.path.join(self.tmp, "agent.log")
+        return {"id": rid, "project": "x", "number": 5, "role": role, "platform": "cline-free",
+                "epoch": 1, "pid": None, "worktree": os.path.join(self.tmp, "wt"),
+                "branch": "mahler/5-wired", "log_path": self.log,
+                "status_path": os.path.join(self.tmp, "exit"),
+                "started_at": iso(NOW), "stop_reason": None}
+
+    def last_event(self):
+        rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                          "AND kind='state' ORDER BY at DESC LIMIT 1")
+        return rows[0]["detail"] if rows else ""
+
+    def test_a_fix_run_gets_the_pr_branch_in_its_prompt(self):
+        run = self.fix_run()
+        with open(self.log, "w") as fh:
+            fh.write("fixed the failing import\nSTATUS: DONE done\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), \
+                mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "snapshot",
+                                  return_value={"ref": "mahler/5-wired", "sha": "z",
+                                                "ahead": 1, "stat": None}):
+            scheduler.finalize(self.ctx, run)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")     # CI re-runs on the new SHA
+        self.assertEqual(item["attempts"], 0)            # a DONE fix is not a failure
+        self.assertIsNone(self.led.lease("x", 5))        # conductor takes it back for CI
+        self.assertIn("fix pushed", self.last_event())
+
+    def test_a_preempted_fix_leaves_the_pr_alone(self):
+        run = self.fix_run()
+        run["stop_reason"] = "preempted"
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE almost\n")
+        with mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            scheduler.finalize(self.ctx, run)
+        self.assertEqual(self.led.item("x", 5)["state"], "working")   # handoff as before
+
+    def test_a_failed_fix_counts_and_retries_like_a_build(self):
+        run = self.fix_run()
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: BLOCKED need prod access\n")
+        with mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            scheduler.finalize(self.ctx, run)
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"]), ("ready", 1))
+        self.assertIn("attempt 1 failed", self.last_event())
+        ping.assert_not_called()
+
+    # ---------- pending CI times out to needs-you (mahler#18, part of #14) ----------
+
+    def test_pending_ci_within_the_timeout_just_waits(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.gh.head_sha = "abc"
+        self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+
+    def test_pending_ci_times_out_to_needs_you(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.gh.head_sha = "abc"
+        self.ship()                              # stamp "since" for abc
+        later = lambda: NOW + timedelta(minutes=90)
+        self.led.now = later
+        try:
+            ping = self.ship()
+        finally:
+            self.led.now = lambda: NOW
+        ping.assert_called_once()
+        self.assertIn("needs you", ping.call_args[0][0])
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))               # the slot is released
+        self.assertIn("90 min", self.last_event())
+
+    def test_pending_ci_timeout_restarts_on_a_new_sha(self):
+        """A push to the PR (e.g. the fix run) restarts the wait: CI starts over."""
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.gh.head_sha = "abc"
+        self.ship()                              # stamp "since" for abc
+        later = lambda: NOW + timedelta(minutes=90)
+        self.led.now = later
+        try:
+            self.gh.head_sha = "def"             # the fix pushed; CI started over
+            ping = self.ship()
+        finally:
+            self.led.now = lambda: NOW
+        ping.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
 
     # ---------- a base that moved (D19) ----------
 
