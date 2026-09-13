@@ -693,8 +693,10 @@ def _set_pin(ctx, project, n, platform):
         except GHError as e:
             ctx.say(f"{project}#{n}: platform label update failed — {e}")
         keep = f"platform:{platform}" if platform else None
-        ctx._labels[(project, n)] = [l for l in current
-                                     if not l.startswith("platform:") or l == keep]
+        updated = [l for l in current if not l.startswith("platform:") or l == keep]
+        if keep and keep not in updated:
+            updated.append(keep)
+        ctx._labels[(project, n)] = updated
     ctx.led.upsert_item(project, n, pin=platform)
 
 
