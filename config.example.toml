@@ -38,6 +38,37 @@ verify = "python3 -m unittest discover -s tests"
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
 # build = ["codex", "copilot", "agy-claude", "agy-gemini", "cline-free", "kilo"]
 
+# Work logins on this same machine (DESIGN D25). Log each CLI in once with its
+# env var set (e.g. `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login).
+# A work project spends only work platforms; nothing ever falls back to yours.
+# [accounts.work]
+# env = { CLAUDE_CONFIG_DIR = "~/.claude-work", COPILOT_HOME = "~/.copilot-work", CODEX_HOME = "~/.codex-work" }
+# # env can also carry GH_CONFIG_DIR = "~/.config/gh-work" if the work repos need a
+# # different GitHub login; set that checkout's git credential helper to match.
+# # Zero-token Claude readings for this login (else a lean probe on the work login):
+# # claude_keychain_service = "Claude Code-credentials-xxxxxxxx"
+# routing = { sort = ["claude-work"], plan = ["claude-opus-work"], build = ["copilot-work", "codex-work", "claude-opus-work", "claude-work"] }
+#
+# [platforms.claude-work]
+# from = "claude"
+# account = "work"
+# [platforms.claude-opus-work]
+# from = "claude-opus"
+# account = "work"
+# [platforms.codex-work]
+# from = "codex"
+# account = "work"
+# [platforms.copilot-work]
+# from = "copilot"
+# account = "work"
+# metered = false                   # no work gh login to read its billing from
+#
+# [projects.acme]
+# enabled = true
+# account = "work"
+# repo = "acme-corp/app"
+# path = "/Users/mike/Work/app"
+
 # [claude_peak]
 # # Claude's peak window (D22): on weekdays 5-11am Pacific, Mahler starts no new
 # # Claude runs. Running work continues, and the hard lines still apply.

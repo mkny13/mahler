@@ -119,6 +119,9 @@ DEFAULTS = {
         },
     },
     "projects": {},
+    # Logins other than this machine's own (DESIGN D25): each names the env
+    # that points the CLIs at its separate login, and its own per-role routing.
+    "accounts": {},
     # Burst before a Claude window resets (D23): in the last lead-time before a
     # window rolls over, Claude's soft/hard lines rise to these burst lines so
     # the expiring reserve turns into work instead of going unused. "soft" and
@@ -209,13 +212,72 @@ def _merge(base, over):
     return out
 
 
+def resolve_platforms(cfg):
+    """`from = "<base>"` makes a platform inherit a base platform's settings
+    (DESIGN D25). A platform on another account gets its own quota group, so
+    its run slot and its quota never merge with the base account's."""
+    plats = cfg["platforms"]
+
+    def resolve(name, seen):
+        own = plats[name]
+        base = own.get("from")
+        if not base:
+            return own
+        if base in seen or base not in plats:
+            return {**own, "enabled": False, "error": f"bad from = {base!r}"}
+        parent = resolve(base, seen | {base})
+        merged = _merge(parent, own)
+        if "quota_group" not in own and "quota_group" in merged \
+                and account_of(merged) != account_of(parent):
+            merged["quota_group"] = f"{merged['quota_group']}@{account_of(merged)}"
+        return merged
+
+    cfg["platforms"] = {n: resolve(n, {n}) for n in plats}
+    return cfg
+
+
 def load(path=None):
     path = path or CONFIG_PATH
     user = {}
     if os.path.exists(path):
         with open(path, "rb") as fh:
             user = tomllib.load(fh)
-    return _merge(DEFAULTS, user)
+    return resolve_platforms(_merge(DEFAULTS, user))
+
+
+DEFAULT_ACCOUNT = "personal"
+
+# Variables that can carry a login. A run on another account never inherits
+# them from the daemon's own environment, only from its account's `env`.
+CREDENTIAL_VARS = (
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR", "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN",
+    "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_HOST", "OPENAI_API_KEY", "CODEX_API_KEY",
+    "CODEX_HOME",
+)
+
+
+def account_of(conf):
+    """The account a platform or project policy belongs to."""
+    return conf.get("account") or DEFAULT_ACCOUNT
+
+
+def run_env(cfg, account, base=None):
+    """The environment for anything spending `account`'s logins, or None for
+    this machine's own account with no overrides (inherit as-is). Fails closed:
+    an account the config doesn't define raises rather than falling back."""
+    acct = cfg.get("accounts", {}).get(account)
+    if acct is None:
+        if account == DEFAULT_ACCOUNT:
+            return None
+        raise ValueError(f"account {account!r} is not defined under [accounts]")
+    env = dict(os.environ if base is None else base)
+    if account != DEFAULT_ACCOUNT:
+        for var in CREDENTIAL_VARS:
+            env.pop(var, None)
+    for k, v in (acct.get("env") or {}).items():
+        env[k] = os.path.expanduser(str(v))
+    return env
 
 
 def project_policy(cfg, name):

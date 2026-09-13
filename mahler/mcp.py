@@ -142,7 +142,7 @@ def serve(cfg, led):
                     content = [{"type": "text", "text": res}]
                 elif name == "add_item":
                     pol = config.project_policy(cfg, args["project"])
-                    url = GH(pol["repo"]).create_issue(args["title"], args.get("body", ""))
+                    url = GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).create_issue(args["title"], args.get("body", ""))
                     # extract issue number from url, typically https://github.com/org/repo/issues/123
                     num_str = url.split("/")[-1]
                     try:
@@ -187,7 +187,7 @@ def serve(cfg, led):
                     content = [{"type": "text", "text": "Released successfully." if ok else "Failed to release. Not held."}]
                 elif name == "handoff":
                     pol = config.project_policy(cfg, args["project"])
-                    GH(pol["repo"]).comment(args["number"], f"<!-- mahler:agent handoff -->\n{args['comment']}")
+                    GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).comment(args["number"], f"<!-- mahler:agent handoff -->\n{args['comment']}")
                     content = [{"type": "text", "text": "Handoff comment posted."}]
                 elif name == "next_id":
                     val = led.next_id(args["project"], args["name"], floor=args.get("floor", 0))

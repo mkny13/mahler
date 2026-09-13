@@ -906,6 +906,48 @@ one project; all other execution state and every other project remain local to e
   a single point of availability for this project's work, which is the safe behavior: if it is
   asleep or unreachable, the laptop leaves `mahler` alone while continuing its local projects.
 
+### D25 — Accounts: work logins on the same machine, never crossed
+
+Decided 2026-09-13 (mahler#163). The Mini is the machine that is always on, so work repos run
+there too, on separate work logins for Claude Code, Copilot and Codex. The laptop is only a way
+to reach the Mini. D24 stays available, but nothing needs it while one machine runs everything.
+The rule that matters is a licensing one. A work project must never spend a personal login, and
+a personal project must never spend a work login.
+
+- **An account is a set of logins, selected by environment.** `[accounts.<name>]` sets `env`,
+  for example `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`, `CODEX_HOME` and optionally `GH_CONFIG_DIR`.
+  Each CLI then reads a separate login from its own directory. This machine's own logins are the
+  implicit `personal` account, which needs no entry.
+- **Platforms and projects each name their account** (`account = "work"`, default `personal`).
+  `from = "<base>"` lets a work platform inherit a base platform's lines and limits, so
+  `claude-work` is `claude` on another login. A platform on another account gets its own
+  `quota_group` (`claude@work`). Its run slot (D21) and its quota readings are therefore its own.
+- **Routing is per account, and it fails closed.** A non-personal account routes only by its
+  own `[accounts.<name>.routing]`, and it gets nothing if that is missing. The router offers a
+  project only platforms on the project's own account. This holds for pins too: a pin to
+  another account's platform is refused, with a reason. `runner.launch` checks the same thing
+  again before it creates a worktree.
+- **The environment carries the boundary.** A run on another account starts from the daemon's
+  environment with every login-carrying variable removed (`CREDENTIAL_VARS`: API keys,
+  `GH_TOKEN`, the CLI home variables and so on). The account's `env` is then added. The
+  conductor's own `gh` calls for that project (sync, PRs, merges, comments) use the same
+  environment. Plain `git` fetches and pushes in a work checkout take their GitHub login from
+  that checkout's own credential config, set up once per repo, so no code path has to remember.
+  An undefined account raises an error. Mahler never falls back to the personal login.
+- **Quota is sensed per login.** Claude usage readings are recorded only onto the platforms in
+  the reading's quota group. A work login's zero-token reading comes from the credentials file
+  or keychain entry its account names. Otherwise Mahler uses the lean probe (D8), run with the
+  work environment. The Antigravity probe, and a Copilot probe with no GitHub login of the
+  account's own, would read the personal logins, so they never feed another account's
+  platforms. Work Copilot is therefore configured unmetered (backoff on a limit error), unless
+  the account has its own `gh` login.
+- **The burst and the human-use flag stay personal.** D23 raises lines from the personal Claude
+  account's reset times, and the human-use flag suppresses that burst. Neither lifts a work
+  login's lines, so work logins always keep their D8 reserve. The peak window (D22) applies to
+  every Claude login.
+- Concurrency: `concurrency.total` stays one global cap. Each login's slot is separate, so a
+  second account usually wants the total raised by one.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.

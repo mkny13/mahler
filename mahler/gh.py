@@ -36,10 +36,10 @@ class GHError(RuntimeError):
     pass
 
 
-def _gh(*args, input=None, timeout=90):
+def _gh(*args, input=None, timeout=90, env=None):
     try:
         r = subprocess.run(["gh", *args], capture_output=True, text=True,
-                           input=input, timeout=timeout)
+                           input=input, timeout=timeout, env=env)
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"gh {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
@@ -47,12 +47,12 @@ def _gh(*args, input=None, timeout=90):
     return r.stdout
 
 
-def _git(path, *args):
+def _git(path, *args, env=None):
     """Git in a project checkout, for the pushes the conductor owns (D18).
     Goes through the same credential setup as the run's own pushes."""
     try:
         r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True,
-                           timeout=300)
+                           timeout=300, env=env)
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"git {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
@@ -61,22 +61,29 @@ def _git(path, *args):
 
 
 class GH:
-    def __init__(self, repo):
+    def __init__(self, repo, env=None):
         self.repo = repo
+        self.env = env      # the project's account env (DESIGN D25); None = inherit
+
+    def _gh(self, *args, **kw):
+        return _gh(*args, env=self.env, **kw)
+
+    def _git(self, path, *args):
+        return _git(path, *args, env=self.env)
 
     def open_issues(self):
-        out = _gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
-                  "--json", "number,title,labels,body,createdAt,updatedAt,comments,url")
+        out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
+                       "--json", "number,title,labels,body,createdAt,updatedAt,comments,url")
         return json.loads(out)
 
     def issue_state(self, number):
-        out = _gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
+        out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
     def comment(self, number, body):
         if not body.startswith(AGENT_MARK):
             body = AGENT_NOTE + "\n" + body
-        _gh("issue", "comment", str(number), "-R", self.repo, "--body-file", "-", input=body)
+        self._gh("issue", "comment", str(number), "-R", self.repo, "--body-file", "-", input=body)
 
     def set_state_label(self, number, state, current_labels):
         want = STATE_LABELS.get(state)
@@ -87,7 +94,7 @@ class GH:
         if want and want not in current_labels:
             args += ["--add-label", want]
         if len(args) > 5:
-            _gh(*args)
+            self._gh(*args)
 
     def set_pin_labels(self, number, want, current_labels):
         """`platform:*` labels are the pin's store of record (mahler#20): sync()
@@ -102,88 +109,88 @@ class GH:
         if keep and keep not in current_labels:
             # --add-label fails on a label the repo doesn't have yet; --force
             # makes this idempotent (an existing label keeps its color).
-            _gh("label", "create", keep, "-R", self.repo, "--color", PIN_COLOR, "--force")
+            self._gh("label", "create", keep, "-R", self.repo, "--color", PIN_COLOR, "--force")
             args += ["--add-label", keep]
         if len(args) > 5:
-            _gh(*args)
+            self._gh(*args)
 
     def add_label(self, number, label):
-        _gh("issue", "edit", str(number), "-R", self.repo, "--add-label", label)
+        self._gh("issue", "edit", str(number), "-R", self.repo, "--add-label", label)
 
     def ensure_labels(self):
         for name, color in LABEL_COLORS.items():
-            _gh("label", "create", name, "-R", self.repo, "--color", color, "--force")
+            self._gh("label", "create", name, "-R", self.repo, "--color", color, "--force")
 
     def ensure_pass_label(self, pass_name):
         label = f"pass:{pass_name}"
-        _gh("label", "create", label, "-R", self.repo, "--color", PIN_COLOR, "--force")
+        self._gh("label", "create", label, "-R", self.repo, "--color", PIN_COLOR, "--force")
 
     def create_issue(self, title, body="", labels=()):
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]
         for l in labels:
             args += ["--label", l]
-        return _gh(*args, input=body).strip()
+        return self._gh(*args, input=body).strip()
 
     def default_branch(self):
-        return _gh("repo", "view", self.repo, "--json", "defaultBranchRef",
-                   "-q", ".defaultBranchRef.name").strip()
+        return self._gh("repo", "view", self.repo, "--json", "defaultBranchRef",
+                        "-q", ".defaultBranchRef.name").strip()
 
     # ---------- the conductor ships (DESIGN D18) ----------
 
     def issue_body(self, number):
-        return json.loads(_gh("issue", "view", str(number), "-R", self.repo,
-                              "--json", "body")).get("body") or ""
+        return json.loads(self._gh("issue", "view", str(number), "-R", self.repo,
+                                   "--json", "body")).get("body") or ""
 
     def push_branch(self, path, branch, ref):
         """Make origin's `branch` point at the saved work `ref` (D18).
 
         `ref` is an already-pushed ref (a mahler/snapshot/* branch). No-op when
         `branch` is already there. Returns the sha now at `branch`."""
-        _git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
-        sha = _git(path, "rev-parse", "FETCH_HEAD")
+        self._git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
+        sha = self._git(path, "rev-parse", "FETCH_HEAD")
         out = subprocess.run(["git", "-C", path, "ls-remote", "origin",
                               f"refs/heads/{branch}"], capture_output=True, text=True,
-                             timeout=90)
+                             timeout=90, env=self.env)
         if out.returncode == 0 and out.stdout.strip().startswith(sha):
             return sha
-        _git(path, "push", "--quiet", "--no-verify", "--force", "origin",
-             f"{sha}:refs/heads/{branch}")
+        self._git(path, "push", "--quiet", "--no-verify", "--force", "origin",
+                  f"{sha}:refs/heads/{branch}")
         return sha
 
     def pr_for_head(self, head):
         """An open PR already made from `head`, or None (idempotent PR opening)."""
-        out = _gh("pr", "list", "-R", self.repo, "--head", head, "--state", "open",
-                  "--limit", "1", "--json", "number")
+        out = self._gh("pr", "list", "-R", self.repo, "--head", head, "--state", "open",
+                       "--limit", "1", "--json", "number")
         prs = json.loads(out)
         return prs[0]["number"] if prs else None
 
     def pr_create(self, head, base, title, body):
-        out = _gh("pr", "create", "-R", self.repo, "--head", head, "--base", base,
-                  "--title", title, "--body-file", "-", input=body)
+        out = self._gh("pr", "create", "-R", self.repo, "--head", head, "--base", base,
+                       "--title", title, "--body-file", "-", input=body)
         m = re.search(r"/pull/(\d+)", out)
         if not m:
             raise GHError(f"gh pr create: no PR url in {out.strip()[:200]!r}")
         return int(m.group(1))
 
     def pr_view(self, number):
-        return json.loads(_gh("pr", "view", str(number), "-R", self.repo, "--json",
-                              "state,body,statusCheckRollup,mergeable,headRefName,"
+        return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
+                                   "state,body,statusCheckRollup,mergeable,headRefName,"
                               "headRefOid,baseRefName"))
 
     def pr_merge(self, number):
-        _gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")
+        self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")
 
     def failed_run_log(self, branch, tail=150):
         """The latest failed CI run on a branch: (run id, tail of its failing
         log) — (None, '') when no failed run is there. This is what a fix
         run's prompt diagnoses from (DESIGN D18, mahler#18)."""
-        out = _gh("run", "list", "-R", self.repo, "--branch", branch, "--status", "failure",
-                  "--limit", "1", "--json", "databaseId")
+        out = self._gh("run", "list", "-R", self.repo, "--branch", branch, "--status", "failure",
+                       "--limit", "1", "--json", "databaseId")
         runs = json.loads(out or "[]")
         if not runs:
             return None, ""
         run_id = runs[0]["databaseId"]
-        log = _gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
+        log = self._gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
         return run_id, "\n".join(log.splitlines()[-tail:])
 
     def close_issue(self, number, comment=None):
@@ -191,7 +198,7 @@ class GH:
         args = ["issue", "close", str(number), "-R", self.repo]
         if comment:
             args += ["--comment", comment]
-        _gh(*args)
+        self._gh(*args)
 
 
 def label_names(issue):

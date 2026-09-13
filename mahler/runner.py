@@ -144,6 +144,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     pol = ctx.policy(project)
     repo, base = pol["path"], pol.get("base", "main")
     pconf = ctx.cfg["platforms"][platform]
+    account = config.account_of(pconf)
+    if account != config.account_of(pol):      # the router never does this (D25)
+        raise RuntimeError(f"{platform} spends the {account} account; "
+                           f"{project} is {config.account_of(pol)}")
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     os.makedirs(run_dir, exist_ok=True)
     wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")
@@ -198,7 +202,7 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         raise RuntimeError(f"{platform} CLI not found")
 
     hooks = fence_hooks(repo, run_dir)
-    env = dict(os.environ,
+    env = dict(config.run_env(ctx.cfg, account) or os.environ,
                MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(item["number"]), MAHLER_EPOCH=str(epoch),
                MAHLER_HOME=config.STATE,
