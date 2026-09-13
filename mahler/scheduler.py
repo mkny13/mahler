@@ -248,7 +248,15 @@ def finalize(ctx, run):
                 # another agent) ships it from here: push, PR, CI, merge. A DONE
                 # build is a success, not a failed attempt — no attempt is
                 # counted, and the item leaves the ready queue into `verifying`.
-                if saved or item["branch"]:
+                if run["role"] == "fix":
+                    # A fix's DONE goes back to verifying on the same PR: the
+                    # new SHA re-triggers CI. The summary stays the build's.
+                    led.set_state(project, n, "verifying",
+                                  "fix pushed — CI re-runs on the new SHA")
+                    ctx.ping(f"Fix pushed — {project} #{n}",
+                             f"{run['platform']} ended DONE; CI re-runs on the PR",
+                             project, n, priority="low")
+                elif saved or item["branch"]:
                     led.set_state(project, n, "verifying",
                                   "build done — the conductor ships it",
                                   summary=rest or item["title"])
@@ -402,21 +410,89 @@ def _ship_item(ctx, project, item):
         return
     state = checks_state(view.get("statusCheckRollup"))
     if state == "pending" or view.get("mergeable") == "UNKNOWN":
-        ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
+        _ci_pending(ctx, project, item, pr, view)
         return
     if state == "red":
-        # fix runs are the rest of #14; until then the PR waits untouched and,
-        # holding the project's slot (D19), pauses its builds — so say so once
-        ctx.say(f"{project}#{n}: PR #{pr} — CI red (fix runs land with the rest of #14)")
-        key = f"red:{project}#{n}:{pr}"
-        if not led.get_kv(key):
-            led.set_kv(key, iso(led.now()))
-            ctx.ping(f"CI red — {project} #{n}",
-                     f"PR #{pr} failed CI; {project}'s builds wait until it's fixed or closed",
-                     project, n, priority="high", tags="warning")
+        # D18 (mahler#18): red CI starts a fix run from the PR branch, with the
+        # failing log in its prompt. The conductor's lease goes to the run.
+        led.release(project, n, holder=CONDUCTOR)
+        _red_ci(ctx, project, item, pr, view)
         return
     gh.pr_merge(pr)
     _shipped(ctx, project, n, pr, led.item(project, n), view)
+
+
+def _ci_pending(ctx, project, item, pr, view):
+    """CI still running. It is watched across ticks (the 30s loop never blocks
+    a tick), but a hung CI must not park the item silently: past
+    verify_timeout_minutes it goes to needs-you with a ping. A new head SHA
+    (e.g. a fix run's push) restarts the wait, because CI starts over."""
+    led, n = ctx.led, item["number"]
+    pol = ctx.policy(project)
+    key = f"ci:{project}#{n}:{pr}"
+    sha = view.get("headRefOid") or ""
+    seen = led.get_kv(key)
+    info = json.loads(seen) if seen else None
+    if not info or info.get("sha") != sha:
+        info = {"sha": sha, "since": iso(led.now())}
+        led.set_kv(key, json.dumps(info))
+    if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
+        ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
+        return
+    led.set_state(project, n, "needs_you",
+                  f"CI on PR #{pr} still pending after {pol['verify_timeout_minutes']} min")
+    ctx.ping(f"Mahler needs you — {project} #{n}",
+             f"CI on PR #{pr} hasn't finished in {pol['verify_timeout_minutes']} min; "
+             "the PR stays open, unmerged",
+             project, n, priority="high", tags="question")
+    led.release(project, n, holder=CONDUCTOR)
+
+
+def _red_ci(ctx, project, item, pr, view):
+    """Red CI on a verifying item: a fix run (D18's second run role) starts on
+    the PR's head branch, its prompt carrying the failing-log tail (runner
+    fetches it). Routing is the build routing (D8), and `max_attempts` caps
+    build and fix runs together — each red cycle counts as an attempt — then
+    escalation as today (_retry_or_fail's stuck branch)."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    head = view.get("headRefName") or item["branch"]
+    key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    if not led.get_kv(key):
+        led.set_kv(key, iso(led.now()))
+        ctx.ping(f"CI red — {project} #{n}",
+                 f"PR #{pr} failed CI; the conductor starts a fix run on it",
+                 project, n, priority="high", tags="warning")
+    active = led.active_runs()
+    if len(active) >= cfg["concurrency"]["total"]:
+        ctx.say(f"{project}#{n}: PR #{pr} — CI red, but every run slot is busy; "
+                "the fix waits for the next tick")
+        return
+    per_platform = {}
+    for r in active:
+        per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
+    busy = {k for k, v in per_platform.items()
+            if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
+    busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
+    size = next((l.split(":", 1)[1] for l in json.loads(item["labels"] or "[]")
+                 if l.startswith("size:")), None)
+    platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy, size=size)
+    if not platform:
+        ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
+                f"{'; '.join(reasons)}")
+        return
+    attempts = item["attempts"] + 1
+    if attempts >= pol["max_attempts"]:
+        led.set_state(project, n, "failed",
+                      f"CI still red on PR #{pr} after {attempts} attempts", attempts=attempts)
+        ctx.ping(f"Stuck — {project} #{n}",
+                 f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
+                 project, n, priority="high", tags="warning")
+        led.release(project, n, holder=CONDUCTOR)
+        return
+    led.upsert_item(project, n, branch=head)
+    if start(ctx, project, {**item, "branch": head}, "fix", platform):
+        led.upsert_item(project, n, attempts=attempts)
 
 
 def _open_pr(ctx, project, item, gh, pol):
@@ -790,6 +866,14 @@ def start(ctx, project, item, role, platform):
         try:
             ctx.gh(project).comment(n, f"▶︎ **{platform}** started work (run {run_id}) on "
                                        f"branch `{meta['branch']}`.")
+        except GHError:
+            pass
+    elif role == "fix":
+        led.set_state(project, n, "working",
+                      f"{platform} fix run {run_id} — CI red on PR #{item['pr']}")
+        try:
+            ctx.gh(project).comment(n, f"🔁 **{platform}** started a fix run (run {run_id}) on "
+                                       f"branch `{meta['branch']}` — CI was red.")
         except GHError:
             pass
     return True
