@@ -588,15 +588,18 @@ class RoutedLedger:
             timeout = int(remote.get("connect_timeout_seconds", 5))
         except (TypeError, ValueError) as exc:
             raise RemoteLedgerError("invalid remote_ledger timeout") from exc
-        if (not isinstance(host, str) or not isinstance(command, str)
-                or not host or host.startswith("-")
+        command_argv = [command] if isinstance(command, str) else command
+        if (not isinstance(host, str) or not host or host.startswith("-")
                 or not re.fullmatch(r"[A-Za-z0-9_.:@-]+", host)
-                or not re.fullmatch(r"[A-Za-z0-9_./~+-]+", command)
+                or not isinstance(command_argv, list) or not 1 <= len(command_argv) <= 8
+                or any(not isinstance(arg, str) or not arg or arg.startswith("-")
+                       or not re.fullmatch(r"[A-Za-z0-9_./~+:-]+", arg)
+                       for arg in command_argv)
                 or not 1 <= timeout <= 60):
             raise RemoteLedgerError("invalid remote_ledger host or command")
         request = {"version": 1, "operation": operation, "project": project, **args}
         argv = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
-                "-o", "ConnectionAttempts=1", host, command, "ledger-remote-op"]
+                "-o", "ConnectionAttempts=1", host, *command_argv, "ledger-remote-op"]
         try:
             proc = self._run(argv, input=json.dumps(request), capture_output=True,
                              text=True, timeout=timeout + 5)
