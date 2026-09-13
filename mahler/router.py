@@ -9,6 +9,7 @@ work is stopped at the *hard* line (see scheduler.watchdog).
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+from .config import DEFAULT_ACCOUNT, account_of
 from .ledger import parse
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
@@ -194,7 +195,9 @@ def usage_state(led, name, pconf, burst_lines=None):
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
-    is_claude = pconf.get("kind") == "claude"
+    # burst lines are computed from this machine's own Claude account (D23), so
+    # they never lift another account's lines (D25)
+    is_claude = pconf.get("kind") == "claude" and account_of(pconf) == DEFAULT_ACCOUNT
     for w in pconf.get("windows", WINDOWS):
         u = usage.get(w)
         if u is None:
@@ -233,18 +236,30 @@ def burst_build_order(cfg):
     return claude + rest
 
 
-def candidates(cfg, role, pin=None, burst_lines=None):
+def routing_for(cfg, account):
+    """The per-role routing table for `account` (DESIGN D25): this machine's own
+    account uses the top-level [routing]; another account uses only its own."""
+    if account == DEFAULT_ACCOUNT:
+        return cfg["routing"]
+    return (cfg.get("accounts", {}).get(account) or {}).get("routing") or {}
+
+
+def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
     # a fix run routes like a build (DESIGN D18): same platforms, same order
+    routing = routing_for(cfg, account)
     if pin:
         order = [pin]
-    elif burst_lines and role == "build":
+    elif burst_lines and role == "build" and account == DEFAULT_ACCOUNT:
         order = burst_build_order(cfg)
     else:
-        order = cfg["routing"].get(role) or cfg["routing"]["build"]
-    return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")]
+        order = routing.get(role) or routing.get("build") or []
+    # a project only ever spends its own account's logins, pins included (D25)
+    return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")
+            and account_of(cfg["platforms"][n]) == account]
 
 
-def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None):
+def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
+         account=DEFAULT_ACCOUNT):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -256,8 +271,11 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None):
     Claude runs are unaffected — this only gates new starts.
     """
     reasons = []
+    if pin and pin in cfg["platforms"] and account_of(cfg["platforms"][pin]) != account:
+        reasons.append(f"{pin}: pinned, but it spends the "
+                       f"{account_of(cfg['platforms'][pin])} account, not {account}")
     peak_active, peak_until = peak_state(cfg, led)
-    for name in candidates(cfg, role, pin, burst_lines):
+    for name in candidates(cfg, role, pin, burst_lines, account):
         if name in busy:
             reasons.append(f"{name}: busy")
             continue

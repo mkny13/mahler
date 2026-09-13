@@ -210,10 +210,27 @@ def claude_samples_from_event(ev):
     return out
 
 
-def oauth_usage():
+def _claude_oauth(keychain_service, credentials_file):
+    try:
+        if credentials_file:
+            with open(credentials_file, encoding="utf-8") as fh:
+                return json.load(fh).get("claudeAiOauth") or {}
+        if not keychain_service:
+            return {}
+        raw = subprocess.run(["security", "find-generic-password", "-s",
+                              keychain_service, "-w"],
+                             capture_output=True, text=True, timeout=10)
+        return json.loads(raw.stdout).get("claudeAiOauth") or {}
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return {}
+
+
+def oauth_usage(keychain_service="Claude Code-credentials", credentials_file=None):
     """Zero-token Claude reading — the same endpoint Claude Code's /usage and the
     Claude Usage menu-bar app use: GET api.anthropic.com/api/oauth/usage with
-    Claude Code's own OAuth access token from the login keychain.
+    Claude Code's own OAuth access token from the login keychain (or, for a
+    login kept in its own config dir, the keychain entry or credentials file
+    that account's config names — DESIGN D25).
 
     The token is read fresh each time, held only in memory, sent only to
     Anthropic, and never logged or written anywhere. Mahler never refreshes it
@@ -222,13 +239,7 @@ def oauth_usage():
     -> [(window, used_pct, resets_iso)] or [] if unavailable."""
     import urllib.error
     import urllib.request
-    try:
-        raw = subprocess.run(["security", "find-generic-password", "-s",
-                              "Claude Code-credentials", "-w"],
-                             capture_output=True, text=True, timeout=10)
-        oauth = json.loads(raw.stdout).get("claudeAiOauth") or {}
-    except (subprocess.SubprocessError, OSError, ValueError):
-        return []
+    oauth = _claude_oauth(keychain_service, credentials_file)
     token, expires = oauth.get("accessToken"), oauth.get("expiresAt")
     if not token or (expires and expires / 1000 < datetime.now(timezone.utc).timestamp()):
         return []
@@ -248,7 +259,7 @@ def oauth_usage():
     return out
 
 
-def probe_claude():
+def probe_claude(env=None):
     exe = claude_exe()
     if not exe:
         return []
@@ -257,7 +268,7 @@ def probe_claude():
             [exe, "-p", "ok", "--model", "claude-haiku-4-5-20251001", "--tools", "",
              "--strict-mcp-config", "--setting-sources", "", "--no-session-persistence",
              "--system-prompt", "Reply ok.", "--output-format", "stream-json", "--verbose"],
-            capture_output=True, text=True, timeout=90, cwd=HOME)
+            capture_output=True, text=True, timeout=90, cwd=HOME, env=env)
     except (subprocess.SubprocessError, OSError):
         return []
     samples = []
@@ -303,26 +314,26 @@ def _next_month_start(now):
     return datetime(year, month, 1, tzinfo=timezone.utc)
 
 
-def _gh_login():
+def _gh_login(env=None):
     try:
         r = subprocess.run(["gh", "api", "user", "--jq", ".login"],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, timeout=15, env=env)
         return r.stdout.strip() or None
     except (subprocess.SubprocessError, OSError):
         return None
 
 
-def probe_copilot(monthly_cap_credits):
+def probe_copilot(monthly_cap_credits, env=None):
     """GitHub's AI-credits billing report (mahler#38): consumption only, no
     cap in the response, so `monthly_cap_credits` (plan-fixed, config) is what
     turns it into a percentage. Needs the `user` OAuth scope on the `gh` token.
     -> [("monthly", used_pct, resets_at_iso)] or [] if unavailable."""
-    login = _gh_login()
+    login = _gh_login(env)
     if not login:
         return []
     try:
         r = subprocess.run(["gh", "api", f"/users/{login}/settings/billing/ai_credit/usage"],
-                           capture_output=True, text=True, timeout=20)
+                           capture_output=True, text=True, timeout=20, env=env)
         data = json.loads(r.stdout)
     except (subprocess.SubprocessError, OSError, ValueError):
         return []

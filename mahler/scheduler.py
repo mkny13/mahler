@@ -37,9 +37,10 @@ class Ctx:
         return config.project_policy(self.cfg, project)
 
     def gh(self, project):
-        repo = self.policy(project)["repo"]
+        pol = self.policy(project)
+        repo = pol["repo"]
         if repo not in self._gh:
-            self._gh[repo] = GH(repo)
+            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.account_of(pol)))
         return self._gh[repo]
 
     def say(self, msg):
@@ -270,24 +271,30 @@ def watchdog(ctx):
             stop(ctx, run, reason)
 
 
-def _record_claude_usage(ctx, samples, backoff_until=None, check_human=False):
-    """Record usage across all configured platforms that share the Claude account.
+def quota_peers(cfg, platform):
+    """Platforms that draw on the same login and quota as `platform` (D21, D25)."""
+    group = cfg["platforms"].get(platform, {}).get("quota_group", platform)
+    return [p for p, pc in cfg["platforms"].items() if pc.get("quota_group", p) == group]
+
+
+def _record_claude_usage(ctx, samples, backoff_until=None, check_human=False,
+                         platform="claude"):
+    """Record usage across the platforms that share `platform`'s Claude login.
 
     When check_human is True (the periodic probe path, not a run's own log), a
     5h usage increase with no live Claude run is treated as human use of the
     account elsewhere (Claude app on phone, the web UI, another session) and
-    sets a kv flag that suppresses the D23 burst for half an hour (D23).
+    sets a kv flag that suppresses the D23 burst for half an hour (D23). Only
+    this machine's own Claude account bursts, so only it sets the flag (D25).
     """
-    claude_platforms = [pname for pname, pconf in ctx.cfg["platforms"].items()
-                        if pconf.get("kind") == "claude"]
-    for pname in claude_platforms:
+    peers = quota_peers(ctx.cfg, platform)
+    check_human = check_human and \
+        config.account_of(ctx.cfg["platforms"].get(platform, {})) == config.DEFAULT_ACCOUNT
+    for pname in peers:
         prev_5h = ctx.led.usage(pname).get("5h", {}).get("used_pct")
         for w, pct, resets in samples:
             if check_human and w == "5h" and prev_5h is not None and pct > prev_5h:
-                active_claude = any(
-                    ctx.cfg["platforms"].get(r["platform"], {}).get("kind") == "claude"
-                    for r in ctx.led.active_runs())
-                if not active_claude:
+                if not any(r["platform"] in peers for r in ctx.led.active_runs()):
                     ctx.led.set_kv("human:claude", iso(ctx.led.now()))
             ctx.led.record_usage(pname, w, pct, resets)
         if backoff_until:
@@ -314,7 +321,7 @@ def _health(ctx, run, pol, now):
         return "hung"
     if pconf["kind"] == "claude":
         log = platforms.read_log(run["log_path"], "claude")
-        _record_claude_usage(ctx, log["usage"])
+        _record_claude_usage(ctx, log["usage"], platform=run["platform"])
         if log["overage"]:
             ctx.say(f"#{run['number']}: {run['platform']} started drawing paid extra usage — stopping")
             kv_key = f"overage:{run['id']}"
@@ -362,7 +369,7 @@ def finalize(ctx, run):
         if log["quota_hit"]:
             pconf = ctx.cfg["platforms"][run["platform"]]
             until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
-        _record_claude_usage(ctx, log["usage"], backoff_until=until)
+        _record_claude_usage(ctx, log["usage"], backoff_until=until, platform=run["platform"])
     else:
         for w, pct, resets in log["usage"]:
             led.record_usage(run["platform"], w, pct, resets)
@@ -873,7 +880,8 @@ def _red_ci(ctx, project, item, pr, view):
     if size == "l":
         size = "m"
     platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy,
-                                    size=size, burst_lines=ctx.burst_lines)
+                                    size=size, burst_lines=ctx.burst_lines,
+                                    account=config.account_of(ctx.policy(project)))
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -1166,29 +1174,65 @@ def _usage_needs_refresh(led, name, pconf):
     return False
 
 
+def _claude_oauth_source(cfg, pconf):
+    """Where a Claude platform's login keeps its OAuth token (D25): this
+    machine's own login is Claude Code's default keychain entry; another
+    account's is whatever its config names, or the credentials file in its
+    CLAUDE_CONFIG_DIR. None when there's nothing to read (use the probe)."""
+    account = config.account_of(pconf)
+    if account == config.DEFAULT_ACCOUNT:
+        return {"keychain_service": "Claude Code-credentials"}
+    acct = cfg.get("accounts", {}).get(account) or {}
+    creds = acct.get("claude_credentials_file")
+    if not creds and (acct.get("env") or {}).get("CLAUDE_CONFIG_DIR"):
+        guess = os.path.join(os.path.expanduser(acct["env"]["CLAUDE_CONFIG_DIR"]),
+                             ".credentials.json")
+        creds = guess if os.path.exists(guess) else None
+    if creds:
+        return {"keychain_service": None, "credentials_file": os.path.expanduser(creds)}
+    if acct.get("claude_keychain_service"):
+        return {"keychain_service": acct["claude_keychain_service"]}
+    return None
+
+
+def _has_own_github_login(cfg, account):
+    env = (cfg.get("accounts", {}).get(account) or {}).get("env") or {}
+    return any(k in env for k in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"))
+
+
 def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     wanted = set()
     for p in projects:
         if led.items(p["name"], ["inbox", "ready"]):
-            wanted |= set(cfg["routing"]["sort"]) | set(cfg["routing"]["build"]) | set(cfg["routing"].get("plan", []))
+            routing = router.routing_for(cfg, config.account_of(p))
+            wanted |= {n for role in ("sort", "build", "plan") for n in routing.get(role, [])}
     wanted |= {r["platform"] for r in led.active_runs()}
-    agy = [n for n in wanted if cfg["platforms"].get(n, {}).get("kind") == "agy"
+    wanted = {n for n in wanted if n in cfg["platforms"]}
+    # probe_agy and a copilot probe without an account's own GitHub login read
+    # this machine's own logins, so they only ever feed its own platforms (D25)
+    own = {n for n, pc in cfg["platforms"].items()
+           if config.account_of(pc) == config.DEFAULT_ACCOUNT}
+    agy = [n for n in wanted & own if cfg["platforms"][n].get("kind") == "agy"
            and router.usage_state(led, n, cfg["platforms"][n])[0] == "stale"]
     if agy:
         pools = platforms.probe_agy()
-        for name, pconf in cfg["platforms"].items():
-            for w, pct, resets in pools.get(pconf.get("pool"), []):
+        for name in own:
+            for w, pct, resets in pools.get(cfg["platforms"][name].get("pool"), []):
                 led.record_usage(name, w, pct, resets)
     for name in wanted:
-        pconf = cfg["platforms"].get(name, {})
+        pconf = cfg["platforms"][name]
+        account = config.account_of(pconf)
         if not _usage_needs_refresh(led, name, pconf):
             continue
         if pconf.get("kind") == "copilot":
+            if name not in own and not _has_own_github_login(cfg, account):
+                continue
             last = parse(led.get_kv(f"probe:{name}"))
             if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
                 continue
-            for w, pct, resets in platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500)):
+            for w, pct, resets in platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500),
+                                                          env=config.run_env(cfg, account)):
                 led.record_usage(name, w, pct, resets)
             if led.usage(name).get("monthly"):
                 led.set_kv(f"probe:{name}", iso(led.now()))
@@ -1200,9 +1244,10 @@ def refresh_usage(ctx, projects):
         # is a headroom rule, not a quota rule, so a stale reading is still "over
         # the line" and Claude simply won't start.
         peak_active, _ = router.peak_state(cfg, led)
-        free = platforms.oauth_usage()                 # zero tokens
+        source = _claude_oauth_source(cfg, pconf)
+        free = platforms.oauth_usage(**source) if source else []   # zero tokens
         if free:
-            _record_claude_usage(ctx, free, check_human=True)
+            _record_claude_usage(ctx, free, check_human=True, platform=name)
             led.set_kv(f"probe:oauth:{name}", iso(led.now()))
             continue
         if peak_active:
@@ -1210,10 +1255,10 @@ def refresh_usage(ctx, projects):
         last = parse(led.get_kv(f"probe:{name}"))
         if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
             continue
-        probed = platforms.probe_claude()
+        probed = platforms.probe_claude(env=config.run_env(cfg, account))
         if probed:
-            _record_claude_usage(ctx, probed, check_human=True)
-            for cname in [cn for cn, cp in cfg["platforms"].items() if cp.get("kind") == "claude"]:
+            _record_claude_usage(ctx, probed, check_human=True, platform=name)
+            for cname in quota_peers(cfg, name):
                 led.set_kv(f"probe:{cname}", iso(led.now()))
 
 
@@ -1240,7 +1285,7 @@ def _candidates(ctx, projects):
     return work
 
 
-def _headroom(ctx, role, per_platform, busy, burst_lines=None):
+def _headroom(ctx, role, per_platform, busy, burst_lines=None, account=config.DEFAULT_ACCOUNT):
     """Routing platforms for `role` that could take a new run right now:
     enabled, under per-platform max_runs, reachable and under its soft lines.
     Burst lines (D23) raise Claude's soft lines when a window is about to reset.
@@ -1251,7 +1296,7 @@ def _headroom(ctx, role, per_platform, busy, burst_lines=None):
     cfg, led = ctx.cfg, ctx.led
     peak_active, _ = router.peak_state(cfg, led)
     free = []
-    for name in router.candidates(cfg, role, burst_lines=burst_lines):
+    for name in router.candidates(cfg, role, burst_lines=burst_lines, account=account):
         pc = cfg["platforms"][name]
         if name in busy or per_platform.get(name, 0) >= pc.get("max_runs", 1):
             continue
@@ -1345,7 +1390,10 @@ def schedule(ctx, projects):
     burst_lines = _compute_burst(ctx, projects)
 
     work = _candidates(ctx, projects)
-    sorts_wait = len(_headroom(ctx, "sort", per_platform, busy, burst_lines)) <= 1
+    # each account has its own builders, so "a sort must not eat the last
+    # builder" is judged per account (D25)
+    sorts_wait = {acct: len(_headroom(ctx, "sort", per_platform, busy, burst_lines, acct)) <= 1
+                  for acct in {config.account_of(p) for p in projects}}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
     def key(c):
@@ -1354,7 +1402,7 @@ def schedule(ctx, projects):
                     if p["name"] in priority_projects
                     else len(priority_projects))
         return (it["priority"],
-                1 if (sorts_wait and role == "sort") else 0,
+                1 if (sorts_wait[config.account_of(p)] and role == "sort") else 0,
                 proj_idx,
                 parse(it["state_changed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
                 p["name"], it["number"])
@@ -1400,7 +1448,8 @@ def schedule(ctx, projects):
                 routing_role = role
             pin = it["pin"] if role in ("build", "fix", "sort") else None
             platform, reasons = router.pick(cfg, led, routing_role, pin,
-                                            busy, size=size, burst_lines=burst_lines)
+                                            busy, size=size, burst_lines=burst_lines,
+                                            account=config.account_of(p))
             if not platform:
                 if routing_role == "plan":
                     ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")

@@ -123,12 +123,13 @@ def cmd_status(a, cfg, led):
     peak = router.peak_status_line(cfg, led)
     if peak:
         print(f"  {peak}")
+    width = max([11] + [len(n) for n in cfg["platforms"]])
     for name, pconf in cfg["platforms"].items():
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
         chips = router.window_countdowns(led, name, pconf)
         tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
-        print(f"  {name:<11} {state:<6} {detail}{tags}")
+        print(f"  {name:<{width}} {state:<6} {detail}{tags}")
     print("\nRecent")
     for e in led.q("SELECT * FROM events ORDER BY id DESC LIMIT 10")[::-1]:
         when = parse(e["at"]).astimezone().strftime("%m-%d %H:%M")
@@ -319,16 +320,27 @@ def cmd_usage(a, cfg, led):
     if a.probe:
         from . import platforms
         pools = platforms.probe_agy()
-        claude_samples = None
+        done = set()
         for name, pconf in cfg["platforms"].items():
-            if pconf["kind"] == "agy":
+            account = config.account_of(pconf)
+            if pconf["kind"] == "agy" and account == config.DEFAULT_ACCOUNT:
                 for w, pct, resets in pools.get(pconf.get("pool"), []):
                     led.record_usage(name, w, pct, resets)
-            elif pconf["kind"] == "claude":
-                if claude_samples is None:
-                    claude_samples = platforms.oauth_usage() or platforms.probe_claude()
-                for w, pct, resets in claude_samples:
-                    led.record_usage(name, w, pct, resets)
+            elif pconf["kind"] == "claude" and name not in done:
+                # one reading per Claude login, recorded only on its own platforms (D25)
+                peers = scheduler.quota_peers(cfg, name)
+                done |= set(peers)
+                try:
+                    env = config.run_env(cfg, account)
+                except ValueError as e:
+                    print(f"  {name}: {e}")
+                    continue
+                source = scheduler._claude_oauth_source(cfg, pconf)
+                samples = ((platforms.oauth_usage(**source) if source else [])
+                           or platforms.probe_claude(env=env))
+                for peer in peers:
+                    for w, pct, resets in samples:
+                        led.record_usage(peer, w, pct, resets)
     burst_lines = router.burst_status(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:
@@ -336,12 +348,13 @@ def cmd_usage(a, cfg, led):
     peak = router.peak_status_line(cfg, led)
     if peak:
         print(f"  {peak}")
+    width = max([11] + [len(n) for n in cfg["platforms"]])
     for name, pconf in cfg["platforms"].items():
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
         chips = router.window_countdowns(led, name, pconf)
         tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
-        print(f"  {name:<11} {state:<6} {detail}{tags}")
+        print(f"  {name:<{width}} {state:<6} {detail}{tags}")
     return 0
 
 
@@ -452,7 +465,7 @@ def cmd_add(a, cfg, led):
     if not pol.get("repo"):
         print(f"unknown project {a.project!r}")
         return 1
-    print(GH(pol["repo"]).create_issue(a.title, a.body or ""))
+    print(GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).create_issue(a.title, a.body or ""))
     return 0
 
 
@@ -464,7 +477,7 @@ def cmd_notify(a, cfg, led):
 
 def cmd_labels(a, cfg, led):
     pol = config.project_policy(cfg, a.project)
-    GH(pol["repo"]).ensure_labels()
+    GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).ensure_labels()
     print(f"labels ensured on {pol['repo']}")
     return 0
 
