@@ -17,6 +17,7 @@ class TestHooks(unittest.TestCase):
         os.makedirs(self.repo_dir)
         self.db_path = os.path.join(self.tmp.name, "mahler.db")
         self.led = Ledger(self.db_path)
+        self.addCleanup(self.led.close)
         self.cfg = {
             "defaults": config.DEFAULTS["defaults"],
             "platforms": config.DEFAULTS["platforms"],
@@ -135,6 +136,7 @@ class TestSessionIdentity(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.led = Ledger(os.path.join(self.tmp.name, "mahler.db"))
+        self.addCleanup(self.led.close)
         self.cfg = {"defaults": config.DEFAULTS["defaults"], "platforms": {},
                     "projects": {"testproj": {"enabled": True}}}
 
@@ -190,6 +192,8 @@ class TestSessionIdentity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as repo_dir:
             self.cfg["projects"]["testproj"]["path"] = repo_dir
             cli.cmd_hooks(Args(), self.cfg, self.led)
-            script = open(os.path.join(repo_dir, ".claude", "hooks", "session_start.py")).read()
+            script_path = os.path.join(repo_dir, ".claude", "hooks", "session_start.py")
+            with open(script_path) as fh:
+                script = fh.read()
             self.assertIn("CLAUDE_CODE_SESSION_ID", script)
             self.assertIn("Another interactive session", script)

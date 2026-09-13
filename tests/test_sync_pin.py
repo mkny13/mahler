@@ -72,6 +72,7 @@ class PinTests(unittest.TestCase):
         self.gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:inbox"],
                               "comments": []}})
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
         self.sync()                     # the item exists, nothing pinned yet
 
@@ -228,6 +229,7 @@ class PlannedChildTests(unittest.TestCase):
         self.cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y"}
         self.cfg["defaults"]["settle_minutes"] = 0
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
 
     def sync(self, issues):

@@ -75,6 +75,7 @@ class FormatTests(unittest.TestCase):
 class GatingTests(unittest.TestCase):
     def setUp(self):
         self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
         self.nine = datetime(2026, 9, 12, 9, 0)          # local wall time
 
     def test_not_due_before_the_hour(self):

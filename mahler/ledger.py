@@ -161,6 +161,23 @@ class Ledger:
     def now(self):
         return self.clock()
 
+    def close(self):
+        """Close the DB handle. Idempotent (sqlite3 tolerates re-close).
+        Call from a shutdown path only — never mid-tick: Ledger is the
+        lease authority (DESIGN D6)."""
+        con = getattr(self, "con", None)
+        if con is not None:
+            con.close()
+
+    def __del__(self):
+        # Safety net: the daemon/CLI close explicitly, but tests (and any
+        # caller that drops a Ledger) must never leak the connection —
+        # issue #68's ResourceWarning must stay quiet.
+        try:
+            self.close()
+        except Exception:
+            pass
+
     # ---------- plumbing ----------
 
     def _tx(self):
@@ -566,6 +583,9 @@ class RoutedLedger:
         self.cfg = cfg
         self._run = run
         self._errors = {}
+
+    def close(self):
+        self.local.close()
 
     def __getattr__(self, name):
         return getattr(self.local, name)

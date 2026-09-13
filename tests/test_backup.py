@@ -46,9 +46,13 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(res["path"]))
         self.assertEqual(res["entries"], 1)
         self.assertEqual(stat.S_IMODE(os.stat(res["path"]).st_mode), 0o600)
-        argv = open(os.path.join(self.tmp.name, "argv.seen")).read()
+        argv = os.path.join(self.tmp.name, "argv.seen")
+        env = os.path.join(self.tmp.name, "env.seen")
+        with open(argv) as fh:
+            argv = fh.read()
         self.assertNotIn("s3cret", argv)
-        seen = open(os.path.join(self.tmp.name, "env.seen")).read()
+        with open(env) as fh:
+            seen = fh.read()
         self.assertIn("PGPASSWORD=s3cret", seen)
         self.assertIn("PGSSLMODE=require", seen)
 

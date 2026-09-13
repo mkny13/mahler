@@ -55,6 +55,7 @@ class SetupFailureTests(unittest.TestCase):
         with open(self.setup_path, "w") as fh:
             fh.write("npm ERR! missing package.json\n")
         self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
         self.led.upsert_item("p", 8, title="surface setup failures")
         self.run_id = self.led.create_run(
             project="p", number=8, role="build", platform="test", epoch=1,

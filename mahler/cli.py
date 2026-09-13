@@ -144,7 +144,11 @@ def cmd_serve(a, cfg, led):
     port = a.port or cfg.get("serve", {}).get("port", 8787)
     # request threads must be able to use this connection, so re-open the
     # same database thread-safe; serve serialises access with a lock
-    return serve.serve(cfg, RoutedLedger(Ledger(led.path, thread_safe=True), cfg), host, port)
+    served = RoutedLedger(Ledger(led.path, thread_safe=True), cfg)
+    try:
+        return serve.serve(cfg, served, host, port)
+    finally:
+        served.close()
 
 
 def cmd_hooks(a, cfg, led):
@@ -676,3 +680,5 @@ def main(argv=None):
     except GHError as e:
         print(f"mahler: {e}", file=sys.stderr)
         return 1
+    finally:
+        led.close()
