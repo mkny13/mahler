@@ -106,8 +106,13 @@ def cmd_status(a, cfg, led):
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
               f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}")
     print("\nQuota")
+    burst_lines = router.burst_status(cfg, led)
+    burst_kind = router.burst_kind(burst_lines) if burst_lines else None
+    if burst_kind:
+        print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")
     for name, pconf in cfg["platforms"].items():
-        state, detail = router.usage_state(led, name, pconf)
+        claude_lines = burst_lines if pconf.get("kind") == "claude" else None
+        state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
         chips = router.window_countdowns(led, name, pconf)
         tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
         print(f"  {name:<11} {state:<6} {detail}{tags}")
@@ -303,11 +308,16 @@ def cmd_usage(a, cfg, led):
                     claude_samples = platforms.oauth_usage() or platforms.probe_claude()
                 for w, pct, resets in claude_samples:
                     led.record_usage(name, w, pct, resets)
+    burst_lines = router.burst_status(cfg, led)
+    burst_kind = router.burst_kind(burst_lines) if burst_lines else None
+    if burst_kind:
+        print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")
     for name, pconf in cfg["platforms"].items():
-        state, detail = router.usage_state(led, name, pconf)
+        claude_lines = burst_lines if pconf.get("kind") == "claude" else None
+        state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
         chips = router.window_countdowns(led, name, pconf)
         tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
-        print(f"{name:<11} {state:<6} {detail}{tags}")
+        print(f"  {name:<11} {state:<6} {detail}{tags}")
     return 0
 
 

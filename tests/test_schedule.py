@@ -7,11 +7,12 @@ on which agent CLIs are installed on the machine.
 """
 
 import copy
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, scheduler
+from mahler import config, router, scheduler
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -41,8 +42,10 @@ def mk_ctx(projects, **kw):
 
 
 def seed(led, **usage):
-    """(5h, weekly) percentages per platform, sampled now, resetting later."""
-    later = iso(NOW + timedelta(hours=3))
+    """(5h, weekly) percentages per platform, sampled now, resetting later.
+    Reset is 6h out: outside both burst lead windows (weekly_lead 5h,
+    session_lead 60m) so the default test scenario is not in a burst."""
+    later = iso(NOW + timedelta(hours=6))
     for name, (five, weekly) in usage.items():
         led.record_usage(name, "5h", five, later)
         led.record_usage(name, "weekly", weekly, later)
@@ -59,6 +62,88 @@ def plan(ctx, led):
     with mock.patch.object(scheduler.platforms, "available", return_value=True):
         scheduler.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
     return [line for line in ctx.lines if ": would " in line]
+
+
+def seed_burst(led, claude_pct=(85, 85), free_pct=(10, 10)):
+    """Seed usage so a weekly burst window is active for claude (D23).
+    Resets: 5h in 30min, weekly in 2h — both within burst leads.
+    Free tiers reset 6h out (no burst for them)."""
+    five_reset = iso(NOW + timedelta(minutes=30))
+    weekly_reset = iso(NOW + timedelta(hours=2))
+    for name in ("claude", "claude-opus"):
+        led.record_usage(name, "5h", claude_pct[0], five_reset)
+        led.record_usage(name, "weekly", claude_pct[1], weekly_reset)
+    later6 = iso(NOW + timedelta(hours=6))
+    for name in ("agy-claude", "agy-gemini"):
+        led.record_usage(name, "5h", free_pct[0], later6)
+        led.record_usage(name, "weekly", free_pct[1], later6)
+
+
+class BurstScheduleTests(unittest.TestCase):
+    """D23: burst before a Claude window resets — use the expiring reserve."""
+
+    def test_burst_picks_claude_for_build(self):
+        """During a burst, Claude builds first — its quota is expiring."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed_burst(led)  # claude 85%: hard normally, ok under burst soft 90
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on claude"])
+        self.assertTrue(any("burst" in l for l in ctx.lines))
+
+    def test_no_burst_picks_free_tier_first(self):
+        """Outside a burst, free tiers build before Claude (D8 reserve)."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed(led, **{"claude": (85, 85), "agy-claude": (10, 10)})
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
+        self.assertFalse(any("burst" in l for l in ctx.lines))
+
+    def test_burst_suppressed_by_human_claude_flag(self):
+        """5h usage rose while no Claude run was live → defer burst."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed_burst(led)
+        led.set_kv("human:claude", iso(NOW))  # recent human usage signal
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
+        self.assertTrue(any("deferring" in l for l in ctx.lines))
+
+    def test_burst_suppressed_by_transcript_activity(self):
+        """Recent Claude Code transcript activity suppresses the burst."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed_burst(led)
+        with mock.patch.object(scheduler.presence, "human_claude_active", return_value=True):
+            item(led, "a", 1, age_minutes=10)
+            lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+
+    def test_burst_lets_claude_continue_past_normal_hard_line(self):
+        """A running Claude run at 85% (normally hard) is not stopped mid-burst."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed_burst(led)
+        scheduler._compute_burst(ctx, list(config.enabled_projects(ctx.cfg)))
+        self.assertIsNotNone(ctx.burst_lines)  # burst detected and not suppressed
+        pconf = config.DEFAULTS["platforms"]["claude"]
+        # 85% is normally hard (>= 70)
+        self.assertEqual(router.usage_state(led, "claude", pconf)[0], "hard")
+        # 85% with burst lines (hard 97) → ok, run can continue
+        self.assertEqual(router.usage_state(led, "claude", pconf,
+                                            burst_lines=ctx.burst_lines)[0], "ok")
+
+    def test_burst_pick_skips_exhausted_claude(self):
+        """If Claude is already at 98% (hard even under burst), fall to free tiers."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed_burst(led, claude_pct=(98, 98))
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
+
+    def test_burst_disabled_turns_off_burst(self):
+        """enabled = false → no burst, no burst note."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        ctx.cfg["burst"]["enabled"] = False
+        seed_burst(led)
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
+        self.assertFalse(any("burst" in l for l in ctx.lines))
 
 
 class FairnessTests(unittest.TestCase):

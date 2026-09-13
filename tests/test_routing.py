@@ -17,7 +17,8 @@ NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
 def led_with(**usage):
     led = Ledger(":memory:", clock=lambda: NOW)
-    later = iso(NOW + timedelta(hours=3))
+    # reset 6h out: outside both burst lead windows (weekly_lead 5h, session_lead 60m)
+    later = iso(NOW + timedelta(hours=6))
     for name, (five, weekly) in usage.items():
         led.record_usage(name, "5h", five, later)
         led.record_usage(name, "weekly", weekly, later)
@@ -165,6 +166,149 @@ class RouterTests(unittest.TestCase):
     def test_kilo_defaults_to_a_free_model_route(self):
         # mahler#29: without an explicit :free route, every kilo run 402s on credits.
         self.assertTrue(self.cfg["platforms"]["kilo"]["model"].endswith("/free"))
+
+
+class BurstTests(unittest.TestCase):
+    cfg = config.DEFAULTS
+
+    def _claude_usage(self, led, five_pct, weekly_pct, five_reset, weekly_reset):
+        """Seed claude platform usage with given reset times (absolute datetimes)."""
+        led.record_usage("claude", "5h", five_pct, iso(five_reset))
+        led.record_usage("claude", "weekly", weekly_pct, iso(weekly_reset))
+        # claude-opus mirrors the same account
+        led.record_usage("claude-opus", "5h", five_pct, iso(five_reset))
+        led.record_usage("claude-opus", "weekly", weekly_pct, iso(weekly_reset))
+        return led
+
+    def _led(self):
+        return Ledger(":memory:", clock=lambda: NOW)
+
+    def test_no_burst_when_resets_are_far_out(self):
+        led = self._claude_usage(self._led(), 81, 81,
+                                 NOW + timedelta(hours=4),
+                                 NOW + timedelta(days=5))  # 4h > 1h session lead, 5d > 5h weekly
+        self.assertIsNone(router.burst_status(self.cfg, led))
+
+    def test_weekly_burst_raises_both_windows(self):
+        # weekly reset in 2h (<= 5h lead), 5h reset in 30m (<= 1h session lead)
+        led = self._claude_usage(self._led(), 81, 81,
+                                 NOW + timedelta(minutes=30),
+                                 NOW + timedelta(hours=2))
+        lines = router.burst_status(self.cfg, led)
+        self.assertIsNotNone(lines)
+        self.assertEqual(lines["5h"], (90, 97))
+        self.assertEqual(lines["weekly"], (90, 97))
+        self.assertEqual(router.burst_kind(lines), "weekly")
+
+    def test_session_burst_raises_only_5h(self):
+        # 5h reset in 30m (<= 1h session lead), weekly reset in 8h (> 5h lead)
+        led = self._claude_usage(self._led(), 81, 81,
+                                 NOW + timedelta(minutes=30),
+                                 NOW + timedelta(hours=8))
+        lines = router.burst_status(self.cfg, led)
+        self.assertIsNotNone(lines)
+        self.assertIn("5h", lines)
+        self.assertNotIn("weekly", lines)
+        self.assertEqual(router.burst_kind(lines), "session")
+
+    def test_burst_disabled_in_config(self):
+        cfg = copy.deepcopy(self.cfg)
+        cfg["burst"]["enabled"] = False
+        led = self._claude_usage(self._led(), 81, 81,
+                                 NOW + timedelta(minutes=30),
+                                 NOW + timedelta(hours=2))
+        self.assertIsNone(router.burst_status(cfg, led))
+
+    def test_burst_needs_fresh_samples(self):
+        # sampled_at 20min ago → stale → no burst even though resets are close
+        led = self._led()
+        old = iso(NOW - timedelta(minutes=20))
+        led.record_usage("claude", "5h", 81, iso(NOW + timedelta(minutes=30)), sampled_at=old)
+        led.record_usage("claude", "weekly", 81, iso(NOW + timedelta(hours=2)), sampled_at=old)
+        self.assertIsNone(router.burst_status(self.cfg, led))
+
+    def test_burst_needs_known_reset_time(self):
+        led = self._led()
+        led.record_usage("claude", "5h", 81, None)  # no reset time
+        led.record_usage("claude", "weekly", 81, None)
+        self.assertIsNone(router.burst_status(self.cfg, led))
+
+    def test_burst_lines_only_for_claude_kind(self):
+        # At 85%, normal claude lines (soft 60, hard 70) → hard. With burst
+        # lines (soft 90, hard 97) → ok.
+        led = self._led()
+        reset = iso(NOW + timedelta(minutes=30))
+        for name in ("claude", "claude-opus"):
+            led.record_usage(name, "5h", 85.0, reset)
+            led.record_usage(name, "weekly", 85.0, reset)
+        pconf = self.cfg["platforms"]["claude"]
+        # without burst
+        self.assertEqual(router.usage_state(led, "claude", pconf)[0], "hard")
+        # with burst
+        lines = {"5h": (90, 97), "weekly": (90, 97)}
+        self.assertEqual(router.usage_state(led, "claude", pconf, burst_lines=lines)[0], "ok")
+
+    def test_burst_does_not_affect_non_claude_platforms(self):
+        # agy-claude soft=85, hard=90; 90% → hard. burst_lines must not change it.
+        led = self._led()
+        reset = iso(NOW + timedelta(minutes=30))
+        led.record_usage("agy-claude", "5h", 90.0, reset)
+        led.record_usage("agy-claude", "weekly", 90.0, reset)
+        pconf = self.cfg["platforms"]["agy-claude"]
+        lines = {"5h": (90, 97), "weekly": (90, 97)}
+        self.assertEqual(router.usage_state(led, "agy-claude", pconf,
+                                            burst_lines=lines)[0], "hard")
+
+    def test_burst_hard_line_still_below_100(self):
+        # 98% with burst hard 97 → hard (never into paid overage)
+        led = self._led()
+        reset = iso(NOW + timedelta(minutes=30))
+        for name in ("claude", "claude-opus"):
+            led.record_usage(name, "5h", 98.0, reset)
+            led.record_usage(name, "weekly", 98.0, reset)
+        lines = {"5h": (90, 97), "weekly": (90, 97)}
+        self.assertEqual(router.usage_state(led, "claude",
+                         self.cfg["platforms"]["claude"], burst_lines=lines)[0], "hard")
+
+    def test_burst_build_order_moves_claude_first(self):
+        self.assertEqual(router.burst_build_order(self.cfg),
+                         ["claude-opus", "claude", "agy-claude", "agy-gemini",
+                          "cline-free", "copilot", "kilo"])
+
+    def test_pick_without_burst_prefers_free_tier(self):
+        led = led_with(**{"claude": (85, 85), "agy-claude": (10, 10), "agy-gemini": (10, 10)})
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "agy-claude")
+
+    def test_pick_with_burst_prefers_claude(self):
+        # Claude at 85%: hard normally, ok under burst lines (soft 90).
+        led = self._led()
+        reset = iso(NOW + timedelta(minutes=30))
+        for name in ("claude", "claude-opus"):
+            led.record_usage(name, "5h", 85.0, reset)
+            led.record_usage(name, "weekly", 85.0, reset)
+        later6 = iso(NOW + timedelta(hours=6))
+        for name in ("agy-claude", "agy-gemini"):
+            led.record_usage(name, "5h", 10.0, later6)
+            led.record_usage(name, "weekly", 10.0, later6)
+        burst = {"5h": (90, 97), "weekly": (90, 97)}
+        # burst put claude-opus first, but min_size:l skips it for size:m; then claude
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m",
+                                     burst_lines=burst)[0], "claude")
+
+    def test_burst_pick_skips_exhausted_claude(self):
+        # Claude at 98% (hard even under burst), so falls through to free tiers.
+        led = self._led()
+        reset = iso(NOW + timedelta(minutes=30))
+        for name in ("claude", "claude-opus"):
+            led.record_usage(name, "5h", 98.0, reset)
+            led.record_usage(name, "weekly", 98.0, reset)
+        later6 = iso(NOW + timedelta(hours=6))
+        for name in ("agy-claude", "agy-gemini"):
+            led.record_usage(name, "5h", 10.0, later6)
+            led.record_usage(name, "weekly", 10.0, later6)
+        burst = {"5h": (90, 97), "weekly": (90, 97)}
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m",
+                                     burst_lines=burst)[0], "agy-claude")
 
 
 class ParseTests(unittest.TestCase):

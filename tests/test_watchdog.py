@@ -103,6 +103,93 @@ class HoldTests(unittest.TestCase):
                                             self.cfg["platforms"]["cline-free"])[0], "ok")
 
 
+class HumanClaudeTests(unittest.TestCase):
+    cfg = config.DEFAULTS
+
+    def _led_ctx(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        return scheduler.Ctx(self.cfg, led, dry_run=True), led
+
+    def _preseed(self, led, pct):
+        reset = iso(NOW + timedelta(minutes=30))
+        for name in ("claude", "claude-opus"):
+            led.record_usage(name, "5h", pct, reset)
+            led.record_usage(name, "weekly", pct, reset)
+
+    def test_5h_usage_rise_with_no_live_run_sets_flag(self):
+        """A 5h usage increase spotted by the probe, with no Claude run live,
+        is treated as human use of the account elsewhere (D23 suppression)."""
+        ctx, led = self._led_ctx()
+        self._preseed(led, 30.0)
+        reset = iso(NOW + timedelta(minutes=30))
+        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+                                       check_human=True)
+        self.assertIsNotNone(led.get_kv("human:claude"))
+
+    def test_5h_usage_rise_with_live_claude_run_does_not_set_flag(self):
+        """The rise is from Mahler's own run, not a human."""
+        ctx, led = self._led_ctx()
+        self._preseed(led, 30.0)
+        led.create_run(project="x", number=1, role="build", platform="claude", epoch=1)
+        reset = iso(NOW + timedelta(minutes=30))
+        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+                                       check_human=True)
+        self.assertIsNone(led.get_kv("human:claude"))
+
+    def test_5h_usage_rise_with_live_other_run_does_not_set_flag(self):
+        """A free-tier run doesn't explain a 5h rise on the Claude account."""
+        ctx, led = self._led_ctx()
+        self._preseed(led, 30.0)
+        led.create_run(project="x", number=1, role="build", platform="agy-claude", epoch=1)
+        reset = iso(NOW + timedelta(minutes=30))
+        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+                                       check_human=True)
+        self.assertIsNotNone(led.get_kv("human:claude"))
+
+    def test_no_5h_rise_does_not_set_flag(self):
+        ctx, led = self._led_ctx()
+        self._preseed(led, 40.0)
+        reset = iso(NOW + timedelta(minutes=30))
+        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+                                       check_human=True)
+        self.assertIsNone(led.get_kv("human:claude"))
+
+    def test_check_human_false_does_not_set_flag(self):
+        """The run's own log should not trigger human detection."""
+        ctx, led = self._led_ctx()
+        self._preseed(led, 30.0)
+        reset = iso(NOW + timedelta(minutes=30))
+        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+                                       check_human=False)
+        self.assertIsNone(led.get_kv("human:claude"))
+
+
+class HumanClaudePresenceTests(unittest.TestCase):
+    """D23: presence.human_claude_active walks managed project paths for
+    recent Claude Code transcripts."""
+
+    def test_no_path_no_activity(self):
+        from mahler import presence
+        self.assertFalse(presence.human_claude_active([{"path": "/nonexistent/xyz"}]))
+
+    def test_no_projects_no_activity(self):
+        from mahler import presence
+        self.assertFalse(presence.human_claude_active([]))
+
+    def test_recent_transcript_is_human_activity(self):
+        from datetime import timezone
+        from mahler import presence
+        now = datetime.now(timezone.utc)
+        with mock.patch.object(presence, "last_claude_activity", return_value=now):
+            self.assertTrue(presence.human_claude_active([{"path": "/some/path"}]))
+
+    def test_old_transcript_is_not_human_activity(self):
+        from mahler import presence
+        old = datetime.now(timezone.utc) - timedelta(minutes=25)
+        with mock.patch.object(presence, "last_claude_activity", return_value=old):
+            self.assertFalse(presence.human_claude_active([{"path": "/some/path"}]))
+
+
 class ReapTests(unittest.TestCase):
     def test_dead_shell_still_gets_its_group_killed_before_finalize(self):
         ctx = ctx_for()

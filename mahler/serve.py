@@ -51,8 +51,10 @@ def snapshot(cfg, led):
             leases[(i["project"], i["number"])] = lease["holder"]
 
     quota = []
+    burst_lines = router.burst_status(cfg, led)
     for name, pconf in cfg["platforms"].items():
-        state, detail = router.usage_state(led, name, pconf)
+        claude_lines = burst_lines if pconf.get("kind") == "claude" else None
+        state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
         # gauge width: worst window's percentage (unmetered platforms show 0)
         windows = [u["used_pct"] for u in led.usage(name).values()
                    if u["window"] in pconf.get("windows", router.WINDOWS)]
@@ -71,6 +73,7 @@ def snapshot(cfg, led):
         "by_state": by_state,
         "leases": leases,
         "quota": quota,
+        "burst": router.burst_kind(burst_lines) if burst_lines else None,
         "events": events,
     }
 
@@ -194,6 +197,10 @@ def _render_rest(out, snap, cfg):
         w('<div class="muted">nothing running</div>')
 
     w("<h2>Quota</h2>")
+    if snap.get("burst"):
+        w(f'<div class="card" style="margin-bottom:.5rem"><b style="color:var(--accent)">'
+          f'D23 {snap["burst"]} burst active</b> <span class="muted">— Claude '
+          f'builds first, lines raised to 90%/97%</span></div>')
     for q in snap["quota"]:
         cls = _esc(q["state"])
         label = "unknown limit" if not q["metered"] else f"{q['pct']:.0f}%"
