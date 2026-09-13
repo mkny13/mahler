@@ -145,6 +145,18 @@ DEFAULTS = {
     },
 }
 
+# Codex uses the locally authenticated ChatGPT account through `codex exec`.
+# The CLI does not expose an account-wide quota probe, so it is treated like
+# the other unmetered adapters: available until a run reports a limit, then
+# held for a short backoff. It is deliberately absent from the default routes;
+# installations opt in according to which account they want Mahler to spend.
+DEFAULTS["platforms"]["codex"] = {
+    "enabled": True, "kind": "codex", "model": "",
+    "metered": False, "backoff_minutes": 60,
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+}
+
 # Cline's free models report no quota at all (verified 2026-09-12): it is
 # "unmetered" — available until a rate-limit/quota error, then backed off.
 # Its free models are weaker, so it only takes small items.

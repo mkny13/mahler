@@ -9,6 +9,13 @@ Verified against the real CLIs on 2026-09-12 (DESIGN D8):
     --output-format json` reports remaining_fraction per pool and window, for
     free. --print-timeout defaults to 5m, so runs must raise it.
 
+Verified against the real CLI on 2026-09-13 (mahler#157):
+  * `codex exec --ephemeral --dangerously-bypass-approvals-and-sandbox
+    --color never --json -C <worktree> <prompt>` uses the Codex CLI's existing
+    ChatGPT login and emits JSONL. Final text is an `item.completed` event whose
+    item type is `agent_message`; a successful turn ends with `turn.completed`.
+    There is no account-wide quota field, so limit errors trigger a backoff.
+
 Verified against the real CLIs on 2026-09-13 (mahler#25):
   * `copilot -p <prompt> --allow-all-tools --output-format json -C <dir>`
     (binary `copilot`, package `@github/copilot`) ran a real end-to-end
@@ -60,7 +67,8 @@ HOME = os.path.expanduser("~")
 
 # Free-tier exhaustion doesn't always say "quota": Kilo's out-of-credits error
 # (mahler#29) is "Add credits to continue" / error_type "usage_limit_exceeded".
-QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage_limit_exceeded")
+QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage limit",
+               "usage_limit_exceeded")
 
 # Guardrails for Claude runs — a safety net, not the plan (DESIGN D12).
 CLAUDE_DENY = [
@@ -92,6 +100,11 @@ def cline_exe():
 
 def copilot_exe():
     return which("copilot", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
+
+
+def codex_exe():
+    return which("codex", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin",
+                           "/Applications/Codex.app/Contents/Resources"])
 
 
 def kilo_exe():
@@ -138,6 +151,15 @@ def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv
 
 
+def codex_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    argv = [codex_exe(), "exec", "--ephemeral",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--color", "never", "--json", "-C", worktree]
+    if pconf.get("model"):
+        argv += ["--model", pconf["model"]]
+    return argv + [prompt]
+
+
 def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     argv = [kilo_exe(), "run", prompt, "--dir", worktree, "--auto", "--format", "json"]
     if pconf.get("model"):
@@ -154,6 +176,8 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
         return cline_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "copilot":
         return copilot_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "codex":
+        return codex_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "kilo":
         return kilo_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
@@ -161,7 +185,8 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
 
 def available(pconf):
     exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
-           "copilot": copilot_exe, "kilo": kilo_exe}[pconf["kind"]]()
+           "copilot": copilot_exe, "codex": codex_exe,
+           "kilo": kilo_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -385,6 +410,19 @@ def read_log(path, kind):
                 elif t == "result":
                     res["ok"] = ev.get("exitCode") == 0
                 elif t == "error" or "error" in (t or ""):
+                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                        res["quota_hit"] = True
+            elif kind == "codex":
+                t = ev.get("type")
+                if t == "item.completed":
+                    item = ev.get("item") or {}
+                    if item.get("type") == "agent_message" and item.get("text"):
+                        res["final"] = item["text"]
+                        texts.append(item["text"])
+                elif t == "turn.completed":
+                    res["ok"] = True
+                elif t in {"turn.failed", "error"} or "error" in (t or ""):
+                    res["ok"] = False
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         res["quota_hit"] = True
             elif kind == "kilo":

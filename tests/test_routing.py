@@ -163,6 +163,24 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(name, "kilo")     # next in order now that copilot's ahead of kilo
         self.assertTrue(any("copilot: hard" in r for r in reasons))
 
+    def test_codex_is_opt_in_and_unmetered(self):
+        self.assertNotIn("codex", self.cfg["routing"]["build"])
+        custom = copy.deepcopy(self.cfg)
+        custom["routing"]["build"] = ["codex", "copilot"]
+        self.assertEqual(router.pick(custom, Ledger(":memory:"), "build", size="m")[0],
+                         "codex")
+
+    def test_codex_argv_is_ephemeral_unattended_jsonl_in_worktree(self):
+        with mock.patch.object(platforms, "codex_exe", return_value="/app/codex"):
+            argv = platforms.codex_argv(
+                self.cfg["platforms"]["codex"], "do it", "/tmp/wt", "build")
+        self.assertEqual(argv[:2], ["/app/codex", "exec"])
+        self.assertIn("--ephemeral", argv)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertIn("--json", argv)
+        self.assertEqual(argv[argv.index("-C") + 1], "/tmp/wt")
+        self.assertEqual(argv[-1], "do it")
+
     def test_kilo_defaults_to_a_free_model_route(self):
         # mahler#29: without an explicit :free route, every kilo run 402s on credits.
         self.assertTrue(self.cfg["platforms"]["kilo"]["model"].endswith("/free"))
@@ -505,6 +523,33 @@ class ParseTests(unittest.TestCase):
                 fh.write(json.dumps({"type": "error", "error": {
                     "message": "You have exceeded your premium request quota"}}) + "\n")
             r = platforms.read_log(p, "copilot")
+            self.assertTrue(r["quota_hit"])
+
+    def test_codex_log_and_quota_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "codex.log")
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "item.completed", "item": {
+                    "type": "agent_message", "text": "STATUS: DONE shipped it"}}) + "\n")
+                fh.write(json.dumps({"type": "turn.completed", "usage": {
+                    "input_tokens": 100, "output_tokens": 10}}) + "\n")
+            r = platforms.read_log(p, "codex")
+            self.assertTrue(r["ok"])
+            self.assertFalse(r["quota_hit"])
+            self.assertEqual(platforms.status_line(r["final"]), ("DONE", "shipped it"))
+
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "turn.failed", "error": {
+                    "message": "Model unavailable"}}) + "\n")
+            r = platforms.read_log(p, "codex")
+            self.assertFalse(r["ok"])
+            self.assertFalse(r["quota_hit"])
+
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "turn.failed", "error": {
+                    "message": "Usage limit exceeded; try again later"}}) + "\n")
+            r = platforms.read_log(p, "codex")
+            self.assertFalse(r["ok"])
             self.assertTrue(r["quota_hit"])
 
     def test_kilo_log(self):
