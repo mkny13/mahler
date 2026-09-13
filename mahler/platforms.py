@@ -53,6 +53,7 @@ per-platform `pconf["windows"]`), re-probed at most every `stale_minutes`.
 
 import json
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 
@@ -325,13 +326,41 @@ def _collect_text(obj, keys=("text", "content", "message", "delta", "deltaConten
     return out
 
 
+# mahler#124: Cline's daily cap names its own reset time, e.g. "Try again in
+# 9h 41m" / "Try again in 2h" / "try again in 45m" — matched case-insensitively.
+_RETRY_AFTER_RE = re.compile(
+    r"try\s+again\s+in\s+(?:(\d+)\s*h(?:\s*(\d+)\s*m)?|(\d+)\s*m)", re.IGNORECASE)
+
+
+def retry_after_minutes(text):
+    """Minutes until the reset time named by the last "try again in ..." in
+    text, or None if text names none."""
+    matches = list(_RETRY_AFTER_RE.finditer(text or ""))
+    if not matches:
+        return None
+    m = matches[-1]
+    hours = int(m.group(1)) if m.group(1) else 0
+    minutes = m.group(2) or m.group(3)
+    return hours * 60 + (int(minutes) if minutes else 0)
+
+
+def _note_quota_hit(res, ev):
+    """Record a quota hit and, if the event names a reset time, keep the
+    largest retry_after minutes seen across the log (mahler#124)."""
+    res["quota_hit"] = True
+    ra = retry_after_minutes(json.dumps(ev))
+    if ra is not None and (res["retry_after"] is None or ra > res["retry_after"]):
+        res["retry_after"] = ra
+
+
 def read_log(path, kind):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
-             'quota_hit': bool, 'last_text': str}
+             'quota_hit': bool, 'retry_after': int|None, 'last_text': str}
     """
-    res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "last_text": ""}
+    res = {"final": None, "ok": None, "usage": [], "quota_hit": False,
+           "retry_after": None, "last_text": ""}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -350,7 +379,7 @@ def read_log(path, kind):
                 if t == "rate_limit_event":
                     res["usage"] = claude_samples_from_event(ev)
                     if (ev.get("rate_limit_info") or {}).get("status") == "rejected":
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, ev)
                 elif t == "assistant":
                     for block in (ev.get("message") or {}).get("content") or []:
                         if block.get("type") == "text" and block.get("text"):
@@ -363,11 +392,11 @@ def read_log(path, kind):
                     res["final"] = ev.get("text")
                     res["ok"] = ev.get("finishReason") == "completed"
                     if not res["ok"] and any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, ev)
                 elif ev.get("type") == "error" or ev.get("error"):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, ev)
             elif kind == "copilot":
                 t = ev.get("type")
                 if t == "assistant.message":
@@ -379,11 +408,11 @@ def read_log(path, kind):
                     res["ok"] = ev.get("exitCode") == 0
                 elif t == "error" or "error" in (t or ""):
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, ev)
             elif kind == "kilo":
                 if ev.get("type") == "error":
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, ev)
                 else:
                     texts.extend(_collect_text(ev))
             else:  # agy
@@ -392,7 +421,7 @@ def read_log(path, kind):
                     res["final"] = r.get("response")
                     res["ok"] = r.get("status") == "SUCCESS"
                     if not res["ok"] and "quota" in json.dumps(r).lower():
-                        res["quota_hit"] = True
+                        _note_quota_hit(res, r)
                 elif ev.get("event") == "step_update":
                     su = ev.get("step_update") or {}
                     if su.get("text_delta"):
