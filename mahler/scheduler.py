@@ -8,6 +8,8 @@ launched them, exactly as in dispatch.
 import fcntl
 import json
 import os
+import shlex
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -270,6 +272,15 @@ def finalize(ctx, run):
                 ctx.ping(f"Handoff — {project} #{n}",
                          f"{run['platform']} stopped ({reason}); next platform picks it up",
                          project, n, priority="low")
+            elif verb is None and reason is None:
+                # D18 fallback: no STATUS line, but the branch may still be done.
+                # Also: Cline resume-once before giving up (mahler#17).
+                if _try_verify_fallback(ctx, run, pol, saved, item):
+                    pass   # handled — state set to verifying
+                elif _try_cline_nudge(ctx, run, kind, log, pol):
+                    keep_worktree = True   # the resumed session uses this worktree
+                else:
+                    _retry_or_fail(ctx, project, n, item, reason, outcome)
             else:
                 _retry_or_fail(ctx, project, n, item, reason, outcome)
     led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
@@ -293,6 +304,103 @@ def _hold_platform(ctx, run):
              "access for python3 after a Homebrew upgrade): click Allow. "
              f"{run['platform']} is on hold until {until.astimezone():%H:%M}.",
              run["project"], run["number"], priority="high", tags="warning")
+
+
+def _try_verify_fallback(ctx, run, pol, saved, item):
+    """D18 verify-green fallback: no STATUS line, but if the branch has commits
+    ahead of base *and* the project's verify command passes in the worktree,
+    treat as DONE. Returns True if the fallback applied."""
+    led = ctx.led
+    project, n = run["project"], run["number"]
+    base = pol.get("base", "main")
+    verify_cmd = pol.get("verify")
+    if not verify_cmd:
+        return False
+    ahead = runner.commits_ahead(run["worktree"], base)
+    if ahead == 0:
+        ctx.say(f"{project}#{n}: no STATUS line, no commits ahead of {base} — failed attempt")
+        return False
+    ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — running verify")
+    ok = runner.verify_in_worktree(run["worktree"], verify_cmd,
+                                   timeout=pol.get("verify_timeout", 120))
+    if not ok:
+        ctx.say(f"{project}#{n}: verify failed in worktree — failed attempt")
+        return False
+    # The branch is done: the conductor ships it, with an honest note.
+    ctx.say(f"{project}#{n}: verify green — treating as DONE (agent didn't confirm)")
+    ref = saved["ref"] if saved else item["branch"]
+    if ref:
+        led.set_state(project, n, "verifying",
+                      "verify-green fallback — agent didn't confirm",
+                      summary=item["title"])
+        led.set_kv(f"unconfirmed:{project}#{n}", "1")
+        ctx.ping(f"Build finished (fallback) — {project} #{n}",
+                 f"{run['platform']} didn't end with STATUS: DONE, but "
+                 f"verify passes; the conductor opens the PR next",
+                 project, n, priority="low")
+        return True
+    return False
+
+
+def _try_cline_nudge(ctx, run, kind, log, pol):
+    """Resume a Cline session once when it ended with finishReason 'completed'
+    but no STATUS line and the verify fallback didn't apply (mahler#17).
+    Returns True if the nudge was started (the run stays alive)."""
+    if kind != "cline":
+        return False
+    if run.get("nudged"):
+        return False
+    code = runner.exit_code(run)
+    if code != 0:
+        return False
+    # The Cline log must show finishReason == "completed"
+    if not log.get("ok"):
+        return False
+    ctx.say(f"{run['project']}#{run['number']}: Cline ended without STATUS — "
+            f"nudging once to resume")
+    if ctx.dry_run:
+        return True
+    led = ctx.led
+    led.update_run(run["id"], nudged=1, status="running")
+    # Find the session ID from cline history
+    session_id = _cline_session_id(run["worktree"])
+    wt = run["worktree"]
+    timeout_secs = int(pol.get("run_timeout_minutes", 60) * 60)
+    nudge_prompt = ("You stopped before finishing. Carry on with the next step of "
+                    "your instructions, and end with the STATUS line.")
+    if session_id:
+        argv = [platforms.cline_exe(), "--id", session_id, "--cwd", wt,
+                "--json", "--auto-approve", "true", "-t", str(timeout_secs),
+                nudge_prompt]
+    else:
+        # No session ID found — start a fresh prompt in the same worktree
+        argv = [platforms.cline_exe(), "--cwd", wt, "--json", "--auto-approve", "true",
+                "-t", str(timeout_secs), nudge_prompt]
+    log_path = run["log_path"]
+    status_path = run["status_path"]
+    shell = (f"{shlex.join(argv)} >> {shlex.quote(log_path)} 2>&1; "
+             f"echo $? > {shlex.quote(status_path)}")
+    proc = subprocess.Popen(["/bin/sh", "-c", shell], cwd=wt,
+                            start_new_session=True, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    led.update_run(run["id"], pid=proc.pid)
+    led.heartbeat(run["project"], run["number"], f"run:{run['id']}", run["epoch"],
+                  pol["auto_lease_minutes"])
+    return True
+
+
+def _cline_session_id(worktree):
+    """Find the Cline session ID whose cwd matches the run's worktree.
+    `cline history --json` lists sessions with their cwd."""
+    try:
+        r = subprocess.run([platforms.cline_exe(), "history", "--json"],
+                           capture_output=True, text=True, timeout=15)
+        for entry in json.loads(r.stdout):
+            if entry.get("cwd") == worktree:
+                return entry.get("sessionId") or entry.get("id")
+    except (subprocess.SubprocessError, OSError, ValueError, TypeError):
+        pass
+    return None
 
 
 def _retry_or_fail(ctx, project, n, item, reason, outcome):
@@ -383,7 +491,8 @@ def _ship_item(ctx, project, item):
                  project, n, priority="low")
         return
     if not item["pr"]:
-        _open_pr(ctx, project, item, gh, pol)
+        unconfirmed = bool(led.get_kv(f"unconfirmed:{project}#{n}"))
+        _open_pr(ctx, project, item, gh, pol, unconfirmed=unconfirmed)
         return                                  # CI is watched from the next tick
     pr = item["pr"]
     view = gh.pr_view(pr)
@@ -419,7 +528,7 @@ def _ship_item(ctx, project, item):
     _shipped(ctx, project, n, pr, led.item(project, n), view)
 
 
-def _open_pr(ctx, project, item, gh, pol):
+def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     led, n = ctx.led, item["number"]
     ref = item["branch"]
     if not ref:
@@ -432,7 +541,8 @@ def _open_pr(ctx, project, item, gh, pol):
     pr = gh.pr_for_head(branch)
     if pr is None:
         needs = needs_human_of(gh.issue_body(n))
-        pr = gh.pr_create(branch, base, item["title"], pr_body(n, item["summary"], needs))
+        pr = gh.pr_create(branch, base, item["title"],
+                          pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
     led.upsert_item(project, n, pr=pr)
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
     ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")

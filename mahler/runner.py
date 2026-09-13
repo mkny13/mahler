@@ -265,5 +265,29 @@ def remove_worktree(repo, wt, branch=None, root=None):
         git(repo, "branch", "-D", branch, check=False)
 
 
+def commits_ahead(wt, base):
+    """How many commits the worktree's HEAD is ahead of origin/<base>.
+    Returns 0 on any error (missing worktree, detached HEAD, etc.)."""
+    if not wt or not os.path.isdir(wt):
+        return 0
+    try:
+        return int(git(wt, "rev-list", "--count", f"origin/{base}..HEAD") or 0)
+    except (GitError, ValueError):
+        return 0
+
+
+def verify_in_worktree(wt, verify_cmd, timeout=120):
+    """Run the project's verify command in the worktree.
+    Returns True if it exits 0 within the timeout, False otherwise."""
+    if not verify_cmd or not wt or not os.path.isdir(wt):
+        return False
+    try:
+        r = subprocess.run(verify_cmd, shell=True, cwd=wt,
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode == 0
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+        return False
+
+
 def self_bin():
     return f"{shlex.quote(sys.executable)} {shlex.quote(MAHLER_BIN)}"

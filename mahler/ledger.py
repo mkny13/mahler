@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS runs (
     outcome     TEXT,
     exit_code   INTEGER,
     yield_at    TEXT,
+    nudged      INTEGER NOT NULL DEFAULT 0,
     started_at  TEXT NOT NULL,
     ended_at    TEXT
 );
@@ -139,6 +140,9 @@ class Ledger:
         for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT")):
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+        run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
+        if "nudged" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
         self.clock = clock
 
     def now(self):
