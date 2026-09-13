@@ -8,12 +8,13 @@ on which agent CLIs are installed on the machine.
 
 import copy
 import json
+import subprocess
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, router, scheduler
-from mahler.ledger import Ledger, iso
+from mahler.ledger import Ledger, RoutedLedger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -77,6 +78,26 @@ def seed_burst(led, claude_pct=(85, 85), free_pct=(10, 10)):
     for name in ("agy-claude", "agy-gemini"):
         led.record_usage(name, "5h", free_pct[0], later6)
         led.record_usage(name, "weekly", free_pct[1], later6)
+
+
+class RemoteLeaseFailureTests(unittest.TestCase):
+    def test_unreachable_canonical_host_skips_project_without_starting(self):
+        cfg = mk_cfg({"a": proj(remote_ledger={"host": "mini.example"})})
+        local = Ledger(":memory:", clock=lambda: NOW)
+        item(local, "a", 1, age_minutes=20)
+        seed(local, **{"agy-claude": (10, 10)})
+
+        def failed(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 255, "", "unreachable")
+
+        led = RoutedLedger(local, cfg, run=failed)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        with mock.patch.object(scheduler.platforms, "available", return_value=True), \
+                mock.patch.object(scheduler, "start") as start:
+            scheduler.schedule(ctx, list(config.enabled_projects(cfg)))
+        start.assert_not_called()
+        self.assertIn("canonical lease host unavailable — project skipped this tick",
+                      "\n".join(ctx.lines))
 
 
 class BurstScheduleTests(unittest.TestCase):
@@ -307,7 +328,8 @@ class QuotaGroupTests(unittest.TestCase):
         seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="claude",
                        epoch=1)
-        busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(scheduler.platforms, "available", return_value=True):
+            busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
         self.assertIn("claude", busy)
         self.assertIn("claude-opus", busy)
         with mock.patch.object(scheduler.platforms, "available", return_value=True):
@@ -335,7 +357,8 @@ class QuotaGroupTests(unittest.TestCase):
         seed(led, **{"agy-gemini": (10, 10), "claude": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="agy-gemini",
                        epoch=1)
-        busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(scheduler.platforms, "available", return_value=True):
+            busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
         # agy-gemini has max_runs=2, 1 run → NOT at capacity
         self.assertNotIn("agy-gemini", busy)
         # claude is different group → NOT blocked by agy-gemini
@@ -343,7 +366,8 @@ class QuotaGroupTests(unittest.TestCase):
         # max_runs=2 for agy-gemini → second run on same platform is fine
         led.create_run(project="a", number=10, role="build", platform="agy-gemini",
                         epoch=2)
-        busy2 = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(scheduler.platforms, "available", return_value=True):
+            busy2 = scheduler.busy_platforms(ctx.cfg, led.active_runs())
         self.assertIn("agy-gemini", busy2)
         self.assertNotIn("claude", busy2)
         item(led, "a", 3, age_minutes=5)

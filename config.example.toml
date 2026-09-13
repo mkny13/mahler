@@ -11,6 +11,15 @@ path = "/Users/mike/Mahler"
 max_parallel = 1                # the conductor changes one thing at a time (DESIGN D17)
 verify = "python3 -m unittest discover -s tests"
 
+# Only on a second machine that shares this project (DESIGN D24). The Mac mini
+# remains canonical and does not set this table. Authorize this machine's SSH
+# public key on the Mini and accept its host key before enabling the daemon.
+# [projects.mahler.remote_ledger]
+# host = "mike@mac-mini.example-tailnet.ts.net"
+# client_id = "work-laptop"        # stable and unique among Mahler machines
+# connect_timeout_seconds = 5
+# command = "~/.mahler/app/bin/mahler"
+
 # [projects.mahler.maintenance]
 # enabled = true
 # cadence_days = 30

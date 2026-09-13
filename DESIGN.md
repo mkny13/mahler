@@ -867,6 +867,42 @@ weekly window stood at 81%, over the 70% soft line, so Claude sat idle until the
   over the line (D8).
 - `[burst]` in the config holds the lead times and lines, and `enabled = false` turns it off.
 
+### D24 — One canonical lease table for a project shared across machines
+
+Decided 2026-09-13 (mahler#151). D14's single-machine scheduler remains the default, but the
+`mahler` project is deliberately worked by two independent Mahler installations: the Mac mini
+and a work laptop. Two local SQLite files cannot coordinate D6's compare-and-set leases, and
+GitHub labels cannot replace them. The Mini therefore remains the sole lease authority for this
+one project; all other execution state and every other project remain local to each machine.
+
+- A project may set `[projects.<name>.remote_ledger]` with an SSH `host`. Only `lease`, `claim`,
+  `heartbeat`, `release`, and `lease_check` are relayed. Items, runs, quota, events, backups, and
+  every unconfigured project's leases continue to use the caller's local SQLite ledger.
+- The transport is one JSON request on stdin and one JSON response on stdout to
+  `mahler ledger-remote-op`. The SSH command is static; item and holder values never enter a
+  shell command. It uses `BatchMode`, normal SSH host-key checking, a short connect timeout, and
+  the laptop's existing key. The endpoint accepts only the five named operations for projects
+  enabled in the Mini's own config. SSH authentication and the Mini's OS account remain the
+  security boundary; no credential or private config is copied between machines.
+- Remote holder ids are prefixed with a stable `client_id`. Local run numbers and the literal
+  `conductor` are otherwise only machine-local and could accidentally renew each other's lease.
+  A remote run id is never written into the Mini's `runs` table: ids in that table belong to the
+  Mini. If the Mini pre-empts a laptop run, the laptop learns by its next failed heartbeat and
+  stops safely.
+- `max_parallel` is enforced canonically too. A capacity-taking claim counts live capacity
+  leases for the project and compares the count in the same `BEGIN IMMEDIATE` transaction that
+  grants the item lease. Sorting does not take capacity (D19). A completed build atomically
+  hands its item lease from the run to the conductor, and a red-CI repair hands it back, so the
+  slot remains occupied through PR, CI, and merge with no cross-machine release/claim race.
+- **Failure is closed and project-scoped.** Timeout, SSH failure, a bad host key, non-zero exit,
+  malformed JSON, or a rejected protocol response can never grant, renew, release, or validate
+  a lease. A candidate is skipped, a running job loses its heartbeat and yields, a fence check
+  blocks push/merge, and shipping waits for a later tick. The exception does not escape and
+  break other projects' ticks. A stale remote lease expires normally on the Mini.
+- This is coordination, not distributed scheduling or database replication. The Mini remains
+  a single point of availability for this project's work, which is the safe behavior: if it is
+  asleep or unreachable, the laptop leaves `mahler` alone while continuing its local projects.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
