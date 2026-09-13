@@ -187,7 +187,7 @@ def serve(cfg, led):
                     content = [{"type": "text", "text": "Released successfully." if ok else "Failed to release. Not held."}]
                 elif name == "handoff":
                     pol = config.project_policy(cfg, args["project"])
-                    GH(pol["repo"]).comment(args["number"], f"<!-- mahler:handoff -->\n{args['comment']}")
+                    GH(pol["repo"]).comment(args["number"], f"<!-- mahler:agent handoff -->\n{args['comment']}")
                     content = [{"type": "text", "text": "Handoff comment posted."}]
                 elif name == "next_id":
                     val = led.next_id(args["project"], args["name"], floor=args.get("floor", 0))

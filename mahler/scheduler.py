@@ -12,12 +12,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from . import backup, config, digest, notify, platforms, presence, router, runner
-from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
-                 label_names, parse_command, pin_of, priority_of)
+from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, checks_state,
+                 depends_of, label_names, needs_human_of, parse_command, pin_of,
+                 pr_body, pr_summary_of, priority_of)
 from .ledger import iso, parse
 
 STOP_NOW = ("parked",)                               # no grace period
 NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent")
+CONDUCTOR = "conductor"                              # the lease holder that ships
 
 
 class Ctx:
@@ -77,6 +79,7 @@ def tick(ctx):
     else:
         refresh_usage(ctx, projects)
         schedule(ctx, projects)
+        ship(ctx, projects)
     for p in projects:
         mirror_labels(ctx, p["name"])
     if not ctx.dry_run:
@@ -242,14 +245,18 @@ def finalize(ctx, run):
                          project, n, priority="high", tags="question")
             elif verb == "DONE" and reason in (None, "quota"):
                 # D18: the run's own job is finished. The conductor (code, not
-                # another agent) opens the PR and ships it from here; a DONE
+                # another agent) ships it from here: push, PR, CI, merge. A DONE
                 # build is a success, not a failed attempt — no attempt is
-                # counted, and the item waits out of the ready queue instead of
-                # being re-run.
-                led.set_state(project, n, "working", "build finished — the conductor ships it")
-                ctx.ping(f"Build finished — {project} #{n}",
-                         f"{run['platform']} ended DONE; the conductor opens the PR next",
-                         project, n, priority="low")
+                # counted, and the item leaves the ready queue into `verifying`.
+                if saved or item["branch"]:
+                    led.set_state(project, n, "verifying",
+                                  "build done — the conductor ships it",
+                                  summary=rest or item["title"])
+                    ctx.ping(f"Build finished — {project} #{n}",
+                             f"{run['platform']} ended DONE; the conductor opens the PR next",
+                             project, n, priority="low")
+                else:
+                    _retry_or_fail(ctx, project, n, item, reason, outcome)
             elif reason == "parked":
                 led.set_state(project, n, "parked", "parked while running")
             elif reason == "preempted":
@@ -317,7 +324,7 @@ REASON_TEXT = {
 def _handoff_comment(ctx, run, item, reason, outcome, saved, log, kept):
     mins = int((ctx.led.now() - parse(run["started_at"])).total_seconds() // 60)
     why = REASON_TEXT.get(reason, f"ended: {outcome}")
-    lines = [f"<!-- mahler:handoff run={run['id']} epoch={run['epoch']} "
+    lines = [f"<!-- mahler:agent handoff run={run['id']} epoch={run['epoch']} "
              f"from={run['platform']} reason={reason or 'ended'} -->",
              f"**Handoff** — {run['platform']} stopped after {mins} min ({why}).", ""]
     if saved:
@@ -336,6 +343,102 @@ def _handoff_comment(ctx, run, item, reason, outcome, saved, log, kept):
         ctx.gh(run["project"]).comment(run["number"], "\n".join(lines))
     except GHError as e:
         ctx.say(f"#{run['number']}: couldn't post handoff comment — {e}")
+
+
+# ---------- the conductor ships (DESIGN D18) ----------
+
+def ship(ctx, projects):
+    """The mechanical tail of a build run, in code (D18): push the branch, open
+    the PR, watch CI across ticks and squash-merge on green — but never merge
+    once the item's lease has gone to an interactive session (D6)."""
+    for p in projects:
+        try:
+            _ship_project(ctx, p["name"])
+        except Exception as e:                  # noqa: BLE001 — a tick must not break
+            ctx.say(f"{p['name']}: ship pass failed — {e}")
+
+
+def _ship_project(ctx, project):
+    for item in ctx.led.items(project, ["verifying"]):
+        try:
+            _ship_item(ctx, project, item)
+        except Exception as e:                  # noqa: BLE001 — one item can't stop the rest
+            ctx.say(f"{project}#{item['number']}: shipping failed — {e}")
+
+
+def _ship_item(ctx, project, item):
+    led, n = ctx.led, item["number"]
+    if ctx.dry_run:
+        ctx.say(f"{project}#{n}: would ship "
+                f"{'PR #' + str(item['pr']) if item['pr'] else '(opening the PR)'}")
+        return
+    gh, pol = ctx.gh(project), ctx.policy(project)
+    lease, info = led.claim(project, n, CONDUCTOR, "auto", pol["auto_lease_minutes"])
+    if lease is None:                           # a session pre-empted the item (D6)
+        pr = f"PR #{item['pr']}" if item["pr"] else "its PR (not yet open)"
+        led.set_state(project, n, "working",
+                      f"handed to {info['held_by']['holder']} — {pr} stays open, unmerged")
+        ctx.ping(f"Handoff to you — {project} #{n}",
+                 "you hold this item now; the conductor won't merge " + pr,
+                 project, n, priority="low")
+        return
+    if not item["pr"]:
+        _open_pr(ctx, project, item, gh, pol)
+        return                                  # CI is watched from the next tick
+    pr = item["pr"]
+    view = gh.pr_view(pr)
+    if view["state"] != "OPEN":                 # merged or closed outside Mahler
+        _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
+        return
+    state = checks_state(view.get("statusCheckRollup"))
+    if state == "pending":
+        ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
+        return
+    if state == "red":
+        # fix runs are the rest of #14; until then the PR waits untouched
+        ctx.say(f"{project}#{n}: PR #{pr} — CI red (fix runs land with the rest of #14)")
+        return
+    gh.pr_merge(pr)
+    _shipped(ctx, project, n, pr, led.item(project, n), view)
+
+
+def _open_pr(ctx, project, item, gh, pol):
+    led, n = ctx.led, item["number"]
+    ref = item["branch"]
+    if not ref:
+        _retry_or_fail(ctx, project, n, led.item(project, n), None, "nothing to ship")
+        led.release(project, n, holder=CONDUCTOR)
+        return
+    base = pol.get("base", "main")
+    branch = f"mahler/{n}-{runner.slug(item['title'])}"
+    sha = gh.push_branch(pol["path"], branch, ref)   # the branch, pushed if needed
+    pr = gh.pr_for_head(branch)
+    if pr is None:
+        needs = needs_human_of(gh.issue_body(n))
+        pr = gh.pr_create(branch, base, item["title"], pr_body(n, item["summary"], needs))
+    led.upsert_item(project, n, pr=pr)
+    led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
+    ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")
+
+
+def _shipped(ctx, project, n, pr, item, view, merged=True):
+    """Close the loop: comment the summary plus the issue's 'Needs a human to
+    check' list, ping, and mark the item done."""
+    led = ctx.led
+    how = "squash-merged" if merged else view["state"].lower()
+    lines = [f"**Shipped** — PR #{pr} {how}.", "",
+             item["summary"] or pr_summary_of(view.get("body")) or ""]
+    needs = needs_human_of(view.get("body"))
+    if needs:
+        lines += ["", "## Needs a human to check", needs]
+    try:
+        ctx.gh(project).comment(n, "\n".join(lines))
+    except GHError as e:
+        ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
+    ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
+    led.set_state(project, n, "done", f"shipped via PR #{pr}")
+    led.event("shipped", project, n, {"pr": pr})
+    led.release(project, n, holder=CONDUCTOR)
 
 
 # ---------- GitHub sync ----------
