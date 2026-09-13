@@ -88,6 +88,12 @@ def queue_maintenance(ctx, projects):
                 if it["state"] != "done":
                     skip = True
                     break
+                # If this pass item has a parent that isn't done, skip
+                if it["parent"] is not None:
+                    parent = led.item(p["name"], it["parent"])
+                    if parent and parent["state"] != "done":
+                        skip = True
+                        break
                 changed_at = parse(it["state_changed_at"])
                 if changed_at and now - changed_at < timedelta(days=pol["cooldown_days"]):
                     skip = True
@@ -112,6 +118,50 @@ def queue_maintenance(ctx, projects):
                     ctx.say(f"{p['name']}: failed to file {pass_name} pass — {e}")
 
 
+# ---------- close finished parents ----------
+
+def close_finished_parents(ctx, projects):
+    """Close parent issues when all their sub-issues are done.
+    
+    For each item in state 'parent', find children (items with parent == number).
+    If there is at least one child and every child is in state 'done':
+    post a comment listing the children, close the issue, and set state to 'done'.
+    """
+    led = ctx.led
+    for p in projects:
+        try:
+            _close_finished_parents_project(ctx, p["name"])
+        except Exception as e:                  # noqa: BLE001 — one project can't stop the rest
+            ctx.say(f"{p['name']}: close_finished_parents failed — {e}")
+
+
+def _close_finished_parents_project(ctx, project):
+    led, gh = ctx.led, ctx.gh(project)
+    for parent_item in led.items(project, ["parent"]):
+        parent_num = parent_item["number"]
+        # Find children: items of the same project with parent == parent_num
+        children = [it for it in led.items(project) if it["parent"] == parent_num]
+        if not children:
+            continue  # no children, nothing to do
+        # Check if all children are done
+        if all(child["state"] == "done" for child in children):
+            child_nums = [str(c["number"]) for c in children]
+            comment = (
+                f"<!-- mahler:agent -->\n"
+                f"All sub-issues done — closing.\n\n"
+                f"Sub-issues: {', '.join(f'#{n}' for n in child_nums)}"
+            )
+            if ctx.dry_run:
+                ctx.say(f"{project}#{parent_num}: would close — all {len(children)} sub-issue(s) done")
+            else:
+                try:
+                    gh.close_issue(parent_num, comment=comment)
+                    led.set_state(project, parent_num, "done", "all sub-issues done")
+                    ctx.say(f"{project}#{parent_num}: closed — all sub-issues done")
+                except GHError as e:
+                    ctx.say(f"{project}#{parent_num}: failed to close — {e}")
+
+
 # ---------- entry ----------
 
 def take_lock():
@@ -134,6 +184,7 @@ def tick(ctx):
         except GHError as e:
             ctx.say(f"{p['name']}: GitHub sync failed — {e}")
     expire(ctx)
+    close_finished_parents(ctx, projects)
     if ctx.led.paused():
         ctx.say("paused — not starting anything (mahler resume)")
     else:
