@@ -17,7 +17,10 @@ Lease rules (D6), all enforced inside one IMMEDIATE transaction:
 
 import json
 import os
+import re
+import socket
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 
 from .config import MAINTENANCE_PASSES
@@ -57,6 +60,7 @@ CREATE TABLE IF NOT EXISTS leases (
     acquired_at  TEXT NOT NULL,
     heartbeat_at TEXT NOT NULL,
     expires_at   TEXT NOT NULL,
+    capacity     INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (project, number)
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -147,6 +151,9 @@ class Ledger:
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
         if "nudged" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
+        lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
+        if "capacity" not in lease_cols:
+            self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
         # migrate legacy 'tracking' state to 'parent'
         self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
         self.clock = clock
@@ -304,7 +311,8 @@ class Ledger:
         return r
 
     def claim(self, project, number, holder, kind, ttl_minutes, platform=None,
-              run_id=None, steal=False):
+              run_id=None, steal=False, max_parallel=None, capacity=True,
+              handoff_from=None):
         """Atomically take (or renew) the lease on an item.
 
         Returns (lease_row, info) on success, (None, info) when refused.
@@ -319,13 +327,20 @@ class Ledger:
             info = {}
             if live and cur["holder"] == holder:
                 self.con.execute(
-                    "UPDATE leases SET heartbeat_at=?, expires_at=? WHERE project=? AND number=?",
-                    (iso(now), iso(now + timedelta(minutes=ttl_minutes)), project, number))
+                    "UPDATE leases SET heartbeat_at=?, expires_at=?, capacity=? "
+                    "WHERE project=? AND number=?",
+                    (iso(now), iso(now + timedelta(minutes=ttl_minutes)), int(capacity),
+                     project, number))
                 info["renewed"] = True
                 return self.lease(project, number, live_only=False), info
             if live:
+                handed_off = (handoff_from is not None
+                              and cur["holder"] == handoff_from[0]
+                              and cur["epoch"] == int(handoff_from[1]))
                 human = kind in ("interactive", "primary")
-                if cur["kind"] == "auto" and human:
+                if handed_off:
+                    info["handed_off_from"] = dict(cur)
+                elif cur["kind"] == "auto" and human:
                     info["preempted"] = dict(cur)
                     if cur["run_id"]:
                         self.con.execute("UPDATE runs SET yield_at=? WHERE id=? AND yield_at IS NULL",
@@ -334,6 +349,14 @@ class Ledger:
                     info["stolen_from"] = dict(cur)
                 else:
                     info["held_by"] = dict(cur)
+                    return None, info
+            if capacity and max_parallel is not None:
+                occupied = self.q(
+                    "SELECT * FROM leases WHERE project=? AND number<>? "
+                    "AND capacity=1 AND expires_at>?",
+                    (project, number, iso(now)))
+                if len(occupied) >= int(max_parallel):
+                    info["at_capacity"] = [dict(row) for row in occupied]
                     return None, info
             item = self.item(project, number)
             if item is None:
@@ -344,9 +367,10 @@ class Ledger:
                              (epoch, project, number))
             self.con.execute(
                 "INSERT OR REPLACE INTO leases (project, number, holder, kind, platform, epoch,"
-                " run_id, acquired_at, heartbeat_at, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " run_id, acquired_at, heartbeat_at, expires_at, capacity) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (project, number, holder, kind, platform, epoch, run_id, iso(now), iso(now),
-                 iso(now + timedelta(minutes=ttl_minutes))))
+                 iso(now + timedelta(minutes=ttl_minutes)), int(capacity)))
             self.event("lease", project, number,
                        {"holder": holder, "kind": kind, "platform": platform, "epoch": epoch,
                         **({"preempted": info["preempted"]["holder"]} if "preempted" in info else {})})
@@ -523,3 +547,248 @@ class _Tx:
     def __exit__(self, exc_type, *_):
         self.con.execute("ROLLBACK" if exc_type else "COMMIT")
         return False
+
+
+class RemoteLedgerError(RuntimeError):
+    """The canonical lease host could not return a trustworthy answer."""
+
+
+class RoutedLedger:
+    """Keep all state local except project-scoped lease operations (DESIGN D24).
+
+    A configured remote is fail-closed: an unreachable or malformed response
+    never grants, renews, or validates a lease. Non-lease methods always go to
+    the local SQLite ledger.
+    """
+
+    def __init__(self, local, cfg, run=subprocess.run):
+        self.local = local
+        self.cfg = cfg
+        self._run = run
+        self._errors = {}
+
+    def __getattr__(self, name):
+        return getattr(self.local, name)
+
+    def _remote(self, project):
+        value = self.cfg.get("projects", {}).get(project, {}).get("remote_ledger")
+        if not value:
+            return None
+        if isinstance(value, str):
+            return {"host": value}
+        return value if isinstance(value, dict) else {"invalid": True}
+
+    def _call(self, project, operation, **args):
+        remote = self._remote(project)
+        if remote is None:
+            raise AssertionError("remote call requested for a local project")
+        host = remote.get("host", "")
+        command = remote.get("command", "~/.mahler/app/bin/mahler")
+        try:
+            timeout = int(remote.get("connect_timeout_seconds", 5))
+        except (TypeError, ValueError) as exc:
+            raise RemoteLedgerError("invalid remote_ledger timeout") from exc
+        if (not isinstance(host, str) or not isinstance(command, str)
+                or not host or host.startswith("-")
+                or not re.fullmatch(r"[A-Za-z0-9_.:@-]+", host)
+                or not re.fullmatch(r"[A-Za-z0-9_./~+-]+", command)
+                or not 1 <= timeout <= 60):
+            raise RemoteLedgerError("invalid remote_ledger host or command")
+        request = {"version": 1, "operation": operation, "project": project, **args}
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={timeout}",
+                "-o", "ConnectionAttempts=1", host, command, "ledger-remote-op"]
+        try:
+            proc = self._run(argv, input=json.dumps(request), capture_output=True,
+                             text=True, timeout=timeout + 5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RemoteLedgerError(f"remote ledger unavailable: {exc}") from exc
+        if proc.returncode:
+            detail = (proc.stderr or proc.stdout or "ssh failed").strip()[:300]
+            raise RemoteLedgerError(f"remote ledger unavailable: {detail}")
+        try:
+            response = json.loads(proc.stdout)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RemoteLedgerError("remote ledger returned malformed JSON") from exc
+        if not isinstance(response, dict) or response.get("version") != 1:
+            raise RemoteLedgerError("remote ledger returned an invalid response")
+        if not response.get("ok"):
+            raise RemoteLedgerError(str(response.get("error") or "remote operation failed"))
+        self._errors.pop(project, None)
+        return response.get("result")
+
+    def remote_error(self, project):
+        return self._errors.get(project)
+
+    def _remember(self, project, exc):
+        self._errors[project] = str(exc)
+
+    def _holder(self, project, holder):
+        """Make laptop holder ids globally distinct from canonical-host ids."""
+        if holder is None or not self._remote(project):
+            return holder
+        remote = self._remote(project)
+        client = remote.get("client_id") or socket.gethostname().split(".", 1)[0]
+        if not isinstance(client, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", client):
+            raise RemoteLedgerError("invalid remote_ledger client_id")
+        qualified = f"{client}/{holder}"
+        return holder if holder.startswith(f"{client}/") else qualified
+
+    def lease(self, project, number, live_only=True):
+        if not self._remote(project):
+            return self.local.lease(project, number, live_only=live_only)
+        try:
+            return self._call(project, "lease", number=number, live_only=live_only)
+        except RemoteLedgerError as exc:
+            self._remember(project, exc)
+            return None
+
+    def lease_rows(self, project=None):
+        """Live leases for status/hooks, including configured remote projects."""
+        remote_projects = {name for name in self.cfg.get("projects", {})
+                           if self._remote(name)}
+        sql, args = "SELECT * FROM leases", ()
+        if project:
+            sql, args = sql + " WHERE project=?", (project,)
+        rows = [dict(row) for row in self.local.q(sql, args)
+                if row["project"] not in remote_projects]
+        names = [project] if project else sorted(remote_projects)
+        for name in names:
+            if name not in remote_projects:
+                continue
+            # Claims make the local item working; conductor leases make it
+            # verifying. Limit SSH round trips to those plausible live leases.
+            for item in self.local.items(name, ["working", "verifying"]):
+                lease = self.lease(name, item["number"])
+                if lease:
+                    rows.append(lease)
+        return rows
+
+    def expired_leases(self):
+        """The canonical host, not this laptop, expires remote-project rows."""
+        remote_projects = {name for name in self.cfg.get("projects", {})
+                           if self._remote(name)}
+        return [row for row in self.local.expired_leases()
+                if row["project"] not in remote_projects]
+
+    def claim(self, project, number, holder, kind, ttl_minutes, platform=None,
+              run_id=None, steal=False, max_parallel=None, capacity=True,
+              handoff_from=None):
+        limit = (config_project(self.cfg, project).get("max_parallel")
+                 if capacity else None)
+        if not self._remote(project):
+            return self.local.claim(
+                project, number, holder, kind, ttl_minutes, platform=platform,
+                run_id=run_id, steal=steal, max_parallel=limit, capacity=capacity,
+                handoff_from=handoff_from)
+        try:
+            result = self._call(
+                project, "claim", number=number, holder=self._holder(project, holder), kind=kind,
+                ttl_minutes=ttl_minutes, platform=platform, steal=steal,
+                capacity=capacity,
+                handoff_from=([self._holder(project, handoff_from[0]), handoff_from[1]]
+                              if handoff_from else None))
+            return result["lease"], result["info"]
+        except RemoteLedgerError as exc:
+            self._remember(project, exc)
+            return None, {"unavailable": str(exc)}
+
+    def heartbeat(self, project, number, holder, epoch, ttl_minutes):
+        if not self._remote(project):
+            return self.local.heartbeat(project, number, holder, epoch, ttl_minutes)
+        try:
+            return bool(self._call(project, "heartbeat", number=number,
+                                   holder=self._holder(project, holder),
+                                   epoch=epoch, ttl_minutes=ttl_minutes))
+        except RemoteLedgerError as exc:
+            self._remember(project, exc)
+            return False
+
+    def release(self, project, number, holder=None, epoch=None):
+        if not self._remote(project):
+            return self.local.release(project, number, holder=holder, epoch=epoch)
+        try:
+            return bool(self._call(project, "release", number=number,
+                                   holder=self._holder(project, holder),
+                                   epoch=epoch))
+        except RemoteLedgerError as exc:
+            self._remember(project, exc)
+            return False
+
+    def lease_check(self, project, number, epoch):
+        if not self._remote(project):
+            return self.local.lease_check(project, number, epoch)
+        try:
+            return bool(self._call(project, "lease_check", number=number, epoch=epoch))
+        except RemoteLedgerError as exc:
+            self._remember(project, exc)
+            return False
+
+
+def config_project(cfg, project):
+    """Small local helper avoids importing config (and a module cycle)."""
+    defaults = cfg.get("defaults", {})
+    return {**defaults, **cfg.get("projects", {}).get(project, {})}
+
+
+def remote_lease_operation(request, cfg, led):
+    """Validate and execute one stdin/stdout JSON operation on canonical SQLite."""
+    if not isinstance(request, dict) or request.get("version") != 1:
+        raise ValueError("unsupported remote ledger protocol version")
+    operation = request.get("operation")
+    if operation not in {"lease", "claim", "heartbeat", "release", "lease_check"}:
+        raise ValueError("unsupported remote ledger operation")
+    project = request.get("project")
+    project_cfg = cfg.get("projects", {}).get(project, {})
+    if not isinstance(project, str) or not project_cfg.get("enabled"):
+        raise ValueError("project is not enabled on the canonical ledger host")
+    number = request.get("number")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        raise ValueError("number must be a positive integer")
+    if operation == "lease":
+        live_only = request.get("live_only", True)
+        if not isinstance(live_only, bool):
+            raise ValueError("live_only must be boolean")
+        lease = led.lease(project, number, live_only=live_only)
+        return dict(lease) if lease else None
+    if operation == "claim":
+        holder, kind, ttl = (request.get("holder"), request.get("kind"),
+                             request.get("ttl_minutes"))
+        if (not isinstance(holder, str) or not holder or len(holder) > 200
+                or kind not in {"auto", "interactive", "primary"}
+                or not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 1440):
+            raise ValueError("invalid claim arguments")
+        capacity, steal = request.get("capacity", True), request.get("steal", False)
+        platform = request.get("platform")
+        if (not isinstance(capacity, bool) or not isinstance(steal, bool)
+                or (platform is not None and not isinstance(platform, str))):
+            raise ValueError("invalid claim arguments")
+        handoff = request.get("handoff_from")
+        if handoff is not None:
+            if (not isinstance(handoff, list) or len(handoff) != 2
+                    or not isinstance(handoff[0], str) or not isinstance(handoff[1], int)):
+                raise ValueError("invalid handoff_from")
+            handoff = tuple(handoff)
+        lease, info = led.claim(
+            project, number, holder, kind, ttl, platform=platform, steal=steal,
+            max_parallel=config_project(cfg, project).get("max_parallel") if capacity else None,
+            capacity=capacity, handoff_from=handoff)
+        return {"lease": dict(lease) if lease else None, "info": info}
+    if operation == "heartbeat":
+        holder, epoch, ttl = (request.get("holder"), request.get("epoch"),
+                              request.get("ttl_minutes"))
+        if (not isinstance(holder, str) or not holder or len(holder) > 200
+                or not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0
+                or not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 1440):
+            raise ValueError("invalid heartbeat arguments")
+        return led.heartbeat(project, number, holder, epoch, ttl)
+    if operation == "release":
+        holder, epoch = request.get("holder"), request.get("epoch")
+        if ((holder is not None and (not isinstance(holder, str) or len(holder) > 200))
+                or (epoch is not None and (not isinstance(epoch, int)
+                                            or isinstance(epoch, bool) or epoch < 0))):
+            raise ValueError("invalid release arguments")
+        return led.release(project, number, holder=holder, epoch=epoch)
+    epoch = request.get("epoch")
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        raise ValueError("invalid lease_check arguments")
+    return led.lease_check(project, number, epoch)

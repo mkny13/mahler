@@ -1,14 +1,16 @@
 """Lease semantics (DESIGN D6) — the part of the kernel that must be right."""
 
 import copy
+import json
 import os
+import subprocess
 import tempfile
 import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler import config
-from mahler.ledger import Ledger
+from mahler.ledger import Ledger, RoutedLedger, remote_lease_operation
 
 
 class Clock:
@@ -96,6 +98,35 @@ class LeaseTests(unittest.TestCase):
         self.assertTrue(self.led.release("p", 1, holder="run:1", epoch=lease["epoch"]))
         self.assertIsNone(self.led.lease("p", 1))
 
+    def test_capacity_is_checked_atomically_across_items(self):
+        first, _ = self.led.claim("p", 1, "run:1", "auto", 10,
+                                  max_parallel=1, capacity=True)
+        second, info = self.led.claim("p", 2, "run:2", "auto", 10,
+                                      max_parallel=1, capacity=True)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(info["at_capacity"][0]["number"], 1)
+
+    def test_non_capacity_sort_does_not_occupy_project_slot(self):
+        self.led.claim("p", 1, "sort:1", "auto", 10,
+                       max_parallel=None, capacity=False)
+        build, _ = self.led.claim("p", 2, "run:2", "auto", 10,
+                                  max_parallel=1, capacity=True)
+        self.assertIsNotNone(build)
+
+    def test_handoff_keeps_same_capacity_slot_without_release(self):
+        run, _ = self.led.claim("p", 1, "run:1", "auto", 10,
+                                max_parallel=1)
+        conductor, info = self.led.claim(
+            "p", 1, "conductor", "auto", 10, max_parallel=1,
+            handoff_from=("run:1", run["epoch"]))
+        other, blocked = self.led.claim("p", 2, "run:2", "auto", 10,
+                                        max_parallel=1)
+        self.assertEqual(info["handed_off_from"]["holder"], "run:1")
+        self.assertEqual(conductor["holder"], "conductor")
+        self.assertIsNone(other)
+        self.assertIn("at_capacity", blocked)
+
     def test_next_id_is_monotonic_and_respects_floor(self):
         self.assertEqual(self.led.next_id("p", "D", floor=227), 228)
         self.assertEqual(self.led.next_id("p", "D"), 229)
@@ -141,6 +172,150 @@ class ConnectionTests(unittest.TestCase):
         t.start()
         t.join(timeout=5)
         self.assertEqual(outcome, ["guarded"])
+
+    def test_capacity_column_is_added_to_legacy_databases(self):
+        from mahler.ledger import SCHEMA
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            import sqlite3
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(
+                line for line in SCHEMA.splitlines()
+                if "capacity     INTEGER" not in line))
+            con.execute(
+                "INSERT INTO leases (project, number, holder, kind, epoch, acquired_at, "
+                "heartbeat_at, expires_at) VALUES ('p',1,'run:1','auto',1,'x','x','x')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.assertEqual(led.lease("p", 1, live_only=False)["capacity"], 1)
+            led.con.close()
+
+
+class RemoteLedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.canonical = Ledger(":memory:", clock=self.clock)
+        self.local = Ledger(":memory:", clock=self.clock)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"] = {
+            "mahler": {
+                "enabled": True,
+                "max_parallel": 1,
+                "remote_ledger": {
+                    "host": "mike@mini.example.ts.net",
+                    "client_id": "work-laptop",
+                    "connect_timeout_seconds": 3,
+                },
+            },
+            "work": {"enabled": True, "max_parallel": 2},
+        }
+        self.canonical_cfg = copy.deepcopy(config.DEFAULTS)
+        self.canonical_cfg["projects"] = {
+            "mahler": {"enabled": True, "max_parallel": 1},
+        }
+        self.requests = []
+
+        def transport(argv, **kwargs):
+            request = json.loads(kwargs["input"])
+            self.requests.append((argv, request, kwargs))
+            try:
+                result = remote_lease_operation(
+                    request, self.canonical_cfg, self.canonical)
+                body = {"version": 1, "ok": True, "result": result}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(body), "")
+            except Exception as exc:
+                body = {"version": 1, "ok": False, "error": str(exc)}
+                return subprocess.CompletedProcess(argv, 1, json.dumps(body), "")
+
+        self.routed = RoutedLedger(self.local, self.cfg, run=transport)
+
+    def test_remote_claim_uses_canonical_db_and_namespaced_holder(self):
+        lease, _ = self.routed.claim(
+            "mahler", 151, "run:7", "auto", 10,
+            platform="copilot", run_id=7)
+        self.assertIsNone(self.local.lease("mahler", 151))
+        canonical = self.canonical.lease("mahler", 151)
+        self.assertEqual(lease["holder"], "work-laptop/run:7")
+        self.assertEqual(canonical["holder"], "work-laptop/run:7")
+        self.assertIsNone(canonical["run_id"])
+        argv, request, kwargs = self.requests[-1]
+        self.assertNotIn("run:7", argv)
+        self.assertEqual(request["holder"], "work-laptop/run:7")
+        self.assertEqual(kwargs["timeout"], 8)
+
+    def test_unconfigured_project_stays_fully_local(self):
+        lease, _ = self.routed.claim("work", 2, "run:2", "auto", 10)
+        self.assertIsNotNone(lease)
+        self.assertIsNotNone(self.local.lease("work", 2))
+        self.assertEqual(self.requests, [])
+
+    def test_remote_capacity_blocks_a_different_issue(self):
+        first, _ = self.routed.claim("mahler", 1, "run:1", "auto", 10)
+        second, info = self.routed.claim("mahler", 2, "run:2", "auto", 10)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(info["at_capacity"][0]["number"], 1)
+
+    def test_remote_handoff_preserves_slot_and_fencing(self):
+        run, _ = self.routed.claim("mahler", 1, "run:1", "auto", 10)
+        conductor, info = self.routed.claim(
+            "mahler", 1, "conductor", "auto", 10,
+            handoff_from=("run:1", run["epoch"]))
+        self.assertEqual(info["handed_off_from"]["holder"], "work-laptop/run:1")
+        self.assertEqual(conductor["holder"], "work-laptop/conductor")
+        self.assertFalse(self.routed.lease_check("mahler", 1, run["epoch"]))
+        self.assertTrue(self.routed.lease_check("mahler", 1, conductor["epoch"]))
+
+    def test_remote_heartbeat_release_and_lease(self):
+        lease, _ = self.routed.claim("mahler", 1, "run:1", "auto", 10)
+        self.clock.advance(minutes=5)
+        self.assertTrue(self.routed.heartbeat(
+            "mahler", 1, "run:1", lease["epoch"], 10))
+        self.assertEqual(self.routed.lease("mahler", 1)["epoch"], lease["epoch"])
+        self.assertTrue(self.routed.release(
+            "mahler", 1, holder="run:1", epoch=lease["epoch"]))
+        self.assertIsNone(self.canonical.lease("mahler", 1))
+
+    def test_status_rows_include_remote_working_lease(self):
+        self.routed.claim("mahler", 1, "interactive:chat", "interactive", 30)
+        self.local.upsert_item("mahler", 1, state="working")
+        rows = self.routed.lease_rows("mahler")
+        self.assertEqual([row["holder"] for row in rows],
+                         ["work-laptop/interactive:chat"])
+
+    def test_transport_failure_is_closed_for_every_operation(self):
+        def failed(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 255, "", "host unreachable")
+
+        routed = RoutedLedger(self.local, self.cfg, run=failed)
+        lease, info = routed.claim("mahler", 1, "run:1", "auto", 10)
+        self.assertIsNone(lease)
+        self.assertIn("unavailable", info)
+        self.assertIsNone(routed.lease("mahler", 1))
+        self.assertFalse(routed.heartbeat("mahler", 1, "run:1", 1, 10))
+        self.assertFalse(routed.release("mahler", 1, holder="run:1", epoch=1))
+        self.assertFalse(routed.lease_check("mahler", 1, 1))
+        self.assertIn("host unreachable", routed.remote_error("mahler"))
+
+    def test_malformed_success_response_is_also_closed(self):
+        def malformed(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 0, "not json", "")
+
+        routed = RoutedLedger(self.local, self.cfg, run=malformed)
+        lease, info = routed.claim("mahler", 1, "run:1", "auto", 10)
+        self.assertIsNone(lease)
+        self.assertIn("malformed JSON", info["unavailable"])
+
+    def test_endpoint_rejects_unknown_operation_and_disabled_project(self):
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            remote_lease_operation(
+                {"version": 1, "operation": "query", "project": "mahler", "number": 1},
+                self.canonical_cfg, self.canonical)
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            remote_lease_operation(
+                {"version": 1, "operation": "lease", "project": "work", "number": 1},
+                self.canonical_cfg, self.canonical)
 
 
 

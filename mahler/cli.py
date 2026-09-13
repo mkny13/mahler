@@ -13,7 +13,7 @@ from datetime import timedelta
 
 from . import config, notify, router, scheduler
 from .gh import GH, GHError
-from .ledger import Ledger, iso, parse
+from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
 
 def ref(s):
@@ -35,6 +35,11 @@ def default_holder():
 def other_interactive_holders(led, project, holder):
     """Other sessions' live `interactive:*` leases in this project right now —
     the signal that would have caught mahler#27 before a git reset did."""
+    if hasattr(led, "lease_rows"):
+        rows = led.lease_rows(project)
+        return sorted({r["holder"] for r in rows
+                       if "/interactive:" in r["holder"] or r["holder"].startswith("interactive:")
+                       if r["holder"] != holder and not r["holder"].endswith(f"/{holder}")})
     rows = led.q("SELECT DISTINCT holder FROM leases WHERE project=? AND holder LIKE 'interactive:%' "
                  "AND holder != ? AND expires_at > ?", (project, holder, iso(led.now())))
     return sorted(r["holder"] for r in rows)
@@ -54,8 +59,10 @@ def cmd_status(a, cfg, led):
         items = [dict(i) for i in led.items() if i["state"] != "done"]
         for i in items:
             i["est_mins"] = int(led.issue_estimate(ests, i["project"]))
-        leases = [dict(l) for l in led.q("SELECT * FROM leases")]
-        if getattr(a, "project", None):
+        project_filter = getattr(a, "project", None)
+        leases = (led.lease_rows(project_filter) if hasattr(led, "lease_rows")
+                  else [dict(l) for l in led.q("SELECT * FROM leases")])
+        if project_filter:
             runs = [r for r in runs if r["project"] == a.project]
             items = [i for i in items if i["project"] == a.project]
             leases = [l for l in leases if l["project"] == a.project]
@@ -137,7 +144,7 @@ def cmd_serve(a, cfg, led):
     port = a.port or cfg.get("serve", {}).get("port", 8787)
     # request threads must be able to use this connection, so re-open the
     # same database thread-safe; serve serialises access with a lock
-    return serve.serve(cfg, Ledger(led.path, thread_safe=True), host, port)
+    return serve.serve(cfg, RoutedLedger(Ledger(led.path, thread_safe=True), cfg), host, port)
 
 
 def cmd_hooks(a, cfg, led):
@@ -186,8 +193,9 @@ def main():
                 print(f'  - {{h}}')
             print('')
         others = sorted({{l['holder'] for l in d.get('leases', [])
-                          if l.get('holder', '').startswith('interactive:')
-                          and l.get('holder') != f'interactive:{{my_id}}'}})
+                          if ('/interactive:' in l.get('holder', '')
+                              or l.get('holder', '').startswith('interactive:'))
+                          and not l.get('holder', '').endswith(f'interactive:{{my_id}}')}})
         if others:
             print(f'Another interactive session ({{", ".join(others)}}) is active in this '
                   'project right now. Work in your own worktree, not by switching branches '
@@ -243,7 +251,9 @@ def main():
                 out = subprocess.check_output(["mahler", "status", "--project", project, "--json"], text=True)
                 d = json.loads(out)
                 my_holder = f"interactive:{{session_id[:8]}}"
-                holds_claim = any(l.get("holder") == my_holder for l in d.get("leases", []))
+                holds_claim = any(l.get("holder") == my_holder
+                                  or l.get("holder", "").endswith("/" + my_holder)
+                                  for l in d.get("leases", []))
                 if not holds_claim:
                     print(f"If this work relates to a backlog item, run `mahler claim {{project}}#N`.")
                     with open(state_file, "w") as f:
@@ -275,7 +285,8 @@ def main():
         out = subprocess.check_output(["mahler", "status", "--project", "{project}", "--json"], text=True)
         d = json.loads(out)
         for l in d.get("leases", []):
-            if l.get("holder") == my_holder:
+            if (l.get("holder") == my_holder
+                    or l.get("holder", "").endswith("/" + my_holder)):
                 # Renew only this session's own claim(s) in the background
                 subprocess.Popen(
                     ["mahler", "heartbeat", f"{{l['project']}}#{{l['number']}}", "--as", my_id],
@@ -336,6 +347,14 @@ def cmd_claim(a, cfg, led):
     lease, info = led.claim(project, n, f"interactive:{a.holder}", "interactive",
                             pol["interactive_lease_minutes"], steal=a.steal)
     if lease is None:
+        if "unavailable" in info:
+            print(f"{project}#{n}: canonical lease host unavailable; claim denied safely")
+            return 1
+        if "at_capacity" in info:
+            held = ", ".join(f"{project}#{row['number']} by {row['holder']}"
+                             for row in info["at_capacity"])
+            print(f"{project} is at its canonical capacity ({held}); claim denied")
+            return 1
         h = info["held_by"]
         print(f"#{n} is held by {h['holder']} ({h['kind']}, last active {h['heartbeat_at']}). "
               "Use --steal to take it anyway.")
@@ -388,6 +407,21 @@ def cmd_lease_check(a, cfg, led):
     print("ok — you still hold the lease" if ok else
           f"STALE — {project}#{n} epoch {epoch} is no longer the lease holder; stop now")
     return 0 if ok else 1
+
+
+def cmd_ledger_remote_op(a, cfg, led):
+    """SSH-only JSON endpoint for D24's canonical project lease operations."""
+    try:
+        raw = sys.stdin.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("remote ledger request is too large")
+        request = json.loads(raw)
+        result = remote_lease_operation(request, cfg, led.local)
+        print(json.dumps({"version": 1, "ok": True, "result": result}, default=dict))
+        return 0
+    except Exception as exc:  # machine-readable failure; never expose a traceback over SSH
+        print(json.dumps({"version": 1, "ok": False, "error": str(exc)}))
+        return 1
 
 
 def cmd_next_id(a, cfg, led):
@@ -585,6 +619,9 @@ def main(argv=None):
     s.add_argument("epoch", type=int, nargs="?")
     s.set_defaults(fn=cmd_lease_check)
 
+    s = sub.add_parser("ledger-remote-op", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_ledger_remote_op)
+
     s = sub.add_parser("next-id", help="atomic per-project counter (e.g. decision IDs)")
     s.add_argument("project")
     s.add_argument("name")
@@ -633,7 +670,7 @@ def main(argv=None):
 
     a = ap.parse_args(argv)
     cfg = config.load()
-    led = Ledger(config.DB_PATH)
+    led = RoutedLedger(Ledger(config.DB_PATH), cfg)
     try:
         return a.fn(a, cfg, led) or 0
     except GHError as e:

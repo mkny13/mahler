@@ -187,9 +187,9 @@ class ShipTests(unittest.TestCase):
         but launches nothing."""
         led = self.led
 
-        def fake_start(ctx, project, it, role, platform):
+        def fake_start(ctx, project, it, role, platform, handoff_from=None):
             led.claim(project, it["number"], "run:14", "auto", 30,
-                      platform=platform, run_id=14)
+                      platform=platform, run_id=14, handoff_from=handoff_from)
             led.set_state(project, it["number"], "working")
             ctx.gh(project).comment(it["number"],
                                     f"🔁 **{platform}** started a fix run (run 14) on "
@@ -285,7 +285,7 @@ class ShipTests(unittest.TestCase):
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "verifying")     # CI re-runs on the new SHA
         self.assertEqual(item["attempts"], 0)            # a DONE fix is not a failure
-        self.assertIsNone(self.led.lease("x", 5))        # conductor takes it back for CI
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
         self.assertIn("fix pushed", self.last_event())
 
     def test_a_preempted_fix_leaves_the_pr_alone(self):

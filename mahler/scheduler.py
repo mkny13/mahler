@@ -475,7 +475,19 @@ def finalize(ctx, run):
                     _retry_or_fail(ctx, project, n, item, reason, outcome)
             else:
                 _retry_or_fail(ctx, project, n, item, reason, outcome)
-    led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
+    # A finished change keeps the canonical project slot while the conductor
+    # opens/watches/merges its PR (D19, D24). Transfer the same item lease in
+    # one transaction so a second machine cannot claim another issue in the
+    # release/claim gap. On transport failure the run lease is left to expire.
+    if led.item(project, n)["state"] == "verifying":
+        transferred, info = led.claim(
+            project, n, CONDUCTOR, "auto", pol["auto_lease_minutes"],
+            handoff_from=(f"run:{run['id']}", run["epoch"]))
+        if transferred is None:
+            detail = info.get("unavailable") or "canonical lease transfer refused"
+            ctx.say(f"{project}#{n}: {detail}; existing lease left to expire safely")
+    else:
+        led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
     led.update_run(run["id"], status="ended", outcome=outcome, exit_code=code,
                    ended_at=iso(led.now()))
     if not keep_worktree:
@@ -728,6 +740,12 @@ def _ship_item(ctx, project, item):
         return
     gh, pol = ctx.gh(project), ctx.policy(project)
     lease, info = led.claim(project, n, CONDUCTOR, "auto", pol["auto_lease_minutes"])
+    if lease is None and "unavailable" in info:
+        ctx.say(f"{project}#{n}: canonical lease host unavailable — shipping skipped")
+        return
+    if lease is None and "at_capacity" in info:
+        ctx.say(f"{project}#{n}: canonical project capacity is already held — shipping skipped")
+        return
     if lease is None:                           # a session pre-empted the item (D6)
         pr = f"PR #{item['pr']}" if item["pr"] else "its PR (not yet open)"
         led.set_state(project, n, "working",
@@ -861,8 +879,12 @@ def _red_ci(ctx, project, item, pr, view):
                 f"{'; '.join(reasons)}")
         return
     led.upsert_item(project, n, branch=head)
-    led.release(project, n, holder=CONDUCTOR)   # the lease passes to the fix run
-    if start(ctx, project, {**item, "branch": head}, "fix", platform):
+    conductor = led.lease(project, n)
+    handoff_from = ((CONDUCTOR, conductor["epoch"])
+                    if conductor and (conductor["holder"] == CONDUCTOR
+                                      or conductor["holder"].endswith("/conductor")) else None)
+    if start(ctx, project, {**item, "branch": head}, "fix", platform,
+             handoff_from=handoff_from):
         led.upsert_item(project, n, attempts=attempts)
 
 
@@ -1335,6 +1357,10 @@ def schedule(ctx, projects):
                 continue
             if led.lease(name, n):
                 continue
+            remote_error = getattr(led, "remote_error", lambda _project: None)(name)
+            if remote_error:
+                ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
+                continue
             size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
                          if l.startswith("size:")), None)
             if role == "sort" and needs_plan(it["labels"]):
@@ -1365,20 +1391,37 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform):
+def start(ctx, project, item, role, platform, handoff_from=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     run_id = led.create_run(project=project, number=n, role=role, platform=platform,
                             epoch=0, status="running")
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],
-                            platform=platform, run_id=run_id)
+                            platform=platform, run_id=run_id, capacity=role != "sort",
+                            handoff_from=handoff_from)
     if lease is None:
         led.update_run(run_id, status="ended", outcome="not claimed", ended_at=iso(led.now()))
-        ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
+        if "unavailable" in info:
+            ctx.say(f"{project}#{n}: canonical lease host unavailable — skipped")
+        elif "at_capacity" in info:
+            held = ", ".join(f"#{row['number']} by {row['holder']}"
+                             for row in info["at_capacity"])
+            ctx.say(f"{project}#{n}: canonical project capacity held ({held}) — skipped")
+        else:
+            ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
         return False
     try:
         meta = runner.launch(ctx, project, item, role, platform, run_id, lease["epoch"])
     except Exception as e:                       # noqa: BLE001 — any launch failure
-        led.release(project, n, holder=f"run:{run_id}")
+        if handoff_from:
+            restored, _ = led.claim(
+                project, n, handoff_from[0], "auto", pol["auto_lease_minutes"],
+                handoff_from=(f"run:{run_id}", lease["epoch"]))
+            if restored is None:
+                # Do not release a canonical slot we could not safely restore;
+                # its short lease will expire and shipping will retry.
+                ctx.say(f"{project}#{n}: couldn't restore the prior lease after launch failure")
+        else:
+            led.release(project, n, holder=f"run:{run_id}")
         led.update_run(run_id, status="ended", outcome=f"launch failed: {e}"[:300],
                        ended_at=iso(led.now()))
         led.event("launch_failed", project, n, str(e)[:500])
