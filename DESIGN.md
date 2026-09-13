@@ -242,6 +242,18 @@ wasted tokens rather than damaged work.
 - **GitHub mirror:** on grant, the `mahler:working` label plus a short comment ("Antigravity
   started, branch `mahler/12-dark-mode`"). This is for you to see; it's never read back.
 
+**Interactive `holder_id`s are per-session, not a shared `"you"` (mahler#33, 2026-09-13).**
+Two interactive Claude Code sessions sharing `~/Mahler` at once both claimed under the literal
+string `interactive:you` — indistinguishable in the ledger, so nothing showed that a second
+session was even active until one nearly discarded the other's uncommitted work with a `git
+reset` (mahler#27). `mahler claim/heartbeat/release`'s `--as` now defaults to the first 8
+characters of `$CLAUDE_CODE_SESSION_ID` (falling back to `"you"` outside a Claude Code session)
+instead of a hardcoded default, so concurrent sessions show up as distinct holders — no ledger
+migration needed, `holder` is a free-text label and old leases keep whatever they were claimed
+under. `mahler claim` and the `SessionStart` hook now also print a note when another session
+already holds a live `interactive:*` lease in the same project, pointing at CLAUDE.md's worktree
+rule (added alongside D19, mahler#27) rather than the shared primary checkout.
+
 #### Layer 2 — Presence (non-cooperative, advisory)
 
 Some sessions won't claim: a forgotten instruction, a platform without hooks, a Claude cloud
