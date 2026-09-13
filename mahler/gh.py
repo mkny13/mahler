@@ -196,10 +196,14 @@ def needs_human_of(body):
     return "\n".join(out).strip()
 
 
-def pr_body(number, summary, needs=""):
+def pr_body(number, summary, needs="", unconfirmed=False):
     """The PR body the conductor opens with: `Fixes #N`, the agent's one-line
     summary, and the issue's 'Needs a human to check' list."""
     lines = [AGENT_NOTE, f"Fixes #{number}", "", summary or "", ""]
+    if unconfirmed:
+        lines += ["> **Note:** The agent did not end with a STATUS line confirming "
+                  "it had finished.  This PR was opened because the branch has commits "
+                  "ahead of base and the project's verify passed.", ""]
     if needs:
         lines += ["## Needs a human to check", needs, ""]
     return "\n".join(lines)
