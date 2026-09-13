@@ -415,7 +415,6 @@ def _ship_item(ctx, project, item):
     if state == "red":
         # D18 (mahler#18): red CI starts a fix run from the PR branch, with the
         # failing log in its prompt. The conductor's lease goes to the run.
-        led.release(project, n, holder=CONDUCTOR)
         _red_ci(ctx, project, item, pr, view)
         return
     gh.pr_merge(pr)
@@ -491,6 +490,7 @@ def _red_ci(ctx, project, item, pr, view):
         led.release(project, n, holder=CONDUCTOR)
         return
     led.upsert_item(project, n, branch=head)
+    led.release(project, n, holder=CONDUCTOR)   # the lease passes to the fix run
     if start(ctx, project, {**item, "branch": head}, "fix", platform):
         led.upsert_item(project, n, attempts=attempts)
 
