@@ -148,6 +148,26 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
 
+    def test_shipped_event_tracks_enabled_maintenance_passes(self):
+        self.cfg["projects"]["x"]["maintenance"] = {
+            "enabled": True, "passes": ["security", "tests"],
+        }
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        self.assertEqual(
+            self.led.maintenance_checkpoint("x", "security")["merged_since"], 1)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("x", "tests")["merged_since"], 1)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("x", "health")["merged_since"], 0)
+
+    def test_disabled_maintenance_does_not_track_shipments(self):
+        self.cfg["projects"]["x"]["maintenance"] = {"enabled": False}
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        self.assertEqual(
+            self.led.maintenance_checkpoint("x", "security")["merged_since"], 0)
+
     def test_conductor_holds_the_lease_while_verifying(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.rollup = [{"state": "PENDING"}]

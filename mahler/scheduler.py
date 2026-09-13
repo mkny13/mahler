@@ -701,7 +701,9 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
         ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
     ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
     led.set_state(project, n, "done", f"shipped via PR #{pr}")
-    led.event("shipped", project, n, {"pr": pr})
+    maintenance = config.maintenance_policy(ctx.cfg, project)
+    passes = maintenance["passes"] if maintenance["enabled"] else ()
+    led.event("shipped", project, n, {"pr": pr}, passes=passes)
     led.release(project, n, holder=CONDUCTOR)
 
 

@@ -1,8 +1,13 @@
 """Lease semantics (DESIGN D6) — the part of the kernel that must be right."""
 
+import copy
+import os
+import tempfile
+import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from mahler import config
 from mahler.ledger import Ledger
 
 
@@ -175,6 +180,108 @@ class SetupFailCounterTests(unittest.TestCase):
             con.close()
             led = Ledger(path)
             self.assertEqual(led.item("p", 1)["setup_fails"], 0)
+
+
+class MaintenanceConfigTests(unittest.TestCase):
+    def test_defaults_cover_all_passes(self):
+        maintenance = config.DEFAULTS["defaults"]["maintenance"]
+        self.assertTrue(maintenance["enabled"])
+        self.assertEqual(maintenance["cadence_days"], 30)
+        self.assertEqual(maintenance["merged_threshold"], 20)
+        self.assertEqual(maintenance["cooldown_days"], 14)
+        self.assertEqual(maintenance["passes"], list(config.MAINTENANCE_PASSES))
+
+    def test_project_maintenance_partially_overrides_defaults(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["projects"]["p"] = {
+            "maintenance": {"enabled": False, "passes": ["security"], "cadence_days": 45},
+        }
+        maintenance = config.maintenance_policy(cfg, "p")
+        self.assertFalse(maintenance["enabled"])
+        self.assertEqual(maintenance["passes"], ["security"])
+        self.assertEqual(maintenance["cadence_days"], 45)
+        self.assertEqual(maintenance["merged_threshold"], 20)
+        self.assertEqual(maintenance["cooldown_days"], 14)
+
+    def test_project_maintenance_table_loads_from_toml(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "config.toml")
+            with open(path, "w") as fh:
+                fh.write("""
+[projects.p]
+enabled = true
+repo = "owner/project"
+path = "/tmp/project"
+
+[projects.p.maintenance]
+enabled = false
+passes = ["health", "guidance"]
+""")
+            with open(path, "rb") as fh:
+                loaded = tomllib.load(fh)
+            cfg = config.load(path)
+        maintenance = loaded["projects"]["p"]["maintenance"]
+        self.assertFalse(maintenance["enabled"])
+        self.assertEqual(maintenance["passes"], ["health", "guidance"])
+        loaded_policy = config.maintenance_policy(cfg, "p")
+        self.assertFalse(loaded_policy["enabled"])
+        self.assertEqual(loaded_policy["passes"], ["health", "guidance"])
+        self.assertEqual(loaded_policy["cadence_days"], 30)
+
+
+class MaintenanceCheckpointTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+
+    def test_threshold_due(self):
+        self.led.set_maintenance_checkpoint("p", "security", merged_since=20)
+        self.assertTrue(self.led.maintenance_due("p", "security"))
+
+    def test_cadence_due(self):
+        self.led.reset_maintenance("p", "security")
+        self.clock.advance(days=30)
+        self.assertTrue(self.led.maintenance_due("p", "security"))
+
+    def test_not_due(self):
+        self.led.reset_maintenance("p", "security")
+        self.clock.advance(days=29, hours=23, minutes=59)
+        self.led.set_maintenance_checkpoint("p", "security", merged_since=19)
+        self.assertFalse(self.led.maintenance_due("p", "security"))
+
+    def test_first_run_is_due(self):
+        self.assertTrue(self.led.maintenance_due("p", "security"))
+
+    def test_reset_then_not_due(self):
+        self.led.set_maintenance_checkpoint(
+            "p", "security", last_filed_at="2020-01-01T00:00:00+00:00",
+            merged_since=99)
+        self.led.reset_maintenance("p", "security")
+        self.assertFalse(self.led.maintenance_due("p", "security"))
+
+    def test_project_and_pass_counters_do_not_leak(self):
+        self.led.reset_maintenance("p", "security")
+        self.led.record_shipped("p", ["security"])
+        self.assertEqual(
+            self.led.maintenance_checkpoint("p", "security")["merged_since"], 1)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("p", "health")["merged_since"], 0)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("q", "security")["merged_since"], 0)
+        self.led.reset_maintenance("p", "health")
+        self.led.reset_maintenance("q", "security")
+        self.assertTrue(self.led.maintenance_due("p", "security", merged_threshold=1))
+        self.assertFalse(self.led.maintenance_due("p", "health", merged_threshold=1))
+        self.assertFalse(self.led.maintenance_due("q", "security", merged_threshold=1))
+
+    def test_shipped_event_increments_only_selected_passes(self):
+        self.led.event("shipped", "p", 1, {"pr": 2}, passes=["security", "tests"])
+        self.assertEqual(
+            self.led.maintenance_checkpoint("p", "security")["merged_since"], 1)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("p", "tests")["merged_since"], 1)
+        self.assertEqual(
+            self.led.maintenance_checkpoint("p", "health")["merged_since"], 0)
 
 
 if __name__ == "__main__":

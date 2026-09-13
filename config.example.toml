@@ -10,3 +10,10 @@ repo = "mkny13/mahler"
 path = "/Users/mike/Mahler"
 max_parallel = 1                # the conductor changes one thing at a time (DESIGN D17)
 verify = "python3 -m unittest discover -s tests"
+
+# [projects.mahler.maintenance]
+# enabled = true
+# cadence_days = 30
+# merged_threshold = 20
+# cooldown_days = 14
+# passes = ["security", "health", "drift", "tests", "token-economy", "guidance"]

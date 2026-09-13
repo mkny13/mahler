@@ -762,6 +762,20 @@ Throughput counts merged changes, not finished runs. So:
 - Snapshot diffstats are measured from the merge base, so a stale branch no longer looks like
   it deletes everything that landed after it.
 
+### D20 — Maintenance passes are triggered by time and shipped volume
+
+Each managed project may enable periodic reviews for security, code health, architecture drift,
+test health, token/quota hygiene, and agent guidance. They default to a 30-day cadence and an
+early trigger after 20 merged PRs since that pass was last filed, with a 14-day cooldown after
+filing. A project can disable maintenance or select a subset of the six passes.
+
+The ledger owns one checkpoint per project and pass: `last_filed_at` plus `merged_since`. Every
+conductor-confirmed shipped PR increments `merged_since` for the project's enabled passes. A pass
+is due immediately before its first checkpoint, then when either the cadence has elapsed or its
+merged-PR threshold is reached. Filing the maintenance issue resets the checkpoint. Merged-PR
+volume is the throughput signal, not raw agent-run count, so the trigger follows work that
+actually reached the project.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
