@@ -168,6 +168,12 @@ class BurstScheduleTests(unittest.TestCase):
 
 
 class FairnessTests(unittest.TestCase):
+    def test_opted_in_codex_route_is_scheduled(self):
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        ctx.cfg["routing"]["build"] = ["codex"]
+        item(led, "a", 1, age_minutes=10)
+        self.assertEqual(plan(ctx, led), ["a#1: would build on codex"])
+
     def test_round_robin_across_projects(self):
         """Three items in project a and one newer in project b, three slots:
         b's item is not left waiting behind a's whole queue."""

@@ -4,6 +4,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from mahler import config, runner
@@ -159,6 +160,45 @@ class SetupTailTests(unittest.TestCase):
             self.assertEqual(tail.splitlines()[0], "line10")
             self.assertEqual(len(tail.splitlines()), 20)
             self.assertEqual(runner.setup_tail(run, lines=2), "line28\nline29")
+
+
+class PlatformLaunchTests(unittest.TestCase):
+    def test_codex_launch_keeps_worktree_and_lease_fencing(self):
+        with tempfile.TemporaryDirectory() as d:
+            runs = os.path.join(d, "runs")
+            repo = os.path.join(d, "repo")
+            worktrees = os.path.join(d, "worktrees")
+            os.makedirs(repo)
+            policy = {
+                "path": repo, "repo": "x/y", "base": "main", "link": [],
+                "rules": "", "run_timeout_minutes": 60,
+                "worktree_root": worktrees,
+            }
+            ctx = SimpleNamespace(
+                cfg={"platforms": {"codex": {"kind": "codex"}}},
+                policy=lambda project: policy,
+            )
+            item = {"number": 157, "title": "Add Codex", "branch": None}
+
+            with mock.patch.object(config, "RUNS_DIR", runs), \
+                    mock.patch.object(runner, "git"), \
+                    mock.patch.object(runner, "remote_has", return_value=False), \
+                    mock.patch.object(runner, "render", return_value="prompt"), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                    mock.patch.object(runner.platforms, "argv_for",
+                                      return_value=["/usr/bin/true"]) as argv_for, \
+                    mock.patch.object(runner.subprocess, "Popen",
+                                      return_value=SimpleNamespace(pid=321)) as popen:
+                launched = runner.launch(ctx, "mahler", item, "build", "codex", 9, 4)
+
+            worktree = os.path.join(worktrees, "mahler", "157-run9")
+            argv_for.assert_called_once_with(ctx.cfg["platforms"]["codex"], "prompt",
+                                             worktree, "build", 60)
+            self.assertEqual(popen.call_args.kwargs["cwd"], worktree)
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(env["MAHLER_EPOCH"], "4")
+            self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/tmp/hooks")
+            self.assertEqual(launched["worktree"], worktree)
 
 
 if __name__ == "__main__":
