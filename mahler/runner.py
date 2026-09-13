@@ -177,9 +177,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         kept = catch_up(wt, branch, base, item["number"], run_id)
         if kept is None:
             handoff = (f"- earlier work on this item is already in your branch, replayed onto "
-                       f"current `origin/{base}`: run `git log --oneline origin/{base}..HEAD`, "
-                       f"and read the latest `mahler:agent handoff` comment on the issue before "
-                       f"continuing")
+                       f"current `origin/{base}`. First run the test/verify command: if it passes, "
+                       f"commit, push, and end with STATUS: DONE immediately. Otherwise run "
+                       f"`git log --oneline origin/{base}..HEAD` and read the latest "
+                       f"`mahler:agent handoff` comment on the issue before continuing")
         else:
             handoff = (f"- earlier work on this item no longer applies to current "
                        f"`origin/{base}`, so your branch starts fresh from it. The old work is "
