@@ -19,6 +19,15 @@ WORKTREES = os.path.join(STATE, "worktrees")
 LOCK_PATH = os.path.join(STATE, "tick.lock")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+MAINTENANCE_PASSES = ("security", "health", "drift", "tests", "token-economy", "guidance")
+DEFAULT_MAINTENANCE = {
+    "enabled": True,
+    "cadence_days": 30,
+    "merged_threshold": 20,
+    "cooldown_days": 14,
+    "passes": list(MAINTENANCE_PASSES),
+}
+
 DEFAULTS = {
     "defaults": {
         "enabled": False,
@@ -44,6 +53,7 @@ DEFAULTS = {
         "link": [],                    # untracked files to symlink from the primary checkout
         "setup": "",                   # shell run in a new worktree before the agent starts
         "rules": "",                   # extra project rules appended to build/sort prompts
+        "maintenance": DEFAULT_MAINTENANCE,
     },
     "concurrency": {"total": 2},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},
@@ -168,7 +178,11 @@ def load(path=None):
 
 def project_policy(cfg, name):
     """Defaults overlaid with one project's own entry."""
-    return {**cfg["defaults"], **cfg["projects"].get(name, {}), "name": name}
+    return {**_merge(cfg["defaults"], cfg["projects"].get(name, {})), "name": name}
+
+
+def maintenance_policy(cfg, name):
+    return project_policy(cfg, name).get("maintenance", DEFAULT_MAINTENANCE)
 
 
 def enabled_projects(cfg):

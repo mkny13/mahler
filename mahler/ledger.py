@@ -20,6 +20,8 @@ import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+from .config import MAINTENANCE_PASSES
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     project          TEXT NOT NULL,
@@ -162,11 +164,82 @@ class Ledger:
     def q1(self, sql, args=()):
         return self.con.execute(sql, args).fetchone()
 
-    def event(self, kind, project=None, number=None, detail=None):
+    def event(self, kind, project=None, number=None, detail=None, passes=None,
+              maintenance_passes=None):
+        selected_passes = (maintenance_passes if maintenance_passes is not None
+                           else passes)
         self.con.execute(
             "INSERT INTO events (at, project, number, kind, detail) VALUES (?,?,?,?,?)",
             (iso(self.now()), project, number, kind,
              detail if isinstance(detail, str) or detail is None else json.dumps(detail)))
+        if kind == "shipped" and project:
+            self.record_shipped(project, MAINTENANCE_PASSES if selected_passes is None
+                                else selected_passes)
+
+    # ---------- maintenance checkpoints ----------
+
+    @staticmethod
+    def _maintenance_counter_name(pass_name):
+        return f"maintenance:{pass_name}:merged_since"
+
+    @staticmethod
+    def _maintenance_timestamp_key(project, pass_name):
+        return f"maintenance:{project}:{pass_name}:last_filed_at"
+
+    def maintenance_checkpoint(self, project, pass_name):
+        row = self.q1("SELECT value FROM counters WHERE project=? AND name=?",
+                      (project, self._maintenance_counter_name(pass_name)))
+        return {"last_filed_at": self.get_kv(
+                    self._maintenance_timestamp_key(project, pass_name)),
+                "merged_since": row["value"] if row else 0}
+
+    def set_maintenance_checkpoint(self, project, pass_name, last_filed_at=None,
+                                   merged_since=0):
+        timestamp = (iso(self.now()) if last_filed_at is None
+                     else last_filed_at if isinstance(last_filed_at, str)
+                     else iso(last_filed_at))
+        with self._tx():
+            self.set_kv(self._maintenance_timestamp_key(project, pass_name), timestamp)
+            self.con.execute(
+                "INSERT OR REPLACE INTO counters (project, name, value) VALUES (?,?,?)",
+                (project, self._maintenance_counter_name(pass_name), merged_since))
+        return self.maintenance_checkpoint(project, pass_name)
+
+    def reset_maintenance(self, project, pass_name):
+        return self.set_maintenance_checkpoint(project, pass_name)
+
+    def increment_maintenance_merged(self, project, pass_name, amount=1):
+        with self._tx():
+            self.con.execute(
+                "INSERT OR IGNORE INTO counters (project, name, value) VALUES (?,?,0)",
+                (project, self._maintenance_counter_name(pass_name)))
+            self.con.execute(
+                "UPDATE counters SET value=value+? WHERE project=? AND name=?",
+                (amount, project, self._maintenance_counter_name(pass_name)))
+        return self.maintenance_checkpoint(project, pass_name)["merged_since"]
+
+    def record_shipped(self, project, passes=None):
+        selected = MAINTENANCE_PASSES if passes is None else passes
+        if isinstance(selected, str):
+            selected = (selected,)
+        for pass_name in dict.fromkeys(selected):
+            self.increment_maintenance_merged(project, pass_name)
+
+    def maintenance_due(self, project, pass_name, cadence_days=30,
+                        merged_threshold=20, policy=None):
+        if policy is not None:
+            policy = policy.get("maintenance", policy)
+            cadence_days = policy.get("cadence_days", cadence_days)
+            merged_threshold = policy.get("merged_threshold", merged_threshold)
+        elif isinstance(cadence_days, dict):
+            policy = cadence_days.get("maintenance", cadence_days)
+            cadence_days = policy.get("cadence_days", 30)
+            merged_threshold = policy.get("merged_threshold", 20)
+        checkpoint = self.maintenance_checkpoint(project, pass_name)
+        last_filed_at = parse(checkpoint["last_filed_at"])
+        return (last_filed_at is None
+                or self.now() - last_filed_at >= timedelta(days=cadence_days)
+                or checkpoint["merged_since"] >= merged_threshold)
 
     # ---------- kv ----------
 
