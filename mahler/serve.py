@@ -153,11 +153,41 @@ td.t {{ text-align: right; white-space: nowrap; color: var(--muted); }}
   background: var(--bar); color: var(--muted); white-space: nowrap;
 }}
 .chip-warn {{ background: var(--hard); color: #fff; }}
+.topbar {{
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg);
+  margin: -1rem -1rem .6rem;
+  padding: .6rem 1rem .5rem;
+  border-bottom: 1px solid var(--line);
+}}
+.topbar-row {{
+  display: flex; justify-content: space-between;
+  align-items: baseline; gap: .5rem; flex-wrap: wrap;
+}}
+.jump {{ display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .3rem; }}
+.jump a {{
+  font-size: .85rem; padding: .5rem .65rem; border-radius: .45rem;
+  background: var(--card); border: 1px solid var(--line);
+}}
+details.section {{ scroll-margin-top: 4rem; }}
+details.section > summary {{
+  cursor: pointer; margin: 1.1rem 0 .4rem;
+  padding: .35rem 0; border-radius: .4rem;
+}}
+details.section > summary h2 {{ margin: 0; }}
 </style>
 </head>
 <body>
-<h1>Mahler</h1>
-<p class="meta">read-only &middot; refreshes every {REFRESH_SECONDS}s</p>""")
+<header class="topbar">
+  <div class="topbar-row"><h1>Mahler</h1>
+  <p class="meta">read-only &middot; refreshes every {REFRESH_SECONDS}s</p></div>
+  <nav class="jump" aria-label="Sections">
+    <a href="#running">Running</a>
+    <a href="#quota">Quota</a>
+    <a href="#items">Items</a>
+    <a href="#events">Events</a>
+  </nav>
+</header>""")
     if snap["paused"]:
         w('<div class="paused">PAUSED &mdash; nothing new will start</div>')
     return _render_rest(out, snap, cfg)
@@ -166,7 +196,8 @@ td.t {{ text-align: right; white-space: nowrap; color: var(--muted); }}
 def _render_rest(out, snap, cfg):
     w = out.append
 
-    w(f"<h2>Running <span class=\"count\">({len(snap['runs'])})</span></h2>")
+    w('<details class="section" id="running" open>')
+    w(f"<summary><h2>Running <span class=\"count\">({len(snap['runs'])})</span></h2></summary>")
     if snap["runs"]:
         for r in snap["runs"]:
             started = parse(r["started_at"])
@@ -196,8 +227,10 @@ def _render_rest(out, snap, cfg):
               f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}{parent_str}</div></div>")
     else:
         w('<div class="muted">nothing running</div>')
+    w("</details>")
 
-    w("<h2>Quota</h2>")
+    w('<details class="section" id="quota" open>')
+    w("<summary><h2>Quota</h2></summary>")
     if snap.get("peak"):
         w(f'<div class="card" style="margin-bottom:.5rem"><b style="color:var(--soft)">'
           f'Peak window</b> <span class="muted">{_esc(snap["peak"])}</span></div>')
@@ -222,7 +255,9 @@ def _render_rest(out, snap, cfg):
           f"align-items:center;padding:0 .5rem;line-height:1.15rem\">"
           f"<span class=\"mono\">{_esc(label)}</span></div></div></div>")
 
-    w("<h2>Items</h2>")
+    w("</details>")
+    w('<details class="section" id="items" open>')
+    w("<summary><h2>Items</h2></summary>")
     any_items = False
     for state in PAGE_STATES:
         group = snap["by_state"].get(state, [])
@@ -256,8 +291,10 @@ def _render_rest(out, snap, cfg):
               f"<div class=\"meta\">p{i['priority']}{held}{tries}{est_str}{parent_str}</div></div>")
     if not any_items:
         w('<div class="muted">nothing open</div>')
+    w("</details>")
 
-    w(f"<h2>Events <span class=\"count\">(last {EVENTS_SHOWN})</span></h2>")
+    w('<details class="section" id="events" open>')
+    w(f"<summary><h2>Events <span class=\"count\">(last {EVENTS_SHOWN})</span></h2></summary>")
     if snap["events"]:
         w('<div class="card"><table>')
         for e in snap["events"]:
@@ -269,7 +306,36 @@ def _render_rest(out, snap, cfg):
         w("</table></div>")
     else:
         w('<div class="muted">no events yet</div>')
+    w("</details>")
 
+    # minimal script (issue #134): keep each section's open/closed state in
+    # localStorage keyed by section id, so the 30s meta-refresh does not snap
+    # collapsed sections back open. A header jump link also opens its target.
+    w("""<script>
+(function () {
+  var KEY = "mahler.section.";
+  var secs = document.querySelectorAll("details.section");
+  for (var i = 0; i < secs.length; i++) {
+    var s = secs[i];
+    try {
+      var v = localStorage.getItem(KEY + s.id);
+      if (v === "closed") { s.open = false; }
+      else if (v === "open") { s.open = true; }
+    } catch (e) {}
+    s.addEventListener("toggle", function () {
+      try { localStorage.setItem(KEY + this.id, this.open ? "open" : "closed"); }
+      catch (e) {}
+    });
+  }
+  var links = document.querySelectorAll(".jump a");
+  for (var j = 0; j < links.length; j++) {
+    links[j].addEventListener("click", function () {
+      var t = document.getElementById(this.getAttribute("href").slice(1));
+      if (t) { t.open = true; }
+    });
+  }
+})();
+</script>""")
     w("</body></html>")
     return "\n".join(out)
 

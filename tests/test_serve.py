@@ -88,7 +88,9 @@ class TestRender(unittest.TestCase):
     def test_title_is_escaped(self):
         html = render(self.led, self.cfg)
         self.assertIn("A needs-you item &lt;script&gt;", html)
-        self.assertNotIn("<script>", html)
+        # mahler#134: the page now has its own <script> (collapse-state), so
+        # assert on the raw unescaped title rather than the bare tag.
+        self.assertNotIn("A needs-you item <script>", html)
 
     def test_quota_gauges(self):
         html = render(self.led, self.cfg)
@@ -179,7 +181,31 @@ class TestRender(unittest.TestCase):
         events_pos = html.find("<h2>Events")
         self.assertLess(running_pos, quota_pos, "Running should appear before Quota")
         self.assertLess(quota_pos, items_pos, "Quota should appear before Items")
-        self.assertLess(items_pos, events_pos, "Items should appear before Events")
+        self.assertLess(items_pos, events_pos, "Events should appear after Items")
+
+    def test_header_has_jump_links(self):
+        # mahler#134: compact header with anchors to each section
+        html = render(self.led, self.cfg)
+        self.assertIn('<header class="topbar">', html)
+        self.assertIn('<nav class="jump"', html)
+        for sid in ("running", "quota", "items", "events"):
+            self.assertIn(f'href="#{sid}"', html)
+
+    def test_sections_are_collapsible_details(self):
+        # mahler#134: each section wraps in details/summary, open by default
+        html = render(self.led, self.cfg)
+        for sid in ("running", "quota", "items", "events"):
+            self.assertIn(f'<details class="section" id="{sid}" open>', html)
+        self.assertEqual(html.count("<summary>"), 4)
+        self.assertIn("<summary><h2>Running", html)
+        self.assertIn("<summary><h2>Events", html)
+
+    def test_collapse_state_persists_via_local_storage(self):
+        # mahler#134: open/closed state survives the 30s meta-refresh
+        html = render(self.led, self.cfg)
+        self.assertIn("localStorage", html)
+        self.assertIn("mahler.section.", html)
+        self.assertIn('http-equiv="refresh" content="30"', html)  # refresh unchanged
 
 
 class TestServer(unittest.TestCase):
