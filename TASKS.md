@@ -1,6 +1,6 @@
 # TASKS.md
 
-Last updated by: Claude (mahler#12 session handoff), 2026-09-12
+Last updated by: Claude (mahler#16 ship + #27 stale bases), 2026-09-12
 
 ## Now
 
@@ -13,13 +13,12 @@ detected, pinged and reaped (DESIGN D8). DESIGN D18 was decided: agents build, a
 itself opens, watches and merges PRs. The backlog lives in GitHub Issues, not here.
 
 ## Next steps
-1. **Ship mahler#16 by hand.** #15 merged first, so build agents now end at `STATUS: DONE`
-   and Mahler parks the item in `working` for the conductor. The conductor is #16, which
-   isn't built yet. So #16's own build, and every build after it, will finish DONE and
-   wait. When #16's run ends DONE, open its PR from the `mahler/snapshot/16-run<id>`
-   branch, wait for CI, merge, and check that it picks up the other parked items. See
-   `mahler status` for items `working` with no run. Then #17 (no status line + green
-   verify = DONE; resume Cline once with "continue") and #18 (red CI → fix run).
+1. **Watch the conductor ship on its own.** #16 (the conductor, PR #24) and #27 (DESIGN
+   D19, PR #28) are merged and the daemon runs them. #20 and #8 had built on stale bases,
+   so they were re-queued with `/mahler go` (2026-09-12). Check that they build one at a
+   time (only one mahler item `working`/`verifying` in `mahler status`), and that each PR
+   opens and merges without anyone's help. Then #17 (no status line + green verify = DONE)
+   and #18 (red CI → fix run). A red PR now pauses that project's builds and pings once.
 2. groundwork#81 is ready and pinned by the `platform:agy-claude` label. It waits for
    Antigravity's Claude pool to reset, then should back up, migrate and seed production,
    and merge PR #93. Check that it did. If it failed again, read the handoff comment.

@@ -43,6 +43,14 @@ mahler heartbeat mahler#12    # if you've been quiet a while (leases lapse after
 mahler release mahler#12      # when you stop without finishing
 ```
 
+**Work in your own worktree, never by switching branches in `~/Mahler`.** Several sessions
+often share that checkout. A `git checkout` or `reset` there carries off or wipes whatever
+another session has uncommitted. This happened on 2026-09-12 (mahler#27).
+
+```bash
+git -C ~/Mahler worktree add ../Mahler-12 -b mahler/12-short-slug origin/main
+```
+
 Other useful commands: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
 `mahler add mahler "title"`.
 
