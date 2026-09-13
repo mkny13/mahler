@@ -183,6 +183,23 @@ class FairnessTests(unittest.TestCase):
                          ["a#1: would sort on claude",
                           "a#2: would build on agy-claude"])
 
+    def test_pinned_inbox_sort_uses_the_pin(self):
+        """A platform pin on an inbox issue routes the sort to that platform."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed(led, **{"agy-claude": (10, 10), "claude": (10, 10)})
+        led.upsert_item("a", 1, state="inbox", priority=2, pin="agy-claude",
+                        state_changed_at=iso(NOW - timedelta(minutes=60)))
+        self.assertEqual(plan(ctx, led), ["a#1: would sort on agy-claude"])
+
+    def test_pinned_plan_sort_still_uses_the_pin(self):
+        """A platform pin on a planning item overrides the default plan route."""
+        ctx, led = mk_ctx({"a": proj()}, total=1)
+        seed(led, **{"agy-claude": (10, 10), "claude-opus": (10, 10)})
+        led.upsert_item("a", 1, state="inbox", priority=2, pin="agy-claude",
+                        labels='["size:l"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=60)))
+        self.assertEqual(plan(ctx, led), ["a#1: would sort on agy-claude"])
+
     def test_priority_comes_first_across_projects(self):
         ctx, led = mk_ctx({"a": proj(), "b": proj()}, total=1)
         seed(led, **{"agy-claude": (10, 10)})
