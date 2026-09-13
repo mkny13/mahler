@@ -7,17 +7,77 @@ work is stopped at the *hard* line (see scheduler.watchdog).
 """
 
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from .ledger import parse
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
+PEAK_OVERRIDE = "peak_override_until"   # kv: an ISO time the peak window is overridden until
 
 # short chip labels for countdowns (mahler#52): "5h" reads fine as-is, but
 # "weekly" is shortened to "wk" to keep the CLI/web chips compact.
 WINDOW_LABELS = {"5h": "5h", "weekly": "wk"}
 
 SIZES = {"s": 1, "m": 2, "l": 3}
+
+
+def peak_state(cfg, led):
+    """Claude's peak window (DESIGN D22): is it active right now?
+
+    Active when `claude_peak.enabled`, the local weekday is listed, the local
+    time is in [start, end), and there is no live override (kv
+    `peak_override_until`, an ISO time in the future). Pinned items bypass the
+    window — the caller decides that, not this helper.
+
+    -> (active: bool, until: datetime|None)
+    `until` is today's end time, converted to UTC. When the window is not
+    active, `until` is None.
+    """
+    pc = cfg.get("claude_peak") or {}
+    if not pc.get("enabled", True):
+        return False, None
+    now = led.now()
+    tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
+    local = now.astimezone(tz)
+    if local.weekday() not in pc.get("weekdays", [0, 1, 2, 3, 4]):
+        return False, None
+    try:
+        sh, sm = (int(x) for x in pc.get("start", "05:00").split(":"))
+        eh, em = (int(x) for x in pc.get("end", "11:00").split(":"))
+    except (ValueError, AttributeError):
+        return False, None
+    start = local.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    end = local.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if not (start <= local < end):
+        return False, None
+    override = parse(led.get_kv(PEAK_OVERRIDE))
+    if override and override > now:
+        return False, None
+    return True, end.astimezone(now.tzinfo)
+
+
+def peak_status_line(cfg, led):
+    """One-line human-readable peak state for `mahler status` / the web page.
+
+    -> str or None. "peak hours: Claude paused until 11:00 PT (in 2h 10m)" or
+    "peak hours: overridden until 09:30" or None when the window is off.
+    """
+    pc = cfg.get("claude_peak") or {}
+    if not pc.get("enabled", True):
+        return None
+    now = led.now()
+    override = parse(led.get_kv(PEAK_OVERRIDE))
+    if override and override > now:
+        tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
+        return (f"peak hours: overridden until {override.astimezone(tz):%H:%M} "
+                f"({fmt_countdown(override - now)})")
+    active, until = peak_state(cfg, led)
+    if not active:
+        return None
+    tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
+    return (f"peak hours: Claude paused until {until.astimezone(tz):%H:%M} PT "
+            f"(in {fmt_countdown(until - now)})")
 
 
 def burst_status(cfg, led):
@@ -189,8 +249,14 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None):
 
     During an active burst (burst_lines from burst_status), build routing puts
     Claude first and Claude platforms use the burst soft/hard lines.
+
+    During Claude's peak window (D22), a candidate whose `kind == "claude"` is
+    skipped with the reason `peak hours until HH:MM (in Xh Ym) — mahler peak off
+    to override`, unless the item is pinned to it (`pin` is not None). Running
+    Claude runs are unaffected — this only gates new starts.
     """
     reasons = []
+    peak_active, peak_until = peak_state(cfg, led)
     for name in candidates(cfg, role, pin, burst_lines):
         if name in busy:
             reasons.append(f"{name}: busy")
@@ -204,9 +270,15 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None):
                 continue
             min_limit = cfg["platforms"][name].get("min_size")
             if min_limit and not pin and SIZES.get(size or "m", 2) < SIZES[min_limit]:
-                reasons.append(f"{name}: requires size:{min_limit}+")
+                reasons.append(f"{name}: requires size:{min_limit}")
                 continue
         pconf = cfg["platforms"][name]
+        if peak_active and pconf.get("kind") == "claude" and not pin:
+            reasons.append(
+                f"{name}: peak hours until {peak_until.astimezone():%H:%M} "
+                f"(in {fmt_countdown(peak_until - led.now())}) "
+                f"— mahler peak off to override")
+            continue
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = usage_state(led, name, pconf, burst_lines=claude_lines)
         if state == "ok":

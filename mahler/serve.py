@@ -69,6 +69,7 @@ def snapshot(cfg, led):
     return {
         "now": now,
         "paused": led.paused(),
+        "peak": router.peak_status_line(cfg, led),
         "runs": runs,
         "by_state": by_state,
         "leases": leases,
@@ -197,6 +198,9 @@ def _render_rest(out, snap, cfg):
         w('<div class="muted">nothing running</div>')
 
     w("<h2>Quota</h2>")
+    if snap.get("peak"):
+        w(f'<div class="card" style="margin-bottom:.5rem"><b style="color:var(--soft)">'
+          f'Peak window</b> <span class="muted">{_esc(snap["peak"])}</span></div>')
     if snap.get("burst"):
         w(f'<div class="card" style="margin-bottom:.5rem"><b style="color:var(--accent)">'
           f'D23 {snap["burst"]} burst active</b> <span class="muted">— Claude '
