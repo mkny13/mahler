@@ -9,7 +9,7 @@ import fcntl
 import json
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import backup, config, digest, notify, platforms, presence, router, runner
 from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
@@ -76,8 +76,7 @@ def tick(ctx):
         ctx.say("paused — not starting anything (mahler resume)")
     else:
         refresh_usage(ctx, projects)
-        for p in projects:
-            schedule(ctx, p)
+        schedule(ctx, projects)
     for p in projects:
         mirror_labels(ctx, p["name"])
     if not ctx.dry_run:
@@ -499,61 +498,121 @@ def refresh_usage(ctx, projects):
 
 # ---------- schedule ----------
 
-def schedule(ctx, p):
-    led, cfg, name = ctx.led, ctx.cfg, p["name"]
-    now = led.now()
+def _candidates(ctx, projects):
+    """One global candidate list of (pol, role, item) across all enabled
+    projects — sorts and settled builds compete for the same slots (mahler#9)."""
+    led = ctx.led
+    work = []
+    for p in projects:
+        name = p["name"]
+        done = {i["number"] for i in led.items(name, ["done"])}
+        for it in led.items(name, ["inbox"]):
+            work.append((p, "sort", it))
+        for it in led.items(name, ["ready"]):
+            sorted_at = parse(it["sorted_at"])
+            if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):
+                continue
+            deps = [d for d in json.loads(it["depends"] or "[]") if d not in done]
+            if deps:
+                continue
+            work.append((p, "build", it))
+    return work
+
+
+def _headroom(ctx, role, per_platform, busy):
+    """Routing platforms for `role` that could take a new run right now:
+    enabled, under per-platform max_runs, reachable and under its soft lines."""
+    cfg, led = ctx.cfg, ctx.led
+    free = []
+    for name in router.candidates(cfg, role):
+        pc = cfg["platforms"][name]
+        if name in busy or per_platform.get(name, 0) >= pc.get("max_runs", 1):
+            continue
+        if router.usage_state(led, name, pc)[0] != "ok":
+            continue
+        free.append(name)
+    return free
+
+
+def schedule(ctx, projects):
+    """Hand out run slots across every project at once (mahler#9).
+
+    Order: priority first; then ready builds before inbox sorts when the
+    platform a sort would choose is the last one with headroom (sorts must
+    not eat a scarce builder); then oldest state_changed_at. The ordered
+    list is then dealt round-robin by project — each pass starts at most
+    one run per project — so no project waits more than one slot behind
+    another. Per-project max_parallel, per-platform max_runs, leases, hot
+    hold and the settle/dependency gates all still apply.
+    """
+    led, cfg = ctx.led, ctx.cfg
     active = led.active_runs()
     total = len(active)
-    in_project = len([r for r in active if r["project"] == name])
-    per_platform = {}
+    in_project, per_platform = {}, {}
     for r in active:
+        in_project[r["project"]] = in_project.get(r["project"], 0) + 1
         per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
+    busy = {k for k, v in per_platform.items()
+            if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
+    busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
 
-    hot = False
-    if p.get("hot_hold") and ctx.hot_hold:
-        last = presence.last_claude_activity(p["path"])
-        hot = bool(last and now - last < timedelta(minutes=p["hot_hold_minutes"]))
+    hot = {}
+    for p in projects:
+        hot[p["name"]] = False
+        if p.get("hot_hold") and ctx.hot_hold:
+            last = presence.last_claude_activity(p["path"])
+            hot[p["name"]] = bool(last and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
 
-    done = {i["number"] for i in led.items(name, ["done"])}
-    work = []
-    for it in led.items(name, ["inbox"]):
-        work.append(("sort", it))
-    for it in led.items(name, ["ready"]):
-        sorted_at = parse(it["sorted_at"])
-        if sorted_at and now - sorted_at < timedelta(minutes=p["settle_minutes"]):
-            continue
-        deps = [d for d in json.loads(it["depends"] or "[]") if d not in done]
-        if deps:
-            continue
-        work.append(("build", it))
+    work = _candidates(ctx, projects)
+    sorts_wait = len(_headroom(ctx, "sort", per_platform, busy)) <= 1
 
-    for role, it in work:
-        n = it["number"]
-        if total >= cfg["concurrency"]["total"] or in_project >= p["max_parallel"]:
-            ctx.say(f"{name}: at capacity ({total} running)")
-            return
-        if led.lease(name, n):
-            continue
-        if role == "build" and hot:
-            ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
-            continue
-        busy = {k for k, v in per_platform.items()
-                if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
-        busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
-        size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
-                     if l.startswith("size:")), None)
-        platform, reasons = router.pick(cfg, led, role, it["pin"] if role == "build" else None,
-                                        busy, size=size)
-        if not platform:
-            ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
-            continue
-        if ctx.dry_run:
-            ctx.say(f"{name}#{n}: would {role} on {platform}")
-        elif not start(ctx, name, it, role, platform):
-            continue
-        total += 1
-        in_project += 1
-        per_platform[platform] = per_platform.get(platform, 0) + 1
+    def key(c):
+        p, role, it = c
+        return (it["priority"],
+                1 if (sorts_wait and role == "sort") else 0,
+                parse(it["state_changed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
+                p["name"], it["number"])
+    work.sort(key=key)
+
+    said = set()             # projects already told they're at capacity
+    while work and total < cfg["concurrency"]["total"]:
+        started = set()      # projects that took a slot this pass
+        for cand in list(work):
+            p, role, it = cand
+            name, n = p["name"], it["number"]
+            if name in started:
+                continue                    # its next item waits for the next pass
+            work.remove(cand)
+            if total >= cfg["concurrency"]["total"]:
+                work.clear()
+                break
+            if in_project.get(name, 0) >= p["max_parallel"]:
+                if name not in said:
+                    said.add(name)
+                    ctx.say(f"{name}: at capacity ({total} running)")
+                continue
+            if role == "build" and hot[name]:
+                ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
+                continue
+            if led.lease(name, n):
+                continue
+            size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
+                         if l.startswith("size:")), None)
+            platform, reasons = router.pick(cfg, led, role, it["pin"] if role == "build" else None,
+                                            busy, size=size)
+            if not platform:
+                ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
+                continue
+            if ctx.dry_run:
+                ctx.say(f"{name}#{n}: would {role} on {platform}")
+            elif not start(ctx, name, it, role, platform):
+                continue
+            total += 1
+            in_project[name] = in_project.get(name, 0) + 1
+            per_platform[platform] = per_platform.get(platform, 0) + 1
+            if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
+                busy.add(platform)
+            started.add(name)
 
 
 def start(ctx, project, item, role, platform):
