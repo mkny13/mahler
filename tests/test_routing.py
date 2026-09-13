@@ -88,13 +88,31 @@ class RouterTests(unittest.TestCase):
         led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
         self.assertEqual(router.pick(self.cfg, led, "build", pin="agy-gemini")[0], "agy-gemini")
 
-    def test_claude_opus_is_pinnable_but_never_beats_claude_unpinned(self):
-        # same account/quota as "claude" (real Claude Code CLI, forced to
-        # Opus), so it's last in routing order and only reached via a pin
-        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+    def test_claude_opus_routes_hard_tasks_unpinned(self):
+        # size:l (hard task) skips agy-claude/gemini (max_size: m) and claude (max_size: m),
+        # routing directly to claude-opus (min_size: l)
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10),
                            "claude": (5, 5), "claude-opus": (5, 5)})
-        self.assertEqual(router.pick(self.cfg, led, "build")[0], "claude")
-        self.assertEqual(router.pick(self.cfg, led, "build", pin="claude-opus")[0],
+        self.assertEqual(router.pick(self.cfg, led, "build", size="l")[0], "claude-opus")
+
+    def test_claude_opus_skips_small_and_medium_unpinned(self):
+        # size:s and size:m skip claude-opus (min_size: l) to save expensive Opus quota;
+        # agy-claude takes them first when available, and claude (Sonnet) builds when free tiers full
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10),
+                           "claude": (5, 5), "claude-opus": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "agy-claude")
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "agy-claude")
+
+        # When free tiers exhausted, size:m routes to claude (Sonnet), not claude-opus
+        led_spent = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+                                "claude": (5, 5), "claude-opus": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led_spent, "build", size="m")[0], "claude")
+
+    def test_claude_opus_pin_overrides_size_restrictions(self):
+        # Explicit pin to claude-opus works even on a size:s or size:m item
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10),
+                           "claude": (5, 5), "claude-opus": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led, "build", pin="claude-opus", size="s")[0],
                           "claude-opus")
 
     def test_claude_opus_model_flag(self):
