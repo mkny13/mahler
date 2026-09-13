@@ -59,26 +59,25 @@ DEFAULTS = {
         # keep Antigravity's scarcer Claude/Opus pool for building
         "sort": ["claude", "agy-gemini", "agy-claude", "claude-opus"],
         "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo",
-                   "claude", "claude-opus"],
+                  "claude-opus", "claude"],
     },
     "platforms": {
         "claude": {
             "enabled": True, "kind": "claude",
             "sort_model": "sonnet", "build_model": "",
+            "max_size": "m",
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
         },
-        # Same CLI, same account/quota as "claude" (kind: claude) — just a
-        # pinnable name that forces Opus for hard tasks (`platform:claude-opus`)
-        # without spending Antigravity's separate, scarcer Claude/Opus pool.
-        # Listed last in routing so it's never picked over "claude" unpinned
-        # (identical usage, so it never would win anyway); it's only reached
-        # via an explicit pin, and being in the routing lists is what gets its
-        # quota probed (refresh_usage only probes platforms it's "wanted").
+        # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
+        # for hard tasks (size:l by default via min_size: "l", or via explicit
+        # `platform:claude-opus` pin) without spending Antigravity's separate,
+        # scarcer Claude/Opus pool.
         "claude-opus": {
             "enabled": True, "kind": "claude",
             "sort_model": "opus", "build_model": "opus",
+            "min_size": "l",
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
@@ -86,6 +85,7 @@ DEFAULTS = {
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
             "model": "claude-opus-4-6-thinking",
+            "max_size": "m",
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
@@ -93,6 +93,7 @@ DEFAULTS = {
         "agy-gemini": {
             "enabled": True, "kind": "agy", "pool": "Gemini Models",
             "model": "gemini-3.1-pro-high",
+            "max_size": "m",
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,

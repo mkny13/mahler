@@ -76,6 +76,10 @@ def pick(cfg, led, role, pin=None, busy=(), size=None):
         if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
             reasons.append(f"{name}: only takes size:{limit}")
             continue
+        min_limit = cfg["platforms"][name].get("min_size")
+        if min_limit and not pin and SIZES.get(size or "m", 2) < SIZES[min_limit]:
+            reasons.append(f"{name}: requires size:{min_limit}+")
+            continue
         state, detail = usage_state(led, name, cfg["platforms"][name])
         if state == "ok":
             return name, reasons
