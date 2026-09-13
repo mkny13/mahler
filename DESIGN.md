@@ -839,6 +839,34 @@ app marks it with a flame. Reporting says the cut was lifted for Claude Code on 
 headroom rule, because it's when you're most likely using Claude yourself. Revisit if the
 evidence settles.
 
+### D23 — Use it or lose it: burst before a Claude window resets
+
+Decided 2026-09-13 (your call). The reserve (D8) keeps Claude quota back for you. In the last
+hours before a window resets, whatever is still in reserve expires unused. On 2026-09-13 the
+weekly window stood at 81%, over the 70% soft line, so Claude sat idle until the reset on
+2026-09-15 at 5am, while a queue of Opus planning waited.
+
+- **The weekly burst.** In the last `weekly_lead_hours` (5) before the weekly window resets,
+  every Claude line (weekly *and* 5-hour) rises to the burst lines: soft 90%, hard 97%. That
+  covers midnight to 5am before the 5am reset. The 5-hour lines rise too, or a single session
+  would cap the burst well short of the weekly remainder.
+- **The session burst.** In the last `session_lead_minutes` (60) before the 5-hour window
+  resets, the 5-hour lines rise to the burst lines, and the weekly lines don't. So leftover
+  session quota turns into work, and the weekly reserve stays yours.
+- **In a burst, Claude goes first.** Claude platforms move ahead of the free tiers in
+  `routing.build`, because their quota is the one expiring. Items waiting for Opus planning
+  (D21) are served too, since the burst lines apply to `claude-opus` as well.
+- **Never while you're using Claude.** No burst starts runs while you're active: an
+  interactive Claude Code transcript outside Mahler's worktrees written in the last 20 minutes,
+  or 5-hour usage that rose while no Mahler Claude run was live (that catches the Claude app on
+  your phone or the web). The peak window (D22) still wins.
+- **Never into paid usage.** Burst lines stop below 100%. As a backstop, any run whose
+  `rate_limit_event` reports `isUsingOverage: true` is stopped at once and Claude is marked
+  exhausted until the reset. This applies at all times, not just in a burst.
+- The burst needs a fresh usage sample with a known reset time. Unknown usage still counts as
+  over the line (D8).
+- `[burst]` in the config holds the lead times and lines, and `enabled = false` turns it off.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
