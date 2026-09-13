@@ -26,7 +26,17 @@ Verified against the real CLIs on 2026-09-13 (mahler#25):
     `{"type":"error","error":{"data":{"statusCode":401,...}}}`. read_log
     falls back to a generic string-walk over each event for kilo, so a run
     still surfaces its STATUS line even if the exact event schema drifts.
-    Re-verify once auth is done and tighten the parser if needed.
+
+Verified against the real CLI on 2026-09-13, after login (mahler#29):
+  * Kilo's default model needs an explicit free route — without one, every
+    run fails immediately with `{"type":"error","error":{"data":
+    {"statusCode":402,"message":"Add credits to continue, or switch to a
+    free model"}}}` (`error_type: "usage_limit_exceeded"`, no "quota" in the
+    text). `kilo/kilo-auto/free` works and auto-picks among Kilo's `:free`
+    models. A real success event looks like `{"type":"text","part":
+    {"type":"text","text":"..."}}` ... `{"type":"step_finish","part":
+    {"type":"step-finish","reason":"stop",...}}` — matched by the generic
+    string-walk (it finds "text" nested under "part") without changes.
 """
 
 import json
@@ -35,6 +45,10 @@ import subprocess
 from datetime import datetime, timezone
 
 HOME = os.path.expanduser("~")
+
+# Free-tier exhaustion doesn't always say "quota": Kilo's out-of-credits error
+# (mahler#29) is "Add credits to continue" / error_type "usage_limit_exceeded".
+QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage_limit_exceeded")
 
 # Guardrails for Claude runs — a safety net, not the plan (DESIGN D12).
 CLAUDE_DENY = [
@@ -300,12 +314,11 @@ def read_log(path, kind):
                 if ev.get("type") == "run_result":
                     res["final"] = ev.get("text")
                     res["ok"] = ev.get("finishReason") == "completed"
-                    if not res["ok"] and any(w in json.dumps(ev).lower()
-                                             for w in ("rate limit", "429", "quota")):
+                    if not res["ok"] and any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         res["quota_hit"] = True
                 elif ev.get("type") == "error" or ev.get("error"):
                     blob = json.dumps(ev).lower()
-                    if any(w in blob for w in ("rate limit", "429", "quota")):
+                    if any(w in blob for w in QUOTA_WORDS):
                         res["quota_hit"] = True
             elif kind == "copilot":
                 t = ev.get("type")
@@ -317,11 +330,11 @@ def read_log(path, kind):
                 elif t == "result":
                     res["ok"] = ev.get("exitCode") == 0
                 elif t == "error" or "error" in (t or ""):
-                    if any(w in json.dumps(ev).lower() for w in ("rate limit", "429", "quota")):
+                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         res["quota_hit"] = True
             elif kind == "kilo":
                 if ev.get("type") == "error":
-                    if any(w in json.dumps(ev).lower() for w in ("rate limit", "429", "quota")):
+                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         res["quota_hit"] = True
                 else:
                     texts.extend(_collect_text(ev))

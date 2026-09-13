@@ -59,7 +59,7 @@ DEFAULTS = {
         # sorting is light: when Claude is over its reserve, spend Gemini, and
         # keep Antigravity's scarcer Claude/Opus pool for building
         "sort": ["claude", "agy-gemini", "agy-claude"],
-        "build": ["agy-claude", "agy-gemini", "cline-free", "kilo", "copilot", "claude"],
+        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "claude"],
     },
     "platforms": {
         "claude": {
@@ -100,10 +100,14 @@ DEFAULTS["platforms"]["cline-free"] = {
 # Copilot (GitHub Education license) and Kilo (kilo.ai account, needs `kilo
 # auth login` once) report no account-wide quota either (mahler#25): both are
 # "unmetered" like cline-free, backed off for an hour after a rate-limit/quota
-# error. Copilot's Education allowance is explicitly small, so it's placed
-# last among the free builders — behind Kilo — to conserve it.
+# error. Copilot goes first: its Education license runs real frontier models
+# (verified: claude-sonnet-5) even though the monthly allowance behind it is
+# small. Kilo's default model needs an explicit `:free` route (mahler#29) —
+# without one, every run 402s on "add credits" — and kilo-auto/free draws
+# from a grab-bag of smaller/niche models of unverified quality, so it's kept
+# last among the free builders and capped to size s like the others.
 DEFAULTS["platforms"]["kilo"] = {
-    "enabled": True, "kind": "kilo", "model": "",
+    "enabled": True, "kind": "kilo", "model": "kilo/kilo-auto/free",
     "metered": False, "backoff_minutes": 60, "max_size": "s",
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,

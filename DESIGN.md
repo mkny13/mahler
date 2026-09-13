@@ -347,8 +347,8 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Antigravity: Claude/GPT pool** (free) | `agy -p … --add-dir <worktree> --model claude-opus-4-6-thinking --dangerously-skip-permissions --output-format stream-json` | `agy -p /usage --output-format json`, which costs nothing and reports `remaining_fraction` + `reset_time` per pool and window | **First-choice builder** |
 | **Antigravity: Gemini pool** (free) | same, `--model gemini-3.1-pro-high` or `gemini-3.8-flash-high` | same probe, separate pool | Second-choice builder |
 | **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off for an hour after any rate-limit error | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3). Daemon-launched runs need macOS Documents access (see below) |
-| **Kilo** (`@kilocode/cli`, kilo.ai account) | `kilo run <prompt> --dir <worktree> --auto --format json` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only. Needs `kilo auth login` (a one-time browser flow only the account owner can do) before it can run. Flags verified 2026-09-13 (mahler#25); the success-path JSON event shape wasn't, since login wasn't available — read_log falls back to a generic string-walk |
-| **Copilot CLI** (`@github/copilot`, GitHub Education license) | `copilot -p <prompt> -C <worktree> --allow-all-tools --output-format json` | None: usage is per-session AI credits/premium requests, not a 5h/weekly window, so it's **unmetered** like Cline | Builder, size `s` only, last in build order — the Education allowance is explicitly small, so every other free tier is spent first. Verified end-to-end 2026-09-13 (mahler#25) against this machine's real Education license |
+| **Copilot CLI** (`@github/copilot`, GitHub Education license) | `copilot -p <prompt> -C <worktree> --allow-all-tools --output-format json` | None: usage is per-session AI credits/premium requests, not a 5h/weekly window, so it's **unmetered** like Cline | Builder, size `s` only, ahead of Kilo — it runs real frontier models (verified: `claude-sonnet-5`), even though the Education allowance behind it is small. Verified end-to-end 2026-09-13 (mahler#25) |
+| **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do). The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | OpenCode | — | — | Later backend (Phase 8) |
 
 **Antigravity test results (2026-09-12).**
@@ -389,10 +389,11 @@ Claude may build, but keep headroom for me*):
 1. **Sorting and planning runs go to Claude.** They're short and high-leverage. If Claude is
    over the reserve, sorting falls back to Antigravity rather than waiting.
 2. **Build runs, in order:**
-   - Antigravity's Claude/GPT pool, then its Gemini pool, then Cline-free, then Kilo, then
-     Copilot CLI. Each is used while it has headroom and fits the item's size (`s` → any;
-     `m` → Antigravity or Claude; `l` → split first). Kilo and Copilot are size `s` only,
-     same as Cline — Copilot goes last since its Education allowance is the smallest.
+   - Antigravity's Claude/GPT pool, then its Gemini pool, then Cline-free, then Copilot CLI,
+     then Kilo. Each is used while it has headroom and fits the item's size (`s` → any;
+     `m` → Antigravity or Claude; `l` → split first). Copilot and Kilo are size `s` only,
+     same as Cline — Copilot goes first for its model quality, Kilo last since its free
+     route is a grab-bag of smaller models.
    - Then Claude, only while the **5-hour window is under 60% and the weekly under 70%**.
    - A `platform:` label overrides the order.
 3. **Nothing autonomous ever runs into paid extra usage.** At or above 100%, Claude is marked
