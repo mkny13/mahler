@@ -296,5 +296,81 @@ class FairnessTests(unittest.TestCase):
                          ["custom#3: would build on agy-claude"])
 
 
+class QuotaGroupTests(unittest.TestCase):
+    """DESIGN D21: claude and claude-opus share one run slot via
+    a shared quota_group. A run on either platform blocks both."""
+
+    def test_claude_run_blocks_claude_opus(self):
+        """With a claude run active, claude-opus is marked busy
+        (shared quota group at max_runs=1), so a size:l item skips it."""
+        ctx, led = mk_ctx({"a": proj()}, total=2, max_runs=1)
+        seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
+        led.create_run(project="a", number=1, role="build", platform="claude",
+                       epoch=1)
+        busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        self.assertIn("claude", busy)
+        self.assertIn("claude-opus", busy)
+        with mock.patch.object(scheduler.platforms, "available", return_value=True):
+            platform, reasons = router.pick(ctx.cfg, led, "build", None, busy,
+                                                size="l")
+        self.assertNotEqual(platform, "claude-opus")
+        self.assertIn("claude-opus: busy", reasons)
+
+    def test_claude_opus_starts_when_free(self):
+        """With nothing active, the size:l item starts on claude-opus."""
+        ctx, led = mk_ctx({"a": proj()}, total=2)
+        seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
+        led.upsert_item("a", 1, state="ready", priority=2,
+                          state_changed_at=iso(NOW - timedelta(minutes=10)),
+                          sorted_at=iso(NOW - timedelta(days=1)),
+                          labels='["size:l"]')
+        self.assertEqual(plan(ctx, led),
+                         ["a#1: would build on claude-opus"])
+
+    def test_different_groups_dont_block_each_other(self):
+        """agy-gemini and claude are in different quota groups: with
+        an agy-gemini run active, claude is still free (different group),
+        and agy-gemini's own max_runs=2 allows a second agy-gemini run."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=4)}, total=4, max_runs=2)
+        seed(led, **{"agy-gemini": (10, 10), "claude": (10, 10)})
+        led.create_run(project="a", number=1, role="build", platform="agy-gemini",
+                       epoch=1)
+        busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        # agy-gemini has max_runs=2, 1 run → NOT at capacity
+        self.assertNotIn("agy-gemini", busy)
+        # claude is different group → NOT blocked by agy-gemini
+        self.assertNotIn("claude", busy)
+        # max_runs=2 for agy-gemini → second run on same platform is fine
+        led.create_run(project="a", number=10, role="build", platform="agy-gemini",
+                        epoch=2)
+        busy2 = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        self.assertIn("agy-gemini", busy2)
+        self.assertNotIn("claude", busy2)
+        item(led, "a", 3, age_minutes=5)
+        self.assertIn("a#3: would build on claude", plan(ctx, led))
+
+    def test_red_ci_respects_quota_group(self):
+        """_red_ci uses busy_platforms: a fix run doesn't start on
+        claude while claude-opus is busy (same quota group)."""
+        ctx, led = mk_ctx({"a": proj()}, total=4, max_runs=1)
+        seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
+        led.create_run(project="a", number=1, role="build", platform="claude-opus",
+                       epoch=1)
+        # Simulate red CI on item 2
+        ctx.led.upsert_item("a", 2, state="verifying", pr=88, branch="mahler/2",
+                              labels='[]', title="fix")
+        fake_start = mock.MagicMock(return_value=True)
+        with mock.patch.object(scheduler, "start", side_effect=fake_start):
+            scheduler._red_ci(ctx, "a", ctx.led.item("a", 2), 88,
+                                {"headRefName": "fix/2", "headRefOid": "red1",
+                                 "state": "FAILURE", "mergeable": "MERGEABLE",
+                                 "statusCheckRollup": [{"state": "FAILURE"}]})
+        # start should NOT be called with claude — group is busy
+        for call in fake_start.call_args_list:
+            platform = call.args[3]
+            self.assertNotEqual(platform, "claude",
+                                "fix run started on claude while claude-opus is busy")
+
+
 if __name__ == "__main__":
     unittest.main()

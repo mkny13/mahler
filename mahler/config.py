@@ -86,6 +86,7 @@ DEFAULTS = {
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
+            "quota_group": "claude",
         },
         # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
         # for hard tasks (size:l by default via min_size: "l", or via explicit
@@ -95,9 +96,10 @@ DEFAULTS = {
             "enabled": True, "kind": "claude",
             "sort_model": "opus", "build_model": "opus",
             "min_size": "l",
-            "soft": {"5h": 60, "weekly": 70},
+            "soft": {"5h": 45, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
+            "quota_group": "claude",
         },
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
