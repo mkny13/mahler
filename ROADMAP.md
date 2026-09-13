@@ -271,7 +271,7 @@ itself.
 ## Phase 8 — Extras
 
 - Claude cloud sessions / claude-code-action as extra workers.
-- More backends: OpenCode, Copilot CLI.
+- More backends: OpenCode. (Copilot CLI and Kilo landed in mahler#25.)
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.
