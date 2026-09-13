@@ -56,6 +56,7 @@ DEFAULTS = {
         "maintenance": DEFAULT_MAINTENANCE,
     },
     "concurrency": {"total": 2},
+    "scheduling": {"priority_projects": ["mahler"]},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},
     # the read-only status page (`mahler serve`, DESIGN D10)
     "serve": {"host": "127.0.0.1", "port": 8787},

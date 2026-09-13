@@ -1056,11 +1056,12 @@ def schedule(ctx, projects):
 
     Order: priority first; then ready builds before inbox sorts when the
     platform a sort would choose is the last one with headroom (sorts must
-    not eat a scarce builder); then oldest state_changed_at. The ordered
-    list is then dealt round-robin by project — each pass starts at most
-    one run per project — so no project waits more than one slot behind
-    another. Per-project max_parallel, per-platform max_runs, leases, hot
-    hold and the settle/dependency gates all still apply.
+    not eat a scarce builder); then priority projects (mahler work prioritized
+    over other projects, all else being equal); then oldest state_changed_at.
+    The ordered list is then dealt round-robin by project — each pass starts
+    at most one run per project — so no project waits more than one slot
+    behind another. Per-project max_parallel, per-platform max_runs, leases,
+    hot hold and the settle/dependency gates all still apply.
     """
     led, cfg = ctx.led, ctx.cfg
     active = led.active_runs()
@@ -1084,11 +1085,16 @@ def schedule(ctx, projects):
 
     work = _candidates(ctx, projects)
     sorts_wait = len(_headroom(ctx, "sort", per_platform, busy)) <= 1
+    priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
     def key(c):
         p, role, it = c
+        proj_idx = (priority_projects.index(p["name"])
+                    if p["name"] in priority_projects
+                    else len(priority_projects))
         return (it["priority"],
                 1 if (sorts_wait and role == "sort") else 0,
+                proj_idx,
                 parse(it["state_changed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
                 p["name"], it["number"])
     work.sort(key=key)
