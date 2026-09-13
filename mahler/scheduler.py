@@ -392,12 +392,14 @@ def finalize(ctx, run):
                 ctx.ping(f"Handoff — {project} #{n}",
                          f"{run['platform']} stopped ({reason}); next platform picks it up",
                          project, n, priority="low")
-            elif verb is None and reason is None:
-                # D18 fallback: no STATUS line, but the branch may still be done.
-                # Also: Cline resume-once before giving up (mahler#17).
+            elif (verb is None or verb == "DONE") and reason in (None, "timeout"):
+                # D18 fallback: no STATUS line (or timed out after DONE), but the branch
+                # may still be done. Applies both when run exited cleanly without STATUS,
+                # or when it timed out with green tests on uncommitted/committed work (mahler#145).
+                # Also: Cline resume-once before giving up (mahler#17, only when reason is None).
                 if _try_verify_fallback(ctx, run, pol, saved, item):
                     pass   # handled — state set to verifying
-                elif _try_cline_nudge(ctx, run, kind, log, pol):
+                elif reason is None and _try_cline_nudge(ctx, run, kind, log, pol):
                     return   # run is still alive — finalized again when the nudge ends
                 else:
                     _retry_or_fail(ctx, project, n, item, reason, outcome)
@@ -428,8 +430,9 @@ def _hold_platform(ctx, run):
 
 def _try_verify_fallback(ctx, run, pol, saved, item):
     """D18 verify-green fallback: no STATUS line, but if the branch has commits
-    ahead of base *and* the project's verify command passes in the worktree,
-    treat as DONE. Returns True if the fallback applied."""
+    ahead of base (or uncommitted changes in saved snapshot) *and* the project's
+    verify command passes in the worktree, treat as DONE. Returns True if the
+    fallback applied."""
     led = ctx.led
     project, n = run["project"], run["number"]
     base = pol.get("base", "main")
@@ -437,6 +440,8 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
     if not verify_cmd:
         return False
     ahead = runner.commits_ahead(run["worktree"], base)
+    if ahead == 0 and saved and saved.get("ahead", 0) > 0:
+        ahead = saved["ahead"]
     if ahead == 0:
         ctx.say(f"{project}#{n}: no STATUS line, no commits ahead of {base} — failed attempt")
         return False
@@ -448,7 +453,7 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
         return False
     # The branch is done: the conductor ships it, with an honest note.
     ctx.say(f"{project}#{n}: verify green — treating as DONE (agent didn't confirm)")
-    ref = saved["ref"] if saved else item["branch"]
+    ref = (saved["ref"] if saved else None) or item["branch"]
     if ref:
         led.set_state(project, n, "verifying",
                       "verify-green fallback — agent didn't confirm",

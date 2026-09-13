@@ -68,8 +68,10 @@ class VerifyFallbackTests(unittest.TestCase):
             fh.write(json.dumps({"event": "result", "result": {"status": "SUCCESS",
                                  "response": "All tests pass, code pushed."}}) + "\n")
 
-    def finalize(self, commits=1, verify_ok=True):
-        saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": commits, "stat": None}
+    def finalize(self, commits=1, verify_ok=True, saved_ahead=None):
+        if saved_ahead is None:
+            saved_ahead = commits
+        saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": saved_ahead, "stat": None} if saved_ahead > 0 else None
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=saved), \
                 mock.patch.object(runner, "remove_worktree"), \
@@ -94,10 +96,21 @@ class VerifyFallbackTests(unittest.TestCase):
         # The kv flag tells the conductor to write 'unconfirmed' in the PR body
         self.assertEqual(self.led.get_kv("unconfirmed:x#5"), "1")
 
-    def test_no_commits_ahead_is_failed_attempt(self):
-        """No status line, 0 commits ahead → failed attempt, as today."""
+    def test_fallback_done_uncommitted_snapshot_and_verify_green(self):
+        """No status line, 0 commits ahead in worktree, but snapshot has uncommitted
+        work and verify passes → verifying (mahler#145)."""
         self._write_log_no_status()
-        self.finalize(commits=0, verify_ok=True)
+        self.finalize(commits=0, verify_ok=True, saved_ahead=2)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["attempts"], 0)
+        self.assertIn("verify-green fallback", self.last_event())
+        self.assertEqual(self.led.get_kv("unconfirmed:x#5"), "1")
+
+    def test_no_commits_ahead_is_failed_attempt(self):
+        """No status line, 0 commits ahead and no uncommitted snapshot → failed attempt, as today."""
+        self._write_log_no_status()
+        self.finalize(commits=0, verify_ok=True, saved_ahead=0)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
@@ -121,16 +134,43 @@ class VerifyFallbackTests(unittest.TestCase):
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
 
-    def test_fallback_with_stop_reason_doesnt_fire(self):
-        """A run stopped for a reason (e.g. timeout) doesn't get the fallback."""
+    def test_fallback_with_timeout_fires_when_verify_green(self):
+        """A run stopped for timeout gets fallback if verify passes (mahler#145)."""
         self._write_log_no_status()
         self.run["stop_reason"] = "timeout"
         self.finalize(commits=3, verify_ok=True)
         item = self.led.item("x", 5)
-        # stop_reason set means we fall to the general _retry_or_fail, not the
-        # new verb=None+reason=None branch
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["attempts"], 0)
+        self.assertIn("verify-green fallback", self.last_event())
+
+    def test_fallback_with_timeout_and_uncommitted_snapshot_fires(self):
+        """A timed-out run with only uncommitted changes snapshotted gets fallback if verify passes."""
+        self._write_log_no_status()
+        self.run["stop_reason"] = "timeout"
+        self.finalize(commits=0, verify_ok=True, saved_ahead=2)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["attempts"], 0)
+
+    def test_fallback_with_timeout_fails_when_verify_red(self):
+        """A run stopped for timeout with failing verify fails the attempt."""
+        self._write_log_no_status()
+        self.run["stop_reason"] = "timeout"
+        self.finalize(commits=3, verify_ok=False)
+        item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
+        self.assertIn("attempt 1 failed", self.last_event())
+
+    def test_non_timeout_stop_reason_doesnt_fire_verify_fallback(self):
+        """A run stopped for e.g. parked or quota doesn't fire verify fallback."""
+        self._write_log_no_status()
+        self.run["stop_reason"] = "parked"
+        self.finalize(commits=3, verify_ok=True)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual(item["attempts"], 0)
 
 
 class ClineNudgeTests(unittest.TestCase):
