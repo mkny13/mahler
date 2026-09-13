@@ -29,13 +29,19 @@ PAGE_STATES = [s for s in STATES if s != "done"]
 def snapshot(cfg, led):
     """Everything the page shows, plain data — the HTML is derived from this."""
     now = led.now()
-    runs = led.active_runs()
-    items = [i for i in led.items() if i["state"] != "done"]
+    ests = led.estimates()
+
+    runs = [dict(r) for r in led.active_runs()]
+    for r in runs:
+        r["est"] = int(led.run_estimate(ests, r["platform"], r["role"]))
+
+    items = [dict(i) for i in led.items() if i["state"] != "done"]
     by_state = {s: [] for s in PAGE_STATES}
-    for i in items:
-        by_state.setdefault(i["state"], []).append(i)
     leases = {}
     for i in items:
+        i["est"] = int(led.issue_estimate(ests, i["project"]))
+        by_state.setdefault(i["state"], []).append(i)
+
         lease = led.lease(i["project"], i["number"])
         if lease:
             leases[(i["project"], i["number"])] = lease["holder"]
@@ -148,11 +154,13 @@ def _render_rest(out, snap, cfg):
         for r in snap["runs"]:
             started = parse(r["started_at"])
             mins = max(int((snap["now"] - started).total_seconds() // 60), 0) if started else 0
+            est = r["est"]
+            time_str = f"{mins} min / ~{est} min" if mins <= est else f"{mins} min <span class=\"hard\">(+{mins-est}m past est)</span>"
             stopped = f" &middot; {_esc(r['stop_reason'])}" if r["stop_reason"] else ""
             w(f"<div class=\"card run\">"
               f"<div><b>{_esc(r['project'])}#{r['number']}</b> "
               f"<span class=\"muted\">{_esc(r['role'])}</span></div>"
-              f"<div><span class=\"mono\">{mins} min</span> on "
+              f"<div><span class=\"mono\">{time_str}</span> on "
               f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}</div></div>")
     else:
         w('<div class="muted">nothing running</div>')
@@ -177,8 +185,10 @@ def _render_rest(out, snap, cfg):
             holder = snap["leases"].get((i["project"], i["number"]))
             held = f' &middot; held by <b>{_esc(holder)}</b>' if holder else ""
             tries = f' &middot; tries {i["attempts"]}' if i["attempts"] else ""
+            est = i["est"]
+            est_str = f' &middot; ~{est}m'
             w(f"<div class=\"card item\"><div>{label}</div>"
-              f"<div class=\"meta\">p{i['priority']}{held}{tries}</div></div>")
+              f"<div class=\"meta\">p{i['priority']}{held}{tries}{est_str}</div></div>")
     if not any_items:
         w('<div class="muted">nothing open</div>')
 
