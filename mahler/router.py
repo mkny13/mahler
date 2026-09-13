@@ -32,7 +32,7 @@ def usage_state(led, name, pconf):
             until = parse(u["resets_at"])
             if u["used_pct"] >= 100 and until and until > now:
                 return "hard", f"backing off until {until.astimezone():%H:%M}"
-        return "ok", "unmetered"
+        return "ok", "unmetered (assumed — platform reports no quota signal)"
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
