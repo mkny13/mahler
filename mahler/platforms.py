@@ -179,6 +179,9 @@ def claude_samples_from_event(ev):
     if info.get("status") == "rejected":           # hit the wall: treat as exhausted
         window = "5h" if info.get("rateLimitType") == "five_hour" else "weekly"
         out.append((window, 100.0, _epoch_iso(info.get("resetsAt"))))
+    if info.get("isUsingOverage"):    # paid extra usage: treat as exhausted (mahler#136)
+        window = "5h" if info.get("rateLimitType") == "five_hour" else "weekly"
+        out.append((window, 100.0, _epoch_iso(info.get("resetsAt"))))
     return out
 
 
@@ -329,9 +332,9 @@ def read_log(path, kind):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
-             'quota_hit': bool, 'last_text': str}
+             'quota_hit': bool, 'overage': bool, 'last_text': str}
     """
-    res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "last_text": ""}
+    res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False, "last_text": ""}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -349,7 +352,11 @@ def read_log(path, kind):
                 t = ev.get("type")
                 if t == "rate_limit_event":
                     res["usage"] = claude_samples_from_event(ev)
-                    if (ev.get("rate_limit_info") or {}).get("status") == "rejected":
+                    info = ev.get("rate_limit_info") or {}
+                    if info.get("status") == "rejected":
+                        res["quota_hit"] = True
+                    if info.get("isUsingOverage"):    # paid extra usage: stop at once (mahler#136)
+                        res["overage"] = True
                         res["quota_hit"] = True
                 elif t == "assistant":
                     for block in (ev.get("message") or {}).get("content") or []:
