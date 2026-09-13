@@ -1115,7 +1115,7 @@ def _compute_burst(ctx, projects):
     suppressed = None
     if lines and ctx.hot_hold:
         flag = ctx.led.get_kv("human:claude")
-        if flag and parse(flag) and ctx.led.now() - parse(flag) < timedelta(minutes=30):
+        if flag and parse(flag) and ctx.led.now() - parse(flag) < timedelta(minutes=ctx.cfg["burst"].get("human_quiet_minutes", 20)):
             suppressed = "5h usage rose with no live Claude run"
             lines = None
         elif presence.human_claude_active(projects):

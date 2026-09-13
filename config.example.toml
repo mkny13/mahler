@@ -22,3 +22,11 @@ verify = "python3 -m unittest discover -s tests"
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
 # sort = ["claude", "agy-gemini", "agy-claude"]
 # build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "claude-opus", "claude"]
+
+# [burst]
+# enabled = true                 # burst before a Claude window resets (D23)
+# weekly_lead_hours = 5          # before the weekly reset
+# session_lead_minutes = 60      # before the 5-hour reset
+# soft = 90                      # burst soft line (still below 100%)
+# hard = 97                      # burst hard line (still below 100%)
+# human_quiet_minutes = 20       # suppress burst after detected human use

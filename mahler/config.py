@@ -128,6 +128,7 @@ DEFAULTS = {
         "session_lead_minutes": 60,   # before the 5-hour reset
         "soft": 90,
         "hard": 97,
+        "human_quiet_minutes": 20,    # suppress burst after human use (D23)
     },
 }
 
