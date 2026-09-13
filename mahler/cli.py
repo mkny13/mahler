@@ -62,6 +62,16 @@ def cmd_status(a, cfg, led):
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
         }, indent=2, default=str))
         return 0
+    def item_url(project, number, it=None):
+        repo = config.project_policy(cfg, project).get("repo")
+        if not repo:
+            return ""
+        if not it:
+            it = led.item(project, number)
+        if it and it.get("pr"):
+            return f" https://github.com/{repo}/pull/{it['pr']}"
+        return f" https://github.com/{repo}/issues/{number}"
+
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
     runs = led.active_runs()
     if getattr(a, "project", None):
@@ -69,8 +79,9 @@ def cmd_status(a, cfg, led):
     print(f"Running ({len(runs)})")
     for r in runs:
         mins = int((now - parse(r["started_at"])).total_seconds() // 60)
+        url = item_url(r["project"], r["number"])
         print(f"  • run {r['id']:<4} {r['project']}#{r['number']:<5} {r['role']:<5} "
-              f"{r['platform']:<11} {mins:>3} min  {r['status']}")
+              f"{r['platform']:<11} {mins:>3} min  {r['status']}{url}")
     print("\nItems")
     items = [i for i in led.items() if i["state"] != "done"]
     if getattr(a, "project", None):
@@ -79,8 +90,9 @@ def cmd_status(a, cfg, led):
         lease = led.lease(i["project"], i["number"])
         held = f"  held by {lease['holder']}" if lease else ""
         tries = f"  tries {i['attempts']}" if i["attempts"] else ""
+        url = item_url(i["project"], i["number"], i)
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
-              f"{(i['title'] or '')[:60]}{held}{tries}")
+              f"{(i['title'] or '')[:60]}{held}{tries}{url}")
     print("\nQuota")
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)
@@ -89,7 +101,8 @@ def cmd_status(a, cfg, led):
     for e in led.q("SELECT * FROM events ORDER BY id DESC LIMIT 10")[::-1]:
         when = parse(e["at"]).astimezone().strftime("%m-%d %H:%M")
         where = f"{e['project']}#{e['number']}" if e["project"] else ""
-        print(f"  {when} {e['kind']:<8} {where:<14} {(e['detail'] or '')[:80]}")
+        url = item_url(e["project"], e["number"]) if e["project"] and e["number"] else ""
+        print(f"  {when} {e['kind']:<8} {where:<14} {(e['detail'] or '')[:80]}{url}")
     return 0
 
 def cmd_serve(a, cfg, led):
