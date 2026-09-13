@@ -63,6 +63,19 @@ class TestRender(unittest.TestCase):
         self.assertIn("min", html)
         self.assertIn("build", html)
 
+    def test_running_links_to_github_issue(self):
+        # mahler#50: the Running section should link project#number too,
+        # consistent with the Items section.
+        html = render(self.led, self.cfg)
+        self.assertIn('<a href="https://github.com/mkny13/mahler/issues/5">mahler#5</a>',
+                      html)
+
+    def test_running_without_repo_renders_without_link(self):
+        html = render(self.led, {"defaults": {}, "platforms": self.cfg["platforms"],
+                                 "projects": {}})
+        self.assertIn("mahler#5", html)
+        self.assertNotIn("https://github.com", html)
+
     def test_items_by_state_with_github_links(self):
         html = render(self.led, self.cfg)
         self.assertIn('href="https://github.com/mkny13/mahler/issues/5"', html)
@@ -130,8 +143,8 @@ class TestServer(unittest.TestCase):
         self.cfg = make_cfg()
         self.led = make_led()
         handler = type("Handler", (serve._Handler,),
-                       {"cfg": self.cfg, "led": self.led,
-                        "lock": threading.Lock()})
+                       {"led": self.led, "lock": threading.Lock(),
+                        "load_cfg": staticmethod(lambda: self.cfg)})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -168,6 +181,55 @@ class TestServer(unittest.TestCase):
         for method in ("POST", "PUT", "DELETE", "PATCH"):
             status, _, _ = self.get("/", method=method, data=b"{}")
             self.assertEqual(status, 405, method)
+
+
+class TestDynamicConfigReload(unittest.TestCase):
+    """mahler#50: a project added to config.toml after `mahler serve` starts
+    must get GitHub links without restarting the server."""
+
+    def setUp(self):
+        self.led = make_led()
+        self.led.upsert_item("phish-in", 3, title="Some new-project item",
+                              state="ready", priority=2)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config_path = os.path.join(self.tmp.name, "config.toml")
+        with open(self.config_path, "w") as fh:
+            fh.write('[projects.mahler]\nrepo = "mkny13/mahler"\n')
+        self.patcher = mock.patch.object(serve.config, "CONFIG_PATH", self.config_path)
+        self.patcher.start()
+
+        handler = type("Handler", (serve._Handler,),
+                       {"led": self.led, "lock": threading.Lock(),
+                        "load_cfg": staticmethod(serve.config.load)})
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+        self.patcher.stop()
+        self.tmp.cleanup()
+
+    def get(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
+            return r.read().decode()
+
+    def test_project_added_after_start_gets_links_without_restart(self):
+        # phish-in isn't in config.toml yet: item renders, but no link.
+        body = self.get()
+        self.assertIn("phish-in#3", body)
+        self.assertNotIn('href="https://github.com/mkny13/phish-in', body)
+
+        # Add phish-in to config.toml while the server is already running.
+        with open(self.config_path, "w") as fh:
+            fh.write('[projects.mahler]\nrepo = "mkny13/mahler"\n'
+                      '[projects.phish-in]\nrepo = "mkny13/phish-in"\n')
+
+        body = self.get()
+        self.assertIn('href="https://github.com/mkny13/phish-in/issues/3"', body)
 
 
 class TestCliWiring(unittest.TestCase):

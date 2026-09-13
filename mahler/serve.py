@@ -166,8 +166,15 @@ def _render_rest(out, snap, cfg):
             est = r["est"]
             time_str = f"{mins} min / ~{est} min" if mins <= est else f"{mins} min <span class=\"hard\">(+{mins-est}m past est)</span>"
             stopped = f" &middot; {_esc(r['stop_reason'])}" if r["stop_reason"] else ""
+            repo = config.project_policy(cfg, r["project"]).get("repo")
+            ref = f"{_esc(r['project'])}#{r['number']}"
+            if repo:
+                run_url = f"https://github.com/{repo}/issues/{r['number']}"
+                run_label = f'<a href="{_esc(run_url)}">{ref}</a>'
+            else:
+                run_label = ref
             w(f"<div class=\"card run\">"
-              f"<div><b>{_esc(r['project'])}#{r['number']}</b> "
+              f"<div><b>{run_label}</b> "
               f"<span class=\"muted\">{_esc(r['role'])}</span></div>"
               f"<div><span class=\"mono\">{time_str}</span> on "
               f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}</div></div>")
@@ -236,22 +243,23 @@ def _render_rest(out, snap, cfg):
     return "\n".join(out)
 
 
-def _page_bytes(cfg, led, lock):
+def _page_bytes(led, lock, load_cfg):
     with lock:
+        cfg = load_cfg()
         return render_page(snapshot(cfg, led), cfg).encode("utf-8")
 
 
 class _Handler(BaseHTTPRequestHandler):
-    cfg = None
     led = None
     lock = None
+    load_cfg = None
 
     def do_GET(self):
         if self.path != "/":
             self.send_error(404)
             return
         try:
-            body = _page_bytes(self.cfg, self.led, self.lock)
+            body = _page_bytes(self.led, self.lock, self.load_cfg)
         except Exception:
             self.send_error(500, "render failed")
             raise
@@ -274,10 +282,17 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def serve(cfg, led, host="127.0.0.1", port=8787):
-    """Start the read-only status server. Blocks until interrupted."""
+    """Start the read-only status server. Blocks until interrupted.
+
+    `cfg` is only used to resolve the initial bind address by the caller;
+    the server itself re-reads `~/.mahler/config.toml` on every request
+    (`config.load()`), so projects added to config after the server started
+    still get their GitHub links without a restart (mahler#50).
+    """
     import threading
     handler = type("Handler", (_Handler,),
-                   {"cfg": cfg, "led": led, "lock": threading.Lock()})
+                   {"led": led, "lock": threading.Lock(),
+                    "load_cfg": staticmethod(config.load)})
     httpd = ThreadingHTTPServer((host, port), handler)
     print(f"mahler status page: http://{host}:{port}/ (read-only, Ctrl-C to stop)")
     try:
