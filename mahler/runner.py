@@ -119,7 +119,7 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     if role == "build" and start != f"origin/{base}":
         handoff = (f"- earlier work on this item is already in your branch (started from "
                    f"`{start}`): run `git log --oneline origin/{base}..HEAD`, and read the "
-                   f"latest `mahler:handoff` comment on the issue before continuing")
+                   f"latest `mahler:agent handoff` comment on the issue before continuing")
     prompt = render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                     worktree=wt, branch=branch or "", base=base, platform=platform,
                     verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",

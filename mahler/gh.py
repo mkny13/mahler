@@ -10,20 +10,21 @@ import subprocess
 
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
-    "needs_you": "mahler:needs-you", "parked": "mahler:parked", "failed": "mahler:failed",
-    "tracking": "mahler:tracking",
+    "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
+    "parked": "mahler:parked", "failed": "mahler:failed", "tracking": "mahler:tracking",
 }
 LABEL_STATES = {v: k for k, v in STATE_LABELS.items()}
 LABEL_COLORS = {
     "mahler:inbox": "ededed", "mahler:ready": "0e8a16", "mahler:working": "1d76db",
-    "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5", "mahler:failed": "b60205",
-    "mahler:tracking": "5319e7",
+    "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5",
+    "mahler:failed": "b60205", "mahler:tracking": "5319e7",
     "type:bug": "d73a4a", "type:feature": "a2eeef", "type:chore": "fef2c0",
     "type:goal": "7057ff", "type:uat": "fbca04", "type:anomaly": "e99695",
     "size:s": "c2e0c6", "size:m": "bfd4f2", "size:l": "f9d0c4",
     "p1": "b60205", "p2": "fbca04", "p3": "c5def5",
 }
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
+AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
 DEPENDS_RE = re.compile(r"^\s*Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
@@ -42,6 +43,19 @@ def _gh(*args, input=None, timeout=90):
     return r.stdout
 
 
+def _git(path, *args):
+    """Git in a project checkout, for the pushes the conductor owns (D18).
+    Goes through the same credential setup as the run's own pushes."""
+    try:
+        r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True,
+                           timeout=300)
+    except (subprocess.SubprocessError, OSError) as e:
+        raise GHError(f"git {' '.join(args[:3])}: {e}") from e
+    if r.returncode != 0:
+        raise GHError(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:400]}")
+    return r.stdout.strip()
+
+
 class GH:
     def __init__(self, repo):
         self.repo = repo
@@ -57,7 +71,7 @@ class GH:
 
     def comment(self, number, body):
         if not body.startswith(AGENT_MARK):
-            body = "<!-- mahler -->\n" + body
+            body = AGENT_NOTE + "\n" + body
         _gh("issue", "comment", str(number), "-R", self.repo, "--body-file", "-", input=body)
 
     def set_state_label(self, number, state, current_labels):
@@ -84,6 +98,50 @@ class GH:
     def default_branch(self):
         return _gh("repo", "view", self.repo, "--json", "defaultBranchRef",
                    "-q", ".defaultBranchRef.name").strip()
+
+    # ---------- the conductor ships (DESIGN D18) ----------
+
+    def issue_body(self, number):
+        return json.loads(_gh("issue", "view", str(number), "-R", self.repo,
+                              "--json", "body")).get("body") or ""
+
+    def push_branch(self, path, branch, ref):
+        """Make origin's `branch` point at the saved work `ref` (D18).
+
+        `ref` is an already-pushed ref (a mahler/snapshot/* branch). No-op when
+        `branch` is already there. Returns the sha now at `branch`."""
+        _git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
+        sha = _git(path, "rev-parse", "FETCH_HEAD")
+        out = subprocess.run(["git", "-C", path, "ls-remote", "origin",
+                              f"refs/heads/{branch}"], capture_output=True, text=True,
+                             timeout=90)
+        if out.returncode == 0 and out.stdout.strip().startswith(sha):
+            return sha
+        _git(path, "push", "--quiet", "--no-verify", "--force", "origin",
+             f"{sha}:refs/heads/{branch}")
+        return sha
+
+    def pr_for_head(self, head):
+        """An open PR already made from `head`, or None (idempotent PR opening)."""
+        out = _gh("pr", "list", "-R", self.repo, "--head", head, "--state", "open",
+                  "--limit", "1", "--json", "number")
+        prs = json.loads(out)
+        return prs[0]["number"] if prs else None
+
+    def pr_create(self, head, base, title, body):
+        out = _gh("pr", "create", "-R", self.repo, "--head", head, "--base", base,
+                  "--title", title, "--body-file", "-", input=body)
+        m = re.search(r"/pull/(\d+)", out)
+        if not m:
+            raise GHError(f"gh pr create: no PR url in {out.strip()[:200]!r}")
+        return int(m.group(1))
+
+    def pr_view(self, number):
+        return json.loads(_gh("pr", "view", str(number), "-R", self.repo, "--json",
+                              "state,body,statusCheckRollup,headRefName,baseRefName"))
+
+    def pr_merge(self, number):
+        _gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")
 
 
 def label_names(issue):
@@ -120,3 +178,59 @@ def parse_command(body):
     if not m:
         return None
     return m.group(1).lower(), (m.group(2) or None)
+
+
+# ---------- PR bodies and CI states (DESIGN D18) ----------
+
+def needs_human_of(body):
+    """The issue's 'Needs a human to check' section, verbatim (or empty)."""
+    out, grab = [], False
+    for line in (body or "").splitlines():
+        h = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
+        if h:
+            grab = h.group(2).strip().lower() == "needs a human to check"
+            continue
+        if grab:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def pr_body(number, summary, needs=""):
+    """The PR body the conductor opens with: `Fixes #N`, the agent's one-line
+    summary, and the issue's 'Needs a human to check' list."""
+    lines = [AGENT_NOTE, f"Fixes #{number}", "", summary or "", ""]
+    if needs:
+        lines += ["## Needs a human to check", needs, ""]
+    return "\n".join(lines)
+
+
+def pr_summary_of(body):
+    """The agent summary out of a PR body the conductor wrote."""
+    m = re.search(r"^Fixes #\d+\s*$", body or "", re.MULTILINE)
+    if not m:
+        return ""
+    out = []
+    for line in body[m.end():].splitlines():
+        if line.startswith("#"):
+            break
+        if line.strip():
+            out.append(line.strip())
+        elif out:
+            break
+    return " ".join(out).strip()
+
+
+_BAD_CHECKS = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
+_WAIT_CHECKS = {"PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING", "EXPECTED"}
+
+
+def checks_state(rollup):
+    """A PR's statusCheckRollup -> green | pending | red | none."""
+    states = [(c.get("state") or c.get("status") or "").upper() for c in (rollup or [])]
+    if not states:
+        return "none"                       # no CI configured: nothing to wait for
+    if any(s in _BAD_CHECKS for s in states):
+        return "red"
+    if any(s in _WAIT_CHECKS for s in states):
+        return "pending"
+    return "green"

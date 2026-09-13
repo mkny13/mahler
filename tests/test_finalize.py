@@ -71,8 +71,9 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "ping") as ping:
             snap, rm = self.finalize()
         item = self.led.item("x", 5)
-        self.assertEqual(item["state"], "working")     # out of the ready queue...
-        self.assertEqual(item["attempts"], 0)          # ...and not a failed attempt
+        self.assertEqual(item["state"], "verifying")   # the conductor ships it next (D18)
+        self.assertEqual(item["summary"], "wired the exporter")
+        self.assertEqual(item["attempts"], 0)          # not a failed attempt
         run = self.led.q("SELECT outcome, status FROM runs WHERE id=?",
                          (self.run_id,))[0]
         self.assertEqual((run["outcome"], run["status"]), ("DONE", "ended"))

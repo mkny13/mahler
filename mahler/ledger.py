@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS items (
     depends          TEXT NOT NULL DEFAULT '[]',
     pin              TEXT,
     branch           TEXT,
+    pr               INTEGER,             -- the PR the conductor opened (D18)
+    summary          TEXT,                -- the agent's one-line DONE summary
     attempts         INTEGER NOT NULL DEFAULT 0,
     epoch            INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT,
@@ -99,7 +101,7 @@ CREATE TABLE IF NOT EXISTS counters (
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 """
 
-STATES = ("inbox", "ready", "working", "needs_you", "parked", "failed",
+STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
           "tracking", "done")
 
 
@@ -132,6 +134,11 @@ class Ledger:
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA busy_timeout=10000")
         self.con.executescript(SCHEMA)
+        # columns added after the daemon's DB already existed
+        cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
+        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT")):
+            if col not in cols:
+                self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         self.clock = clock
 
     def now(self):

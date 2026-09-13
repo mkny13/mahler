@@ -97,7 +97,7 @@ class TestMCP(unittest.TestCase):
             "params": {"name": "handoff", "arguments": {"project": "mahler", "number": 6, "comment": "Notes"}}
         }])
         self.assertIn("Handoff comment posted", out[0]["result"]["content"][0]["text"])
-        instance.comment.assert_called_with(6, "<!-- mahler:handoff -->\nNotes")
+        instance.comment.assert_called_with(6, "<!-- mahler:agent handoff -->\nNotes")
 
 if __name__ == '__main__':
     unittest.main()
