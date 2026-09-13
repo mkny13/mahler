@@ -77,7 +77,22 @@ def queue_maintenance(ctx, projects):
         if not passes:
             continue
         
+        pol_full = ctx.policy(p["name"])
+        scope_label = pol_full.get("scope_label") if pol_full.get("scope") == "label" else None
+        
         items = led.items(p["name"])
+        
+        # D20: at most one pass in flight per project. If any pass:* item
+        # is still open, skip all passes for now.
+        has_open_pass = False
+        for it in items:
+            labels = json.loads(it["labels"] or "[]")
+            if any(l.startswith("pass:") for l in labels) and it["state"] != "done":
+                has_open_pass = True
+                break
+        if has_open_pass:
+            continue
+        
         for pass_name in passes:
             label = f"pass:{pass_name}"
             skip = False
@@ -85,6 +100,8 @@ def queue_maintenance(ctx, projects):
                 labels = json.loads(it["labels"] or "[]")
                 if label not in labels:
                     continue
+                # D20: only one pass in flight per project — an open pass:* item
+                # was already caught above, so here we only handle done items.
                 if it["state"] != "done":
                     skip = True
                     break
@@ -107,6 +124,8 @@ def queue_maintenance(ctx, projects):
             
             title, body = MAINTENANCE_TEXT[pass_name]
             issue_labels = ["type:chore", "size:l", "p2", label]
+            if scope_label is not None:
+                issue_labels.append(scope_label)
             
             ctx.say(f"{p['name']}: queuing {pass_name} pass")
             if not ctx.dry_run:
