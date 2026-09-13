@@ -83,11 +83,15 @@ class RouterTests(unittest.TestCase):
     def test_kilo_and_copilot_are_unmetered_last_resort_builders(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
         led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
-        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "kilo")
-        led.record_usage("kilo", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
         self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "copilot")
         led.record_usage("copilot", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "kilo")
+        led.record_usage("kilo", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
         self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "claude")
+
+    def test_kilo_defaults_to_a_free_model_route(self):
+        # mahler#29: without an explicit :free route, every kilo run 402s on credits.
+        self.assertTrue(self.cfg["platforms"]["kilo"]["model"].endswith("/free"))
 
 
 class ParseTests(unittest.TestCase):
@@ -162,15 +166,35 @@ class ParseTests(unittest.TestCase):
             r = platforms.read_log(p, "copilot")
             self.assertTrue(r["quota_hit"])
 
-    def test_kilo_log_falls_back_to_a_generic_text_walk(self):
+    def test_kilo_log(self):
+        # Real shape from `kilo run ... --format json -m kilo/kilo-auto/free`
+        # (mahler#29, verified after `kilo auth login`).
         with tempfile.TemporaryDirectory() as d:
             k = os.path.join(d, "k.log")
             with open(k, "w") as fh:
-                fh.write(json.dumps({"type": "message.part.updated",
+                fh.write(json.dumps({"type": "step_start", "part": {"type": "step-start"}}) + "\n")
+                fh.write(json.dumps({"type": "text",
                                      "part": {"type": "text", "text": "STATUS: READY"}}) + "\n")
+                fh.write(json.dumps({"type": "step_finish", "part": {
+                    "type": "step-finish", "reason": "stop",
+                    "model": {"providerID": "kilo", "modelID": "poolside/laguna-s-2.1:free"},
+                    "cost": 0}}) + "\n")
             r = platforms.read_log(k, "kilo")
             self.assertFalse(r["quota_hit"])
             self.assertEqual(platforms.status_line(r["last_text"]), ("READY", ""))
+
+    def test_kilo_out_of_credits_is_a_quota_hit(self):
+        # Real 402 shape hit on the default (non-:free) model (mahler#29): no
+        # "quota" in the text, so this exercises the broader QUOTA_WORDS list.
+        with tempfile.TemporaryDirectory() as d:
+            k = os.path.join(d, "k.log")
+            with open(k, "w") as fh:
+                fh.write(json.dumps({"type": "error", "error": {"data": {
+                    "message": "Add credits to continue, or switch to a free model",
+                    "statusCode": 402,
+                    "responseBody": '{"error_type":"usage_limit_exceeded"}'}}}) + "\n")
+            r = platforms.read_log(k, "kilo")
+            self.assertTrue(r["quota_hit"])
 
     def test_kilo_auth_error_is_not_a_quota_hit(self):
         with tempfile.TemporaryDirectory() as d:
