@@ -63,6 +63,32 @@ def start_ref(repo, base, handoff_branch, run_branch):
     return f"origin/{options[0]}"
 
 
+def catch_up(wt, branch, base, number, run_id):
+    """Replay the saved work checked out in `wt` onto the current base, and make
+    the remote branch match (DESIGN D19). When it no longer applies cleanly,
+    keep the old tip on a snapshot ref and start the branch from base.
+    -> None if rebased, else the ref the old work was kept on."""
+    onto = f"origin/{base}"
+    kept = None
+    try:
+        git(wt, "rebase", "--quiet", "--no-verify", onto)
+    except GitError:
+        git(wt, "rebase", "--abort", check=False)
+        kept = f"mahler/snapshot/{number}-stale-run{run_id}"
+        git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
+            f"HEAD:refs/heads/{kept}")
+        git(wt, "reset", "--quiet", "--hard", onto)
+    # The remote branch must not keep the stale history, or the agent's first push
+    # is rejected and a weak model "fixes" that by pulling it back in. But a branch
+    # sitting at base's tip reads as merged on an open PR, so drop it instead.
+    if int(git(wt, "rev-list", "--count", f"{onto}..HEAD") or 0):
+        git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
+            f"HEAD:refs/heads/{branch}")
+    else:
+        git(wt, "push", "--quiet", "--no-verify", "origin", "--delete", branch, check=False)
+    return kept
+
+
 def fence_hooks(repo, run_dir):
     """A per-run hooks dir: pre-push checks the lease epoch (DESIGN D6), and every
     hook the repo already has is chained so its own checks still run."""
@@ -117,9 +143,18 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
 
     handoff = ""
     if role == "build" and start != f"origin/{base}":
-        handoff = (f"- earlier work on this item is already in your branch (started from "
-                   f"`{start}`): run `git log --oneline origin/{base}..HEAD`, and read the "
-                   f"latest `mahler:agent handoff` comment on the issue before continuing")
+        kept = catch_up(wt, branch, base, item["number"], run_id)
+        if kept is None:
+            handoff = (f"- earlier work on this item is already in your branch, replayed onto "
+                       f"current `origin/{base}`: run `git log --oneline origin/{base}..HEAD`, "
+                       f"and read the latest `mahler:agent handoff` comment on the issue before "
+                       f"continuing")
+        else:
+            handoff = (f"- earlier work on this item no longer applies to current "
+                       f"`origin/{base}`, so your branch starts fresh from it. The old work is "
+                       f"on `{kept}`: read `git log -p origin/{base}..origin/{kept}` and the "
+                       f"latest `mahler:agent handoff` comment, then redo what still fits")
+            start = f"origin/{base}"
     prompt = render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                     worktree=wt, branch=branch or "", base=base, platform=platform,
                     verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
@@ -210,7 +245,7 @@ def snapshot(repo, wt, run_id, number, base):
             return None
         ref = f"mahler/snapshot/{number}-run{run_id}"
         git(wt, "push", "--quiet", "--no-verify", "--force", "origin", f"{sha}:refs/heads/{ref}")
-        stat = git(wt, "diff", "--shortstat", f"origin/{base}", sha, check=False)
+        stat = git(wt, "diff", "--shortstat", f"origin/{base}...{sha}", check=False)
         return {"ref": ref, "sha": sha[:9], "ahead": ahead, "stat": stat}
     finally:
         if os.path.exists(idx):

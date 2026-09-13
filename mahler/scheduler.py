@@ -390,13 +390,30 @@ def _ship_item(ctx, project, item):
     if view["state"] != "OPEN":                 # merged or closed outside Mahler
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
+    if view.get("mergeable") == "CONFLICTING":
+        # base moved under it: rebuild on current base (D19); no attempt counted
+        base = pol.get("base", "main")
+        led.upsert_item(project, n, pr=None)
+        led.set_state(project, n, "ready", f"PR #{pr} conflicts with {base} — rebuilding on it")
+        led.release(project, n, holder=CONDUCTOR)
+        ctx.ping(f"Rebuilding — {project} #{n}",
+                 f"PR #{pr} no longer merges into {base}; the next build starts on current {base}",
+                 project, n, priority="low")
+        return
     state = checks_state(view.get("statusCheckRollup"))
-    if state == "pending":
+    if state == "pending" or view.get("mergeable") == "UNKNOWN":
         ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
         return
     if state == "red":
-        # fix runs are the rest of #14; until then the PR waits untouched
+        # fix runs are the rest of #14; until then the PR waits untouched and,
+        # holding the project's slot (D19), pauses its builds — so say so once
         ctx.say(f"{project}#{n}: PR #{pr} — CI red (fix runs land with the rest of #14)")
+        key = f"red:{project}#{n}:{pr}"
+        if not led.get_kv(key):
+            led.set_kv(key, iso(led.now()))
+            ctx.ping(f"CI red — {project} #{n}",
+                     f"PR #{pr} failed CI; {project}'s builds wait until it's fixed or closed",
+                     project, n, priority="high", tags="warning")
         return
     gh.pr_merge(pr)
     _shipped(ctx, project, n, pr, led.item(project, n), view)
@@ -668,6 +685,8 @@ def schedule(ctx, projects):
     busy = {k for k, v in per_platform.items()
             if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
     busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
+    # a finished build keeps its project's build slot until it merges (D19)
+    in_flight = {p["name"]: len(led.items(p["name"], ["verifying"])) for p in projects}
 
     hot = {}
     for p in projects:
@@ -703,6 +722,12 @@ def schedule(ctx, projects):
                 if name not in said:
                     said.add(name)
                     ctx.say(f"{name}: at capacity ({total} running)")
+                continue
+            if role == "build" and in_project.get(name, 0) + in_flight[name] >= p["max_parallel"]:
+                if name not in said:
+                    said.add(name)
+                    ctx.say(f"{name}: builds wait — {in_flight[name]} finished change(s) "
+                            "not merged yet")
                 continue
             if role == "build" and hot[name]:
                 ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")

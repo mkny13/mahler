@@ -30,6 +30,7 @@ class FakeGH:
         self.view_body = gh_module.pr_body(5, "wired the exporter",
                                            "- the new ping arrives")
         self.rollup = [{"state": "SUCCESS"}]
+        self.mergeable = "MERGEABLE"
         self.pushed, self.created, self.merged, self.comments = [], [], [], []
         self.fail_view = set()
 
@@ -51,7 +52,8 @@ class FakeGH:
         if number in self.fail_view:
             raise gh_module.GHError("github down")
         return {"state": self.view_state, "body": self.view_body,
-                "statusCheckRollup": self.rollup, "headRefName": "mahler/5-x",
+                "statusCheckRollup": self.rollup, "mergeable": self.mergeable,
+                "headRefName": "mahler/5-x",
                 "baseRefName": "main"}
 
     def pr_merge(self, number):
@@ -149,13 +151,38 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")
         ping.assert_not_called()
 
-    def test_red_ci_waits_for_the_fix_path(self):
+    def test_red_ci_waits_for_the_fix_path_and_says_so_once(self):
+        """Red CI holds the project's build slot (D19), so the owner hears
+        about it — once, not every tick."""
         self.led.upsert_item("x", 5, pr=88)
         self.gh.rollup = [{"state": "FAILURE"}]
         ping = self.ship()
         self.assertEqual(self.gh.merged, [])
         self.assertEqual(self.item()["state"], "verifying")
-        ping.assert_not_called()
+        ping.assert_called_once()
+        self.assertEqual(ping.call_args[0][0], "CI red — x #5")
+        self.assertEqual(self.ship().call_count, 0)
+
+    # ---------- a base that moved (D19) ----------
+
+    def test_conflicting_pr_goes_back_for_a_rebuild(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "CONFLICTING"
+        self.gh.rollup = []                  # GitHub runs no CI on a conflicting PR
+        ping = self.ship()
+        self.assertEqual(self.gh.merged, [])
+        item = self.item()
+        self.assertEqual((item["state"], item["pr"], item["attempts"]), ("ready", None, 0))
+        self.assertEqual(item["branch"], "mahler/snapshot/5-run7")   # the rebuild resumes it
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(ping.call_args[0][0], "Rebuilding — x #5")
+
+    def test_mergeability_not_known_yet_waits(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(self.item()["state"], "verifying")
 
     def test_no_ci_configured_counts_as_green(self):
         self.led.upsert_item("x", 5, pr=88)
