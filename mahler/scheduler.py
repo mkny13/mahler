@@ -278,7 +278,7 @@ def finalize(ctx, run):
                 if _try_verify_fallback(ctx, run, pol, saved, item):
                     pass   # handled — state set to verifying
                 elif _try_cline_nudge(ctx, run, kind, log, pol):
-                    keep_worktree = True   # the resumed session uses this worktree
+                    return   # run is still alive — finalized again when the nudge ends
                 else:
                     _retry_or_fail(ctx, project, n, item, reason, outcome)
             else:
