@@ -23,6 +23,7 @@ LABEL_COLORS = {
     "size:s": "c2e0c6", "size:m": "bfd4f2", "size:l": "f9d0c4",
     "p1": "b60205", "p2": "fbca04", "p3": "c5def5",
 }
+PIN_COLOR = "d4c5f9"        # platform:* labels, created on the fly (mahler#20)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
 DEPENDS_RE = re.compile(r"^\s*Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
@@ -82,6 +83,24 @@ class GH:
             args += ["--remove-label", l]
         if want and want not in current_labels:
             args += ["--add-label", want]
+        if len(args) > 5:
+            _gh(*args)
+
+    def set_pin_labels(self, number, want, current_labels):
+        """`platform:*` labels are the pin's store of record (mahler#20): sync()
+        re-derives pin=pin_of(labels) every tick, so a pin change must land here.
+        Keeps exactly the label `want` names, or none at all; skips the gh call
+        when nothing would change."""
+        keep = f"platform:{want}" if want else None
+        drop = [l for l in current_labels if l.startswith("platform:") and l != keep]
+        args = ["issue", "edit", str(number), "-R", self.repo]
+        for l in drop:
+            args += ["--remove-label", l]
+        if keep and keep not in current_labels:
+            # --add-label fails on a label the repo doesn't have yet; --force
+            # makes this idempotent (an existing label keeps its color).
+            _gh("label", "create", keep, "-R", self.repo, "--color", PIN_COLOR, "--force")
+            args += ["--add-label", keep]
         if len(args) > 5:
             _gh(*args)
 
