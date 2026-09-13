@@ -42,6 +42,11 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(name)
         self.assertTrue(any("claude: soft" in r for r in reasons))
 
+    def test_fix_routes_like_a_build(self):
+        """Red CI's fix runs use the build routing, not a separate table (D18, #18)."""
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10), "claude": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led, "fix")[0], "agy-claude")
+
     def test_weekly_reserve_applies_too(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (10, 71)})
         self.assertIsNone(router.pick(self.cfg, led, "build")[0])
