@@ -88,6 +88,19 @@ class RouterTests(unittest.TestCase):
         led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
         self.assertEqual(router.pick(self.cfg, led, "build", pin="agy-gemini")[0], "agy-gemini")
 
+    def test_claude_opus_is_pinnable_but_never_beats_claude_unpinned(self):
+        # same account/quota as "claude" (real Claude Code CLI, forced to
+        # Opus), so it's last in routing order and only reached via a pin
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+                           "claude": (5, 5), "claude-opus": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led, "build")[0], "claude")
+        self.assertEqual(router.pick(self.cfg, led, "build", pin="claude-opus")[0],
+                          "claude-opus")
+
+    def test_claude_opus_model_flag(self):
+        argv = platforms.claude_argv(self.cfg["platforms"]["claude-opus"], "hi", "wt", "build")
+        self.assertIn("opus", argv)
+
     def test_kilo_is_unmetered_last_resort_builder(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
         led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))

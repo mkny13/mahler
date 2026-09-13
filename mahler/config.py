@@ -57,13 +57,28 @@ DEFAULTS = {
     "routing": {
         # sorting is light: when Claude is over its reserve, spend Gemini, and
         # keep Antigravity's scarcer Claude/Opus pool for building
-        "sort": ["claude", "agy-gemini", "agy-claude"],
-        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "claude"],
+        "sort": ["claude", "agy-gemini", "agy-claude", "claude-opus"],
+        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo",
+                   "claude", "claude-opus"],
     },
     "platforms": {
         "claude": {
             "enabled": True, "kind": "claude",
             "sort_model": "sonnet", "build_model": "",
+            "soft": {"5h": 60, "weekly": 70},
+            "hard": {"5h": 70, "weekly": 80},
+            "stale_minutes": 15,
+        },
+        # Same CLI, same account/quota as "claude" (kind: claude) — just a
+        # pinnable name that forces Opus for hard tasks (`platform:claude-opus`)
+        # without spending Antigravity's separate, scarcer Claude/Opus pool.
+        # Listed last in routing so it's never picked over "claude" unpinned
+        # (identical usage, so it never would win anyway); it's only reached
+        # via an explicit pin, and being in the routing lists is what gets its
+        # quota probed (refresh_usage only probes platforms it's "wanted").
+        "claude-opus": {
+            "enabled": True, "kind": "claude",
+            "sort_model": "opus", "build_model": "opus",
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
