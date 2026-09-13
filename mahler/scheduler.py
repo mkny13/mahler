@@ -725,6 +725,29 @@ def _ci_pending(ctx, project, item, pr, view):
     led.release(project, n, holder=CONDUCTOR)
 
 
+def busy_platforms(cfg, active):
+    """Count active runs per quota group (quota_group or platform name).
+
+    A platform is busy when its group's count reaches that platform's
+    max_runs (default 1), or when it isn't available(). Platforms sharing
+    a quota_group share one slot (DESIGN D21).
+    """
+    per_group = {}
+    for r in active:
+        pname = r["platform"]
+        pconf = cfg["platforms"].get(pname, {})
+        group = pconf.get("quota_group", pname)
+        per_group[group] = per_group.get(group, 0) + 1
+    busy = set()
+    for pname, pconf in cfg["platforms"].items():
+        group = pconf.get("quota_group", pname)
+        if per_group.get(group, 0) >= pconf.get("max_runs", 1):
+            busy.add(pname)
+        if not platforms.available(pconf):
+            busy.add(pname)
+    return busy
+
+
 def _red_ci(ctx, project, item, pr, view):
     """Red CI on a verifying item: a fix run (D18's second run role) starts on
     the PR's head branch, its prompt carrying the failing-log tail (runner
@@ -755,12 +778,7 @@ def _red_ci(ctx, project, item, pr, view):
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, but every run slot is busy; "
                 "the fix waits for the next tick")
         return
-    per_platform = {}
-    for r in active:
-        per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
-    busy = {k for k, v in per_platform.items()
-            if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
-    busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
+    busy = busy_platforms(cfg, active)
     size = next((l.split(":", 1)[1] for l in json.loads(item["labels"] or "[]")
                  if l.startswith("size:")), None)
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
@@ -1187,9 +1205,7 @@ def schedule(ctx, projects):
     for r in active:
         in_project[r["project"]] = in_project.get(r["project"], 0) + 1
         per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
-    busy = {k for k, v in per_platform.items()
-            if v >= cfg["platforms"].get(k, {}).get("max_runs", 1)}
-    busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
+    busy = busy_platforms(cfg, active)
     # a finished build keeps its project's build slot until it merges (D19)
     in_flight = {p["name"]: len(led.items(p["name"], ["verifying"])) for p in projects}
 
@@ -1271,8 +1287,11 @@ def schedule(ctx, projects):
             total += 1
             in_project[name] = in_project.get(name, 0) + 1
             per_platform[platform] = per_platform.get(platform, 0) + 1
+            group = cfg["platforms"][platform].get("quota_group", platform)
             if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
-                busy.add(platform)
+                for p in cfg["platforms"]:
+                    if cfg["platforms"][p].get("quota_group", p) == group:
+                        busy.add(p)
             started.add(name)
 
 
