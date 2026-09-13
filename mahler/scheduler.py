@@ -13,7 +13,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
-from . import backup, config, digest, notify, platforms, presence, router, runner
+from . import backup, config, digest, janitor, notify, platforms, presence, router, runner
 from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, checks_state,
                  depends_of, label_names, needs_human_of, parse_command, pin_of,
                  pr_body, pr_summary_of, priority_of)
@@ -89,6 +89,7 @@ def tick(ctx):
             for spec in p.get("backups") or []:
                 backup.run(ctx, p["name"], spec)
     digest.maybe_send(ctx)                  # informational: also runs while paused
+    janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
     return ctx.lines
 
 
