@@ -85,5 +85,57 @@ class MaintenanceQueueTests(unittest.TestCase):
         scheduler.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
+    def test_pass_issue_carries_scope_label(self):
+        """D20: when scope=label, the filed pass issue carries the project's
+        scope_label so Mahler's sync recognises it as in-scope."""
+        self.cfg = {"defaults": {}, "projects": {"mahler": proj(scope="label", scope_label="project-scope")}}
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh_mock = mock.Mock()
+        self.ctx._gh["mkny13/mahler"] = self.gh_mock
+
+        scheduler.queue_maintenance(self.ctx, [proj(scope="label", scope_label="project-scope")])
+
+        self.gh_mock.create_issue.assert_called_once()
+        args, kwargs = self.gh_mock.create_issue.call_args
+        self.assertIn("project-scope", args[2])
+
+    def test_pass_issue_no_scope_label_when_scope_all(self):
+        """When scope=all, no scope_label is added to the pass issue."""
+        scheduler.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        args, kwargs = self.gh_mock.create_issue.call_args
+        self.assertNotIn("mahler", args[2])
+
+    def test_one_pass_in_flight_blocks_all_passes(self):
+        """D20: if any pass:* item is open, no new passes are filed."""
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="working")
+        scheduler.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_open_pass_blocks_different_pass(self):
+        """An open pass:health blocks filing the due pass:security."""
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="ready")
+        scheduler.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_all_passes_done_allows_new_pass(self):
+        """D20: only blocks while a pass is open; once all pass items are
+        done, filing proceeds for due passes."""
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]))
+        self.led.set_state("mahler", 99, "done")
+        self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=20)))
+
+        scheduler.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        args, kwargs = self.gh_mock.create_issue.call_args
+        self.assertIn("pass:security", args[2])
+
+    def test_open_pass_blocks_dry_run_too(self):
+        """The in-flight guard applies even in dry-run."""
+        self.ctx.dry_run = True
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="working")
+        scheduler.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
