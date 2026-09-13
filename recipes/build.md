@@ -15,29 +15,21 @@ Rules:
    $branch` at least every ~10 minutes. You can be stopped at any moment (quota,
    pre-emption); unpushed work is lost work.
 2. **Verify before every push:** `$verify`. Fix what fails.
-3. When every "Done when" check passes, open a PR:
-   `gh pr create -R $repo --base $base --head $branch` with a body that starts with
-   `Fixes #$number`, summarises the change, and repeats the issue's "Needs a human to check"
-   list.
-4. **Wait for CI:** `gh pr checks <pr> -R $repo --watch --fail-fast`. On failure, read the
-   failing log (`gh run view <run-id> -R $repo --log-failed | tail -150`), fix, push, repeat.
-5. **Before merging, confirm you still own this item:** `$mahler lease-check` must exit 0.
-   If it doesn't, someone else has taken over — push your branch and stop with
-   `STATUS: YIELDED`.
-6. **Merge:** `gh pr merge <pr> -R $repo --squash`, then `git push origin --delete $branch`.
-   Then comment on the issue: a short summary of what changed, plus the "Needs a human to
-   check" list.
-7. Stop only for a decision genuinely only the owner can make (product intent, credentials,
+3. **Your job ends at the push.** When every "Done when" check passes, commit, push, and
+   end with `STATUS: DONE <one-line summary of what changed>`. That is the whole ending:
+   you do **not** open a PR, watch CI, merge, or comment on the issue — Mahler's
+   conductor does all of that itself, in code, after you end.
+4. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data operations). Post it as an issue comment and end
-   with `STATUS: NEEDS-YOU`.
-8. Never force-push `$base`, delete repos or releases, run destructive SQL against real
+   with `STATUS: NEEDS-YOU <the question, on one line>`.
+5. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
+   push what you have and end with `STATUS: BLOCKED <reason>`.
+6. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
 End your final message with exactly one of these lines:
-STATUS: MERGED #<pr>
-STATUS: PR-OPEN #<pr> <why it is not merged>
+STATUS: DONE <one-line summary of what changed>
 STATUS: NEEDS-YOU <the question, on one line>
 STATUS: BLOCKED <reason>
-STATUS: YIELDED
