@@ -1137,6 +1137,35 @@ def expire(ctx):
 
 # ---------- usage ----------
 
+def _usage_needs_refresh(led, name, pconf):
+    """True when usage data is stale or approaching stale — needs a refresh.
+
+    A metered platform needs refresh when:
+    - usage_state reports 'stale', or
+    - any window's sample age exceeds stale_minutes - 3 (proactive), or
+    - for claude platforms, oauth_usage hasn't been checked in >5 minutes.
+    """
+    state, _ = router.usage_state(led, name, pconf)
+    if state == "stale":
+        return True
+    stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
+    proactive_threshold = stale_after - timedelta(minutes=3)
+    now = led.now()
+    usage = led.usage(name)
+    for w in pconf.get("windows", router.WINDOWS):
+        u = usage.get(w)
+        if u is None:
+            continue
+        sampled = parse(u.get("sampled_at"))
+        if sampled and now - sampled > proactive_threshold:
+            return True
+    if pconf.get("kind") == "claude":
+        oauth_last = parse(led.get_kv(f"probe:oauth:{name}"))
+        if not oauth_last or now - oauth_last > timedelta(minutes=5):
+            return True
+    return False
+
+
 def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     wanted = set()
@@ -1153,15 +1182,16 @@ def refresh_usage(ctx, projects):
                 led.record_usage(name, w, pct, resets)
     for name in wanted:
         pconf = cfg["platforms"].get(name, {})
-        if router.usage_state(led, name, pconf)[0] != "stale":
+        if not _usage_needs_refresh(led, name, pconf):
             continue
         if pconf.get("kind") == "copilot":
             last = parse(led.get_kv(f"probe:{name}"))
             if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
                 continue
-            led.set_kv(f"probe:{name}", iso(led.now()))
             for w, pct, resets in platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500)):
                 led.record_usage(name, w, pct, resets)
+            if led.usage(name).get("monthly"):
+                led.set_kv(f"probe:{name}", iso(led.now()))
             continue
         if pconf.get("kind") != "claude":
             continue
@@ -1173,17 +1203,18 @@ def refresh_usage(ctx, projects):
         free = platforms.oauth_usage()                 # zero tokens
         if free:
             _record_claude_usage(ctx, free, check_human=True)
+            led.set_kv(f"probe:oauth:{name}", iso(led.now()))
             continue
         if peak_active:
             continue
         last = parse(led.get_kv(f"probe:{name}"))
         if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
             continue
-        for cname in [cn for cn, cp in cfg["platforms"].items() if cp.get("kind") == "claude"]:
-            led.set_kv(f"probe:{cname}", iso(led.now()))
         probed = platforms.probe_claude()
         if probed:
             _record_claude_usage(ctx, probed, check_human=True)
+            for cname in [cn for cn, cp in cfg["platforms"].items() if cp.get("kind") == "claude"]:
+                led.set_kv(f"probe:{cname}", iso(led.now()))
 
 
 # ---------- schedule ----------
