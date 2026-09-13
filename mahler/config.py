@@ -87,6 +87,11 @@ DEFAULTS = {
     # daily janitor (mahler#7, DESIGN D12): prune worktrees of ended runs and
     # old mahler/snapshot|abandoned branches; once-only via the ledger kv table
     "janitor": {"retention_days": 14, "worktree_grace_hours": 24},
+    # Periodic calibration of run and issue duration estimates (mahler#59)
+    "estimates": {
+        "calibration_interval": 10,
+        "calibration_window": 20,
+    },
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
