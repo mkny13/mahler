@@ -87,6 +87,9 @@ class ShipTests(unittest.TestCase):
                              summary="wired the exporter", sorted_at=iso(NOW))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = FakeGH()
+        avail = mock.patch.object(platforms, "available", return_value=True)
+        avail.start()
+        self.addCleanup(avail.stop)
 
     def item(self, n=5):
         return self.led.item("x", n)
