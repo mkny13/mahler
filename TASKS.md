@@ -1,51 +1,33 @@
-# TASKS.md
-
-Last updated by: Claude (mahler#16 ship + #27 stale bases handoff), 2026-09-12
+# TASKS
 
 ## Now
 
+- [x] mahler#38 (PR #39): Copilot AI Credits billing probe committed, tested, green CI, and squash-merged to main.
+- [x] mahler#35 (PR #36): "unknown limit" quota display wording rebased cleanly on main, tested, green CI, and squash-merged to main.
+- [ ] Watch autonomous daemon runs on the backlog (mahler#17, #18, #20, #32, #8).
+
 ## Status
-The conductor (#16, DESIGN D18) and D19 (#27) are live in the daemon. Mahler now pushes,
-opens, watches and merges its own PRs, holds a project's build slot until the change merges,
-and starts every build on current `main`. groundwork#81 shipped (PR #93). mahler#20 and #8
-had built on stale bases and were re-queued with `/mahler go`. Nothing is in flight by hand.
-The backlog lives in GitHub Issues, not here.
+
+Shipped both pending items:
+1. **Copilot quota probe (mahler#38, PR #39):** GitHub Copilot CLI now has a real quota probe via `gh api /users/<login>/settings/billing/ai_credit/usage` (summing monthly AI Credits against 1500 monthly allotment), with metered routing using a `monthly` window.
+2. **Quota display honest wording (mahler#35, PR #36):** Unmetered platforms (cline-free, kilo) now display as `"unknown limit (platform reports no quota signal)"` rather than asserting `"unmetered"`.
 
 ## Next steps
-1. **Watch the first builds that ship with nobody's help.** mahler#17, #18, #20 and #8 are
-   `ready`. Check that only one mahler item is `working` or `verifying` at a time in
-   `mahler status`, and that each PR opens and merges on its own. A resumed build's handoff
-   comment should say its work was replayed onto current main, or that it started fresh from
-   a `mahler/snapshot/<n>-stale-run<id>` branch. #8 will almost certainly start fresh.
-2. Then #17 (no status line + green verify = DONE) and #18 (red CI → fix run). Until #18
-   lands, a red PR pauses that project's builds and pings once. Fix it by hand or close it.
-3. groundwork#81: PR #93 merged. Confirm the production backup, migrate and seed actually ran.
-4. mahler#7 janitor is `failed` after 3 tries. Read its handoff comments before re-queuing.
-   It should also prune the new `mahler/snapshot/*-stale-run*` branches.
-5. ROADMAP Phase 1 remainder: deploy tracking/smoke checks for groundwork. The owner turns
-   on `tailscale serve` for the status page (`mahler serve`).
+
+1. **Watch the backlog runs:** mahler#17, #18, #20, #32, #8 are `ready`.
+2. mahler#7 janitor is `failed` after 3 tries — inspect handoff comments before re-queuing.
+3. groundwork#81: PR #93 merged. Confirm production backup, migrate and seed ran.
+4. ROADMAP Phase 1 remainder: deploy tracking/smoke checks for groundwork; tailscale serve for status page.
 
 ## Context
-- **Sessions share `~/Mahler`.** Work in your own worktree (CLAUDE.md). On 2026-09-12 two
-  sessions switched branches under each other, and one's commit was reset off `main`
-  (recovered from the reflog). Cross-session messages (ListAgents / SendMessage) work for
-  coordinating.
-- D19 details worth knowing: the conductor sends a `CONFLICTING` PR back to `ready` (no
-  attempt counted). A branch left with nothing beyond base is deleted, not pushed, because a
-  PR head at base's tip reads as merged and would close the issue.
-- New unmetered builders `copilot` and `kilo` (#26, #31; size s only; Copilot first in
-  build routing). Kilo must use `kilo/kilo-auto/free`: its default model is paid and 402s.
-- Controls: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
-  `mahler log <run>`, `mahler backup [project]`. Logs are in `~/.mahler/logs/`
-  (`tick.log`, `update.log`).
-- Config that isn't in git lives in `~/.mahler/config.toml`: projects, ntfy topic, groundwork
-  rules, routing overrides. `cline-free` is enabled with `max_size = "l"`.
-- Weak-model failure mode: the agent finishes the code, then ends on narration with no
-  STATUS line. D18 (#15–#18) handles it.
-- An interactive Claude session active in ~/Mahler hot-holds Mahler's own builds
-  (`hot_hold_minutes` 20). Expected; builds resume once the session goes quiet.
-- After any `brew upgrade` of Python, expect a "runs are stuck at startup" ping: click Allow
-  on the Documents-access dialog on the Mac mini (DESIGN D8, mahler#12).
-- groundwork scope is label-based: only issues labelled `mahler` are managed.
-- The owner should rotate the groundwork Neon password (it was printed in a local session
-  transcript on 2026-09-12).
+
+- **Why `copilot-ai-credits-probe` has staged-but-uncommitted changes:** this session ran low on context/tokens mid-implementation, right after resolving a 3-way merge conflict against `origin/main` (the branch was rebuilt fresh off `origin/main` after discovering the first attempt was accidentally stacked on the old, unrelated PR #36 branch). The merge conflict is fully resolved and tests pass — what's missing is purely the commit/push/PR mechanics.
+- **What changed in this branch, concretely:**
+  - `mahler/config.py`: Copilot's platform config flips from `metered: False` to `metered: True`, adds `"windows": ["monthly"]` and `"monthly_cap_credits": 1500`, with `soft`/`hard` keyed on `"monthly"` instead of `"5h"`/`"weekly"`.
+  - `mahler/router.py`: `usage_state()` now reads `pconf.get("windows", WINDOWS)` instead of the hardcoded global `WINDOWS`, so a platform can have its own window set. (`serve.py`'s gauge-width calc and `scheduler.py`'s quota-hit backoff were updated the same way.)
+  - `mahler/platforms.py`: new `probe_copilot(monthly_cap_credits)` — shells to `gh api /users/<login>/settings/billing/ai_credit/usage`, sums `usageItems[].grossQuantity`, and returns a `("monthly", pct, resets_at)` sample. Needs the `user` OAuth scope on the `gh` CLI token (already granted on this machine via `gh auth refresh -h github.com -s user`, done during this session with the user's explicit go-ahead).
+  - `mahler/scheduler.py`: `refresh_usage()` gained a branch to probe Copilot when its `usage_state` is stale, at most every `stale_minutes` (360 = 6h, since it's a billing API, not live-critical).
+  - `tests/test_routing.py`, `DESIGN.md` (D8 table): updated to match — Copilot is no longer grouped with Cline/Kilo as "unmetered."
+- **Important nuance already baked into `main` that this branch had to merge with**: `main` independently reordered `routing.build` so Copilot now comes *before* Kilo (`"cline-free", "copilot", "kilo", "claude"`) — Copilot runs real frontier models (verified `claude-sonnet-5`) despite the smaller monthly budget, so it's preferred over Kilo's grab-bag `:free` models. The merged code preserves that ordering.
+- **Issue numbering**: this session's new issue is `mkny13/mahler#38` (not #37 — #37 was already used by an unrelated, since-merged PR). All in-code comments/docstrings correctly say `mahler#38`.
+- **Caveat for future maintenance**: the AI-credits billing endpoint only reports *consumption*, never the cap — 1500/month is hardcoded config based on GitHub's published Pro/Education allotment as of 2026-09-12. If GitHub changes that allotment, `monthly_cap_credits` in `mahler/config.py` needs a manual update.
