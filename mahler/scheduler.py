@@ -1237,8 +1237,8 @@ def schedule(ctx, projects):
                 routing_role = "plan"
             else:
                 routing_role = role
-            platform, reasons = router.pick(cfg, led, routing_role,
-                                            it["pin"] if role == "build" else None,
+            pin = it["pin"] if role in ("build", "fix", "sort") else None
+            platform, reasons = router.pick(cfg, led, routing_role, pin,
                                             busy, size=size, burst_lines=burst_lines)
             if not platform:
                 if routing_role == "plan":
