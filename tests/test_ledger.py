@@ -244,6 +244,26 @@ class RemoteLedgerTests(unittest.TestCase):
         self.assertEqual(request["holder"], "work-laptop/run:7")
         self.assertEqual(kwargs["timeout"], 8)
 
+    def test_remote_command_accepts_safe_argv_for_an_explicit_python(self):
+        self.cfg["projects"]["mahler"]["remote_ledger"]["command"] = [
+            "/opt/homebrew/bin/python3", "~/.mahler/app/bin/mahler"]
+        routed = RoutedLedger(self.local, self.cfg, run=self.routed._run)
+        lease, _ = routed.claim("mahler", 151, "run:7", "auto", 10)
+        self.assertIsNotNone(lease)
+        argv = self.requests[-1][0]
+        self.assertEqual(argv[-3:], [
+            "/opt/homebrew/bin/python3", "~/.mahler/app/bin/mahler",
+            "ledger-remote-op"])
+
+    def test_remote_command_argv_rejects_shell_syntax_and_options(self):
+        for command in (["python3", "-c"], ["python3", "x;touch-bad"]):
+            with self.subTest(command=command):
+                self.cfg["projects"]["mahler"]["remote_ledger"]["command"] = command
+                routed = RoutedLedger(self.local, self.cfg, run=self.routed._run)
+                lease, info = routed.claim("mahler", 151, "run:7", "auto", 10)
+                self.assertIsNone(lease)
+                self.assertIn("invalid remote_ledger", info["unavailable"])
+
     def test_unconfigured_project_stays_fully_local(self):
         lease, _ = self.routed.claim("work", 2, "run:2", "auto", 10)
         self.assertIsNotNone(lease)

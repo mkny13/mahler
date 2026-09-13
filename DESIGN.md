@@ -879,8 +879,10 @@ one project; all other execution state and every other project remain local to e
   `heartbeat`, `release`, and `lease_check` are relayed. Items, runs, quota, events, backups, and
   every unconfigured project's leases continue to use the caller's local SQLite ledger.
 - The transport is one JSON request on stdin and one JSON response on stdout to
-  `mahler ledger-remote-op`. The SSH command is static; item and holder values never enter a
-  shell command. It uses `BatchMode`, normal SSH host-key checking, a short connect timeout, and
+  `mahler ledger-remote-op`. The SSH command is static; it may be one executable string or a
+  validated argv list when an explicit Python interpreter is needed. Each token excludes shell
+  syntax and option-like arguments, and item and holder values never enter the command. It uses
+  `BatchMode`, normal SSH host-key checking, a short connect timeout, and
   the laptop's existing key. The endpoint accepts only the five named operations for projects
   enabled in the Mini's own config. SSH authentication and the Mini's OS account remain the
   security boundary; no credential or private config is copied between machines.
