@@ -148,5 +148,18 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(runner.slug("Add dark mode (Settings)!"), "add-dark-mode-settings")
 
 
+class SetupTailTests(unittest.TestCase):
+    def test_setup_tail_reads_the_last_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            run = {"log_path": os.path.join(d, "agent.log")}
+            self.assertEqual(runner.setup_tail(run), "")
+            with open(os.path.join(d, "setup.log"), "w") as fh:
+                fh.write("\n".join(f"line{i}" for i in range(30)))
+            tail = runner.setup_tail(run)
+            self.assertEqual(tail.splitlines()[0], "line10")
+            self.assertEqual(len(tail.splitlines()), 20)
+            self.assertEqual(runner.setup_tail(run, lines=2), "line28\nline29")
+
+
 if __name__ == "__main__":
     unittest.main()

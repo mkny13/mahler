@@ -198,8 +198,11 @@ def finalize(ctx, run):
             led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
-    reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None)
-    outcome = verb or (f"exit {code}" if code else "no status line")
+    setup_failed = code == 97 and run["role"] == "build"   # setup step failed before the agent ran
+    reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
+             ("setup-failed" if setup_failed else None)
+    outcome = ("setup failed" if setup_failed
+               else verb or (f"exit {code}" if code else "no status line"))
     ctx.say(f"{project}#{n}: run {run['id']} ({run['role']} on {run['platform']}) ended — "
             f"{outcome}{f' [{reason}]' if reason else ''}")
     if ctx.dry_run:
@@ -209,6 +212,10 @@ def finalize(ctx, run):
 
     gh = ctx.gh(project)
     keep_worktree = False
+    if setup_failed:
+        _setup_failure(ctx, run, item)
+        return
+    led.reset_setup_fails(project, n)
     if run["role"] == "sort":
         if verb == "READY":
             led.set_state(project, n, "ready", "sorted", sorted_at=iso(led.now()))
@@ -411,6 +418,56 @@ def _cline_session_id(worktree):
     return None
 
 
+SETUP_FAIL_CAP = 2                                   # consecutive setup failures before needs_you
+
+
+def _setup_failure(ctx, run, item):
+    """A build run died in the setup step (exit 97): the environment is broken, not
+    the task (issue #8). Post a handoff with the setup.log tail, don't burn an agent
+    attempt, and after SETUP_FAIL_CAP in a row hand the item to the owner."""
+    led, project, n = ctx.led, run["project"], run["number"]
+    pol = ctx.policy(project)
+    tail = runner.setup_tail(run)
+    fails = led.bump_setup_fails(project, n)
+    stuck = fails >= SETUP_FAIL_CAP
+    _setup_failed_comment(ctx, run, fails, tail, stuck)
+    if stuck:
+        led.set_state(project, n, "needs_you",
+                      f"setup failed {fails} times in a row — the environment, not the task")
+        ctx.ping(f"Mahler needs you — {project} #{n}",
+                 f"setup failed {fails} times in a row (setup.log tail is in the handoff comment).",
+                 project, n, priority="high", tags="warning")
+    else:
+        led.set_state(project, n, "ready" if item["sorted_at"] else "inbox",
+                      f"setup failed (failure {fails} of {SETUP_FAIL_CAP}) — retrying")
+        ctx.ping(f"Setup failed — {project} #{n}",
+                 f"run {run['id']}: setup failed ({fails}/{SETUP_FAIL_CAP}); retrying.",
+                 project, n, priority="low")
+    led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
+    led.update_run(run["id"], status="ended", outcome="setup failed", exit_code=97,
+                   ended_at=iso(led.now()))
+    runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
+                           runner.worktree_root(pol))
+
+
+def _setup_failed_comment(ctx, run, fails, tail, stuck):
+    why = ("this looks like a broken environment, not the task — comment "
+           "`/mahler go` to retry once it's fixed" if stuck
+           else f"retrying (consecutive setup failures capped at {SETUP_FAIL_CAP})")
+    lines = [f"<!-- mahler:handoff run={run['id']} epoch={run['epoch']} "
+             f"from={run['platform']} reason=setup-failed -->",
+             f"**Setup failed** — run {run['id']} stopped during the project's setup step, "
+             f"before the agent started (exit 97). {fails} in a row: {why}", ""]
+    if tail:
+        lines += ["Last 20 lines of setup.log:", "", "```", tail, "```"]
+    else:
+        lines.append("(setup.log was empty or missing)")
+    try:
+        ctx.gh(run["project"]).comment(run["number"], "\n".join(lines))
+    except GHError as e:
+        ctx.say(f"#{run['number']}: couldn't post setup-failure comment — {e}")
+
+
 def _retry_or_fail(ctx, project, n, item, reason, outcome):
     led = ctx.led
     if reason in NO_ATTEMPT:
@@ -434,6 +491,7 @@ REASON_TEXT = {
     "hung": "no progress for too long", "timeout": "hit the time limit",
     "silent": "never started — printed nothing",
     "closed": "the issue was closed", "parked": "parked", "lost-lease": "lost its lease",
+    "setup-failed": "the project's setup step failed (exit 97)",
 }
 
 
@@ -740,7 +798,7 @@ def _process_comments(ctx, project, item, comments):
 def _apply_instruction(ctx, project, item, verb, arg):
     led, n = ctx.led, item["number"]
     if verb == "go":
-        led.set_state(project, n, "ready", "you said go", attempts=0,
+        led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
                       sorted_at=iso(led.now() - timedelta(days=1)))
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
