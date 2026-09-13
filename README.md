@@ -11,20 +11,22 @@ issues, quota gauges per platform, and the last 30 events. It auto-refreshes
 every 30 seconds and follows the OS light/dark setting.
 
 ```bash
-mahler serve            # http://127.0.0.1:8787
+mahler serve                  # http://127.0.0.1:8787
+mahler serve --host 0.0.0.0   # listen on all interfaces
 mahler serve --port 9000
 ```
 
-The port can also be set in `~/.mahler/config.toml`:
+The host and port can also be set in `~/.mahler/config.toml`:
 
 ```toml
 [serve]
+host = "127.0.0.1"
 port = 8787
 ```
 
 The page is strictly read-only: only `GET /` is served; anything else gets a
-404 or 405. The server always binds to `127.0.0.1` — it is never exposed
-beyond the machine by Mahler itself.
+404 or 405. By default, the server binds to `127.0.0.1`. You can expose it
+to your local network using `--host 0.0.0.0`.
 
 ### Viewing it from your phone (Tailscale)
 

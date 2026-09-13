@@ -47,10 +47,8 @@ DEFAULTS = {
     },
     "concurrency": {"total": 2},
     "ntfy": {"server": "https://ntfy.sh", "topic": ""},
-    # the read-only status page (`mahler serve`, DESIGN D10); always bound
-    # to 127.0.0.1 — exposure to the tailnet is a `tailscale serve` machine
-    # setting the owner turns on
-    "serve": {"port": 8787},
+    # the read-only status page (`mahler serve`, DESIGN D10)
+    "serve": {"host": "127.0.0.1", "port": 8787},
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
     # tick at/after `hour` local time; once-only via the ledger kv table
     "digest": {"hour": 8},
