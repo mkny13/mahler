@@ -90,9 +90,10 @@ def cmd_status(a, cfg, led):
         lease = led.lease(i["project"], i["number"])
         held = f"  held by {lease['holder']}" if lease else ""
         tries = f"  tries {i['attempts']}" if i["attempts"] else ""
+        setup = f"  setup failed ×{i['setup_fails']}" if i["setup_fails"] else ""
         url = item_url(i["project"], i["number"], i)
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
-              f"{(i['title'] or '')[:60]}{held}{tries}{url}")
+              f"{(i['title'] or '')[:60]}{held}{tries}{setup}{url}")
     print("\nQuota")
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)
@@ -421,6 +422,11 @@ def cmd_log(a, cfg, led):
           f"{run['platform']} — {run['status']} {run['outcome'] or ''}")
     print(f"log: {run['log_path']}\n")
     print(s["last_text"])
+    if run["exit_code"] == 97:
+        from . import runner
+        tail = runner.setup_tail({"log_path": run["log_path"]})
+        print(f"\nsetup.log (last 20 lines):\n{tail}" if tail
+              else "\n(no setup.log left for this run)")
     return 0
 
 

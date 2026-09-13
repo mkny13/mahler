@@ -150,5 +150,32 @@ class StateTests(unittest.TestCase):
         self.assertIn("inbox -> ready", ev["detail"])
 
 
+class SetupFailCounterTests(unittest.TestCase):
+    def test_bump_counts_consecutively_and_reset_clears(self):
+        led = Ledger(":memory:")
+        led.upsert_item("p", 8, title="x")
+        self.assertEqual(led.item("p", 8)["setup_fails"], 0)
+        self.assertEqual(led.bump_setup_fails("p", 8), 1)
+        self.assertEqual(led.bump_setup_fails("p", 8), 2)
+        led.reset_setup_fails("p", 8)
+        self.assertEqual(led.item("p", 8)["setup_fails"], 0)
+
+    def test_setup_fails_column_is_added_to_legacy_databases(self):
+        import os
+        import sqlite3
+        import tempfile
+        from mahler.ledger import SCHEMA
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(l for l in SCHEMA.splitlines()
+                                        if "setup_fails" not in l))
+            con.execute("INSERT INTO items (project, number, state) VALUES ('p', 1, 'ready')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.assertEqual(led.item("p", 1)["setup_fails"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
