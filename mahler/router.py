@@ -13,8 +13,40 @@ from .ledger import parse
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
 
+# short chip labels for countdowns (mahler#52): "5h" reads fine as-is, but
+# "weekly" is shortened to "wk" to keep the CLI/web chips compact.
+WINDOW_LABELS = {"5h": "5h", "weekly": "wk"}
 
 SIZES = {"s": 1, "m": 2, "l": 3}
+
+
+def fmt_countdown(delta):
+    """timedelta -> '1h 26m' / '2d 5h' / '35m', biggest two non-zero units."""
+    total_minutes = max(int(delta.total_seconds() // 60), 0)
+    days, rem = divmod(total_minutes, 1440)
+    hours, mins = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
+
+
+def window_countdowns(led, name, pconf):
+    """-> [(label, 'in <countdown>'), ...] for each metered window with a
+    known, still-future reset time, in config order (mahler#52)."""
+    now = led.now()
+    usage = led.usage(name)
+    out = []
+    for w in pconf.get("windows", WINDOWS):
+        u = usage.get(w)
+        if u is None:
+            continue
+        resets = parse(u["resets_at"])
+        if not resets or resets <= now:
+            continue
+        out.append((WINDOW_LABELS.get(w, w), f"in {fmt_countdown(resets - now)}"))
+    return out
 
 
 def usage_state(led, name, pconf):
@@ -25,13 +57,15 @@ def usage_state(led, name, pconf):
     if hold and parse(hold["resets_at"]) and parse(hold["resets_at"]) > now:
         # not a quota reading: the platform can't start runs right now (a run
         # sat silent at startup). Soft, so a run already making progress keeps going.
-        return "soft", f"on hold until {parse(hold['resets_at']).astimezone():%H:%M} (a run never started)"
+        until = parse(hold["resets_at"])
+        return "soft", (f"on hold until {until.astimezone():%H:%M} "
+                         f"(in {fmt_countdown(until - now)}) (a run never started)")
     if not pconf.get("metered", True):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():
             until = parse(u["resets_at"])
             if u["used_pct"] >= 100 and until and until > now:
-                return "hard", f"backing off until {until.astimezone():%H:%M}"
+                return "hard", f"backing off until {until.astimezone():%H:%M} (in {fmt_countdown(until - now)})"
         return "ok", "unknown limit (platform reports no quota signal)"
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []

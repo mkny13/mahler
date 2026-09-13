@@ -82,6 +82,16 @@ class TestRender(unittest.TestCase):
         self.assertIn("width:42%", html)    # gauge fill
         self.assertIn("unknown limit", html)    # cline-free
 
+    def test_quota_reset_countdown_chips(self):
+        # mahler#52: badge chips show reset countdowns on the quota card header
+        from datetime import timedelta
+        from mahler.ledger import iso
+        led = make_led()
+        later = iso(led.now() + timedelta(hours=2, minutes=5))
+        led.record_usage("claude", "weekly", 10.0, later)
+        html = render(led, self.cfg)
+        self.assertRegex(html, r'class="chip">wk in 2h [0-5]?\dm</span>')
+
     def test_paused_banner(self):
         self.led.set_kv("paused", "1")
         html = render(self.led, self.cfg)

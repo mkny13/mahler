@@ -58,6 +58,36 @@ class StatusCliTests(unittest.TestCase):
         self.assertIn("https://github.com/owner/proj/issues/1", output)
         self.assertIn("https://github.com/owner/proj/pull/123", output)
 
+    def test_status_quota_shows_reset_countdown_chips(self):
+        # mahler#52: quota lines append `[5h in ...  · wk in ...]` chips
+        # when a window has a fresh, still-future reset time.
+        from datetime import timedelta
+        from mahler.ledger import iso
+        cfg = {
+            "defaults": {},
+            "platforms": {
+                "claude": {"enabled": True, "kind": "claude",
+                           "soft": {"5h": 60, "weekly": 70},
+                           "hard": {"5h": 70, "weekly": 80},
+                           "stale_minutes": 15},
+            },
+            "projects": {},
+        }
+        later = iso(self.led.now() + timedelta(hours=1, minutes=26))
+        self.led.record_usage("claude", "5h", 42.0, later)
+
+        class Args:
+            json = False
+            project = None
+
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            ret = cli.cmd_status(Args(), cfg, self.led)
+
+        self.assertEqual(ret, 0)
+        output = buf.getvalue()
+        self.assertRegex(output, r"\[5h in 1h 2[0-9]m\]")
+
 
 if __name__ == "__main__":
     unittest.main()
