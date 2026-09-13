@@ -106,14 +106,17 @@ def pick(cfg, led, role, pin=None, busy=(), size=None):
         if name in busy:
             reasons.append(f"{name}: busy")
             continue
-        limit = cfg["platforms"][name].get("max_size")
-        if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
-            reasons.append(f"{name}: only takes size:{limit}")
-            continue
-        min_limit = cfg["platforms"][name].get("min_size")
-        if min_limit and not pin and SIZES.get(size or "m", 2) < SIZES[min_limit]:
-            reasons.append(f"{name}: requires size:{min_limit}+")
-            continue
+        # Size limits (max_size/min_size) are builder limits — they don't apply
+        # to sort or plan roles (DESIGN D21).
+        if role not in ("sort", "plan"):
+            limit = cfg["platforms"][name].get("max_size")
+            if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
+                reasons.append(f"{name}: only takes size:{limit}")
+                continue
+            min_limit = cfg["platforms"][name].get("min_size")
+            if min_limit and not pin and SIZES.get(size or "m", 2) < SIZES[min_limit]:
+                reasons.append(f"{name}: requires size:{min_limit}+")
+                continue
         state, detail = usage_state(led, name, cfg["platforms"][name])
         if state == "ok":
             return name, reasons

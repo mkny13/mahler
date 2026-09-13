@@ -17,3 +17,8 @@ verify = "python3 -m unittest discover -s tests"
 # merged_threshold = 20
 # cooldown_days = 14
 # passes = ["security", "health", "drift", "tests", "token-economy", "guidance"]
+
+# [routing]
+# plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
+# sort = ["claude", "agy-gemini", "agy-claude"]
+# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "claude-opus", "claude"]
