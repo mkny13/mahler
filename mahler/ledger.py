@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 """
 
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
-          "tracking", "done")
+          "parent", "done")
 
 
 def utcnow():
@@ -144,6 +144,8 @@ class Ledger:
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
         if "nudged" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
+        # migrate legacy 'tracking' state to 'parent'
+        self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
         self.clock = clock
 
     def now(self):
