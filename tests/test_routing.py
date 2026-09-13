@@ -70,7 +70,8 @@ class RouterTests(unittest.TestCase):
 
     def test_cline_backs_off_after_a_quota_error(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (80, 5)})
-        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        for name in ("cline-free", "kilo", "copilot"):
+            led.record_usage(name, "5h", 100.0, iso(NOW + timedelta(minutes=30)))
         name, reasons = router.pick(self.cfg, led, "build", size="s")
         self.assertIsNone(name)
         self.assertTrue(any("backing off" in r for r in reasons))
@@ -78,6 +79,15 @@ class RouterTests(unittest.TestCase):
     def test_pin_overrides_order(self):
         led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
         self.assertEqual(router.pick(self.cfg, led, "build", pin="agy-gemini")[0], "agy-gemini")
+
+    def test_kilo_and_copilot_are_unmetered_last_resort_builders(self):
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
+        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "kilo")
+        led.record_usage("kilo", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "copilot")
+        led.record_usage("copilot", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "claude")
 
 
 class ParseTests(unittest.TestCase):
@@ -127,6 +137,50 @@ class ParseTests(unittest.TestCase):
                          ("DONE", "wired the exporter"))
         self.assertEqual(platforms.status_line("all green\nSTATUS: DONE pushed; summary here"),
                          ("DONE", "pushed; summary here"))
+
+    def test_copilot_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "p.log")
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "assistant.message",
+                                     "data": {"content": "working on it"}}) + "\n")
+                fh.write(json.dumps({"type": "assistant.message",
+                                     "data": {"content": "STATUS: DONE shipped it"}}) + "\n")
+                fh.write(json.dumps({"type": "result", "exitCode": 0,
+                                     "usage": {"premiumRequests": 1}}) + "\n")
+            r = platforms.read_log(p, "copilot")
+            self.assertTrue(r["ok"])
+            self.assertFalse(r["quota_hit"])
+            self.assertEqual(platforms.status_line(r["final"]), ("DONE", "shipped it"))
+
+    def test_copilot_quota_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "p.log")
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "error", "error": {
+                    "message": "You have exceeded your premium request quota"}}) + "\n")
+            r = platforms.read_log(p, "copilot")
+            self.assertTrue(r["quota_hit"])
+
+    def test_kilo_log_falls_back_to_a_generic_text_walk(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = os.path.join(d, "k.log")
+            with open(k, "w") as fh:
+                fh.write(json.dumps({"type": "message.part.updated",
+                                     "part": {"type": "text", "text": "STATUS: READY"}}) + "\n")
+            r = platforms.read_log(k, "kilo")
+            self.assertFalse(r["quota_hit"])
+            self.assertEqual(platforms.status_line(r["last_text"]), ("READY", ""))
+
+    def test_kilo_auth_error_is_not_a_quota_hit(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = os.path.join(d, "k.log")
+            with open(k, "w") as fh:
+                fh.write(json.dumps({"type": "error", "error": {
+                    "data": {"message": "You need to sign in to use this model.",
+                             "statusCode": 401}}}) + "\n")
+            r = platforms.read_log(k, "kilo")
+            self.assertFalse(r["quota_hit"])
 
 
 if __name__ == "__main__":

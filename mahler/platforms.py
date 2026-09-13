@@ -8,6 +8,25 @@ Verified against the real CLIs on 2026-09-12 (DESIGN D8):
   * agy -p ignores its cwd unless given --add-dir; `agy -p /usage
     --output-format json` reports remaining_fraction per pool and window, for
     free. --print-timeout defaults to 5m, so runs must raise it.
+
+Verified against the real CLIs on 2026-09-13 (mahler#25):
+  * `copilot -p <prompt> --allow-all-tools --output-format json -C <dir>`
+    (binary `copilot`, package `@github/copilot`) ran a real end-to-end
+    non-interactive prompt against this machine's GitHub-Education Copilot
+    license. --allow-all-tools is required for non-interactive mode. JSONL
+    events: assistant text arrives as `{"type":"assistant.message","data":
+    {"content": "..."}}`; the run ends with `{"type":"result","exitCode":0,
+    "usage":{...}}`. There's no cheap account-wide quota probe (usage is
+    per-session AI credits/premium requests, not a 5h/weekly window), so it's
+    routed unmetered like Cline, backed off on a rate-limit/quota error.
+  * `kilo run <message> --dir <dir> --auto --format json` (binary `kilo`,
+    package `@kilocode/cli`) — flags confirmed from `--help`, but auth
+    (`kilo auth login`, a browser flow only the account owner can do) wasn't
+    available to verify a real successful run's JSON shape, only a failure:
+    `{"type":"error","error":{"data":{"statusCode":401,...}}}`. read_log
+    falls back to a generic string-walk over each event for kilo, so a run
+    still surfaces its STATUS line even if the exact event schema drifts.
+    Re-verify once auth is done and tighten the parser if needed.
 """
 
 import json
@@ -45,6 +64,14 @@ def cline_exe():
     return which("cline", ["/opt/homebrew/bin"])
 
 
+def copilot_exe():
+    return which("copilot", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
+
+
+def kilo_exe():
+    return which("kilo", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
+
+
 def _epoch_iso(secs):
     return datetime.fromtimestamp(int(secs), timezone.utc).isoformat() if secs else None
 
@@ -77,6 +104,21 @@ def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv + [prompt]
 
 
+def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    argv = [copilot_exe(), "-p", prompt, "-C", worktree, "--allow-all-tools",
+            "--output-format", "json", "--no-color", "--no-auto-update"]
+    if pconf.get("model"):
+        argv += ["--model", pconf["model"]]
+    return argv
+
+
+def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    argv = [kilo_exe(), "run", prompt, "--dir", worktree, "--auto", "--format", "json"]
+    if pconf.get("model"):
+        argv += ["-m", pconf["model"]]
+    return argv
+
+
 def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
@@ -84,11 +126,16 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
         return agy_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "cline":
         return cline_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "copilot":
+        return copilot_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "kilo":
+        return kilo_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
 
 
 def available(pconf):
-    exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe}[pconf["kind"]]()
+    exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
+           "copilot": copilot_exe, "kilo": kilo_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -199,6 +246,23 @@ def probe_agy():
 
 # ---------- run logs ----------
 
+def _collect_text(obj, keys=("text", "content", "message", "delta", "deltaContent")):
+    """Recursively pull string values out from under any of `keys`, in
+    document order — a schema-agnostic fallback for platforms (kilo) whose
+    exact JSON event shape isn't verified yet."""
+    out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in keys and isinstance(v, str):
+                out.append(v)
+            else:
+                out.extend(_collect_text(v, keys))
+    elif isinstance(obj, list):
+        for v in obj:
+            out.extend(_collect_text(v, keys))
+    return out
+
+
 def read_log(path, kind):
     """Summarise a run's stream-json log.
 
@@ -243,6 +307,24 @@ def read_log(path, kind):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in ("rate limit", "429", "quota")):
                         res["quota_hit"] = True
+            elif kind == "copilot":
+                t = ev.get("type")
+                if t == "assistant.message":
+                    c = (ev.get("data") or {}).get("content")
+                    if c:
+                        res["final"] = c
+                        texts.append(c)
+                elif t == "result":
+                    res["ok"] = ev.get("exitCode") == 0
+                elif t == "error" or "error" in (t or ""):
+                    if any(w in json.dumps(ev).lower() for w in ("rate limit", "429", "quota")):
+                        res["quota_hit"] = True
+            elif kind == "kilo":
+                if ev.get("type") == "error":
+                    if any(w in json.dumps(ev).lower() for w in ("rate limit", "429", "quota")):
+                        res["quota_hit"] = True
+                else:
+                    texts.extend(_collect_text(ev))
             else:  # agy
                 if ev.get("event") == "result":
                     r = ev.get("result") or {}

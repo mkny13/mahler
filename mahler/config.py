@@ -59,7 +59,7 @@ DEFAULTS = {
         # sorting is light: when Claude is over its reserve, spend Gemini, and
         # keep Antigravity's scarcer Claude/Opus pool for building
         "sort": ["claude", "agy-gemini", "agy-claude"],
-        "build": ["agy-claude", "agy-gemini", "cline-free", "claude"],
+        "build": ["agy-claude", "agy-gemini", "cline-free", "kilo", "copilot", "claude"],
     },
     "platforms": {
         "claude": {
@@ -92,6 +92,24 @@ DEFAULTS = {
 # Its free models are weaker, so it only takes small items.
 DEFAULTS["platforms"]["cline-free"] = {
     "enabled": True, "kind": "cline", "model": "",
+    "metered": False, "backoff_minutes": 60, "max_size": "s",
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+}
+
+# Copilot (GitHub Education license) and Kilo (kilo.ai account, needs `kilo
+# auth login` once) report no account-wide quota either (mahler#25): both are
+# "unmetered" like cline-free, backed off for an hour after a rate-limit/quota
+# error. Copilot's Education allowance is explicitly small, so it's placed
+# last among the free builders — behind Kilo — to conserve it.
+DEFAULTS["platforms"]["kilo"] = {
+    "enabled": True, "kind": "kilo", "model": "",
+    "metered": False, "backoff_minutes": 60, "max_size": "s",
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+}
+DEFAULTS["platforms"]["copilot"] = {
+    "enabled": True, "kind": "copilot", "model": "",
     "metered": False, "backoff_minutes": 60, "max_size": "s",
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
