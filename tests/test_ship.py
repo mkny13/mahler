@@ -57,6 +57,9 @@ class FakeGH:
                 "headRefName": "mahler/5-x", "headRefOid": self.head_sha,
                 "baseRefName": "main"}
 
+    def issue_state(self, number):
+        return "OPEN"
+
     def pr_merge(self, number):
         self.merged.append(number)
 
@@ -74,9 +77,10 @@ class ShipTests(unittest.TestCase):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["x"] = {"path": self.tmp, "repo": "x/y"}
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        later = iso(NOW + timedelta(hours=2))
         for name in ("agy-claude", "agy-gemini", "claude"):   # live usage samples,
-            self.led.record_usage(name, "5h", 10, iso(NOW))   # so routing has something
-            self.led.record_usage(name, "weekly", 10, iso(NOW))
+            self.led.record_usage(name, "5h", 10, later)   # so routing has something
+            self.led.record_usage(name, "weekly", 10, later)
         self.led.upsert_item("x", 5, state="verifying", priority=2,
                              title="Wired the exporter",
                              branch="mahler/snapshot/5-run7",
@@ -164,6 +168,9 @@ class ShipTests(unittest.TestCase):
             led.claim(project, it["number"], "run:14", "auto", 30,
                       platform=platform, run_id=14)
             led.set_state(project, it["number"], "working")
+            ctx.gh(project).comment(it["number"],
+                                    f"🔁 **{platform}** started a fix run (run 14) on "
+                                    f"branch `{it['branch']}` — CI was red.")
             return True
 
         patcher = mock.patch.object(scheduler, "start", side_effect=fake_start)
@@ -179,7 +186,7 @@ class ShipTests(unittest.TestCase):
         ping = self.ship()
         start.assert_called_once()
         (it, role) = start.call_args[0][2:4]
-        self.assertEqual((it["branch"], role), ("mahler/snapshot/5-run7", "fix"))
+        self.assertEqual((it["branch"], role), ("mahler/5-x", "fix"))
         self.assertEqual(self.item()["state"], "working")        # the fix run's lease
         self.assertEqual(self.item()["attempts"], 1)             # a red cycle counts
         self.assertEqual(self.led.lease("x", 5)["holder"], "run:14")

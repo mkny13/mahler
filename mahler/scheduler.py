@@ -547,10 +547,11 @@ def _ci_pending(ctx, project, item, pr, view):
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
         ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
         return
+    elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
     led.set_state(project, n, "needs_you",
-                  f"CI on PR #{pr} still pending after {pol['verify_timeout_minutes']} min")
+                  f"CI on PR #{pr} still pending after {elapsed} min")
     ctx.ping(f"Mahler needs you — {project} #{n}",
-             f"CI on PR #{pr} hasn't finished in {pol['verify_timeout_minutes']} min; "
+             f"CI on PR #{pr} hasn't finished in {elapsed} min; "
              "the PR stays open, unmerged",
              project, n, priority="high", tags="question")
     led.release(project, n, holder=CONDUCTOR)
@@ -565,6 +566,16 @@ def _red_ci(ctx, project, item, pr, view):
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
+    attempts = item["attempts"] + 1
+    if attempts >= pol["max_attempts"]:
+        led.set_state(project, n, "failed",
+                      f"CI still red on PR #{pr} after {attempts} attempts", attempts=attempts)
+        ctx.ping(f"Stuck — {project} #{n}",
+                 f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
+                 project, n, priority="high", tags="warning")
+        led.release(project, n, holder=CONDUCTOR)
+        return
+
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
@@ -588,15 +599,6 @@ def _red_ci(ctx, project, item, pr, view):
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
-        return
-    attempts = item["attempts"] + 1
-    if attempts >= pol["max_attempts"]:
-        led.set_state(project, n, "failed",
-                      f"CI still red on PR #{pr} after {attempts} attempts", attempts=attempts)
-        ctx.ping(f"Stuck — {project} #{n}",
-                 f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
-                 project, n, priority="high", tags="warning")
-        led.release(project, n, holder=CONDUCTOR)
         return
     led.upsert_item(project, n, branch=head)
     led.release(project, n, holder=CONDUCTOR)   # the lease passes to the fix run
