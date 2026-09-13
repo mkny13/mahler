@@ -16,9 +16,9 @@ Verified against the real CLIs on 2026-09-13 (mahler#25):
     license. --allow-all-tools is required for non-interactive mode. JSONL
     events: assistant text arrives as `{"type":"assistant.message","data":
     {"content": "..."}}`; the run ends with `{"type":"result","exitCode":0,
-    "usage":{...}}`. There's no cheap account-wide quota probe (usage is
-    per-session AI credits/premium requests, not a 5h/weekly window), so it's
-    routed unmetered like Cline, backed off on a rate-limit/quota error.
+    "usage":{...}}`. That per-run event has no account-wide quota, but the
+    account-wide cap turned out to be probeable a different way — see below.
+
   * `kilo run <message> --dir <dir> --auto --format json` (binary `kilo`,
     package `@kilocode/cli`) — flags confirmed from `--help`, but auth
     (`kilo auth login`, a browser flow only the account owner can do) wasn't
@@ -37,6 +37,18 @@ Verified against the real CLI on 2026-09-13, after login (mahler#29):
     {"type":"text","text":"..."}}` ... `{"type":"step_finish","part":
     {"type":"step-finish","reason":"stop",...}}` — matched by the generic
     string-walk (it finds "text" nested under "part") without changes.
+
+Verified 2026-09-12 (mahler#38): unlike Cline/Kilo, Copilot's cap is real and
+checkable, just not from the CLI. GitHub Copilot moved off "premium requests"
+to "AI Credits" billing on 2026-06-01 (1 credit = $0.01; Pro/Education include
+1500/month). `gh api /users/<login>/settings/billing/ai_credit/usage` reports
+this month's consumption (`usageItems[].grossQuantity`, one row per model) —
+confirmed live against this account. It needs the `user` OAuth scope on the
+`gh` token (`gh auth refresh -h github.com -s user`) and only reports
+consumption, not the cap, so the 1500/month figure is config
+(`monthly_cap_credits`), not something the response carries. Routed as a
+normal metered platform with a single "monthly" window (see router.py's
+per-platform `pconf["windows"]`), re-probed at most every `stale_minutes`.
 """
 
 import json
@@ -256,6 +268,42 @@ def probe_agy():
         return parse_agy_usage(json.loads(r.stdout))
     except (subprocess.SubprocessError, OSError, ValueError):
         return {}
+
+
+def _next_month_start(now):
+    year, month = (now.year, now.month + 1) if now.month < 12 else (now.year + 1, 1)
+    return datetime(year, month, 1, tzinfo=timezone.utc)
+
+
+def _gh_login():
+    try:
+        r = subprocess.run(["gh", "api", "user", "--jq", ".login"],
+                           capture_output=True, text=True, timeout=15)
+        return r.stdout.strip() or None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def probe_copilot(monthly_cap_credits):
+    """GitHub's AI-credits billing report (mahler#38): consumption only, no
+    cap in the response, so `monthly_cap_credits` (plan-fixed, config) is what
+    turns it into a percentage. Needs the `user` OAuth scope on the `gh` token.
+    -> [("monthly", used_pct, resets_at_iso)] or [] if unavailable."""
+    login = _gh_login()
+    if not login:
+        return []
+    try:
+        r = subprocess.run(["gh", "api", f"/users/{login}/settings/billing/ai_credit/usage"],
+                           capture_output=True, text=True, timeout=20)
+        data = json.loads(r.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return []
+    used = sum(item.get("grossQuantity", 0) for item in data.get("usageItems", []))
+    if not monthly_cap_credits:
+        return []
+    pct = round(100 * used / monthly_cap_credits, 1)
+    resets = _next_month_start(datetime.now(timezone.utc)).isoformat()
+    return [("monthly", pct, resets)]
 
 
 # ---------- run logs ----------

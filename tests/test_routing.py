@@ -2,9 +2,11 @@
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from mahler import config, platforms, router
 from mahler.ledger import Ledger, iso
@@ -70,8 +72,9 @@ class RouterTests(unittest.TestCase):
 
     def test_cline_backs_off_after_a_quota_error(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (80, 5)})
-        for name in ("cline-free", "kilo", "copilot"):
+        for name in ("cline-free", "kilo"):
             led.record_usage(name, "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        led.record_usage("copilot", "monthly", 100.0, iso(NOW + timedelta(minutes=30)))
         name, reasons = router.pick(self.cfg, led, "build", size="s")
         self.assertIsNone(name)
         self.assertTrue(any("backing off" in r for r in reasons))
@@ -80,14 +83,22 @@ class RouterTests(unittest.TestCase):
         led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
         self.assertEqual(router.pick(self.cfg, led, "build", pin="agy-gemini")[0], "agy-gemini")
 
-    def test_kilo_and_copilot_are_unmetered_last_resort_builders(self):
+    def test_kilo_is_unmetered_last_resort_builder(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
         led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
-        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "copilot")
-        led.record_usage("copilot", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        led.record_usage("copilot", "monthly", 100.0, iso(NOW + timedelta(minutes=30)))
         self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "kilo")
-        led.record_usage("kilo", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
-        self.assertEqual(router.pick(self.cfg, led, "build", size="m")[0], "claude")
+
+    def test_copilot_is_metered_by_monthly_ai_credits(self):
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
+        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        later = iso(NOW + timedelta(days=5))
+        led.record_usage("copilot", "monthly", 10.0, later)
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "copilot")
+        led.record_usage("copilot", "monthly", 96.0, later)     # over its hard line
+        name, reasons = router.pick(self.cfg, led, "build", size="s")
+        self.assertEqual(name, "kilo")     # next in order now that copilot's ahead of kilo
+        self.assertTrue(any("copilot: hard" in r for r in reasons))
 
     def test_kilo_defaults_to_a_free_model_route(self):
         # mahler#29: without an explicit :free route, every kilo run 402s on credits.
@@ -195,6 +206,34 @@ class ParseTests(unittest.TestCase):
                     "responseBody": '{"error_type":"usage_limit_exceeded"}'}}}) + "\n")
             r = platforms.read_log(k, "kilo")
             self.assertTrue(r["quota_hit"])
+
+    def test_probe_copilot_sums_ai_credits_into_a_monthly_pct(self):
+        payload = {"timePeriod": {"year": 2026, "month": 9}, "user": "mkny13", "usageItems": [
+            {"product": "Copilot", "sku": "Copilot AI Credits",
+             "model": "Auto: Claude Haiku 4.5", "grossQuantity": 5.632911},
+            {"product": "Copilot", "sku": "Copilot AI Credits",
+             "model": "Claude Sonnet 5", "grossQuantity": 6.9314}]}
+        with mock.patch("subprocess.run") as run:
+            run.side_effect = [
+                subprocess.CompletedProcess([], 0, stdout="mkny13\n"),
+                subprocess.CompletedProcess([], 0, stdout=json.dumps(payload)),
+            ]
+            samples = platforms.probe_copilot(1500)
+        self.assertEqual(len(samples), 1)
+        window, pct, resets = samples[0]
+        self.assertEqual(window, "monthly")
+        self.assertAlmostEqual(pct, round(100 * (5.632911 + 6.9314) / 1500, 1))
+        self.assertTrue(resets)
+
+    def test_probe_copilot_needs_a_login(self):
+        with mock.patch("subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="\n")
+            self.assertEqual(platforms.probe_copilot(1500), [])
+        run.assert_called_once()      # never got to the billing call
+
+    def test_next_month_start_rolls_over_the_year(self):
+        dec = datetime(2026, 12, 15, tzinfo=timezone.utc)
+        self.assertEqual(platforms._next_month_start(dec), datetime(2027, 1, 1, tzinfo=timezone.utc))
 
     def test_kilo_auth_error_is_not_a_quota_hit(self):
         with tempfile.TemporaryDirectory() as d:

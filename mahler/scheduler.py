@@ -192,7 +192,7 @@ def finalize(ctx, run):
     if log["quota_hit"]:
         pconf = ctx.cfg["platforms"][run["platform"]]
         until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
-        for w in router.WINDOWS:
+        for w in pconf.get("windows", router.WINDOWS):
             led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
@@ -611,7 +611,17 @@ def refresh_usage(ctx, projects):
                 led.record_usage(name, w, pct, resets)
     for name in wanted:
         pconf = cfg["platforms"].get(name, {})
-        if pconf.get("kind") != "claude" or router.usage_state(led, name, pconf)[0] != "stale":
+        if router.usage_state(led, name, pconf)[0] != "stale":
+            continue
+        if pconf.get("kind") == "copilot":
+            last = parse(led.get_kv(f"probe:{name}"))
+            if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
+                continue
+            led.set_kv(f"probe:{name}", iso(led.now()))
+            for w, pct, resets in platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500)):
+                led.record_usage(name, w, pct, resets)
+            continue
+        if pconf.get("kind") != "claude":
             continue
         free = platforms.oauth_usage()                     # zero tokens
         for w, pct, resets in free:
