@@ -47,8 +47,13 @@ def cmd_tick(a, cfg, led):
 def cmd_status(a, cfg, led):
     now = led.now()
     if a.json:
+        ests = led.estimates()
         runs = [dict(r) for r in led.active_runs()]
+        for r in runs:
+            r["est_mins"] = int(led.run_estimate(ests, r["platform"], r["role"]))
         items = [dict(i) for i in led.items() if i["state"] != "done"]
+        for i in items:
+            i["est_mins"] = int(led.issue_estimate(ests, i["project"]))
         leases = [dict(l) for l in led.q("SELECT * FROM leases")]
         if getattr(a, "project", None):
             runs = [r for r in runs if r["project"] == a.project]
@@ -78,11 +83,14 @@ def cmd_status(a, cfg, led):
     if getattr(a, "project", None):
         runs = [r for r in runs if r["project"] == a.project]
     print(f"Running ({len(runs)})")
+    ests = led.estimates()
     for r in runs:
         mins = int((now - parse(r["started_at"])).total_seconds() // 60)
+        est = int(led.run_estimate(ests, r["platform"], r["role"]))
+        time_str = f"{mins}m / ~{est}m" if mins <= est else f"{mins}m (+{mins-est}m past est)"
         url = item_url(r["project"], r["number"])
         print(f"  • run {r['id']:<4} {r['project']}#{r['number']:<5} {r['role']:<5} "
-              f"{r['platform']:<11} {mins:>3} min  {r['status']}{url}")
+              f"{r['platform']:<11} {time_str:>16}  {r['status']}{url}")
     print("\nItems")
     items = [i for i in led.items() if i["state"] != "done"]
     if getattr(a, "project", None):
@@ -92,9 +100,11 @@ def cmd_status(a, cfg, led):
         held = f"  held by {lease['holder']}" if lease else ""
         tries = f"  tries {i['attempts']}" if i["attempts"] else ""
         setup = f"  setup failed ×{i['setup_fails']}" if i["setup_fails"] else ""
+        est = int(led.issue_estimate(ests, i["project"]))
+        est_str = f"  ~{est}m"
         url = item_url(i["project"], i["number"], i)
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
-              f"{(i['title'] or '')[:60]}{held}{tries}{setup}{url}")
+              f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}")
     print("\nQuota")
     for name, pconf in cfg["platforms"].items():
         state, detail = router.usage_state(led, name, pconf)

@@ -349,6 +349,62 @@ class Ledger:
         return {r["window"]: dict(r) for r in
                 self.q("SELECT * FROM usage WHERE platform=?", (platform,))}
 
+    def estimates(self):
+        rows = self.q("""
+            SELECT platform, role, count(*) as c, 
+                   avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
+            FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform, role
+        """)
+        plat_rows = self.q("""
+            SELECT platform, count(*) as c, avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
+            FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform
+        """)
+        global_row = self.q1("""
+            SELECT avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
+            FROM runs WHERE ended_at IS NOT NULL AND status='ended'
+        """)
+        global_avg = global_row["avg_mins"] if (global_row and global_row["avg_mins"]) else 15.0
+
+        by_pr = {(r["platform"], r["role"]): r["avg_mins"] for r in rows if r["c"] >= 3}
+        by_p = {r["platform"]: r["avg_mins"] for r in plat_rows if r["c"] >= 3}
+
+        issue_avg = self.q("""
+            SELECT items.project, avg(t.issue_mins) as avg_mins
+            FROM items
+            JOIN (
+                SELECT project, number, sum((julianday(ended_at) - julianday(started_at))*24*60) as issue_mins
+                FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY project, number
+            ) t ON items.project = t.project AND items.number = t.number
+            WHERE items.state = 'done' GROUP BY items.project
+        """)
+        proj_issue_avg = {r["project"]: r["avg_mins"] for r in issue_avg}
+        
+        global_issue_row = self.q1("""
+            SELECT avg(t.issue_mins) as avg_mins
+            FROM items
+            JOIN (
+                SELECT project, number, sum((julianday(ended_at) - julianday(started_at))*24*60) as issue_mins
+                FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY project, number
+            ) t ON items.project = t.project AND items.number = t.number
+            WHERE items.state = 'done'
+        """)
+        global_issue = global_issue_row["avg_mins"] if (global_issue_row and global_issue_row["avg_mins"]) else 30.0
+
+        return {
+            "run_avg": by_pr,
+            "plat_avg": by_p,
+            "global_run_avg": global_avg,
+            "proj_issue_avg": proj_issue_avg,
+            "global_issue_avg": global_issue,
+        }
+
+    def run_estimate(self, ests, platform, role):
+        return ests["run_avg"].get((platform, role)) or ests["plat_avg"].get(platform) or ests["global_run_avg"]
+
+    def issue_estimate(self, ests, project):
+        return ests["proj_issue_avg"].get(project) or ests["global_issue_avg"]
+
+
     # ---------- setup failures (issue #8) ----------
 
     def bump_setup_fails(self, project, number):
