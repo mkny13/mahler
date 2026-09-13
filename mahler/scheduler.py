@@ -730,6 +730,9 @@ def _red_ci(ctx, project, item, pr, view):
     busy |= {k for k, pc in cfg["platforms"].items() if not platforms.available(pc)}
     size = next((l.split(":", 1)[1] for l in json.loads(item["labels"] or "[]")
                  if l.startswith("size:")), None)
+    # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
+    if size == "l":
+        size = "m"
     platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy, size=size)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
@@ -976,7 +979,7 @@ def refresh_usage(ctx, projects):
     wanted = set()
     for p in projects:
         if led.items(p["name"], ["inbox", "ready"]):
-            wanted |= set(cfg["routing"]["sort"]) | set(cfg["routing"]["build"])
+            wanted |= set(cfg["routing"]["sort"]) | set(cfg["routing"]["build"]) | set(cfg["routing"].get("plan", []))
     wanted |= {r["platform"] for r in led.active_runs()}
     agy = [n for n in wanted if cfg["platforms"].get(n, {}).get("kind") == "agy"
            and router.usage_state(led, n, cfg["platforms"][n])[0] == "stale"]
@@ -1049,6 +1052,19 @@ def _headroom(ctx, role, per_platform, busy):
             continue
         free.append(name)
     return free
+
+
+def needs_plan(labels_json):
+    """True when the labels indicate this item needs Opus planning (DESIGN D21):
+    type:goal, size:l, or any pass:* label."""
+    try:
+        labels = json.loads(labels_json or "[]")
+    except json.JSONDecodeError:
+        return False
+    for label in labels:
+        if label == "type:goal" or label == "size:l" or label.startswith("pass:"):
+            return True
+    return False
 
 
 def schedule(ctx, projects):
@@ -1129,10 +1145,18 @@ def schedule(ctx, projects):
                 continue
             size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
                          if l.startswith("size:")), None)
-            platform, reasons = router.pick(cfg, led, role, it["pin"] if role == "build" else None,
+            if role == "sort" and needs_plan(it["labels"]):
+                routing_role = "plan"
+            else:
+                routing_role = role
+            platform, reasons = router.pick(cfg, led, routing_role,
+                                            it["pin"] if role == "build" else None,
                                             busy, size=size)
             if not platform:
-                ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
+                if routing_role == "plan":
+                    ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")
+                else:
+                    ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
                 continue
             if ctx.dry_run:
                 ctx.say(f"{name}#{n}: would {role} on {platform}")

@@ -71,7 +71,10 @@ DEFAULTS = {
     "routing": {
         # sorting is light: when Claude is over its reserve, spend Gemini, and
         # keep Antigravity's scarcer Claude/Opus pool for building
-        "sort": ["claude", "agy-gemini", "agy-claude", "claude-opus"],
+        "sort": ["claude", "agy-gemini", "agy-claude"],
+        # planning is a separate route (DESIGN D21): goals, audits, and size:l
+        # items are planned by Opus only; when Opus is over its line, they wait
+        "plan": ["claude-opus"],
         "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo",
                   "claude-opus", "claude"],
     },
