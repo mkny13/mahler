@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 
 from . import backup, config, digest, janitor, notify, platforms, presence, router, runner
 from .gh import (GH, GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, checks_state,
-                 depends_of, label_names, needs_human_of, parse_command, part_of, pin_of,
-                 pr_body, pr_summary_of, priority_of)
+                 depends_of, has_sections, label_names, needs_human_of, parse_command,
+                 part_of, pin_of, pr_body, pr_summary_of, priority_of)
 from .ledger import iso, parse
 
 STOP_NOW = ("parked",)                               # no grace period
@@ -864,10 +864,15 @@ def sync(ctx, project):
                       parent=part_of(iss.get("body")))
         item = led.item(project, n)
         if item is None:
-            state = _state_from_labels(labels) or "inbox"
+            state = _state_from_labels(labels)
+            planned = state is None and planned_child(iss, labels, led, project)
+            if state is None:
+                state = "ready" if planned else "inbox"
             extra = {"sorted_at": iso(led.now())} if state == "ready" else {}
             led.upsert_item(project, n, created_at=iss["createdAt"], **fields, **extra)
-            led.set_state(project, n, state, "new issue")
+            why = "born ready (planned under #{})".format(part_of(iss.get("body"))) \
+                if planned else "new issue"
+            led.set_state(project, n, state, why)
             ctx.say(f"{project}#{n}: new — {iss['title']}")
             item = led.item(project, n)
         else:
@@ -892,6 +897,20 @@ def sync(ctx, project):
             if not running:
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
+
+
+def planned_child(iss, labels, led, project):
+    """Whether a newly-synced sub-issue was fully planned by its parent."""
+    parent_n = part_of(iss.get("body"))
+    if parent_n is None:
+        return False
+    parent = led.item(project, parent_n)
+    if parent is None or parent["state"] != "parent":
+        return False
+    sizes = {label.split(":", 1)[1] for label in labels
+             if label.startswith("size:")}
+    return (("s" in sizes or "m" in sizes)
+            and has_sections(iss.get("body"), "## Plan", "## Done when"))
 
 
 def _state_from_labels(labels):

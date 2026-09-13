@@ -218,6 +218,18 @@ def part_of(body):
     return int(m.group(1)) if m else None
 
 
+def has_sections(body, *headings):
+    """True when the body contains every requested markdown heading."""
+    wanted = {re.sub(r"^#{1,6}\s*", "", heading).strip().lower()
+              for heading in headings}
+    found = set()
+    for line in (body or "").splitlines():
+        match = re.match(r"^#{1,6}\s+(.+?)\s*$", line, re.IGNORECASE)
+        if match:
+            found.add(match.group(1).strip().lower())
+    return found.issuperset(wanted)
+
+
 
 COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform)\b\s*(\S*)", re.IGNORECASE | re.MULTILINE)
 

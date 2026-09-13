@@ -15,7 +15,9 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, scheduler
+from mahler.gh import has_sections
 from mahler.ledger import Ledger, iso
+from mahler import runner
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -216,6 +218,83 @@ class SubIssueScopeTests(unittest.TestCase):
 
         self.assertIsNotNone(led.item("proj", 20))
         self.assertIn("mahler", gh.issues[20]["labels"])
+
+
+class PlannedChildTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y"}
+        self.cfg["defaults"]["settle_minutes"] = 0
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def sync(self, issues):
+        gh = FakeGH(issues)
+        with mock.patch.object(self.ctx, "gh", return_value=gh):
+            scheduler.sync(self.ctx, "proj")
+        return gh
+
+    def test_planned_sub_issue_is_born_ready_without_a_sort(self):
+        self.led.upsert_item("proj", 5, state="parent", title="Parent")
+        issues = {
+            6: {"title": "Planned child",
+                "labels": ["type:feature", "size:s", "p2"],
+                "body": "Part of #5\n\n## Plan\nChange one file.\n\n"
+                        "## Done when\nThe test passes."},
+        }
+        self.sync(issues)
+
+        item = self.led.item("proj", 6)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["sorted_at"], iso(NOW))
+        self.assertEqual(item["parent"], 5)
+        event = self.led.q("SELECT detail FROM events WHERE kind='state'")[-1]
+        self.assertIn("born ready (planned under #5)", event["detail"])
+        self.assertNotIn("proj#6: started sort", "\n".join(self.ctx.lines))
+        candidates = scheduler._candidates(self.ctx, [self.ctx.policy("proj")])
+        self.assertEqual([(it["number"], role) for _, role, it in candidates],
+                         [(6, "build")])
+
+    def test_incomplete_sub_issue_stays_in_inbox(self):
+        cases = [
+            ("missing plan", "size:s",
+             "Part of #5\n\n## Done when\nThe test passes.", "parent"),
+            ("large size", "size:l",
+             "Part of #5\n\n## Plan\nChange one file.\n\n"
+             "## Done when\nThe test passes.", "parent"),
+            ("wrong parent state", "size:s",
+             "Part of #5\n\n## Plan\nChange one file.\n\n"
+             "## Done when\nThe test passes.", "ready"),
+        ]
+        for name, size, body, parent_state in cases:
+            with self.subTest(name=name):
+                self.led = Ledger(":memory:", clock=lambda: NOW)
+                self.ctx = scheduler.Ctx(self.cfg, self.led)
+                self.led.upsert_item("proj", 5, state=parent_state, title="Parent")
+                self.sync({6: {"title": "Child",
+                               "labels": ["type:feature", size, "p2"],
+                               "body": body}})
+                item = self.led.item("proj", 6)
+                self.assertEqual(item["state"], "inbox")
+                self.assertIsNone(item["sorted_at"])
+
+    def test_has_sections_matches_markdown_headings_case_insensitively(self):
+        body = "## plan\nbody\n## DONE WHEN\nchecks"
+        self.assertTrue(has_sections(body, "## Plan", "Done when"))
+        self.assertFalse(has_sections(body, "Context"))
+
+
+class SortRecipeTests(unittest.TestCase):
+    def test_recipe_includes_plan_and_no_split_rule(self):
+        rendered = runner.render("sort", number=6, repo="x/y", title="Child", rules="")
+        self.assertIn("## Plan", rendered)
+        self.assertIn("files to change", rendered)
+        self.assertIn("ordered steps", rendered)
+        self.assertIn("test that proves it", rendered)
+        self.assertIn("Do not split it", rendered)
+        self.assertIn("Part of #N", rendered)
 
 
 if __name__ == "__main__":
