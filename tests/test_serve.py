@@ -135,6 +135,36 @@ class TestRender(unittest.TestCase):
         self.assertNotIn("https://github.com", html)
         self.assertIn("mahler#5", html)     # still listed, just not linked
 
+    def test_child_items_show_parent(self):
+        self.led.upsert_item("mahler", 10, title="Child issue", state="ready",
+                            priority=2, parent=5)
+        html = render(self.led, self.cfg)
+        self.assertIn("mahler#10", html)
+        self.assertIn("part of", html)
+        self.assertIn("mahler#5", html)
+
+    def test_running_child_shows_parent(self):
+        self.led.upsert_item("mahler", 12, title="Another child", state="working",
+                            priority=2, parent=5)
+        self.led.claim("mahler", 12, "run-33", "auto", 10, platform="cline-free", run_id=2)
+        self.led.create_run(project="mahler", number=12, role="build",
+                           platform="cline-free", epoch=1)
+        html = render(self.led, self.cfg)
+        self.assertIn("mahler#12", html)
+        self.assertIn("part of", html)
+        self.assertIn("mahler#5", html)
+
+    def test_ui_order_is_running_quota_items_events(self):
+        # Issue: UI should show Running, then Quota, then the rest
+        html = render(self.led, self.cfg)
+        running_pos = html.find("<h2>Running")
+        quota_pos = html.find("<h2>Quota")
+        items_pos = html.find("<h2>Items")
+        events_pos = html.find("<h2>Events")
+        self.assertLess(running_pos, quota_pos, "Running should appear before Quota")
+        self.assertLess(quota_pos, items_pos, "Quota should appear before Items")
+        self.assertLess(items_pos, events_pos, "Items should appear before Events")
+
 
 class TestServer(unittest.TestCase):
     """The real HTTP surface, on an ephemeral localhost port."""
