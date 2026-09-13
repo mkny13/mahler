@@ -1,5 +1,6 @@
 """Watchdog: stuck starts and runs that outlive their shell (mahler#12)."""
 
+import json
 import os
 import subprocess
 import tempfile
@@ -53,6 +54,31 @@ class HealthTests(unittest.TestCase):
 
     def test_silent_is_not_the_items_fault(self):
         self.assertIn("silent", scheduler.NO_ATTEMPT)
+
+    def test_overage_stops_the_run_and_holds_all_claude_platforms(self):
+        # mahler#136: isUsingOverage true means paid extra usage — stop at once,
+        # and because usage is mirrored across claude platforms, both claude and
+        # claude-opus (kind: claude) must read hard afterwards.
+        ev = json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.75,
+            "isUsingOverage": True, "resetsAt": 1789462800, "unifiedWindows": {
+                "five_hour": {"utilization": 0.25, "resetsAt": 1789257600},
+                "seven_day": {"utilization": 0.75, "resetsAt": 1789462800}}}}).encode() + b"\n"
+        with open(self.log.name, "wb") as fh:
+            fh.write(ev)
+        run = {"id": 42, "started_at": iso(NOW - timedelta(minutes=1)),
+               "log_path": self.log.name, "platform": "claude", "project": "x", "number": 1}
+        with mock.patch.object(self.ctx, "ping") as ping:
+            reason = scheduler._health(self.ctx, run, self.pol, NOW)
+        self.assertEqual(reason, "quota")
+        ping.assert_called_once()
+        for pname in ("claude", "claude-opus"):
+            state, _ = router.usage_state(self.ctx.led, pname, config.DEFAULTS["platforms"][pname])
+            self.assertEqual(state, "hard")
+        # a second watchdog pass for the same run must not ping again
+        with mock.patch.object(self.ctx, "ping") as ping2:
+            scheduler._health(self.ctx, run, self.pol, NOW)
+        ping2.assert_not_called()
 
 
 class HoldTests(unittest.TestCase):

@@ -187,6 +187,45 @@ class ParseTests(unittest.TestCase):
         s = platforms.claude_samples_from_event(ev)
         self.assertEqual([x[:2] for x in s], [("5h", 33.0), ("weekly", 49.0)])
 
+    def test_claude_overage_marks_the_window_exhausted(self):
+        # mahler#136: isUsingOverage true means paid extra usage has started —
+        # treat the reported window as exhausted, same as a rejection.
+        ev = {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.75,
+            "isUsingOverage": True, "resetsAt": 1789462800, "unifiedWindows": {
+                "seven_day": {"utilization": 0.75, "resetsAt": 1789462800}}}}
+        s = platforms.claude_samples_from_event(ev)
+        self.assertIn(("weekly", 100.0, "2026-09-15T09:00:00+00:00"), s)
+
+        ev_false = {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.75,
+            "isUsingOverage": False, "resetsAt": 1789462800, "unifiedWindows": {
+                "seven_day": {"utilization": 0.75, "resetsAt": 1789462800}}}}
+        s_false = platforms.claude_samples_from_event(ev_false)
+        self.assertNotIn(("weekly", 100.0, "2026-09-15T09:00:00+00:00"), s_false)
+
+    def test_claude_overage_in_read_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "o.log")
+            with open(p, "w") as fh:
+                fh.write(json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "allowed_warning", "rateLimitType": "five_hour", "utilization": 0.8,
+                    "isUsingOverage": True, "resetsAt": 1789257600, "unifiedWindows": {
+                        "five_hour": {"utilization": 0.8, "resetsAt": 1789257600}}}}) + "\n")
+            r = platforms.read_log(p, "claude")
+            self.assertTrue(r["overage"])
+            self.assertTrue(r["quota_hit"])
+
+            q = os.path.join(d, "n.log")
+            with open(q, "w") as fh:
+                fh.write(json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "allowed", "rateLimitType": "five_hour", "utilization": 0.8,
+                    "isUsingOverage": False, "resetsAt": 1789257600, "unifiedWindows": {
+                        "five_hour": {"utilization": 0.8, "resetsAt": 1789257600}}}}) + "\n")
+            r = platforms.read_log(q, "claude")
+            self.assertFalse(r["overage"])
+            self.assertFalse(r["quota_hit"])
+
     def test_logs_and_status_lines(self):
         with tempfile.TemporaryDirectory() as d:
             c = os.path.join(d, "c.log")

@@ -228,7 +228,18 @@ def _health(ctx, run, pol, now):
     if idle > pol["progress_timeout_minutes"] * 60:
         return "hung"
     if pconf["kind"] == "claude":
-        _record_claude_usage(ctx, platforms.read_log(run["log_path"], "claude")["usage"])
+        log = platforms.read_log(run["log_path"], "claude")
+        _record_claude_usage(ctx, log["usage"])
+        if log["overage"]:
+            ctx.say(f"#{run['number']}: {run['platform']} started drawing paid extra usage — stopping")
+            kv_key = f"overage:{run['id']}"
+            if not ctx.led.get_kv(kv_key):
+                ctx.led.set_kv(kv_key, "1")
+                ctx.ping(f"Mahler: {run['platform']} run drawing paid extra usage",
+                         f"Run {run['id']} on {run['platform']} reported isUsingOverage — stopped "
+                         "at once so nothing autonomous eats into paid overage (DESIGN D8).",
+                         run["project"], run["number"], priority="high", tags="warning")
+            return "quota"
     state, detail = router.usage_state(ctx.led, run["platform"], pconf)
     if state == "hard":
         ctx.say(f"#{run['number']}: {run['platform']} over its hard line ({detail})")
