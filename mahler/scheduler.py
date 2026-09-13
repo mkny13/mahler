@@ -1055,9 +1055,16 @@ def refresh_usage(ctx, projects):
             continue
         if pconf.get("kind") != "claude":
             continue
+        # D22: during the peak window, keep the zero-token OAuth reading and skip
+        # the lean Claude probe (`probe_claude`, which costs tokens) — the window
+        # is a headroom rule, not a quota rule, so a stale reading is still "over
+        # the line" and Claude simply won't start.
+        peak_active, _ = router.peak_state(cfg, led)
         free = platforms.oauth_usage()                 # zero tokens
         if free:
             _record_claude_usage(ctx, free, check_human=True)
+            continue
+        if peak_active:
             continue
         last = parse(led.get_kv(f"probe:{name}"))
         if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
@@ -1096,12 +1103,18 @@ def _headroom(ctx, role, per_platform, busy, burst_lines=None):
     """Routing platforms for `role` that could take a new run right now:
     enabled, under per-platform max_runs, reachable and under its soft lines.
     Burst lines (D23) raise Claude's soft lines when a window is about to reset.
+    The peak window (D22) removes Claude platforms from headroom entirely while
+    it's active, so the `sorts_wait` logic stays right: a sort that would pick
+    Claude must not be counted as having a free builder available.
     """
     cfg, led = ctx.cfg, ctx.led
+    peak_active, _ = router.peak_state(cfg, led)
     free = []
     for name in router.candidates(cfg, role, burst_lines=burst_lines):
         pc = cfg["platforms"][name]
         if name in busy or per_platform.get(name, 0) >= pc.get("max_runs", 1):
+            continue
+        if peak_active and pc.get("kind") == "claude":
             continue
         claude_lines = burst_lines if pc.get("kind") == "claude" else None
         if router.usage_state(led, name, pc, burst_lines=claude_lines)[0] != "ok":

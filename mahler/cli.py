@@ -79,6 +79,9 @@ def cmd_status(a, cfg, led):
         return f" https://github.com/{repo}/issues/{number}"
 
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
+    peak = router.peak_status_line(cfg, led)
+    if peak:
+        print(peak)
     runs = led.active_runs()
     if getattr(a, "project", None):
         runs = [r for r in runs if r["project"] == a.project]
@@ -110,6 +113,9 @@ def cmd_status(a, cfg, led):
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:
         print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")
+    peak = router.peak_status_line(cfg, led)
+    if peak:
+        print(f"  {peak}")
     for name, pconf in cfg["platforms"].items():
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
@@ -312,6 +318,9 @@ def cmd_usage(a, cfg, led):
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:
         print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")
+    peak = router.peak_status_line(cfg, led)
+    if peak:
+        print(f"  {peak}")
     for name, pconf in cfg["platforms"].items():
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = router.usage_state(led, name, pconf, burst_lines=claude_lines)
@@ -458,12 +467,76 @@ def cmd_log(a, cfg, led):
     return 0
 
 
+def _parse_duration(s):
+    """'2h' / '90m' / '1h30m' -> timedelta. Raises ValueError on garbage."""
+    import re
+    m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", s or "")
+    if not m or not (m.group(1) or m.group(2)):
+        raise ValueError(f"bad duration {s!r}: use e.g. 2h or 90m")
+    return timedelta(hours=int(m.group(1) or 0), minutes=int(m.group(2) or 0))
+
+
+def _peak_window_end(cfg, led):
+    """Today's peak-window end in UTC, or the next one if today's has passed."""
+    from zoneinfo import ZoneInfo
+    pc = cfg.get("claude_peak") or {}
+    tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
+    now = led.now()
+    local = now.astimezone(tz)
+    try:
+        eh, em = (int(x) for x in pc.get("end", "11:00").split(":"))
+    except (ValueError, AttributeError):
+        return None
+    end = local.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if end <= local:
+        from datetime import timedelta as _td
+        end = end + _td(days=1)
+    return end.astimezone(now.tzinfo)
+
+
 def cmd_version(a, cfg, led):
     from .version import format_version, version_info
     app_dir = config.REPO_ROOT
     home_dir = config.STATE
     info = version_info(app_dir, home_dir)
     print(format_version(info))
+    return 0
+
+
+def cmd_peak(a, cfg, led):
+    """Override Claude's peak window (D22).
+
+    `peak off` pauses new Claude runs until the current (or next) window ends,
+    or for `--for DURATION`. `peak on` clears the override.
+    """
+    from zoneinfo import ZoneInfo
+    pc = cfg.get("claude_peak") or {}
+    if not pc.get("enabled", True):
+        print("claude_peak is disabled in config — nothing to override")
+        return 1
+    if a.off:
+        if a.for_duration:
+            until = led.now() + _parse_duration(a.for_duration)
+        else:
+            until = _peak_window_end(cfg, led)
+            if until is None:
+                print("peak window has no end configured")
+                return 1
+        led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+        led.event("peak_override", detail=f"peak override until {until.isoformat()}")
+        tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
+        print(f"peak override on — Claude runs allowed until "
+              f"{until.astimezone(tz):%H:%M} PT "
+              f"(in {router.fmt_countdown(until - led.now())})")
+        return 0
+    if a.on:
+        if led.get_kv(router.PEAK_OVERRIDE):
+            led.set_kv(router.PEAK_OVERRIDE, None)
+            led.event("peak_override", detail="peak override cleared")
+        print("peak override cleared")
+        return 0
+    line = router.peak_status_line(cfg, led)
+    print(line if line else "peak window: inactive")
     return 0
 
 
@@ -546,6 +619,14 @@ def main(argv=None):
 
     s = sub.add_parser("mcp", help="run MCP server over stdio")
     s.set_defaults(fn=lambda a, cfg, led: __import__('mahler.mcp', fromlist=['']).serve(cfg, led) or 0)
+
+    s = sub.add_parser("peak", help="override Claude's peak window (D22)")
+    grp = s.add_mutually_exclusive_group(required=True)
+    grp.add_argument("--off", action="store_true", help="pause new Claude runs")
+    grp.add_argument("--on", action="store_true", help="clear the override")
+    s.add_argument("--for", dest="for_duration", default=None,
+                   help="override duration, e.g. 2h or 90m (default: until the window ends)")
+    s.set_defaults(fn=cmd_peak)
 
     sub.add_parser("version", help="show commit, known-good status, behind-count"
                    ).set_defaults(fn=cmd_version)

@@ -130,6 +130,17 @@ DEFAULTS = {
         "hard": 97,
         "human_quiet_minutes": 20,    # suppress burst after human use (D23)
     },
+    # Claude's peak window (D22): on weekdays 5-11am Pacific, Mahler starts no
+    # new Claude runs. Running work continues, and the hard lines still apply.
+    # Override with `mahler peak off [--for DURATION]`, or by pinning an item
+    # to a Claude platform. `enabled = false` turns the window off entirely.
+    "claude_peak": {
+        "enabled": True,
+        "tz": "America/Los_Angeles",
+        "weekdays": [0, 1, 2, 3, 4],   # Python weekday(): Mon=0 .. Sun=6
+        "start": "05:00",
+        "end": "11:00",
+    },
 }
 
 # Cline's free models report no quota at all (verified 2026-09-12): it is
