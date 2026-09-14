@@ -68,7 +68,7 @@ def take_lock():
 
 def tick(ctx):
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
-    compute_burst(ctx, projects)   # D23: before watchdog so running runs
+    compute_burst(ctx, projects)    # D23: before watchdog so running runs
     watchdog(ctx)                   #   see burst lines too
     for p in projects:
         try:

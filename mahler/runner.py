@@ -14,7 +14,6 @@ import subprocess
 
 from . import config, platforms, redact
 
-MAHLER_BIN = config.MAHLER_BIN
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
               "post-rewrite", "pre-applypatch", "pre-commit", "pre-merge-commit",
               "prepare-commit-msg", "pre-push", "pre-rebase")
@@ -96,7 +95,7 @@ def fence_hooks(repo, run_dir):
     for name in HOOK_NAMES:
         body = "#!/bin/sh\n"
         if name == "pre-push":
-            body += (f'"{MAHLER_BIN}" lease-check || {{ echo "mahler: this run no longer holds '
+            body += (f'"{config.MAHLER_BIN}" lease-check || {{ echo "mahler: this run no longer holds '
                      f'the lease on #$MAHLER_ISSUE — push refused" >&2; exit 1; }}\n')
         body += f'[ -x "{orig}/{name}" ] && exec "{orig}/{name}" "$@"\nexit 0\n'
         path = os.path.join(hooks, name)

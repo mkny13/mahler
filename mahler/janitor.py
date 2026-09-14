@@ -1,6 +1,6 @@
 """Daily janitor (mahler#7, DESIGN D12): prune stale worktrees and old refs.
 
-Every run normally cleans up after itself — scheduler.finalize removes its
+Every run normally cleans up after itself — finalize.py removes its
 worktree — but a crash, a hung daemon or a deliberately kept worktree leaves
 things behind. Once a day the tick sweeps, per project:
 

@@ -16,9 +16,7 @@ from .tick import busy_platforms, start
 
 
 def ship(ctx, projects):
-    """The mechanical tail of a build run, in code (D18): push the branch, open
-    the PR, watch CI across ticks and squash-merge on green — but never merge
-    once the item's lease has gone to an interactive session (D6)."""
+    """One pass over every project's finished-but-unmerged changes."""
     for p in projects:
         try:
             _ship_project(ctx, p["name"])
