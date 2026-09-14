@@ -426,10 +426,6 @@ class Ledger:
                         **({"preempted": info["preempted"]["holder"]} if "preempted" in info else {})})
         return self.lease(project, number, live_only=False), info
 
-    def attach_run(self, project, number, epoch, run_id):
-        self.con.execute("UPDATE leases SET run_id=? WHERE project=? AND number=? AND epoch=?",
-                         (run_id, project, number, epoch))
-
     def heartbeat(self, project, number, holder, epoch, ttl_minutes):
         """Extend a lease we still hold. False means it was taken over or reaped."""
         now = self.now()

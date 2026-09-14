@@ -173,10 +173,6 @@ class GH:
             args += ["--label", l]
         return self._gh(*args, input=body).strip()
 
-    def default_branch(self):
-        return self._gh("repo", "view", self.repo, "--json", "defaultBranchRef",
-                        "-q", ".defaultBranchRef.name").strip()
-
     # ---------- the conductor ships (DESIGN D18) ----------
 
     def issue_body(self, number):
