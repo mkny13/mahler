@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, scheduler, sync, tick
-from mahler.gh import has_sections
+from mahler.gh import GHError, has_sections
 from mahler.ledger import Ledger, iso
 from mahler import prompt
 
@@ -33,6 +33,9 @@ class FakeGH:
     def __init__(self, issues=None):
         self.issues = issues or {}     # number -> {"title", "labels", "comments"}
         self.edits = []                # (number, want, current_labels)
+        self.fail_pin = False
+        self.fail_state_label = False
+        self.fail_issue_state_for = set()
 
     def open_issues(self):
         return [{"number": n, "title": i["title"], "body": i.get("body", ""),
@@ -51,12 +54,16 @@ class FakeGH:
             self.issues[number]["labels"].append(label)
 
     def issue_state(self, number):
+        if number in self.fail_issue_state_for:
+            raise GHError("github down")
         return "OPEN"
 
     def comment(self, number, body):
         pass
 
     def set_pin_labels(self, number, want, current_labels):
+        if self.fail_pin:
+            raise GHError("github down")
         self.edits.append((number, want, list(current_labels)))
         keep = f"platform:{want}" if want else None
         labels = [l for l in current_labels
@@ -64,6 +71,11 @@ class FakeGH:
         if keep and keep not in labels:
             labels.append(keep)
         self.issues[number]["labels"] = labels
+
+    def set_state_label(self, number, state, current_labels):
+        if self.fail_state_label:
+            raise GHError("github down")
+        self.issues[number]["labels"] = current_labels
 
 
 class PinTests(unittest.TestCase):
@@ -148,6 +160,24 @@ class PinTests(unittest.TestCase):
         self.sync()
         self.assertEqual(self.led.item("x", 5)["pin"], "agy-gemini")
         self.assertEqual(self.gh.edits, [])
+
+    def test_set_pin_label_failure_still_updates_the_ledger(self):
+        """The label edit failing must not stop the ledger's pin from taking
+        effect this tick (D9): only the GitHub-side mirror is behind."""
+        self.gh.fail_pin = True
+        self.command("/mahler platform agy-claude")
+        self.assertEqual(self.gh.edits, [])
+        self.assertNotIn("platform:agy-claude", self.gh.issues[5]["labels"])
+        self.assertEqual(self.led.item("x", 5)["pin"], "agy-claude")
+        self.assertIn("platform label update failed", self.lines())
+
+    def test_closed_issue_lookup_failure_is_skipped_not_raised(self):
+        """sync()'s per-item closed-issue check must not break the tick when
+        GitHub is unreachable — the item is just checked again next tick."""
+        del self.gh.issues[5]                # no longer returned by open_issues()
+        self.gh.fail_issue_state_for = {5}
+        self.sync()                          # must not raise
+        self.assertEqual(self.led.item("x", 5)["state"], "inbox")   # unchanged
 
 
 class SubIssueScopeTests(unittest.TestCase):
@@ -289,6 +319,41 @@ class PlannedChildTests(unittest.TestCase):
         body = "## plan\nbody\n## DONE WHEN\nchecks"
         self.assertTrue(has_sections(body, "## Plan", "Done when"))
         self.assertFalse(has_sections(body, "Context"))
+
+
+class MirrorLabelsTests(unittest.TestCase):
+    """mirror_labels writes Mahler's state label back to GitHub each tick."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["x"] = {"path": tmp.name, "repo": "x/y"}
+        self.gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:inbox"],
+                              "comments": []}})
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.sync(self.ctx, "x")            # item exists, state=inbox, mirror unset
+        self.led.set_state("x", 5, "ready", "you said go")
+
+    def mirror(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.mirror_labels(self.ctx, "x")
+
+    def test_label_update_failure_is_recorded_and_mirror_stays_stale(self):
+        self.gh.fail_state_label = True
+        self.mirror()   # must not raise
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertIn("label update failed", "\n".join(self.ctx.lines))
+
+    def test_a_later_successful_mirror_recovers(self):
+        self.gh.fail_state_label = True
+        self.mirror()
+        self.gh.fail_state_label = False
+        self.mirror()
+        self.assertEqual(self.led.item("x", 5)["mirror"], "mahler:ready")
 
 
 class SortRecipeTests(unittest.TestCase):

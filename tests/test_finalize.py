@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, finalize, runner, scheduler, tick
+from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -161,6 +162,36 @@ class RunTests(unittest.TestCase):
         self.assertTrue(opus_5h)
         self.assertEqual(claude_5h[0]["used_pct"], 45.0)
         self.assertEqual(opus_5h[0]["used_pct"], 45.0)
+
+    def test_snapshot_failure_keeps_the_worktree_and_still_ends_the_run(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE wired the exporter\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot",
+                                  side_effect=runner.GitError("no space left on device")), \
+                mock.patch.object(runner, "remove_worktree") as rm, \
+                mock.patch.object(self.ctx, "ping"):
+            finalize.finalize(self.ctx, self.run)
+        rm.assert_not_called()               # the worktree is kept, not removed
+        run = self.led.q("SELECT status, outcome FROM runs WHERE id=?", (self.run_id,))[0]
+        self.assertEqual((run["status"], run["outcome"]), ("ended", "DONE"))
+        self.assertIn("snapshot failed, keeping worktree", "\n".join(self.ctx.lines))
+        self.assertIn("Couldn't push a snapshot", self.gh.comments[-1])
+
+    def test_handoff_comment_failure_does_not_break_finalize(self):
+        with open(self.log, "w") as fh:
+            fh.write("reached quota\n")
+        self.run["stop_reason"] = "quota"
+        saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=saved), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(self.gh, "comment",
+                                  side_effect=gh_module.GHError("rate limited")):
+            finalize.finalize(self.ctx, self.run)   # must not raise
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertIn("couldn't post handoff comment", "\n".join(self.ctx.lines))
 
     def test_cline_daily_cap_waits_until_the_named_reset_not_the_flat_backoff(self):
         # mahler#124: Cline's free model names its own reset time in the

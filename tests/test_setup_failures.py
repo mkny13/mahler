@@ -5,17 +5,21 @@ import tempfile
 import unittest
 
 from mahler import finalize, scheduler, sync
+from mahler.gh import GHError
 from mahler.ledger import Ledger
 
 
 class FakeGH:
-    def __init__(self):
+    def __init__(self, fail_comment=False):
         self.comments = []
+        self.fail_comment = fail_comment
 
     def issue_state(self, n):
         return "OPEN"
 
     def comment(self, n, body):
+        if self.fail_comment:
+            raise GHError("rate limited")
         self.comments.append(body)
 
 
@@ -115,6 +119,15 @@ class SetupFailureTests(unittest.TestCase):
         self.end()
         sync._apply_instruction(self.ctx, "p", self.led.item("p", 8), "go", None)
         self.assertEqual(self.led.item("p", 8)["setup_fails"], 0)
+
+    def test_comment_failure_does_not_break_the_setup_failure_handling(self):
+        self.gh.fail_comment = True
+        self.end()   # must not raise
+        item = self.led.item("p", 8)
+        self.assertEqual(item["setup_fails"], 1)
+        self.assertEqual(item["state"], "inbox")
+        self.assertEqual(self.gh.comments, [])
+        self.assertIn("couldn't post setup-failure comment", "\n".join(self.ctx.lines))
 
 
 if __name__ == "__main__":

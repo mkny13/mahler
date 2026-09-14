@@ -149,6 +149,48 @@ class SetupPhaseTests(unittest.TestCase):
         self.assertIsNone(self.health(started_ago=5))
 
 
+class YieldGraceTests(unittest.TestCase):
+    """A yielding run stops at once for a STOP_NOW reason ('parked'); any
+    other reason (e.g. a preemption) gets the full yield_grace_seconds first,
+    so it can wrap up (D6)."""
+
+    def setUp(self):
+        self.ctx = ctx_for()
+        self.led = self.ctx.led
+        self.pol = config.project_policy(config.DEFAULTS, "x")
+        self.led.upsert_item("x", 1, state="working", sorted_at=iso(NOW))
+        self.led.claim("x", 1, "run:1", "auto", 10)
+        self.led.create_run(id=1, project="x", number=1, role="build",
+                            platform="cline-free", epoch=self.led.lease("x", 1)["epoch"],
+                            pid=999, worktree="/tmp/wt1", branch="b1", base_ref="main",
+                            log_path="/nonexistent/1/agent.log",
+                            status_path="/nonexistent/1/exit",
+                            started_at=iso(NOW - timedelta(minutes=5)))
+
+    def watch(self, stop_reason, yield_seconds_ago):
+        run = dict(self.led.run(1))
+        run["yield_at"] = iso(NOW - timedelta(seconds=yield_seconds_ago))
+        run["stop_reason"] = stop_reason
+        with mock.patch.object(runner, "alive", return_value=True), \
+                mock.patch.object(runner, "terminate") as term:
+            watchdog._watch_one(self.ctx, run, NOW)
+        return term
+
+    def test_parked_stops_at_once_with_no_grace(self):
+        term = self.watch("parked", yield_seconds_ago=1)
+        term.assert_called_once_with(999)
+        self.assertEqual(self.led.run(1)["stop_reason"], "parked")
+
+    def test_another_reason_waits_out_the_grace_period(self):
+        term = self.watch("preempted", yield_seconds_ago=1)
+        term.assert_not_called()
+
+    def test_another_reason_stops_once_the_grace_period_elapses(self):
+        term = self.watch("preempted", yield_seconds_ago=self.pol["yield_grace_seconds"])
+        term.assert_called_once_with(999)
+        self.assertEqual(self.led.run(1)["stop_reason"], "preempted")
+
+
 class HoldTests(unittest.TestCase):
     cfg = config.DEFAULTS
 

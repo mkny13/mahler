@@ -149,6 +149,17 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
 
+    def test_shipped_comment_failure_still_closes_the_loop(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "comment",
+                               side_effect=gh_module.GHError("rate limited")):
+            ping = self.ship()   # must not raise
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(self.item()["state"], "done")
+        self.assertIsNone(self.led.lease("x", 5))
+        ping.assert_called_once()
+        self.assertIn("couldn't post the shipped comment", " ".join(self.ctx.lines))
+
     def test_shipped_event_tracks_enabled_maintenance_passes(self):
         self.cfg["projects"]["x"]["maintenance"] = {
             "enabled": True, "passes": ["security", "tests"],
