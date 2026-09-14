@@ -136,6 +136,7 @@ class SyncStoresParentTests(unittest.TestCase):
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh_mock = mock.Mock()
+        self.gh_mock.issues_changed.return_value = (True, None)
         self.ctx._gh["mkny13/mahler"] = self.gh_mock
 
     def test_sync_stores_parent_from_body(self):

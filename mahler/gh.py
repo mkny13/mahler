@@ -34,6 +34,17 @@ PART_OF_RE = re.compile(r"^\s*(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+)", re.IG
 
 
 
+def _etag_of(out):
+    """The ETag header of a `gh api -i` response, or None.
+
+    `gh api -i` prints the status line, then headers (CRLF-terminated), then
+    a blank line, then the body. Only the header block is searched, so a
+    body that happens to contain the word "etag" can't fool the parse."""
+    head = re.split(r"\r?\n\r?\n", out, maxsplit=1)[0]
+    m = re.search(r"^etag:\s*(.+?)\s*$", head, re.IGNORECASE | re.MULTILINE)
+    return m.group(1) if m else None
+
+
 class GHError(RuntimeError):
     pass
 
@@ -79,6 +90,33 @@ class GH:
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
                        "--json", "number,title,labels,body,createdAt,updatedAt,comments,url")
         return json.loads(out)
+
+    def issues_changed(self, etag=None):
+        """Conditional probe of the open-issue collection (mahler#90).
+
+        One `gh api -i` GET with If-None-Match instead of the full `gh issue
+        list`: a 304 doesn't count against the REST rate limit, so a quiet
+        repo costs ~nothing per tick, and sync() skips the fetch (and the
+        per-item closed checks) entirely. `sort=updated` makes the ETag a
+        change-detector for the whole collection — any issue update re-sorts
+        it to the top of page 1, changing the body and with it the ETag.
+
+        Returns (changed, etag): False → keep polling with the same etag;
+        True → the new etag to store (None when it couldn't be read, which
+        just means the next tick probes with the old one and re-fetches).
+        `gh api` treats a 304 as an error (exit 1, "gh: HTTP 304"), so that
+        is caught here rather than surfacing as a failed sync."""
+        args = ["api", "-i",
+                f"repos/{self.repo}/issues?state=open&sort=updated&direction=desc&per_page=1"]
+        if etag:
+            args += ["-H", f"If-None-Match: {etag}"]
+        try:
+            out = self._gh(*args, timeout=30)
+        except GHError as e:
+            if "HTTP 304" in str(e):
+                return False, etag
+            raise
+        return True, _etag_of(out)
 
     def issue_state(self, number):
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")

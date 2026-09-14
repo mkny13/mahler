@@ -43,6 +43,9 @@ class FakeGH:
                               for at, body in i.get("comments", [])]}
                 for n, i in sorted(self.issues.items())]
 
+    def issues_changed(self, etag=None):
+        return (True, None)              # this fake's repo is always "modified"
+
     def add_label(self, number, label):
         if label not in self.issues[number]["labels"]:
             self.issues[number]["labels"].append(label)
