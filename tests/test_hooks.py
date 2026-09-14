@@ -24,9 +24,14 @@ class TestHooks(unittest.TestCase):
             "projects": {"testproj": {"path": self.repo_dir, "enabled": True}}
         }
         
-        # Override config.RUNS_DIR for watchdog tests
-        config.RUNS_DIR = os.path.join(self.tmp.name, "runs")
-        os.makedirs(config.RUNS_DIR)
+        # Redirect the scheduler's runs dir into the temp tree (mahler#93):
+        # patched rather than assigned, so the module global is restored
+        # after each test instead of leaking to whichever test runs next.
+        self.runs_dir = os.path.join(self.tmp.name, "runs")
+        os.makedirs(self.runs_dir)
+        runs_patch = patch.object(config, "RUNS_DIR", self.runs_dir)
+        runs_patch.start()
+        self.addCleanup(runs_patch.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -49,6 +54,12 @@ class TestHooks(unittest.TestCase):
         pt = d["hooks"]["PreToolUse"][0]
         self.assertIn("pre_tool_use.py", pt["command"])
         self.assertEqual(pt["tools"], ["Edit", "Write", "Bash"])
+        
+        # The yield check must honor MAHLER_RUNS_DIR so tests can keep
+        # their hands off the real ~/.mahler state (mahler#93).
+        script_path = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
+        with open(script_path) as f:
+            self.assertIn("MAHLER_RUNS_DIR", f.read())
         
     @patch("mahler.runner.alive", return_value=True)
     @patch("mahler.router.usage_state", return_value=("soft", ""))
@@ -80,22 +91,21 @@ class TestHooks(unittest.TestCase):
         
         pre_tool_script = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
         
-        # Setup yield file
+        # The hook must read the yield file from the runs dir it is told
+        # about (MAHLER_RUNS_DIR): tests must never touch the real
+        # ~/.mahler state (mahler#93).
         run_id = "123"
-        os.environ["MAHLER_RUN_ID"] = run_id
-        yield_dir = os.path.expanduser(f"~/.mahler/runs/{run_id}")
-        os.makedirs(yield_dir, exist_ok=True)
-        yield_file = os.path.join(yield_dir, "yield")
-        with open(yield_file, "w") as f:
-            pass
-            
-        try:
+        with patch.dict(os.environ, {"MAHLER_RUN_ID": run_id,
+                                     "MAHLER_RUNS_DIR": self.runs_dir}):
+            yield_dir = os.path.join(self.runs_dir, run_id)
+            os.makedirs(yield_dir, exist_ok=True)
+            yield_file = os.path.join(yield_dir, "yield")
+            with open(yield_file, "w") as f:
+                pass
+                
             res = subprocess.run(["python3", pre_tool_script], capture_output=True, text=True)
             self.assertEqual(res.returncode, 1)
             self.assertIn("yield delivered", res.stdout)
-        finally:
-            os.remove(yield_file)
-            del os.environ["MAHLER_RUN_ID"]
 
     def test_merge_fence_logic(self):
         class Args:
@@ -104,17 +114,16 @@ class TestHooks(unittest.TestCase):
         pre_tool_script = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
         
         run_id = "124"
-        os.environ["MAHLER_RUN_ID"] = run_id
         
         # Mock lease-check failure by setting up environment and running the script
         # The script calls `mahler lease-check`.
         # To fail `mahler lease-check`, we can set MAHLER_PROJECT, MAHLER_ISSUE, MAHLER_EPOCH and let it fail.
-        os.environ["MAHLER_PROJECT"] = "testproj"
-        os.environ["MAHLER_ISSUE"] = "1"
-        os.environ["MAHLER_EPOCH"] = "1"
-        
+        env_extra = {"MAHLER_RUN_ID": run_id,
+                     "MAHLER_PROJECT": "testproj",
+                     "MAHLER_ISSUE": "1",
+                     "MAHLER_EPOCH": "1"}
         # No item in DB, so lease-check fails.
-        try:
+        with patch.dict(os.environ, env_extra):
             env = os.environ.copy()
             env["PATH"] = os.path.abspath("bin") + os.pathsep + env.get("PATH", "")
             # We mock the call by actually passing JSON to stdin
@@ -122,11 +131,6 @@ class TestHooks(unittest.TestCase):
             res = subprocess.run(["python3", pre_tool_script], input=stdin_data, capture_output=True, text=True, env=env)
             self.assertEqual(res.returncode, 1)
             self.assertIn("STALE", res.stdout)
-        finally:
-            del os.environ["MAHLER_RUN_ID"]
-            del os.environ["MAHLER_PROJECT"]
-            del os.environ["MAHLER_ISSUE"]
-            del os.environ["MAHLER_EPOCH"]
 
 
 class TestSessionIdentity(unittest.TestCase):
