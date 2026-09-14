@@ -590,6 +590,16 @@ doesn't rely on that and stops on its own thresholds regardless.
    - blocked: destructive SQL against production connections, `wrangler d1 execute --remote`
      with DROP/DELETE/TRUNCATE, `rm -rf` outside the worktree, force-push to the default
      branch, `gh repo delete`, `gh release delete`, and touching `~/.ssh` or the keychain
+   - **per-platform launch-flag deny coverage** (mahler#77): `platforms.DENY_STEMS` (force
+     pushes and ref deletes, `--mirror`, history rewrites, `git reset --hard`,
+     `gh repo delete`/`archive`, `gh release delete`/`issue delete`, `rm -rf/-fr /` and `~`)
+     is rendered per CLI — Claude gets `--disallowedTools` (`CLAUDE_DENY`), Copilot gets
+     `--deny-tool` (`COPILOT_DENY`; denials beat `--allow-all-tools` per `copilot help
+     permissions`). **Known, accepted gaps — no deny-list flag exists:** agy, cline,
+     codex, kilo (comments at each argv builder; codex's execpolicy `.rules` is the
+     possible future mechanism). All deny rules are prefix stems: they catch accidents,
+     not a determined agent (`git push origin :branch`, reordered flags) — branch
+     protection and the lease pre-push hook remain the real fence.
 6. **Secrets** come from the Keychain or untracked `.env` files. They are never put in prompts,
    issues, ntfy or logs.
 
