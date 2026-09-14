@@ -573,6 +573,21 @@ class ParseTests(unittest.TestCase):
             r = platforms.read_log(k, "kilo")
             self.assertFalse(r["quota_hit"])
             self.assertEqual(platforms.status_line(r["last_text"]), ("READY", ""))
+            # mahler#141: kilo-auto/free is stateless per invocation — record
+            # the underlying model actually used so a quota hit can be weighed
+            # against which free model it reflects rather than the whole pool.
+            self.assertEqual(r["model"], "poolside/laguna-s-2.1:free")
+
+    def test_kilo_log_without_model(self):
+        # A kilo log with no step_finish event (e.g. an error-only run) leaves
+        # model as None instead of raising.
+        with tempfile.TemporaryDirectory() as d:
+            k = os.path.join(d, "k.log")
+            with open(k, "w") as fh:
+                fh.write(json.dumps({"type": "text",
+                                     "part": {"type": "text", "text": "STATUS: READY"}}) + "\n")
+            r = platforms.read_log(k, "kilo")
+            self.assertIsNone(r["model"])
 
     def test_kilo_out_of_credits_is_a_quota_hit(self):
         # Real 402 shape hit on the default (non-:free) model (mahler#29): no

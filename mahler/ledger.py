@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS runs (
     exit_code   INTEGER,
     yield_at    TEXT,
     nudged      INTEGER NOT NULL DEFAULT 0,
+    model       TEXT,                    -- the modelID a stateless route actually used (mahler#141)
     started_at  TEXT NOT NULL,
     ended_at    TEXT
 );
@@ -171,6 +172,8 @@ class Ledger:
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
         if "nudged" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
+        if "model" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN model TEXT")
         lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
         if "capacity" not in lease_cols:
             self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")

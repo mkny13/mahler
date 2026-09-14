@@ -99,8 +99,9 @@ def cmd_status(a, cfg, led):
         est = int(led.run_estimate(ests, r["platform"], r["role"]))
         time_str = f"{mins}m / ~{est}m" if mins <= est else f"{mins}m (+{mins-est}m past est)"
         url = item_url(r["project"], r["number"])
+        model = f" {r['model']}" if r["model"] else ""
         print(f"  • run {r['id']:<4} {r['project']}#{r['number']:<5} {r['role']:<5} "
-              f"{r['platform']:<11} {time_str:>16}  {r['status']}{url}")
+              f"{r['platform']:<11} {time_str:>16}  {r['status']}{model}{url}")
     print("\nItems")
     items = [i for i in led.items() if i["state"] != "done"]
     if getattr(a, "project", None):

@@ -442,10 +442,10 @@ def read_log(path, kind):
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
              'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
-             'last_text': str}
+             'last_text': str, 'model': str|None}
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
-           "retry_after": None, "last_text": ""}
+           "retry_after": None, "last_text": "", "model": None}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -515,6 +515,15 @@ def read_log(path, kind):
                 if ev.get("type") == "error":
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                elif ev.get("type") == "step_finish":
+                    # kilo-auto/free is stateless per invocation: each `kilo run`
+                    # is a fresh routing decision across the free pool, so the
+                    # model actually used is the signal for whether a quota hit
+                    # reflects one underlying free model being rate-limited
+                    # rather than the whole account/pool (mahler#141).
+                    model = ((ev.get("part") or {}).get("model") or {}).get("modelID")
+                    if model:
+                        res["model"] = model
                 else:
                     texts.extend(_collect_text(ev))
             else:  # agy
