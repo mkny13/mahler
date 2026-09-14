@@ -404,9 +404,8 @@ def cmd_heartbeat(a, cfg, led):
 
 def cmd_release(a, cfg, led):
     project, n = a.item
-    ok = led.release(project, n, holder=f"interactive:{a.holder}")
-    if ok and led.item(project, n)["state"] == "working":
-        led.set_state(project, n, "ready", f"released by {a.holder}")
+    ok = led.release(project, n, holder=f"interactive:{a.holder}",
+                     to_state="ready", why=f"released by {a.holder}")
     print("released" if ok else "you didn't hold it")
     return 0
 

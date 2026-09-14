@@ -180,10 +180,8 @@ def serve(cfg, led):
                         content = [{"type": "text", "text": "Failed to heartbeat. Lease lost or not held.", "isError": True}]
                 elif name == "release":
                     holder = f"interactive:{args['holder']}"
-                    ok = led.release(args["project"], args["number"], holder=holder)
-                    item = led.item(args["project"], args["number"])
-                    if ok and item and item["state"] == "working":
-                        led.set_state(args["project"], args["number"], "ready", f"released by {holder}")
+                    ok = led.release(args["project"], args["number"], holder=holder,
+                                     to_state="ready", why=f"released by {holder}")
                     content = [{"type": "text", "text": "Released successfully." if ok else "Failed to release. Not held."}]
                 elif name == "handoff":
                     pol = config.project_policy(cfg, args["project"])

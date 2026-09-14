@@ -402,5 +402,40 @@ class QuotaGroupTests(unittest.TestCase):
                                 "fix run started on claude while claude-opus is busy")
 
 
+    def test_orphan_working_item_reclaimed_on_tick(self):
+        ctx, led = mk_ctx({"a": proj()})
+        # mahler#162: item stuck in 'working' with no lease and no run
+        item(led, "a", 124, state="working")
+        self.assertEqual(led.item("a", 124)["state"], "working")
+        self.assertIsNone(led.lease("a", 124))
+
+        # On the next tick, expire/sweep_orphans returns it to ready
+        scheduler.expire(ctx)
+        self.assertEqual(led.item("a", 124)["state"], "ready")
+        self.assertTrue(any("orphan working item (no lease, no active run) returned to ready" in line
+                            for line in ctx.lines))
+        evs = led.q("SELECT * FROM events WHERE project='a' AND number=124 AND kind='orphan_recovered'")
+        self.assertEqual(len(evs), 1)
+
+    def test_orphan_lease_on_ready_and_done_items_reaped_on_tick(self):
+        ctx, led = mk_ctx({"a": proj()})
+        item(led, "a", 10, state="ready")
+        led.claim("a", 10, "stale:holder", "auto", 30)
+        item(led, "a", 20, state="done")
+        led.claim("a", 20, "stale:holder2", "auto", 30)
+        self.assertIsNotNone(led.lease("a", 10))
+        self.assertIsNotNone(led.lease("a", 20))
+
+        scheduler.expire(ctx)
+        self.assertIsNone(led.lease("a", 10))
+        self.assertIsNone(led.lease("a", 20))
+        self.assertEqual(led.item("a", 10)["state"], "ready")
+        self.assertEqual(led.item("a", 20)["state"], "done")
+        self.assertTrue(any("orphan lease by stale:holder on ready item released" in line
+                            for line in ctx.lines))
+        self.assertTrue(any("orphan lease by stale:holder2 on done item released" in line
+                            for line in ctx.lines))
+
+
 if __name__ == "__main__":
     unittest.main()

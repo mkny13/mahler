@@ -459,7 +459,11 @@ def finalize(ctx, run):
             elif reason == "parked":
                 led.set_state(project, n, "parked", "parked while running")
             elif reason == "preempted":
-                led.set_state(project, n, "working", "handed to your session")
+                cur = led.lease(project, n)
+                if cur and cur["kind"] == "interactive":
+                    led.set_state(project, n, "working", "handed to your session")
+                else:
+                    led.set_state(project, n, "ready", "handoff (preempted)")
                 ctx.ping(f"Handoff to you — {project} #{n}",
                          f"{run['platform']} stepped aside; its work is on "
                          f"{saved['ref'] if saved else 'nothing new to save'}",
@@ -1121,6 +1125,26 @@ def _set_pin(ctx, project, n, platform):
 
 # ---------- leases that ran out ----------
 
+def sweep_orphans(ctx):
+    """Orphan sweep keyed on items (not just expiring leases):
+    1. Items in 'working' with no lease row and no active run -> return to 'ready'.
+    2. Mirror case: items in 'ready'/'done' with a live lease row -> drop the lease row.
+    """
+    led = ctx.led
+    for item in led.orphan_working_items():
+        project, n = item["project"], item["number"]
+        led.set_state(project, n, "ready", "orphan: working with no lease or run returned to ready")
+        led.event("orphan_recovered", project, n, {"reason": "working with no lease or run"})
+        ctx.say(f"{project}#{n}: orphan working item (no lease, no active run) returned to ready")
+
+    for lease in led.orphan_lease_rows():
+        project, n = lease["project"], lease["number"]
+        led.release(project, n, holder=lease["holder"], epoch=lease["epoch"], to_state=None)
+        led.event("orphan_lease_released", project, n,
+                  {"holder": lease["holder"], "item_state": lease["item_state"]})
+        ctx.say(f"{project}#{n}: orphan lease by {lease['holder']} on {lease['item_state']} item released")
+
+
 def expire(ctx):
     led = ctx.led
     for lease in led.expired_leases():
@@ -1136,11 +1160,10 @@ def expire(ctx):
                 led.heartbeat(project, n, lease["holder"], lease["epoch"],
                               pol["interactive_lease_minutes"])
                 continue
-        led.release(project, n, holder=lease["holder"], epoch=lease["epoch"])
-        item = led.item(project, n)
-        if item and item["state"] == "working":
-            led.set_state(project, n, "ready", f"{lease['kind']} lease expired")
+        led.release(project, n, holder=lease["holder"], epoch=lease["epoch"],
+                    to_state="ready", why=f"{lease['kind']} lease expired")
         ctx.say(f"{project}#{n}: {lease['kind']} lease by {lease['holder']} expired")
+    sweep_orphans(ctx)
 
 
 # ---------- usage ----------

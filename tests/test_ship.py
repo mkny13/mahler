@@ -291,13 +291,14 @@ class ShipTests(unittest.TestCase):
 
     def test_a_preempted_fix_leaves_the_pr_alone(self):
         run = self.fix_run()
+        self.led.claim("x", 5, "interactive:you", "interactive", 30)
         run["stop_reason"] = "preempted"
         with open(self.log, "w") as fh:
             fh.write("STATUS: DONE almost\n")
         with mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
                 mock.patch.object(runner, "remove_worktree"):
             scheduler.finalize(self.ctx, run)
-        self.assertEqual(self.led.item("x", 5)["state"], "working")   # handoff as before
+        self.assertEqual(self.led.item("x", 5)["state"], "working")   # handoff to session
 
     def test_a_failed_fix_counts_and_retries_like_a_build(self):
         run = self.fix_run()
