@@ -34,8 +34,9 @@ Playwright and preview deploys already in place, and it has real personal data.
       quota reporting → routed as unmetered, `size:s` only. (DESIGN D8)
 - [ ] **S4 — Reach from the phone** (`tailscale serve`, CORS from app origins). Filed as an
       issue.
-- [ ] **S5 — GitHub polling cost with ETags.** Filed as an issue. The bootstrap polls
-      plainly at a low rate meanwhile.
+- [x] **S5 — GitHub polling cost with ETags.** Shipped (mahler#90): sync() probes the
+      open-issue collection with one conditional `gh api -i` GET per tick; a 304 skips the
+      fetch and the closed-issue checks and costs no quota.
 - [ ] **You:** install **ntfy** on the Pixel and subscribe to the topic printed at the end of
       Phase B.
 

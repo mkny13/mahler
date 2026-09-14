@@ -1006,6 +1006,16 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
+    # Conditional poll (mahler#90): a 304 means the open-issue collection is
+    # byte-identical to the last full sync — no new issues, no edits, no
+    # comments — so both the fetch and the closed-issue checks below can be
+    # skipped. The etag is stored only after a clean sync: if anything fails
+    # mid-tick, the next tick probes with the old etag and re-fetches.
+    etag_key = f"etag:{project}"
+    poll_changed, poll_etag = gh.issues_changed(led.get_kv(etag_key))
+    if not poll_changed:
+        ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
+        return
     issues = gh.open_issues()
 
     if pol.get("scope") == "label":
@@ -1083,6 +1093,9 @@ def sync(ctx, project):
             if not running:
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
+
+    if poll_etag:
+        led.set_kv(etag_key, poll_etag)
 
 
 def planned_child(iss, labels, led, project):
