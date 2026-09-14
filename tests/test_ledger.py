@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import sqlite3
 import subprocess
 import tempfile
 import tomllib
@@ -10,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler import config
-from mahler.ledger import Ledger, RoutedLedger, remote_lease_operation
+from mahler.ledger import Ledger, RoutedLedger, SCHEMA, remote_lease_operation
 
 
 class Clock:
@@ -585,6 +586,73 @@ class InvariantAndOrphanTests(unittest.TestCase):
         orphans = self.led.orphan_lease_rows()
         self.assertEqual(sorted(o["number"] for o in orphans), [3, 4])
 
+class IndexTests(unittest.TestCase):
+    """Query indexes (issue #89): created on fresh DBs and applied to existing
+    ones at startup, without touching table structure."""
+
+    EXPECTED = {
+        "idx_items_project_state", "idx_items_state",
+        "idx_runs_status_project", "idx_runs_item_status", "idx_runs_ended",
+        "idx_events_kind_at", "idx_events_item",
+    }
+
+    def _indexes(self, con):
+        return {r["name"] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")}
+
+    def test_fresh_db_has_query_indexes(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        self.assertTrue(self.EXPECTED <= self._indexes(led.con))
+
+    def test_existing_db_gets_indexes_at_startup(self):
+        # Simulate a legacy database: same tables, no query indexes.
+        legacy_lines, skipping = [], False
+        for line in SCHEMA.splitlines():
+            if line.lstrip().upper().startswith("CREATE INDEX"):
+                skipping = ";" not in line
+                continue
+            if skipping:
+                skipping = ";" not in line
+                continue
+            legacy_lines.append(line)
+        legacy = "\n".join(legacy_lines)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mahler.db")
+            con = sqlite3.connect(path)
+            con.row_factory = sqlite3.Row
+            con.executescript(legacy)
+            con.execute("INSERT INTO items (project, number, state) VALUES ('p', 1, 'ready')")
+            con.commit()
+            con.close()
+
+            led = Ledger(path)  # the startup schema update must add the indexes
+            self.addCleanup(led.close)
+            self.assertTrue(self.EXPECTED <= self._indexes(led.con))
+            # ... and the pre-existing data survives untouched
+            self.assertEqual(led.item("p", 1)["state"], "ready")
+
+    def test_reopening_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mahler.db")
+            led = Ledger(path)
+            led.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            self.assertEqual(self.EXPECTED, self.EXPECTED & self._indexes(led.con))
+
+    def test_planner_uses_index_for_active_runs(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.create_run(project="p", number=1, role="build", platform="claude", epoch=1)
+        plan = " ".join(r[3] for r in led.q(
+            "EXPLAIN QUERY PLAN SELECT * FROM runs WHERE status IN ('running','stopping')"))
+        # no full table scan: one of the runs-status indexes is chosen
+        self.assertRegex(plan, r"USING INDEX idx_runs_\w+")
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 if __name__ == "__main__":
     unittest.main()

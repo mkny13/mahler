@@ -108,6 +108,26 @@ CREATE TABLE IF NOT EXISTS counters (
     PRIMARY KEY (project, name)
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+
+-- Query indexes (issue #89): every column below is part of the original
+-- schema, so these are safe on existing databases — executescript runs at
+-- every Ledger init and IF NOT EXISTS makes it idempotent. Tables with a
+-- composite PK (leases, usage, counters, kv) don't need more: their PK
+-- index already serves every lookup they get.
+CREATE INDEX IF NOT EXISTS idx_items_project_state
+    ON items(project, state, priority, number);   -- items(project, states) ORDER BY priority
+CREATE INDEX IF NOT EXISTS idx_items_state
+    ON items(state, priority, number);            -- state-only filters (digest, done stats)
+CREATE INDEX IF NOT EXISTS idx_runs_status_project
+    ON runs(status, project);                     -- active_runs
+CREATE INDEX IF NOT EXISTS idx_runs_item_status
+    ON runs(project, number, status);             -- orphan checks' EXISTS subqueries
+CREATE INDEX IF NOT EXISTS idx_runs_ended
+    ON runs(status, ended_at);                    -- ended-run averages (run stats)
+CREATE INDEX IF NOT EXISTS idx_events_kind_at
+    ON events(kind, at);                          -- digest: kind + at >= cutoff
+CREATE INDEX IF NOT EXISTS idx_events_item
+    ON events(project, number);                   -- item-scoped event lookups
 """
 
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
