@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS items (
     pin              TEXT,
     branch           TEXT,
     pr               INTEGER,             -- the PR the conductor opened (D18)
+    summary          TEXT,                -- the agent's one-line DONE summary
     attempts         INTEGER NOT NULL DEFAULT 0,
     setup_fails      INTEGER NOT NULL DEFAULT 0,
     esc_tier         INTEGER NOT NULL DEFAULT 0,
@@ -249,10 +250,8 @@ class Ledger:
     def q1(self, sql, args=()):
         return self.con.execute(sql, args).fetchone()
 
-    def event(self, kind, project=None, number=None, detail=None, passes=None,
-              maintenance_passes=None):
-        selected_passes = (maintenance_passes if maintenance_passes is not None
-                           else passes)
+    def event(self, kind, project=None, number=None, detail=None, passes=None):
+        selected_passes = passes
         self.con.execute(
             "INSERT INTO events (at, project, number, kind, detail) VALUES (?,?,?,?,?)",
             (iso(self.now()), project, number, kind,
@@ -316,10 +315,6 @@ class Ledger:
             policy = policy.get("maintenance", policy)
             cadence_days = policy.get("cadence_days", cadence_days)
             merged_threshold = policy.get("merged_threshold", merged_threshold)
-        elif isinstance(cadence_days, dict):
-            policy = cadence_days.get("maintenance", cadence_days)
-            cadence_days = policy.get("cadence_days", 30)
-            merged_threshold = policy.get("merged_threshold", 20)
         checkpoint = self.maintenance_checkpoint(project, pass_name)
         last_filed_at = parse(checkpoint["last_filed_at"])
         return (last_filed_at is None
@@ -481,7 +476,7 @@ class Ledger:
             (iso(now), iso(now + timedelta(minutes=ttl_minutes)), project, number, holder, epoch))
         return cur.rowcount == 1
 
-    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None, reason=None):
+    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None):
         with self._tx():
             sql, args = "DELETE FROM leases WHERE project=? AND number=?", [project, number]
             if holder is not None:
@@ -497,7 +492,7 @@ class Ledger:
                     item = self.item(project, number)
                     if item and item["state"] == "working":
                         self.set_state(project, number, to_state,
-                                       why=why or reason or (f"released by {holder}" if holder else "lease released"))
+                                       why=why or (f"released by {holder}" if holder else "lease released"))
             return n == 1
 
     def lease_check(self, project, number, epoch):
@@ -923,17 +918,16 @@ class RoutedLedger:
             self._remember(project, exc)
             return False
 
-    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None, reason=None):
+    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None):
         if not self._remote(project):
             return self.local.release(project, number, holder=holder, epoch=epoch,
-                                      to_state=to_state, why=why or reason)
+                                      to_state=to_state, why=why)
         try:
             kwargs = {"number": number, "holder": self._holder(project, holder), "epoch": epoch}
             if to_state != "ready":
                 kwargs["to_state"] = to_state
-            why_val = why or reason
-            if why_val is not None:
-                kwargs["why"] = why_val
+            if why is not None:
+                kwargs["why"] = why
             return bool(self._call(project, "release", **kwargs))
         except RemoteLedgerError as exc:
             self._remember(project, exc)
@@ -1015,9 +1009,9 @@ def remote_lease_operation(request, cfg, led):
         to_state = request.get("to_state", "ready")
         if to_state is not None and to_state not in STATES:
             raise ValueError("invalid to_state")
-        why = request.get("why") or request.get("reason")
+        why = request.get("why")
         if why is not None and (not isinstance(why, str) or len(why) > 500):
-            raise ValueError("invalid why/reason")
+            raise ValueError("invalid why")
         return led.release(project, number, holder=holder, epoch=epoch,
                            to_state=to_state, why=why)
     epoch = request.get("epoch")
