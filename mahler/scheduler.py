@@ -562,7 +562,7 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
     Returns True if the nudge was started (the run stays alive)."""
     if kind != "cline":
         return False
-    if run.get("nudged"):
+    if dict(run).get("nudged"):
         return False
     code = runner.exit_code(run)
     if code != 0:
