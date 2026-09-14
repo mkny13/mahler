@@ -406,18 +406,24 @@ class Ledger:
             (iso(now), iso(now + timedelta(minutes=ttl_minutes)), project, number, holder, epoch))
         return cur.rowcount == 1
 
-    def release(self, project, number, holder=None, epoch=None):
-        sql, args = "DELETE FROM leases WHERE project=? AND number=?", [project, number]
-        if holder is not None:
-            sql += " AND holder=?"
-            args.append(holder)
-        if epoch is not None:
-            sql += " AND epoch=?"
-            args.append(epoch)
-        n = self.con.execute(sql, args).rowcount
-        if n:
-            self.event("release", project, number, {"holder": holder, "epoch": epoch})
-        return n == 1
+    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None, reason=None):
+        with self._tx():
+            sql, args = "DELETE FROM leases WHERE project=? AND number=?", [project, number]
+            if holder is not None:
+                sql += " AND holder=?"
+                args.append(holder)
+            if epoch is not None:
+                sql += " AND epoch=?"
+                args.append(epoch)
+            n = self.con.execute(sql, args).rowcount
+            if n:
+                self.event("release", project, number, {"holder": holder, "epoch": epoch})
+                if to_state is not None:
+                    item = self.item(project, number)
+                    if item and item["state"] == "working":
+                        self.set_state(project, number, to_state,
+                                       why=why or reason or (f"released by {holder}" if holder else "lease released"))
+            return n == 1
 
     def lease_check(self, project, number, epoch):
         """Fencing check: is `epoch` still the live lease on this item?"""
@@ -427,6 +433,47 @@ class Ledger:
     def expired_leases(self):
         now = self.now()
         return [r for r in self.q("SELECT * FROM leases") if parse(r["expires_at"]) <= now]
+
+    def orphan_working_items(self, project=None):
+        """Items in 'working' with no lease row and no active run."""
+        sql = """
+            SELECT i.* FROM items i
+            WHERE i.state = 'working'
+              AND NOT EXISTS (
+                  SELECT 1 FROM leases l
+                  WHERE l.project = i.project AND l.number = i.number
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM runs r
+                  WHERE r.project = i.project AND r.number = i.number
+                    AND r.status IN ('running', 'stopping')
+              )
+        """
+        args = []
+        if project:
+            sql += " AND i.project = ?"
+            args.append(project)
+        sql += " ORDER BY i.priority, i.number"
+        return self.q(sql, args)
+
+    def orphan_lease_rows(self, project=None):
+        """Lease rows held on items that are in 'ready' or 'done' with no active run."""
+        sql = """
+            SELECT l.*, i.state AS item_state FROM leases l
+            JOIN items i ON l.project = i.project AND l.number = i.number
+            WHERE i.state IN ('ready', 'done')
+              AND NOT EXISTS (
+                  SELECT 1 FROM runs r
+                  WHERE r.project = l.project AND r.number = l.number
+                    AND r.status IN ('running', 'stopping')
+              )
+        """
+        args = []
+        if project:
+            sql += " AND l.project = ?"
+            args.append(project)
+        sql += " ORDER BY l.project, l.number"
+        return self.q(sql, args)
 
     # ---------- runs ----------
 
@@ -726,13 +773,18 @@ class RoutedLedger:
             self._remember(project, exc)
             return False
 
-    def release(self, project, number, holder=None, epoch=None):
+    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None, reason=None):
         if not self._remote(project):
-            return self.local.release(project, number, holder=holder, epoch=epoch)
+            return self.local.release(project, number, holder=holder, epoch=epoch,
+                                      to_state=to_state, why=why or reason)
         try:
-            return bool(self._call(project, "release", number=number,
-                                   holder=self._holder(project, holder),
-                                   epoch=epoch))
+            kwargs = {"number": number, "holder": self._holder(project, holder), "epoch": epoch}
+            if to_state != "ready":
+                kwargs["to_state"] = to_state
+            why_val = why or reason
+            if why_val is not None:
+                kwargs["why"] = why_val
+            return bool(self._call(project, "release", **kwargs))
         except RemoteLedgerError as exc:
             self._remember(project, exc)
             return False
@@ -810,7 +862,14 @@ def remote_lease_operation(request, cfg, led):
                 or (epoch is not None and (not isinstance(epoch, int)
                                             or isinstance(epoch, bool) or epoch < 0))):
             raise ValueError("invalid release arguments")
-        return led.release(project, number, holder=holder, epoch=epoch)
+        to_state = request.get("to_state", "ready")
+        if to_state is not None and to_state not in STATES:
+            raise ValueError("invalid to_state")
+        why = request.get("why") or request.get("reason")
+        if why is not None and (not isinstance(why, str) or len(why) > 500):
+            raise ValueError("invalid why/reason")
+        return led.release(project, number, holder=holder, epoch=epoch,
+                           to_state=to_state, why=why)
     epoch = request.get("epoch")
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
         raise ValueError("invalid lease_check arguments")

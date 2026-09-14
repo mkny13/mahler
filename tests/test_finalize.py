@@ -112,12 +112,32 @@ class RunTests(unittest.TestCase):
     def test_a_real_stop_keeps_its_own_handoff(self):
         with open(self.log, "w") as fh:
             fh.write("STATUS: DONE almost\n")
+        self.led.claim("x", 5, "interactive:you", "interactive", 30)
         self.run["stop_reason"] = "preempted"
         self.finalize()
         item = self.led.item("x", 5)
-        self.assertEqual(item["state"], "working")     # handed to your session, as before
+        self.assertEqual(item["state"], "working")     # handed to your session
         self.assertEqual(item["attempts"], 0)          # a pre-emption is not a failure either
         self.assertNotIn("conductor ships it", self.last_event())
+
+    def test_preempted_without_active_session_returns_to_ready(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE almost\n")
+        self.run["stop_reason"] = "preempted"
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")       # no active session holding lease; returned to ready
+        self.assertEqual(item["attempts"], 0)
+        self.assertNotIn("conductor ships it", self.last_event())
+
+    def test_handoff_sets_ready_and_drops_lease_atomically(self):
+        with open(self.log, "w") as fh:
+            fh.write("reached quota\n")
+        self.run["stop_reason"] = "quota"
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertIsNone(self.led.lease("x", 5))
 
     def test_claude_usage_and_quota_mirrors_to_opus_on_finalize(self):
         self.run["platform"] = "claude"

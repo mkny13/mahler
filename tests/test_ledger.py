@@ -506,5 +506,85 @@ class MaintenanceCheckpointTests(unittest.TestCase):
             self.led.maintenance_checkpoint("p", "health")["merged_since"], 0)
 
 
+class InvariantAndOrphanTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def test_release_working_item_sets_ready_atomically(self):
+        self.led.upsert_item("p", 1, state="ready")
+        self.led.claim("p", 1, "run:1", "auto", 10)
+        self.led.set_state("p", 1, "working", "run 1 started")
+        self.assertEqual(self.led.item("p", 1)["state"], "working")
+
+        ok = self.led.release("p", 1, holder="run:1")
+        self.assertTrue(ok)
+        self.assertIsNone(self.led.lease("p", 1))
+        self.assertEqual(self.led.item("p", 1)["state"], "ready")
+        ev = self.led.q("SELECT * FROM events WHERE kind='state'")[-1]
+        self.assertIn("working -> ready", ev["detail"])
+
+    def test_release_non_working_item_preserves_state(self):
+        for state in ("verifying", "done", "needs_you", "failed", "parked"):
+            self.led.upsert_item("p", 2, state="ready")
+            self.led.claim("p", 2, "run:2", "auto", 10)
+            self.led.set_state("p", 2, state, "reason")
+            self.assertEqual(self.led.item("p", 2)["state"], state)
+
+            self.led.release("p", 2, holder="run:2")
+            self.assertEqual(self.led.item("p", 2)["state"], state)
+
+    def test_release_explicit_to_state_none_preserves_working(self):
+        self.led.upsert_item("p", 1, state="working")
+        self.led.claim("p", 1, "run:1", "auto", 10)
+        self.led.release("p", 1, holder="run:1", to_state=None)
+        self.assertEqual(self.led.item("p", 1)["state"], "working")
+
+    def test_orphan_working_items_query(self):
+        # 1. working with live lease -> not orphan
+        self.led.upsert_item("p", 1, state="working")
+        self.led.claim("p", 1, "run:1", "auto", 10)
+
+        # 2. working with active run -> not orphan
+        self.led.upsert_item("p", 2, state="working")
+        self.led.create_run(project="p", number=2, role="build", platform="claude", epoch=1, status="running")
+
+        # 3. working with no lease and no run -> orphan!
+        self.led.upsert_item("p", 3, state="working")
+
+        # 4. ready with no lease -> not orphan
+        self.led.upsert_item("p", 4, state="ready")
+
+        orphans = self.led.orphan_working_items()
+        self.assertEqual([o["number"] for o in orphans], [3])
+        self.assertEqual(self.led.orphan_working_items("other"), [])
+
+    def test_orphan_lease_rows_query(self):
+        # 1. lease on working item -> not orphan lease
+        self.led.upsert_item("p", 1, state="working")
+        self.led.claim("p", 1, "run:1", "auto", 10)
+
+        # 2. lease on verifying item -> not orphan lease
+        self.led.upsert_item("p", 2, state="verifying")
+        self.led.claim("p", 2, "conductor", "auto", 10)
+
+        # 3. lease on ready item with no run -> orphan lease!
+        self.led.upsert_item("p", 3, state="ready")
+        self.led.claim("p", 3, "stale:holder", "auto", 10)
+
+        # 4. lease on done item with no run -> orphan lease!
+        self.led.upsert_item("p", 4, state="done")
+        self.led.claim("p", 4, "stale:holder2", "auto", 10)
+
+        # 5. lease on ready item WITH an active run -> not orphan lease (watchdog owns)
+        self.led.upsert_item("p", 5, state="ready")
+        self.led.claim("p", 5, "run:5", "auto", 10)
+        self.led.create_run(project="p", number=5, role="build", platform="claude", epoch=1, status="running")
+
+        orphans = self.led.orphan_lease_rows()
+        self.assertEqual(sorted(o["number"] for o in orphans), [3, 4])
+
+
 if __name__ == "__main__":
     unittest.main()
