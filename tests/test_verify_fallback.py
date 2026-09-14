@@ -249,6 +249,27 @@ class ClineNudgeTests(unittest.TestCase):
         self.assertIn("sess-42", argv_str)
         self.assertIn("Carry on", argv_str)
 
+    def test_cline_nudge_handles_sqlite_row(self):
+        """Regression test for mahler#165: _try_cline_nudge must accept sqlite3.Row."""
+        self._write_cline_log_completed_no_status()
+        fake_proc = mock.MagicMock()
+        fake_proc.pid = 99998
+        # Ensure the DB run has matching paths
+        self.led.update_run(self.run_id, log_path=self.log, status_path=self.exit_path,
+                            worktree=self.run["worktree"])
+        row = self.led.run(self.run_id)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "commits_ahead", return_value=0), \
+                mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
+                mock.patch.object(scheduler, "_cline_session_id", return_value="sess-42"):
+            scheduler.finalize(self.ctx, row)
+        db_run = self.led.run(self.run_id)
+        self.assertEqual(db_run["status"], "running")
+        self.assertEqual(db_run["nudged"], 1)
+        popen.assert_called_once()
+
     def test_cline_nudge_does_not_fire_twice(self):
         """A nudged cline run that ends again without STATUS is a failed attempt."""
         self._write_cline_log_completed_no_status()
