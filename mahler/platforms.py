@@ -71,12 +71,33 @@ HOME = os.path.expanduser("~")
 QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage limit",
                "usage_limit_exceeded")
 
-# Guardrails for Claude runs — a safety net, not the plan (DESIGN D12).
-CLAUDE_DENY = [
-    "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(git push --force-with-lease:*)",
-    "Bash(gh repo delete:*)", "Bash(gh release delete:*)", "Bash(git worktree remove:*)",
-    "Bash(rm -rf /:*)", "Bash(rm -rf ~:*)",
+# Guardrails (DESIGN D12): destructive command stems agents must never run.
+# Kept platform-neutral; each argv builder renders its own CLI's deny syntax.
+# These are prefix rules — a safety net against accidents, not a fence against
+# a determined agent (a reordered flag or `git push origin :branch` evades
+# them). Branch protection and the lease pre-push hook remain the real fence.
+# Known unmatchable-by-prefix gaps, accepted in mahler#77: mid-string refspec
+# deletions (`git push origin :branch`), `git checkout -- <path>`, `gh repo
+# edit --visibility`, and `gh api --method DELETE` (a `gh api` prefix rule
+# would block all API use).
+DENY_STEMS = [
+    # remote history and refs
+    "git push --force", "git push -f", "git push --force-with-lease",
+    "git push --delete", "git push -d", "git push --mirror",
+    "git filter-branch", "git filter-repo", "git reset --hard",
+    "git worktree remove",
+    # GitHub data
+    "gh repo delete", "gh repo archive", "gh release delete", "gh issue delete",
+    # filesystem (both flag orders)
+    "rm -rf /", "rm -rf ~", "rm -fr /", "rm -fr ~",
 ]
+
+# Claude: --disallowedTools takes Bash prefix rules, `Bash(<stem>:*)`.
+CLAUDE_DENY = [f"Bash({stem}:*)" for stem in DENY_STEMS]
+# Copilot: shell prefix rules, `shell(<stem>:*)`. Per `copilot help permissions`
+# (verified 2026-09-13): "Denial rules always take precedence over allow rules,
+# even --allow-all-tools."
+COPILOT_DENY = [f"shell({stem}:*)" for stem in DENY_STEMS]
 
 
 def which(binary, fallbacks=()):
@@ -128,6 +149,11 @@ def claude_argv(pconf, prompt, worktree, role):
 
 
 def agy_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Known guardrail gap (mahler#77, accepted): agy exposes no deny-list flag —
+    # `agy --help` offers only the coarse `--sandbox` ("terminal restrictions")
+    # next to the `--dangerously-skip-permissions` Mahler needs for unattended
+    # runs, and combining them unverified would risk breaking free-tier runs.
+    # Nothing to wire; re-check `agy --help` on CLI upgrades.
     argv = [agy_exe(), "-p", prompt, "--add-dir", worktree,
             "--dangerously-skip-permissions", "--output-format", "stream-json",
             "--print-timeout", f"{int(timeout_minutes)}m"]
@@ -137,6 +163,11 @@ def agy_argv(pconf, prompt, worktree, role, timeout_minutes=60):
 
 
 def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Known guardrail gap (mahler#77, accepted): the cline CLI has no deny-list
+    # flag — `--auto-approve` is all-or-nothing. `--hooks-dir` could in
+    # principle inject a PreToolUse-style command filter, but the hook payload
+    # contract is unverified (DESIGN.md's open cline question); revisit there
+    # before wiring one.
     argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
             "-t", str(int(timeout_minutes) * 60)]
     if pconf.get("model"):
@@ -147,12 +178,21 @@ def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
 def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     argv = [copilot_exe(), "-p", prompt, "-C", worktree, "--allow-all-tools",
             "--output-format", "json", "--no-color", "--no-auto-update"]
+    # Denials take precedence over --allow-all-tools (`copilot help
+    # permissions`), so these stay enforced in the all-tools mode runs need.
+    for pattern in COPILOT_DENY:
+        argv += ["--deny-tool", pattern]
     if pconf.get("model"):
         argv += ["--model", pconf["model"]]
     return argv
 
 
 def codex_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Known guardrail gap (mahler#77, accepted): codex has no deny-list flag.
+    # execpolicy `.rules` files are loaded unless `--ignore-rules` and could
+    # deny commands, but they live in $CODEX_HOME or the project — outside this
+    # repo — and their effect under `--ephemeral` + bypass is unverified.
+    # Future work, not a flag to wire today.
     argv = [codex_exe(), "exec", "--ephemeral",
             "--dangerously-bypass-approvals-and-sandbox",
             "--color", "never", "--json", "-C", worktree]
@@ -162,6 +202,9 @@ def codex_argv(pconf, prompt, worktree, role, timeout_minutes=60):
 
 
 def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Known guardrail gap (mahler#77, accepted): `kilo run` exposes no
+    # deny-list flag; `--auto` approves every tool. Accepted for the free-tier
+    # runner (build order last, size s only).
     argv = [kilo_exe(), "run", prompt, "--dir", worktree, "--auto", "--format", "json"]
     if pconf.get("model"):
         argv += ["-m", pconf["model"]]
