@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import cli, config, platforms, router, scheduler, usage
+from mahler import cli, config, platforms, router, scheduler, tick, usage
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -296,7 +296,7 @@ class BurstTests(unittest.TestCase):
     def test_burst_build_order_moves_claude_first(self):
         self.assertEqual(router.burst_build_order(self.cfg),
                          ["claude-opus", "claude", "agy-claude", "agy-gemini",
-                          "cline-free", "copilot", "kilo"])
+                          "cline-free", "copilot", "copilot-high", "kilo"])
 
     def test_pick_without_burst_prefers_free_tier(self):
         led = led_with(**{"claude": (85, 85), "agy-claude": (10, 10), "agy-gemini": (10, 10)})
@@ -804,6 +804,72 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         led = led_with(**{"kilo": (10, 10), "agy-claude": (10, 10)})
         p, _ = router.pick(self.cfg, led, "build", pin="kilo", min_tier=2)
         self.assertEqual(p, "kilo")
+
+
+class HighTierSiblingsTests(unittest.TestCase):
+    """mahler#192: codex-high and copilot-high mirror claude/claude-opus —
+    an escalation-only stronger sibling sharing the base platform's account
+    and quota (quota_group), gated to size:l via min_size."""
+
+    cfg = config.DEFAULTS
+
+    def test_quota_groups_are_shared_with_the_base_platform(self):
+        self.assertEqual(self.cfg["platforms"]["codex"]["quota_group"], "codex")
+        self.assertEqual(self.cfg["platforms"]["codex-high"]["quota_group"], "codex")
+        self.assertEqual(self.cfg["platforms"]["copilot"]["quota_group"], "copilot")
+        self.assertEqual(self.cfg["platforms"]["copilot-high"]["quota_group"], "copilot")
+        # same login -> quota readings and run slots are shared (D21)
+        self.assertEqual(usage.quota_peers(self.cfg, "codex"), ["codex", "codex-high"])
+        self.assertEqual(usage.quota_peers(self.cfg, "copilot"),
+                         ["copilot", "copilot-high"])
+
+    def test_route_placement(self):
+        # copilot-high joins the default build route right after copilot;
+        # codex-high stays opt-in like codex itself.
+        build = self.cfg["routing"]["build"]
+        self.assertLess(build.index("copilot"), build.index("copilot-high"))
+        self.assertNotIn("codex-high", build)
+        self.assertNotIn("codex", build)
+
+    def test_copilot_high_takes_size_l_but_not_smaller(self):
+        # size:l: copilot is capped at max_size s, so the first size-capable
+        # platform in route order is copilot-high (min_size l, tier 3) — it
+        # needs a fresh monthly sample, since copilot-high is metered
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
+        led.record_usage("copilot-high", "monthly", 5.0,
+                         iso(NOW + timedelta(hours=6)))
+        self.assertEqual(router.pick(self.cfg, led, "build", size="l")[0],
+                         "copilot-high")
+        # size:s/m: copilot-high is skipped (min_size l) like claude-opus;
+        # copilot (max_size s) still takes size:s
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0],
+                         "agy-claude")
+        led_spent = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+                                "claude": (5, 5), "claude-opus": (5, 5)})
+        self.assertEqual(router.pick(self.cfg, led_spent, "build", size="m")[0],
+                         "claude")
+
+    def test_copilot_high_usage_shares_the_monthly_cap(self):
+        # copilot-high is metered on the same monthly AI-credits window; a
+        # hard reading on either platform reflects the shared account
+        led = Ledger(":memory:", clock=lambda: NOW)
+        led.record_usage("copilot-high", "monthly", 96.0,
+                         iso(NOW + timedelta(hours=6)))
+        state, _ = router.usage_state(led, "copilot-high",
+                                      self.cfg["platforms"]["copilot-high"])
+        self.assertEqual(state, "hard")
+        # the run slot is shared: an active run on copilot-high holds copilot
+        # and vice versa (busy_platforms groups by quota_group)
+        active = [{"platform": "copilot-high"}]
+        self.assertIn("copilot", tick.busy_platforms(self.cfg, active))
+
+    def test_sibling_models_reach_the_argv(self):
+        self.assertIn("gpt-5.3-codex",
+                      platforms.copilot_argv(self.cfg["platforms"]["copilot-high"],
+                                             "hi", "wt", "build"))
+        self.assertIn("gpt-5.6-sol",
+                      platforms.codex_argv(self.cfg["platforms"]["codex-high"],
+                                           "hi", "wt", "build"))
 
 
 if __name__ == "__main__":

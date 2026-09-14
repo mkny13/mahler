@@ -37,7 +37,7 @@ verify = "python3 -m unittest discover -s tests"
 # [routing]
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
 # sort = ["claude", "agy-gemini", "agy-claude"]
-# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "claude-opus", "claude"]
+# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "copilot-high", "kilo", "claude-opus", "claude"]
 # A machine logged into ChatGPT through Codex CLI can opt in explicitly:
 # plan = ["codex", "claude-opus"]
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
