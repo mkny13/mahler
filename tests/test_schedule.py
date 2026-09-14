@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, router, scheduler
+from mahler import config, platforms, presence, router, scheduler, ship, tick, usage
 from mahler.ledger import Ledger, RoutedLedger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -60,8 +60,8 @@ def item(led, project, number, state="ready", priority=2, age_minutes=0):
 
 def plan(ctx, led):
     """One schedule pass with platform availability faked to True."""
-    with mock.patch.object(scheduler.platforms, "available", return_value=True):
-        scheduler.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+    with mock.patch.object(platforms, "available", return_value=True):
+        tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
     return [line for line in ctx.lines if ": would " in line]
 
 
@@ -92,9 +92,9 @@ class RemoteLeaseFailureTests(unittest.TestCase):
 
         led = RoutedLedger(local, cfg, run=failed)
         ctx = scheduler.Ctx(cfg, led, dry_run=True)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True), \
-                mock.patch.object(scheduler, "start") as start:
-            scheduler.schedule(ctx, list(config.enabled_projects(cfg)))
+        with mock.patch.object(platforms, "available", return_value=True), \
+                mock.patch.object(tick, "start") as start:
+            tick.schedule(ctx, list(config.enabled_projects(cfg)))
         start.assert_not_called()
         self.assertIn("canonical lease host unavailable — project skipped this tick",
                       "\n".join(ctx.lines))
@@ -132,7 +132,7 @@ class BurstScheduleTests(unittest.TestCase):
         """Recent Claude Code transcript activity suppresses the burst."""
         ctx, led = mk_ctx({"a": proj()}, total=1)
         seed_burst(led)
-        with mock.patch.object(scheduler.presence, "human_claude_active", return_value=True):
+        with mock.patch.object(presence, "human_claude_active", return_value=True):
             item(led, "a", 1, age_minutes=10)
             lines = plan(ctx, led)
         self.assertEqual(lines, ["a#1: would build on agy-claude"])
@@ -141,7 +141,7 @@ class BurstScheduleTests(unittest.TestCase):
         """A running Claude run at 85% (normally hard) is not stopped mid-burst."""
         ctx, led = mk_ctx({"a": proj()}, total=1)
         seed_burst(led)
-        scheduler._compute_burst(ctx, list(config.enabled_projects(ctx.cfg)))
+        usage.compute_burst(ctx, list(config.enabled_projects(ctx.cfg)))
         self.assertIsNotNone(ctx.burst_lines)  # burst detected and not suppressed
         pconf = config.DEFAULTS["platforms"]["claude"]
         # 85% is normally hard (>= 70)
@@ -334,11 +334,11 @@ class QuotaGroupTests(unittest.TestCase):
         seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="claude",
                        epoch=1)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True):
-            busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy = tick.busy_platforms(ctx.cfg, led.active_runs())
         self.assertIn("claude", busy)
         self.assertIn("claude-opus", busy)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True):
+        with mock.patch.object(platforms, "available", return_value=True):
             platform, reasons = router.pick(ctx.cfg, led, "build", None, busy,
                                                 size="l")
         self.assertNotEqual(platform, "claude-opus")
@@ -363,8 +363,8 @@ class QuotaGroupTests(unittest.TestCase):
         seed(led, **{"agy-gemini": (10, 10), "claude": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="agy-gemini",
                        epoch=1)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True):
-            busy = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy = tick.busy_platforms(ctx.cfg, led.active_runs())
         # agy-gemini has max_runs=2, 1 run → NOT at capacity
         self.assertNotIn("agy-gemini", busy)
         # claude is different group → NOT blocked by agy-gemini
@@ -372,8 +372,8 @@ class QuotaGroupTests(unittest.TestCase):
         # max_runs=2 for agy-gemini → second run on same platform is fine
         led.create_run(project="a", number=10, role="build", platform="agy-gemini",
                         epoch=2)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True):
-            busy2 = scheduler.busy_platforms(ctx.cfg, led.active_runs())
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy2 = tick.busy_platforms(ctx.cfg, led.active_runs())
         self.assertIn("agy-gemini", busy2)
         self.assertNotIn("claude", busy2)
         item(led, "a", 3, age_minutes=5)
@@ -390,8 +390,8 @@ class QuotaGroupTests(unittest.TestCase):
         ctx.led.upsert_item("a", 2, state="verifying", pr=88, branch="mahler/2",
                               labels='[]', title="fix")
         fake_start = mock.MagicMock(return_value=True)
-        with mock.patch.object(scheduler, "start", side_effect=fake_start):
-            scheduler._red_ci(ctx, "a", ctx.led.item("a", 2), 88,
+        with mock.patch.object(ship, "start", side_effect=fake_start):
+            ship._red_ci(ctx, "a", ctx.led.item("a", 2), 88,
                                 {"headRefName": "fix/2", "headRefOid": "red1",
                                  "state": "FAILURE", "mergeable": "MERGEABLE",
                                  "statusCheckRollup": [{"state": "FAILURE"}]})
@@ -410,7 +410,7 @@ class QuotaGroupTests(unittest.TestCase):
         self.assertIsNone(led.lease("a", 124))
 
         # On the next tick, expire/sweep_orphans returns it to ready
-        scheduler.expire(ctx)
+        tick.expire(ctx)
         self.assertEqual(led.item("a", 124)["state"], "ready")
         self.assertTrue(any("orphan working item (no lease, no active run) returned to ready" in line
                             for line in ctx.lines))
@@ -426,7 +426,7 @@ class QuotaGroupTests(unittest.TestCase):
         self.assertIsNotNone(led.lease("a", 10))
         self.assertIsNotNone(led.lease("a", 20))
 
-        scheduler.expire(ctx)
+        tick.expire(ctx)
         self.assertIsNone(led.lease("a", 10))
         self.assertIsNone(led.lease("a", 20))
         self.assertEqual(led.item("a", 10)["state"], "ready")

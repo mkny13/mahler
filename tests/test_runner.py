@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from mahler import config, runner
+from mahler import config, prompt, runner
 from mahler.gh import depends_of, parse_command
 
 
@@ -201,7 +201,9 @@ class PlatformLaunchTests(unittest.TestCase):
                                       return_value=["/usr/bin/true"]) as argv_for, \
                     mock.patch.object(runner.subprocess, "Popen",
                                       side_effect=popen_side_effect) as popen:
-                launched = runner.launch(ctx, "mahler", item, "build", "codex", 9, 4)
+                prep = runner.prepare(ctx, "mahler", item, "build", "codex", 9)
+                launched = runner.launch(ctx, "mahler", item, "build", "codex", 9, 4,
+                                         "the prompt", prep)
 
             worktree = os.path.join(worktrees, "mahler", "157-run9")
             argv_for.assert_called_once_with(ctx.cfg["platforms"]["codex"], mock.ANY,
@@ -242,14 +244,14 @@ class ShellSanitizationTests(unittest.TestCase):
             with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
                     mock.patch.object(runner, "git"), \
                     mock.patch.object(runner, "remote_has", return_value=False), \
-                    mock.patch.object(runner, "render", return_value=evil), \
                     mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
                     mock.patch.object(runner.platforms, "argv_for",
                                       return_value=["/bin/agent", evil]), \
                     mock.patch.object(runner.subprocess, "Popen",
                                       return_value=SimpleNamespace(pid=321)) as popen:
-                runner.launch(ctx, "mahler", {"number": 74, "title": evil, "branch": None},
-                              "build", "codex", 11, 1)
+                item = {"number": 74, "title": evil, "branch": None}
+                prep = runner.prepare(ctx, "mahler", item, "build", "codex", 11)
+                runner.launch(ctx, "mahler", item, "build", "codex", 11, 1, evil, prep)
             shell = popen.call_args.args[0][2]
             # the prompt element survives intact, inside shlex quoting
             self.assertIn(shlex.quote(evil), shell)

@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, scheduler
+from mahler import config, scheduler, tick
 from mahler.ledger import Ledger, iso
 from mahler.gh import GHError
 
@@ -31,7 +31,7 @@ class MaintenanceQueueTests(unittest.TestCase):
                                             last_filed_at=NOW - timedelta(days=40))
 
     def test_files_due_pass_and_resets(self):
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         
         self.gh_mock.ensure_pass_label.assert_called_once_with("security")
         self.gh_mock.create_issue.assert_called_once()
@@ -46,7 +46,7 @@ class MaintenanceQueueTests(unittest.TestCase):
 
     def test_dry_run_never_files(self):
         self.ctx.dry_run = True
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         
         self.gh_mock.create_issue.assert_not_called()
         self.gh_mock.ensure_pass_label.assert_not_called()
@@ -58,7 +58,7 @@ class MaintenanceQueueTests(unittest.TestCase):
     def test_due_but_already_open(self):
         # Open issue with pass:security
         self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:security"]), state="ready")
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
     def test_due_but_in_cooldown(self):
@@ -68,7 +68,7 @@ class MaintenanceQueueTests(unittest.TestCase):
         # set_state overwrites state_changed_at, fix it:
         self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=5)))
         
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
     def test_due_and_clear_of_cooldown(self):
@@ -77,13 +77,13 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.led.set_state("mahler", 99, "done")
         self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=20)))
         
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_called_once()
 
     def test_not_due(self):
         self.led.set_maintenance_checkpoint("mahler", "security", 
                                             last_filed_at=NOW - timedelta(days=10))
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
     def test_pass_issue_carries_scope_label(self):
@@ -94,7 +94,7 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.gh_mock = mock.Mock()
         self.ctx._gh["mkny13/mahler"] = self.gh_mock
 
-        scheduler.queue_maintenance(self.ctx, [proj(scope="label", scope_label="project-scope")])
+        tick.queue_maintenance(self.ctx, [proj(scope="label", scope_label="project-scope")])
 
         self.gh_mock.create_issue.assert_called_once()
         args, kwargs = self.gh_mock.create_issue.call_args
@@ -102,7 +102,7 @@ class MaintenanceQueueTests(unittest.TestCase):
 
     def test_pass_issue_no_scope_label_when_scope_all(self):
         """When scope=all, no scope_label is added to the pass issue."""
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_called_once()
         args, kwargs = self.gh_mock.create_issue.call_args
         self.assertNotIn("mahler", args[2])
@@ -110,13 +110,13 @@ class MaintenanceQueueTests(unittest.TestCase):
     def test_one_pass_in_flight_blocks_all_passes(self):
         """D20: if any pass:* item is open, no new passes are filed."""
         self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="working")
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
     def test_open_pass_blocks_different_pass(self):
         """An open pass:health blocks filing the due pass:security."""
         self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="ready")
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
     def test_all_passes_done_allows_new_pass(self):
@@ -126,7 +126,7 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.led.set_state("mahler", 99, "done")
         self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=20)))
 
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_called_once()
         args, kwargs = self.gh_mock.create_issue.call_args
         self.assertIn("pass:security", args[2])
@@ -135,7 +135,7 @@ class MaintenanceQueueTests(unittest.TestCase):
         """The in-flight guard applies even in dry-run."""
         self.ctx.dry_run = True
         self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:health"]), state="working")
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
 if __name__ == "__main__":

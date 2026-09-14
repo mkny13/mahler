@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from mahler import scheduler
+from mahler import finalize, scheduler, sync
 from mahler.ledger import Ledger
 
 
@@ -71,7 +71,7 @@ class SetupFailureTests(unittest.TestCase):
         if code is not None:
             with open(self.status_path, "w") as fh:
                 fh.write(str(code))
-        scheduler.finalize(self.ctx, self.led.run(self.run_id))
+        finalize.finalize(self.ctx, self.led.run(self.run_id))
 
     def test_first_setup_failure_retries_without_burning_an_attempt(self):
         self.end()
@@ -113,7 +113,7 @@ class SetupFailureTests(unittest.TestCase):
 
     def test_go_clears_the_count(self):
         self.end()
-        scheduler._apply_instruction(self.ctx, "p", self.led.item("p", 8), "go", None)
+        sync._apply_instruction(self.ctx, "p", self.led.item("p", 8), "go", None)
         self.assertEqual(self.led.item("p", 8)["setup_fails"], 0)
 
 

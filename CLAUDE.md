@@ -67,8 +67,12 @@ e.g. decision numbers — never invent one).
 
 - `mahler/`:
   - `ledger.py`: SQLite leases, runs, usage, events
-  - `scheduler.py`: the tick
-  - `runner.py`: worktrees, launch, snapshot
+  - `scheduler.py`: the tick's entry — `Ctx`, the lock, the order of the passes
+  - one module per pass: `watchdog.py` (process health, heartbeats), `sync.py`
+    (GitHub in, labels out), `finalize.py` (every exit is a handoff),
+    `ship.py` (the conductor's PR/CI/merge pass), `tick.py` (maintenance,
+    lease expiry, scheduling, `start`), `usage.py` (quota readings, D23 burst)
+  - `runner.py`: worktrees, launch, snapshot — `prompt.py` writes what a run is told
   - `router.py`: quota policy
   - `platforms.py`: CLI adapters and usage readers
   - `gh.py`: GitHub — the conductor's push/PR/CI/merge machinery (D18)

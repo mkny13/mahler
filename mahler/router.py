@@ -3,7 +3,7 @@
 A platform is usable for a new run only if every quota window has a fresh
 sample under its *soft* line. Unknown or stale usage counts as over the line,
 so a missing reading can never push Claude into paid extra usage. Running
-work is stopped at the *hard* line (see scheduler.watchdog).
+work is stopped at the *hard* line (see watchdog.py).
 """
 
 from datetime import timedelta
