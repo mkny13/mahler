@@ -3,6 +3,7 @@
 
 [ntfy]
 topic = "mahler-change-me"      # subscribe to this topic in the ntfy app
+# topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
 
 [projects.mahler]
 enabled = true

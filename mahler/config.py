@@ -78,7 +78,7 @@ DEFAULTS = {
     },
     "concurrency": {"total": 2},
     "scheduling": {"priority_projects": ["mahler"]},
-    "ntfy": {"server": "https://ntfy.sh", "topic": ""},
+    "ntfy": {"server": "https://ntfy.sh", "topic": "", "topic_high": ""},
     # the read-only status page (`mahler serve`, DESIGN D10)
     "serve": {"host": "127.0.0.1", "port": 8787},
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first

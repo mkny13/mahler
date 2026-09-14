@@ -29,20 +29,31 @@ def send(cfg, title, message="", click=None, priority="default", tags=""):
     one boundary where text leaves the machine (issue #76)."""
     from . import redact
     title, message = redact.redact(title), redact.redact(message)
-    topic = cfg.get("ntfy", {}).get("topic")
-    if not topic:
+    ntfy = cfg.get("ntfy", {})
+    topic = ntfy.get("topic")
+    topic_high = ntfy.get("topic_high")
+    if not topic and not (priority == "high" and topic_high):
         return False
-    server = cfg["ntfy"].get("server", "https://ntfy.sh").rstrip("/")
-    req = urllib.request.Request(f"{server}/{topic}", data=(message or title).encode(),
-                                 method="POST")
-    req.add_header("Title", _ascii_title(title))
-    req.add_header("Priority", priority)
-    if tags:
-        req.add_header("Tags", tags)
-    if click:
-        req.add_header("Click", click)
-    try:
-        with urllib.request.urlopen(req, timeout=10):
-            return True
-    except OSError:
-        return False
+    server = ntfy.get("server", "https://ntfy.sh").rstrip("/")
+    
+    def _post(topic_name):
+        req = urllib.request.Request(f"{server}/{topic_name}", data=(message or title).encode(),
+                                     method="POST")
+        req.add_header("Title", _ascii_title(title))
+        req.add_header("Priority", priority)
+        if tags:
+            req.add_header("Tags", tags)
+        if click:
+            req.add_header("Click", click)
+        try:
+            with urllib.request.urlopen(req, timeout=10):
+                return True
+        except OSError:
+            return False
+    
+    ok = False
+    if topic:
+        ok = _post(topic)
+    if priority == "high" and topic_high:
+        ok = _post(topic_high) or ok
+    return ok
