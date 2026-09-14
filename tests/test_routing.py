@@ -190,6 +190,84 @@ class RouterTests(unittest.TestCase):
         # mahler#29: without an explicit :free route, every kilo run 402s on credits.
         self.assertTrue(self.cfg["platforms"]["kilo"]["model"].endswith("/free"))
 
+    def test_copilot_high_routes_hard_tasks_unpinned(self):
+        # mahler#192: mirrors claude/claude-opus — size:l (min_size: l) is the
+        # only way copilot-high gets picked unpinned.
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (95, 95),
+                          "claude-opus": (95, 95)})
+        led.record_usage("cline-free", "5h", 100.0, iso(NOW + timedelta(minutes=30)))
+        later = iso(NOW + timedelta(days=5))
+        led.record_usage("copilot", "monthly", 10.0, later)
+        led.record_usage("copilot-high", "monthly", 10.0, later)
+        self.assertEqual(router.pick(self.cfg, led, "build", size="l")[0], "copilot-high")
+        self.assertEqual(router.pick(self.cfg, led, "build", size="s")[0], "copilot")
+
+    def test_copilot_high_pin_overrides_size_restrictions(self):
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10)})
+        led.record_usage("copilot-high", "monthly", 10.0, iso(NOW + timedelta(days=5)))
+        self.assertEqual(
+            router.pick(self.cfg, led, "build", pin="copilot-high", size="s")[0], "copilot-high")
+
+    def test_copilot_and_copilot_high_share_the_same_ai_credits_quota_group(self):
+        self.assertEqual(usage.quota_peers(self.cfg, "copilot"), ["copilot", "copilot-high"])
+
+    def test_copilot_argv_uses_auto_with_the_configured_tier(self):
+        argv = platforms.copilot_argv(self.cfg["platforms"]["copilot"], "hi", "wt", "build")
+        self.assertEqual(argv[argv.index("--model") + 1], "auto")
+        self.assertEqual(argv[argv.index("--auto-tier") + 1], "balance")
+
+    def test_copilot_high_argv_pins_a_model_not_auto(self):
+        argv = platforms.copilot_argv(self.cfg["platforms"]["copilot-high"], "hi", "wt", "build")
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.3-codex")
+        self.assertNotIn("--auto-tier", argv)
+
+    def test_codex_high_is_opt_in_pinned_and_shares_codexs_quota_group(self):
+        self.assertNotIn("codex-high", self.cfg["routing"]["build"])
+        self.assertEqual(usage.quota_peers(self.cfg, "codex"), ["codex", "codex-high"])
+        custom = copy.deepcopy(self.cfg)
+        custom["routing"]["build"] = ["codex", "codex-high"]
+        # codex has no max_size cap (unlike claude), so ordinary size:l routing
+        # still lands on plain codex first — codex-high is escalation-only
+        # (D8 rule 4: two failed attempts on a weaker tier retries a tier up).
+        self.assertEqual(router.pick(custom, Ledger(":memory:"), "build", size="l")[0],
+                         "codex")
+        self.assertEqual(
+            router.pick(custom, Ledger(":memory:"), "build", size="l", min_tier=3)[0],
+            "codex-high")
+        self.assertEqual(router.pick(custom, Ledger(":memory:"), "build", size="s")[0],
+                         "codex")
+        argv = platforms.codex_argv(self.cfg["platforms"]["codex-high"], "hi", "wt", "build")
+        self.assertEqual(argv[argv.index("--model") + 1], "gpt-5.6-sol")
+
+
+class CopilotQuotaFanOutTests(unittest.TestCase):
+    """mahler#192: copilot-high shares copilot's AI-credits quota_group, so the
+    periodic probe (usage.refresh_usage) must fan its one reading out to both —
+    same account, same credits, one `gh api` call — the way record_claude_usage
+    already does for claude/claude-opus."""
+
+    def setUp(self):
+        self.cfg = config.resolve_platforms(config._merge(config.DEFAULTS, {
+            "projects": {"acme": {"enabled": True, "repo": "x/acme", "path": "/tmp/acme"}},
+        }))
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        self.led.upsert_item("acme", 1, state="ready", priority=2)
+        self.projects = [config.project_policy(self.cfg, "acme")]
+
+    def test_a_single_probe_reading_lands_on_both_platforms(self):
+        later = iso(NOW + timedelta(days=5))
+        with mock.patch.object(platforms, "probe_copilot",
+                               return_value=[("monthly", 42.0, later)]) as probe, \
+                mock.patch.object(platforms, "probe_claude", return_value=[]), \
+                mock.patch.object(platforms, "oauth_usage", return_value=[]), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(router, "peak_state", return_value=(False, None)):
+            usage.refresh_usage(self.ctx, self.projects)
+        probe.assert_called_once()     # not called twice for copilot and copilot-high
+        self.assertEqual(self.led.usage("copilot")["monthly"]["used_pct"], 42.0)
+        self.assertEqual(self.led.usage("copilot-high")["monthly"]["used_pct"], 42.0)
+
 
 class BurstTests(unittest.TestCase):
     cfg = config.DEFAULTS
@@ -296,7 +374,7 @@ class BurstTests(unittest.TestCase):
     def test_burst_build_order_moves_claude_first(self):
         self.assertEqual(router.burst_build_order(self.cfg),
                          ["claude-opus", "claude", "agy-claude", "agy-gemini",
-                          "cline-free", "copilot", "kilo"])
+                          "cline-free", "copilot", "kilo", "copilot-high"])
 
     def test_pick_without_burst_prefers_free_tier(self):
         led = led_with(**{"claude": (85, 85), "agy-claude": (10, 10), "agy-gemini": (10, 10)})

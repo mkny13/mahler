@@ -103,7 +103,7 @@ DEFAULTS = {
         # items are planned by Opus only; when Opus is over its line, they wait
         "plan": ["claude-opus"],
         "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo",
-                  "claude-opus", "claude"],
+                  "claude-opus", "claude", "copilot-high"],
     },
     "platforms": {
         "claude": {
@@ -185,6 +185,23 @@ DEFAULTS["platforms"]["codex"] = {
     "metered": False, "backoff_minutes": 60, "tier": 2,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
+    "quota_group": "codex",
+}
+
+# Same CLI, same ChatGPT account/quota as "codex" — forces GPT-5.6 Sol ("latest
+# frontier agentic coding model", per the model catalog the installed Codex
+# CLI itself embeds — `codex`'s unset model instead defers to whatever
+# ~/.codex/config.toml names, currently GPT-5.6 Terra, its balanced everyday
+# model) for hard tasks (size:l via min_size: "l", or an explicit
+# `platform:codex-high` pin), mirroring "claude"/"claude-opus" above. Like
+# "codex", it's opt-in only — a project that routes to "codex" should add
+# "codex-high" to its own routing.build override if it wants the escalation.
+DEFAULTS["platforms"]["codex-high"] = {
+    "enabled": True, "kind": "codex", "model": "gpt-5.6-sol",
+    "min_size": "l", "metered": False, "backoff_minutes": 60, "tier": 3,
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+    "quota_group": "codex",
 }
 
 # Cline's free models report no quota at all (verified 2026-09-12): it is
@@ -220,12 +237,41 @@ DEFAULTS["platforms"]["kilo"] = {
 # scope) reports this month's consumption, so Copilot gets a single "monthly"
 # window instead of the usual 5h/weekly pair (see router.py's per-platform
 # `windows` override).
+#
+# `model: "auto"` (verified 2026-09-14, mahler#192) lets Copilot pick per-turn
+# instead of pinning claude-sonnet-5, and gets a 10% multiplier discount on
+# every request for it (GitHub's "Copilot auto model selection"). `auto_tier:
+# "balance"` is the CLI's own middle profile between "efficiency" and
+# "intelligence" — auto is turn-complexity-adaptive either way (confirmed live:
+# even "intelligence" picked claude-haiku-4.5 for a trivial one-line reply), so
+# this is about nudging routine size:s work toward cheaper models on the easy
+# turns, not a capability guarantee.
 DEFAULTS["platforms"]["copilot"] = {
-    "enabled": True, "kind": "copilot", "model": "",
+    "enabled": True, "kind": "copilot", "model": "auto", "auto_tier": "balance",
     "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
     "backoff_minutes": 60, "max_size": "s", "tier": 2,
     "soft": {"monthly": 80}, "hard": {"monthly": 95},
     "stale_minutes": 360,
+    "quota_group": "copilot",
+}
+
+# Same CLI, same AI-credits budget as "copilot" — pinned to GPT-5.3-Codex
+# (verified live 2026-09-14: a real premium coding model on this account,
+# `lastActiveModel` confirmed) instead of "auto", for hard tasks (size:l via
+# min_size: "l", or an explicit `platform:copilot-high` pin), mirroring
+# "claude"/"claude-opus" above. Deliberately *not* "auto" despite the 10%
+# discount: this tier's whole job is a capability guarantee for escalated
+# work, and auto proved adaptive enough to still pick a weak model even under
+# an "intelligence" bias — the wrong trade for a tier that only fires after
+# two failed attempts on a weaker platform (D8 rule 4).
+DEFAULTS["platforms"]["copilot-high"] = {
+    "enabled": True, "kind": "copilot", "model": "gpt-5.3-codex",
+    "min_size": "l",
+    "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
+    "backoff_minutes": 60, "tier": 3,
+    "soft": {"monthly": 80}, "hard": {"monthly": 95},
+    "stale_minutes": 360,
+    "quota_group": "copilot",
 }
 
 

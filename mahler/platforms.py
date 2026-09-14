@@ -56,6 +56,30 @@ consumption, not the cap, so the 1500/month figure is config
 (`monthly_cap_credits`), not something the response carries. Routed as a
 normal metered platform with a single "monthly" window (see router.py's
 per-platform `pconf["windows"]`), re-probed at most every `stale_minutes`.
+
+Verified against the real CLIs on 2026-09-14 (mahler#192), adding `codex-high`
+and `copilot-high` (stronger, escalation-only siblings of `codex`/`copilot`,
+mirroring `claude`/`claude-opus`):
+  * The installed Codex CLI binary embeds its live model catalog as JSON
+    (`strings -a <codex binary>`); `gpt-5.6-sol` ("latest frontier agentic
+    coding model") is real and current — `gpt-5.4`/`gpt-5.4-mini` are marked
+    migrated to `gpt-5.6-terra`/`gpt-5.6-luna` in the same catalog.
+  * `copilot --model <bad-name> -p ...` rejects an unknown model client-side,
+    before any session/MCP cost, with `Error: Model "<name>" from --model flag
+    is not available.` — used to rule candidates in/out for free. `gpt-5.3-codex`
+    is confirmed real and accepted on this account (a live run's
+    `lastActiveModel` matched it exactly); several plausible-looking guesses
+    (`claude-opus-4.8`, `claude-opus-4.6`, `claude-opus-4-6`, `gpt-5.6-sol`,
+    `claude-sonnet-4.6`) are not available on Copilot despite some being real
+    Codex or GitHub-pricing-table names — Copilot's catalog doesn't mirror
+    either 1:1.
+  * `copilot --model auto --auto-tier <profile>` (`efficiency`/`balance`/
+    `intelligence`) gets a 10% multiplier discount on every request (GitHub's
+    "Copilot auto model selection"), but auto is turn-complexity-adaptive, not
+    a fixed strength pin: a live run with `--auto-tier intelligence` still
+    picked `claude-haiku-4.5` for a trivial one-line reply. Good fit for
+    `copilot`'s routine size:s lane; not used for `copilot-high`, whose only
+    job is a capability guarantee for escalated work.
 """
 
 import json
@@ -186,6 +210,8 @@ def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
         argv += ["--deny-tool", pattern]
     if pconf.get("model"):
         argv += ["--model", pconf["model"]]
+    if pconf.get("auto_tier"):
+        argv += ["--auto-tier", pconf["auto_tier"]]
     return argv
 
 
