@@ -1,12 +1,15 @@
 # Mahler
 
-Mahler conducts coding agents (Claude Code, Antigravity's `agy`, later Cline) through
-each project's GitHub-issue backlog. It is quota-aware, and it hands work off across
-platforms. **Read [DESIGN.md](DESIGN.md) before changing behaviour.** Each decision there
-(D1–D17) has its reasoning. [ROADMAP.md](ROADMAP.md) says what's next.
+Mahler conducts coding agents (Claude Code, Antigravity's `agy`, Cline, Copilot, Codex,
+Kilo) through each project's GitHub-issue backlog. It is quota-aware, and it hands work
+off across platforms. **Read [DESIGN.md](DESIGN.md) before changing behaviour.** Each
+decision there has its reasoning; D18 — *agents build, the conductor ships* — is the one
+that decides how you end a task. [ROADMAP.md](ROADMAP.md) says what's next.
 
-The owner (Mike) is not a developer and doesn't review code. Work autonomously: branch,
-commit, PR, CI, merge. Stop only for decisions that are genuinely his (DESIGN D13).
+The owner (Mike) is not a developer and doesn't review code. Work autonomously:
+implement, verify, commit and push to your branch, then end with a STATUS line — the
+conductor opens the PR, watches CI and merges (DESIGN D18). Stop only for decisions that
+are genuinely his (DESIGN D13).
 
 ## This repo manages itself
 
@@ -17,8 +20,8 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
   a merge to `main` with green CI (the launcher self-updates, and rolls back after two
   failed ticks).
 - **`launcher/` is hand-installed.** Changing `mahler-launcher`, the plist or `install.sh`
-  has no effect until someone re-runs `launcher/install.sh`. Say so in the PR, and ping
-  via `mahler notify`.
+  has no effect until someone re-runs `launcher/install.sh`. Say so in your final DONE
+  summary (the conductor puts it on the PR), and ping via `mahler notify`.
 - **The daemon must never break itself.** Keep `mahler tick` exception-safe per project.
   Don't add a dependency that isn't in the standard library until the console/MCP phase
   introduces `uv` deliberately.
@@ -52,7 +55,8 @@ git -C ~/Mahler worktree add ../Mahler-12 -b mahler/12-short-slug origin/main
 ```
 
 Other useful commands: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
-`mahler add mahler "title"`.
+`mahler add mahler "title"`, `mahler next-id mahler <prefix>` (shared sequential IDs,
+e.g. decision numbers — never invent one).
 
 ## Layout
 
@@ -62,8 +66,13 @@ Other useful commands: `mahler status`, `mahler usage --probe`, `mahler pause` /
   - `runner.py`: worktrees, launch, snapshot
   - `router.py`: quota policy
   - `platforms.py`: CLI adapters and usage readers
-  - `gh.py`: GitHub
+  - `gh.py`: GitHub — the conductor's push/PR/CI/merge machinery (D18)
   - `cli.py`: the command line
-- `recipes/`: the prompts runs receive (`sort.md`, `build.md`). The STATUS-line contract at
-  the end of each is parsed by `platforms.status_line`.
+  - the rest: `config.py` (paths and config), `notify.py` (ntfy pings), `serve.py`
+    (read-only status page), `mcp.py` (MCP server), `digest.py` (daily digest),
+    `janitor.py` (stale worktree/old-ref cleanup), `backup.py` (database backups),
+    `presence.py` (human-session detection), `redact.py` (credential redaction),
+    `version.py` (version info)
+- `recipes/`: the prompts runs receive (`sort.md`, `build.md`, `fix.md`). The STATUS-line
+  contract at the end of each is parsed by `platforms.status_line`.
 - `launcher/`: the stable launcher, launchd plist and installer.
