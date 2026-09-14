@@ -12,7 +12,6 @@ import shutil
 import signal
 import string
 import subprocess
-import sys
 
 from . import config, gh as gh_module, platforms, redact
 
@@ -352,7 +351,3 @@ def verify_in_worktree(wt, verify_cmd, timeout=120):
         return r.returncode == 0
     except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
         return False
-
-
-def self_bin():
-    return f"{shlex.quote(sys.executable)} {shlex.quote(MAHLER_BIN)}"
