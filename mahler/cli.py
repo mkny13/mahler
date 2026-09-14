@@ -227,7 +227,10 @@ def main():
     run_id = os.environ.get("MAHLER_RUN_ID")
     
     if run_id:
-        yield_file = os.path.expanduser(f"~/.mahler/runs/{{run_id}}/yield")
+        # MAHLER_RUNS_DIR lets tests redirect the runs dir; production
+        # leaves it unset and gets the real state dir (mahler#93).
+        runs_dir = os.environ.get("MAHLER_RUNS_DIR") or os.path.expanduser("~/.mahler/runs")
+        yield_file = os.path.join(runs_dir, str(run_id), "yield")
         if os.path.exists(yield_file):
             print("yield delivered: commit your work, push the branch, and end with STATUS: YIELDED")
             sys.exit(1)
