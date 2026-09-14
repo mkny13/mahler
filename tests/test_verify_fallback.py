@@ -10,6 +10,7 @@ Plus the Cline resume-once nudge.
 import copy
 import json
 import os
+import shlex
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -248,6 +249,30 @@ class ClineNudgeTests(unittest.TestCase):
         self.assertIn("--id", argv_str)
         self.assertIn("sess-42", argv_str)
         self.assertIn("Carry on", argv_str)
+
+    def test_cline_nudge_shell_string_quotes_session_id(self):
+        """mahler#74: the session id comes from `cline history --json` output —
+        treat it as untrusted. It must be shlex-quoted inside the /bin/sh -c
+        string, never able to break out and run as shell."""
+        self._write_cline_log_completed_no_status()
+        fake_proc = mock.MagicMock()
+        fake_proc.pid = 99997
+        evil_session = "x'; touch /tmp/mahler-pwned; '"
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "commits_ahead", return_value=0), \
+                mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
+                mock.patch.object(scheduler, "_cline_session_id",
+                                  return_value=evil_session):
+            scheduler.finalize(self.ctx, self.run)
+        popen.assert_called_once()
+        shell = popen.call_args[0][0][2]
+        self.assertIn(shlex.quote(evil_session), shell)
+        # the command part re-parses to exactly the intended argv — the session
+        # id is data, never shell
+        self.assertEqual(shlex.split(shell.split(" >> ", 1)[0])[0:4],
+                         [platforms.cline_exe(), "--id", evil_session, "--cwd"])
 
     def test_cline_nudge_handles_sqlite_row(self):
         """Regression test for mahler#165: _try_cline_nudge must accept sqlite3.Row."""

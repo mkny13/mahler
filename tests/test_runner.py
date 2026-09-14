@@ -1,6 +1,7 @@
 """Snapshots must save everything a run left without touching its worktree (DESIGN D6/D9)."""
 
 import os
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -199,6 +200,44 @@ class PlatformLaunchTests(unittest.TestCase):
             self.assertEqual(env["MAHLER_EPOCH"], "4")
             self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/tmp/hooks")
             self.assertEqual(launched["worktree"], worktree)
+
+
+class ShellSanitizationTests(unittest.TestCase):
+    """mahler#74: untrusted content (issue title/body, agent output) reaches
+    runner.launch inside the prompt argv element. Before that argv lands in
+    the `/bin/sh -c` string, every element must be shlex-quoted so nothing
+    can break out and run as shell."""
+
+    def test_launch_shell_string_quotes_adversarial_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            policy = {
+                "path": os.path.join(d, "repo"), "repo": "x/y", "base": "main",
+                "link": [], "rules": "", "run_timeout_minutes": 60,
+                "worktree_root": os.path.join(d, "worktrees"),
+            }
+            ctx = SimpleNamespace(
+                cfg={"platforms": {"codex": {"kind": "codex"}}},
+                policy=lambda project: policy,
+            )
+            evil = "ok'; rm -rf / #$(cat /etc/passwd) `id` \"quote\" \\eol"
+            with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
+                    mock.patch.object(runner, "git"), \
+                    mock.patch.object(runner, "remote_has", return_value=False), \
+                    mock.patch.object(runner, "render", return_value=evil), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                    mock.patch.object(runner.platforms, "argv_for",
+                                      return_value=["/bin/agent", evil]), \
+                    mock.patch.object(runner.subprocess, "Popen",
+                                      return_value=SimpleNamespace(pid=321)) as popen:
+                runner.launch(ctx, "mahler", {"number": 74, "title": evil, "branch": None},
+                              "build", "codex", 11, 1)
+            shell = popen.call_args.args[0][2]
+            # the prompt element survives intact, inside shlex quoting
+            self.assertIn(shlex.quote(evil), shell)
+            # the command part of the shell string re-parses to exactly the
+            # intended argv — i.e. the metacharacters are data, never shell
+            self.assertEqual(shlex.split(shell.split(" > ", 1)[0]),
+                             ["/bin/agent", evil])
 
 
 if __name__ == "__main__":
