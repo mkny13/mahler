@@ -263,6 +263,7 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
                 mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
+                mock.patch.object(platforms, "cline_exe", return_value="/usr/local/bin/cline"), \
                 mock.patch.object(scheduler, "_cline_session_id",
                                   return_value=evil_session):
             scheduler.finalize(self.ctx, self.run)
@@ -272,7 +273,7 @@ class ClineNudgeTests(unittest.TestCase):
         # the command part re-parses to exactly the intended argv — the session
         # id is data, never shell
         self.assertEqual(shlex.split(shell.split(" >> ", 1)[0])[0:4],
-                         [platforms.cline_exe(), "--id", evil_session, "--cwd"])
+                         ["/usr/local/bin/cline", "--id", evil_session, "--cwd"])
 
     def test_cline_nudge_handles_sqlite_row(self):
         """Regression test for mahler#165: _try_cline_nudge must accept sqlite3.Row."""
