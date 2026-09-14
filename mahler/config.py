@@ -138,7 +138,7 @@ DEFAULTS = {
         "agy-gemini": {
             "enabled": True, "kind": "agy", "pool": "Gemini Models",
             "model": "gemini-3.1-pro-high",
-            "max_size": "m", "tier": 2,
+            "max_size": "m", "tier": 3,
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,

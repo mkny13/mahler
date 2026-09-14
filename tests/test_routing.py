@@ -772,6 +772,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         self.assertEqual(router.tier_of(self.cfg["platforms"]["cline-free"]), 1)
         self.assertEqual(router.tier_of(self.cfg["platforms"]["copilot"]), 2)
         self.assertEqual(router.tier_of(self.cfg["platforms"]["agy-claude"]), 2)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["agy-gemini"]), 3)
         self.assertEqual(router.tier_of(self.cfg["platforms"]["claude"]), 3)
         self.assertEqual(router.tier_of(self.cfg["platforms"]["claude-opus"]), 4)
 
