@@ -102,8 +102,11 @@ DEFAULTS = {
         # planning is a separate route (DESIGN D21): goals, audits, and size:l
         # items are planned by Opus only; when Opus is over its line, they wait
         "plan": ["claude-opus"],
-        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo",
-                  "claude-opus", "claude"],
+        # copilot-high sits right after copilot: min_size: "l" gates it to
+        # size:l items only (mahler#192), so it never changes routing for
+        # normal-size items.
+        "build": ["agy-claude", "agy-gemini", "cline-free", "copilot",
+                  "copilot-high", "kilo", "claude-opus", "claude"],
     },
     "platforms": {
         "claude": {
@@ -185,6 +188,26 @@ DEFAULTS["platforms"]["codex"] = {
     "metered": False, "backoff_minutes": 60, "tier": 2,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
+    "quota_group": "codex",
+}
+
+# Same CLI, same ChatGPT account/quota as "codex" (kind: codex, shared
+# quota_group) — an escalation-only stronger sibling mirroring
+# claude/claude-opus (mahler#192): min_size "l" keeps it for hard tasks, and
+# tier 3 is one rung above codex's tier 2 so D8 rule-4 escalation lands here.
+# Model verified 2026-09-14 from the installed codex-cli 0.154.0's embedded
+# catalog: gpt-5.6-sol is the top tier ("Latest frontier agentic coding
+# model"); the base codex entry's effective model stays gpt-5.6-terra (set in
+# ~/.codex/config.toml). Like codex, deliberately absent from the default
+# routes — a project opting into codex adds codex-high alongside it in its own
+# routing.build override if it wants the escalation tier.
+DEFAULTS["platforms"]["codex-high"] = {
+    "enabled": True, "kind": "codex", "model": "gpt-5.6-sol",
+    "min_size": "l", "tier": 3,
+    "metered": False, "backoff_minutes": 60,
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+    "quota_group": "codex",
 }
 
 # Cline's free models report no quota at all (verified 2026-09-12): it is
@@ -226,6 +249,28 @@ DEFAULTS["platforms"]["copilot"] = {
     "backoff_minutes": 60, "max_size": "s", "tier": 2,
     "soft": {"monthly": 80}, "hard": {"monthly": 95},
     "stale_minutes": 360,
+    "quota_group": "copilot",
+}
+
+# Same CLI, same GitHub account and monthly AI-credits cap as "copilot"
+# (kind: copilot, shared quota_group) — an escalation-only stronger sibling
+# mirroring claude/claude-opus (mahler#192): min_size "l" keeps it for hard
+# tasks (D8 rule-4 escalation lands here at tier 3, one rung above copilot's
+# tier 2), and unlike copilot it has no max_size cap. Copilot's model catalog
+# is fetched live and account-gated (no static bundle), so the model was
+# verified live on 2026-09-14 with the fast-fail check — `copilot --model
+# <slug> -p "hi"` errors "not available." client-side in ~2s for rejected
+# slugs (claude-opus-4.8, claude-sonnet-4 were rejected) before any session
+# cost; gpt-5.3-codex passed. Copilot's naming does not mirror Codex's 1:1:
+# gpt-5.6-sol does not exist on Copilot.
+DEFAULTS["platforms"]["copilot-high"] = {
+    "enabled": True, "kind": "copilot", "model": "gpt-5.3-codex",
+    "min_size": "l", "tier": 3,
+    "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
+    "backoff_minutes": 60,
+    "soft": {"monthly": 80}, "hard": {"monthly": 95},
+    "stale_minutes": 360,
+    "quota_group": "copilot",
 }
 
 
