@@ -68,6 +68,33 @@ class LeaseTests(unittest.TestCase):
         self.assertIsNotNone(stolen)
         self.assertEqual(info["stolen_from"]["holder"], "interactive:mac")
 
+    def test_primary_lease_preempts_auto(self):
+        # D6 names `primary` as a holder kind alongside interactive and auto;
+        # it is human and wins the item the same way (mahler#97).
+        run_id = self.led.create_run(project="p", number=1, role="build",
+                                     platform="agy-claude", epoch=0)
+        auto, _ = self.led.claim("p", 1, f"run:{run_id}", "auto", 10, run_id=run_id)
+        primary, info = self.led.claim("p", 1, "primary:checkout", "primary", 30)
+        self.assertIsNotNone(primary)
+        self.assertEqual(info["preempted"]["holder"], f"run:{run_id}")
+        self.assertIsNotNone(self.led.run(run_id)["yield_at"])
+        # ... and primary vs interactive needs a steal, like any human lease
+        self.led.claim("p", 2, "interactive:you", "interactive", 30)
+        refused, _ = self.led.claim("p", 2, "primary:checkout", "primary", 30)
+        self.assertIsNone(refused)
+
+    def test_handoff_with_stale_epoch_is_refused(self):
+        # handoff_from is itself a compare-and-set: a stale holder/epoch pair
+        # must not be able to hand the lease across (mahler#97).
+        lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
+        stale, info = self.led.claim("p", 1, "conductor", "auto", 10,
+                                     handoff_from=("run:1", lease["epoch"] + 5))
+        self.assertIsNone(stale)
+        self.assertEqual(info["held_by"]["holder"], "run:1")
+        wrong_holder, _ = self.led.claim("p", 1, "conductor", "auto", 10,
+                                         handoff_from=("run:other", lease["epoch"]))
+        self.assertIsNone(wrong_holder)
+
     def test_epoch_fences_a_zombie(self):
         old, _ = self.led.claim("p", 1, "run:1", "auto", 10)
         self.clock.advance(minutes=11)                        # presumed dead
@@ -495,6 +522,41 @@ class SetupFailCounterTests(unittest.TestCase):
             self.assertEqual(led.item("p", 1)["setup_fails"], 0)
 
 
+class SchemaDriftTests(unittest.TestCase):
+    """SCHEMA must describe the real runtime schema (mahler#97): the startup
+    ALTER migrations exist for databases opened by older versions, not as a
+    way to finish CREATE TABLE on fresh ones."""
+
+    MIGRATED_ITEM_COLS = ("pr", "summary", "setup_fails", "parent",
+                          "esc_tier", "esc_fails")
+
+    def _cols(self, con, table):
+        return {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+
+    def test_fresh_schema_declares_every_migrated_column(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        items = self._cols(led.con, "items")
+        for col in self.MIGRATED_ITEM_COLS:
+            self.assertIn(col, items)
+            self.assertIn(col, SCHEMA)          # declared, not ALTERed in
+        self.assertIn("summary", SCHEMA)        # the column ship.py reads
+
+    def test_legacy_items_table_without_summary_is_migrated(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(l for l in SCHEMA.splitlines()
+                                        if "summary" not in l))
+            con.execute("INSERT INTO items (project, number, state) VALUES ('p', 1, 'ready')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            self.assertIn("summary", self._cols(led.con, "items"))
+            self.assertIsNone(led.item("p", 1)["summary"])
+
+
 class MaintenanceConfigTests(unittest.TestCase):
     def test_defaults_cover_all_passes(self):
         maintenance = config.DEFAULTS["defaults"]["maintenance"]
@@ -763,5 +825,3 @@ class IndexTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-if __name__ == "__main__":
-    unittest.main()
