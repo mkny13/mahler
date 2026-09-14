@@ -108,7 +108,7 @@ DEFAULTS = {
         "claude": {
             "enabled": True, "kind": "claude",
             "sort_model": "sonnet", "build_model": "",
-            "max_size": "m",
+            "max_size": "m", "tier": 3,
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
@@ -121,7 +121,7 @@ DEFAULTS = {
         "claude-opus": {
             "enabled": True, "kind": "claude",
             "sort_model": "opus", "build_model": "opus",
-            "min_size": "l",
+            "min_size": "l", "tier": 4,
             "soft": {"5h": 45, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
@@ -130,7 +130,7 @@ DEFAULTS = {
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
             "model": "claude-opus-4-6-thinking",
-            "max_size": "m",
+            "max_size": "m", "tier": 2,
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
@@ -138,7 +138,7 @@ DEFAULTS = {
         "agy-gemini": {
             "enabled": True, "kind": "agy", "pool": "Gemini Models",
             "model": "gemini-3.1-pro-high",
-            "max_size": "m",
+            "max_size": "m", "tier": 3,
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
@@ -181,7 +181,7 @@ DEFAULTS = {
 # installations opt in according to which account they want Mahler to spend.
 DEFAULTS["platforms"]["codex"] = {
     "enabled": True, "kind": "codex", "model": "",
-    "metered": False, "backoff_minutes": 60,
+    "metered": False, "backoff_minutes": 60, "tier": 2,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
 }
@@ -191,7 +191,7 @@ DEFAULTS["platforms"]["codex"] = {
 # Its free models are weaker, so it only takes small items.
 DEFAULTS["platforms"]["cline-free"] = {
     "enabled": True, "kind": "cline", "model": "",
-    "metered": False, "backoff_minutes": 60, "max_size": "s",
+    "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
 }
@@ -205,7 +205,7 @@ DEFAULTS["platforms"]["cline-free"] = {
 # like the others.
 DEFAULTS["platforms"]["kilo"] = {
     "enabled": True, "kind": "kilo", "model": "kilo/kilo-auto/free",
-    "metered": False, "backoff_minutes": 60, "max_size": "s",
+    "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
 }
@@ -222,7 +222,7 @@ DEFAULTS["platforms"]["kilo"] = {
 DEFAULTS["platforms"]["copilot"] = {
     "enabled": True, "kind": "copilot", "model": "",
     "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
-    "backoff_minutes": 60, "max_size": "s",
+    "backoff_minutes": 60, "max_size": "s", "tier": 2,
     "soft": {"monthly": 80}, "hard": {"monthly": 95},
     "stale_minutes": 360,
 }
