@@ -258,8 +258,31 @@ def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
             and account_of(cfg["platforms"][n]) == account]
 
 
+def tier_of(pconf):
+    return pconf.get("tier", 1)
+
+
+RISK_KEYWORDS = (
+    "recipes/", "agents.md", "claude.md", "prompt context",
+    "meta-programming", "credentials", "credential boundary",
+    "database migration", "schema migration", "concurrency",
+    "lease protocol"
+)
+
+
+def risk_min_tier(text):
+    """Keywords in title or description that require a stronger platform (tier 2+)
+    rather than free tier models like Kilo or Cline."""
+    if not text:
+        return 0
+    lower = text.lower()
+    if any(kw in lower for kw in RISK_KEYWORDS):
+        return 2
+    return 0
+
+
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
-         account=DEFAULT_ACCOUNT):
+         account=DEFAULT_ACCOUNT, min_tier=0):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -279,18 +302,24 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         if name in busy:
             reasons.append(f"{name}: busy")
             continue
+        pconf = cfg["platforms"][name]
+        # Escalation tier (DESIGN D8 rule 4): build and fix skip platforms below min_tier
+        if min_tier and not pin and role in ("build", "fix"):
+            t = tier_of(pconf)
+            if t < min_tier:
+                reasons.append(f"{name}: tier {t} below escalation tier {min_tier}")
+                continue
         # Size limits (max_size/min_size) are builder limits — they don't apply
         # to sort or plan roles (DESIGN D21).
         if role not in ("sort", "plan"):
-            limit = cfg["platforms"][name].get("max_size")
+            limit = pconf.get("max_size")
             if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
                 reasons.append(f"{name}: only takes size:{limit}")
                 continue
-            min_limit = cfg["platforms"][name].get("min_size")
+            min_limit = pconf.get("min_size")
             if min_limit and not pin and SIZES.get(size or "m", 2) < SIZES[min_limit]:
                 reasons.append(f"{name}: requires size:{min_limit}")
                 continue
-        pconf = cfg["platforms"][name]
         if peak_active and pconf.get("kind") == "claude" and not pin:
             reasons.append(
                 f"{name}: peak hours until {peak_until.astimezone():%H:%M} "

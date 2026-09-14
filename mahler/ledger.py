@@ -37,9 +37,10 @@ CREATE TABLE IF NOT EXISTS items (
     pin              TEXT,
     branch           TEXT,
     pr               INTEGER,             -- the PR the conductor opened (D18)
-    summary          TEXT,                -- the agent's one-line DONE summary
     attempts         INTEGER NOT NULL DEFAULT 0,
     setup_fails      INTEGER NOT NULL DEFAULT 0,
+    esc_tier         INTEGER NOT NULL DEFAULT 0,
+    esc_fails        INTEGER NOT NULL DEFAULT 0,
     epoch            INTEGER NOT NULL DEFAULT 0,
     parent           INTEGER,             -- parent issue number if part of a sub-issue
     created_at       TEXT,
@@ -168,7 +169,11 @@ class Ledger:
         self.con.executescript(SCHEMA)
         # columns added after the daemon's DB already existed
         cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
-        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"), ("setup_fails", "INTEGER NOT NULL DEFAULT 0"), ("parent", "INTEGER")):
+        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"),
+                         ("setup_fails", "INTEGER NOT NULL DEFAULT 0"),
+                         ("parent", "INTEGER"),
+                         ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),
+                         ("esc_fails", "INTEGER NOT NULL DEFAULT 0")):
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
@@ -564,6 +569,11 @@ class Ledger:
             sql += " AND project=?"
             args = (project,)
         return self.q(sql, args)
+
+    def last_run(self, project, number):
+        return self.q1(
+            "SELECT * FROM runs WHERE project=? AND number=? ORDER BY id DESC LIMIT 1",
+            (project, number))
 
     # ---------- usage ----------
 

@@ -24,6 +24,19 @@ NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent")
 CONDUCTOR = "conductor"                              # the lease holder that ships
 
 
+def _row_get(row, key, default=None):
+    if row is None:
+        return default
+    if hasattr(row, "get"):
+        val = row.get(key, default)
+        return default if val is None else val
+    try:
+        val = row[key]
+        return default if val is None else val
+    except (IndexError, KeyError):
+        return default
+
+
 class Ctx:
     def __init__(self, cfg, led, dry_run=False, hot_hold=True, verbose=False):
         self.cfg, self.led, self.dry_run, self.hot_hold = cfg, led, dry_run, hot_hold
@@ -426,6 +439,13 @@ def finalize(ctx, run):
             for w in pconf.get("windows", router.WINDOWS):
                 led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
+    duration_mins = None
+    started_at = _row_get(run, "started_at")
+    if started_at:
+        try:
+            duration_mins = (led.now() - parse(started_at)).total_seconds() / 60.0
+        except Exception:
+            pass
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup step failed before the agent ran
     reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
@@ -455,7 +475,8 @@ def finalize(ctx, run):
             ctx.ping(f"Mahler needs you — {project} #{n}", rest or item["title"],
                      project, n, priority="high", tags="question")
         else:
-            _retry_or_fail(ctx, project, n, item, reason, outcome)
+            _retry_or_fail(ctx, project, n, item, reason, outcome,
+                           platform=run["platform"], duration_mins=duration_mins)
     else:
         closed = False
         try:
@@ -502,7 +523,8 @@ def finalize(ctx, run):
                              f"{run['platform']} ended DONE; the conductor opens the PR next",
                              project, n, priority="low")
                 else:
-                    _retry_or_fail(ctx, project, n, item, reason, outcome)
+                    _retry_or_fail(ctx, project, n, item, reason, outcome,
+                                   platform=run["platform"], duration_mins=duration_mins)
             elif reason == "parked":
                 led.set_state(project, n, "parked", "parked while running")
             elif reason == "preempted":
@@ -530,9 +552,11 @@ def finalize(ctx, run):
                 elif reason is None and _try_cline_nudge(ctx, run, kind, log, pol):
                     return   # run is still alive — finalized again when the nudge ends
                 else:
-                    _retry_or_fail(ctx, project, n, item, reason, outcome)
+                    _retry_or_fail(ctx, project, n, item, reason, outcome,
+                                   platform=run["platform"], duration_mins=duration_mins)
             else:
-                _retry_or_fail(ctx, project, n, item, reason, outcome)
+                _retry_or_fail(ctx, project, n, item, reason, outcome,
+                               platform=run["platform"], duration_mins=duration_mins)
     # A finished change keeps the canonical project slot while the conductor
     # opens/watches/merges its PR (D19, D24). Transfer the same item lease in
     # one transaction so a second machine cannot claim another issue in the
@@ -744,22 +768,47 @@ def _setup_failed_comment(ctx, run, fails, tail, stuck):
         ctx.say(f"#{run['number']}: couldn't post setup-failure comment — {e}")
 
 
-def _retry_or_fail(ctx, project, n, item, reason, outcome):
+def _retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None):
     led = ctx.led
     if reason in NO_ATTEMPT:
         led.set_state(project, n, "ready" if item["sorted_at"] else "inbox", f"retry ({reason})")
         return
     attempts = item["attempts"] + 1
+
+    cur_tier = _row_get(item, "esc_tier", 0)
+    cur_fails = _row_get(item, "esc_fails", 0)
+    new_tier = cur_tier
+    new_fails = cur_fails + 1
+
+    pconf = ctx.cfg.get("platforms", {}).get(platform, {}) if platform else {}
+    run_tier = router.tier_of(pconf) if platform else 1
+
+    # Overrun heuristic: size:s run took >= 10m on tier 1 and failed
+    labels = json.loads(_row_get(item, "labels", "[]"))
+    size = next((l.split(":", 1)[1] for l in labels if l.startswith("size:")), None)
+    overrun = (run_tier == 1 and size == "s" and duration_mins is not None and duration_mins >= 10.0)
+
+    if overrun:
+        new_tier = max(cur_tier, run_tier) + 1
+        new_fails = 0
+        ctx.say(f"{project}#{n}: escalated to tier {new_tier} — size:s overrun on tier {run_tier} ({int(duration_mins)}m >= 10m)")
+        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (duration overrun {int(duration_mins)}m)")
+    elif new_fails >= 2:
+        new_tier = max(cur_tier, run_tier) + 1
+        new_fails = 0
+        ctx.say(f"{project}#{n}: escalated to tier {new_tier} after 2 failures on tier <= {max(cur_tier, run_tier)}")
+        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (after 2 failures)")
+
     if attempts >= ctx.policy(project)["max_attempts"]:
         led.set_state(project, n, "failed", f"{attempts} failed attempts — last: {outcome}",
-                      attempts=attempts)
+                      attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
         ctx.ping(f"Stuck — {project} #{n}",
                  f"{attempts} attempts failed ({outcome}). Comment `/mahler go` to retry.",
                  project, n, priority="high", tags="warning")
     else:
         back = "ready" if item["sorted_at"] else "inbox"
         led.set_state(project, n, back, f"attempt {attempts} failed: {outcome}",
-                      attempts=attempts)
+                      attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
 
 
 REASON_TEXT = {
@@ -930,14 +979,30 @@ def _red_ci(ctx, project, item, pr, view):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1
+    cur_tier = _row_get(item, "esc_tier", 0)
+    cur_fails = _row_get(item, "esc_fails", 0)
+    new_fails = cur_fails + 1
+    new_tier = cur_tier
+    last = led.last_run(project, n)
+    last_platform = last["platform"] if last else None
+    run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
+    if new_fails >= 2:
+        new_tier = max(cur_tier, run_tier) + 1
+        new_fails = 0
+        ctx.say(f"{project}#{n}: escalated to tier {new_tier} after red CI on tier <= {max(cur_tier, run_tier)}")
+        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (red CI)")
+
     if attempts >= pol["max_attempts"]:
         led.set_state(project, n, "failed",
-                      f"CI still red on PR #{pr} after {attempts} attempts", attempts=attempts)
+                      f"CI still red on PR #{pr} after {attempts} attempts",
+                      attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
         ctx.ping(f"Stuck — {project} #{n}",
                  f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
                  project, n, priority="high", tags="warning")
         led.release(project, n, holder=CONDUCTOR)
         return
+
+    led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
 
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     if not led.get_kv(key):
@@ -951,10 +1016,13 @@ def _red_ci(ctx, project, item, pr, view):
                 "the fix waits for the next tick")
         return
     busy = busy_platforms(cfg, active)
-    size = next((l.split(":", 1)[1] for l in json.loads(item["labels"] or "[]")
+    size = next((l.split(":", 1)[1] for l in json.loads(_row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
+        size = "m"
+    effective_min_tier = max(new_tier, router.risk_min_tier(_row_get(item, "title", "")))
+    if effective_min_tier >= 2 and size == "s":
         size = "m"
     # D26: a multi-account project tries its accounts in declared order and
     # spends the first with a fix platform; never fall through on anything
@@ -964,7 +1032,7 @@ def _red_ci(ctx, project, item, pr, view):
     for account in config.accounts_of(pol):
         platform, why = router.pick(cfg, led, "fix", item["pin"], busy,
                                     size=size, burst_lines=ctx.burst_lines,
-                                    account=account)
+                                    account=account, min_tier=effective_min_tier)
         reasons += why
         if platform:
             break
@@ -1181,6 +1249,7 @@ def _apply_instruction(ctx, project, item, verb, arg):
     led, n = ctx.led, item["number"]
     if verb == "go":
         led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
+                      esc_tier=0, esc_fails=0,
                       sorted_at=iso(led.now() - timedelta(days=1)))
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
@@ -1562,21 +1631,27 @@ def schedule(ctx, projects):
             if remote_error:
                 ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
                 continue
-            size = next((l.split(":", 1)[1] for l in json.loads(it["labels"] or "[]")
+            size = next((l.split(":", 1)[1] for l in json.loads(_row_get(it, "labels", "[]"))
                          if l.startswith("size:")), None)
-            if role == "sort" and needs_plan(it["labels"]):
+            if role == "sort" and needs_plan(_row_get(it, "labels", "[]")):
                 routing_role = "plan"
             else:
                 routing_role = role
             pin = it["pin"] if role in ("build", "fix", "sort") else None
+
+            effective_min_tier = max(_row_get(it, "esc_tier", 0), router.risk_min_tier(_row_get(it, "title", ""))) if role in ("build", "fix") else 0
+            effective_size = size
+            if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
+                effective_size = "m"
+
             # D26: try the project's accounts in declared order, spending the
             # first that yields a platform; reasons pool across the misses.
             reasons = []
             platform = None
             for account in config.accounts_of(p):
                 platform, why = router.pick(cfg, led, routing_role, pin,
-                                            busy, size=size, burst_lines=burst_lines,
-                                            account=account)
+                                            busy, size=effective_size, burst_lines=burst_lines,
+                                            account=account, min_tier=effective_min_tier)
                 reasons += why
                 if platform:
                     break

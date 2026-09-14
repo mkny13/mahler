@@ -767,6 +767,43 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         self.assertEqual(c_5h, 25.0)
         self.assertEqual(o_5h, 25.0)
 
+    def test_tier_of(self):
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["kilo"]), 1)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["cline-free"]), 1)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["copilot"]), 2)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["agy-claude"]), 2)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["claude"]), 3)
+        self.assertEqual(router.tier_of(self.cfg["platforms"]["claude-opus"]), 4)
+
+    def test_risk_min_tier(self):
+        self.assertEqual(router.risk_min_tier("update recipes/sort.md"), 2)
+        self.assertEqual(router.risk_min_tier("fix typo in AGENTS.md"), 2)
+        self.assertEqual(router.risk_min_tier("prompt context size fix"), 2)
+        self.assertEqual(router.risk_min_tier("database migration for users"), 2)
+        self.assertEqual(router.risk_min_tier("just a normal bug fix"), 0)
+        self.assertEqual(router.risk_min_tier(None), 0)
+
+    def test_min_tier_filtering(self):
+        # kilo is tier 1, claude is tier 3. Busy holds everything before kilo in routing order.
+        busy = {"agy-claude", "agy-gemini", "cline-free", "copilot"}
+        led = led_with(**{"kilo": (10, 10), "claude": (10, 10)})
+        # Default min_tier=0 picks kilo for size:s
+        p, _ = router.pick(self.cfg, led, "build", size="s", busy=busy)
+        self.assertEqual(p, "kilo")
+        # min_tier=2 skips kilo (tier 1 < 2) and picks claude (tier 3)
+        p, reasons = router.pick(self.cfg, led, "build", size="s", min_tier=2, busy=busy)
+        self.assertEqual(p, "claude")
+        self.assertTrue(any("kilo: tier 1 below escalation tier 2" in r for r in reasons))
+        # min_tier=4 skips kilo and claude (tier 3 < 4)
+        p, reasons = router.pick(self.cfg, led, "build", size="s", min_tier=4, busy=busy)
+        self.assertIsNone(p)
+        self.assertTrue(any("claude: tier 3 below escalation tier 4" in r for r in reasons))
+
+    def test_pinned_platform_bypasses_min_tier(self):
+        led = led_with(**{"kilo": (10, 10), "agy-claude": (10, 10)})
+        p, _ = router.pick(self.cfg, led, "build", pin="kilo", min_tier=2)
+        self.assertEqual(p, "kilo")
+
 
 if __name__ == "__main__":
     unittest.main()

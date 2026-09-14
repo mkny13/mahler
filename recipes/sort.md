@@ -31,6 +31,14 @@ personal data, accounts, credentials or money.
 4. Labels (`gh issue edit … --add-label`): exactly one of `type:bug` `type:feature`
    `type:chore` `type:goal`; exactly one of `size:s` `size:m` `size:l`; and `p2` unless a
    p-label is already present. Never add or remove `mahler:*` labels — Mahler owns those.
+   Sizing rules (critical for platform routing):
+   - `size:s` (trivial / localized): 1 file, 1–2 functions or small test (< 50 lines diff).
+     Zero architectural ambiguity, zero cross-module blast radius.
+   - `size:m` (standard builder work): multi-file changes (2+ files), new features, DB schemas,
+     concurrency/leases/transactions. Golden rule: prompt recipes (`recipes/*.md`), system rules
+     (`AGENTS.md`, `CLAUDE.md`), and security/credential boundaries are ALWAYS `size:m` minimum (never `size:s`).
+   - `size:l` (large / multi-step): broad refactors, new subsystems, or tasks spanning multiple
+     domains. Must be split into sub-issues per rule 5.
 5. If it is `size:l`, split it into 2–5 sub-issues, each small enough for one
    agent run and one mergeable PR with its own test. Never split below that. Give
    each sub-issue the full body shape above, including a concrete `## Plan` and
