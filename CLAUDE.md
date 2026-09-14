@@ -36,6 +36,11 @@ python3 -m unittest discover -s tests
 Python 3.12+, standard library only. The lease rules (`tests/test_ledger.py`) are the
 part that must stay right. Extend those tests whenever you touch `ledger.py`.
 
+Tests must be fully isolated (mahler#93): no test may leak env vars, module globals,
+files, or SQLite state that another test depends on, and no test may touch the real
+`~/.mahler` state — use `Ledger(':memory:')` or temp dirs. Check order-independence
+with `python3 tests/run_random.py <seed>` (omit the seed for a random one).
+
 ## Working on an issue by hand (interactive sessions)
 
 If you're a chat session, not a Mahler run, take part in the lease protocol (DESIGN D6):
