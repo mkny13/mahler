@@ -3,6 +3,7 @@ import io
 import unittest
 import os
 import json
+import stat
 import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
@@ -51,10 +52,25 @@ class TestHooks(unittest.TestCase):
         self.assertIn("SessionStart", d["hooks"])
         self.assertIn("PreToolUse", d["hooks"])
         
+        ss = d["hooks"]["SessionStart"][0]
+        self.assertEqual(ss["command"],
+                         f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}")
+
         pt = d["hooks"]["PreToolUse"][0]
-        self.assertIn("pre_tool_use.py", pt["command"])
+        self.assertEqual(pt["command"],
+                         f"python3 {os.path.join('.claude', 'hooks', 'pre_tool_use.py')}")
         self.assertEqual(pt["tools"], ["Edit", "Write", "Bash"])
-        
+
+        hb = d["hooks"]["PostToolUse"][0]
+        self.assertEqual(hb["command"],
+                         f"python3 {os.path.join('.claude', 'hooks', 'heartbeat.py')}")
+        self.assertEqual(d["hooks"]["UserPromptSubmit"], d["hooks"]["PostToolUse"])
+
+        for name in ("session_start.py", "pre_tool_use.py", "heartbeat.py"):
+            script_path = os.path.join(self.repo_dir, ".claude", "hooks", name)
+            self.assertTrue(os.path.exists(script_path), name)
+            self.assertEqual(stat.S_IMODE(os.stat(script_path).st_mode), 0o755, name)
+
         # The yield check must honor MAHLER_RUNS_DIR so tests can keep
         # their hands off the real ~/.mahler state (mahler#93).
         script_path = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
@@ -80,9 +96,17 @@ class TestHooks(unittest.TestCase):
             def say(self, msg): pass
             
         watchdog.watchdog(Ctx())
-        
+
         yield_file = os.path.join(config.RUNS_DIR, "10", "yield")
         self.assertTrue(os.path.exists(yield_file))
+        self.assertEqual(stat.S_IMODE(os.stat(yield_file).st_mode), 0o600)
+        with open(yield_file) as f:
+            self.assertEqual(f.read(), "")
+
+        # The expired yield must also have stopped the run.
+        row = self.led.q1("SELECT status, stop_reason FROM runs WHERE id=?", (10,))
+        self.assertEqual(row["status"], "stopping")
+        self.assertEqual(row["stop_reason"], "preempted")
 
     def test_yield_hook_logic(self):
         class Args:
@@ -103,34 +127,60 @@ class TestHooks(unittest.TestCase):
             with open(yield_file, "w") as f:
                 pass
                 
-            res = subprocess.run(["python3", pre_tool_script], capture_output=True, text=True)
+            res = subprocess.run(["python3", pre_tool_script], input="",
+                                 capture_output=True, text=True)
             self.assertEqual(res.returncode, 1)
             self.assertIn("yield delivered", res.stdout)
+
+            # Without the yield file the same tool call goes through: the
+            # block above must come from the yield check, not from the hook
+            # failing outright.
+            os.remove(yield_file)
+            res = subprocess.run(["python3", pre_tool_script], input="",
+                                 capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertEqual(res.stdout, "")
 
     def test_merge_fence_logic(self):
         class Args:
             project = "testproj"
         cli.cmd_hooks(Args(), self.cfg, self.led)
         pre_tool_script = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
-        
-        run_id = "124"
-        
-        # Mock lease-check failure by setting up environment and running the script
-        # The script calls `mahler lease-check`.
-        # To fail `mahler lease-check`, we can set MAHLER_PROJECT, MAHLER_ISSUE, MAHLER_EPOCH and let it fail.
-        env_extra = {"MAHLER_RUN_ID": run_id,
-                     "MAHLER_PROJECT": "testproj",
-                     "MAHLER_ISSUE": "1",
-                     "MAHLER_EPOCH": "1"}
-        # No item in DB, so lease-check fails.
-        with patch.dict(os.environ, env_extra):
+        bin_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin")
+
+        # A live lease on the item, but at epoch 2: a merge attempt still
+        # claiming epoch 1 must be fenced off.
+        self.led.set_state("testproj", 1, "ready")
+        self.led.claim("testproj", 1, "run:124", "auto", 30)
+        self.led.con.execute("UPDATE leases SET epoch = 2 WHERE project='testproj' AND number=1")
+        self.led.con.commit()
+
+        def run_hook(epoch):
             env = os.environ.copy()
-            env["PATH"] = os.path.abspath("bin") + os.pathsep + env.get("PATH", "")
-            # We mock the call by actually passing JSON to stdin
-            stdin_data = json.dumps({"command": "gh pr merge -s"})
-            res = subprocess.run(["python3", pre_tool_script], input=stdin_data, capture_output=True, text=True, env=env)
-            self.assertEqual(res.returncode, 1)
-            self.assertIn("STALE", res.stdout)
+            env.update({
+                "MAHLER_RUN_ID": "124",
+                "MAHLER_RUNS_DIR": self.runs_dir,
+                # The hook's `mahler lease-check` runs in its own process:
+                # MAHLER_HOME points it at the temp ledger, never the real
+                # ~/.mahler state (mahler#93).
+                "MAHLER_HOME": self.tmp.name,
+                "MAHLER_PROJECT": "testproj",
+                "MAHLER_ISSUE": "1",
+                "MAHLER_EPOCH": epoch,
+            })
+            env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+            return subprocess.run(["python3", pre_tool_script],
+                                  input=json.dumps({"command": "gh pr merge -s"}),
+                                  capture_output=True, text=True, env=env)
+
+        res = run_hook("1")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("STALE", res.stdout)
+
+        # The live epoch merges without being blocked.
+        res = run_hook("2")
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout, "")
 
 
 class TestSessionIdentity(unittest.TestCase):
