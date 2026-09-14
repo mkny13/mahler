@@ -204,6 +204,20 @@ def _headroom(ctx, role, per_platform, busy, burst_lines=None, account=config.DE
     return free
 
 
+def area_of(labels_json):
+    """The item's `area:<name>` label, or None (soft mutual exclusion, D6):
+    items sharing an area aren't run concurrently, even though neither blocks
+    the other's `depends`."""
+    try:
+        labels = json.loads(labels_json or "[]")
+    except json.JSONDecodeError:
+        return None
+    for label in labels:
+        if label.startswith("area:"):
+            return label.split(":", 1)[1]
+    return None
+
+
 def needs_plan(labels_json):
     """True when the labels indicate this item needs Opus planning (DESIGN D21):
     type:goal, size:l, or any pass:* label."""
@@ -237,8 +251,28 @@ def schedule(ctx, projects):
         in_project[r["project"]] = in_project.get(r["project"], 0) + 1
         per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
     busy = busy_platforms(cfg, active)
+
+    # area: label collision (D6): items sharing an area aren't run concurrently.
+    # Seed busy_areas from what's currently running...
+    busy_areas = set()
+    for r in active:
+        r_item = led.item(r["project"], r["number"])
+        if r_item:
+            area = area_of(row_get(r_item, "labels", "[]"))
+            if area:
+                busy_areas.add(area)
+
     # a finished build keeps its project's build slot until it merges (D19)
-    in_flight = {p["name"]: len(led.items(p["name"], ["verifying"])) for p in projects}
+    in_flight = {}
+    for p in projects:
+        verifying = led.items(p["name"], ["verifying"])
+        in_flight[p["name"]] = len(verifying)
+        # ...and from verifying items too: a merged-but-unverified change
+        # still holds its area against a race with a moving base (D19).
+        for it in verifying:
+            area = area_of(row_get(it, "labels", "[]"))
+            if area:
+                busy_areas.add(area)
 
     hot = {}
     for p in projects:
@@ -300,6 +334,10 @@ def schedule(ctx, projects):
             if role == "build" and hot[name]:
                 ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
                 continue
+            area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
+            if area and area in busy_areas:
+                ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
+                continue
             if led.lease(name, n):
                 continue
             remote_error = getattr(led, "remote_error", lambda _project: None)(name)
@@ -343,6 +381,8 @@ def schedule(ctx, projects):
             total += 1
             in_project[name] = in_project.get(name, 0) + 1
             per_platform[platform] = per_platform.get(platform, 0) + 1
+            if area:
+                busy_areas.add(area)
             group = cfg["platforms"][platform].get("quota_group", platform)
             if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
                 for p in cfg["platforms"]:

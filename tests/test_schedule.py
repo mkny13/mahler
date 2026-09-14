@@ -437,5 +437,60 @@ class QuotaGroupTests(unittest.TestCase):
                             for line in ctx.lines))
 
 
+class AreaLabelTests(unittest.TestCase):
+    """mahler#197: items sharing an `area:` label aren't run concurrently
+    (DESIGN Layer 3, D6) — soft mutual exclusion, distinct from `depends`."""
+
+    def test_same_area_serializes_only_one_starts(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="ready", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=30)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+        self.assertIn("a#2: waiting — area:router already in progress", ctx.lines)
+
+    def test_different_areas_both_start(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
+        led.upsert_item("a", 1, state="ready", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=30)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["area:scheduler"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(any("a#1: would build" in l for l in lines))
+        self.assertTrue(any("a#2: would build" in l for l in lines))
+
+    def test_verifying_item_holds_its_area_against_a_ready_item(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="verifying", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=40)))
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, [])
+        self.assertIn("a#2: waiting — area:router already in progress", ctx.lines)
+
+    def test_unlabeled_item_is_never_blocked(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="verifying", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=40)))
+        led.upsert_item("a", 2, state="ready", priority=2, labels="[]",
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#2: would build on agy-claude"])
+
+
 if __name__ == "__main__":
     unittest.main()

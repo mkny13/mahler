@@ -39,6 +39,13 @@ credentials or money.
      (`AGENTS.md`, `CLAUDE.md`), and security/credential boundaries are ALWAYS `size:m` minimum (never `size:s`).
    - `size:l` (large / multi-step): broad refactors, new subsystems, or tasks spanning multiple
      domains. Must be split into sub-issues per rule 5.
+   Optional `area:<name>` (e.g. `area:router`, `area:scheduler-tick`): only when you're
+   confident this issue's work will touch the same files as another currently-open issue —
+   neither blocks the other, but Mahler won't run them at the same time. Keep the name short
+   and specific; a broad one (`area:mahler`) serializes everything and defeats the point.
+   Don't add it defensively — only on real, confident file-level overlap. Create the label
+   first if needed: `gh label create area:<name> --color 0052cc --force -R $repo`, then
+   `gh issue edit --add-label area:<name>` on both/all the colliding issues.
 5. If it is `size:l`, split it into 2–5 sub-issues, each small enough for one
    agent run and one mergeable PR with its own test. Never split below that. Give
    each sub-issue the full body shape above, including a concrete `## Plan` and
