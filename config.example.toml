@@ -10,6 +10,10 @@ repo = "mkny13/mahler"
 path = "/Users/mike/Mahler"
 max_parallel = 1                # the conductor changes one thing at a time (DESIGN D17)
 verify = "python3 -m unittest discover -s tests"
+# A project may span more than one account (DESIGN D26): it tries each of its
+# accounts in declared order and spends the first with headroom. Set one of
+# account/accounts, never both:
+# accounts = ["personal", "work"]
 
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH

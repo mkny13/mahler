@@ -40,7 +40,7 @@ class Ctx:
         pol = self.policy(project)
         repo = pol["repo"]
         if repo not in self._gh:
-            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.account_of(pol)))
+            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.gh_account_of(pol)))
         return self._gh[repo]
 
     def say(self, msg):
@@ -894,9 +894,18 @@ def _red_ci(ctx, project, item, pr, view):
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
-    platform, reasons = router.pick(cfg, led, "fix", item["pin"], busy,
+    # D26: a multi-account project tries its accounts in declared order and
+    # spends the first with a fix platform; never fall through on anything
+    # but "no platform from this account".
+    reasons = []
+    platform = None
+    for account in config.accounts_of(pol):
+        platform, why = router.pick(cfg, led, "fix", item["pin"], busy,
                                     size=size, burst_lines=ctx.burst_lines,
-                                    account=config.account_of(ctx.policy(project)))
+                                    account=account)
+        reasons += why
+        if platform:
+            break
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -1239,8 +1248,9 @@ def refresh_usage(ctx, projects):
     wanted = set()
     for p in projects:
         if led.items(p["name"], ["inbox", "ready"]):
-            routing = router.routing_for(cfg, config.account_of(p))
-            wanted |= {n for role in ("sort", "build", "plan") for n in routing.get(role, [])}
+            for account in config.accounts_of(p):
+                routing = router.routing_for(cfg, account)
+                wanted |= {n for role in ("sort", "build", "plan") for n in routing.get(role, [])}
     wanted |= {r["platform"] for r in led.active_runs()}
     wanted = {n for n in wanted if n in cfg["platforms"]}
     # probe_agy and a copilot probe without an account's own GitHub login read
@@ -1425,9 +1435,11 @@ def schedule(ctx, projects):
 
     work = _candidates(ctx, projects)
     # each account has its own builders, so "a sort must not eat the last
-    # builder" is judged per account (D25)
+    # builder" is judged per account (D25); a multi-account project competes
+    # in every bucket it can draw from (D26)
+    buckets = {acct for p in projects for acct in config.accounts_of(p)}
     sorts_wait = {acct: len(_headroom(ctx, "sort", per_platform, busy, burst_lines, acct)) <= 1
-                  for acct in {config.account_of(p) for p in projects}}
+                  for acct in buckets}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
     def key(c):
@@ -1436,7 +1448,8 @@ def schedule(ctx, projects):
                     if p["name"] in priority_projects
                     else len(priority_projects))
         return (it["priority"],
-                1 if (sorts_wait[config.account_of(p)] and role == "sort") else 0,
+                1 if (role == "sort" and all(sorts_wait[a] for a in
+                                             config.accounts_of(p))) else 0,
                 proj_idx,
                 parse(it["state_changed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
                 p["name"], it["number"])
@@ -1481,9 +1494,17 @@ def schedule(ctx, projects):
             else:
                 routing_role = role
             pin = it["pin"] if role in ("build", "fix", "sort") else None
-            platform, reasons = router.pick(cfg, led, routing_role, pin,
+            # D26: try the project's accounts in declared order, spending the
+            # first that yields a platform; reasons pool across the misses.
+            reasons = []
+            platform = None
+            for account in config.accounts_of(p):
+                platform, why = router.pick(cfg, led, routing_role, pin,
                                             busy, size=size, burst_lines=burst_lines,
-                                            account=config.account_of(p))
+                                            account=account)
+                reasons += why
+                if platform:
+                    break
             if not platform:
                 if routing_role == "plan":
                     ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")
