@@ -1,10 +1,10 @@
 # Mahler
 
 Mahler conducts coding agents (Claude Code, Antigravity's `agy`, Cline, Copilot, Codex,
-Kilo) through each project's GitHub-issue backlog. It is quota-aware, and it hands work
-off across platforms. **Read [DESIGN.md](DESIGN.md) before changing behaviour.** Each
-decision there has its reasoning; D18 — *agents build, the conductor ships* — is the one
-that decides how you end a task. [ROADMAP.md](ROADMAP.md) says what's next.
+Kilo) through each project's GitHub-issue backlog. It is quota-aware and hands work off
+across platforms. **Read [DESIGN.md](DESIGN.md) before changing behaviour** — each
+decision there has its reasoning; D18 — *agents build, the conductor ships* — decides how
+you end a task. [ROADMAP.md](ROADMAP.md) says what's next.
 
 The owner (Mike) is not a developer and doesn't review code. Work autonomously:
 implement, verify, commit and push to your branch, then end with a STATUS line — the
@@ -16,14 +16,14 @@ are genuinely his (DESIGN D13).
 Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 
 - **The daemon runs from `~/.mahler/app`, a separate clone pinned to a known-good commit.**
-  Never edit anything under `~/.mahler/` from a task. Changes reach the daemon only through
-  a merge to `main` with green CI (the launcher self-updates, and rolls back after two
-  failed ticks).
+  Never edit anything under `~/.mahler/` from a task — changes reach the daemon only
+  through a merge to `main` with green CI (the launcher self-updates, and rolls back after
+  two failed ticks).
 - **`launcher/` is hand-installed.** Changing `mahler-launcher`, the plist or `install.sh`
   has no effect until someone re-runs `launcher/install.sh`. Say so in your final DONE
   summary (the conductor puts it on the PR), and ping via `mahler notify`.
 - **The daemon must never break itself.** Keep `mahler tick` exception-safe per project.
-  Don't add a dependency that isn't in the standard library until the console/MCP phase
+  Don't add a dependency outside the standard library until the console/MCP phase
   introduces `uv` deliberately.
 - `max_parallel = 1` for this repo: one change to the conductor at a time.
 
