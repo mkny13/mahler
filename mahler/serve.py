@@ -224,7 +224,9 @@ def _render_rest(out, snap, cfg):
               f"<div><b>{run_label}</b> "
               f"<span class=\"muted\">{_esc(r['role'])}</span></div>"
               f"<div><span class=\"mono\">{time_str}</span> on "
-              f"<b>{_esc(r['platform'])}</b> &middot; {_esc(r['status'])}{stopped}{parent_str}</div></div>")
+              f"<b>{_esc(r['platform'])}</b>"
+              f"{' &middot; ' + _esc(r['model']) if r.get('model') else ''}"
+              f" &middot; {_esc(r['status'])}{stopped}{parent_str}</div></div>")
     else:
         w('<div class="muted">nothing running</div>')
     w("</details>")

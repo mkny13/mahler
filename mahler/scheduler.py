@@ -550,6 +550,11 @@ def finalize(ctx, run):
                    "ended_at": iso(led.now())}
     if not run["stop_reason"] and reason:      # mahler#124: record why it stopped
         update_cols["stop_reason"] = reason
+    if log.get("model") and log["model"] != run["model"]:
+        # kilo-auto/free is stateless per invocation — the model actually used
+        # is the signal for whether a quota hit reflects one underlying free
+        # model being rate-limited rather than the whole pool (mahler#141).
+        update_cols["model"] = log["model"]
     led.update_run(run["id"], **update_cols)
     if not keep_worktree:
         runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
