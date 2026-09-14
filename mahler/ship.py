@@ -34,46 +34,51 @@ def _ship_project(ctx, project):
             ctx.say(f"{project}#{item['number']}: shipping failed — {e}")
 
 
-def _ship_item(ctx, project, item):
+def _ship_lease(ctx, project, item):
+    """Take the conductor's lease on an item that is ready to ship.
+    -> True when we hold it; each refusal says why and leaves the PR alone."""
     led, n = ctx.led, item["number"]
-    if ctx.dry_run:
-        ctx.say(f"{project}#{n}: would ship "
-                f"{'PR #' + str(item['pr']) if item['pr'] else '(opening the PR)'}")
-        return
-    gh, pol = ctx.gh(project), ctx.policy(project)
-    lease, info = led.claim(project, n, CONDUCTOR, "auto", pol["auto_lease_minutes"])
-    if lease is None and "unavailable" in info:
+    lease, info = led.claim(project, n, CONDUCTOR, "auto",
+                            ctx.policy(project)["auto_lease_minutes"])
+    if lease is not None:
+        return True
+    if "unavailable" in info:
         ctx.say(f"{project}#{n}: canonical lease host unavailable — shipping skipped")
-        return
-    if lease is None and "at_capacity" in info:
+    elif "at_capacity" in info:
         ctx.say(f"{project}#{n}: canonical project capacity is already held — shipping skipped")
-        return
-    if lease is None:                           # a session pre-empted the item (D6)
+    else:                                       # a session pre-empted the item (D6)
         pr = f"PR #{item['pr']}" if item["pr"] else "its PR (not yet open)"
         led.set_state(project, n, "working",
                       f"handed to {info['held_by']['holder']} — {pr} stays open, unmerged")
         ctx.ping(f"Handoff to you — {project} #{n}",
                  "you hold this item now; the conductor won't merge " + pr,
                  project, n, priority="low")
-        return
-    if not item["pr"]:
-        unconfirmed = bool(led.get_kv(f"unconfirmed:{project}#{n}"))
-        _open_pr(ctx, project, item, gh, pol, unconfirmed=unconfirmed)
-        return                                  # CI is watched from the next tick
-    pr = item["pr"]
+    return False
+
+
+def _rebuild_on_base(ctx, project, item, pr, base):
+    """The base moved under the PR: drop it and build again on current base
+    (D19). No attempt is counted — the work was fine, the ground moved."""
+    led, n = ctx.led, item["number"]
+    led.upsert_item(project, n, pr=None)
+    led.set_state(project, n, "ready", f"PR #{pr} conflicts with {base} — rebuilding on it")
+    led.release(project, n, holder=CONDUCTOR)
+    ctx.ping(f"Rebuilding — {project} #{n}",
+             f"PR #{pr} no longer merges into {base}; the next build starts on current {base}",
+             project, n, priority="low")
+
+
+def _watch_pr(ctx, project, item, pr):
+    """One step of the open PR's state machine, one step per tick: gone,
+    conflicting, CI still running, CI red, or green and merged."""
+    led, n = ctx.led, item["number"]
+    gh = ctx.gh(project)
     view = gh.pr_view(pr)
     if view["state"] != "OPEN":                 # merged or closed outside Mahler
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
     if view.get("mergeable") == "CONFLICTING":
-        # base moved under it: rebuild on current base (D19); no attempt counted
-        base = pol.get("base", "main")
-        led.upsert_item(project, n, pr=None)
-        led.set_state(project, n, "ready", f"PR #{pr} conflicts with {base} — rebuilding on it")
-        led.release(project, n, holder=CONDUCTOR)
-        ctx.ping(f"Rebuilding — {project} #{n}",
-                 f"PR #{pr} no longer merges into {base}; the next build starts on current {base}",
-                 project, n, priority="low")
+        _rebuild_on_base(ctx, project, item, pr, ctx.policy(project).get("base", "main"))
         return
     state = checks_state(view.get("statusCheckRollup"))
     if state == "pending" or view.get("mergeable") == "UNKNOWN":
@@ -86,6 +91,23 @@ def _ship_item(ctx, project, item):
         return
     gh.pr_merge(pr)
     _shipped(ctx, project, n, pr, led.item(project, n), view)
+
+
+def _ship_item(ctx, project, item):
+    led, n = ctx.led, item["number"]
+    if ctx.dry_run:
+        ctx.say(f"{project}#{n}: would ship "
+                f"{'PR #' + str(item['pr']) if item['pr'] else '(opening the PR)'}")
+        return
+    if not _ship_lease(ctx, project, item):
+        return
+    if item["pr"]:
+        _watch_pr(ctx, project, item, item["pr"])
+        return
+    # no PR yet: open it — its CI is watched from the next tick
+    unconfirmed = bool(led.get_kv(f"unconfirmed:{project}#{n}"))
+    _open_pr(ctx, project, item, ctx.gh(project), ctx.policy(project),
+             unconfirmed=unconfirmed)
 
 
 def _ci_pending(ctx, project, item, pr, view):

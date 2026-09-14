@@ -7,7 +7,6 @@ the item moves to whatever state its outcome implies.
 """
 
 import json
-import shlex
 import subprocess
 from datetime import timedelta
 
@@ -19,45 +18,245 @@ from .usage import record_claude_usage
 NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent")
 
 
+class Ending:
+    """One run's ending, as the outcome handlers below need it.
+
+    Built once by `finalize` after the log has been read, then passed to the
+    one handler whose rule matches. `saved`, `keep_worktree` and `closed` are
+    filled in by `_save_work` before the dispatch.
+    """
+
+    def __init__(self, ctx, run, item, pol, log, kind, verb, rest, reason, outcome):
+        self.ctx, self.led, self.run, self.item, self.pol = ctx, ctx.led, run, item, pol
+        self.log, self.kind = log, kind
+        self.verb, self.rest, self.reason, self.outcome = verb, rest, reason, outcome
+        self.project, self.number = run["project"], run["number"]
+        self.saved, self.keep_worktree, self.closed = None, False, False
+        self.duration_mins = None
+        started_at = row_get(run, "started_at")
+        if started_at:
+            try:
+                self.duration_mins = (ctx.led.now() - parse(started_at)).total_seconds() / 60.0
+            except Exception:                   # noqa: BLE001 — an unreadable timestamp
+                pass                            #   must not cost us the finalize
+
+    def set_state(self, state, why, **cols):
+        self.led.set_state(self.project, self.number, state, why, **cols)
+
+    def ping(self, title, message, **kw):
+        self.ctx.ping(title, message, self.project, self.number, **kw)
+
+
+# ---------- what each ending means ----------
+
+def _retry(e):
+    """No usable outcome: another attempt, or `failed` once they run out."""
+    retry_or_fail(e.ctx, e.project, e.number, e.item, e.reason, e.outcome,
+                  platform=e.run["platform"], duration_mins=e.duration_mins)
+    return True
+
+
+def _needs_you(e):
+    """The agent asked a question only the owner can answer (DESIGN D13)."""
+    e.set_state("needs_you", e.rest)
+    e.ping(f"Mahler needs you — {e.project} #{e.number}", e.rest or e.item["title"],
+           priority="high", tags="question")
+    return True
+
+
+def _sorted_ready(e):
+    e.set_state("ready", "sorted", sorted_at=iso(e.led.now()))
+    return True
+
+
+def _sorted_split(e):
+    e.set_state("parent", "split into sub-issues")
+    return True
+
+
+SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you}
+
+
+def _ended_done(e):
+    """D18: the run's own job is finished. The conductor (code, not another
+    agent) ships it from here: push, PR, CI, merge. A DONE build is a success,
+    not a failed attempt — no attempt is counted, and the item leaves the ready
+    queue into `verifying`."""
+    if e.run["role"] == "fix":
+        # A fix's DONE goes back to verifying on the same PR: the new SHA
+        # re-triggers CI. The summary stays the build's.
+        e.set_state("verifying", "fix pushed — CI re-runs on the new SHA")
+        e.ping(f"Fix pushed — {e.project} #{e.number}",
+               f"{e.run['platform']} ended DONE; CI re-runs on the PR", priority="low")
+        return True
+    if not (e.saved or e.item["branch"]):
+        return _retry(e)                        # DONE, but nothing to ship
+    e.set_state("verifying", "build done — the conductor ships it",
+                summary=e.rest or e.item["title"])
+    e.ping(f"Build finished — {e.project} #{e.number}",
+           f"{e.run['platform']} ended DONE; the conductor opens the PR next",
+           priority="low")
+    return True
+
+
+def _ended_parked(e):
+    e.set_state("parked", "parked while running")
+    return True
+
+
+def _ended_preempted(e):
+    cur = e.led.lease(e.project, e.number)
+    if cur and cur["kind"] == "interactive":
+        e.set_state("working", "handed to your session")
+    else:
+        e.set_state("ready", "handoff (preempted)")
+    e.ping(f"Handoff to you — {e.project} #{e.number}",
+           f"{e.run['platform']} stepped aside; its work is on "
+           f"{e.saved['ref'] if e.saved else 'nothing new to save'}", priority="low")
+    return True
+
+
+def _ended_out_of_reach(e):
+    """Quota or a lost lease: the item goes back in the queue for whichever
+    platform can afford it next (D9)."""
+    e.set_state("ready", f"handoff ({e.reason})")
+    e.ping(f"Handoff — {e.project} #{e.number}",
+           f"{e.run['platform']} stopped ({e.reason}); next platform picks it up",
+           priority="low")
+    return True
+
+
+def _ended_unconfirmed(e):
+    """D18 fallback: no STATUS line (or a timeout after DONE), but the branch
+    may still be done — both when the run exited cleanly without STATUS and
+    when it timed out with green tests on committed or uncommitted work
+    (mahler#145). A Cline run gets one resume before we give up (mahler#17).
+    -> False when that nudge restarted it, so finalize leaves it alone."""
+    if _try_verify_fallback(e.ctx, e.run, e.pol, e.saved, e.item):
+        return True                             # handled — state set to verifying
+    if e.reason is None and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol):
+        return False                            # alive again — finalized when it ends
+    return _retry(e)
+
+
+# Tried in order: the first rule that matches decides the ending. The order is
+# the contract — a NEEDS-YOU question outranks the reason the run stopped, and
+# the verify-green fallback is the last word before an attempt is counted.
+ENDINGS = (
+    (lambda e: e.verb == "NEEDS-YOU", _needs_you),
+    (lambda e: e.verb == "DONE" and e.reason in (None, "quota"), _ended_done),
+    (lambda e: e.reason == "parked", _ended_parked),
+    (lambda e: e.reason == "preempted", _ended_preempted),
+    (lambda e: e.reason in ("quota", "lost-lease"), _ended_out_of_reach),
+    (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
+     _ended_unconfirmed),
+)
+
+
+def _dispatch(e):
+    """-> False when the run is alive again and must not be closed out."""
+    for matches, handle in ENDINGS:
+        if matches(e):
+            return handle(e)
+    return _retry(e)
+
+
+# ---------- finalize ----------
+
+def _backoff_until(ctx, run, log):
+    """When a quota error named its own reset time, honour it (mahler#124);
+    otherwise wait the platform's flat backoff. None when quota wasn't hit."""
+    if not log["quota_hit"]:
+        return None
+    pconf = ctx.cfg["platforms"][run["platform"]]
+    minutes = log["retry_after"] if log["retry_after"] is not None \
+        else pconf.get("backoff_minutes", 60)
+    return iso(ctx.led.now() + timedelta(minutes=minutes))
+
+
+def _record_run_usage(ctx, run, kind, log):
+    """Everything the run's own log says about what it spent."""
+    led, until = ctx.led, _backoff_until(ctx, run, log)
+    if kind == "claude":
+        # one reading covers every platform sharing that Claude login (D21, D25)
+        record_claude_usage(ctx, log["usage"], backoff_until=until, platform=run["platform"])
+        return
+    for w, pct, resets in log["usage"]:
+        led.record_usage(run["platform"], w, pct, resets)
+    if until:
+        for w in ctx.cfg["platforms"][run["platform"]].get("windows", router.WINDOWS):
+            led.record_usage(run["platform"], w, 100.0, until)
+
+
+def _save_work(e):
+    """Whatever the run left becomes a pushed ref and a handoff comment (D9) —
+    unless its own merge already closed the issue, in which case it is done."""
+    ctx, led = e.ctx, e.led
+    try:
+        e.closed = ctx.gh(e.project).issue_state(e.number) == "CLOSED"
+    except GHError:
+        pass
+    if e.closed:
+        e.set_state("done", e.outcome)
+        if e.verb == "MERGED":
+            e.ping(f"Shipped — {e.project} #{e.number}", e.item["title"], tags="rocket")
+        return
+    try:
+        e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
+                                  e.pol.get("base", "main"))
+    except runner.GitError as err:
+        e.keep_worktree = True
+        ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
+    if e.saved:
+        led.upsert_item(e.project, e.number, branch=e.saved["ref"])
+    _handoff_comment(ctx, e.run, e.item, e.reason, e.outcome, e.saved, e.log, e.keep_worktree)
+
+
+def _close_the_books(e, code):
+    """The lease, the run row and the worktree, once the ending is decided."""
+    ctx, led, run = e.ctx, e.led, e.run
+    # A finished change keeps the canonical project slot while the conductor
+    # opens/watches/merges its PR (D19, D24). Transfer the same item lease in
+    # one transaction so a second machine cannot claim another issue in the
+    # release/claim gap. On transport failure the run lease is left to expire.
+    if led.item(e.project, e.number)["state"] == "verifying":
+        transferred, info = led.claim(
+            e.project, e.number, CONDUCTOR, "auto", e.pol["auto_lease_minutes"],
+            handoff_from=(f"run:{run['id']}", run["epoch"]))
+        if transferred is None:
+            detail = info.get("unavailable") or "canonical lease transfer refused"
+            ctx.say(f"{e.project}#{e.number}: {detail}; existing lease left to expire safely")
+    else:
+        led.release(e.project, e.number, holder=f"run:{run['id']}", epoch=run["epoch"])
+    update_cols = {"status": "ended", "outcome": e.outcome, "exit_code": code,
+                   "ended_at": iso(led.now())}
+    if not run["stop_reason"] and e.reason:     # mahler#124: record why it stopped
+        update_cols["stop_reason"] = e.reason
+    if e.log.get("model") and e.log["model"] != run["model"]:
+        # kilo-auto/free is stateless per invocation — the model actually used
+        # is the signal for whether a quota hit reflects one underlying free
+        # model being rate-limited rather than the whole pool (mahler#141).
+        update_cols["model"] = e.log["model"]
+    led.update_run(run["id"], **update_cols)
+    _check_estimate_calibration(ctx)
+    if not e.keep_worktree:
+        runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],
+                               runner.worktree_root(e.pol))
+
+
 def finalize(ctx, run):
+    """A run that ended passes through here exactly once."""
     led = ctx.led
     project, n = run["project"], run["number"]
     pol = ctx.policy(project)
     item = led.item(project, n)
     kind = ctx.cfg["platforms"][run["platform"]]["kind"]
     log = platforms.read_log(run["log_path"], kind)
-    if kind == "claude":
-        until = None
-        if log["quota_hit"]:
-            pconf = ctx.cfg["platforms"][run["platform"]]
-            # mahler#124: honor a reset time the quota error named (e.g. Cline's
-            # daily cap) instead of always waiting the flat backoff.
-            minutes = log["retry_after"] if log["retry_after"] is not None \
-                else pconf.get("backoff_minutes", 60)
-            until = iso(led.now() + timedelta(minutes=minutes))
-        record_claude_usage(ctx, log["usage"], backoff_until=until, platform=run["platform"])
-    else:
-        for w, pct, resets in log["usage"]:
-            led.record_usage(run["platform"], w, pct, resets)
-        if log["quota_hit"]:
-            pconf = ctx.cfg["platforms"][run["platform"]]
-            # mahler#124: honor a reset time the quota error named (e.g. Cline's
-            # daily cap) instead of always waiting the flat backoff.
-            minutes = log["retry_after"] if log["retry_after"] is not None \
-                else pconf.get("backoff_minutes", 60)
-            until = iso(led.now() + timedelta(minutes=minutes))
-            for w in pconf.get("windows", router.WINDOWS):
-                led.record_usage(run["platform"], w, 100.0, until)
+    _record_run_usage(ctx, run, kind, log)
+
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
-    duration_mins = None
-    started_at = row_get(run, "started_at")
-    if started_at:
-        try:
-            duration_mins = (led.now() - parse(started_at)).total_seconds() / 60.0
-        except Exception:
-            pass
     code = runner.exit_code(run)
-    setup_failed = code == 97 and run["role"] == "build"   # setup step failed before the agent ran
+    setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
     reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
              ("setup-failed" if setup_failed else None)
     outcome = ("setup failed" if setup_failed
@@ -68,132 +267,19 @@ def finalize(ctx, run):
         return
     if reason == "silent":
         _hold_platform(ctx, run)
-
-    gh = ctx.gh(project)
-    keep_worktree = False
     if setup_failed:
         _setup_failure(ctx, run, item)
         return
     led.reset_setup_fails(project, n)
+
+    ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     if run["role"] == "sort":
-        if verb == "READY":
-            led.set_state(project, n, "ready", "sorted", sorted_at=iso(led.now()))
-        elif verb == "SPLIT":
-            led.set_state(project, n, "parent", "split into sub-issues")
-        elif verb == "NEEDS-YOU":
-            led.set_state(project, n, "needs_you", rest)
-            ctx.ping(f"Mahler needs you — {project} #{n}", rest or item["title"],
-                     project, n, priority="high", tags="question")
-        else:
-            retry_or_fail(ctx, project, n, item, reason, outcome,
-                           platform=run["platform"], duration_mins=duration_mins)
+        SORT_OUTCOMES.get(verb, _retry)(ending)
     else:
-        closed = False
-        try:
-            closed = gh.issue_state(n) == "CLOSED"
-        except GHError:
-            pass
-        saved = None
-        if closed:
-            led.set_state(project, n, "done", outcome)
-            if verb == "MERGED":
-                ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
-        else:
-            try:
-                saved = runner.snapshot(pol["path"], run["worktree"], run["id"], n,
-                                        pol.get("base", "main"))
-            except runner.GitError as e:
-                keep_worktree = True
-                ctx.say(f"{project}#{n}: snapshot failed, keeping worktree — {e}")
-            if saved:
-                led.upsert_item(project, n, branch=saved["ref"])
-            _handoff_comment(ctx, run, item, reason, outcome, saved, log, keep_worktree)
-            if verb == "NEEDS-YOU":
-                led.set_state(project, n, "needs_you", rest)
-                ctx.ping(f"Mahler needs you — {project} #{n}", rest or item["title"],
-                         project, n, priority="high", tags="question")
-            elif verb == "DONE" and reason in (None, "quota"):
-                # D18: the run's own job is finished. The conductor (code, not
-                # another agent) ships it from here: push, PR, CI, merge. A DONE
-                # build is a success, not a failed attempt — no attempt is
-                # counted, and the item leaves the ready queue into `verifying`.
-                if run["role"] == "fix":
-                    # A fix's DONE goes back to verifying on the same PR: the
-                    # new SHA re-triggers CI. The summary stays the build's.
-                    led.set_state(project, n, "verifying",
-                                  "fix pushed — CI re-runs on the new SHA")
-                    ctx.ping(f"Fix pushed — {project} #{n}",
-                             f"{run['platform']} ended DONE; CI re-runs on the PR",
-                             project, n, priority="low")
-                elif saved or item["branch"]:
-                    led.set_state(project, n, "verifying",
-                                  "build done — the conductor ships it",
-                                  summary=rest or item["title"])
-                    ctx.ping(f"Build finished — {project} #{n}",
-                             f"{run['platform']} ended DONE; the conductor opens the PR next",
-                             project, n, priority="low")
-                else:
-                    retry_or_fail(ctx, project, n, item, reason, outcome,
-                                   platform=run["platform"], duration_mins=duration_mins)
-            elif reason == "parked":
-                led.set_state(project, n, "parked", "parked while running")
-            elif reason == "preempted":
-                cur = led.lease(project, n)
-                if cur and cur["kind"] == "interactive":
-                    led.set_state(project, n, "working", "handed to your session")
-                else:
-                    led.set_state(project, n, "ready", "handoff (preempted)")
-                ctx.ping(f"Handoff to you — {project} #{n}",
-                         f"{run['platform']} stepped aside; its work is on "
-                         f"{saved['ref'] if saved else 'nothing new to save'}",
-                         project, n, priority="low")
-            elif reason in ("quota", "lost-lease"):
-                led.set_state(project, n, "ready", f"handoff ({reason})")
-                ctx.ping(f"Handoff — {project} #{n}",
-                         f"{run['platform']} stopped ({reason}); next platform picks it up",
-                         project, n, priority="low")
-            elif (verb is None or verb == "DONE") and reason in (None, "timeout"):
-                # D18 fallback: no STATUS line (or timed out after DONE), but the branch
-                # may still be done. Applies both when run exited cleanly without STATUS,
-                # or when it timed out with green tests on uncommitted/committed work (mahler#145).
-                # Also: Cline resume-once before giving up (mahler#17, only when reason is None).
-                if _try_verify_fallback(ctx, run, pol, saved, item):
-                    pass   # handled — state set to verifying
-                elif reason is None and _try_cline_nudge(ctx, run, kind, log, pol):
-                    return   # run is still alive — finalized again when the nudge ends
-                else:
-                    retry_or_fail(ctx, project, n, item, reason, outcome,
-                                   platform=run["platform"], duration_mins=duration_mins)
-            else:
-                retry_or_fail(ctx, project, n, item, reason, outcome,
-                               platform=run["platform"], duration_mins=duration_mins)
-    # A finished change keeps the canonical project slot while the conductor
-    # opens/watches/merges its PR (D19, D24). Transfer the same item lease in
-    # one transaction so a second machine cannot claim another issue in the
-    # release/claim gap. On transport failure the run lease is left to expire.
-    if led.item(project, n)["state"] == "verifying":
-        transferred, info = led.claim(
-            project, n, CONDUCTOR, "auto", pol["auto_lease_minutes"],
-            handoff_from=(f"run:{run['id']}", run["epoch"]))
-        if transferred is None:
-            detail = info.get("unavailable") or "canonical lease transfer refused"
-            ctx.say(f"{project}#{n}: {detail}; existing lease left to expire safely")
-    else:
-        led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
-    update_cols = {"status": "ended", "outcome": outcome, "exit_code": code,
-                   "ended_at": iso(led.now())}
-    if not run["stop_reason"] and reason:      # mahler#124: record why it stopped
-        update_cols["stop_reason"] = reason
-    if log.get("model") and log["model"] != run["model"]:
-        # kilo-auto/free is stateless per invocation — the model actually used
-        # is the signal for whether a quota hit reflects one underlying free
-        # model being rate-limited rather than the whole pool (mahler#141).
-        update_cols["model"] = log["model"]
-    led.update_run(run["id"], **update_cols)
-    _check_estimate_calibration(ctx)
-    if not keep_worktree:
-        runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
-                               runner.worktree_root(pol))
+        _save_work(ending)
+        if not ending.closed and not _dispatch(ending):
+            return                  # a nudge resumed it; it finalizes again when it ends
+    _close_the_books(ending, code)
 
 
 def _check_estimate_calibration(ctx):
@@ -301,14 +387,11 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
         # No session ID found — start a fresh prompt in the same worktree
         argv = [platforms.cline_exe(), "--cwd", wt, "--json", "--auto-approve", "true",
                 "-t", str(timeout_secs), nudge_prompt]
-    log_path = run["log_path"]
-    status_path = run["status_path"]
-    shell = (f"{shlex.join(argv)} >> {shlex.quote(log_path)} 2>&1; "
-             f"echo $? > {shlex.quote(status_path)}")
-    proc = subprocess.Popen(["/bin/sh", "-c", shell], cwd=wt,
-                            start_new_session=True, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    led.update_run(run["id"], pid=proc.pid)
+    # mahler#70: process lifecycle is runner's job, so the resume goes out
+    # through the same detached, shlex-quoted spawn a launch uses — appending
+    # to the run's own log, so read_log still sees one conversation.
+    pid = runner.spawn(argv, wt, run["log_path"], run["status_path"], append=True)
+    led.update_run(run["id"], pid=pid)
     led.heartbeat(run["project"], run["number"], f"run:{run['id']}", run["epoch"],
                   pol["auto_lease_minutes"])
     return True
