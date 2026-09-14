@@ -620,6 +620,29 @@ class ParseTests(unittest.TestCase):
             r = platforms.read_log(k, "kilo")
             self.assertFalse(r["quota_hit"])
 
+    def test_retry_after_minutes(self):
+        # mahler#124: Cline's daily cap names its own reset time.
+        self.assertEqual(platforms.retry_after_minutes("Try again in 17h 5m"), 17 * 60 + 5)
+        self.assertEqual(platforms.retry_after_minutes("try again in 45m"), 45)
+        self.assertEqual(platforms.retry_after_minutes("Try again in 2h"), 2 * 60)
+        self.assertIsNone(platforms.retry_after_minutes("no reset time here"))
+        self.assertIsNone(platforms.retry_after_minutes(""))
+        self.assertIsNone(platforms.retry_after_minutes(None))
+
+    def test_cline_daily_cap_gives_retry_after_from_the_error_text(self):
+        # Real shape from the issue: every run fails at once when Cline's free
+        # model (GLM-5.3-flash) hits its daily cap (mahler#124).
+        with tempfile.TemporaryDirectory() as d:
+            c = os.path.join(d, "c.log")
+            with open(c, "w") as fh:
+                fh.write(json.dumps({"error": {
+                    "code": "INFERENCE_CAP_ERROR",
+                    "message": "Error 429: Daily free limit reached on model "
+                               "z-ai/glm-5.3-flash. Try again in 9h 41m"}}) + "\n")
+            r = platforms.read_log(c, "cline")
+            self.assertTrue(r["quota_hit"])
+            self.assertEqual(r["retry_after"], 9 * 60 + 41)
+
 
 class ClaudeUsageSharingTests(unittest.TestCase):
     def setUp(self):

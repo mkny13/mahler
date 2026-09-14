@@ -368,14 +368,22 @@ def finalize(ctx, run):
         until = None
         if log["quota_hit"]:
             pconf = ctx.cfg["platforms"][run["platform"]]
-            until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
+            # mahler#124: honor a reset time the quota error named (e.g. Cline's
+            # daily cap) instead of always waiting the flat backoff.
+            minutes = log["retry_after"] if log["retry_after"] is not None \
+                else pconf.get("backoff_minutes", 60)
+            until = iso(led.now() + timedelta(minutes=minutes))
         _record_claude_usage(ctx, log["usage"], backoff_until=until, platform=run["platform"])
     else:
         for w, pct, resets in log["usage"]:
             led.record_usage(run["platform"], w, pct, resets)
         if log["quota_hit"]:
             pconf = ctx.cfg["platforms"][run["platform"]]
-            until = iso(led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60)))
+            # mahler#124: honor a reset time the quota error named (e.g. Cline's
+            # daily cap) instead of always waiting the flat backoff.
+            minutes = log["retry_after"] if log["retry_after"] is not None \
+                else pconf.get("backoff_minutes", 60)
+            until = iso(led.now() + timedelta(minutes=minutes))
             for w in pconf.get("windows", router.WINDOWS):
                 led.record_usage(run["platform"], w, 100.0, until)
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
@@ -499,8 +507,11 @@ def finalize(ctx, run):
             ctx.say(f"{project}#{n}: {detail}; existing lease left to expire safely")
     else:
         led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
-    led.update_run(run["id"], status="ended", outcome=outcome, exit_code=code,
-                   ended_at=iso(led.now()))
+    update_cols = {"status": "ended", "outcome": outcome, "exit_code": code,
+                   "ended_at": iso(led.now())}
+    if not run["stop_reason"] and reason:      # mahler#124: record why it stopped
+        update_cols["stop_reason"] = reason
+    led.update_run(run["id"], **update_cols)
     if not keep_worktree:
         runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
                                runner.worktree_root(pol))

@@ -10,7 +10,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, runner, scheduler
@@ -161,6 +161,26 @@ class RunTests(unittest.TestCase):
         self.assertTrue(opus_5h)
         self.assertEqual(claude_5h[0]["used_pct"], 45.0)
         self.assertEqual(opus_5h[0]["used_pct"], 45.0)
+
+    def test_cline_daily_cap_waits_until_the_named_reset_not_the_flat_backoff(self):
+        # mahler#124: Cline's free model names its own reset time in the
+        # error text ("Try again in 9h 41m") — honor it instead of always
+        # retrying after backoff_minutes (60).
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"error": {
+                "code": "INFERENCE_CAP_ERROR",
+                "message": "Error 429: Daily free limit reached on model "
+                           "z-ai/glm-5.3-flash. Try again in 9h 41m"}}) + "\n")
+        self.finalize()
+        usage = self.led.q("SELECT resets_at, used_pct FROM usage WHERE platform='cline-free' "
+                           "AND window='5h' ORDER BY sampled_at DESC LIMIT 1")
+        self.assertTrue(usage)
+        self.assertEqual(usage[0]["used_pct"], 100.0)
+        resets_at = datetime.fromisoformat(usage[0]["resets_at"].replace("Z", "+00:00"))
+        expected = NOW + timedelta(hours=9, minutes=41)
+        self.assertLess(abs((resets_at - expected).total_seconds()), 60)
+        run = self.led.q("SELECT stop_reason FROM runs WHERE id=?", (self.run_id,))[0]
+        self.assertEqual(run["stop_reason"], "quota")
 
 
 if __name__ == "__main__":
