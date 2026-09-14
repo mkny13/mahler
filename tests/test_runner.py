@@ -168,38 +168,57 @@ class PlatformLaunchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             runs = os.path.join(d, "runs")
             repo = os.path.join(d, "repo")
+            remote = os.path.join(d, "remote.git")
             worktrees = os.path.join(d, "worktrees")
             os.makedirs(repo)
+            sh(d, "git", "init", "-q", "--bare", "-b", "main", remote)
+            sh(d, "git", "clone", "-q", remote, repo)
+            for k, v in (("user.email", "t@t"), ("user.name", "t")):
+                sh(repo, "git", "config", k, v)
+            sh(repo, "git", "commit", "--allow-empty", "-qm", "init")
+            sh(repo, "git", "push", "-q", "origin", "main")
             policy = {
                 "path": repo, "repo": "x/y", "base": "main", "link": [],
                 "rules": "", "run_timeout_minutes": 60,
                 "worktree_root": worktrees,
             }
             ctx = SimpleNamespace(
-                cfg={"platforms": {"codex": {"kind": "codex"}}},
+                cfg={"platforms": {"codex": {"kind": "codex", "model": "codex"}}},
                 policy=lambda project: policy,
             )
             item = {"number": 157, "title": "Add Codex", "branch": None}
 
+            # Mock Popen only for the agent launch (which uses /bin/sh -c),
+            # let subprocess.run (used by git) work normally
+            real_popen = subprocess.Popen
+            def popen_side_effect(args, **kwargs):
+                if args and args[0] == "/bin/sh" and args[1] == "-c":
+                    return SimpleNamespace(pid=321)
+                return real_popen(args, **kwargs)
+
             with mock.patch.object(config, "RUNS_DIR", runs), \
-                    mock.patch.object(runner, "git"), \
-                    mock.patch.object(runner, "remote_has", return_value=False), \
-                    mock.patch.object(runner, "render", return_value="prompt"), \
-                    mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
                     mock.patch.object(runner.platforms, "argv_for",
                                       return_value=["/usr/bin/true"]) as argv_for, \
                     mock.patch.object(runner.subprocess, "Popen",
-                                      return_value=SimpleNamespace(pid=321)) as popen:
+                                      side_effect=popen_side_effect) as popen:
                 launched = runner.launch(ctx, "mahler", item, "build", "codex", 9, 4)
 
             worktree = os.path.join(worktrees, "mahler", "157-run9")
-            argv_for.assert_called_once_with(ctx.cfg["platforms"]["codex"], "prompt",
+            argv_for.assert_called_once_with(ctx.cfg["platforms"]["codex"], mock.ANY,
                                              worktree, "build", 60)
             self.assertEqual(popen.call_args.kwargs["cwd"], worktree)
+            self.assertEqual(launched["worktree"], worktree)
+            # Verify worktree was actually created and is a valid git worktree
+            self.assertTrue(os.path.isdir(worktree))
+            self.assertTrue(os.path.isfile(os.path.join(worktree, ".git")))
+            # Verify hooks directory was created with pre-push hook
+            hooks_dir = os.path.join(runs, "9", "hooks")
+            self.assertTrue(os.path.isdir(hooks_dir))
+            self.assertTrue(os.path.isfile(os.path.join(hooks_dir, "pre-push")))
+            # Verify the hooks path is passed via GIT_CONFIG_VALUE_0
             env = popen.call_args.kwargs["env"]
             self.assertEqual(env["MAHLER_EPOCH"], "4")
-            self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/tmp/hooks")
-            self.assertEqual(launched["worktree"], worktree)
+            self.assertEqual(env["GIT_CONFIG_VALUE_0"], hooks_dir)
 
 
 class ShellSanitizationTests(unittest.TestCase):

@@ -51,13 +51,18 @@ class RouterTests(unittest.TestCase):
 
     def test_weekly_reserve_applies_too(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (10, 71)})
-        self.assertIsNone(router.pick(self.cfg, led, "build")[0])
+        name, reasons = router.pick(self.cfg, led, "build")
+        self.assertIsNone(name)
+        self.assertTrue(any("claude: soft" in r for r in reasons),
+                        f"claude should be rejected due to weekly reserve, reasons: {reasons}")
 
     def test_unknown_usage_counts_as_over_the_line(self):
         led = led_with(**{"agy-claude": (10, 10)})
         led.q("DELETE FROM usage WHERE platform='agy-claude' AND window='weekly'")
-        name, _ = router.pick(self.cfg, led, "build")
+        name, reasons = router.pick(self.cfg, led, "build")
         self.assertNotEqual(name, "agy-claude")
+        self.assertTrue(any("agy-claude: stale" in r for r in reasons),
+                        f"agy-claude should be rejected as stale, reasons: {reasons}")
 
     def test_stale_samples_are_unknown(self):
         led = Ledger(":memory:", clock=lambda: NOW)
