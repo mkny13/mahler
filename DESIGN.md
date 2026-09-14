@@ -948,6 +948,33 @@ a personal project must never spend a work login.
 - Concurrency: `concurrency.total` stays one global cap. Each login's slot is separate, so a
   second account usually wants the total raised by one.
 
+### D26 — Accounts: a project may span more than one account
+
+Decided 2026-09-13. Mahler-the-project is worked by Mahler-the-daemon, and Mike wants it built
+with both his personal and his work Claude logins — work projects will depend on it too, so it
+isn't purely personal or purely work. That's a deliberate, named exception to D25's "never
+crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole or a fallback.
+
+- A project names `accounts = [...]` instead of the singular `account` when it may spend more
+  than one. `account = "x"` stays shorthand for `accounts = ["x"]`; a project sets one or the
+  other, never both. Compute routing and quota still work exactly as D25 describes *per
+  account* — a multi-account project tries each of its accounts in turn (personal first, since
+  that's the pool D23's burst favors), and spends the first with headroom, rather than drawing
+  from some merged pool.
+- Pins keep working the same way, generalized from equality to membership: a pin is valid if the
+  pinned platform's account is one of the project's declared accounts, refused otherwise.
+- Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the
+  project declares — one of its several, not a single fixed one.
+- Builder-fairness accounting ("a sort must not eat the last builder", D25) stays per account. A
+  multi-account project counts toward every account bucket it can draw from, competing in each
+  pool it's eligible for, same as a single-account project competes in its one.
+- GitHub identity is a separate axis from compute account and stays singular: `gh_account`
+  (default personal) says which login the conductor uses for that project's sync, PRs, merges
+  and comments. Mahler's own repo is already reachable from Mike's personal GitHub, so it needs
+  no override even though it spends two compute accounts.
+- Only `mahler` sets `accounts = ["personal", "work"]`. Nothing else changes: a project that
+  still names a single `account` keeps D25's exact behaviour, unchanged.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
