@@ -208,6 +208,88 @@ class TestRender(unittest.TestCase):
         self.assertIn('http-equiv="refresh" content="30"', html)  # refresh unchanged
 
 
+def make_idle_led():
+    """Like make_led(), but with no active run — for exercising idle_reasons."""
+    led = Ledger(":memory:", thread_safe=True)
+    led.upsert_item("mahler", 5, title="Read-only status page",
+                    state="ready", priority=2)
+    return led
+
+
+class TestIdleReasons(unittest.TestCase):
+    """mahler#187: when Running is empty, the page explains why in plain English."""
+
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.cfg["claude_peak"] = {"enabled": False}   # deterministic unless a test opts in
+
+    def test_no_reasons_block_when_something_is_running(self):
+        html = render(make_led(), self.cfg)
+        self.assertNotIn('<div class="idle-why">', html)
+
+    def test_paused_explains_idle(self):
+        led = make_idle_led()
+        led.set_kv("paused", "1")
+        html = render(led, self.cfg)
+        self.assertIn('<div class="idle-why">', html)
+        self.assertIn("Mahler is paused globally", html)
+
+    def test_empty_backlog_explains_idle(self):
+        led = Ledger(":memory:", thread_safe=True)   # no items at all
+        html = render(led, self.cfg)
+        self.assertIn("backlog is empty", html)
+
+    def test_project_max_parallel_zero_explains_idle(self):
+        led = make_idle_led()
+        cfg = make_cfg()
+        cfg["claude_peak"] = {"enabled": False}
+        cfg["projects"]["mahler"]["max_parallel"] = 0
+        html = render(led, cfg)
+        self.assertIn('<div class="idle-why">', html)
+        self.assertIn("max_parallel is 0", html)
+        self.assertIn("mahler", html)
+
+    def test_quota_capped_explains_idle(self):
+        led = make_idle_led()
+        led.record_usage("claude", "5h", 75.0)
+        led.record_usage("claude", "weekly", 75.0)
+        html = render(led, self.cfg)
+        self.assertIn('<div class="idle-why">', html)
+        self.assertIn("claude is at its quota limit", html)
+
+    def test_peak_hours_explains_idle(self):
+        from datetime import datetime, timezone
+        led = Ledger(":memory:", thread_safe=True,
+                     clock=lambda: datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc))  # a Monday
+        led.upsert_item("mahler", 5, title="Read-only status page",
+                        state="ready", priority=2)
+        cfg = make_cfg()
+        cfg["claude_peak"] = {"enabled": True, "tz": "UTC",
+                              "weekdays": [0, 1, 2, 3, 4],
+                              "start": "00:00", "end": "23:59"}
+        html = render(led, cfg)
+        self.assertIn('<div class="idle-why">', html)
+        self.assertIn("Peak hours", html)
+
+    def test_reasons_can_combine(self):
+        led = make_idle_led()
+        led.set_kv("paused", "1")
+        led.record_usage("claude", "5h", 75.0)
+        led.record_usage("claude", "weekly", 75.0)
+        html = render(led, self.cfg)
+        self.assertIn("Mahler is paused globally", html)
+        self.assertIn("claude is at its quota limit", html)
+
+    def test_idle_reasons_function_returns_list_of_strings(self):
+        led = make_idle_led()
+        led.set_kv("paused", "1")
+        snap = serve.snapshot(self.cfg, led)
+        reasons = serve.idle_reasons(self.cfg, snap)
+        self.assertIsInstance(reasons, list)
+        self.assertTrue(all(isinstance(r, str) for r in reasons))
+        self.assertTrue(any("paused" in r for r in reasons))
+
+
 class TestServer(unittest.TestCase):
     """The real HTTP surface, on an ephemeral localhost port."""
 
