@@ -64,6 +64,8 @@ import re
 import subprocess
 from datetime import datetime, timezone
 
+from . import redact
+
 HOME = os.path.expanduser("~")
 
 # Free-tier exhaustion doesn't always say "quota": Kilo's out-of-credits error
@@ -527,7 +529,11 @@ def read_log(path, kind):
                     if su.get("text_delta"):
                         texts.append(su["text_delta"])
     joined = "".join(texts) if kind == "agy" else "\n".join(texts)
-    res["last_text"] = (res["final"] or joined)[-1500:]
+    # The last_text feeds handoff comments (GitHub) and the final text can land
+    # in a NEEDS-YOU ping (ntfy), so credential-shaped strings that leaked into
+    # the agent's own output are masked before anything sees them (issue #76).
+    res["final"] = redact.redact(res["final"])
+    res["last_text"] = redact.redact((res["final"] or joined)[-1500:])
     return res
 
 

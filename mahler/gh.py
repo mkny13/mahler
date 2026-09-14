@@ -8,6 +8,8 @@ import json
 import re
 import subprocess
 
+from . import redact
+
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
     "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
@@ -43,7 +45,8 @@ def _gh(*args, input=None, timeout=90, env=None):
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"gh {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
-        raise GHError(f"gh {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:500]}")
+        raise GHError(f"gh {' '.join(args[:3])}: "
+                      f"{redact.redact((r.stderr or r.stdout).strip()[:500])}")
     return r.stdout
 
 
@@ -56,7 +59,8 @@ def _git(path, *args, env=None):
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"git {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
-        raise GHError(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:400]}")
+        raise GHError(f"git {' '.join(args[:3])}: "
+                      f"{redact.redact((r.stderr or r.stdout).strip()[:400])}")
     return r.stdout.strip()
 
 

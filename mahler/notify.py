@@ -24,6 +24,11 @@ def _ascii_title(title):
 
 
 def send(cfg, title, message="", click=None, priority="default", tags=""):
+    """Titles and links only — never secrets. As the last filter, anything
+    credential-shaped that leaked into the text earlier is masked here, at the
+    one boundary where text leaves the machine (issue #76)."""
+    from . import redact
+    title, message = redact.redact(title), redact.redact(message)
     topic = cfg.get("ntfy", {}).get("topic")
     if not topic:
         return False
