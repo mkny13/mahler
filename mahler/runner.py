@@ -14,7 +14,7 @@ import string
 import subprocess
 import sys
 
-from . import config, gh as gh_module, platforms
+from . import config, gh as gh_module, platforms, redact
 
 MAHLER_BIN = os.path.join(config.REPO_ROOT, "bin", "mahler")
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
@@ -31,7 +31,8 @@ def git(repo, *args, env=None, check=True):
     r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
                        env=env, timeout=300)
     if check and r.returncode != 0:
-        raise GitError(f"git {' '.join(args[:3])}: {(r.stderr or r.stdout).strip()[:400]}")
+        raise GitError(f"git {' '.join(args[:3])}: "
+                       f"{redact.redact((r.stderr or r.stdout).strip()[:400])}")
     return r.stdout.strip()
 
 
@@ -275,9 +276,13 @@ def setup_tail(run, lines=20):
     path = os.path.join(os.path.dirname(run["log_path"]), "setup.log")
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
-            return "".join(fh.readlines()[-lines:]).strip()
+            tail = "".join(fh.readlines()[-lines:]).strip()
     except OSError:
         return ""
+    # The setup command is project config and can echo its environment (set -x,
+    # verbose installers); this tail is posted to GitHub and printed by
+    # `mahler log`, so credential-shaped strings are masked first (issue #76).
+    return redact.redact(tail)
 
 
 def snapshot(repo, wt, run_id, number, base):
