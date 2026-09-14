@@ -159,9 +159,9 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     account = config.account_of(pconf)
     check_account(ctx, project, platform)
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
-    os.makedirs(run_dir, exist_ok=True)
+    config.ensure_private_dir(run_dir)
     wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")
-    os.makedirs(os.path.dirname(wt), exist_ok=True)
+    config.ensure_private_dir(os.path.dirname(wt))
 
     git(repo, "fetch", "--quiet", "--prune", "origin")
     branch, start = None, f"origin/{base}"
@@ -178,6 +178,9 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         except GitError:          # branch still checked out by a kept worktree
             branch = f"{branch}-r{run_id}"
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
+    # git created the worktree under the process umask; keep it user-only —
+    # it can hold linked .env files and repo content (issue #75)
+    config.ensure_private_dir(wt)
 
     for name in pol.get("link") or []:          # e.g. .env pointing at *local* services only
         src, dst = os.path.join(repo, name), os.path.join(wt, name)
