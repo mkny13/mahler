@@ -53,6 +53,12 @@ class LeaseTests(unittest.TestCase):
         lease, info = self.led.claim("p", 1, "run:9", "auto", 10)
         self.assertIsNone(lease)
         self.assertIn("held_by", info)
+        self.assertEqual(info["held_by"]["holder"], "interactive:you")
+        self.assertEqual(info["held_by"]["kind"], "interactive")
+        # Verify the interactive lease is still valid
+        current = self.led.lease("p", 1)
+        self.assertEqual(current["holder"], "interactive:you")
+        self.assertEqual(current["kind"], "interactive")
 
     def test_interactive_vs_interactive_needs_steal(self):
         self.led.claim("p", 1, "interactive:mac", "interactive", 30)
@@ -89,10 +95,30 @@ class LeaseTests(unittest.TestCase):
 
     def test_heartbeat_keeps_it_alive(self):
         lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
+        original_expires = lease["expires_at"]
         for _ in range(5):
             self.clock.advance(minutes=8)
             self.assertTrue(self.led.heartbeat("p", 1, "run:1", lease["epoch"], 10))
+            # Verify expires_at is actually extended
+            current = self.led.lease("p", 1, live_only=False)
+            self.assertGreater(current["expires_at"], original_expires)
+            original_expires = current["expires_at"]
         self.assertTrue(self.led.lease_check("p", 1, lease["epoch"]))
+
+    def test_heartbeat_fails_when_lease_taken(self):
+        lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
+        self.clock.advance(minutes=11)  # lease expires
+        self.led.claim("p", 1, "run:2", "auto", 10)  # new holder takes it
+        # Heartbeat with old epoch should fail
+        self.assertFalse(self.led.heartbeat("p", 1, "run:1", lease["epoch"], 10))
+
+    def test_heartbeat_fails_on_wrong_holder(self):
+        lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
+        self.assertFalse(self.led.heartbeat("p", 1, "run:other", lease["epoch"], 10))
+
+    def test_heartbeat_fails_on_wrong_epoch(self):
+        lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
+        self.assertFalse(self.led.heartbeat("p", 1, "run:1", lease["epoch"] + 1, 10))
 
     def test_release_only_by_matching_holder(self):
         lease, _ = self.led.claim("p", 1, "run:1", "auto", 10)
@@ -128,6 +154,21 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(conductor["holder"], "conductor")
         self.assertIsNone(other)
         self.assertIn("at_capacity", blocked)
+        # Verify epoch was incremented (fencing)
+        self.assertGreater(conductor["epoch"], run["epoch"])
+        # Verify old epoch is fenced
+        self.assertFalse(self.led.lease_check("p", 1, run["epoch"]))
+        self.assertTrue(self.led.lease_check("p", 1, conductor["epoch"]))
+
+    def test_handoff_fails_on_wrong_epoch(self):
+        run, _ = self.led.claim("p", 1, "run:1", "auto", 10,
+                                max_parallel=1)
+        # Try handoff with wrong epoch
+        conductor, info = self.led.claim(
+            "p", 1, "conductor", "auto", 10, max_parallel=1,
+            handoff_from=("run:1", run["epoch"] + 1))
+        self.assertIsNone(conductor)
+        self.assertIn("held_by", info)
 
     def test_next_id_is_monotonic_and_respects_floor(self):
         self.assertEqual(self.led.next_id("p", "D", floor=227), 228)
@@ -141,6 +182,8 @@ class ConnectionTests(unittest.TestCase):
     (mahler.serve serialises access with a lock)."""
 
     def test_thread_safe_ledger_usable_from_another_thread(self):
+        """thread_safe=True allows a connection to be used from another thread
+        when access is serialized externally (e.g. by a lock in mahler.serve)."""
         import threading
         led = Ledger(":memory:", thread_safe=True)
         result = {}
@@ -155,6 +198,31 @@ class ConnectionTests(unittest.TestCase):
         self.assertFalse(t.is_alive())
         self.assertEqual(result.get("title"), "x")
 
+    def test_thread_safe_ledger_serialized_access(self):
+        """Multiple threads can use the ledger when access is serialized with a lock."""
+        import threading
+        led = Ledger(":memory:", thread_safe=True)
+        lock = threading.Lock()
+        errors = []
+
+        def writer(thread_id):
+            try:
+                for i in range(50):
+                    with lock:
+                        led.upsert_item("p", thread_id * 100 + i, title=f"item-{thread_id}-{i}")
+            except Exception as e:
+                errors.append(f"Thread {thread_id}: {e}")
+
+        threads = [threading.Thread(target=writer, args=(i,)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertFalse(any(t.is_alive() for t in threads), "Some threads did not complete")
+        self.assertEqual(errors, [], f"Serialized access errors: {errors}")
+        self.assertEqual(len(led.items("p")), 250)
+
     def test_default_ledger_stays_main_thread_only(self):
         # without the flag sqlite3 still guards the connection: the guard is
         # the default, thread_safe must be a deliberate opt-in
@@ -165,7 +233,7 @@ class ConnectionTests(unittest.TestCase):
 
         def work():
             try:
-                led.item("p", 1)
+                led.upsert_item("p", 1, title="x")  # write operation triggers thread check
                 outcome.append("unguarded")
             except sqlite3.ProgrammingError:
                 outcome.append("guarded")
@@ -290,6 +358,19 @@ class RemoteLedgerTests(unittest.TestCase):
                 lease, info = routed.claim("mahler", 151, "run:7", "auto", 10)
                 self.assertIsNone(lease)
                 self.assertIn("invalid remote_ledger", info["unavailable"])
+        # Also test invalid host
+        self.cfg["projects"]["mahler"]["remote_ledger"]["command"] = [
+            "/opt/homebrew/bin/python3", "~/.mahler/app/bin/mahler"]
+        self.cfg["projects"]["mahler"]["remote_ledger"]["host"] = "invalid host with spaces"
+        routed = RoutedLedger(self.local, self.cfg, run=self.routed._run)
+        lease, info = routed.claim("mahler", 151, "run:7", "auto", 10)
+        self.assertIsNone(lease)
+        self.assertIn("invalid remote_ledger", info["unavailable"])
+        # Test valid host and command still works
+        self.cfg["projects"]["mahler"]["remote_ledger"]["host"] = "mike@mini.example.ts.net"
+        routed = RoutedLedger(self.local, self.cfg, run=self.routed._run)
+        lease, _ = routed.claim("mahler", 151, "run:7", "auto", 10)
+        self.assertIsNotNone(lease)
 
     def test_unconfigured_project_stays_fully_local(self):
         lease, _ = self.routed.claim("work", 2, "run:2", "auto", 10)
@@ -323,6 +404,13 @@ class RemoteLedgerTests(unittest.TestCase):
         self.assertTrue(self.routed.release(
             "mahler", 1, holder="run:1", epoch=lease["epoch"]))
         self.assertIsNone(self.canonical.lease("mahler", 1))
+        # Verify heartbeat fails with wrong epoch
+        lease2, _ = self.routed.claim("mahler", 2, "run:2", "auto", 10)
+        self.assertFalse(self.routed.heartbeat("mahler", 2, "run:2", lease2["epoch"] + 1, 10))
+        # Verify release fails with wrong epoch
+        self.assertFalse(self.routed.release("mahler", 2, holder="run:2", epoch=lease2["epoch"] + 1))
+        # Verify lease_check fails with wrong epoch
+        self.assertFalse(self.routed.lease_check("mahler", 2, lease2["epoch"] + 1))
 
     def test_status_rows_include_remote_working_lease(self):
         self.routed.claim("mahler", 1, "interactive:chat", "interactive", 30)
@@ -344,6 +432,9 @@ class RemoteLedgerTests(unittest.TestCase):
         self.assertFalse(routed.release("mahler", 1, holder="run:1", epoch=1))
         self.assertFalse(routed.lease_check("mahler", 1, 1))
         self.assertIn("host unreachable", routed.remote_error("mahler"))
+        # Verify local project still works
+        local_lease, _ = routed.claim("work", 1, "run:1", "auto", 10)
+        self.assertIsNotNone(local_lease)
 
     def test_malformed_success_response_is_also_closed(self):
         def malformed(argv, **kwargs):
@@ -541,6 +632,11 @@ class InvariantAndOrphanTests(unittest.TestCase):
         self.led.claim("p", 1, "run:1", "auto", 10)
         self.led.release("p", 1, holder="run:1", to_state=None)
         self.assertEqual(self.led.item("p", 1)["state"], "working")
+        # Verify lease is still released
+        self.assertIsNone(self.led.lease("p", 1))
+        # Verify no state transition event was logged
+        events = self.led.q("SELECT * FROM events WHERE kind='state' AND project='p' AND number=1")
+        self.assertEqual(len(events), 0)
 
     def test_orphan_working_items_query(self):
         # 1. working with live lease -> not orphan
@@ -583,8 +679,21 @@ class InvariantAndOrphanTests(unittest.TestCase):
         self.led.claim("p", 5, "run:5", "auto", 10)
         self.led.create_run(project="p", number=5, role="build", platform="claude", epoch=1, status="running")
 
+        # 6. lease on ready item WITH a stopping run -> not orphan lease
+        self.led.upsert_item("p", 6, state="ready")
+        self.led.claim("p", 6, "run:6", "auto", 10)
+        self.led.create_run(project="p", number=6, role="build", platform="claude", epoch=1, status="stopping")
+
         orphans = self.led.orphan_lease_rows()
         self.assertEqual(sorted(o["number"] for o in orphans), [3, 4])
+
+    def test_orphan_lease_rows_excludes_stopping_run(self):
+        # Verify that stopping runs also prevent orphan classification
+        self.led.upsert_item("p", 10, state="ready")
+        self.led.claim("p", 10, "run:10", "auto", 10)
+        self.led.create_run(project="p", number=10, role="build", platform="claude", epoch=1, status="stopping")
+        orphans = self.led.orphan_lease_rows()
+        self.assertNotIn(10, [o["number"] for o in orphans])
 
 class IndexTests(unittest.TestCase):
     """Query indexes (issue #89): created on fresh DBs and applied to existing
