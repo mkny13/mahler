@@ -79,6 +79,63 @@ def snapshot(cfg, led):
     }
 
 
+def idle_reasons(cfg, snap):
+    """Plain-English reasons nothing is running right now (issue #187).
+
+    Built from the same `snap` the rest of the page renders from, so it never
+    claims a state the page doesn't otherwise show. Every applicable reason is
+    returned (a tick can be idle for more than one cause at once); order is
+    roughly most-actionable-by-a-human first.
+    """
+    reasons = []
+
+    if snap["paused"]:
+        reasons.append("Mahler is paused globally — nothing new will start "
+                        "until you run `mahler resume`.")
+
+    all_items = [i for group in snap["by_state"].values() for i in group]
+    by_project = {}
+    for i in all_items:
+        by_project.setdefault(i["project"], []).append(i)
+
+    for name in cfg.get("projects", {}):
+        items = by_project.get(name, [])
+        pending = [i for i in items if i["state"] in ("inbox", "ready")]
+        if not pending:
+            continue
+        pol = config.project_policy(cfg, name)
+        if pol.get("max_parallel", 1) == 0:
+            reasons.append(f"{name}: max_parallel is 0 — {len(pending)} item(s) "
+                           f"waiting but the project is paused.")
+
+    verifying = snap["by_state"].get("verifying", [])
+    if verifying:
+        refs = ", ".join(f"{i['project']}#{i['number']}" for i in verifying[:3])
+        more = f" (+{len(verifying) - 3} more)" if len(verifying) > 3 else ""
+        reasons.append(f"{len(verifying)} item(s) waiting on CI / PR verification "
+                       f"before the conductor merges: {refs}{more}.")
+
+    if snap.get("peak"):
+        reasons.append(snap["peak"][0].upper() + snap["peak"][1:] + ".")
+
+    for q in snap["quota"]:
+        if q["state"] in ("soft", "hard"):
+            reasons.append(f"{q['name']} is at its quota limit ({q['detail']}).")
+
+    if reasons:
+        return reasons
+
+    if not all_items:
+        return ["The backlog is empty — nothing to work on."]
+
+    pending = [i for i in all_items if i["state"] in ("inbox", "ready")]
+    if pending:
+        return [f"{len(pending)} item(s) queued, but no platform has headroom "
+                f"for them right now."]
+
+    return ["Nothing running right now — check back after the next tick."]
+
+
 def _esc(s):
     return html.escape(str(s), quote=True)
 
@@ -128,6 +185,8 @@ h2 .count, h3 .count {{ color: var(--muted); font-weight: normal; }}
 }}
 .mono {{ font-variant-numeric: tabular-nums; }}
 .muted {{ color: var(--muted); }}
+.idle-why ul {{ margin: .35rem 0 0; padding-left: 1.1rem; }}
+.idle-why li {{ margin: .2rem 0; }}
 a {{ color: var(--accent); text-decoration: none; }}
 table {{ width: 100%; border-collapse: collapse; }}
 td {{ padding: .15rem 0; vertical-align: top; }}
@@ -229,6 +288,10 @@ def _render_rest(out, snap, cfg):
               f" &middot; {_esc(r['status'])}{stopped}{parent_str}</div></div>")
     else:
         w('<div class="muted">nothing running</div>')
+        w('<div class="idle-why"><ul>')
+        for reason in idle_reasons(cfg, snap):
+            w(f"<li class=\"muted\">{_esc(reason)}</li>")
+        w("</ul></div>")
     w("</details>")
 
     w('<details class="section" id="quota" open>')
