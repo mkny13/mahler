@@ -27,6 +27,7 @@ LABEL_COLORS = {
     "p1": "b60205", "p2": "fbca04", "p3": "c5def5",
 }
 PIN_COLOR = "d4c5f9"        # platform:* labels, created on the fly (mahler#20)
+AREA_COLOR = "0052cc"       # area:* labels, created on the fly (mahler#197)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
 DEPENDS_RE = re.compile(r"^\s*Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
@@ -166,6 +167,10 @@ class GH:
     def ensure_pass_label(self, pass_name):
         label = f"pass:{pass_name}"
         self._gh("label", "create", label, "-R", self.repo, "--color", PIN_COLOR, "--force")
+
+    def ensure_area_label(self, area_name):
+        label = f"area:{area_name}"
+        self._gh("label", "create", label, "-R", self.repo, "--color", AREA_COLOR, "--force")
 
     def create_issue(self, title, body="", labels=()):
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]

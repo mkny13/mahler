@@ -289,7 +289,9 @@ Two rules use this:
   14 days. The cost is bounded by how often runs check the lease: a few minutes of tokens.
 - **Parallel items in one project** start on current base and hold their slot until they merge
   (D19), so they rarely collide; when one does, the conductor sends it back for a rebuild. Items
-  sharing an `area:` label aren't run concurrently. Per-project `max_parallel` defaults to 2.
+  sharing an `area:` label aren't run concurrently — `tick.schedule()` gates `build`/`fix`
+  starts on area collision against both running and in-flight (`verifying`) items
+  (mahler#197). Per-project `max_parallel` defaults to 2.
 - **Shared counters** (like phish-in-app's `Dnnn` decision IDs, which collided in D208) are
   handed out by Mahler: `mahler next-id <project> D` is atomic. That removes a whole category of
   merge-time collision git can't detect.
