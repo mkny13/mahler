@@ -492,5 +492,98 @@ class AreaLabelTests(unittest.TestCase):
         self.assertEqual(lines, ["a#2: would build on agy-claude"])
 
 
+class HotHoldTests(unittest.TestCase):
+    """D6 layer 2: recent Claude transcript activity in a project holds its
+    new builds (not sorts, not running work) until hot_hold_minutes pass.
+    The hold lifts `hot_hold_minutes` after the last activity; a project can
+    opt out with hot_hold: false, and --no-hot-hold lifts every hold."""
+
+    def hold(self, minutes_ago=5, hot_hold=True, **over):
+        ctx, led = mk_ctx({"a": proj(hot_hold=hot_hold, **over)})
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1)
+        last = None if minutes_ago is None else NOW - timedelta(minutes=minutes_ago)
+        with mock.patch.object(presence, "last_claude_activity", return_value=last):
+            lines = plan(ctx, led)
+        return lines, ctx.lines
+
+    def test_recent_activity_holds_new_builds(self):
+        lines, said = self.hold(minutes_ago=5)
+        self.assertEqual(lines, [])
+        self.assertIn("a#1: hot hold — a Claude session is active in this project", said)
+
+    def test_activity_older_than_the_window_lets_builds_start(self):
+        lines, _ = self.hold(minutes_ago=25)          # default window is 20 min
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+
+    def test_no_activity_at_all_lets_builds_start(self):
+        lines, _ = self.hold(minutes_ago=None)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+
+    def test_a_raised_window_holds_longer(self):
+        lines, _ = self.hold(minutes_ago=25, hot_hold_minutes=30)
+        self.assertEqual(lines, [])
+
+    def test_a_project_can_opt_out_of_the_hot_hold(self):
+        lines, _ = self.hold(hot_hold=False)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+
+    def test_no_hot_hold_let_starts_through_everywhere(self):
+        cfg = mk_cfg({"a": proj(hot_hold=True)})
+        led = Ledger(":memory:", clock=lambda: NOW)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True, hot_hold=False)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1)
+        with mock.patch.object(presence, "last_claude_activity",
+                               return_value=NOW - timedelta(minutes=1)):
+            lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+
+    def test_sorts_are_not_gated_by_the_hot_hold(self):
+        # sorts are read-only triage: no worktree, no files, so a human
+        # session in the project never collides with one
+        ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, state="inbox")
+        with mock.patch.object(presence, "last_claude_activity",
+                               return_value=NOW - timedelta(minutes=1)):
+            lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#1: would sort on agy-claude"])
+
+
+class InteractiveLeaseRenewalTests(unittest.TestCase):
+    """D6: an interactive lease whose TTL lapses is renewed from Claude
+    transcript activity (presence stands in for the hooks), and released
+    back to ready when the activity is gone."""
+
+    def setUp(self):
+        self.t = {"now": NOW}
+        self.led = Ledger(":memory:", clock=lambda: self.t["now"])
+        cfg = mk_cfg({"a": proj()})
+        self.ctx = scheduler.Ctx(cfg, self.led, dry_run=True)
+
+    def expired_lease(self):
+        self.led.upsert_item("a", 1, state="working")
+        self.led.claim("a", 1, "interactive:you", "interactive", 30)
+        self.t["now"] = NOW + timedelta(minutes=45)     # past the 30-min TTL
+
+    def test_recent_claude_activity_renews_the_lease(self):
+        self.expired_lease()
+        with mock.patch.object(presence, "last_claude_activity",
+                               return_value=self.t["now"] - timedelta(minutes=5)):
+            tick.expire(self.ctx)
+        lease = self.led.lease("a", 1)
+        self.assertIsNotNone(lease)
+        self.assertEqual(lease["holder"], "interactive:you")
+        self.assertEqual(self.led.item("a", 1)["state"], "working")
+
+    def test_no_activity_releases_the_expired_lease(self):
+        self.expired_lease()
+        with mock.patch.object(presence, "last_claude_activity", return_value=None):
+            tick.expire(self.ctx)
+        self.assertIsNone(self.led.lease("a", 1))
+        self.assertEqual(self.led.item("a", 1)["state"], "ready")
+
+
 if __name__ == "__main__":
     unittest.main()

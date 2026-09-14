@@ -44,13 +44,17 @@ def human_claude_active(projects, minutes=20, root=CLAUDE_PROJECTS):
     Walks each project's primary checkout path for a recently modified
     transcript. Mahler's own runs live under ~/.mahler/worktrees, whose
     encoded path differs from the primary checkout, so they never count.
+    A project's own hot_hold_minutes (D6) wins over the default window,
+    so burst suppression and the schedule's hot hold agree on how long
+    activity keeps counting.
     """
     now = datetime.now(timezone.utc)
     for p in projects:
         path = p.get("path")
         if not path:
             continue
+        window = timedelta(minutes=p.get("hot_hold_minutes", minutes))
         last = last_claude_activity(path, root=root)
-        if last and now - last < timedelta(minutes=minutes):
+        if last and now - last < window:
             return True
     return False
