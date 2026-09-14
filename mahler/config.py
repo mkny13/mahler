@@ -242,7 +242,9 @@ def load(path=None):
     if os.path.exists(path):
         with open(path, "rb") as fh:
             user = tomllib.load(fh)
-    return resolve_platforms(_merge(DEFAULTS, user))
+    cfg = _merge(DEFAULTS, user)
+    validate_accounts(cfg)
+    return resolve_platforms(cfg)
 
 
 DEFAULT_ACCOUNT = "personal"
@@ -260,6 +262,36 @@ CREDENTIAL_VARS = (
 def account_of(conf):
     """The account a platform or project policy belongs to."""
     return conf.get("account") or DEFAULT_ACCOUNT
+
+
+def accounts_of(conf):
+    """The accounts a policy may spend, in declared order (D26). Platforms
+    stay single-account (D25); a project may name `accounts = [...]` instead
+    of the singular `account`, which still reads as one account either way."""
+    accts = conf.get("accounts")
+    if accts is None:
+        return [account_of(conf)]
+    return list(accts)
+
+
+def gh_account_of(conf):
+    """The GitHub identity a project's sync, PRs, merges and comments use
+    (D26): its own gh_account when set, else its first declared account."""
+    return conf.get("gh_account") or accounts_of(conf)[0]
+
+
+def validate_accounts(cfg):
+    """A project sets `account` or `accounts`, never both (D26)."""
+    for name, proj in cfg.get("projects", {}).items():
+        if "account" in proj and "accounts" in proj:
+            raise ValueError(f"project {name!r} sets both 'account' and "
+                             "'accounts' — one or the other (DESIGN D26)")
+        if "accounts" in proj:
+            accts = proj["accounts"]
+            if not (isinstance(accts, list) and accts
+                    and all(isinstance(a, str) and a for a in accts)):
+                raise ValueError(f"project {name!r}: 'accounts' must be a "
+                                 "non-empty list of account names (DESIGN D26)")
 
 
 def run_env(cfg, account, base=None):

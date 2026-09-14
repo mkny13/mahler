@@ -464,7 +464,7 @@ def cmd_add(a, cfg, led):
     if not pol.get("repo"):
         print(f"unknown project {a.project!r}")
         return 1
-    print(GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).create_issue(a.title, a.body or ""))
+    print(GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).create_issue(a.title, a.body or ""))
     return 0
 
 
@@ -476,7 +476,7 @@ def cmd_notify(a, cfg, led):
 
 def cmd_labels(a, cfg, led):
     pol = config.project_policy(cfg, a.project)
-    GH(pol["repo"], env=config.run_env(cfg, config.account_of(pol))).ensure_labels()
+    GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).ensure_labels()
     print(f"labels ensured on {pol['repo']}")
     return 0
 

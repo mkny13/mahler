@@ -139,15 +139,24 @@ def ci_handoff(ctx, project, item, branch, tail=150):
     return "\n".join(lines)
 
 
+def check_account(ctx, project, platform):
+    """Fail closed: a run must spend an account the project declares (D25).
+    D26: 'declares' is membership — any of the project's declared accounts."""
+    pol = ctx.policy(project)
+    account = config.account_of(ctx.cfg["platforms"][platform])
+    accounts = config.accounts_of(pol)
+    if account not in accounts:      # the router never does this (D25)
+        raise RuntimeError(f"{platform} spends the {account} account; "
+                           f"{project} is on {', '.join(accounts)}")
+
+
 def launch(ctx, project, item, role, platform, run_id, epoch):
     """Create the worktree, render the recipe, start the CLI detached."""
     pol = ctx.policy(project)
     repo, base = pol["path"], pol.get("base", "main")
     pconf = ctx.cfg["platforms"][platform]
     account = config.account_of(pconf)
-    if account != config.account_of(pol):      # the router never does this (D25)
-        raise RuntimeError(f"{platform} spends the {account} account; "
-                           f"{project} is {config.account_of(pol)}")
+    check_account(ctx, project, platform)
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     os.makedirs(run_dir, exist_ok=True)
     wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")

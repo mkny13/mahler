@@ -7,6 +7,7 @@ human-use flag stay with this machine's own Claude account.
 
 import os
 import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -212,6 +213,142 @@ class ScheduleTests(unittest.TestCase):
         lines = "\n".join(ctx.lines)
         self.assertIn("acme#1: would build on codex-work", lines)   # copilot takes size:s only
         self.assertIn("home#1: would build on agy-claude", lines)
+
+
+class MultiAccountTests(unittest.TestCase):
+    """A project may name accounts = [...] instead of a single account (D26):
+    it tries its accounts in declared order and spends the first with
+    headroom; pins and the runner check generalize to membership; GitHub
+    identity stays singular (gh_account, default the first account)."""
+
+    def setUp(self):
+        self.cfg = work_cfg(
+            acme={"enabled": True, "repo": "acme/app", "path": "/tmp/acme",
+                  "account": "work", "hot_hold": False},
+            home={"enabled": True, "repo": "me/home", "path": "/tmp/home",
+                  "hot_hold": False},
+            both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                  "accounts": ["personal", "work"], "hot_hold": False},
+        )
+        self.cfg["accounts"]["other"] = {"env": {"CLAUDE_CONFIG_DIR": "~/.claude-other"}}
+        self.cfg["platforms"]["claude-other"] = {"from": "claude", "account": "other"}
+        self.cfg = config.resolve_platforms(self.cfg)
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+
+    def item(self, project, number, state="ready", age_minutes=30, **kw):
+        fields = dict(priority=2,
+                      state_changed_at=iso(NOW - timedelta(minutes=age_minutes)))
+        if state == "ready":
+            fields["sorted_at"] = iso(NOW - timedelta(days=1))
+        fields.update(kw)
+        self.led.upsert_item(project, number, state=state, **fields)
+
+    def plan(self, total=3):
+        self.cfg["concurrency"]["total"] = total
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        with mock.patch.object(scheduler.platforms, "available", return_value=True), \
+                mock.patch.object(scheduler.presence, "human_claude_active", return_value=False):
+            scheduler.schedule(ctx, list(config.enabled_projects(self.cfg)))
+        return ctx.lines
+
+    def test_single_account_projects_read_as_one_account(self):
+        self.assertEqual(config.accounts_of(config.project_policy(self.cfg, "home")),
+                         ["personal"])
+        self.assertEqual(config.accounts_of(config.project_policy(self.cfg, "acme")),
+                         ["work"])
+        self.assertEqual(config.accounts_of(config.project_policy(self.cfg, "both")),
+                         ["personal", "work"])
+
+    def test_project_setting_both_account_and_accounts_is_a_config_error(self):
+        cfg = config._merge(config.DEFAULTS, {"projects": {"x": {
+            "enabled": True, "account": "work", "accounts": ["personal"]}}})
+        with self.assertRaises(ValueError) as cm:
+            config.validate_accounts(cfg)
+        self.assertIn("both 'account' and 'accounts'", str(cm.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w") as fh:
+                fh.write('[projects.x]\nenabled = true\naccount = "work"\n'
+                         'accounts = ["personal"]\n')
+            with self.assertRaises(ValueError):
+                config.load(path)
+
+    def test_gh_account_defaults_to_the_first_account_and_explicit_wins(self):
+        self.assertEqual(config.gh_account_of(config.project_policy(self.cfg, "home")),
+                         "personal")
+        self.assertEqual(config.gh_account_of(config.project_policy(self.cfg, "acme")),
+                         "work")
+        self.assertEqual(config.gh_account_of(config.project_policy(self.cfg, "both")),
+                         "personal")
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        self.assertIsNone(ctx.gh("both").env)          # personal: inherit as-is
+        self.cfg["projects"]["both"]["gh_account"] = "work"
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        self.assertEqual(ctx.gh("both").env["CODEX_HOME"],
+                         os.path.expanduser("~/.codex-work"))
+
+
+    def test_multi_account_builds_on_its_first_account_with_headroom(self):
+        seed(self.led, **{"agy-claude": (10, 10), "agy-gemini": (10, 10),
+                          "claude-work": (5, 5), "claude-opus-work": (5, 5)})
+        self.item("both", 1)
+        self.assertIn("both#1: would build on agy-claude", self.plan())
+
+    def test_multi_account_falls_through_to_its_next_account(self):
+        # every personal build platform is busy; work has copilot-work free
+        for platform in ("agy-claude", "agy-gemini", "cline-free", "copilot",
+                         "kilo", "claude"):     # claude also busy-blocks claude-opus
+            self.led.create_run(project="zz", number=1, role="build",
+                                platform=platform, epoch=1)
+        self.item("both", 1)
+        self.assertIn("both#1: would build on codex-work", self.plan(total=10))
+
+    def test_multi_account_pin_on_either_declared_account_works(self):
+        seed(self.led, **{"agy-claude": (10, 10), "claude-work": (5, 5)})
+        self.item("both", 1, pin="claude-work")
+        self.assertIn("both#1: would build on claude-work", self.plan())
+        self.led.upsert_item("both", 1, state="ready", priority=2, pin="agy-claude",
+                             state_changed_at=iso(NOW - timedelta(minutes=30)),
+                             sorted_at=iso(NOW - timedelta(days=1)))
+        self.assertIn("both#1: would build on agy-claude", self.plan())
+
+    def test_multi_account_pin_on_an_undeclared_account_is_refused(self):
+        self.item("both", 1, pin="claude-other")
+        line = next(l for l in self.plan() if l.startswith("both#1: no platform"))
+        self.assertIn("claude-other: pinned, but it spends the other account, "
+                      "not personal", line)
+        self.assertIn("claude-other: pinned, but it spends the other account, "
+                      "not work", line)
+
+    def test_multi_account_sort_is_not_deferred_while_any_account_has_a_builder(self):
+        # personal has plenty of sort headroom, work has none: the sort still
+        # goes first — it only waits when *every* account lacks a builder
+        seed(self.led, **{"claude": (10, 10), "agy-claude": (10, 10),
+                          "agy-gemini": (10, 10), "claude-work": (95, 95)})
+        self.item("both", 1, state="inbox", age_minutes=60)
+        self.item("both", 2, age_minutes=10)
+        self.assertEqual([l for l in self.plan(total=1) if ": would " in l],
+                         ["both#1: would sort on claude"])
+
+    def test_multi_account_sort_is_deferred_when_every_account_lacks_a_builder(self):
+        seed(self.led, **{"claude": (95, 95), "agy-claude": (95, 95),
+                          "agy-gemini": (95, 95), "claude-work": (95, 95)})
+        self.item("both", 1, state="inbox", age_minutes=60)
+        self.item("both", 2, age_minutes=10)
+        self.assertEqual([l for l in self.plan(total=1) if ": would " in l],
+                         ["both#2: would build on codex-work"])
+
+    def test_launch_accepts_a_platform_on_any_declared_account(self):
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        runner.check_account(ctx, "both", "agy-claude")    # personal
+        runner.check_account(ctx, "both", "codex-work")    # work
+
+    def test_launch_still_refuses_a_platform_on_an_undeclared_account(self):
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        with self.assertRaises(RuntimeError) as cm:
+            runner.check_account(ctx, "both", "claude-other")
+        self.assertIn("claude-other spends the other account; "
+                      "both is on personal, work", str(cm.exception))
 
 
 class LaunchAndGitHubTests(unittest.TestCase):
