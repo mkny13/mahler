@@ -72,6 +72,60 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "agy-claude",
                                             self.cfg["platforms"]["agy-claude"])[0], "stale")
 
+    def test_window_reset_since_sample_is_stale(self):
+        # D8: a reading for a window that already rolled over says nothing
+        # about the new window — re-probe rather than guess.
+        led = Ledger(":memory:", clock=lambda: NOW)
+        led.record_usage("agy-claude", "5h", 1, iso(NOW - timedelta(minutes=1)))
+        led.record_usage("agy-claude", "weekly", 1, iso(NOW + timedelta(hours=2)))
+        state, detail = router.usage_state(led, "agy-claude",
+                                           self.cfg["platforms"]["agy-claude"])
+        self.assertEqual(state, "stale")
+        self.assertIn("5h: reset since sample", detail)
+
+    def test_unreadable_sample_is_stale_not_a_crash(self):
+        # D8: unknown counts as over the soft line. A malformed timestamp must
+        # never raise out of the router — the tick must stay exception-safe.
+        led = Ledger(":memory:", clock=lambda: NOW)
+        for w in ("5h", "weekly"):
+            led.record_usage("agy-claude", w, 1, iso(NOW + timedelta(hours=2)),
+                             sampled_at="not-a-timestamp")
+        state, detail = router.usage_state(led, "agy-claude",
+                                           self.cfg["platforms"]["agy-claude"])
+        self.assertEqual(state, "stale")
+        self.assertIn("5h: unreadable sample", detail)
+
+    def test_size_m_skips_s_only_platforms(self):
+        # D8 rule 2: m fits Antigravity or Claude only; Copilot, Kilo and
+        # Cline-free are capped at size s.
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+                          "claude": (59, 10)})
+        name, reasons = router.pick(self.cfg, led, "build", size="m")
+        self.assertEqual(name, "claude")
+        for small in ("cline-free", "copilot", "kilo"):
+            self.assertTrue(any(f"{small}: only takes size:s" in r for r in reasons),
+                            f"{small} should be size-capped, reasons: {reasons}")
+
+    def test_size_m_build_skips_claude_opus(self):
+        # claude-opus is min_size l (D21); a size:m build lands on plain
+        # claude, not Opus — Opus builds only by escalation or on size:l.
+        led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95),
+                          "claude": (59, 10)})
+        name, reasons = router.pick(self.cfg, led, "build", size="m")
+        self.assertEqual(name, "claude")
+        self.assertTrue(any("claude-opus: requires size:l" in r for r in reasons),
+                        f"claude-opus should require size:l, reasons: {reasons}")
+
+    def test_size_l_skips_max_size_m_platforms(self):
+        # D8 rule 2: l items are split first; nothing with max_size m takes
+        # them — the first size-capable platform is the min_size l sibling.
+        led = led_with(**{"claude": (5, 5)})
+        led.record_usage("copilot-high", "monthly", 5.0,
+                         iso(NOW + timedelta(hours=6)))
+        name, reasons = router.pick(self.cfg, led, "build", size="l")
+        self.assertEqual(name, "copilot-high")
+        self.assertTrue(any("agy-claude: only takes size:m" in r for r in reasons))
+
     def test_hard_line(self):
         led = led_with(**{"agy-gemini": (91, 10)})
         self.assertEqual(router.usage_state(led, "agy-gemini",

@@ -23,6 +23,19 @@ WINDOW_LABELS = {"5h": "5h", "weekly": "wk"}
 SIZES = {"s": 1, "m": 2, "l": 3}
 
 
+def _ts(value):
+    """ledger.parse() that treats an unparseable timestamp as missing.
+
+    Usage rows come from probes and run logs; a malformed timestamp must
+    degrade to "unknown" (D8: unknown counts as over the soft line), never
+    raise out of the router and break the tick.
+    """
+    try:
+        return parse(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def peak_state(cfg, led):
     """Claude's peak window (DESIGN D22): is it active right now?
 
@@ -52,7 +65,7 @@ def peak_state(cfg, led):
     end = local.replace(hour=eh, minute=em, second=0, microsecond=0)
     if not (start <= local < end):
         return False, None
-    override = parse(led.get_kv(PEAK_OVERRIDE))
+    override = _ts(led.get_kv(PEAK_OVERRIDE))
     if override and override > now:
         return False, None
     return True, end.astimezone(now.tzinfo)
@@ -68,7 +81,7 @@ def peak_status_line(cfg, led):
     if not pc.get("enabled", True):
         return None
     now = led.now()
-    override = parse(led.get_kv(PEAK_OVERRIDE))
+    override = _ts(led.get_kv(PEAK_OVERRIDE))
     if override and override > now:
         tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
         return (f"peak hours: overridden until {override.astimezone(tz):%H:%M} "
@@ -107,15 +120,15 @@ def burst_status(cfg, led):
     fiveh = usage.get("5h")
     if not weekly or not fiveh:
         return None
-    sw = parse(weekly.get("sampled_at"))
-    sf = parse(fiveh.get("sampled_at"))
+    sw = _ts(weekly.get("sampled_at"))
+    sf = _ts(fiveh.get("sampled_at"))
     if not sw or not sf:
         return None
     stale_after = timedelta(minutes=15)
     if sw < now - stale_after or sf < now - stale_after:
         return None
-    weekly_reset = parse(weekly.get("resets_at"))
-    fiveh_reset = parse(fiveh.get("resets_at"))
+    weekly_reset = _ts(weekly.get("resets_at"))
+    fiveh_reset = _ts(fiveh.get("resets_at"))
     if not weekly_reset or not fiveh_reset:
         return None
     bsoft = bconf.get("soft", 90)
@@ -162,7 +175,7 @@ def window_countdowns(led, name, pconf):
         u = usage.get(w)
         if u is None:
             continue
-        resets = parse(u["resets_at"])
+        resets = _ts(u.get("resets_at"))
         if not resets or resets <= now:
             continue
         out.append((WINDOW_LABELS.get(w, w), f"in {fmt_countdown(resets - now)}"))
@@ -179,16 +192,17 @@ def usage_state(led, name, pconf, burst_lines=None):
     now = led.now()
     usage = led.usage(name)
     hold = usage.pop(HOLD, None)
-    if hold and parse(hold["resets_at"]) and parse(hold["resets_at"]) > now:
+    hold_until = _ts(hold.get("resets_at")) if hold else None
+    if hold_until and hold_until > now:
         # not a quota reading: the platform can't start runs right now (a run
         # sat silent at startup). Soft, so a run already making progress keeps going.
-        until = parse(hold["resets_at"])
+        until = hold_until
         return "soft", (f"on hold until {until.astimezone():%H:%M} "
-                         f"(in {fmt_countdown(until - now)}) (a run never started)")
+                        f"(in {fmt_countdown(until - now)}) (a run never started)")
     if not pconf.get("metered", True):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():
-            until = parse(u["resets_at"])
+            until = _ts(u.get("resets_at"))
             if u["used_pct"] >= 100 and until and until > now:
                 return "hard", f"backing off until {until.astimezone():%H:%M} (in {fmt_countdown(until - now)})"
         return "ok", "unknown limit (platform reports no quota signal)"
@@ -204,13 +218,17 @@ def usage_state(led, name, pconf, burst_lines=None):
             state = "stale"
             detail.append(f"{w}: no sample")
         else:
-            resets = parse(u["resets_at"])
+            resets = _ts(u.get("resets_at"))
+            sampled = _ts(u.get("sampled_at"))
             if resets and resets <= now:
                 state = "stale"          # window rolled over — re-probe rather than guess
                 detail.append(f"{w}: reset since sample")
-            elif parse(u["sampled_at"]) < now - stale_after:
+            elif not sampled or sampled < now - stale_after:
+                # an unreadable sample is as good as no sample: unknown counts
+                # as over the soft line (D8), it never crashes the tick
                 state = "stale"
-                detail.append(f"{w}: sample older than {stale_after}")
+                detail.append(f"{w}: sample older than {stale_after}"
+                              if sampled else f"{w}: unreadable sample")
             else:
                 pct = u["used_pct"]
                 soft_w, hard_w = pconf["soft"][w], pconf["hard"][w]
