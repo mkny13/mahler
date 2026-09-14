@@ -10,13 +10,11 @@ import re
 import shlex
 import shutil
 import signal
-import string
 import subprocess
 
-from . import config, gh as gh_module, platforms, redact
+from . import config, platforms, redact
 
-MAHLER_BIN = os.path.join(config.REPO_ROOT, "bin", "mahler")
-RECIPES = os.path.join(config.REPO_ROOT, "recipes")
+MAHLER_BIN = config.MAHLER_BIN
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
               "post-rewrite", "pre-applypatch", "pre-commit", "pre-merge-commit",
               "prepare-commit-msg", "pre-push", "pre-rebase")
@@ -38,11 +36,6 @@ def git(repo, *args, env=None, check=True):
 def slug(title, n=40):
     s = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
     return s[:n].rstrip("-") or "item"
-
-
-def render(recipe, **vars):
-    with open(os.path.join(RECIPES, f"{recipe}.md"), encoding="utf-8") as fh:
-        return string.Template(fh.read()).safe_substitute(**vars)
 
 
 def remote_has(repo, ref):
@@ -113,32 +106,6 @@ def fence_hooks(repo, run_dir):
     return hooks
 
 
-def ci_handoff(ctx, project, item, branch, tail=150):
-    """The fix prompt's CI context (D18, mahler#18): the failing-log tail of
-    the latest failed run on the branch — or the commands to fetch it, when
-    that lookup fails right now."""
-    gh = ctx.gh(project)
-    run_id, log = None, ""
-    try:
-        run_id, log = gh.failed_run_log(branch, tail)
-    except gh_module.GHError as e:
-        ctx.say(f"{project}#{item['number']}: couldn't fetch the CI log for the fix "
-                f"run — {e}")
-    lines = [f"- the PR (#{item['pr']})'s CI is red, and this branch is the PR's head "
-             "branch: push your fixes to it, and each push re-runs CI"]
-    if run_id:
-        lines.append(f"- run {run_id} is the latest failed one "
-                     f"(full log: `gh run view {run_id} -R {gh.repo} --log-failed`)")
-        if log:
-            lines += ["- its failing-log tail:", "", "```", log, "```"]
-    else:
-        lines += [f"- find the latest failed run and its failing-log tail:",
-                  f"  `gh run list -R {gh.repo} --branch {branch} --status failure "
-                  f"--limit 1 --json databaseId`",
-                  f"  `gh run view <run-id> -R {gh.repo} --log-failed | tail -{tail}`"]
-    return "\n".join(lines)
-
-
 def check_account(ctx, project, platform):
     """Fail closed: a run must spend an account the project declares (D25).
     D26: 'declares' is membership — any of the project's declared accounts."""
@@ -150,12 +117,17 @@ def check_account(ctx, project, platform):
                            f"{project} is on {', '.join(accounts)}")
 
 
-def launch(ctx, project, item, role, platform, run_id, epoch):
-    """Create the worktree, render the recipe, start the CLI detached."""
+def prepare(ctx, project, item, role, platform, run_id):
+    """Everything a run needs before its CLI starts: a private run dir, the
+    worktree on the right ref, the project's linked files, and — for a build —
+    the saved work replayed onto current base (D19).
+
+    -> dict(run_dir, worktree, branch, base_ref, replayed, kept). `replayed`
+    says whether earlier work was carried over; `kept` is the ref the old tip
+    was parked on when it no longer applied. Both feed prompt.build.
+    """
     pol = ctx.policy(project)
     repo, base = pol["path"], pol.get("base", "main")
-    pconf = ctx.cfg["platforms"][platform]
-    account = config.account_of(pconf)
     check_account(ctx, project, platform)
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     config.ensure_private_dir(run_dir)
@@ -186,34 +158,42 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
         if os.path.exists(src) and not os.path.lexists(dst):
             os.symlink(src, dst)
 
-    handoff = ""
-    if role == "fix":
-        handoff = ci_handoff(ctx, project, item, branch)
-    elif role == "build" and start != f"origin/{base}":
+    replayed, kept = False, None
+    if role == "build" and start != f"origin/{base}":
+        replayed = True
         kept = catch_up(wt, branch, base, item["number"], run_id)
-        if kept is None:
-            handoff = (f"- earlier work on this item is already in your branch, replayed onto "
-                       f"current `origin/{base}`. First run the test/verify command: if it passes, "
-                       f"commit, push, and end with STATUS: DONE immediately. Otherwise run "
-                       f"`git log --oneline origin/{base}..HEAD` and read the latest "
-                       f"`mahler:agent handoff` comment on the issue before continuing")
-        else:
-            handoff = (f"- earlier work on this item no longer applies to current "
-                       f"`origin/{base}`, so your branch starts fresh from it. The old work is "
-                       f"on `{kept}`: read `git log -p origin/{base}..origin/{kept}` and the "
-                       f"latest `mahler:agent handoff` comment, then redo what still fits")
+        if kept:
             start = f"origin/{base}"
-    prompt = render(role, number=item["number"], title=item["title"], repo=pol["repo"],
-                    worktree=wt, branch=branch or "", base=base, platform=platform,
-                    verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
-                    mahler=MAHLER_BIN, handoff=handoff,
-                    rules=("\nProject rules (from Mahler's config — these override anything else):\n"
-                           + pol["rules"].strip() + "\n") if pol.get("rules") else "")
+    return {"run_dir": run_dir, "worktree": wt, "branch": branch,
+            "base_ref": start, "replayed": replayed, "kept": kept}
+
+
+def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix=""):
+    """Start `argv` detached, with its output in the run's log and its exit
+    code in `status_path`. Every element is shlex-quoted, so untrusted content
+    inside the argv (issue titles, agent output) is data, never shell
+    (mahler#74). -> the pid of the /bin/sh that owns the process group."""
+    shell = (f"{shlex.join(argv)} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
+             f"echo $? > {shlex.quote(status_path)}")
+    proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
+                            start_new_session=True, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return proc.pid
+
+
+def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
+    """Start the platform's CLI, detached, on the worktree `prepare` made.
+    `prompt` is already rendered (mahler/prompt.py) — the runner never writes
+    the words a run is given."""
+    pol = ctx.policy(project)
+    pconf = ctx.cfg["platforms"][platform]
+    account = config.account_of(pconf)
+    wt, run_dir = prep["worktree"], prep["run_dir"]
     argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
     if not argv[0]:
         raise RuntimeError(f"{platform} CLI not found")
 
-    hooks = fence_hooks(repo, run_dir)
+    hooks = fence_hooks(pol["path"], run_dir)
     env = dict(config.run_env(ctx.cfg, account) or os.environ,
                MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(item["number"]), MAHLER_EPOCH=str(epoch),
@@ -224,17 +204,15 @@ def launch(ctx, project, item, role, platform, run_id, epoch):
     status_path = os.path.join(run_dir, "exit")
     with open(os.path.join(run_dir, "prompt.md"), "w") as fh:
         fh.write(prompt)
-    shell = (f"{shlex.join(argv)} > {shlex.quote(log_path)} 2>&1; "
-             f"echo $? > {shlex.quote(status_path)}")
+    prefix = ""
     if pol.get("setup") and role == "build":   # e.g. dependency install; runs detached too
         setup_log = shlex.quote(os.path.join(run_dir, "setup.log"))
-        shell = (f"( {pol['setup']} ) > {setup_log} 2>&1 || "
-                 f"{{ echo 97 > {shlex.quote(status_path)}; exit 97; }}; " + shell)
-    proc = subprocess.Popen(["/bin/sh", "-c", shell], cwd=wt, env=env,
-                            start_new_session=True, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"pid": proc.pid, "worktree": wt, "branch": branch, "base_ref": start,
-            "log_path": log_path, "status_path": status_path}
+        prefix = (f"( {pol['setup']} ) > {setup_log} 2>&1 || "
+                  f"{{ echo 97 > {shlex.quote(status_path)}; exit 97; }}; ")
+    pid = spawn(argv, wt, log_path, status_path, env=env, prefix=prefix)
+    return {"pid": pid, "worktree": wt, "branch": prep["branch"],
+            "base_ref": prep["base_ref"], "log_path": log_path,
+            "status_path": status_path}
 
 
 def alive(pid):

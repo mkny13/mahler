@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, router, runner, scheduler
+from mahler import config, finalize, router, runner, scheduler, usage, watchdog
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -41,7 +41,7 @@ class HealthTests(unittest.TestCase):
         os.utime(self.log.name, (t, t))
         run = {"started_at": iso(NOW - timedelta(minutes=minutes_ago)),
                "log_path": self.log.name, "platform": "cline-free", "number": 1}
-        return scheduler._health(self.ctx, run, self.pol, NOW)
+        return watchdog._health(self.ctx, run, self.pol, NOW)
 
     def test_empty_log_past_the_startup_limit_is_silent(self):
         self.assertEqual(self.health(11), "silent")
@@ -54,7 +54,7 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(self.health(21, b'{"type":"agent_event"}\n'), "hung")
 
     def test_silent_is_not_the_items_fault(self):
-        self.assertIn("silent", scheduler.NO_ATTEMPT)
+        self.assertIn("silent", finalize.NO_ATTEMPT)
 
     def test_overage_stops_the_run_and_holds_all_claude_platforms(self):
         # mahler#136: isUsingOverage true means paid extra usage — stop at once,
@@ -70,7 +70,7 @@ class HealthTests(unittest.TestCase):
         run = {"id": 42, "started_at": iso(NOW - timedelta(minutes=1)),
                "log_path": self.log.name, "platform": "claude", "project": "x", "number": 1}
         with mock.patch.object(self.ctx, "ping") as ping:
-            reason = scheduler._health(self.ctx, run, self.pol, NOW)
+            reason = watchdog._health(self.ctx, run, self.pol, NOW)
         self.assertEqual(reason, "quota")
         ping.assert_called_once()
         for pname in ("claude", "claude-opus"):
@@ -78,7 +78,7 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(state, "hard")
         # a second watchdog pass for the same run must not ping again
         with mock.patch.object(self.ctx, "ping") as ping2:
-            scheduler._health(self.ctx, run, self.pol, NOW)
+            watchdog._health(self.ctx, run, self.pol, NOW)
         ping2.assert_not_called()
 
 
@@ -99,7 +99,7 @@ class WallClockTests(unittest.TestCase):
         os.utime(self.log.name, (t, t))
         run = {"started_at": iso(NOW - timedelta(minutes=minutes_ago)),
                "log_path": self.log.name, "platform": "cline-free", "number": 1}
-        return scheduler._health(self.ctx, run, self.pol, NOW)
+        return watchdog._health(self.ctx, run, self.pol, NOW)
 
     def test_a_chatty_run_inside_the_limit_is_fine(self):
         self.assertIsNone(self.health(55, log_age=0))
@@ -134,7 +134,7 @@ class SetupPhaseTests(unittest.TestCase):
             os.utime(self.setup_log, (t, t))
         run = {"started_at": iso(NOW - timedelta(minutes=started_ago)),
                "log_path": self.agent_log, "platform": "cline-free", "number": 1}
-        return scheduler._health(self.ctx, run, self.pol, NOW)
+        return watchdog._health(self.ctx, run, self.pol, NOW)
 
     def test_an_active_setup_is_not_a_hung_run(self):
         self.assertIsNone(self.health(setup_age=0, started_ago=25))
@@ -156,7 +156,7 @@ class HoldTests(unittest.TestCase):
         ctx = ctx_for()
         run = {"id": 7, "platform": "cline-free", "project": "x", "number": 1}
         with mock.patch.object(ctx, "ping") as ping:
-            scheduler._hold_platform(ctx, run)
+            finalize._hold_platform(ctx, run)
         ping.assert_called_once()
         state, detail = router.usage_state(ctx.led, "cline-free", self.cfg["platforms"]["cline-free"])
         self.assertEqual(state, "soft")          # stop starting; don't kill live runs
@@ -190,7 +190,7 @@ class HumanClaudeTests(unittest.TestCase):
         ctx, led = self._led_ctx()
         self._preseed(led, 30.0)
         reset = iso(NOW + timedelta(minutes=30))
-        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+        usage.record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
                                        check_human=True)
         self.assertIsNotNone(led.get_kv("human:claude"))
 
@@ -200,7 +200,7 @@ class HumanClaudeTests(unittest.TestCase):
         self._preseed(led, 30.0)
         led.create_run(project="x", number=1, role="build", platform="claude", epoch=1)
         reset = iso(NOW + timedelta(minutes=30))
-        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+        usage.record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
                                        check_human=True)
         self.assertIsNone(led.get_kv("human:claude"))
 
@@ -210,7 +210,7 @@ class HumanClaudeTests(unittest.TestCase):
         self._preseed(led, 30.0)
         led.create_run(project="x", number=1, role="build", platform="agy-claude", epoch=1)
         reset = iso(NOW + timedelta(minutes=30))
-        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+        usage.record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
                                        check_human=True)
         self.assertIsNotNone(led.get_kv("human:claude"))
 
@@ -218,7 +218,7 @@ class HumanClaudeTests(unittest.TestCase):
         ctx, led = self._led_ctx()
         self._preseed(led, 40.0)
         reset = iso(NOW + timedelta(minutes=30))
-        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+        usage.record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
                                        check_human=True)
         self.assertIsNone(led.get_kv("human:claude"))
 
@@ -227,7 +227,7 @@ class HumanClaudeTests(unittest.TestCase):
         ctx, led = self._led_ctx()
         self._preseed(led, 30.0)
         reset = iso(NOW + timedelta(minutes=30))
-        scheduler._record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
+        usage.record_claude_usage(ctx, [("5h", 40.0, None), ("weekly", 50.0, reset)],
                                        check_human=False)
         self.assertIsNone(led.get_kv("human:claude"))
 
@@ -264,11 +264,11 @@ class ReapTests(unittest.TestCase):
         order = []
         run = {"pid": 4242, "project": "x"}
         with mock.patch.object(ctx.led, "active_runs", return_value=[run]), \
-                mock.patch.object(scheduler.runner, "alive", return_value=False), \
-                mock.patch.object(scheduler.runner, "kill", side_effect=lambda p: order.append(("kill", p))), \
-                mock.patch.object(scheduler, "finalize", side_effect=lambda c, r: order.append(("finalize",))), \
+                mock.patch.object(runner, "alive", return_value=False), \
+                mock.patch.object(runner, "kill", side_effect=lambda p: order.append(("kill", p))), \
+                mock.patch.object(watchdog, "finalize", side_effect=lambda c, r: order.append(("finalize",))), \
                 mock.patch.object(ctx, "policy", return_value={}):
-            scheduler.watchdog(ctx)
+            watchdog.watchdog(ctx)
         self.assertEqual(order, [("kill", 4242), ("finalize",)])
 
     def test_killing_the_group_reaches_a_child_that_outlived_its_shell(self):
@@ -327,7 +327,7 @@ class EscalationTests(unittest.TestCase):
     def test_a_live_run_past_the_wall_clock_is_stopped_at_once(self):
         with mock.patch.object(runner, "alive", return_value=True), \
                 mock.patch.object(runner, "terminate") as term:
-            scheduler.watchdog(self.ctx)
+            watchdog.watchdog(self.ctx)
         term.assert_called_once_with(4242)
         row = self.led.run(9)
         self.assertEqual((row["status"], row["stop_reason"]), ("stopping", "timeout"))
@@ -337,14 +337,14 @@ class EscalationTests(unittest.TestCase):
         with mock.patch.object(runner, "alive", return_value=True), \
                 mock.patch.object(runner, "kill") as kill, \
                 mock.patch.object(runner, "terminate") as term, \
-                mock.patch.object(scheduler, "finalize") as fin:
-            scheduler.watchdog(self.ctx)
+                mock.patch.object(watchdog, "finalize") as fin:
+            watchdog.watchdog(self.ctx)
         kill.assert_called_once_with(4242)
         term.assert_not_called()
         fin.assert_not_called()
 
     def test_one_poisoned_run_does_not_disarm_the_watchdog(self):
-        real_health = scheduler._health
+        real_health = watchdog._health
 
         def flaky(ctx, run, pol, now):
             if run["platform"] == "ghost":
@@ -352,9 +352,9 @@ class EscalationTests(unittest.TestCase):
             return real_health(ctx, run, pol, now)
 
         with mock.patch.object(runner, "alive", return_value=True), \
-                mock.patch.object(scheduler, "_health", side_effect=flaky), \
+                mock.patch.object(watchdog, "_health", side_effect=flaky), \
                 mock.patch.object(runner, "terminate") as term:
-            scheduler.watchdog(self.ctx)
+            watchdog.watchdog(self.ctx)
         term.assert_called_once_with(4242)   # the healthy run was still stopped
         self.assertTrue(any("run 8" in line for line in self.ctx.lines))
 
@@ -409,7 +409,7 @@ class TimeoutHandoffTests(unittest.TestCase):
                 mock.patch.object(runner, "snapshot", return_value=saved) as snap, \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(self.ctx, "ping"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         return snap
 
     def test_a_timed_out_run_is_snapshotted_and_handed_off(self):

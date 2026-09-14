@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, router, runner, scheduler
+from mahler import config, platforms, presence, router, runner, scheduler, tick, usage
 from mahler.gh import GH
 from mahler.ledger import Ledger, iso
 
@@ -142,15 +142,15 @@ class SlotAndUsageTests(unittest.TestCase):
 
     def test_each_claude_login_has_its_own_run_slot(self):
         self.led.create_run(project="home", number=1, role="build", platform="claude", epoch=1)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True):
-            busy = scheduler.busy_platforms(self.cfg, self.led.active_runs())
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy = tick.busy_platforms(self.cfg, self.led.active_runs())
         self.assertIn("claude-opus", busy)
         self.assertNotIn("claude-work", busy)
         self.assertNotIn("claude-opus-work", busy)
 
     def test_work_readings_land_only_on_work_platforms(self):
         seed(self.led, claude=(30, 30), **{"claude-work": (30, 30)})
-        scheduler._record_claude_usage(self.ctx, [("5h", 50.0, LATER), ("weekly", 60.0, LATER)],
+        usage.record_claude_usage(self.ctx, [("5h", 50.0, LATER), ("weekly", 60.0, LATER)],
                                        check_human=True, platform="claude-work")
         self.assertEqual(self.led.usage("claude-work")["5h"]["used_pct"], 50.0)
         self.assertEqual(self.led.usage("claude-opus-work")["weekly"]["used_pct"], 60.0)
@@ -158,21 +158,21 @@ class SlotAndUsageTests(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("human:claude"))
 
     def test_personal_readings_never_land_on_work_platforms(self):
-        scheduler._record_claude_usage(self.ctx, [("5h", 50.0, LATER)])
+        usage.record_claude_usage(self.ctx, [("5h", 50.0, LATER)])
         self.assertEqual(self.led.usage("claude")["5h"]["used_pct"], 50.0)
         self.assertEqual(self.led.usage("claude-work"), {})
 
     def test_refresh_probes_the_work_login_with_its_own_env(self):
         self.led.upsert_item("acme", 1, state="ready", priority=2)
         projects = [config.project_policy(self.cfg, "acme")]
-        with mock.patch.object(scheduler.platforms, "oauth_usage",
+        with mock.patch.object(platforms, "oauth_usage",
                                return_value=[("5h", 11.0, LATER), ("weekly", 12.0, LATER)]) as oauth, \
-                mock.patch.object(scheduler.platforms, "probe_claude",
+                mock.patch.object(platforms, "probe_claude",
                                   return_value=[("5h", 21.0, LATER), ("weekly", 22.0, LATER)]) as probe, \
-                mock.patch.object(scheduler.platforms, "probe_copilot", return_value=[]) as copilot, \
-                mock.patch.object(scheduler.platforms, "probe_agy", return_value={}) as agy, \
-                mock.patch.object(scheduler.router, "peak_state", return_value=(False, None)):
-            scheduler.refresh_usage(self.ctx, projects)
+                mock.patch.object(platforms, "probe_copilot", return_value=[]) as copilot, \
+                mock.patch.object(platforms, "probe_agy", return_value={}) as agy, \
+                mock.patch.object(router, "peak_state", return_value=(False, None)):
+            usage.refresh_usage(self.ctx, projects)
         oauth.assert_not_called()          # no credentials source configured for work yet
         env = probe.call_args.kwargs["env"]
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
@@ -185,12 +185,12 @@ class SlotAndUsageTests(unittest.TestCase):
         self.cfg["accounts"]["work"]["claude_keychain_service"] = "Claude Code-credentials-abc"
         self.led.upsert_item("acme", 1, state="ready", priority=2)
         projects = [config.project_policy(self.cfg, "acme")]
-        with mock.patch.object(scheduler.platforms, "oauth_usage",
+        with mock.patch.object(platforms, "oauth_usage",
                                return_value=[("5h", 11.0, LATER), ("weekly", 12.0, LATER)]) as oauth, \
-                mock.patch.object(scheduler.platforms, "probe_claude") as probe, \
-                mock.patch.object(scheduler.platforms, "probe_copilot", return_value=[]), \
-                mock.patch.object(scheduler.router, "peak_state", return_value=(False, None)):
-            scheduler.refresh_usage(self.ctx, projects)
+                mock.patch.object(platforms, "probe_claude") as probe, \
+                mock.patch.object(platforms, "probe_copilot", return_value=[]), \
+                mock.patch.object(router, "peak_state", return_value=(False, None)):
+            usage.refresh_usage(self.ctx, projects)
         oauth.assert_called_with(keychain_service="Claude Code-credentials-abc")
         probe.assert_not_called()
         self.assertEqual(self.led.usage("claude-opus-work")["weekly"]["used_pct"], 12.0)
@@ -207,9 +207,9 @@ class ScheduleTests(unittest.TestCase):
                             state_changed_at=iso(NOW - timedelta(minutes=30)),
                             sorted_at=iso(NOW - timedelta(days=1)))
         ctx = scheduler.Ctx(cfg, led, dry_run=True)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True), \
-                mock.patch.object(scheduler.presence, "human_claude_active", return_value=False):
-            scheduler.schedule(ctx, list(config.enabled_projects(cfg)))
+        with mock.patch.object(platforms, "available", return_value=True), \
+                mock.patch.object(presence, "human_claude_active", return_value=False):
+            tick.schedule(ctx, list(config.enabled_projects(cfg)))
         lines = "\n".join(ctx.lines)
         self.assertIn("acme#1: would build on codex-work", lines)   # copilot takes size:s only
         self.assertIn("home#1: would build on agy-claude", lines)
@@ -246,9 +246,9 @@ class MultiAccountTests(unittest.TestCase):
     def plan(self, total=3):
         self.cfg["concurrency"]["total"] = total
         ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
-        with mock.patch.object(scheduler.platforms, "available", return_value=True), \
-                mock.patch.object(scheduler.presence, "human_claude_active", return_value=False):
-            scheduler.schedule(ctx, list(config.enabled_projects(self.cfg)))
+        with mock.patch.object(platforms, "available", return_value=True), \
+                mock.patch.object(presence, "human_claude_active", return_value=False):
+            tick.schedule(ctx, list(config.enabled_projects(self.cfg)))
         return ctx.lines
 
     def test_single_account_projects_read_as_one_account(self):
@@ -356,8 +356,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
         ctx = scheduler.Ctx(work_cfg(), Ledger(":memory:", clock=lambda: NOW), dry_run=True)
         with mock.patch.object(runner, "git") as git:
             with self.assertRaises(RuntimeError):
-                runner.launch(ctx, "acme", {"number": 1, "title": "t", "branch": None},
-                              "build", "claude", 7, 1)
+                runner.prepare(ctx, "acme", {"number": 1, "title": "t", "branch": None},
+                               "build", "claude", 7)
         git.assert_not_called()
 
     def test_work_project_github_calls_carry_the_work_env(self):

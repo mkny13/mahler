@@ -16,7 +16,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from mahler import config, platforms, runner, scheduler
+from mahler import config, finalize, platforms, runner, scheduler
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -80,7 +80,7 @@ class VerifyFallbackTests(unittest.TestCase):
                 mock.patch.object(runner, "commits_ahead", return_value=commits), \
                 mock.patch.object(runner, "verify_in_worktree", return_value=verify_ok), \
                 mock.patch.object(self.ctx, "ping"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
 
     def last_event(self):
         rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
@@ -233,8 +233,8 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
                 mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
-                mock.patch.object(scheduler, "_cline_session_id", return_value="sess-42"):
-            scheduler.finalize(self.ctx, self.run)
+                mock.patch.object(finalize, "_cline_session_id", return_value="sess-42"):
+            finalize.finalize(self.ctx, self.run)
         # The run should be back to "running" (resumed), not ended
         db_run = self.led.run(self.run_id)
         self.assertEqual(db_run["status"], "running")
@@ -264,9 +264,9 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
                 mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
                 mock.patch.object(platforms, "cline_exe", return_value="/usr/local/bin/cline"), \
-                mock.patch.object(scheduler, "_cline_session_id",
+                mock.patch.object(finalize, "_cline_session_id",
                                   return_value=evil_session):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         popen.assert_called_once()
         shell = popen.call_args[0][0][2]
         self.assertIn(shlex.quote(evil_session), shell)
@@ -289,8 +289,8 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
                 mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
-                mock.patch.object(scheduler, "_cline_session_id", return_value="sess-42"):
-            scheduler.finalize(self.ctx, row)
+                mock.patch.object(finalize, "_cline_session_id", return_value="sess-42"):
+            finalize.finalize(self.ctx, row)
         db_run = self.led.run(self.run_id)
         self.assertEqual(db_run["status"], "running")
         self.assertEqual(db_run["nudged"], 1)
@@ -304,7 +304,7 @@ class ClineNudgeTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
@@ -315,7 +315,7 @@ class ClineNudgeTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
@@ -332,7 +332,7 @@ class ClineNudgeTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
@@ -349,7 +349,7 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "commits_ahead", return_value=2), \
                 mock.patch.object(runner, "verify_in_worktree", return_value=True), \
                 mock.patch.object(self.ctx, "ping"):
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "verifying")  # fallback DONE, not nudge
         self.assertEqual(item["attempts"], 0)

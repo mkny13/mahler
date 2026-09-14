@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import timedelta
 
-from . import config, notify, router, scheduler
+from . import config, notify, router, scheduler, usage as usage_mod
 from .gh import GH, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -336,14 +336,14 @@ def cmd_usage(a, cfg, led):
                     led.record_usage(name, w, pct, resets)
             elif pconf["kind"] == "claude" and name not in done:
                 # one reading per Claude login, recorded only on its own platforms (D25)
-                peers = scheduler.quota_peers(cfg, name)
+                peers = usage_mod.quota_peers(cfg, name)
                 done |= set(peers)
                 try:
                     env = config.run_env(cfg, account)
                 except ValueError as e:
                     print(f"  {name}: {e}")
                     continue
-                source = scheduler._claude_oauth_source(cfg, pconf)
+                source = usage_mod.claude_oauth_source(cfg, pconf)
                 samples = ((platforms.oauth_usage(**source) if source else [])
                            or platforms.probe_claude(env=env))
                 for peer in peers:

@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, router, scheduler
+from mahler import config, finalize, platforms, router, scheduler, ship, sync, tick
 from mahler.ledger import Ledger, iso
 
 
@@ -73,7 +73,7 @@ class TierEscalationTests(unittest.TestCase):
             log_path=self.log_path, status_path=self.status_path,
             worktree=self.tmp.name)
         self.led.con.execute("UPDATE runs SET started_at=? WHERE id=?", (started, run_id))
-        scheduler.finalize(self.ctx, self.led.run(run_id))
+        finalize.finalize(self.ctx, self.led.run(run_id))
 
     def test_two_failures_on_tier_1_escalates_to_tier_2(self):
         # item starts at esc_tier=0, esc_fails=0
@@ -118,14 +118,14 @@ class TierEscalationTests(unittest.TestCase):
             log_path=self.log_path, status_path=self.status_path,
             worktree=self.tmp.name)
         self.led.update_run(run_id, stop_reason="quota")
-        scheduler.finalize(self.ctx, self.led.run(run_id))
+        finalize.finalize(self.ctx, self.led.run(run_id))
         item = self.led.item("p", 4)
         self.assertEqual(item["esc_tier"], 0)
         self.assertEqual(item["esc_fails"], 0)
 
     def test_go_resets_esc_tier_and_esc_fails(self):
         self.led.upsert_item("p", 5, title="retry task", esc_tier=3, esc_fails=1)
-        scheduler._apply_instruction(self.ctx, "p", self.led.item("p", 5), "go", None)
+        sync._apply_instruction(self.ctx, "p", self.led.item("p", 5), "go", None)
         item = self.led.item("p", 5)
         self.assertEqual(item["esc_tier"], 0)
         self.assertEqual(item["esc_fails"], 0)
@@ -144,9 +144,9 @@ class TierEscalationTests(unittest.TestCase):
         # Schedule should pick agy-claude (tier 2), not kilo (tier 1)
         projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
         started = []
-        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
-             mock.patch.object(scheduler.platforms, "available", return_value=True):
-            scheduler.schedule(self.ctx, projects)
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
         self.assertEqual(started, ["agy-claude"])
 
     def test_schedule_elevates_meta_programming_to_size_m_and_tier_2(self):
@@ -162,9 +162,9 @@ class TierEscalationTests(unittest.TestCase):
 
         projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
         started = []
-        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
-             mock.patch.object(scheduler.platforms, "available", return_value=True):
-            scheduler.schedule(self.ctx, projects)
+        with mock.patch("mahler.tick.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, projects)
         # Even though labeled size:s, risk_min_tier elevates min_tier to 2 and size to m,
         # so kilo (tier 1, max_size s) cannot take it, agy-claude takes it.
         self.assertEqual(started, ["agy-claude"])
@@ -178,16 +178,16 @@ class TierEscalationTests(unittest.TestCase):
         item = self.led.item("p", 8)
 
         # 1st red CI
-        with mock.patch("mahler.scheduler.start", return_value=True):
-            scheduler._red_ci(self.ctx, "p", item, 10, view)
+        with mock.patch("mahler.tick.start", return_value=True):
+            ship._red_ci(self.ctx, "p", item, 10, view)
         item = self.led.item("p", 8)
         self.assertEqual(item["esc_tier"], 0)
         self.assertEqual(item["esc_fails"], 1)
 
         # 2nd red CI -> escalates to tier 2
         view2 = {"headRefName": "b", "headRefOid": "sha2"}
-        with mock.patch("mahler.scheduler.start", return_value=True):
-            scheduler._red_ci(self.ctx, "p", item, 10, view2)
+        with mock.patch("mahler.tick.start", return_value=True):
+            ship._red_ci(self.ctx, "p", item, 10, view2)
         item = self.led.item("p", 8)
         self.assertEqual(item["esc_tier"], 2)
         self.assertEqual(item["esc_fails"], 0)

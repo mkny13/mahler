@@ -18,6 +18,7 @@ RUNS_DIR = os.path.join(STATE, "runs")
 WORKTREES = os.path.join(STATE, "worktrees")
 LOCK_PATH = os.path.join(STATE, "tick.lock")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAHLER_BIN = os.path.join(REPO_ROOT, "bin", "mahler")
 
 
 def ensure_private_dir(path, mode=0o700):

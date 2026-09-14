@@ -7,7 +7,7 @@ import tempfile
 import subprocess
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta, timezone
-from mahler import cli, config, scheduler, runner
+from mahler import cli, config, runner, scheduler, watchdog
 from mahler.ledger import Ledger, iso
 
 class TestHooks(unittest.TestCase):
@@ -79,7 +79,7 @@ class TestHooks(unittest.TestCase):
                 return config.project_policy(self.cfg, proj)
             def say(self, msg): pass
             
-        scheduler.watchdog(Ctx())
+        watchdog.watchdog(Ctx())
         
         yield_file = os.path.join(config.RUNS_DIR, "10", "yield")
         self.assertTrue(os.path.exists(yield_file))

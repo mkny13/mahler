@@ -137,6 +137,22 @@ CREATE INDEX IF NOT EXISTS idx_events_item
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
           "parent", "done")
 
+CONDUCTOR = "conductor"          # the lease holder that ships (DESIGN D18)
+
+
+def row_get(row, key, default=None):
+    """A column off an item/run row, whatever the row type, never None."""
+    if row is None:
+        return default
+    if hasattr(row, "get"):
+        val = row.get(key, default)
+        return default if val is None else val
+    try:
+        val = row[key]
+        return default if val is None else val
+    except (IndexError, KeyError):
+        return default
+
 
 def utcnow():
     return datetime.now(timezone.utc)

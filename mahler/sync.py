@@ -1,0 +1,272 @@
+"""GitHub is the backlog (DESIGN D2): this pass makes the ledger match it.
+
+Issues, their labels, their comments and the commands in them come in;
+Mahler's own state labels go back out. Closing a parent whose sub-issues are
+all done is the same kind of work, so it lives here too.
+"""
+
+import json
+from datetime import timedelta
+
+from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
+                 has_sections, label_names, parse_command, part_of, pin_of, priority_of)
+from .ledger import iso, parse
+from .watchdog import request_stop
+
+
+def sync(ctx, project):
+    led, gh = ctx.led, ctx.gh(project)
+    pol = ctx.policy(project)
+    # Conditional poll (mahler#90): a 304 means the open-issue collection is
+    # byte-identical to the last full sync — no new issues, no edits, no
+    # comments — so both the fetch and the closed-issue checks below can be
+    # skipped. The etag is stored only after a clean sync: if anything fails
+    # mid-tick, the next tick probes with the old etag and re-fetches.
+    etag_key = f"etag:{project}"
+    poll_changed, poll_etag = gh.issues_changed(led.get_kv(etag_key))
+    if not poll_changed:
+        ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
+        return
+    issues = gh.open_issues()
+
+    if pol.get("scope") == "label":
+        scope_label = pol["scope_label"]
+        in_scope_nums = {
+            iss["number"] for iss in issues
+            if scope_label in label_names(iss)
+            or any(l in LABEL_STATES for l in label_names(iss))
+            or led.item(project, iss["number"]) is not None
+        }
+        # If child issues reference an in-scope parent via "Part of #N", inherit scope
+        changed = True
+        while changed:
+            changed = False
+            for iss in issues:
+                n = iss["number"]
+                if n not in in_scope_nums:
+                    parent_n = part_of(iss.get("body"))
+                    if parent_n and (parent_n in in_scope_nums or led.item(project, parent_n) is not None):
+                        in_scope_nums.add(n)
+                        changed = True
+    else:
+        in_scope_nums = None
+
+    open_nums = set()
+    for iss in issues:
+        n = iss["number"]
+        labels = label_names(iss)
+        if in_scope_nums is not None and n not in in_scope_nums:
+            continue                      # not (yet) handed to Mahler
+        if pol.get("scope") == "label" and pol["scope_label"] not in labels:
+            labels.append(pol["scope_label"])
+            if not ctx.dry_run:
+                try:
+                    gh.add_label(n, pol["scope_label"])
+                except GHError:
+                    pass
+        open_nums.add(n)
+        ctx._labels[(project, n)] = labels
+        fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
+                      depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels),
+                      parent=part_of(iss.get("body")))
+        item = led.item(project, n)
+        if item is None:
+            state = _state_from_labels(labels)
+            planned = state is None and planned_child(iss, labels, led, project)
+            if state is None:
+                state = "ready" if planned else "inbox"
+            extra = {"sorted_at": iso(led.now())} if state == "ready" else {}
+            led.upsert_item(project, n, created_at=iss["createdAt"], **fields, **extra)
+            why = "born ready (planned under #{})".format(part_of(iss.get("body"))) \
+                if planned else "new issue"
+            led.set_state(project, n, state, why)
+            ctx.say(f"{project}#{n}: new — {iss['title']}")
+            item = led.item(project, n)
+        else:
+            led.upsert_item(project, n, **fields)
+            _adopt_label_edits(ctx, project, item, labels)
+        _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
+
+    for item in led.items(project):
+        if item["number"] in open_nums or item["state"] == "done":
+            continue
+        try:
+            state = gh.issue_state(item["number"])
+        except GHError:
+            continue
+        if state == "CLOSED":
+            running = [r for r in led.active_runs(project) if r["number"] == item["number"]]
+            # A run whose own merge closed the issue is usually still writing its
+            # summary: give it the normal grace period; finalize marks it done.
+            for run in running:
+                if not run["yield_at"]:
+                    request_stop(ctx, run, "closed")
+            if not running:
+                led.release(project, item["number"])
+                led.set_state(project, item["number"], "done", "closed on GitHub")
+
+    if poll_etag:
+        led.set_kv(etag_key, poll_etag)
+
+
+def planned_child(iss, labels, led, project):
+    """Whether a newly-synced sub-issue was fully planned by its parent."""
+    parent_n = part_of(iss.get("body"))
+    if parent_n is None:
+        return False
+    parent = led.item(project, parent_n)
+    if parent is None or parent["state"] != "parent":
+        return False
+    sizes = {label.split(":", 1)[1] for label in labels
+             if label.startswith("size:")}
+    return (("s" in sizes or "m" in sizes)
+            and has_sections(iss.get("body"), "## Plan", "## Done when"))
+
+
+def _state_from_labels(labels):
+    states = [LABEL_STATES[l] for l in labels if l in LABEL_STATES]
+    return states[0] if len(states) == 1 else None
+
+
+def _adopt_label_edits(ctx, project, item, labels):
+    """You changed a mahler:* label by hand → that's an instruction.
+
+    `mirror` is the label Mahler last wrote. A label equal to it is Mahler's own
+    (possibly not yet updated); a different one was set by you."""
+    wanted = _state_from_labels(labels)
+    if not wanted or wanted == item["state"] or item["mirror"] is None:
+        return
+    if STATE_LABELS.get(wanted) == item["mirror"]:
+        return
+    if wanted in ("ready", "parked", "inbox"):
+        _apply_instruction(ctx, project, item, "go" if wanted == "ready" else wanted, None)
+
+
+def _process_comments(ctx, project, item, comments):
+    led = ctx.led
+    seen = parse(item["last_comment_at"])
+    newest = seen
+    for c in sorted(comments, key=lambda c: c["createdAt"]):
+        at = parse(c["createdAt"])
+        if seen and at <= seen:
+            continue
+        newest = at if newest is None or at > newest else newest
+        body = c.get("body") or ""
+        if body.lstrip().startswith(AGENT_MARK):
+            continue
+        cmd = parse_command(body)
+        if cmd:
+            _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd)
+        elif led.item(project, item["number"])["state"] == "needs_you":
+            led.set_state(project, item["number"], "inbox", "you answered — re-sorting",
+                          sorted_at=None)
+            ctx.say(f"{project}#{item['number']}: answer received, re-sorting")
+    if newest and newest != seen:
+        led.upsert_item(project, item["number"], last_comment_at=iso(newest))
+
+
+def _apply_instruction(ctx, project, item, verb, arg):
+    led, n = ctx.led, item["number"]
+    if verb == "go":
+        led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
+                      esc_tier=0, esc_fails=0,
+                      sorted_at=iso(led.now() - timedelta(days=1)))
+    elif verb == "park":
+        led.set_state(project, n, "parked", "you parked it")
+        for run in led.active_runs(project):
+            if run["number"] == n:
+                request_stop(ctx, run, "parked")
+    elif verb == "inbox":
+        led.set_state(project, n, "inbox", "back to inbox", sorted_at=None)
+    elif verb == "platform" and arg:
+        if arg in ("none", "auto"):
+            _set_pin(ctx, project, n, None)
+        elif arg in ctx.cfg["platforms"]:
+            _set_pin(ctx, project, n, arg)
+        else:
+            ctx.say(f"{project}#{n}: unknown platform {arg!r}")
+    ctx.say(f"{project}#{n}: instruction '{verb}{' ' + arg if arg else ''}'")
+
+
+def _set_pin(ctx, project, n, platform):
+    """`platform:*` labels on GitHub are the pin's store of record (mahler#20):
+    sync() re-derives pin=pin_of(labels) on every tick, so a ledger-only pin
+    lasted exactly one tick. The command edits the labels instead, then mirrors
+    the change into the ledger so it takes effect in this tick's schedule."""
+    current = ctx._labels.get((project, n)) or []
+    if not ctx.dry_run:
+        try:
+            ctx.gh(project).set_pin_labels(n, platform, current)
+        except GHError as e:
+            ctx.say(f"{project}#{n}: platform label update failed — {e}")
+        keep = f"platform:{platform}" if platform else None
+        updated = [l for l in current if not l.startswith("platform:") or l == keep]
+        if keep and keep not in updated:
+            updated.append(keep)
+        ctx._labels[(project, n)] = updated
+    ctx.led.upsert_item(project, n, pin=platform)
+
+
+def close_finished_parents(ctx, projects):
+    """Close parent issues when all their sub-issues are done.
+    
+    For each item in state 'parent', find children (items with parent == number).
+    If there is at least one child and every child is in state 'done':
+    post a comment listing the children, close the issue, and set state to 'done'.
+    """
+    led = ctx.led
+    for p in projects:
+        try:
+            _close_finished_parents_project(ctx, p["name"])
+        except Exception as e:                  # noqa: BLE001 — one project can't stop the rest
+            ctx.say(f"{p['name']}: close_finished_parents failed — {e}")
+
+
+def _close_finished_parents_project(ctx, project):
+    led, gh = ctx.led, ctx.gh(project)
+    for parent_item in led.items(project, ["parent"]):
+        parent_num = parent_item["number"]
+        # Find children: items of the same project with parent == parent_num
+        children = [it for it in led.items(project) if it["parent"] == parent_num]
+        if not children:
+            continue  # no children, nothing to do
+        # Check if all children are done
+        if all(child["state"] == "done" for child in children):
+            child_nums = [str(c["number"]) for c in children]
+            comment = (
+                f"<!-- mahler:agent -->\n"
+                f"All sub-issues done — closing.\n\n"
+                f"Sub-issues: {', '.join(f'#{n}' for n in child_nums)}"
+            )
+            if ctx.dry_run:
+                ctx.say(f"{project}#{parent_num}: would close — all {len(children)} sub-issue(s) done")
+            else:
+                try:
+                    gh.close_issue(parent_num, comment=comment)
+                    led.set_state(project, parent_num, "done", "all sub-issues done")
+                    ctx.say(f"{project}#{parent_num}: closed — all sub-issues done")
+                except GHError as e:
+                    ctx.say(f"{project}#{parent_num}: failed to close — {e}")
+
+
+def mirror_labels(ctx, project):
+    if ctx.dry_run:
+        return
+    led, gh = ctx.led, ctx.gh(project)
+    for item in led.items(project):
+        if item["state"] == "done":
+            continue
+        want = STATE_LABELS.get(item["state"])
+        current = ctx._labels.get((project, item["number"]))
+        if current is None:
+            continue
+        if want in current and not [l for l in current if l in LABEL_STATES and l != want]:
+            if item["mirror"] != want:
+                led.upsert_item(project, item["number"], mirror=want)
+            continue
+        try:
+            gh.set_state_label(item["number"], item["state"], current)
+            led.upsert_item(project, item["number"], mirror=want)
+        except GHError as e:
+            ctx.say(f"{project}#{item['number']}: label update failed — {e}")
+

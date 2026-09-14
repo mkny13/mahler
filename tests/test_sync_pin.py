@@ -14,10 +14,10 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, scheduler
+from mahler import config, scheduler, sync, tick
 from mahler.gh import has_sections
 from mahler.ledger import Ledger, iso
-from mahler import runner
+from mahler import prompt
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -81,7 +81,7 @@ class PinTests(unittest.TestCase):
 
     def sync(self):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
-            scheduler.sync(self.ctx, "x")
+            sync.sync(self.ctx, "x")
 
     def command(self, body, minutes=1):
         """A user comment arrives; sync processes it."""
@@ -184,7 +184,7 @@ class SubIssueScopeTests(unittest.TestCase):
         ctx = scheduler.Ctx(cfg, led)
 
         with mock.patch.object(ctx, "gh", return_value=gh):
-            scheduler.sync(ctx, "proj")
+            sync.sync(ctx, "proj")
 
         # 1, 2, and 3 should be synced into the ledger
         self.assertIsNotNone(led.item("proj", 1))
@@ -218,7 +218,7 @@ class SubIssueScopeTests(unittest.TestCase):
         ctx = scheduler.Ctx(cfg, led)
 
         with mock.patch.object(ctx, "gh", return_value=gh):
-            scheduler.sync(ctx, "proj")
+            sync.sync(ctx, "proj")
 
         self.assertIsNotNone(led.item("proj", 20))
         self.assertIn("mahler", gh.issues[20]["labels"])
@@ -238,7 +238,7 @@ class PlannedChildTests(unittest.TestCase):
     def sync(self, issues):
         gh = FakeGH(issues)
         with mock.patch.object(self.ctx, "gh", return_value=gh):
-            scheduler.sync(self.ctx, "proj")
+            sync.sync(self.ctx, "proj")
         return gh
 
     def test_planned_sub_issue_is_born_ready_without_a_sort(self):
@@ -258,7 +258,7 @@ class PlannedChildTests(unittest.TestCase):
         event = self.led.q("SELECT detail FROM events WHERE kind='state'")[-1]
         self.assertIn("born ready (planned under #5)", event["detail"])
         self.assertNotIn("proj#6: started sort", "\n".join(self.ctx.lines))
-        candidates = scheduler._candidates(self.ctx, [self.ctx.policy("proj")])
+        candidates = tick._candidates(self.ctx, [self.ctx.policy("proj")])
         self.assertEqual([(it["number"], role) for _, role, it in candidates],
                          [(6, "build")])
 
@@ -293,7 +293,7 @@ class PlannedChildTests(unittest.TestCase):
 
 class SortRecipeTests(unittest.TestCase):
     def test_recipe_includes_plan_and_no_split_rule(self):
-        rendered = runner.render("sort", number=6, repo="x/y", title="Child", rules="")
+        rendered = prompt.render("sort", number=6, repo="x/y", title="Child", rules="")
         self.assertIn("## Plan", rendered)
         self.assertIn("files to change", rendered)
         self.assertIn("ordered steps", rendered)

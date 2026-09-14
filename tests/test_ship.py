@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, gh as gh_module, platforms, runner, scheduler
+from mahler import config, finalize, gh as gh_module, platforms, runner, scheduler, ship
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -98,7 +98,7 @@ class ShipTests(unittest.TestCase):
     def ship(self):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.ctx, "ping") as ping:
-            scheduler.ship(self.ctx, [{"name": "x"}])
+            ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
     # ---------- opening the PR ----------
@@ -197,7 +197,7 @@ class ShipTests(unittest.TestCase):
                                     f"branch `{it['branch']}` — CI was red.")
             return True
 
-        patcher = mock.patch.object(scheduler, "start", side_effect=fake_start)
+        patcher = mock.patch.object(ship, "start", side_effect=fake_start)
         started = patcher.start()
         self.addCleanup(patcher.stop)
         return started
@@ -282,7 +282,7 @@ class ShipTests(unittest.TestCase):
                 mock.patch.object(runner, "snapshot",
                                   return_value={"ref": "mahler/5-wired", "sha": "z",
                                                 "ahead": 1, "stat": None}):
-            scheduler.finalize(self.ctx, run)
+            finalize.finalize(self.ctx, run)
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "verifying")     # CI re-runs on the new SHA
         self.assertEqual(item["attempts"], 0)            # a DONE fix is not a failure
@@ -297,7 +297,7 @@ class ShipTests(unittest.TestCase):
             fh.write("STATUS: DONE almost\n")
         with mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
                 mock.patch.object(runner, "remove_worktree"):
-            scheduler.finalize(self.ctx, run)
+            finalize.finalize(self.ctx, run)
         self.assertEqual(self.led.item("x", 5)["state"], "working")   # handoff to session
 
     def test_a_failed_fix_counts_and_retries_like_a_build(self):
@@ -307,7 +307,7 @@ class ShipTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "ping") as ping, \
                 mock.patch.object(self.ctx, "say"), \
                 mock.patch.object(runner, "remove_worktree"):
-            scheduler.finalize(self.ctx, run)
+            finalize.finalize(self.ctx, run)
         item = self.led.item("x", 5)
         self.assertEqual((item["state"], item["attempts"]), ("ready", 1))
         self.assertIn("attempt 1 failed", self.last_event())
@@ -419,7 +419,7 @@ class ShipTests(unittest.TestCase):
         self.gh.fail_view = {88}
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.ctx, "ping"):
-            scheduler.ship(self.ctx, [{"name": "x"}])
+            ship.ship(self.ctx, [{"name": "x"}])
         self.assertEqual(self.item()["state"], "verifying")     # 5: retried next tick
         self.assertEqual(self.item(6)["state"], "done")         # 6: still shipped
         self.assertIn("shipping failed", " ".join(self.ctx.lines))

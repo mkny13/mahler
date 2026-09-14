@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler.ledger import Ledger, iso
-from mahler.scheduler import _check_estimate_calibration
+from mahler.finalize import _check_estimate_calibration
 
 
 class Clock:

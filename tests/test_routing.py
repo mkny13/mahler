@@ -9,7 +9,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import cli, config, platforms, router, scheduler
+from mahler import cli, config, platforms, router, scheduler, usage
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -678,7 +678,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         sample = [("5h", 35.0, iso(NOW + timedelta(hours=3))),
                   ("weekly", 55.0, iso(NOW + timedelta(days=5)))]
         with mock.patch("mahler.platforms.oauth_usage", return_value=sample):
-            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+            usage.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
 
         c_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")[0]["used_pct"]
         o_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h'")[0]["used_pct"]
@@ -689,7 +689,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         sample = [("5h", 42.0, iso(NOW + timedelta(hours=2)))]
         with mock.patch("mahler.platforms.oauth_usage", return_value=[]), \
              mock.patch("mahler.platforms.probe_claude", return_value=sample):
-            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+            usage.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
 
         c_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")[0]["used_pct"]
         o_5h = self.led.q("SELECT used_pct FROM usage WHERE platform='claude-opus' AND window='5h'")[0]["used_pct"]
@@ -701,7 +701,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
     def test_refresh_usage_no_lockout_when_probe_fails(self):
         with mock.patch("mahler.platforms.oauth_usage", return_value=[]), \
              mock.patch("mahler.platforms.probe_claude", return_value=[]):
-            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+            usage.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
         self.assertIsNone(self.led.get_kv("probe:claude"))
         self.assertIsNone(self.led.get_kv("probe:claude-opus"))
         self.assertIsNone(self.led.get_kv("probe:oauth:claude"))
@@ -711,7 +711,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         sample = [("5h", 35.0, iso(NOW + timedelta(hours=3))),
                   ("weekly", 55.0, iso(NOW + timedelta(days=5)))]
         with mock.patch("mahler.platforms.oauth_usage", return_value=sample):
-            scheduler.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
+            usage.refresh_usage(self.ctx, [config.project_policy(self.cfg, "p")])
         self.assertIsNotNone(self.led.get_kv("probe:oauth:claude"))
         self.assertIsNotNone(self.led.get_kv("probe:oauth:claude-opus"))
 
@@ -721,7 +721,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         for w in ("5h", "weekly"):
             led.record_usage("claude", w, 1, iso(NOW + timedelta(hours=2)), sampled_at=old)
         pconf = self.cfg["platforms"]["claude"]
-        self.assertTrue(scheduler._usage_needs_refresh(led, "claude", pconf))
+        self.assertTrue(usage._usage_needs_refresh(led, "claude", pconf))
 
     def test_usage_needs_refresh_when_approaching_stale(self):
         # 13 minutes old — past stale_minutes - 3 (12) but not yet stale (15)
@@ -730,7 +730,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         for w in ("5h", "weekly"):
             led.record_usage("claude", w, 1, iso(NOW + timedelta(hours=2)), sampled_at=old)
         pconf = self.cfg["platforms"]["claude"]
-        self.assertTrue(scheduler._usage_needs_refresh(led, "claude", pconf))
+        self.assertTrue(usage._usage_needs_refresh(led, "claude", pconf))
 
     def test_usage_needs_refresh_when_oauth_overdue(self):
         # Fresh samples but oauth never checked — needs refresh
@@ -739,7 +739,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         for w in ("5h", "weekly"):
             led.record_usage("claude", w, 1, later)
         pconf = self.cfg["platforms"]["claude"]
-        self.assertTrue(scheduler._usage_needs_refresh(led, "claude", pconf))
+        self.assertTrue(usage._usage_needs_refresh(led, "claude", pconf))
 
     def test_usage_needs_refresh_when_fresh(self):
         led = Ledger(":memory:", clock=lambda: NOW)
@@ -750,8 +750,8 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         led.set_kv("probe:oauth:claude", iso(NOW - timedelta(minutes=1)))
         led.set_kv("probe:oauth:claude-opus", iso(NOW - timedelta(minutes=1)))
         pconf = self.cfg["platforms"]["claude"]
-        self.assertFalse(scheduler._usage_needs_refresh(led, "claude", pconf))
-        self.assertFalse(scheduler._usage_needs_refresh(led, "claude-opus", pconf))
+        self.assertFalse(usage._usage_needs_refresh(led, "claude", pconf))
+        self.assertFalse(usage._usage_needs_refresh(led, "claude-opus", pconf))
 
     def test_cli_cmd_usage_probe_mirrors_to_both(self):
         from types import SimpleNamespace

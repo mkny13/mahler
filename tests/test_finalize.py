@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, runner, scheduler
+from mahler import config, finalize, runner, scheduler, tick
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -59,7 +59,7 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=saved) as snap, \
                 mock.patch.object(runner, "remove_worktree") as rm:
-            scheduler.finalize(self.ctx, self.run)
+            finalize.finalize(self.ctx, self.run)
         return snap, rm
 
     def last_event(self):
@@ -87,7 +87,7 @@ class RunTests(unittest.TestCase):
         with open(self.log, "w") as fh:
             fh.write("STATUS: DONE everything green\n")
         self.finalize()
-        cands = scheduler._candidates(self.ctx, [config.project_policy(self.cfg, "x")])
+        cands = tick._candidates(self.ctx, [config.project_policy(self.cfg, "x")])
         self.assertEqual([(p["name"], r, it["number"]) for p, r, it in cands], [])
 
     def test_no_status_line_is_still_a_failed_attempt(self):

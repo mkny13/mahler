@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, scheduler
+from mahler import config, scheduler, sync, tick
 from mahler.ledger import Ledger, iso
 from mahler.gh import GHError
 
@@ -35,7 +35,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
         self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="done")
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         # Verify close_issue was called with correct comment
         self.gh_mock.close_issue.assert_called_once()
@@ -53,7 +53,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
         self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="ready")
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         self.gh_mock.close_issue.assert_not_called()
         parent = self.led.item("mahler", 10)
@@ -63,7 +63,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         """With no children, nothing happens."""
         self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         self.gh_mock.close_issue.assert_not_called()
         parent = self.led.item("mahler", 10)
@@ -76,7 +76,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
         self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="done")
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         self.gh_mock.close_issue.assert_not_called()
         self.assertIn("would close", self.ctx.lines[0])
@@ -91,7 +91,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 21, title="Child 3", parent=20, state="done")
         self.led.upsert_item("mahler", 22, title="Child 4", parent=20, state="ready")  # not done
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         # Only parent 10 should be closed
         self.assertEqual(self.gh_mock.close_issue.call_count, 1)
@@ -106,7 +106,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led.upsert_item("mahler", 10, title="Not a parent", state="ready")
         self.led.upsert_item("mahler", 11, title="Child", parent=10, state="done")
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         self.gh_mock.close_issue.assert_not_called()
 
@@ -120,7 +120,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
 
         self.gh_mock.close_issue.side_effect = [GHError("fail"), None]
 
-        scheduler.close_finished_parents(self.ctx, [proj()])
+        sync.close_finished_parents(self.ctx, [proj()])
 
         # Both should be attempted
         self.assertEqual(self.gh_mock.close_issue.call_count, 2)
@@ -154,7 +154,7 @@ class SyncStoresParentTests(unittest.TestCase):
             }
         ]
 
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
 
         item = self.led.item("mahler", 11)
         self.assertEqual(item["parent"], 10)
@@ -173,7 +173,7 @@ class SyncStoresParentTests(unittest.TestCase):
             }
         ]
 
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
 
         item = self.led.item("mahler", 11)
         self.assertEqual(item["parent"], 10)
@@ -192,7 +192,7 @@ class SyncStoresParentTests(unittest.TestCase):
             }
         ]
 
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
 
         item = self.led.item("mahler", 11)
         self.assertIsNone(item["parent"])
@@ -257,14 +257,14 @@ class MaintenanceQueueAfterParentCloseTests(unittest.TestCase):
         self.led.upsert_item("mahler", 11, state_changed_at=iso(NOW - timedelta(days=20)))
 
         # Parent is still open - queue_maintenance should skip
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
         # Now close the parent (simulate close_finished_parents)
         self.led.set_state("mahler", 10, "done", "all sub-issues done")
 
         # queue_maintenance should now file the pass
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_called_once()
         args, kwargs = self.gh_mock.create_issue.call_args
         self.assertIn("pass:security", args[2])
@@ -280,7 +280,7 @@ class MaintenanceQueueAfterParentCloseTests(unittest.TestCase):
         # Close parent
         self.led.set_state("mahler", 10, "done", "all sub-issues done")
 
-        scheduler.queue_maintenance(self.ctx, [proj()])
+        tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
 

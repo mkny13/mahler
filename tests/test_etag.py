@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timezone
 from unittest import mock
 
-from mahler import scheduler
+from mahler import scheduler, sync
 from mahler.gh import GH, GHError
 from mahler.ledger import Ledger, iso
 
@@ -99,14 +99,14 @@ class SyncETagTests(unittest.TestCase):
     def test_full_sync_processes_and_stores_the_etag(self):
         self.gh.issues_changed.return_value = (True, 'W/"e1"')
         self.gh.open_issues.return_value = [self.issue()]
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
         self.assertEqual(self.led.item("mahler", 11)["title"], "T")
         self.assertEqual(self.led.get_kv("etag:mahler"), 'W/"e1"')
 
     def test_304_skips_the_fetch(self):
         self.led.set_kv("etag:mahler", 'W/"e1"')
         self.gh.issues_changed.return_value = (False, 'W/"e1"')
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
         self.gh.open_issues.assert_not_called()
         self.assertIn("304", "\n".join(self.ctx.lines))
         self.assertEqual(self.led.get_kv("etag:mahler"), 'W/"e1"')
@@ -117,7 +117,7 @@ class SyncETagTests(unittest.TestCase):
         self.led.upsert_item("mahler", 12, title="Old", state="ready")
         self.led.set_kv("etag:mahler", 'W/"e1"')
         self.gh.issues_changed.return_value = (False, 'W/"e1"')
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
         self.gh.issue_state.assert_not_called()
         self.assertEqual(self.led.item("mahler", 12)["state"], "ready")
 
@@ -128,7 +128,7 @@ class SyncETagTests(unittest.TestCase):
         self.gh.issues_changed.return_value = (True, 'W/"e2"')
         self.gh.open_issues.side_effect = GHError("gh: HTTP 500")
         with self.assertRaises(GHError):
-            scheduler.sync(self.ctx, "mahler")
+            sync.sync(self.ctx, "mahler")
         self.assertEqual(self.led.get_kv("etag:mahler"), 'W/"e1"')
 
     def test_unparseable_etag_is_not_stored(self):
@@ -136,6 +136,6 @@ class SyncETagTests(unittest.TestCase):
         self.led.set_kv("etag:mahler", 'W/"e1"')
         self.gh.issues_changed.return_value = (True, None)
         self.gh.open_issues.return_value = [self.issue()]
-        scheduler.sync(self.ctx, "mahler")
+        sync.sync(self.ctx, "mahler")
         self.assertEqual(self.led.item("mahler", 11)["title"], "T")
         self.assertEqual(self.led.get_kv("etag:mahler"), 'W/"e1"')
