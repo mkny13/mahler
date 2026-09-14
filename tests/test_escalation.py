@@ -144,7 +144,8 @@ class TierEscalationTests(unittest.TestCase):
         # Schedule should pick agy-claude (tier 2), not kilo (tier 1)
         projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
         started = []
-        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True):
+        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(scheduler.platforms, "available", return_value=True):
             scheduler.schedule(self.ctx, projects)
         self.assertEqual(started, ["agy-claude"])
 
@@ -161,7 +162,8 @@ class TierEscalationTests(unittest.TestCase):
 
         projects = [{"name": "p", "repo": "o/p", "max_parallel": 1, "path": self.tmp.name}]
         started = []
-        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True):
+        with mock.patch("mahler.scheduler.start", side_effect=lambda *args, **kw: started.append(args[4]) or True), \
+             mock.patch.object(scheduler.platforms, "available", return_value=True):
             scheduler.schedule(self.ctx, projects)
         # Even though labeled size:s, risk_min_tier elevates min_tier to 2 and size to m,
         # so kilo (tier 1, max_size s) cannot take it, agy-claude takes it.
