@@ -331,6 +331,12 @@ def schedule(ctx, projects):
                     ctx.say(f"{name}: builds wait — {in_flight[name]} finished change(s) "
                             "not merged yet")
                 continue
+            # Hot hold (D6 layer 2): no new *code-writing* starts while an
+            # untracked Claude session is active in the project — running work
+            # continues, and the hold lifts hot_hold_minutes after the last
+            # transcript activity. Sorts are read-only triage (no worktree, no
+            # files) and fixes repair an item already in flight, so neither
+            # competes with the human's work; only builds are gated.
             if role == "build" and hot[name]:
                 ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
                 continue

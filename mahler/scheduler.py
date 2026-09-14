@@ -22,9 +22,8 @@ from .watchdog import watchdog
 
 
 class Ctx:
-    def __init__(self, cfg, led, dry_run=False, hot_hold=True, verbose=False):
+    def __init__(self, cfg, led, dry_run=False, hot_hold=True):
         self.cfg, self.led, self.dry_run, self.hot_hold = cfg, led, dry_run, hot_hold
-        self.verbose = verbose
         self.lines = []
         self._gh = {}
         self._labels = {}          # (project, number) -> labels from this tick's sync

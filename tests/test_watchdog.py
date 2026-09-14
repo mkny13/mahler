@@ -257,6 +257,17 @@ class HumanClaudePresenceTests(unittest.TestCase):
         with mock.patch.object(presence, "last_claude_activity", return_value=old):
             self.assertFalse(presence.human_claude_active([{"path": "/some/path"}]))
 
+    def test_a_projects_own_window_wins_over_the_default(self):
+        """D6: hot_hold_minutes is per project — burst suppression and the
+        schedule's hot hold must agree on how long activity counts."""
+        from mahler import presence
+        old = datetime.now(timezone.utc) - timedelta(minutes=25)
+        with mock.patch.object(presence, "last_claude_activity", return_value=old):
+            self.assertTrue(presence.human_claude_active(
+                [{"path": "/some/path", "hot_hold_minutes": 30}]))
+            self.assertFalse(presence.human_claude_active(
+                [{"path": "/some/path", "hot_hold_minutes": 10}]))
+
 
 class ReapTests(unittest.TestCase):
     def test_dead_shell_still_gets_its_group_killed_before_finalize(self):
@@ -434,6 +445,65 @@ class TimeoutHandoffTests(unittest.TestCase):
         item = self.led.item("x", 5)
         self.assertEqual(item["attempts"], 1)
         self.assertEqual(item["state"], "ready")     # back in the queue for a retry
+
+
+class YieldGraceTests(unittest.TestCase):
+    """D6 pre-emption: a run told to yield gets its grace period to commit,
+    push its branch and post a handoff; once it passes, the watchdog stops
+    it and finalize turns the exit into a handoff (D9)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.runs_dir = os.path.join(tmp.name, "runs")
+        os.makedirs(self.runs_dir)
+        runs_patch = mock.patch.object(config, "RUNS_DIR", self.runs_dir)
+        runs_patch.start()
+        self.addCleanup(runs_patch.stop)
+        self.ctx = ctx_for()
+
+    def yield_run(self, platform="cline-free", yield_age=10):
+        led = self.ctx.led
+        led.upsert_item("x", 1, state="working")
+        led.claim("x", 1, "run:10", "auto", 10)
+        led.create_run(id=10, project="x", number=1, role="build", platform=platform,
+                       epoch=1, pid=9999, worktree="wt", branch="br", base_ref="main",
+                       log_path="log", status_path="exit", status="running")
+        led.update_run(10, yield_at=iso(NOW - timedelta(seconds=yield_age)))
+        return [r for r in led.active_runs() if r["id"] == 10][0]
+
+    def watched(self):
+        with mock.patch.object(runner, "alive", return_value=True), \
+                mock.patch.object(router, "usage_state", return_value=("soft", "")), \
+                mock.patch.object(runner, "terminate") as term:
+            watchdog.watchdog(self.ctx)
+        return term
+
+    def test_a_fresh_yield_is_inside_the_grace_and_left_alone(self):
+        self.yield_run(yield_age=10)                  # grace is 120s
+        term = self.watched()
+        term.assert_not_called()
+        self.assertEqual(self.ctx.led.run(10)["status"], "running")
+
+    def test_a_yield_past_the_grace_is_stopped(self):
+        self.yield_run(yield_age=180)
+        term = self.watched()
+        term.assert_called_once()
+        self.assertEqual(self.ctx.led.run(10)["status"], "stopping")
+        self.assertEqual(self.ctx.led.run(10)["stop_reason"], "preempted")
+
+    def test_a_parked_run_gets_no_grace(self):
+        self.yield_run(yield_age=1)
+        self.ctx.led.update_run(10, stop_reason="parked")
+        run = [r for r in self.ctx.led.active_runs() if r["id"] == 10][0]
+        term = self.watched()
+        term.assert_called_once()
+        self.assertEqual(run["stop_reason"], "parked")
+
+    def test_a_non_claude_run_gets_no_yield_file(self):
+        self.yield_run(platform="cline-free", yield_age=180)
+        self.watched()
+        self.assertFalse(os.path.exists(os.path.join(self.runs_dir, "10", "yield")))
 
 
 if __name__ == "__main__":
