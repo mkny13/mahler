@@ -556,9 +556,27 @@ def finalize(ctx, run):
         # model being rate-limited rather than the whole pool (mahler#141).
         update_cols["model"] = log["model"]
     led.update_run(run["id"], **update_cols)
+    _check_estimate_calibration(ctx)
     if not keep_worktree:
         runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
                                runner.worktree_root(pol))
+
+
+def _check_estimate_calibration(ctx):
+    """Periodically compare predicted vs actual durations and refine estimates (mahler#59)."""
+    est_cfg = ctx.cfg.get("estimates", {})
+    interval = est_cfg.get("calibration_interval", 10)
+    window = est_cfg.get("calibration_window", 20)
+
+    cur = int(ctx.led.get_kv("runs_since_calibration") or "0") + 1
+    if cur >= interval:
+        stats = ctx.led.calibrate_estimates(window=window)
+        ctx.led.set_kv("runs_since_calibration", "0")
+        if stats:
+            ctx.say(f"Calibrated time estimates over {stats['samples']} runs: "
+                    f"factor={stats['factor']:.2f}, MAE={stats['mae']}m")
+    else:
+        ctx.led.set_kv("runs_since_calibration", str(cur))
 
 
 def _hold_platform(ctx, run):
@@ -1585,8 +1603,10 @@ def schedule(ctx, projects):
 
 def start(ctx, project, item, role, platform, handoff_from=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
+    ests = led.estimates()
+    est = led.run_estimate(ests, platform, role)
     run_id = led.create_run(project=project, number=n, role=role, platform=platform,
-                            epoch=0, status="running")
+                            epoch=0, status="running", est_mins=round(est, 2))
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],
                             platform=platform, run_id=run_id, capacity=role != "sort",
                             handoff_from=handoff_from)
