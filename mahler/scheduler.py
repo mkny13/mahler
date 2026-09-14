@@ -185,11 +185,13 @@ def _close_finished_parents_project(ctx, project):
 # ---------- entry ----------
 
 def take_lock():
-    os.makedirs(config.STATE, exist_ok=True)
+    config.ensure_private_dir(config.STATE)   # 0700, even if created loose earlier (#75)
     fh = open(config.LOCK_PATH, "w")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.chmod(config.LOCK_PATH, 0o600)     # creation is umask-masked (#75)
     except BlockingIOError:
+        fh.close()
         return None
     return fh
 
@@ -257,8 +259,10 @@ def watchdog(ctx):
             if ctx.cfg["platforms"][run["platform"]]["kind"] == "claude":
                 yield_file = os.path.join(config.RUNS_DIR, str(run["id"]), "yield")
                 if not os.path.exists(yield_file):
-                    os.makedirs(os.path.dirname(yield_file), exist_ok=True)
-                    open(yield_file, "w").close()
+                    config.ensure_private_dir(os.path.dirname(yield_file))
+                    with open(yield_file, "w") as fh:
+                        fh.write("")
+                    os.chmod(yield_file, 0o600)
             preset = run["stop_reason"]
             grace = timedelta(seconds=0 if preset in STOP_NOW else pol["yield_grace_seconds"])
             if now >= parse(run["yield_at"]) + grace:

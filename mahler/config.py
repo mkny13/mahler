@@ -19,6 +19,27 @@ WORKTREES = os.path.join(STATE, "worktrees")
 LOCK_PATH = os.path.join(STATE, "tick.lock")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def ensure_private_dir(path, mode=0o700):
+    """Create `path` (and missing parents) user-only (issue #75, following
+    backup.py's pattern: dirs 0700, files 0600). os.makedirs' `mode` is masked
+    by the process umask — fine for newly created dirs at 0o700, but a
+    directory that already exists keeps its old, possibly loose mode, so every
+    level from STATE down is chmod'ed explicitly afterwards. Paths outside
+    STATE (e.g. a custom worktree_root) get their leaf tightened only —
+    ancestors there are not ours to chmod."""
+    os.makedirs(path, mode=mode, exist_ok=True)
+    state = os.path.abspath(STATE)
+    p = os.path.abspath(path)
+    while True:
+        try:
+            os.chmod(p, mode)
+        except OSError:
+            pass
+        if p == state or not p.startswith(state + os.sep):
+            break
+        p = os.path.dirname(p)
+
 MAINTENANCE_PASSES = ("security", "health", "drift", "tests", "token-economy", "guidance")
 DEFAULT_MAINTENANCE = {
     "enabled": True,

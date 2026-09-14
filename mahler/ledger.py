@@ -23,7 +23,7 @@ import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
 
-from .config import MAINTENANCE_PASSES
+from .config import MAINTENANCE_PASSES, ensure_private_dir
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -132,7 +132,7 @@ def parse(s):
 class Ledger:
     def __init__(self, path, clock=utcnow, thread_safe=False):
         if path != ":memory:":
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            ensure_private_dir(os.path.dirname(path) or ".")
         # thread_safe=True lets a server thread use a connection made on the
         # main thread (the status page does this); callers must then serialise
         # access around one connection, which mahler.serve does with a lock.
@@ -156,6 +156,16 @@ class Ledger:
             self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
         # migrate legacy 'tracking' state to 'parent'
         self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
+        if path != ":memory:":
+            # 0600 on the database and its WAL/SHM sidecars (issue #75): the
+            # file is created umask-masked, so chmod explicitly — same pattern
+            # as backup.py's dumps. Fixes a file created loose by an older
+            # version too.
+            for side in (path, path + "-wal", path + "-shm"):
+                try:
+                    os.chmod(side, 0o600)
+                except OSError:
+                    pass
         self.clock = clock
 
     def now(self):
