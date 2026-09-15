@@ -556,6 +556,44 @@ class FileOverlapTests(unittest.TestCase):
         self.assertEqual(lines, ["a#2: would build on agy-claude"])
 
 
+class ProjectExclusionTests(unittest.TestCase):
+    """mahler#231: area and file exclusions belong to one project."""
+
+    def test_exclusions_are_project_scoped_for_every_seed_path(self):
+        for field, value, waiting in (
+            ("labels", '["area:router"]', "area:router already in progress"),
+            ("files", '["README.md"]', "files already in progress: README.md"),
+        ):
+            for state in ("working", "verifying", "ready"):
+                for candidate_project in ("a", "b"):
+                    with self.subTest(field=field, state=state,
+                                      candidate_project=candidate_project):
+                        ctx, led = mk_ctx({
+                            "a": proj(repo="x/a", path="/tmp/a", max_parallel=2),
+                            "b": proj(repo="x/b", path="/tmp/b", max_parallel=2),
+                        }, total=3, max_runs=3)
+                        self.addCleanup(led.close)
+                        seed(led, **{"agy-claude": (10, 10)})
+                        item(led, "a", 1, state=state, age_minutes=30)
+                        led.upsert_item("a", 1, **{field: value})
+                        if state == "working":
+                            led.create_run(project="a", number=1, role="build",
+                                           platform="agy-claude", epoch=1)
+                        item(led, candidate_project, 2, age_minutes=10)
+                        led.upsert_item(candidate_project, 2, **{field: value})
+
+                        lines = plan(ctx, led)
+
+                        expected = (["a#1: would build on agy-claude"]
+                                    if state == "ready" else [])
+                        if candidate_project == "b":
+                            expected.append("b#2: would build on agy-claude")
+                            self.assertFalse(any("waiting —" in line for line in ctx.lines))
+                        else:
+                            self.assertIn(f"a#2: waiting — {waiting}", ctx.lines)
+                        self.assertEqual(lines, expected)
+
+
 class TierBudgetUnitTests(unittest.TestCase):
     """mahler#200: tick.tier_budget_busy() in isolation — the pure function
     behind concurrency.by_tier, before it's wired into a full schedule()
