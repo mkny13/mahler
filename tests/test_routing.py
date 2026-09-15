@@ -727,6 +727,13 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         # Ensure there is an inbox item so routing platforms are wanted
         self.led.upsert_item("p", 1, state="inbox", title="Task", priority=2)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
+        # refresh_usage also probes agy/copilot platforms pulled into `wanted`
+        # by routing; these tests only care about Claude mirroring, and
+        # leaving them unmocked shells out to the real `agy`/`gh` CLIs
+        # (mahler#95 — multi-second execution time creep per test).
+        self.addCleanup(mock.patch.stopall)
+        mock.patch("mahler.platforms.probe_agy", return_value={}).start()
+        mock.patch("mahler.platforms.probe_copilot", return_value=[]).start()
 
     def test_refresh_usage_mirrors_oauth_to_claude_and_opus(self):
         sample = [("5h", 35.0, iso(NOW + timedelta(hours=3))),
