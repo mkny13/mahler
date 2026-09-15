@@ -136,6 +136,54 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 0)
         self.assertNotIn("conductor ships it", self.last_event())
 
+    def test_yielded_returns_to_ready_without_counting_failure(self):
+        for reason in (None, "preempted", "parked", "quota", "lost-lease", "timeout"):
+            with self.subTest(reason=reason):
+                self.run["stop_reason"] = reason
+                self.led.upsert_item("x", 5, state="working", attempts=1,
+                                     esc_fails=1, esc_tier=2)
+                with open(self.log, "w") as fh:
+                    fh.write("STATUS: YIELDED handed over\n")
+                with mock.patch.object(self.ctx, "ping") as ping:
+                    self.finalize()
+                item = self.led.item("x", 5)
+                self.assertEqual(item["state"], "ready")
+                self.assertEqual((item["attempts"], item["esc_fails"], item["esc_tier"]),
+                                 (1, 1, 2))
+                run = self.led.q("SELECT outcome, status FROM runs WHERE id=?",
+                                 (self.run_id,))[0]
+                self.assertEqual((run["outcome"], run["status"]), ("YIELDED", "ended"))
+                self.assertIsNone(self.led.lease("x", 5))
+                self.assertIn("mahler/snapshot/5-run7", ping.call_args.args[1])
+                self.assertEqual(ping.call_args.kwargs["priority"], "low")
+
+    def test_yielded_hands_to_live_interactive_session(self):
+        for reason in (None, "preempted", "parked", "quota", "lost-lease", "timeout"):
+            with self.subTest(reason=reason):
+                self.run["stop_reason"] = reason
+                self.led.upsert_item("x", 5, state="working", attempts=1, esc_fails=1)
+                self.led.claim("x", 5, "interactive:you", "interactive", 30)
+                with open(self.log, "w") as fh:
+                    fh.write("STATUS: YIELDED handed over\n")
+                self.finalize()
+                item = self.led.item("x", 5)
+                self.assertEqual(item["state"], "working")
+                self.assertEqual((item["attempts"], item["esc_fails"]), (1, 1))
+                self.assertEqual(self.led.lease("x", 5)["holder"], "interactive:you")
+
+    def test_blocked_counts_attempt_and_preserves_reason(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: BLOCKED needs a database password\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["attempts"], 1)
+        self.assertEqual(item["state"], "ready")
+        outcome = "BLOCKED needs a database password"
+        self.assertIn(outcome, self.last_event())
+        run = self.led.q("SELECT outcome, status FROM runs WHERE id=?", (self.run_id,))[0]
+        self.assertEqual((run["outcome"], run["status"]), (outcome, "ended"))
+        self.assertIn(outcome, self.gh.comments[-1])
+
     def test_handoff_sets_ready_and_drops_lease_atomically(self):
         with open(self.log, "w") as fh:
             fh.write("reached quota\n")

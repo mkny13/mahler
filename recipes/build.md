@@ -34,7 +34,10 @@ Rules:
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
+If a yield is delivered: commit your work, push the branch, and end with STATUS: YIELDED — a handoff, not a failure.
+
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what changed>
 STATUS: NEEDS-YOU <the question, on one line>
 STATUS: BLOCKED <reason>
+STATUS: YIELDED <handoff summary>
