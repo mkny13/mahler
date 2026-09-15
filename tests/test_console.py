@@ -288,9 +288,9 @@ class BannerTests(unittest.TestCase):
         self.assertEqual([b["kind"] for b in banners],
                          ["PAUSED BY YOU", "ALL PLATFORMS OVER SOFT LINE", "HOT HOLD · MAHLER",
                           "RUN SAT SILENT · KILO"])
-        self.assertEqual(banners[2]["text"], "You have uncommitted edits in mahler from 4 minutes "
-                                             "ago. No new runs start there until 20 minutes after "
-                                             "you stop. Work in flight continues.")
+        self.assertEqual(banners[2]["text"], "You were working in mahler with Claude Code 4 "
+                                             "minutes ago. No new builds start there until 20 "
+                                             "minutes after you stop. Work in flight continues.")
         self.assertEqual(banners[0]["act"], "resume")
         self.assertIn("printed nothing for 10 minutes", banners[3]["text"])
 

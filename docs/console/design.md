@@ -518,11 +518,25 @@ at a time.
 - The scheduler recording why nothing started (structured holds), so the 0-runs
   view is complete rather than inferred.
 - Ready to test: the UAT queue, Pass, and Fail through the bug sheet.
-- Capture to a GitHub issue, then attachments for capture and the bug sheet.
+- Capture to a GitHub issue in the project you pick, then attachments for capture
+  and the bug sheet.
 - Stop & hand off from the run detail, and the live log tail.
 - Undo a merge: the revert PR through the normal pipeline.
 - The serve process restarting itself when its code updates, and ntfy
   needs-you pings deep-linking to the item.
+
+### Changed from the design (owner, 2026-09-15)
+
+These override the verbatim spec above.
+
+- **Hot hold wording.** The designed banner said "You have uncommitted edits… No
+  new runs start there", but Mahler detects an active Claude Code session, and a
+  hot hold only holds builds. It now reads: *"You were working
+  in groundwork with Claude Code 4 minutes ago. No new builds start there until 20
+  minutes after you stop. Work in flight continues."*
+- **No inbox.** Capture always files into a project you pick. The `inbox (no
+  project)` chip, "the inbox repo" and the inbox backlog group are dropped; no project is preselected, and Save waits until you pick one. The
+  placeholder becomes *"Type or dictate, then pick a project."*
 
 ### Judgment calls the design didn't settle
 
@@ -543,9 +557,6 @@ at a time.
 - **Until their issues land**, Capture is not in the rail, Ready to test shows 0,
   and a needs-you item links to its GitHub issue, where a reply already counts as
   the answer.
-- **Hot hold wording.** The banner copy says "uncommitted edits", as designed, but
-  what Mahler actually detects is an active Claude Code session in the project.
-  Worth a word from the owner.
 
 ### Copy added during implementation
 
@@ -566,7 +577,7 @@ place:
   *"quota error — backing off until 11:12"*.
 - Capacity line phrases: *"is past its soft line"*, *"has no fresh quota
   reading"*, *"is on hold until 11:12"*.
-- Hot hold banner: *"from under a minute ago"* when it is under a minute.
+- Hot hold banner: *"under a minute ago"* when it is under a minute.
 - Event kinds shown: `run_started`, `pr_opened`, `pr_merged`, `escalated`
   (*"retried a tier up (2 → 3)"*), `handoff`, `backoff_cleared` (*"cleared by hand
   on kilo"*), and the state an item moved to (`needs_you`, `ready`, …).
