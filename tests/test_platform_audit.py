@@ -124,6 +124,13 @@ class MergedThroughputTests(unittest.TestCase):
 
 
 class VerifiedDateParsingTests(unittest.TestCase):
+    def test_real_design_md_has_verified_dates_for_enabled_base_platforms(self):
+        dates = platform_audit.verified_dates(platform_audit._design_md_text())
+        for name, platform in config.DEFAULTS["platforms"].items():
+            if platform.get("enabled", True) and "from" not in platform:
+                with self.subTest(platform=name):
+                    self.assertIn(name, dates)
+
     def test_finds_nearest_verified_date_for_an_alias(self):
         text = "**Kilo** does the thing. Verified end-to-end 2026-09-13 (mahler#29)."
         dates = platform_audit.verified_dates(text)
