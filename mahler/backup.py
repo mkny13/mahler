@@ -155,11 +155,12 @@ def prune(project, name, root=ROOT, **policy):
 def due(led, project, spec, now=None):
     """Once a day, after spec['hour'] (default 3) local time."""
     now = now or datetime.now()
-    if now.hour < spec.get("hour", 3):
-        return False
-    failed = led.get_kv(f"backup:{project}:{spec['name']}:failed_at")
+    name = spec.get("name") or "<unnamed>"
+    failed = led.get_kv(f"backup:{project}:{name}:failed_at")
     if failed and (now - datetime.fromisoformat(failed)).total_seconds() < 3600:
         return False                      # retry hourly, not every tick (and ping)
+    if now.hour < spec.get("hour", 3):
+        return False
     last = led.get_kv(f"backup:{project}:{spec['name']}")
     return not last or datetime.fromisoformat(last) < now.replace(
         hour=spec.get("hour", 3), minute=0, second=0, microsecond=0)
@@ -168,19 +169,25 @@ def due(led, project, spec, now=None):
 def run(ctx, project, spec, force=False):
     """Back up one store if due (or forced). Pings on failure. -> result or None."""
     led = ctx.led
-    if not force and not due(led, project, spec):
-        return None
-    key = f"backup:{project}:{spec['name']}"
+    # Non-table entries follow the same unnamed failure/backoff path.
+    spec = spec if isinstance(spec, dict) else {}
+    name = spec.get("name") or "<unnamed>"
+    key = f"backup:{project}:{name}"
     try:
+        if not force and not due(led, project, spec):
+            return None
+        if not isinstance(spec.get("name"), str) or not spec["name"]:
+            raise BackupError("backup name must be a non-empty string")
         if spec.get("kind", "postgres") != "postgres":
             raise BackupError(f"unsupported kind {spec.get('kind')!r}")
         res = backup_postgres(project, spec, root=spec.get("root", ROOT))
         removed = prune(project, spec["name"], root=spec.get("root", ROOT))
-    except (BackupError, OSError, subprocess.SubprocessError, KeyError) as e:
+    except (BackupError, OSError, subprocess.SubprocessError, KeyError,
+            ValueError, TypeError, AttributeError, OverflowError) as e:
         led.set_kv(f"{key}:failed_at", datetime.now().isoformat())
-        led.event("backup_failed", project, None, f"{spec.get('name')}: {e}"[:500])
-        ctx.say(f"{project}: backup {spec.get('name')} FAILED — {e}")
-        ctx.ping(f"Backup failed — {project} {spec.get('name')}", str(e)[:300],
+        led.event("backup_failed", project, None, f"{name}: {e}"[:500])
+        ctx.say(f"{project}: backup {name} FAILED — {e}")
+        ctx.ping(f"Backup failed — {project} {name}", str(e)[:300],
                  priority="high", tags="warning")
         return None
     led.set_kv(key, datetime.now().isoformat())
