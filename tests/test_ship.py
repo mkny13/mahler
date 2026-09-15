@@ -381,6 +381,9 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "needs_you")
         self.assertIsNone(self.led.lease("x", 5))               # the slot is released
         self.assertIn("90 min", self.last_event())
+        # mahler#248: a structured question with no answer options
+        self.assertIn("90 min", self.item()["question"])
+        self.assertEqual(self.item()["options"], "[]")
 
     def test_pending_ci_timeout_restarts_on_a_new_sha(self):
         """A push to the PR (e.g. the fix run) restarts the wait: CI starts over."""
@@ -497,6 +500,9 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "needs_you")
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("90 min", self.last_event())
+        # mahler#248: a structured question with no answer options
+        self.assertIn("90 min", self.item()["question"])
+        self.assertEqual(self.item()["options"], "[]")
 
     def test_pr_resolved_outside_mahler_is_just_done(self):
         self.led.upsert_item("x", 5, pr=88)

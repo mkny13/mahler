@@ -126,8 +126,8 @@ def _ci_pending(ctx, project, item, pr, view):
         ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
         return
     elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
-    led.set_state(project, n, "needs_you",
-                  f"CI on PR #{pr} still pending after {elapsed} min")
+    reason = f"CI on PR #{pr} still pending after {elapsed} min"
+    led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
     ctx.ping(f"Mahler needs you — {project} #{n}",
              f"CI on PR #{pr} hasn't finished in {elapsed} min; "
              "the PR stays open, unmerged",
@@ -168,9 +168,9 @@ def _merge_queued(ctx, project, item, pr, view):
         ctx.say(f"{project}#{n}: PR #{pr} — waiting for the merge queue")
         return
     elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
-    led.set_state(project, n, "needs_you",
-                  f"PR #{pr} passed checks but hasn't merged in {elapsed} min — "
-                  "check the merge queue")
+    reason = (f"PR #{pr} passed checks but hasn't merged in {elapsed} min — "
+              "check the merge queue")
+    led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
     ctx.ping(f"Mahler needs you — {project} #{n}",
              f"PR #{pr} passed checks but hasn't merged in {elapsed} min "
              "(the merge queue?); the PR stays open, unmerged",

@@ -108,6 +108,31 @@ class NeedsTests(unittest.TestCase):
         self.assertEqual(needs[0]["question"], "3 attempts failed")
         self.assertIn("waiting 0m", needs[1]["meta"])
 
+    def test_question_and_options_come_from_the_item_when_set(self):
+        """mahler#248: finalize's OPTIONS split stores both on the item; the
+        console prefers them over the raw state-transition reason."""
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 9, title="Staging key", state="ready", priority=2)
+        led.set_state("mahler", 9, "needs_you", "Create a staging key or reuse prod?",
+                      question="Create a staging key or reuse prod?",
+                      options=json.dumps(["I'll create it", "Reuse prod"]))
+        needs = state.build(cfg, led)["needs"]
+        need = next(n for n in needs if n["ref"] == "mahler#9")
+        self.assertEqual(need["question"], "Create a staging key or reuse prod?")
+        self.assertEqual(need["options"], [{"label": "I'll create it", "text": "I'll create it"},
+                                           {"label": "Reuse prod", "text": "Reuse prod"}])
+
+    def test_failed_question_ignores_a_stale_item_question_column(self):
+        """A leftover 'question' column from an earlier needs_you round must not
+        leak into a later failed item's displayed reason."""
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("groundwork", 81, title="Date format", state="ready", priority=1,
+                        question="stale question from a past needs_you")
+        led.set_state("groundwork", 81, "failed", "3 attempts failed")
+        needs = state.build(cfg, led)["needs"]
+        need = next(n for n in needs if n["ref"] == "groundwork#81")
+        self.assertEqual(need["question"], "3 attempts failed")
+
     def test_landing_prefers_triage_when_something_needs_you(self):
         cfg, led = make_cfg(), make_led()
         self.assertEqual(state.build(cfg, led)["landing"], {"tab": "now", "view": "now"})

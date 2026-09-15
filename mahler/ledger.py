@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS items (
     branch           TEXT,
     pr               INTEGER,             -- the PR the conductor opened (D18)
     summary          TEXT,                -- the agent's one-line DONE summary
+    question         TEXT,                -- the NEEDS-YOU question, sans OPTIONS (mahler#248)
+    options          TEXT NOT NULL DEFAULT '[]',  -- its answer choices, JSON list (mahler#248)
     attempts         INTEGER NOT NULL DEFAULT 0,
     setup_fails      INTEGER NOT NULL DEFAULT 0,
     esc_tier         INTEGER NOT NULL DEFAULT 0,
@@ -214,7 +216,9 @@ class Ledger:
                          ("parent", "INTEGER"),
                          ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),
                          ("esc_fails", "INTEGER NOT NULL DEFAULT 0"),
-                         ("files", "TEXT NOT NULL DEFAULT '[]'")):
+                         ("files", "TEXT NOT NULL DEFAULT '[]'"),
+                         ("question", "TEXT"),
+                         ("options", "TEXT NOT NULL DEFAULT '[]'")):
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
