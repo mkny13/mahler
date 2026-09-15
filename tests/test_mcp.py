@@ -66,6 +66,8 @@ class TestMCP(unittest.TestCase):
         text = out[0]["result"]["content"][0]["text"]
         self.assertIn("Created issue", text)
         self.assertIn("Claimed as", text)
+        mock_gh.assert_called_once_with("mkny13/mahler", env=None)
+        instance.create_issue.assert_called_once_with("New", "")
         lease = self.led.lease("mahler", 5)
         self.assertIsNotNone(lease)
         self.assertEqual(lease["holder"], "interactive:mcp")
@@ -98,6 +100,7 @@ class TestMCP(unittest.TestCase):
             "params": {"name": "handoff", "arguments": {"project": "mahler", "number": 6, "comment": "Notes"}}
         }])
         self.assertIn("Handoff comment posted", out[0]["result"]["content"][0]["text"])
+        mock_gh.assert_called_once_with("mkny13/mahler", env=None)
         instance.comment.assert_called_with(6, "<!-- mahler:agent handoff -->\nNotes")
 
 if __name__ == '__main__':
