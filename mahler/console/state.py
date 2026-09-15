@@ -57,6 +57,7 @@ def build(cfg, led):
     quota = _quota(cfg, led, peak)
     runs = _runs(cfg, led, now)
     needs = _needs(cfg, led, projects, now)
+    uat = _uat(cfg, led, projects)
     backlog = _backlog(cfg, led, projects)
     events = _events(cfg, led)
     digest = _digest(cfg, led, now)
@@ -72,7 +73,9 @@ def build(cfg, led):
         "runs": runs,
         "needs": needs,
         "needs_count": sum(n["pending"] is None for n in needs),
-        "uat": [],              # the Ready-to-test source is its own change (D27)
+        "uat": uat,
+        # the count you act on: items with no verdict, recorded or queued
+        "uat_count": sum(u["pending"] is None for u in uat),
         "backlog": backlog,
         "backlog_total": sum(len(g["items"]) for g in backlog),
         "quota": quota,
@@ -85,8 +88,8 @@ def build(cfg, led):
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
     s["landing"] = {
-        "tab": "triage" if needs or s["uat"] else "now",
-        "view": "needs" if needs else "test" if s["uat"] else "now",
+        "tab": "triage" if needs or s["uat_count"] else "now",
+        "view": "needs" if needs else "test" if s["uat_count"] else "now",
     }
     return s
 
@@ -399,6 +402,49 @@ def _needs(cfg, led, projects, now):
             "meta": " · ".join(meta),
         })
     out.sort(key=lambda x: (not x["p1"], -x["waited_s"]))
+    return out
+
+
+def _uat(cfg, led, projects):
+    """The Ready-to-test queue (D10): what shipped with a needs-human check,
+    until you pass or fail it. A verdict queued but not yet run (the tick
+    applies it) still shows, as the copy it will become."""
+    pols = {p["name"]: p for p in projects}
+    queued = {}
+    for kind in ("uat_pass", "uat_fail"):
+        for r in led.pending_actions(kind):
+            queued[(r["project"], r["number"])] = kind
+    out = []
+    for row in led.pending_uat():
+        project, n = row["project"], row["number"]
+        if project not in pols:
+            continue
+        shipped = parse(row["shipped_at"])
+        meta = [f"merged {_hhmm(shipped)}" if shipped else "merged"]
+        if row["sha"]:
+            meta.append(f"sha {row['sha'][:7]}")
+        needs = []
+        for line in (row["needs"] or "").splitlines():
+            t = re.sub(r"^[-*]\s+(?:\[[ xX]\]\s+)?", "", line.strip())
+            if t:
+                needs.append(t)
+        uat_url = pols[project].get("uat_url")
+        if uat_url:
+            link = uat_url.replace("{number}", str(n)).replace(
+                "{pr}", str(row["pr"] or ""))
+            link_label = pols[project].get("uat_url_label") or "Staging"
+        elif row["pr"]:
+            link, link_label = _pr_url(cfg, project, row["pr"]), f"PR #{row['pr']}"
+        else:
+            link, link_label = None, None
+        out.append({
+            "project": project, "number": n, "ref": _ref(project, n),
+            "url": _issue_url(cfg, project, n),
+            "title": row["title"] or _ref(project, n),
+            "meta": " · ".join(meta), "check": "; ".join(needs)[:200],
+            "link": link, "link_label": link_label,
+            "pending": queued.get((project, n)),
+        })
     return out
 
 

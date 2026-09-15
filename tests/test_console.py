@@ -486,6 +486,122 @@ class PageTests(unittest.TestCase):
         self.assertNotIn("serif", page.CSS.replace("sans-serif", ""))
 
 
+class UatStateTests(unittest.TestCase):
+    """Ready to test (mahler#250): what shipped lands there, until a verdict."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.led.add_uat('mahler', 9, 88, '4c1f0abfeed5', 'Wired the exporter',
+                         '- the new ping arrives\n- [x] no errors in the log')
+
+    def uat(self, cfg=None):
+        return state.build(cfg or self.cfg, self.led)["uat"]
+
+    def test_rows_show_ref_meta_check_and_pr_link(self):
+        u = self.uat()[0]
+        self.assertEqual(u["ref"], "mahler#9")
+        self.assertEqual(u["url"], "https://github.com/mkny13/mahler/issues/9")
+        self.assertEqual(u["title"], "Wired the exporter")
+        self.assertIn("merged", u["meta"])
+        self.assertTrue(u["meta"].endswith("sha 4c1f0ab"))
+        self.assertEqual(u["check"], "the new ping arrives; no errors in the log")
+        self.assertEqual((u["link"], u["link_label"]),
+                         ("https://github.com/mkny13/mahler/pull/88", "PR #88"))
+        self.assertIsNone(u["pending"])
+
+    def test_the_check_is_the_markers_stripped_and_capped(self):
+        long = "\n".join(f"- thing {i} that goes on" for i in range(20))
+        self.led.add_uat('mahler', 10, 89, 'abc', 'Later', long)
+        self.assertEqual(len(self.uat()[0]["check"]), 200)   # capped
+
+    def test_newest_first_and_disabled_projects_hidden(self):
+        self.led.add_uat('mahler', 10, 89, 'abc', 'Later', '- x')
+        self.led.add_uat('old', 3, 1, 'abc', 'disabled', '- x')
+        self.assertEqual([u["number"] for u in self.uat()], [10, 9])
+        self.assertNotIn("old", [u["project"] for u in self.uat()])
+
+    def test_a_recorded_verdict_removes_the_row(self):
+        self.led.set_uat_verdict('mahler', 9, 'pass')
+        self.assertEqual(self.uat(), [])
+
+    def test_uat_url_config_beats_the_pr_link(self):
+        cfg = make_cfg(projects={'mahler': {
+            'uat_url': 'https://staging.example.com/build/{number}',
+            'uat_url_label': 'Open build'}})
+        u = self.uat(cfg)[0]
+        self.assertEqual(u["link"], 'https://staging.example.com/build/9')
+        self.assertEqual(u["link_label"], 'Open build')
+
+    def test_counts_exclude_a_queued_verdict(self):
+        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+        s = state.build(self.cfg, self.led)
+        self.assertEqual((s["uat_count"], len(s["uat"])), (0, 1))
+        self.assertEqual(s["uat"][0]["pending"], "uat_pass")
+        self.assertEqual(s["landing"], {"tab": "now", "view": "now"})   # nothing to act on
+
+    def test_landing_lands_on_ready_to_test(self):
+        self.assertEqual(state.build(self.cfg, self.led)["landing"],
+                         {"tab": "triage", "view": "test"})
+
+
+class UatPageTests(unittest.TestCase):
+    """The Ready-to-test view: Pass, Fail, and the bug sheet."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.led.add_uat('mahler', 9, 88, '4c1f0abfeed5', 'Wired the exporter',
+                         '- the new ping arrives')
+
+    def frag(self):
+        return page.app(state.build(self.cfg, self.led))
+
+    def doc(self):
+        return page.document(state.build(self.cfg, self.led))
+
+    def test_renders_the_row_with_pass_and_fail(self):
+        frag = self.frag()
+        self.assertIn('data-uat="mahler#9"', frag)
+        self.assertIn("Wired the exporter", frag)
+        self.assertIn("the new ping arrives", frag)
+        self.assertIn('href="https://github.com/mkny13/mahler/pull/88"', frag)
+        self.assertIn("PR #88 ↗", frag)
+        self.assertIn('data-act="uat_pass"', frag)
+        self.assertIn('data-open-bug="mahler#9"', frag)
+        self.assertIn(">Pass</button>", frag)
+        self.assertIn(">Fail</button>", frag)
+        self.assertIn('data-view="test" data-tab="triage"', self.doc())
+        self.assertIn('<span>Ready to test</span><span class="mono t-mut">1</span>',
+                      self.doc())                                # the rail badge
+
+    def test_the_bug_sheet_is_in_the_page_and_wired(self):
+        frag = self.frag()
+        self.assertIn('data-bug-detail="mahler#9"', frag)
+        self.assertIn("What went wrong?", frag)
+        self.assertIn("File p1 bug", frag)
+        self.assertIn('data-keep="bug:mahler#9"', frag)
+        self.assertIn('data-act="uat_fail"', frag)
+
+    def test_a_queued_verdict_shows_its_copy(self):
+        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+        self.assertIn("Passed — issue closed, UAT recorded.", self.frag())
+        self.led2 = make_led()
+        self.led2.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter', '- x')
+        actions.run(self.cfg, self.led2, 'uat_fail',
+                    {'project': 'mahler', 'number': 9, 'note': 'nope'})
+        self.assertIn("Failed — p1 bug filed and routed.", page.app(state.build(self.cfg, self.led2)))
+
+    def test_phone_has_a_ready_to_test_section(self):
+        frag = self.frag()
+        self.assertIn("Ready to test · 1", frag)
+        self.assertIn('class="puat"', frag)
+
+    def test_an_empty_queue_renders_no_section(self):
+        self.led.set_uat_verdict('mahler', 9, 'pass')
+        frag = self.frag()
+        self.assertNotIn("Ready to test ·", frag)
+        self.assertNotIn('class="puat"', frag)
+
+
 if __name__ == "__main__":
     unittest.main()
 
