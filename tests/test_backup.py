@@ -4,9 +4,11 @@ import os
 import stat
 import tempfile
 import unittest
+from contextlib import ExitStack
+from unittest.mock import Mock, patch
 from datetime import datetime, timedelta
 
-from mahler import backup
+from mahler import backup, scheduler
 from mahler.ledger import Ledger
 
 FAKE_DUMP = """#!/bin/sh
@@ -83,6 +85,92 @@ class BackupTests(unittest.TestCase):
         led.set_kv("backup:gw:prod:failed_at", datetime(2026, 9, 13, 3, 5).isoformat())
         self.assertFalse(backup.due(led, "gw", spec, datetime(2026, 9, 13, 3, 30)))
         self.assertTrue(backup.due(led, "gw", spec, datetime(2026, 9, 13, 4, 6)))
+
+
+class BackupFailureTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx({}, self.led)
+        self.ctx.ping = Mock()
+        self.now = datetime(2026, 9, 12, 12)
+        clock = self.enterContext(patch("mahler.backup.datetime", wraps=datetime))
+        clock.now.side_effect = lambda: self.now
+
+    def assert_failure_backs_off(self, spec, name):
+        key = f"backup:gw:{name}:failed_at"
+        self.assertIsNone(backup.run(self.ctx, "gw", spec))
+        self.assertEqual(self.led.get_kv(key), self.now.isoformat())
+        self.assertIn("FAILED", self.ctx.lines[-1])
+        self.assertIn(name, self.ctx.lines[-1])
+        self.ctx.ping.assert_called_once()
+        self.now += timedelta(minutes=59)
+        self.assertIsNone(backup.run(self.ctx, "gw", spec))
+        self.ctx.ping.assert_called_once()
+        self.now += timedelta(minutes=1)
+        self.assertIsNone(backup.run(self.ctx, "gw", spec))
+        self.assertEqual(self.ctx.ping.call_count, 2)
+
+    def test_missing_name_backs_off(self):
+        self.assert_failure_backs_off({"hour": 0}, "<unnamed>")
+
+    def test_corrupt_success_timestamp_backs_off(self):
+        self.led.set_kv("backup:gw:prod", "not-a-date")
+        self.assert_failure_backs_off({"name": "prod", "hour": 0}, "prod")
+
+    def test_corrupt_failure_timestamp_backs_off(self):
+        self.led.set_kv("backup:gw:prod:failed_at", "not-a-date")
+        self.assert_failure_backs_off({"name": "prod", "hour": 0}, "prod")
+
+    def test_invalid_hour_backs_off_before_validation(self):
+        self.assert_failure_backs_off({"name": "prod", "hour": "noon"}, "prod")
+
+    def test_non_table_spec_backs_off(self):
+        self.assert_failure_backs_off("invalid", "<unnamed>")
+
+    def test_forced_missing_name_is_reported(self):
+        self.assertIsNone(backup.run(self.ctx, "gw", {}, force=True))
+        self.ctx.ping.assert_called_once()
+
+    def test_well_formed_run_then_skip_and_force(self):
+        spec = {"name": "prod", "hour": 0}
+        result = {"bytes": 2048, "entries": 1}
+        with patch("mahler.backup.backup_postgres", return_value=result) as dump, \
+                patch("mahler.backup.prune", return_value=[]) as prune:
+            self.assertEqual(backup.run(self.ctx, "gw", spec), result)
+            self.assertIsNone(backup.run(self.ctx, "gw", spec))
+            dump.assert_called_once()
+            prune.assert_called_once()
+            self.assertEqual(backup.run(self.ctx, "gw", spec, force=True), result)
+            self.assertEqual(dump.call_count, 2)
+        self.ctx.ping.assert_not_called()
+
+    def test_tick_continues_after_malformed_or_unexpected_backup_failure(self):
+        for unexpected in (False, True):
+            with self.subTest(unexpected=unexpected), ExitStack() as stack:
+                project = {"name": "gw", "backups": [{"hour": 0}, {"name": "next"}]}
+                stack.enter_context(patch("mahler.scheduler.config.enabled_projects",
+                                         return_value=[project]))
+                stack.enter_context(patch("mahler.scheduler._project_ok", return_value=True))
+                for name in ("compute_burst", "watchdog", "sync", "expire",
+                             "close_finished_parents", "refresh_usage", "queue_maintenance",
+                             "platform_audit.queue", "schedule", "ship", "mirror_labels"):
+                    stack.enter_context(patch(f"mahler.scheduler.{name}"))
+                stack.enter_context(patch.object(self.led, "paused", return_value=True))
+                digest = stack.enter_context(patch("mahler.scheduler.digest.maybe_send"))
+                janitor = stack.enter_context(patch("mahler.scheduler.janitor.maybe_run"))
+                if unexpected:
+                    run = stack.enter_context(patch("mahler.scheduler.backup.run",
+                                                    side_effect=[RuntimeError("unexpected"), None]))
+                else:
+                    run = stack.enter_context(patch("mahler.scheduler.backup.run", wraps=backup.run))
+                    stack.enter_context(patch("mahler.backup.backup_postgres",
+                                             return_value={"bytes": 1, "entries": 1}))
+                    stack.enter_context(patch("mahler.backup.prune", return_value=[]))
+                self.assertIs(scheduler.tick(self.ctx), self.ctx.lines)
+                self.assertEqual(run.call_count, 2)
+                digest.assert_called_once_with(self.ctx)
+                janitor.assert_called_once_with(self.ctx)
 
 
 if __name__ == "__main__":

@@ -89,7 +89,10 @@ def tick(ctx):
     if not ctx.dry_run:
         for p in config.enabled_projects(ctx.cfg):     # backups run even while paused
             for spec in p.get("backups") or []:
-                backup.run(ctx, p["name"], spec)
+                try:
+                    backup.run(ctx, p["name"], spec)
+                except Exception as e:
+                    ctx.say(f"{p['name']}: backup failed — {e}")
     digest.maybe_send(ctx)                  # informational: also runs while paused
     janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
     return ctx.lines
