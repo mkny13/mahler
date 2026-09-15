@@ -253,6 +253,30 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
 
+    def test_red_ci_does_not_reescalate_every_tick_on_the_same_sha(self):
+        """mahler#232 — a tick that can't start a fix run (no free slot, no
+        platform) must not re-count the same red CI cycle: esc_fails/esc_tier
+        and attempts stay put across repeated ticks on one head sha, and only
+        move again once a genuinely new cycle (a new sha) is observed."""
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        self.gh.head_sha = "red1"
+        with mock.patch.object(platforms, "available", return_value=False):
+            for _ in range(3):
+                self.ship()
+        item = self.item()
+        self.assertEqual((item["state"], item["esc_fails"], item["esc_tier"], item["attempts"]),
+                         ("verifying", 1, 0, 0))
+
+        # a second failing sha (as if a fix run had pushed and failed again)
+        # is one more cycle, not two more.
+        self.gh.head_sha = "red2"
+        with mock.patch.object(platforms, "available", return_value=False):
+            for _ in range(3):
+                self.ship()
+        item = self.item()
+        self.assertEqual((item["esc_fails"], item["esc_tier"]), (0, 2))
+
     def test_red_ci_gives_up_after_max_attempts(self):
         self.led.upsert_item("x", 5, pr=88, attempts=2)
         self.gh.rollup = [{"state": "FAILURE"}]

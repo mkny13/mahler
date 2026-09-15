@@ -183,43 +183,55 @@ def _red_ci(ctx, project, item, pr, view):
     the PR's head branch, its prompt carrying the failing-log tail (runner
     fetches it). Routing is the build routing (D8), and `max_attempts` caps
     build and fix runs together — each red cycle counts as an attempt — then
-    escalation as today (retry_or_fail's stuck branch)."""
+    escalation as today (retry_or_fail's stuck branch).
+
+    This runs every tick while the PR stays red, so the counting above must
+    fire once per CI cycle, not once per tick (mahler#232): the same head sha
+    is re-observed on every tick that a fix run couldn't start (no free slot,
+    no platform), and previously re-incremented esc_fails/esc_tier and
+    re-evaluated the max_attempts cutoff each time. It's now gated behind the
+    same per-sha key already used to dedupe the ping. Ticks after the first
+    still retry starting a fix run — a platform may free up — without
+    counting a cycle already counted.
+    """
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1
     cur_tier = row_get(item, "esc_tier", 0)
-    cur_fails = row_get(item, "esc_fails", 0)
-    new_fails = cur_fails + 1
-    new_tier = cur_tier
-    last = led.last_run(project, n)
-    last_platform = last["platform"] if last else None
-    run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
-    if new_fails >= 2:
-        new_tier = max(cur_tier, run_tier) + 1
-        new_fails = 0
-        ctx.say(f"{project}#{n}: escalated to tier {new_tier} after red CI on tier <= {max(cur_tier, run_tier)}")
-        led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
-                  "platform": last_platform, "reason": "red CI"})
-
-    if attempts >= pol["max_attempts"]:
-        led.set_state(project, n, "failed",
-                      f"CI still red on PR #{pr} after {attempts} attempts",
-                      attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
-        ctx.ping(f"Stuck — {project} #{n}",
-                 f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
-                 project, n, priority="high", tags="warning")
-        led.release(project, n, holder=CONDUCTOR)
-        return
-
-    led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
-
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
+
+        cur_fails = row_get(item, "esc_fails", 0)
+        new_fails = cur_fails + 1
+        new_tier = cur_tier
+        last = led.last_run(project, n)
+        last_platform = last["platform"] if last else None
+        run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
+        if new_fails >= 2:
+            new_tier = max(cur_tier, run_tier) + 1
+            new_fails = 0
+            ctx.say(f"{project}#{n}: escalated to tier {new_tier} after red CI on tier <= {max(cur_tier, run_tier)}")
+            led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
+                      "platform": last_platform, "reason": "red CI"})
+
+        if attempts >= pol["max_attempts"]:
+            led.set_state(project, n, "failed",
+                          f"CI still red on PR #{pr} after {attempts} attempts",
+                          attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+            ctx.ping(f"Stuck — {project} #{n}",
+                     f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
+                     project, n, priority="high", tags="warning")
+            led.release(project, n, holder=CONDUCTOR)
+            return
+
+        led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
+        cur_tier = new_tier
         ctx.ping(f"CI red — {project} #{n}",
                  f"PR #{pr} failed CI; the conductor starts a fix run on it",
                  project, n, priority="high", tags="warning")
+
     active = led.active_runs()
     if len(active) >= cfg["concurrency"]["total"]:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, but every run slot is busy; "
@@ -231,7 +243,7 @@ def _red_ci(ctx, project, item, pr, view):
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
-    effective_min_tier = max(new_tier, router.risk_min_tier(row_get(item, "title", "")))
+    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
     # D26: route within the project's declared accounts, in order by default
