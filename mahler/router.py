@@ -8,6 +8,7 @@ work is stopped at the *hard* line (see watchdog.py).
 
 from datetime import timedelta
 from itertools import zip_longest
+from math import ceil
 from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of
@@ -109,7 +110,7 @@ def peak_status_line(cfg, led):
             f"(in {fmt_countdown(until - now)})")
 
 
-def burst_status(cfg, led):
+def burst_status(cfg, led, name="claude"):
     """Detect an active Claude burst window (D23) and return the burst lines.
 
     The reserve (D8) keeps Claude quota back for you. In the last lead-time
@@ -130,7 +131,7 @@ def burst_status(cfg, led):
     if not bconf.get("enabled", False):
         return None
     now = led.now()
-    usage = led.usage("claude")
+    usage = led.usage(name)
     weekly = usage.get("weekly")
     fiveh = usage.get("5h")
     if not weekly or not fiveh:
@@ -161,11 +162,52 @@ def burst_status(cfg, led):
     return lines or None
 
 
+def all_bursts(cfg, led):
+    """Burst windows keyed by quota group; never borrow another login's reset."""
+    out = {}
+    for name, pc in cfg["platforms"].items():
+        if pc.get("kind") != "claude":
+            continue
+        lines = burst_status(cfg, led, name)
+        if lines:
+            out[pc.get("quota_group", name)] = lines
+    return out or None
+
+
+def platform_burst(name, pconf, burst_lines):
+    if pconf.get("kind") != "claude" or not burst_lines:
+        return None
+    # The original flat API denotes the personal Claude pool only.
+    if "5h" in burst_lines:
+        return burst_lines if account_of(pconf) == DEFAULT_ACCOUNT else None
+    return burst_lines.get(pconf.get("quota_group", name))
+
+
+def effective_lines(led, name, pconf, window, burst_lines=None):
+    """Shared quota thresholds for routing, watchdog and display.
+
+    Unknown progressive reset times get day one's allowance. Expired samples
+    remain stale in usage_state; no allowance is inferred for a new cycle.
+    """
+    soft = pconf.get("soft", {}).get(window, 100)
+    hard = pconf.get("hard", {}).get(window, 100)
+    if window == "weekly" and window in pconf.get("progressive", []):
+        reset = _ts(led.usage(name).get(window, {}).get("resets_at"))
+        day = (min(7, max(1, ceil(7 - (reset - led.now()).total_seconds() / 86400)))
+               if reset else 1)
+        soft, hard = soft * day / 7, hard * day / 7
+    lines = platform_burst(name, pconf, burst_lines)
+    if lines and window in lines:
+        soft, hard = lines[window]
+    return soft, hard
+
+
 def burst_kind(burst_lines):
     """'weekly' / 'session' / None — for human-readable status display."""
     if not burst_lines:
         return None
-    return "weekly" if "weekly" in burst_lines else "session"
+    return "weekly" if ("weekly" in burst_lines or any(
+        isinstance(v, dict) and "weekly" in v for v in burst_lines.values())) else "session"
 
 
 def fmt_countdown(delta):
@@ -224,9 +266,6 @@ def usage_state(led, name, pconf, burst_lines=None):
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
-    # burst lines are computed from this machine's own Claude account (D23), so
-    # they never lift another account's lines (D25)
-    is_claude = pconf.get("kind") == "claude" and account_of(pconf) == DEFAULT_ACCOUNT
     for w in pconf.get("windows", WINDOWS):
         u = usage.get(w)
         if u is None:
@@ -246,9 +285,7 @@ def usage_state(led, name, pconf, burst_lines=None):
                               if sampled else f"{w}: unreadable sample")
             else:
                 pct = u["used_pct"]
-                soft_w, hard_w = pconf["soft"][w], pconf["hard"][w]
-                if is_claude and burst_lines and w in burst_lines:
-                    soft_w, hard_w = burst_lines[w]
+                soft_w, hard_w = effective_lines(led, name, pconf, w, burst_lines)
                 state = ("hard" if pct >= hard_w
                          else "soft" if pct >= soft_w else "ok")
                 detail.append(f"{w} {pct:.0f}%")
@@ -282,10 +319,11 @@ def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
     routing = routing_for(cfg, account)
     if pin:
         order = [pin]
-    elif burst_lines and role == "build" and account == DEFAULT_ACCOUNT:
-        order = burst_build_order(cfg)
     else:
         order = routing.get(role) or routing.get("build") or []
+    if not pin and burst_lines and role == "build":
+        bursting = [n for n in order if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]
+        order = bursting + [n for n in order if n not in bursting]
     # a project only ever spends its own account's logins, pins included (D25)
     return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")
             and account_of(cfg["platforms"][n]) == account]

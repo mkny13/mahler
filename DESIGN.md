@@ -436,6 +436,16 @@ work yields):
 | Claude, autonomous | 5 h 60% / 7 d 70% | 5 h 70% / 7 d 80% |
 | Claude Opus | 5 h 45% / 7 d 70% (D21) | same account and hard lines as Claude |
 
+**Progressive weekly pacing** (mahler#283, 2026-09-15) is opt-in per platform:
+`progressive = ["weekly"]` scales both weekly targets by `day_number / 7`, where
+`day_number = min(7, max(1, ceil(7 - seconds_until_reset / 86400)))`.
+A 40% soft target allows 5.71% on day 1, 11.43% on day 2, and 40% on day 7.
+Other windows and platforms without this setting retain their static lines.
+Unknown or malformed reset times use day one's allowance; stale samples and expired
+resets still block starts. A weekly burst overrides pacing; a session burst lifts
+only the 5h lines, preserving the paced weekly reserve. Routing, running-run yields,
+and console gauges use the same effective thresholds.
+
 Platforms without a usage percentage are treated as 100% on the first quota error, and stay
 unavailable until the reset time, parsed or with a backoff default. All of these numbers live in
 `~/.mahler/config.toml`.
@@ -1005,10 +1015,12 @@ a personal project must never spend a work login.
   account's own, would read the personal logins, so they never feed another account's
   platforms. Work Copilot is therefore configured unmetered (backoff on a limit error), unless
   the account has its own `gh` login.
-- **The burst and the human-use flag stay personal.** D23 raises lines from the personal Claude
-  account's reset times, and the human-use flag suppresses that burst. Neither lifts a work
-  login's lines, so work logins always keep their D8 reserve. The peak window (D22) applies to
-  every Claude login.
+- **Bursts are per quota group** (amended 2026-09-15, mahler#283). D23 applies to work
+  Claude logins too, using their own fresh samples and reset times. Personal reset times
+  never lift work lines, or vice versa. Each bursting group's platforms move forward in
+  their own account's build route. A usage-rise human flag suppresses only its quota group;
+  detected human Claude transcript activity suppresses all groups. The peak window (D22)
+  still applies to every Claude login.
 - Concurrency: `concurrency.total` stays one global cap. Each login's slot is separate, so a
   second account usually wants the total raised by one.
 

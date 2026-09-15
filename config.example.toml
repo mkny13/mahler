@@ -106,3 +106,13 @@ verify = "python3 -m unittest discover -s tests"
 # soft = 90                      # burst soft line (still below 100%)
 # hard = 97                      # burst hard line (still below 100%)
 # human_quiet_minutes = 20       # suppress burst after detected human use
+
+# Opt-in weekly pacing: release 1/7 of the weekly targets per elapsed cycle day.
+# Set on each platform that should be paced (or its inherited base).
+# [platforms.claude]
+# progressive = ["weekly"]
+# soft.weekly = 40
+# hard.weekly = 49
+# Missing reset times use day one's allowance; expired/stale samples block starts.
+# [burst] also covers work Claude, using each quota group's own reset times.
+# Weekly bursts override pacing; session bursts preserve the weekly allowance.

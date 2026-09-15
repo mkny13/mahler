@@ -122,7 +122,7 @@ def cmd_status(a, cfg, led):
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
               f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}")
     print("\nQuota")
-    burst_lines = router.burst_status(cfg, led)
+    burst_lines = router.all_bursts(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:
         print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")
@@ -360,7 +360,7 @@ def cmd_usage(a, cfg, led):
                 for peer in peers:
                     for w, pct, resets in samples:
                         led.record_usage(peer, w, pct, resets)
-    burst_lines = router.burst_status(cfg, led)
+    burst_lines = router.all_bursts(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:
         print(f"  D23 {burst_kind} burst active — Claude builds first, lines raised to 90/97")

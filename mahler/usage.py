@@ -25,18 +25,16 @@ def record_claude_usage(ctx, samples, backoff_until=None, check_human=False,
     When check_human is True (the periodic probe path, not a run's own log), a
     5h usage increase with no live Claude run is treated as human use of the
     account elsewhere (Claude app on phone, the web UI, another session) and
-    sets a kv flag that suppresses the D23 burst for half an hour (D23). Only
-    this machine's own Claude account bursts, so only it sets the flag (D25).
+    sets a quota-group flag that suppresses that login's D23 burst.
     """
     peers = quota_peers(ctx.cfg, platform)
-    check_human = check_human and \
-        config.account_of(ctx.cfg["platforms"].get(platform, {})) == config.DEFAULT_ACCOUNT
+    group = ctx.cfg["platforms"].get(platform, {}).get("quota_group", platform)
     for pname in peers:
         prev_5h = ctx.led.usage(pname).get("5h", {}).get("used_pct")
         for w, pct, resets in samples:
             if check_human and w == "5h" and prev_5h is not None and pct > prev_5h:
                 if not any(r["platform"] in peers for r in ctx.led.active_runs()):
-                    ctx.led.set_kv("human:claude", iso(ctx.led.now()))
+                    ctx.led.set_kv(f"human:{group}", iso(ctx.led.now()))
             ctx.led.record_usage(pname, w, pct, resets)
         if backoff_until:
             pconf = ctx.cfg["platforms"][pname]
@@ -180,16 +178,19 @@ def compute_burst(ctx, projects):
     """
     if ctx.burst_lines is not None:
         return ctx.burst_lines
-    lines = router.burst_status(ctx.cfg, ctx.led)
+    lines = router.all_bursts(ctx.cfg, ctx.led)
     suppressed = None
     if lines and ctx.hot_hold:
-        flag = ctx.led.get_kv("human:claude")
-        if flag and parse(flag) and ctx.led.now() - parse(flag) < timedelta(minutes=ctx.cfg["burst"].get("human_quiet_minutes", 20)):
-            suppressed = "5h usage rose with no live Claude run"
-            lines = None
-        elif presence.human_claude_active(projects):
+        quiet = timedelta(minutes=ctx.cfg["burst"].get("human_quiet_minutes", 20))
+        for group in list(lines):
+            flag = router._ts(ctx.led.get_kv(f"human:{group}"))
+            if flag and ctx.led.now() - flag < quiet:
+                suppressed = "5h usage rose with no live Claude run"
+                del lines[group]
+        if presence.human_claude_active(projects):
             suppressed = "Claude in use (recent transcript activity)"
             lines = None
+        lines = lines or None
     if suppressed:
         ctx.say(f"D23: burst window open — deferring ({suppressed})")
     elif lines:
