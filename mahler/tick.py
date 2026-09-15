@@ -204,10 +204,14 @@ def _candidates(ctx, projects):
     projects — sorts and settled builds compete for the same slots (mahler#9)."""
     led = ctx.led
     work = []
+    planning = {(r["project"], r["number"]) for r in led.active_runs()
+                if r["role"] == "sort"}
     for p in projects:
         name = p["name"]
         done = {i["number"] for i in led.items(name, ["done"])}
         for it in led.items(name, ["inbox"]):
+            if (name, it["parent"]) in planning:
+                continue  # The parent planner is still writing this child.
             work.append((p, "sort", it))
         for it in led.items(name, ["ready"]):
             sorted_at = parse(it["sorted_at"])

@@ -79,13 +79,18 @@ def sync(ctx, project):
                 state = "ready" if planned else "inbox"
             extra = {"sorted_at": iso(led.now())} if state == "ready" else {}
             led.upsert_item(project, n, created_at=iss["createdAt"], **fields, **extra)
-            why = "born ready (planned under #{})".format(part_of(iss.get("body"))) \
-                if planned else "new issue"
-            led.set_state(project, n, state, why)
+            if planned:
+                _born_ready(led, project, n, iss)
+            else:
+                led.set_state(project, n, state, "new issue")
             ctx.say(f"{project}#{n}: new — {iss['title']}")
             item = led.item(project, n)
         else:
             led.upsert_item(project, n, **fields)
+            if (item["state"] == "inbox" and led.lease(project, n) is None
+                    and planned_child(iss, labels, led, project)):
+                _born_ready(led, project, n, iss)
+                item = led.item(project, n)
             _adopt_label_edits(ctx, project, item, labels)
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
 
@@ -111,8 +116,14 @@ def sync(ctx, project):
         led.set_kv(etag_key, poll_etag)
 
 
+def _born_ready(led, project, number, iss):
+    led.set_state(project, number, "ready",
+                  f"born ready (planned under #{part_of(iss.get('body'))})",
+                  sorted_at=iso(led.now()))
+
+
 def planned_child(iss, labels, led, project):
-    """Whether a newly-synced sub-issue was fully planned by its parent."""
+    """Whether a sub-issue was fully planned by its parent."""
     parent_n = part_of(iss.get("body"))
     if parent_n is None:
         return False
@@ -271,4 +282,3 @@ def mirror_labels(ctx, project):
             led.upsert_item(project, item["number"], mirror=want)
         except GHError as e:
             ctx.say(f"{project}#{item['number']}: label update failed — {e}")
-
