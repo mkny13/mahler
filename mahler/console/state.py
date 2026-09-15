@@ -68,6 +68,7 @@ def build(cfg, led):
         "peak": peak,
         "runs": runs,
         "needs": needs,
+        "needs_count": sum(n["pending"] is None for n in needs),
         "uat": [],              # the Ready-to-test source is its own change (D27)
         "backlog": backlog,
         "backlog_total": sum(len(g["items"]) for g in backlog),
@@ -357,8 +358,20 @@ def _question(led, project, number, state):
     return None
 
 
+def _answer_options(item):
+    options = row_get(item, "options", [])
+    if isinstance(options, str):
+        try:
+            options = json.loads(options)
+        except ValueError:
+            return []
+    return [{"label": o, "text": o} for o in options if isinstance(o, str)] if isinstance(options, list) else []
+
+
 def _needs(cfg, led, projects, now):
     names = {p["name"] for p in projects}
+    pending = {(r["project"], r["number"]): {"id": r["id"], "text": json.loads(r["payload"])["text"]}
+               for r in led.pending_actions("answer")}
     out = []
     for it in led.items(states=ATTENTION_STATES):
         if it["project"] not in names:
@@ -374,7 +387,10 @@ def _needs(cfg, led, projects, now):
             "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": it["title"] or "",
             "question": _question(led, project, n, it["state"]) or it["title"] or "",
-            "options": [],       # structured answer options are their own change (D27)
+            "pending": pending.get((project, n)),
+            "options": ([{"label": "Retry", "text": "/mahler go"},
+                         {"label": "Park it", "text": "/mahler park"}]
+                        if it["state"] == "failed" else _answer_options(it)),
             "p": f"p{it['priority']}", "p1": it["priority"] == 1,
             "state": it["state"], "waited_s": waited.total_seconds(),
             "meta": " · ".join(meta),

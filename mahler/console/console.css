@@ -306,3 +306,20 @@ a { color: var(--acc); text-decoration: none; }
   .dk { display: none; }
   .ph { display: flex; }
 }
+
+/* Needs-you answers (D27). */
+.answers { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.answers .btn { min-height: 36px; height: auto; white-space: normal; }
+.reply { display: flex; gap: 6px; max-width: 360px; }
+.reply input { min-width: 0; width: 100%; max-width: 320px; height: 34px;
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 9px; background: var(--bg); color: var(--ink); }
+.reply .btn { width: 34px; height: 34px; flex-shrink: 0; padding: 0; }
+.answered { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; color: var(--good); }
+.answered span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.answered .link { color: var(--acc); flex-shrink: 0; }
+.needcard .answers .btn { flex: 1 1 44%; }
+.pneed .answers .btn { min-height: 44px; flex: 1 1 40%; }
+.pneed .reply { max-width: none; }
+.pneed .reply input { height: 44px; max-width: none; }
+.pneed .reply .btn { width: 44px; height: 44px; }
+.pneed .answered { color: var(--mut); padding-bottom: 10px; border-bottom: 1px solid var(--line); }

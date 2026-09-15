@@ -7,7 +7,8 @@ they apply at once. Writes that reach GitHub or a running agent go through the
 tick instead, so all GitHub traffic keeps the project's own login (D25).
 """
 
-from .. import router
+from .. import config, router
+from ..gh import AGENT_MARK
 from .state import SEEN_KEY
 
 
@@ -78,8 +79,42 @@ def digest_seen(cfg, led, body):
         led.event("console_seen", detail={"upto": upto})
 
 
+def answer(cfg, led, body):
+    project, number, text = (body.get(k) for k in ("project", "number", "text"))
+    if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    if type(number) is not int or number <= 0:
+        raise ActionError("number must be a positive issue number")
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 4000:
+        raise ActionError("text must be 1–4000 characters")
+    text = text.strip()
+    if text.startswith(AGENT_MARK):
+        raise ActionError("an answer cannot start with the agent marker")
+    with led._tx():
+        item = led.item(project, number)
+        if item is None or item["state"] not in ("needs_you", "failed"):
+            raise ActionError("the item moved on")
+        for row in led.pending_actions("answer"):
+            if (row["project"], row["number"]) == (project, number):
+                led.cancel_action(row["id"])
+        id = led.queue_action("answer", project, number, {"text": text}, delay_seconds=60)
+        led.event("console_answer_queued", project, number, {"id": id})
+    return {"id": id}
+
+
+def answer_undo(cfg, led, body):
+    id = body.get("id")
+    if type(id) is not int or id <= 0:
+        raise ActionError("id must be a positive action id")
+    with led._tx():
+        row = led.q1("SELECT * FROM console_actions WHERE id=? AND kind='answer'", (id,))
+        if row is None or not led.cancel_action(id):
+            raise ActionError("already sent")
+        led.event("console_answer_cancelled", row["project"], row["number"], {"id": id})
+
+
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
-                                   clear_backoff, digest_seen)}
+                                   clear_backoff, digest_seen, answer, answer_undo)}
 
 
 def run(cfg, led, name, body):
@@ -87,4 +122,4 @@ def run(cfg, led, name, body):
     input it can't act on."""
     if not isinstance(body, dict):
         raise ActionError("the body must be a JSON object")
-    ACTIONS[name](cfg, led, body)
+    return ACTIONS[name](cfg, led, body)

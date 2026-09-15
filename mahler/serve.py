@@ -135,14 +135,14 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             with self.lock:
-                actions.run(self.load_cfg(), self.led, name, body)
+                result = actions.run(self.load_cfg(), self.led, name, body)
         except actions.ActionError as e:
             self._json(400, {"ok": False, "error": str(e)})
             return
         except Exception:
             self._json(500, {"ok": False, "error": "the action failed"})
             raise
-        self._json(200, {"ok": True})
+        self._json(200, {"ok": True, **(result or {})})
 
     def _reject(self):
         self.send_error(405, "only GET, and POST to /api/<action>")

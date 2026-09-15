@@ -62,7 +62,7 @@ var b=sessionStorage.getItem("mahler.tab");if(b)d.setAttribute("data-tab",b);}ca
 
 def app(s):
     """The #app fragment — what the 30-second refresh replaces."""
-    counts = {"runs": len(s["runs"]), "needs": len(s["needs"]), "uat": len(s["uat"]),
+    counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": len(s["uat"]),
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
             + _desktop(s) + _phone(s) + _run_overlays(s))
@@ -168,7 +168,7 @@ def _event_text(ev):
 def _desktop(s):
     rail_counts = {
         "now": (str(len(s["runs"])) if s["runs"] else "", "acc"),
-        "needs": (str(len(s["needs"])) if s["needs"] else "", "bad"),
+        "needs": (str(s["needs_count"]) if s["needs"] else "", "bad"),
         "test": (str(len(s["uat"])), "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
@@ -223,11 +223,35 @@ def _need_meta(n):
             f'{e(n["meta"])}</span>')
 
 
+def _answer_buttons(n):
+    return '<div class="answers">' + ''.join(
+        f'<button class="btn{ " btn-pri" if i == 0 else ""}" data-act="answer" '
+        f'data-project="{e(n["project"])}" data-number="{n["number"]}" '
+        f'data-text="{e(o["text"])}">{e(o["label"])}</button>'
+        for i, o in enumerate(n["options"])) + '</div>'
+
+
+def _answer_input(n, phone=False):
+    placeholder = "or say something…" if phone else "or type an answer…"
+    return (f'<div class="reply"><input maxlength="4000" aria-label="Answer {e(n["ref"])}" '
+            f'data-keep="need:{e(n["id"])}" placeholder="{placeholder}">'
+            f'<button class="btn" aria-label="Send answer" data-act="answer" '
+            f'data-project="{e(n["project"])}" data-number="{n["number"]}">↑</button></div>')
+
+
+def _answered(n):
+    return (f'<div class="answered"><span>You said: {e(n["pending"]["text"])}</span>'
+            f'<button class="link" data-act="answer_undo" '
+            f'data-id="{n["pending"]["id"]}">Undo</button></div>')
+
+
 def _d_needs(s):
     out = ['<section class="view view-needs">', _banners(s)]
     for n in s["needs"]:
-        out.append(f'<div class="need" data-need="{e(n["id"])}"><div class="body">'
-                   f'<span class="q">{e(n["question"])}</span>{_need_meta(n)}</div></div>')
+        content = (_answered(n) if n["pending"] else
+                   f'<div class="body"><span class="q">{e(n["question"])}</span>'
+                   f'{_need_meta(n)}{_answer_input(n)}</div>{_answer_buttons(n)}')
+        out.append(f'<div class="need" data-need="{e(n["id"])}">{content}</div>')
     if not s["needs"]:
         out.append('<span class="empty">Nothing waiting on you. Runs continue on their own.</span>')
     out.append("</section>")
@@ -255,12 +279,14 @@ def _d_history(s):
 def _d_side(s):
     out = ['<aside class="side">',
            f'<div class="side-top">{_state_label(s)}{_pause_button(s)}</div>']
-    if s["needs"]:
-        first = min(s["needs"], key=lambda n: -n["waited_s"])
-        out.append(f'<div class="needcard"><span class="lbl">Needs you · {len(s["needs"])}</span>'
+    open_needs = [n for n in s["needs"] if not n["pending"]]
+    if open_needs:
+        first = max(open_needs, key=lambda n: n["waited_s"])
+        out.append(f'<div class="needcard"><span class="lbl">Needs you · {s["needs_count"]}</span>'
                    f'<span class="q">{e(first["question"])}</span>'
                    f'<span class="meta">{_a(first["url"], first["ref"])} · {e(first["meta"])}</span>'
-                   f'<button class="link" data-go="needs">All {len(s["needs"])} →</button></div>')
+                   f'{_answer_buttons(first)}'
+                   f'<button class="link" data-go="needs">All {s["needs_count"]} →</button></div>')
     out.append('<div class="sblock"><span class="lbl">Backlog</span>')
     for g in s["backlog"]:
         out.append(f'<button class="sproj" data-go="backlog" data-open-group="{e(g["project"])}">'
@@ -278,7 +304,7 @@ def _d_side(s):
 # ---------- phone ----------
 
 def _phone(s):
-    runs, needs = len(s["runs"]), len(s["needs"])
+    runs, needs = len(s["runs"]), s["needs_count"]
     head = (f'<header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span>'
             f'{_state_label(s)}</div><div class="phead-btns">'
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
@@ -335,13 +361,17 @@ def _p_now(s):
 def _p_triage(s):
     out = ['<section class="tabv tabv-triage">', _banners(s), '<div class="pad">']
     out.append(f'<div class="psect" style="gap:12px"><span class="lbl t-bad">Needs you · '
-               f'{len(s["needs"])}</span>')
+               f'{s["needs_count"]}</span>')
     for n in s["needs"]:
+        if n["pending"]:
+            out.append(f'<div class="pneed" data-need="{e(n["id"])}">{_answered(n)}</div>')
+            continue
         out.append(f'<div class="pneed{" p1" if n["p1"] else ""}" data-need="{e(n["id"])}">'
                    f'<div class="row"><span class="meta">{_a(n["url"], n["ref"])}</span>'
                    f'<span class="pchip{" p1" if n["p1"] else ""}">{e(n["p"])}</span>'
                    f'<span class="meta" style="font-size:10.5px">{e(n["meta"])}</span></div>'
-                   f'<div class="q">{e(n["question"])}</div></div>')
+                   f'<div class="q">{e(n["question"])}</div>'
+                   f'{_answer_buttons(n)}{_answer_input(n, phone=True)}</div>')
     if not s["needs"]:
         out.append('<div class="empty" style="font-size:13.5px;padding:4px 0">Nothing waiting on '
                    'you. Runs continue on their own.</div>')

@@ -137,8 +137,9 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
-    def comment(self, number, body):
-        if not body.startswith(AGENT_MARK):
+    def comment(self, number, body, *, agent=True):
+        """Console answers are human replies; all conductor comments stay marked."""
+        if agent and not body.startswith(AGENT_MARK):
             body = AGENT_NOTE + "\n" + body
         self._gh("issue", "comment", str(number), "-R", self.repo, "--body-file", "-", input=body)
 

@@ -257,3 +257,14 @@ class TestCliWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAnswers(_Served):
+    def test_answer_returns_id_and_undo(self):
+        status, _, body = self.post('answer', {'project': 'mahler', 'number': 9, 'text': 'Yes'})
+        self.assertEqual(status, 200)
+        result = json.loads(body)
+        self.assertTrue(result['ok'])
+        self.assertIsInstance(result['id'], int)
+        self.assertEqual(self.post('answer_undo', {'id': result['id']})[0], 200)
+        self.assertEqual(self.post('answer_undo', {'id': result['id']})[0], 400)

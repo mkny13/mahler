@@ -576,3 +576,144 @@ class RecordedIdleTests(unittest.TestCase):
         reasons = self.idle(holds)["reasons"]
         self.assertEqual(len(reasons), 1)
         self.assertEqual(reasons[0]["action"], "Open PR #20")
+
+
+class AnswerTests(unittest.TestCase):
+    def setUp(self):
+        from mahler.console import outbox
+        self.outbox = outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.upsert_item('mahler', 9, title='Which?', state='needs_you')
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = mock.Mock()
+        self.ctx._gh['mkny13/mahler'] = self.gh
+
+    def answer(self, text='Yes', number=9):
+        return actions.run(self.cfg, self.led, 'answer',
+                           {'project': 'mahler', 'number': number, 'text': text})['id']
+
+    def row(self, id):
+        return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
+
+    def test_delay_replace_undo_and_validation(self):
+        first = self.answer(' Yes ')
+        self.assertEqual(self.row(first)['due_at'], iso(self.led.now() + timedelta(seconds=60)))
+        second = self.answer('No')
+        self.assertEqual(self.row(first)['status'], 'cancelled')
+        actions.run(self.cfg, self.led, 'answer_undo', {'id': second})
+        self.led.clock.t += timedelta(seconds=60)
+        self.outbox.drain(self.ctx)
+        self.gh.comment.assert_not_called()
+        with self.assertRaisesRegex(actions.ActionError, 'already sent'):
+            actions.run(self.cfg, self.led, 'answer_undo', {'id': second})
+        for text in ('', '  ', 'x' * 4001, None, '<!-- mahler:agent --> answer'):
+            with self.subTest(text=str(text)[:25]), self.assertRaises(actions.ActionError):
+                self.answer(text)
+        self.led.set_state('mahler', 9, 'ready')
+        with self.assertRaises(actions.ActionError):
+            self.answer()
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, 'answer', {'project': 'old', 'number': 1, 'text': 'yes'})
+
+    def test_delivery_and_existing_reply_path(self):
+        from mahler.sync import _process_comments
+        id = self.answer('Choose <this>')
+        self.outbox.drain(self.ctx)
+        self.gh.comment.assert_not_called()
+        self.led.clock.t += timedelta(seconds=60)
+        self.ctx.dry_run = True
+        self.outbox.drain(self.ctx)
+        self.gh.comment.assert_not_called()
+        self.ctx.dry_run = False
+        self.outbox.drain(self.ctx)
+        self.gh.comment.assert_called_once_with(9, 'Choose <this>', agent=False)
+        self.assertEqual(self.row(id)['status'], 'done')
+        with self.assertRaisesRegex(actions.ActionError, 'already sent'):
+            actions.run(self.cfg, self.led, 'answer_undo', {'id': id})
+        _process_comments(self.ctx, 'mahler', self.led.item('mahler', 9),
+                          [{'createdAt': iso(self.led.now()), 'body': 'Choose <this>'}])
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'inbox')
+        self.outbox.drain(self.ctx)
+        self.gh.comment.assert_called_once()
+
+    def test_moved_on_and_failures_do_not_stop_next_action(self):
+        moved = self.answer()
+        self.led.set_state('mahler', 9, 'ready')
+        bad = self.led.queue_action('unknown')
+        self.led.upsert_item('mahler', 10, state='failed')
+        failed = self.answer(number=10)
+        self.led.upsert_item('mahler', 11, state='needs_you')
+        good = self.answer(number=11)
+        self.gh.comment.side_effect = [RuntimeError('x' * 500), None]
+        self.led.clock.t += timedelta(seconds=60)
+        self.outbox.drain(self.ctx)
+        self.assertEqual([self.row(i)['status'] for i in (moved, bad, failed, good)],
+                         ['skipped', 'failed', 'failed', 'done'])
+        self.assertLessEqual(len(self.row(failed)['result']), 300)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='console_action_failed'")), 2)
+        with mock.patch.object(self.led, 'due_actions', side_effect=RuntimeError('db gone')):
+            self.outbox.drain(self.ctx)
+
+    def test_pending_state_counts_render_and_options(self):
+        self.led.upsert_item('mahler', 10, title='Failed', state='failed')
+        id = self.answer('<yes>')
+        s = state.build(self.cfg, self.led)
+        self.assertEqual(s['needs_count'], 1)
+        need = next(n for n in s['needs'] if n['number'] == 9)
+        self.assertEqual(need['pending'], {'id': id, 'text': '<yes>'})
+        failed = next(n for n in s['needs'] if n['number'] == 10)
+        self.assertEqual(failed['options'], [{'label': 'Retry', 'text': '/mahler go'},
+                                            {'label': 'Park it', 'text': '/mahler park'}])
+        doc = page.document(s)
+        self.assertEqual(doc.count('You said: &lt;yes&gt;'), 2)
+        self.assertIn('data-act="answer_undo"', doc)
+        self.assertIn('data-keep="need:mahler#10"', doc)
+        self.assertIn('or say something…', doc)
+        self.assertIn('or type an answer…', doc)
+        self.assertIn('Failed', page._d_side(s))
+        self.assertNotIn('Which?', page._d_side(s))
+        self.assertEqual(state._answer_options({'options': '["One", "Two"]'}),
+                         [{'label': 'One', 'text': 'One'}, {'label': 'Two', 'text': 'Two'}])
+
+
+    def test_real_gh_wrapper_keeps_human_answer_unmarked(self):
+        from mahler.gh import GH, AGENT_MARK
+        gh = GH('mkny13/mahler')
+        self.ctx._gh['mkny13/mahler'] = gh
+        self.answer('/mahler go')
+        self.led.clock.t += timedelta(seconds=60)
+        with mock.patch.object(gh, '_gh') as call:
+            self.outbox.drain(self.ctx)
+        self.assertEqual(call.call_args.kwargs['input'], '/mahler go')
+        with mock.patch.object(gh, '_gh') as call:
+            gh.comment(9, 'agent update')
+        self.assertTrue(call.call_args.kwargs['input'].startswith(AGENT_MARK))
+
+    def test_retry_and_park_use_existing_commands(self):
+        from mahler.sync import _process_comments
+        for text, expected in (('/mahler go', 'ready'), ('/mahler park', 'parked')):
+            self.led.set_state('mahler', 9, 'failed', attempts=3)
+            self.answer(text)
+            self.led.clock.t += timedelta(seconds=60)
+            self.outbox.drain(self.ctx)
+            _process_comments(self.ctx, 'mahler', self.led.item('mahler', 9),
+                              [{'createdAt': iso(self.led.now()), 'body': text}])
+            self.assertEqual(self.led.item('mahler', 9)['state'], expected)
+
+    def test_tick_drains_before_burst_even_while_paused(self):
+        self.led.set_kv('paused', '1')
+        order = []
+        names = ('watchdog', 'expire', 'close_finished_parents', 'record_holds',
+                 'mirror_labels', 'sync')
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for name in names:
+                stack.enter_context(mock.patch.object(scheduler, name))
+            for mod in (scheduler.digest, scheduler.janitor):
+                stack.enter_context(mock.patch.object(mod, 'maybe_send' if mod is scheduler.digest else 'maybe_run'))
+            stack.enter_context(mock.patch.object(scheduler, '_project_ok', return_value=False))
+            stack.enter_context(mock.patch.object(self.outbox, 'drain', side_effect=lambda ctx: order.append('drain')))
+            stack.enter_context(mock.patch.object(scheduler, 'compute_burst', side_effect=lambda *a: order.append('burst')))
+            scheduler.tick(self.ctx)
+        self.assertEqual(order, ['drain', 'burst'])
