@@ -177,6 +177,42 @@ class SetupTailTests(unittest.TestCase):
             self.assertEqual(runner.setup_tail(run, lines=2), "line28\nline29")
 
 
+class RemoveWorktreeTests(unittest.TestCase):
+    """DESIGN D12: rm -rf must never stray outside the worktree root."""
+
+    def test_removes_a_worktree_inside_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "worktrees")
+            wt = os.path.join(root, "proj", "1-run1")
+            os.makedirs(wt)
+            with mock.patch.object(runner, "git") as git:
+                runner.remove_worktree("/repo", wt, "mahler/1-x", root=root)
+            self.assertFalse(os.path.isdir(wt))
+            git.assert_any_call("/repo", "worktree", "remove", "--force", wt, check=False)
+            git.assert_any_call("/repo", "worktree", "prune", check=False)
+            git.assert_any_call("/repo", "branch", "-D", "mahler/1-x", check=False)
+
+    def test_refuses_a_sibling_directory_sharing_only_a_string_prefix(self):
+        # root=".../worktrees", wt=".../worktrees-evil/x" — a bare startswith()
+        # would wrongly treat this as "inside" root and delete it.
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "worktrees")
+            evil = os.path.join(d, "worktrees-evil", "x")
+            os.makedirs(evil)
+            with mock.patch.object(runner, "git") as git:
+                runner.remove_worktree("/repo", evil, root=root)
+            self.assertTrue(os.path.isdir(evil))    # untouched
+            self.assertNotIn(
+                mock.call("/repo", "worktree", "remove", "--force", evil, check=False),
+                git.call_args_list)
+            git.assert_any_call("/repo", "worktree", "prune", check=False)
+
+    def test_missing_worktree_is_a_noop_but_still_prunes(self):
+        with mock.patch.object(runner, "git") as git:
+            runner.remove_worktree("/repo", None, root="/tmp/nonexistent-mahler-root")
+        git.assert_called_once_with("/repo", "worktree", "prune", check=False)
+
+
 class PlatformLaunchTests(unittest.TestCase):
     def test_codex_launch_keeps_worktree_and_lease_fencing(self):
         with tempfile.TemporaryDirectory() as d:

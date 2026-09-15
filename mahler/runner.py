@@ -298,7 +298,12 @@ def worktree_root(pol):
 
 
 def remove_worktree(repo, wt, branch=None, root=None):
-    if wt and os.path.isdir(wt) and os.path.abspath(wt).startswith(root or config.WORKTREES):
+    """`wt` must be *inside* `root` (DESIGN D12: rm -rf never strays outside the
+    worktree) — a bare `startswith` would also match a sibling directory that
+    merely shares the prefix, e.g. root `.../worktrees` and wt
+    `.../worktrees-evil/x`, so the comparison is anchored on a path boundary."""
+    base = os.path.abspath(root or config.WORKTREES)
+    if wt and os.path.isdir(wt) and os.path.abspath(wt).startswith(base + os.sep):
         git(repo, "worktree", "remove", "--force", wt, check=False)
         shutil.rmtree(wt, ignore_errors=True)
     git(repo, "worktree", "prune", check=False)
