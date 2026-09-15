@@ -62,7 +62,11 @@ class FakeGH:
     def issue_state(self, number):
         return "OPEN"
 
-    def pr_merge(self, number):
+    def base_in_head(self, path, base, head):
+        return True
+
+    def pr_merge(self, number, head):
+        assert head == self.head_sha
         self.merged.append(number)
         if not self.queue:                # a real merge (no queue) is synchronous
             self.view_state = "MERGED"
@@ -428,6 +432,120 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.merged, [88])
 
+    def test_stale_base_rebuild_preserves_attempts_and_work(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2)
+        with mock.patch.object(self.gh, "base_in_head", return_value=False):
+            self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual((self.item()["state"], self.item()["pr"], self.item()["attempts"]),
+                         ("ready", None, 2))
+        self.assertEqual(self.item()["branch"], "mahler/snapshot/5-run7")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("does not contain current main", self.last_event())
+
+    def test_no_checks_still_requires_freshness(self):
+        self.gh.rollup = []
+        self.test_stale_base_rebuild_preserves_attempts_and_work()
+
+    def test_changed_pr_observation_never_merges(self):
+        self.led.upsert_item("x", 5, pr=88)
+        view = self.gh.pr_view(88)
+        for change in ({"headRefOid": "replacement"}, {"baseRefName": "release"},
+                       {"headRefOid": None}, {"baseRefName": None},
+                       {"statusCheckRollup": [{"state": "PENDING"}]},
+                       {"statusCheckRollup": [{"state": "FAILURE"}]},
+                       {"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]},
+                       {"mergeable": "UNKNOWN"}):
+            with self.subTest(change=change), mock.patch.object(
+                    self.gh, "pr_view", side_effect=[view, dict(view, **change)]), \
+                    mock.patch.object(self.gh, "base_in_head") as guard:
+                self.ship()
+                guard.assert_not_called()
+                self.assertEqual(self.gh.merged, [])
+        self.gh.head_sha = "replacement"
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        self.ship()
+        self.assertEqual(self.item()["state"], "done")
+
+    def test_non_main_target_is_used(self):
+        self.led.upsert_item("x", 5, pr=88)
+        view = dict(self.gh.pr_view(88), baseRefName="release/v2")
+        self.gh.queue = True
+        with mock.patch.object(self.gh, "pr_view", return_value=view), \
+                mock.patch.object(self.gh, "base_in_head", return_value=True) as guard:
+            self.ship()
+        guard.assert_called_once_with(self.tmp, "release/v2", self.gh.head_sha)
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_unknown_freshness_retries_then_times_out_without_attempts(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "base_in_head", side_effect=gh_module.GHError("fetch failed")):
+            self.ship()
+            self.assertEqual(self.item()["state"], "verifying")
+            self.led.now = lambda: NOW + timedelta(minutes=90)
+            self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual(self.gh.merged, [])
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("fetch failed", self.last_event())
+
+    def test_lookup_failure_keeps_existing_verification_deadline(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "base_in_head", return_value=None):
+            self.ship()
+        self.led.now = lambda: NOW + timedelta(minutes=90)
+        self.gh.fail_view = {88}
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.gh.merged, [])
+
+    def test_missing_metadata_on_first_observation_waits(self):
+        self.led.upsert_item("x", 5, pr=88)
+        for key in ("headRefOid", "baseRefName"):
+            view = self.gh.pr_view(88)
+            view.pop(key)
+            with self.subTest(key=key), mock.patch.object(self.gh, "pr_view", return_value=view), \
+                    mock.patch.object(self.gh, "base_in_head") as guard:
+                self.ship()
+                guard.assert_not_called()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(self.gh.merged, [])
+
+    def test_unknown_ancestry_and_api_failure_wait(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "base_in_head", return_value=None):
+            self.ship()
+        view = self.gh.pr_view(88)
+        with mock.patch.object(self.gh, "pr_view", side_effect=[view, gh_module.GHError("API down")]):
+            self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_preemption_during_fetch_blocks_merge_and_rebuild(self):
+        self.led.upsert_item("x", 5, pr=88)
+        def preempt(*args):
+            self.led.claim("x", 5, "interactive:mike", "interactive", 30)
+            return False
+        with mock.patch.object(self.gh, "base_in_head", side_effect=preempt):
+            self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual((self.item()["state"], self.item()["pr"]), ("working", 88))
+
+    def test_queued_request_does_not_recheck_freshness(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.queue = True
+        self.ship()
+        with mock.patch.object(self.gh, "base_in_head", return_value=False) as guard:
+            self.ship()
+        guard.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.gh.merged, [88])
+
     # ---------- a merge queue (mahler#211) ----------
 
     def test_merge_queue_waits_then_ships_once_it_lands(self):
@@ -472,7 +590,7 @@ class ShipTests(unittest.TestCase):
         self.gh.queue = True
         view = self.gh.pr_view(88)
         with mock.patch.object(self.gh, "pr_view", side_effect=[
-                view, gh_module.GHError("github down")]):
+                view, view, gh_module.GHError("github down")]):
             ping = self.ship()
         self.assertEqual(self.item()["state"], "verifying")
         self.assertEqual(self.gh.comments, [])
@@ -543,7 +661,7 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         self.assertEqual(self.item()["state"], "verifying")     # 5: retried next tick
         self.assertEqual(self.item(6)["state"], "done")         # 6: still shipped
-        self.assertIn("shipping failed", " ".join(self.ctx.lines))
+        self.assertIn("PR lookup failed", " ".join(self.ctx.lines))
 
 
 class HelpersTests(unittest.TestCase):
@@ -559,6 +677,12 @@ class HelpersTests(unittest.TestCase):
                          "- the new ping arrives\n- nothing else")
         self.assertEqual(gh_module.needs_human_of("no section here"), "")
         self.assertEqual(gh_module.needs_human_of(""), "")
+
+    def test_completed_check_uses_its_conclusion(self):
+        self.assertEqual(gh_module.checks_state(
+            [{"status": "COMPLETED", "conclusion": "FAILURE"}]), "red")
+        self.assertEqual(gh_module.checks_state(
+            [{"status": "COMPLETED", "conclusion": "SUCCESS"}]), "green")
 
     def test_checks_state(self):
         self.assertEqual(gh_module.checks_state(None), "none")
@@ -589,6 +713,61 @@ class MigrationTests(unittest.TestCase):
             self.assertIsNone(led.item("x", 5))
             led.upsert_item("x", 5, pr=7, summary="s")
             self.assertEqual(led.item("x", 5)["pr"], 7)
+
+
+class FreshnessAdapterTests(unittest.TestCase):
+    def test_real_origin_drift_and_replacement_head(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, origin = os.path.join(d, "repo"), os.path.join(d, "origin.git")
+            def git(*args):
+                return subprocess.run(["git", "-C", repo, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            subprocess.run(["git", "init", "-b", "release", repo], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "init", "--bare", origin], check=True, capture_output=True)
+            git("remote", "add", "origin", origin)
+            def commit(message):
+                git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                    "commit", "--allow-empty", "-m", message)
+                return git("rev-parse", "HEAD")
+            base = commit("base")
+            git("push", "origin", "HEAD:release")
+            head = commit("PR work")
+            git("push", "origin", "HEAD:topic")
+            gh = gh_module.GH("test/repo")
+            self.assertTrue(gh.base_in_head(repo, "release", head))
+            # Advance origin independently, leaving the checked PR head untouched.
+            tree = git("rev-parse", f"{base}^{{tree}}")
+            moved = git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit-tree", tree, "-p", base, "-m", "independent base change")
+            git("push", "origin", f"{moved}:release")
+            self.assertFalse(gh.base_in_head(repo, "release", head))
+            self.assertEqual(git("rev-parse", "HEAD"), head)
+            with self.assertRaises(gh_module.GHError):
+                gh.base_in_head(repo, "missing", head)
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "merge", "--no-edit", moved)
+            replacement = git("rev-parse", "HEAD")
+            git("push", "origin", "HEAD:topic")
+            self.assertTrue(gh.base_in_head(repo, "release", replacement))
+
+    def test_merge_pins_checked_sha_and_keeps_account(self):
+        env = {"GH_CONFIG_DIR": "/test/account"}
+        with mock.patch.object(gh_module, "_gh") as call:
+            gh_module.GH("x/y", env=env).pr_merge(88, "a" * 40)
+        call.assert_called_once_with("pr", "merge", "88", "-R", "x/y", "--squash",
+                                     "--delete-branch", "--match-head-commit", "a" * 40,
+                                     env=env)
+
+    def test_missing_metadata_and_indeterminate_git_fail_closed(self):
+        gh = gh_module.GH("x/y")
+        for base, head in ((None, "a" * 40), ("main", None), ("main", "--option")):
+            with self.subTest(base=base, head=head), self.assertRaises(gh_module.GHError):
+                gh.base_in_head("unused", base, head)
+        with mock.patch.object(gh, "_git", side_effect=["", "", "", "b" * 40, "false"]), \
+                mock.patch.object(subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 128, "", "missing object")), self.assertRaises(gh_module.GHError):
+            gh.base_in_head("unused", "main", "a" * 40)
 
 
 class PushBranchTests(unittest.TestCase):
