@@ -77,6 +77,17 @@ DEFAULTS = {
         "rules": "",                   # extra project rules appended to build/sort prompts
         "maintenance": DEFAULT_MAINTENANCE,
     },
+    # `total` is the hard overall ceiling (blast radius). `by_tier` (optional,
+    # mahler#200) layers a finer cap under it, keyed by the same `tier` field
+    # platforms carry for D8 rule-4 escalation (router.tier_of): each entry
+    # caps concurrent runs at that tier *or above* (a tier-4 run also counts
+    # against a tier-"3 and up" budget, so it can't dodge the cap by being
+    # even scarcer). Absent/empty by_tier reproduces today's behavior exactly
+    # — every tier is bounded only by `total`. Example, biasing slots toward
+    # the cheap/free platforms without touching `total`:
+    #   [concurrency]
+    #   total = 4
+    #   by_tier = { 1 = 3, 2 = 2 }   # tiers 3 and 4 stay unrestricted (still <= total)
     "concurrency": {"total": 2},
     "scheduling": {"priority_projects": ["mahler"]},
     "ntfy": {"server": "https://ntfy.sh", "topic": "", "topic_high": ""},

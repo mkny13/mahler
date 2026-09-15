@@ -431,6 +431,24 @@ Platforms without a usage percentage are treated as 100% on the first quota erro
 unavailable until the reset time, parsed or with a backoff default. All of these numbers live in
 `~/.mahler/config.toml`.
 
+**Tier-weighted concurrency budgets** (mahler#200). `concurrency.total` (`tick.schedule()`) is
+one flat global ceiling: an expensive Claude Opus run and three cheap Cline/Kilo runs compete
+for the exact same pool of slots. `concurrency.by_tier` (optional) layers a second, finer cap
+underneath it, reusing the `tier` field every platform already carries for D8 rule-4 escalation
+(`router.tier_of`): tier 1 = cline-free, kilo; tier 2 = agy-claude, codex, copilot; tier 3 =
+agy-gemini, claude, codex-high, copilot-high; tier 4 = claude-opus. `tier` is the closest
+existing signal to "how scarce/strong is this platform" — not a perfect proxy for cost
+(`agy-claude`/`agy-gemini` are tier 2/3 but free; `copilot-high` is tier 3 but spends real AI
+credits) — refining that further is its own project, not worth blocking this on. An entry
+`by_tier = { 1 = 3, 2 = 2 }` caps tier 1 (and above) at 3 concurrent runs, and tier 2 (and above)
+at 2; tiers 3 and 4 stay unrestricted, still bounded by `total`. **Budgets are "at or above,"
+not "exactly":** a tier-4 run also counts against a tier-"2 and up" budget, so a scarce platform
+can't dodge a laxer cap by being even scarcer. `total` stays the hard outer ceiling regardless —
+`by_tier` only ever restricts further, never loosens it. Absent/empty `by_tier` reproduces
+today's exact behavior (every tier bounded only by `total`), so it's opt-in and backward
+compatible. This is a different mechanism from the per-platform `max_runs` (one specific
+platform's own slot count, e.g. shared quota) — both apply at once, neither replaces the other.
+
 **Sensing Claude:** every Mahler Claude run's log is scanned for `rate_limit_event`. When no
 run has reported in 15 minutes and a Claude run is about to start, Mahler takes a lean probe
 first. A statusline sidecar (writing `rate_limits` from your own interactive sessions to
