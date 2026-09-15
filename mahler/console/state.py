@@ -552,6 +552,89 @@ def _pending(cfg, led, projects):
     return {p["name"]: [i for i in led.items(p["name"], ["inbox", "ready"])] for p in projects}
 
 
+BLOCKER_LABELS = {
+    "busy": "busy", "over": "past the line", "peak": "peak hours",
+    "size": "too small", "tier": "below required tier",
+    "stale": "no fresh reading", "account": "wrong account", "other": "unavailable",
+}
+
+
+def _schedule_holds(led, now):
+    """None means absent/stale; an empty list is a fresh scheduler snapshot."""
+    try:
+        snapshot = json.loads(led.get_kv("schedule_holds") or "null")
+        at = parse(snapshot["at"])
+        holds = snapshot["holds"]
+        if not (timedelta(0) <= now - at <= timedelta(minutes=3)):
+            return None
+        if not isinstance(holds, list) or not all(isinstance(h, dict) for h in holds):
+            return None
+        return holds
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _hold_reasons(cfg, holds, pending, hot, now):
+    out, routes, settling, deps = [], {}, {}, []
+    seen = set()
+    for h in holds:
+        kind, project = h.get("kind"), h.get("project")
+        if project not in pending or not pending[project]:
+            continue
+        number = h.get("number")
+        if number is not None and number not in {i["number"] for i in pending[project]}:
+            continue
+        pol = config.project_policy(cfg, project)
+        ref = _ref(project, number)
+        if kind == "no_platform":
+            routes.setdefault((h["role"], h["size"]), []).append(h)
+        elif kind == "settling":
+            until = router._ts(h.get("until"))
+            if until and until > now:
+                settling.setdefault(pol["settle_minutes"], []).append(until)
+        elif kind == "deps":
+            deps.append(h)
+        elif kind in ("area", "files"):
+            overlap = f"area:{h['area']}" if kind == "area" else ", ".join(h["files"])
+            out.append({"text": f"{ref} waits — {overlap} already in progress."})
+        elif (kind, project) not in seen:
+            seen.add((kind, project))
+            if kind == "capacity":
+                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s)."})
+            elif kind == "lease_host":
+                out.append({"text": f"{project} waits — its canonical lease host is unavailable."})
+            elif kind == "hot_hold" and not any(x["project"] == project for x in hot):
+                out.append({"text": f"You have been working in {project}, so new builds there wait "
+                                    f"until {pol['hot_hold_minutes']} minutes after you stop."})
+    for (role, size), items in routes.items():
+        groups = {}
+        for h in items:
+            for category, names in h["blockers"].items():
+                groups.setdefault(category, set()).update(names)
+        groups = {k: v for k, v in groups.items() if v}
+        if set(groups) == {"size"}:
+            text = (f"{len(items)} item(s) need a builder that takes size:{size}, "
+                    "and none in the route does.")
+        else:
+            summary = "; ".join(f"{label}: {', '.join(sorted(groups[k]))}"
+                                for k, label in BLOCKER_LABELS.items() if k in groups)
+            text = (f"{len(items)} {role} item(s) have no platform with headroom — "
+                    f"{summary or 'no platforms in the route'}.")
+        out.append({"text": text})
+    for minutes, times in settling.items():
+        first = max(1, int((min(times) - now).total_seconds() / 60 + .999))
+        out.append({"text": f"{len(times)} item(s) were just sorted and settle for "
+                            f"{minutes} minutes before a build starts.",
+                    "countdown": f"first in {first}m"})
+    if len(deps) > 3:
+        out.append({"text": f"{len(deps)} items wait for other issues to close."})
+    else:
+        for h in deps:
+            refs = _join(_ref(h["project"], n) for n in h["on"])
+            out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close."})
+    return out
+
+
 def _idle(cfg, led, s, hot, now):
     """Why nothing is running: every reason that is actually binding, each a
     sentence with a countdown when one exists and an escape when you have one."""
@@ -564,6 +647,7 @@ def _idle(cfg, led, s, hot, now):
         return {"headline": "Nothing is running.", "reasons": [{"text": (
             "Nothing is waiting to start — finished changes are waiting on CI." if waiting
             else "The backlog is empty — nothing to work on.")}]}
+    schedule_holds = _schedule_holds(led, now)
     reasons = []
     if s["paused"]:
         reasons.append({"text": "You paused everything, so nothing new starts.",
@@ -614,7 +698,9 @@ def _idle(cfg, led, s, hot, now):
     for p in projects:
         name = p["name"]
         builds = [i for i in pending[name] if i["state"] == "ready"]
-        if pending[name] and p.get("max_parallel", 1) == 0:
+        if (pending[name] and p.get("max_parallel", 1) == 0
+                and not any(h.get("kind") == "capacity" and h.get("project") == name
+                            for h in schedule_holds or [])):
             reasons.append({"text": f"{name} has max_parallel set to 0, so its "
                                     f"{len(pending[name])} waiting item(s) stay put."})
             continue
@@ -641,10 +727,14 @@ def _idle(cfg, led, s, hot, now):
                 "text": f"You have been working in {h['project']}, so new builds there wait "
                         f"until {h['hold_minutes']} minutes after you stop.",
                 "countdown": f"{_dur(h['until'] - now)} left"})
-    if not reasons:
+    if schedule_holds is not None:
+        reasons.extend(_hold_reasons(cfg, schedule_holds, pending, hot, now))
+    if not reasons and schedule_holds is None:
         reasons.append({"text": f"{n_pending} item(s) queued, but no platform has "
                                 f"headroom for them right now."})
     n = len(reasons)
+    if not n:
+        return {"headline": "Nothing is running.", "reasons": []}
     word = NUMBER_WORDS[n] if n < len(NUMBER_WORDS) else str(n)
     return {"headline": f"Nothing is running. {word} thing{'s are' if n != 1 else ' is'} "
                         f"holding it:",

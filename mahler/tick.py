@@ -208,9 +208,12 @@ def _candidates(ctx, projects):
         for it in led.items(name, ["ready"]):
             sorted_at = parse(it["sorted_at"])
             if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):
+                ctx.hold("settling", project=name, number=it["number"],
+                         until=iso(sorted_at + timedelta(minutes=p["settle_minutes"])))
                 continue
             deps = [d for d in json.loads(it["depends"] or "[]") if d not in done]
             if deps:
+                ctx.hold("deps", project=name, number=it["number"], on=deps)
                 continue
             work.append((p, "build", it))
     return work
@@ -385,12 +388,15 @@ def schedule(ctx, projects):
                 if name not in said:
                     said.add(name)
                     ctx.say(f"{name}: at capacity ({total} running)")
+                    ctx.hold("capacity", project=name, max_parallel=p["max_parallel"])
                 continue
             if role == "build" and in_project.get(name, 0) + in_flight[name] >= p["max_parallel"]:
                 if name not in said:
                     said.add(name)
                     ctx.say(f"{name}: builds wait — {in_flight[name]} finished change(s) "
                             "not merged yet")
+                    ctx.hold("slot", project=name, verifying=[
+                        v["number"] for v in led.items(name, ["verifying"])])
                 continue
             # Hot hold (D6 layer 2): no new *code-writing* starts while an
             # untracked Claude session is active in the project — running work
@@ -400,22 +406,26 @@ def schedule(ctx, projects):
             # competes with the human's work; only builds are gated.
             if role == "build" and hot[name]:
                 ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
+                ctx.hold("hot_hold", project=name, number=n)
                 continue
             area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
             if area and area in busy_areas[name]:
                 ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
+                ctx.hold("area", project=name, number=n, area=area)
                 continue
             item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
             file_overlap = busy_files[name].intersection(item_files)
             if file_overlap:
                 ctx.say(f"{name}#{n}: waiting — files already in progress: "
                         f"{', '.join(sorted(file_overlap))}")
+                ctx.hold("files", project=name, number=n, files=sorted(file_overlap))
                 continue
             if led.lease(name, n):
                 continue
             remote_error = getattr(led, "remote_error", lambda _project: None)(name)
             if remote_error:
                 ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
+                ctx.hold("lease_host", project=name)
                 continue
             size = next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
                          if l.startswith("size:")), None)
@@ -436,6 +446,8 @@ def schedule(ctx, projects):
                 cfg, led, p, routing_role, pin, busy, size=effective_size,
                 burst_lines=burst_lines, min_tier=effective_min_tier)
             if not platform:
+                ctx.hold("no_platform", project=name, number=n, role=routing_role,
+                         size=effective_size or "m", blockers=router.reason_groups(reasons))
                 if routing_role == "plan":
                     ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")
                 else:

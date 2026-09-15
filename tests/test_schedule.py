@@ -809,5 +809,92 @@ class InteractiveLeaseRenewalTests(unittest.TestCase):
         self.assertEqual(self.led.item("a", 1)["state"], "ready")
 
 
+class ScheduleHoldTests(unittest.TestCase):
+    def test_candidate_holds(self):
+        ctx, led = mk_ctx({"a": proj(settle_minutes=10)})
+        self.addCleanup(led.close)
+        item(led, "a", 1)
+        led.upsert_item("a", 1, sorted_at=iso(NOW - timedelta(minutes=2)))
+        item(led, "a", 2)
+        led.upsert_item("a", 2, depends="[3, 4]")
+        item(led, "a", 3, state="done")
+        plan(ctx, led)
+        self.assertEqual(ctx.holds, [
+            {"kind": "settling", "project": "a", "number": 1,
+             "until": iso(NOW + timedelta(minutes=8))},
+            {"kind": "deps", "project": "a", "number": 2, "on": [4]}])
+
+    def test_schedule_branches(self):
+        for kind in ("capacity", "slot", "area", "files", "hot_hold", "lease_host", "no_platform"):
+            with self.subTest(kind=kind):
+                ctx, led = mk_ctx({"a": proj(max_parallel=2, hot_hold=kind == "hot_hold")}, total=4)
+                self.addCleanup(led.close)
+                item(led, "a", 1)
+                if kind == "capacity":
+                    for n in (2, 3):
+                        led.create_run(project="a", number=n, role="build", platform="kilo", epoch=1)
+                elif kind in ("slot", "area", "files"):
+                    item(led, "a", 2, state="verifying")
+                    if kind == "slot":
+                        item(led, "a", 3, state="verifying")
+                    else:
+                        field, value = (("labels", '["area:console"]') if kind == "area"
+                                        else ("files", '["mahler/tick.py"]'))
+                        for n in (1, 2):
+                            led.upsert_item("a", n, **{field: value})
+                with mock.patch.object(presence, "last_claude_activity", return_value=NOW), \
+                     mock.patch.object(led, "remote_error", create=True,
+                                       return_value="offline" if kind == "lease_host" else None), \
+                     mock.patch.object(router, "pick_for_project", return_value=(None, ["kilo: busy"])):
+                    plan(ctx, led)
+                expected = {"kind": kind, "project": "a"}
+                expected.update({
+                    "capacity": {"max_parallel": 2}, "slot": {"verifying": [2, 3]},
+                    "area": {"number": 1, "area": "console"},
+                    "files": {"number": 1, "files": ["mahler/tick.py"]},
+                    "hot_hold": {"number": 1}, "lease_host": {},
+                    "no_platform": {"number": 1, "role": "build", "size": "m",
+                                    "blockers": {"busy": ["kilo"]}},
+                }[kind])
+                self.assertEqual(ctx.holds, [expected])
+
+    def test_tick_records_paused_and_scheduled_holds_and_survives_failed_write(self):
+        from contextlib import ExitStack
+        for paused, fail in ((False, False), (True, False), (False, True)):
+            with self.subTest(paused=paused, fail=fail):
+                ctx, led = mk_ctx({})
+                self.addCleanup(led.close)
+                ctx.dry_run = False
+                if paused:
+                    led.set_kv("paused", "1")
+                with ExitStack() as stack:
+                    for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
+                                 "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                                 "ship", "digest.maybe_send", "janitor.maybe_run"):
+                        stack.enter_context(mock.patch("mahler.scheduler." + name))
+                    stack.enter_context(mock.patch("mahler.scheduler.schedule", side_effect=lambda c, p:
+                                                   c.hold("lease_host", project="a")))
+                    if fail:
+                        stack.enter_context(mock.patch.object(led, "set_kv", side_effect=RuntimeError("disk")))
+                    scheduler.tick(ctx)
+                if fail:
+                    self.assertTrue(any("couldn't record schedule holds" in line for line in ctx.lines))
+                else:
+                    self.assertEqual(json.loads(led.get_kv("schedule_holds")), {
+                        "at": iso(NOW), "holds": [{"kind": "paused"}] if paused else
+                        [{"kind": "lease_host", "project": "a"}]})
+
+    def test_snapshot_is_bounded_and_dry_run_does_not_write(self):
+        ctx, led = mk_ctx({})
+        self.addCleanup(led.close)
+        for n in range(205):
+            ctx.hold("deps", project="a", number=n, on=[300])
+        scheduler.record_holds(ctx)
+        self.assertIsNone(led.get_kv("schedule_holds"))
+        ctx.dry_run = False
+        scheduler.record_holds(ctx)
+        self.assertEqual(len(json.loads(led.get_kv("schedule_holds"))["holds"]), 200)
+
+
 if __name__ == "__main__":
     unittest.main()
