@@ -8,6 +8,7 @@ Interactive sessions (any platform) take part in the lease protocol through
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import timedelta
 
@@ -145,7 +146,6 @@ def cmd_status(a, cfg, led):
 
 def cmd_serve(a, cfg, led):
     from . import serve
-    from .ledger import Ledger
     host = a.host or cfg.get("serve", {}).get("host", "127.0.0.1")
     port = a.port or cfg.get("serve", {}).get("port", 8787)
     # request threads must be able to use this connection, so re-open the
@@ -180,8 +180,13 @@ def cmd_hooks(a, cfg, led):
     
     hooks = settings["hooks"]
     
-    # 1. SessionStart
-    hooks["SessionStart"] = [{"command": f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}"}]
+    # Claude Code hook configuration schema (code.claude.com/docs/en/hooks):
+    # each event maps to a list of {"matcher": ..., "hooks": [{"type": "command",
+    # "command": ...}]} entries. A bare {"command": ...} entry never fires.
+    # 1. SessionStart (D6 layer 2: held-items nudge, claim prompt, other-session note)
+    hooks["SessionStart"] = [{
+        "hooks": [{"type": "command", "command": f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}"}]
+    }]
     with open(os.path.join(hooks_dir, "session_start.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
 import json
@@ -218,8 +223,12 @@ if __name__ == "__main__":
     main()
 """)
 
-    # 2. PreToolUse
-    hooks["PreToolUse"] = [{"command": f"python3 {os.path.join('.claude', 'hooks', 'pre_tool_use.py')}", "tools": ["Edit", "Write", "Bash"]}]
+    # 2. PreToolUse: lease fencing on pushes/PRs from a run (D6 — the epoch is
+    # checked for `gh pr create|merge`), plus the one-time unclaimed nudge.
+    hooks["PreToolUse"] = [{
+        "matcher": "Edit|Write|Bash",
+        "hooks": [{"type": "command", "command": f"python3 {os.path.join('.claude', 'hooks', 'pre_tool_use.py')}"}]
+    }]
     with open(os.path.join(hooks_dir, "pre_tool_use.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
 import sys
@@ -249,7 +258,8 @@ def main():
             
     if run_id:
         command = tool_args.get("command", "")
-        if command and "gh pr merge" in command:
+        # D6: fence outward-facing steps — `gh pr create|merge` — on the epoch.
+        if command and ("gh pr merge" in command or "gh pr create" in command):
             res = subprocess.run(["mahler", "lease-check"], capture_output=True, text=True)
             if res.returncode != 0:
                 print(res.stdout.strip())
@@ -278,10 +288,11 @@ if __name__ == "__main__":
     main()
 """)
 
-    # 3. PostToolUse / UserPromptSubmit (heartbeat)
-    heartbeat_cmd = {"command": f"python3 {os.path.join('.claude', 'hooks', 'heartbeat.py')}"}
-    hooks["PostToolUse"] = [heartbeat_cmd]
-    hooks["UserPromptSubmit"] = [heartbeat_cmd]
+    # 3. PostToolUse / UserPromptSubmit (interactive heartbeats, D6 layer 1)
+    heartbeat_entry = {"hooks": [{"type": "command",
+                                  "command": f"python3 {os.path.join('.claude', 'hooks', 'heartbeat.py')}"}]}
+    hooks["PostToolUse"] = [heartbeat_entry]
+    hooks["UserPromptSubmit"] = [heartbeat_entry]
     
     with open(os.path.join(hooks_dir, "heartbeat.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
@@ -527,7 +538,6 @@ def cmd_log(a, cfg, led):
 
 def _parse_duration(s):
     """'2h' / '90m' / '1h30m' -> timedelta. Raises ValueError on garbage."""
-    import re
     m = re.fullmatch(r"(?:(\d+)h)?(?:(\d+)m)?", s or "")
     if not m or not (m.group(1) or m.group(2)):
         raise ValueError(f"bad duration {s!r}: use e.g. 2h or 90m")
@@ -547,8 +557,7 @@ def _peak_window_end(cfg, led):
         return None
     end = local.replace(hour=eh, minute=em, second=0, microsecond=0)
     if end <= local:
-        from datetime import timedelta as _td
-        end = end + _td(days=1)
+        end = end + timedelta(days=1)
     return end.astimezone(now.tzinfo)
 
 

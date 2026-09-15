@@ -5,10 +5,11 @@ import os
 import json
 import tempfile
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta, timezone
 from mahler import cli, config, runner, scheduler, watchdog
-from mahler.ledger import Ledger, iso
+from mahler.ledger import Ledger, iso, parse
 
 class TestHooks(unittest.TestCase):
     def setUp(self):
@@ -47,13 +48,27 @@ class TestHooks(unittest.TestCase):
         with open(settings_path) as f:
             d = json.load(f)
             
+        # Claude Code hook schema (D6): event -> [{"matcher", "hooks":
+        # [{"type": "command", "command"}]}]. A bare {"command": ...} entry
+        # never fires, so the fence and heartbeats would silently do nothing.
         self.assertIn("hooks", d)
         self.assertIn("SessionStart", d["hooks"])
         self.assertIn("PreToolUse", d["hooks"])
-        
-        pt = d["hooks"]["PreToolUse"][0]
-        self.assertIn("pre_tool_use.py", pt["command"])
-        self.assertEqual(pt["tools"], ["Edit", "Write", "Bash"])
+        self.assertIn("PostToolUse", d["hooks"])
+        self.assertIn("UserPromptSubmit", d["hooks"])
+
+        def cmds(entries):
+            return [h["command"] for grp in entries for h in grp.get("hooks", [])
+                    if h.get("type") == "command"]
+        self.assertEqual(cmds(d["hooks"]["SessionStart"]),
+                         ["python3 .claude/hooks/session_start.py"])
+        pt = d["hooks"]["PreToolUse"]
+        self.assertEqual([grp.get("matcher") for grp in pt], ["Edit|Write|Bash"])
+        self.assertEqual(cmds(pt), ["python3 .claude/hooks/pre_tool_use.py"])
+        self.assertEqual(cmds(d["hooks"]["PostToolUse"]),
+                         ["python3 .claude/hooks/heartbeat.py"])
+        self.assertEqual(cmds(d["hooks"]["UserPromptSubmit"]),
+                         ["python3 .claude/hooks/heartbeat.py"])
         
         # The yield check must honor MAHLER_RUNS_DIR so tests can keep
         # their hands off the real ~/.mahler state (mahler#93).
@@ -126,11 +141,18 @@ class TestHooks(unittest.TestCase):
         with patch.dict(os.environ, env_extra):
             env = os.environ.copy()
             env["PATH"] = os.path.abspath("bin") + os.pathsep + env.get("PATH", "")
-            # We mock the call by actually passing JSON to stdin
-            stdin_data = json.dumps({"command": "gh pr merge -s"})
-            res = subprocess.run(["python3", pre_tool_script], input=stdin_data, capture_output=True, text=True, env=env)
-            self.assertEqual(res.returncode, 1)
-            self.assertIn("STALE", res.stdout)
+            # D6 fences both outward-facing steps: `gh pr create|merge`.
+            for fenced in ("gh pr merge -s", "gh pr create --title x"):
+                stdin_data = json.dumps({"command": fenced})
+                res = subprocess.run(["python3", pre_tool_script], input=stdin_data,
+                                     capture_output=True, text=True, env=env)
+                self.assertEqual(res.returncode, 1, fenced)
+                self.assertIn("STALE", res.stdout)
+            # Anything else a run does is not fenced on the epoch.
+            stdin_data = json.dumps({"command": "gh pr checks 5"})
+            res = subprocess.run(["python3", pre_tool_script], input=stdin_data,
+                                 capture_output=True, text=True, env=env)
+            self.assertEqual(res.returncode, 0)
 
 
 class TestSessionIdentity(unittest.TestCase):
@@ -201,3 +223,103 @@ class TestSessionIdentity(unittest.TestCase):
                 script = fh.read()
             self.assertIn("CLAUDE_CODE_SESSION_ID", script)
             self.assertIn("Another interactive session", script)
+
+
+class TestInteractiveLeaseCommands(unittest.TestCase):
+    """D6 layer 1 pinned at the CLI: `claim/heartbeat/release` go through the
+    ledger's compare-and-set, interactive claims grant the policy TTL (30 min
+    of inactivity, mahler#33-style per-session holders), heartbeats are
+    fenced on holder+epoch, and `lease-check` works from the run env and
+    allows anything outside a run."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.led = Ledger(os.path.join(self.tmp.name, "mahler.db"))
+        self.addCleanup(self.led.close)
+        self.cfg = {"defaults": config.DEFAULTS["defaults"], "platforms": {},
+                    "projects": {"testproj": {"enabled": True}}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_claim_grants_interactive_lease_with_policy_ttl(self):
+        class Args:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+            steal = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.cmd_claim(Args(), self.cfg, self.led), 0)
+        lease = self.led.lease("testproj", 7)
+        self.assertEqual(lease["kind"], "interactive")
+        self.assertEqual(lease["holder"], "interactive:aaaaaaaa")
+        self.assertEqual(lease["epoch"], 1)
+        ttl = (parse(lease["expires_at"]) - parse(lease["heartbeat_at"])).total_seconds() / 60
+        self.assertEqual(ttl, 30)  # interactive_lease_minutes default (D6)
+        self.assertIn("(epoch 1)", out.getvalue())
+
+    def test_heartbeat_renews_own_lease_and_refuses_a_taken_over_one(self):
+        class Claim:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+            steal = False
+        class HB:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_claim(Claim(), self.cfg, self.led)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.cmd_heartbeat(HB(), self.cfg, self.led), 0)
+            self.assertIn("renewed", out.getvalue())
+            # a second session steals; the first session's heartbeat is refused
+            Claim.holder = "bbbbbbbb"
+            Claim.steal = True
+            with contextlib.redirect_stdout(io.StringIO()):
+                cli.cmd_claim(Claim(), self.cfg, self.led)
+            Claim.holder = "aaaaaaaa"
+            out2 = io.StringIO()
+            with contextlib.redirect_stdout(out2):
+                self.assertEqual(cli.cmd_heartbeat(HB(), self.cfg, self.led), 1)
+            self.assertIn("you don't hold this item", out2.getvalue())
+
+    def test_release_hands_the_item_back(self):
+        class Args:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+            steal = False
+        class Rel:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_claim(Args(), self.cfg, self.led)
+            self.assertEqual(cli.cmd_release(Rel(), self.cfg, self.led), 0)
+        self.assertIsNone(self.led.lease("testproj", 7))
+        self.assertEqual(self.led.item("testproj", 7)["state"], "ready")
+
+    def test_lease_check_reads_the_run_env_and_allows_outside(self):
+        class Args:
+            item = ("testproj", 7)
+            holder = "aaaaaaaa"
+            steal = False
+        with contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_claim(Args(), self.cfg, self.led)
+        env = {"MAHLER_PROJECT": "testproj", "MAHLER_ISSUE": "7"}
+        out = io.StringIO()
+        with patch.dict(os.environ, {**env, "MAHLER_EPOCH": "1"}):
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.cmd_lease_check(SimpleNamespace(item=None, epoch=None),
+                                                     self.cfg, self.led), 0)
+        self.assertIn("ok — you still hold", out.getvalue())
+        out = io.StringIO()
+        with patch.dict(os.environ, {**env, "MAHLER_EPOCH": "2"}):  # stale epoch
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.cmd_lease_check(SimpleNamespace(item=None, epoch=None),
+                                                     self.cfg, self.led), 1)
+        self.assertIn("STALE", out.getvalue())
+        out = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True):  # not inside a Mahler run
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.cmd_lease_check(SimpleNamespace(item=None, epoch=None),
+                                                     self.cfg, self.led), 0)
+        self.assertIn("allowed", out.getvalue())
