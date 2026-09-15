@@ -34,6 +34,7 @@ class FakeGH:
         self.head_sha = "abc123"
         self.pushed, self.created, self.merged, self.comments = [], [], [], []
         self.fail_view = set()
+        self.queue = False    # simulate a merge queue: pr_merge only enqueues
 
     def issue_body(self, number):
         return ISSUE_BODY
@@ -62,6 +63,8 @@ class FakeGH:
 
     def pr_merge(self, number):
         self.merged.append(number)
+        if not self.queue:                # a real merge (no queue) is synchronous
+            self.view_state = "MERGED"
 
     def comment(self, number, body):
         if not body.startswith(gh_module.AGENT_MARK):
@@ -382,6 +385,48 @@ class ShipTests(unittest.TestCase):
         self.gh.rollup = []
         self.ship()
         self.assertEqual(self.gh.merged, [88])
+
+    # ---------- a merge queue (mahler#211) ----------
+
+    def test_merge_queue_waits_then_ships_once_it_lands(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.queue = True
+        ping = self.ship()
+        self.assertEqual(self.gh.merged, [88])            # merge requested once
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        ping.assert_not_called()
+        self.gh.view_state = "MERGED"                      # the queue landed it
+        ping = self.ship()
+        self.assertEqual(self.gh.merged, [88])              # not requested again
+        self.assertEqual(self.item()["state"], "done")
+        self.assertIsNone(self.led.lease("x", 5))
+        ping.assert_called_once()
+        self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
+
+    def test_merge_queue_does_not_re_request_every_tick(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.queue = True
+        self.ship()
+        self.ship()
+        self.ship()
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_merge_queue_stuck_times_out_to_needs_you(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.queue = True
+        self.ship()                              # requests the merge, stamps "since"
+        later = lambda: NOW + timedelta(minutes=90)
+        self.led.now = later
+        try:
+            ping = self.ship()
+        finally:
+            self.led.now = lambda: NOW
+        ping.assert_called_once()
+        self.assertIn("needs you", ping.call_args[0][0])
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("90 min", self.last_event())
 
     def test_pr_resolved_outside_mahler_is_just_done(self):
         self.led.upsert_item("x", 5, pr=88)

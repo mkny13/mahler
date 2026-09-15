@@ -1026,6 +1026,45 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
 - Only `mahler` sets `accounts = ["personal", "work"]`. Nothing else changes: a project that
   still names a single `account` keeps D25's exact behaviour, unchanged.
 
+### D27 — GitHub's native merge queue, not a deeper hand-rolled one
+
+Decided 2026-09-14 (mahler#211, filed alongside mahler#210 as the other prerequisite before
+raising any project's `max_parallel` above 1). The gap: `_watch_pr` merged once a PR's own
+`mergeable` flag was clean and its own CI run was green — both computed against the PR in
+isolation. Neither is recomputed just because `main` moved since that CI run fired, so a PR
+that still applies cleanly but was never actually tested against the current base (a changed
+function signature elsewhere, a duplicate config key) could sail through. At `max_parallel = 1`
+this window is narrow — only an out-of-band push can land in it — and stops being narrow the
+moment a project runs more than one build at once. This is exactly Graydon Hoare's "Not Rocket
+Science Rule of Software Engineering" (bors, 2013): test the actual combined state before merge,
+not the PR alone. GitHub, GitLab and Mergify all ship it now as a native merge queue.
+
+- **Adopted, not deepened.** Rather than teach `_rebuild_on_base` (D19) to also catch semantic
+  (non-textual) conflicts, `main` gets a GitHub ruleset requiring the `test` status check and a
+  merge queue (squash, `min_entries_to_merge = 1`, immediate processing — no batching yet). Zero
+  new dependencies; the stdlib-only constraint (D17) is untouched, because the guarantee now
+  lives in GitHub, not in Mahler's code.
+- **`_watch_pr` no longer assumes `gh pr merge` is synchronous.** `gh` auto-detects a
+  queue-requiring branch: if checks already passed it enqueues rather than merging on the spot,
+  so a git tell-tale "state is still OPEN" doesn't mean the request failed — it means the queue
+  is re-testing the merge commit. `_merge_queued` requests the merge once per PR head SHA (a kv
+  flag keyed like `_ci_pending`'s), re-views immediately to catch the common instant-merge case
+  in the same tick, and otherwise polls like pending CI. Past `verify_timeout_minutes` still
+  open, it goes to `needs-you` instead of waiting silently forever — the one way this can get
+  stuck is the queue's own re-test failing and kicking the PR back out, and GitHub doesn't expose
+  that as a clean textual signal Mahler can special-case yet.
+- **`ci.yml` triggers on `merge_group`**, not just `pull_request`, since the queue's re-test runs
+  on its own temporary `gh-readonly-queue/main/*` ref.
+- **D19's reactive rebuild is now a fallback, not the sole guard.** It still catches the rarer
+  textual-conflict case (`mergeable == CONFLICTING`); the queue is what catches the semantic one
+  nobody can label in advance.
+- Speculative/parallel queue checks (testing PR N against "PR N-1 already merged" concurrently,
+  cascading restart on a failure) are a throughput optimization on the same guarantee — worth
+  having once more than one PR is regularly in flight, not required for correctness on day one.
+- Enabled on `mkny13/mahler` itself first, since this surfaced from a discussion about a second
+  mahler lane (mahler#209/#210); other projects opt in the same way at onboarding as their own
+  `max_parallel` grows past 1.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
