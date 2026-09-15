@@ -37,6 +37,17 @@ verify = "python3 -m unittest discover -s tests"
 # cooldown_days = 14
 # passes = ["security", "health", "drift", "tests", "token-economy", "guidance"]
 
+# Periodic self-audit of platform tier/capability assumptions (DESIGN D20,
+# mahler#206) — global, not per-project: it's about mahler/config.py's own
+# tier/max_size/min_size judgment calls, not a managed project's codebase.
+# [platform_audit]
+# enabled = true
+# project = "mahler"             # whose merged-PR throughput anchors the checkpoint
+# cadence_days = 30
+# merged_threshold = 20
+# cooldown_days = 14
+# stale_verified_days = 90       # DESIGN.md "verified" date older than this is flagged
+
 # [routing]
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
 # sort = ["claude", "agy-gemini", "agy-claude"]

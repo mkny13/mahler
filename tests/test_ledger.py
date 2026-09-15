@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler import config
-from mahler.ledger import Ledger, RoutedLedger, SCHEMA, remote_lease_operation
+from mahler.ledger import Ledger, RoutedLedger, SCHEMA, iso, remote_lease_operation
 
 
 class Clock:
@@ -820,6 +820,66 @@ class IndexTests(unittest.TestCase):
             "EXPLAIN QUERY PLAN SELECT * FROM runs WHERE status IN ('running','stopping')"))
         # no full table scan: one of the runs-status indexes is chosen
         self.assertRegex(plan, r"USING INDEX idx_runs_\w+")
+
+
+class PlatformOutcomeTests(unittest.TestCase):
+    """mahler#206: the ledger-side data the platform-tier audit reads."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def _run(self, platform, outcome, role="build", started_ago_days=0):
+        started = self.clock() - timedelta(days=started_ago_days)
+        run_id = self.led.create_run(project="p", number=1, role=role, platform=platform,
+                                     epoch=1, status="ended", outcome=outcome,
+                                     started_at=iso(started))
+        return run_id
+
+    def test_platform_outcomes_counts_done_and_needs_you(self):
+        self._run("kilo", "DONE")
+        self._run("kilo", "DONE")
+        self._run("kilo", "NEEDS-YOU")
+        self._run("kilo", "exit 1")
+        stats = self.led.platform_outcomes()
+        self.assertEqual(stats["kilo"], {"runs": 4, "done": 2, "needs_you": 1})
+
+    def test_platform_outcomes_ignores_sort_role(self):
+        self._run("claude", "READY", role="sort")
+        stats = self.led.platform_outcomes()
+        self.assertNotIn("claude", stats)
+
+    def test_platform_outcomes_respects_since(self):
+        self._run("kilo", "DONE", started_ago_days=200)
+        self._run("kilo", "DONE", started_ago_days=1)
+        recent = self.led.platform_outcomes(since=self.clock() - timedelta(days=30))
+        self.assertEqual(recent["kilo"]["runs"], 1)
+        all_time = self.led.platform_outcomes()
+        self.assertEqual(all_time["kilo"]["runs"], 2)
+
+    def test_platform_escalations_reads_structured_detail(self):
+        self.led.event("escalated", "p", 1,
+                       {"tier_from": 0, "tier_to": 2, "platform": "kilo", "reason": "2 failures"})
+        self.led.event("escalated", "p", 2,
+                       {"tier_from": 2, "tier_to": 3, "platform": "kilo", "reason": "red CI"})
+        self.led.event("escalated", "p", 3,
+                       {"tier_from": 2, "tier_to": 3, "platform": "agy-claude", "reason": "red CI"})
+        counts = self.led.platform_escalations()
+        self.assertEqual(counts, {"kilo": 2, "agy-claude": 1})
+
+    def test_platform_escalations_skips_legacy_string_detail(self):
+        self.led.event("escalated", "p", 1, "tier 0 -> 2 (red CI)")
+        self.assertEqual(self.led.platform_escalations(), {})
+
+    def test_platform_escalations_respects_since(self):
+        self.clock.advance(days=0)
+        self.led.event("escalated", "p", 1, {"platform": "kilo"})
+        self.clock.advance(days=10)
+        cutoff = self.clock()
+        self.clock.advance(days=1)
+        self.led.event("escalated", "p", 2, {"platform": "kilo"})
+        self.assertEqual(self.led.platform_escalations(since=cutoff), {"kilo": 1})
 
 
 if __name__ == "__main__":

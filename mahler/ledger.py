@@ -588,6 +588,51 @@ class Ledger:
             "SELECT * FROM runs WHERE project=? AND number=? ORDER BY id DESC LIMIT 1",
             (project, number))
 
+    def platform_outcomes(self, since=None):
+        """Per-platform build/fix run outcomes (mahler#206): {platform:
+        {"runs": n, "done": n, "needs_you": n}} — the observed half of the
+        periodic platform-tier/capability audit, alongside
+        `platform_escalations` below. `since` (a datetime) restricts to runs
+        started at/after it; None is all-time."""
+        sql = ("SELECT platform, outcome, COUNT(*) c FROM runs "
+               "WHERE role IN ('build','fix') AND status='ended'")
+        args = []
+        if since is not None:
+            sql += " AND started_at >= ?"
+            args.append(iso(since))
+        sql += " GROUP BY platform, outcome"
+        stats = {}
+        for row in self.q(sql, args):
+            s = stats.setdefault(row["platform"], {"runs": 0, "done": 0, "needs_you": 0})
+            s["runs"] += row["c"]
+            if row["outcome"] == "DONE":
+                s["done"] += row["c"]
+            elif row["outcome"] == "NEEDS-YOU":
+                s["needs_you"] += row["c"]
+        return stats
+
+    def platform_escalations(self, since=None):
+        """Count of `escalated` events attributable to a platform (mahler#206)
+        — ship.py/finalize.py record the platform whose run preceded the
+        escalation in the event's JSON detail. Events logged before that
+        detail carried a platform (a plain string, pre-mahler#206) have no
+        `platform` key and are silently skipped."""
+        sql = "SELECT detail FROM events WHERE kind='escalated'"
+        args = []
+        if since is not None:
+            sql += " AND at >= ?"
+            args.append(iso(since))
+        counts = {}
+        for row in self.q(sql, args):
+            try:
+                detail = json.loads(row["detail"]) if row["detail"] else None
+            except json.JSONDecodeError:
+                continue
+            platform = detail.get("platform") if isinstance(detail, dict) else None
+            if platform:
+                counts[platform] = counts.get(platform, 0) + 1
+        return counts
+
     # ---------- usage ----------
 
     def record_usage(self, platform, window, used_pct, resets_at=None, sampled_at=None):

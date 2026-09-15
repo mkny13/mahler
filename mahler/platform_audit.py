@@ -1,0 +1,218 @@
+"""Periodic self-audit of Mahler's own platform tier/capability assumptions
+(mahler#206) — distinct from a managed project's D20 maintenance passes: this
+audits `config.py`'s own tier/max_size/min_size judgment calls and each
+platform's DESIGN.md "verified" annotation, not a managed project's codebase.
+
+It reuses D20's cadence/threshold checkpoint machinery (`Ledger.maintenance_due`,
+`last_filed_at` + `merged_since`) instead of inventing a second scheduler, and
+files its finding the same way a maintenance pass does: as an issue for a
+human (or a future pass) to act on. It never changes `config.py` itself —
+tier ordering is a judgment call, not a mechanical recalibration like time
+estimates (mahler#59).
+"""
+
+import json
+import os
+import re
+from datetime import datetime, timedelta
+
+from . import config, router
+from .gh import GHError
+
+TITLE = "Platform Tier/Capability Assumptions Audit"
+
+# A "verified ... 2026-09-13"-shaped mention anywhere within a short window of
+# text is read as that window's evidence date. DESIGN.md is prose, not a table
+# Mahler owns mechanically, so this is an approximate signal for a human
+# reviewer, not a precise citation.
+VERIFIED_RE = re.compile(r"verified[^.\n]{0,120}?(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+
+# Prose names DESIGN.md uses for each platform config key — they don't match
+# 1:1, so an alias list is needed to associate a "verified" mention with the
+# platform it's about.
+PLATFORM_ALIASES = {
+    "claude": ["claude code"],
+    "claude-opus": ["claude code", "claude-opus"],
+    "agy-claude": ["antigravity: claude", "agy-claude"],
+    "agy-gemini": ["antigravity: gemini", "agy-gemini"],
+    "cline-free": ["cline"],
+    "kilo": ["kilo"],
+    "copilot": ["copilot cli", "copilot"],
+    "copilot-high": ["copilot-high"],
+    "codex": ["codex cli", "codex"],
+    "codex-high": ["codex-high"],
+}
+
+
+def _design_md_text():
+    path = os.path.join(config.REPO_ROOT, "DESIGN.md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def verified_dates(text):
+    """{platform: latest 'verified YYYY-MM-DD' date found near an alias}."""
+    lower = text.lower()
+    out = {}
+    for platform, aliases in PLATFORM_ALIASES.items():
+        best = None
+        for alias in aliases:
+            start = 0
+            while True:
+                idx = lower.find(alias, start)
+                if idx == -1:
+                    break
+                window = text[max(0, idx - 150):idx + 700]
+                m = VERIFIED_RE.search(window)
+                if m and (best is None or m.group(1) > best):
+                    best = m.group(1)
+                start = idx + len(alias)
+        if best:
+            out[platform] = best
+    return out
+
+
+def _age_days(date_str, now):
+    return (now.date() - datetime.fromisoformat(date_str).date()).days
+
+
+def stale_report(cfg, dates, now, stale_days):
+    """One row per enabled platform: (name, date_or_None, age_or_None, stale)."""
+    rows = []
+    for name, pconf in cfg["platforms"].items():
+        if not pconf.get("enabled", True):
+            continue
+        date = dates.get(name)
+        age = _age_days(date, now) if date else None
+        stale = date is None or age >= stale_days
+        rows.append((name, date, age, stale))
+    return sorted(rows, key=lambda r: (r[3] is False, r[0]))
+
+
+def _pct(n, d):
+    return round(100.0 * n / d, 1) if d else None
+
+
+def outcome_report(cfg, outcomes, escalations):
+    """One row per enabled platform, ordered by declared tier (`router.tier_of`):
+    (name, tier, runs, done_pct, needs_you_pct, escalated_from)."""
+    rows = []
+    for name, pconf in cfg["platforms"].items():
+        if not pconf.get("enabled", True):
+            continue
+        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0})
+        rows.append((name, router.tier_of(pconf), stats["runs"],
+                     _pct(stats["done"], stats["runs"]),
+                     _pct(stats["needs_you"], stats["runs"]),
+                     escalations.get(name, 0)))
+    return sorted(rows, key=lambda r: (r[1], r[0]))
+
+
+def tier_inversions(rows, min_runs=3, margin=15.0):
+    """Flag a lower-tier platform whose done-rate beats a higher-tier one by
+    more than `margin` points, both with at least `min_runs` observed runs —
+    a mechanical signal for the review issue, not a conclusion: the finding
+    still needs a human judgment call (mahler#206 proposal item 3)."""
+    sample = [r for r in rows if r[2] >= min_runs and r[3] is not None]
+    found = []
+    for lo in sample:
+        for hi in sample:
+            if hi[1] > lo[1] and lo[3] - hi[3] >= margin:
+                found.append((lo[0], lo[1], lo[3], hi[0], hi[1], hi[3]))
+    return found
+
+
+def build_body(cfg, led, pol):
+    now = led.now()
+    dates = verified_dates(_design_md_text())
+    stale_days = pol["stale_verified_days"]
+    stale_rows = stale_report(cfg, dates, now, stale_days)
+    since = now - timedelta(days=180)
+    outcomes = led.platform_outcomes(since=since)
+    escalations = led.platform_escalations(since=since)
+    out_rows = outcome_report(cfg, outcomes, escalations)
+    inversions = tier_inversions(out_rows)
+
+    lines = [
+        "Periodic self-audit of `config.py`'s platform tier/capability assumptions "
+        "(mahler#206) — mechanical data only, no tier/size change applied. Tier "
+        "ordering stays a judgment call for whoever picks this up.",
+        "",
+        f"## DESIGN.md verified-date staleness (flag threshold: {stale_days} days)",
+        "",
+        "| Platform | Last verified mention | Age (days) | Flag |",
+        "|---|---|---|---|",
+    ]
+    for name, date, age, stale in stale_rows:
+        flag = "**STALE**" if stale and date else ("**NO ANNOTATION FOUND**" if stale else "ok")
+        lines.append(f"| {name} | {date or '—'} | {age if age is not None else '—'} | {flag} |")
+
+    lines += [
+        "",
+        "## Observed ledger outcomes (build/fix runs, last 180 days)",
+        "",
+        "| Platform | Tier | Runs | Done % | Needs-you % | Escalated away from (count) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for name, tier, runs, done_pct, needs_you_pct, esc in out_rows:
+        lines.append(f"| {name} | {tier} | {runs} | "
+                     f"{done_pct if done_pct is not None else '—'} | "
+                     f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} |")
+
+    lines += ["", "## Possible tier inconsistencies"]
+    if inversions:
+        lines.append("")
+        for lo_name, lo_tier, lo_pct, hi_name, hi_tier, hi_pct in inversions:
+            lines.append(f"- `{lo_name}` (tier {lo_tier}, {lo_pct}% done) outperforms "
+                         f"`{hi_name}` (tier {hi_tier}, {hi_pct}% done) by "
+                         f"{round(lo_pct - hi_pct, 1)} points — worth a look.")
+    else:
+        lines.append("None found (or too little data — needs at least 3 runs on both sides "
+                     "of a comparison).")
+
+    return "\n".join(lines)
+
+
+def _has_open_pass(led, project):
+    """D20 discipline (mahler#204): at most one pass in flight per project,
+    across every pass kind — including this one."""
+    for it in led.items(project):
+        if it["state"] == "done":
+            continue
+        labels = json.loads(it["labels"] or "[]")
+        if any(l.startswith("pass:") for l in labels):
+            return True
+        if (it["title"] or "").strip().lower() == TITLE.strip().lower():
+            return True
+    return False
+
+
+def queue(ctx, projects):
+    """File the due platform-tier/capability self-audit as an issue, deduped
+    and cadenced the same way a D20 maintenance pass is."""
+    led = ctx.led
+    pol = config.platform_audit_policy(ctx.cfg)
+    if not pol["enabled"]:
+        return
+    project = pol["project"]
+    if project not in {p["name"] for p in projects}:
+        return
+    if _has_open_pass(led, project):
+        return
+    if not led.maintenance_due(project, config.PLATFORM_AUDIT_PASS, policy=pol):
+        return
+
+    label = f"pass:{config.PLATFORM_AUDIT_PASS}"
+    body = build_body(ctx.cfg, led, pol)
+    ctx.say(f"{project}: queuing {config.PLATFORM_AUDIT_PASS} pass")
+    if ctx.dry_run:
+        return
+    try:
+        ctx.gh(project).ensure_pass_label(config.PLATFORM_AUDIT_PASS)
+        ctx.gh(project).create_issue(TITLE, body, ["type:chore", "size:l", "p2", label])
+        led.reset_maintenance(project, config.PLATFORM_AUDIT_PASS)
+    except GHError as e:
+        ctx.say(f"{project}: failed to file {config.PLATFORM_AUDIT_PASS} pass — {e}")

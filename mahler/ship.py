@@ -156,7 +156,8 @@ def _red_ci(ctx, project, item, pr, view):
         new_tier = max(cur_tier, run_tier) + 1
         new_fails = 0
         ctx.say(f"{project}#{n}: escalated to tier {new_tier} after red CI on tier <= {max(cur_tier, run_tier)}")
-        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (red CI)")
+        led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
+                  "platform": last_platform, "reason": "red CI"})
 
     if attempts >= pol["max_attempts"]:
         led.set_state(project, n, "failed",
@@ -248,4 +249,10 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
     led.event("shipped", project, n, {"pr": pr}, passes=passes)
+    # Platform-audit pass (mahler#206) is not one of the eight D20 passes and
+    # isn't per-project opt-in, so it isn't in `passes` above — it anchors on
+    # its own configured project's throughput instead.
+    audit_pol = config.platform_audit_policy(ctx.cfg)
+    if audit_pol["enabled"] and project == audit_pol["project"]:
+        led.increment_maintenance_merged(project, config.PLATFORM_AUDIT_PASS)
     led.release(project, n, holder=CONDUCTOR)
