@@ -889,6 +889,165 @@ class CaptureOutboxTests(unittest.TestCase):
         self.assertEqual(self.row(id)['status'], 'skipped')
 
 
+class UatActionTests(unittest.TestCase):
+    """Ready to test (mahler#250): the Pass and Fail buttons queue a verdict."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter',
+                         '- the new ping arrives')
+
+    def row(self, id):
+        return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
+
+    def test_bad_input_is_refused(self):
+        for body in ({}, {'project': 'mahler'}, {'number': 9},
+                     {'project': 'mahler', 'number': 0},
+                     {'project': 'mahler', 'number': True},
+                     {'project': 'nope', 'number': 9},
+                     {'project': 'old', 'number': 9},
+                     {'project': 'mahler', 'number': 8}):
+            with self.assertRaises(actions.ActionError, msg=body):
+                actions.run(self.cfg, self.led, 'uat_pass', body)
+
+    def test_pass_queues_with_no_delay_and_records_the_event(self):
+        id = actions.run(self.cfg, self.led, 'uat_pass',
+                         {'project': 'mahler', 'number': 9})['id']
+        row = self.row(id)
+        self.assertEqual((row['kind'], row['project'], row['number'],
+                          json.loads(row['payload'])), ('uat_pass', 'mahler', 9, {}))
+        self.assertEqual(self.led.due_actions()[0]['id'], id)   # due at once
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_uat_queued'")
+        self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
+                         ('mahler', 9, 'pass'))
+
+    def test_fail_needs_a_note_of_at_most_2000_chars(self):
+        for body in ({'project': 'mahler', 'number': 9},
+                     {'project': 'mahler', 'number': 9, 'note': 3},
+                     {'project': 'mahler', 'number': 9, 'note': 'x' * 2001}):
+            with self.assertRaises(actions.ActionError, msg=body):
+                actions.run(self.cfg, self.led, 'uat_fail', body)
+        id = actions.run(self.cfg, self.led, 'uat_fail',
+                         {'project': 'mahler', 'number': 9, 'note': ''})['id']
+        self.assertEqual(json.loads(self.row(id)['payload']), {'note': ''})
+
+    def test_a_second_verdict_is_refused_while_one_is_queued(self):
+        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, 'uat_fail',
+                        {'project': 'mahler', 'number': 9, 'note': 'again'})
+
+    def test_a_second_verdict_is_refused_after_one_is_recorded(self):
+        self.led.set_uat_verdict('mahler', 9, 'pass')
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+
+
+class UatOutboxTests(unittest.TestCase):
+    """The tick applies the verdicts: a pass closes it, a fail files the bug."""
+
+    def setUp(self):
+        from mahler.console import outbox
+        self.outbox = outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = mock.Mock()
+        self.ctx._gh['mkny13/mahler'] = self.gh
+        self.led.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter',
+                         '- the new ping arrives')
+
+    def row(self, id):
+        return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
+
+    def uat(self):
+        return self.led.uat('mahler', 9)
+
+    def queue(self, kind, **body):
+        return actions.run(self.cfg, self.led, kind,
+                           {'project': 'mahler', 'number': 9, **body})['id']
+
+    def drain(self):
+        self.outbox.drain(self.ctx)
+
+    def test_pass_comments_and_records_the_verdict(self):
+        id = self.queue('uat_pass')
+        self.drain()
+        self.gh.comment.assert_called_once_with(
+            9, "✅ **UAT passed** (from the console).", agent=False)
+        row = self.uat()
+        self.assertEqual(row['verdict'], 'pass')
+        self.assertEqual(row['verdict_at'], iso(self.led.now()))
+        self.assertEqual(self.row(id)['status'], 'done')
+        ev = self.led.q1("SELECT * FROM events WHERE kind='uat_verdict'")
+        self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
+                         ('mahler', 9, 'pass'))
+
+    def test_fail_files_a_p1_bug_and_routs_it(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
+        id = self.queue('uat_fail', note='the ping never arrived')
+        self.drain()
+        title, body, labels = self.gh.create_issue.call_args[0]
+        self.assertEqual(title, 'UAT failed: Wired the exporter')
+        self.assertIn('> the ping never arrived', body)
+        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
+        self.assertIn('## Needs a human to check\n- the new ping arrives', body)
+        self.assertEqual(labels, ['type:bug', 'p1'])
+        self.gh.comment.assert_called_once_with(9, "❌ **UAT failed** — filed #42.",
+                                                agent=False)
+        row = self.uat()
+        self.assertEqual((row['verdict'], row['bug'], row['note']),
+                         ('fail', 42, 'the ping never arrived'))
+        self.assertEqual(self.row(id)['status'], 'done')
+        self.assertEqual(self.row(id)['result'], 'filed #42')
+        ev = self.led.q1("SELECT * FROM events WHERE kind='uat_verdict'")
+        self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['bug']),
+                         ('mahler', 9, 42))
+
+    def test_fail_without_a_note_still_files_the_bug(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/7'
+        self.queue('uat_fail', note='')
+        self.drain()
+        body = self.gh.create_issue.call_args[0][1]
+        self.assertNotIn('>', body)
+        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
+        self.assertIsNone(self.uat()['note'])
+
+    def test_fail_labels_the_project_scope(self):
+        cfg = make_cfg(projects={'mahler': {'scope': 'label', 'scope_label': 'triage'}})
+        self.ctx.cfg = cfg
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/7'
+        self.queue('uat_fail', note='nope')
+        self.drain()
+        self.assertIn('triage', self.gh.create_issue.call_args[0][2])
+
+    def test_a_github_failure_marks_the_action_failed_and_leaves_it_pending(self):
+        from mahler.gh import GHError
+        self.gh.comment.side_effect = GHError('boom')
+        id = self.queue('uat_pass')
+        self.drain()
+        self.assertEqual(self.row(id)['status'], 'failed')
+        self.assertIsNone(self.uat()['verdict'])    # still in the queue
+
+    def test_a_recorded_verdict_is_skipped(self):
+        id = self.queue('uat_fail', note='late')
+        self.led.set_uat_verdict('mahler', 9, 'pass')   # decided before the tick runs
+        self.drain()
+        self.gh.create_issue.assert_not_called()
+        self.assertEqual((self.row(id)['status'], self.row(id)['result']),
+                         ('skipped', 'the verdict is already recorded'))
+
+    def test_a_disabled_project_is_skipped(self):
+        self.ctx.cfg = make_cfg()
+        self.ctx.cfg['projects']['mahler']['enabled'] = False
+        id = self.queue('uat_pass')
+        self.drain()
+        self.gh.comment.assert_not_called()
+        self.assertEqual((self.row(id)['status'], self.row(id)['result']),
+                         ('skipped', 'the project is disabled'))
+
+
 class CaptureStateTests(unittest.TestCase):
     def setUp(self):
         self.cfg, self.led = make_cfg(), make_led()

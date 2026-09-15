@@ -62,7 +62,60 @@ def revert(ctx, row, payload):
     return prepare(ctx, row["project"], row["number"], payload["pr"])
 
 
-HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert}
+def uat_pending_row(ctx, project, number):
+    """The UAT row the verdict applies to, or the reason to skip."""
+    if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
+        return None, "the project is disabled"
+    r = ctx.led.uat(project, number)
+    if r is None or r["verdict"]:
+        return None, "the verdict is already recorded"
+    return r, None
+
+
+def uat_pass(ctx, row, payload):
+    project, number = row["project"], row["number"]
+    r, skip = uat_pending_row(ctx, project, number)
+    if r is None:
+        return "skipped", skip
+    ctx.gh(project).comment(number, "✅ **UAT passed** (from the console).", agent=False)
+    ctx.led.set_uat_verdict(project, number, "pass")
+    ctx.led.event("uat_verdict", project, number, {"verdict": "pass", "via": "console"})
+    return "done", "UAT passed"
+
+
+def uat_fail(ctx, row, payload):
+    project, number = row["project"], row["number"]
+    r, skip = uat_pending_row(ctx, project, number)
+    if r is None:
+        return "skipped", skip
+    pol = config.project_policy(ctx.cfg, project)
+    labels = ["type:bug", "p1"]
+    if pol.get("scope") == "label":
+        labels.append(pol["scope_label"])
+    note = payload.get("note") or ""
+    lines = []
+    if note:
+        lines += ["> " + line for line in note.splitlines()] + [""]
+    lines += [f"Found checking #{number} — PR #{r['pr'] or '?'}, "
+              f"build {r['sha'] or 'unknown'}.", "",
+              "## Needs a human to check", r["needs"] or ""]
+    url = ctx.gh(project).create_issue(f"UAT failed: {r['title'] or f'{project}#{number}'}",
+                                       "\n".join(lines), labels)
+    try:
+        bug = int(url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError:
+        raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
+    ctx.gh(project).comment(number, f"❌ **UAT failed** — filed #{bug}.", agent=False)
+    if not ctx.led.set_uat_verdict(project, number, "fail", bug=bug,
+                                   note=note or None):
+        return "skipped", "the verdict is already recorded"
+    ctx.led.event("uat_verdict", project, number,
+                  {"verdict": "fail", "bug": bug, "via": "console"})
+    return "done", f"filed #{bug}"
+
+
+HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
+            'uat_pass': uat_pass, 'uat_fail': uat_fail}
 
 
 def _report(ctx, message):
