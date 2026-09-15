@@ -6,6 +6,7 @@ the outside world live in watchdog.py, sync.py, finalize.py and ship.py.
 """
 
 import json
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from . import config, platforms, presence, prompt, router, runner
@@ -306,19 +307,20 @@ def schedule(ctx, projects):
              for r in active if r["platform"] in cfg["platforms"]]
     busy |= tier_budget_busy(cfg, tiers)
 
-    # area: label collision (D6): items sharing an area aren't run concurrently.
+    # area: label collision (D6): items sharing an area within a project
+    # aren't run concurrently. File paths are project-local too (mahler#231).
     # Seed busy_areas from what's currently running...
     # Planned-file collision (mahler#210): same idea, mechanical — seed
     # busy_files from the same running/verifying items' `## Plan` Files: list.
-    busy_areas = set()
-    busy_files = set()
+    busy_areas = defaultdict(set)
+    busy_files = defaultdict(set)
     for r in active:
         r_item = led.item(r["project"], r["number"])
         if r_item:
             area = area_of(row_get(r_item, "labels", "[]"))
             if area:
-                busy_areas.add(area)
-            busy_files.update(files_of(row_get(r_item, "files", "[]")))
+                busy_areas[r["project"]].add(area)
+            busy_files[r["project"]].update(files_of(row_get(r_item, "files", "[]")))
 
     # a finished build keeps its project's build slot until it merges (D19)
     in_flight = {}
@@ -330,8 +332,8 @@ def schedule(ctx, projects):
         for it in verifying:
             area = area_of(row_get(it, "labels", "[]"))
             if area:
-                busy_areas.add(area)
-            busy_files.update(files_of(row_get(it, "files", "[]")))
+                busy_areas[p["name"]].add(area)
+            busy_files[p["name"]].update(files_of(row_get(it, "files", "[]")))
 
     hot = {}
     for p in projects:
@@ -400,11 +402,11 @@ def schedule(ctx, projects):
                 ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
                 continue
             area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
-            if area and area in busy_areas:
+            if area and area in busy_areas[name]:
                 ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
                 continue
             item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
-            file_overlap = busy_files.intersection(item_files)
+            file_overlap = busy_files[name].intersection(item_files)
             if file_overlap:
                 ctx.say(f"{name}#{n}: waiting — files already in progress: "
                         f"{', '.join(sorted(file_overlap))}")
@@ -447,8 +449,8 @@ def schedule(ctx, projects):
             in_project[name] = in_project.get(name, 0) + 1
             per_platform[platform] = per_platform.get(platform, 0) + 1
             if area:
-                busy_areas.add(area)
-            busy_files.update(item_files)
+                busy_areas[name].add(area)
+            busy_files[name].update(item_files)
             group = cfg["platforms"][platform].get("quota_group", platform)
             if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
                 for p in cfg["platforms"]:
