@@ -353,9 +353,15 @@ def _runs(cfg, led, now):
 
 # ---------- needs you ----------
 
-def _question(led, project, number, state):
-    """The question an item is waiting on: the reason on its latest move into
-    needs_you/failed (finalize writes the agent's NEEDS-YOU line there)."""
+def _question(led, project, number, state, item):
+    """The question an item is waiting on. For needs_you, item['question']
+    when finalize's OPTIONS split stored one (mahler#248); otherwise — and
+    always for failed, whose reason isn't a 'question' column — the reason on
+    its latest move into that state."""
+    if state == "needs_you":
+        question = row_get(item, "question")
+        if question:
+            return question
     for e in led.q("SELECT detail FROM events WHERE project=? AND number=? AND kind='state'"
                    " ORDER BY id DESC LIMIT 20", (project, number)):
         _, to, why = _state_parts(e["detail"])
@@ -392,7 +398,7 @@ def _needs(cfg, led, projects, now):
             "id": _ref(project, n), "project": project, "number": n,
             "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": it["title"] or "",
-            "question": _question(led, project, n, it["state"]) or it["title"] or "",
+            "question": _question(led, project, n, it["state"], it) or it["title"] or "",
             "pending": pending.get((project, n)),
             "options": ([{"label": "Retry", "text": "/mahler go"},
                          {"label": "Park it", "text": "/mahler park"}]

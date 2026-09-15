@@ -111,6 +111,10 @@ class SetupFailureTests(unittest.TestCase):
         self.assertIn("/mahler go", self.gh.comments[-1])
         self.assertIn("npm ERR! missing package.json", self.gh.comments[-1])
         self.assertEqual([p[2] for p in self.ctx.pings], ["low", "high"])
+        # mahler#248: a structured question with no answer options
+        self.assertEqual(item["question"],
+                         "setup failed 2 times in a row — the environment, not the task")
+        self.assertEqual(item["options"], "[]")
 
     def test_missing_setup_log_is_said_so(self):
         os.remove(self.setup_path)

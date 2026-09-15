@@ -20,7 +20,9 @@ Rules:
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
 4. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data). Post it as an issue comment and end with
-   `STATUS: NEEDS-YOU <the question, on one line>`.
+   `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
+   answer is one of two or three short choices, end the line with `OPTIONS:` and the
+   choices, a few words each, separated by `|` — they become the console's answer buttons.
 5. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
    push what you have and end with `STATUS: BLOCKED <reason>`.
 6. Never force-push `$base`, delete repos or releases, run destructive SQL against real
@@ -38,6 +40,6 @@ If a yield is delivered: commit your work, push the branch, and end with STATUS:
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what changed>
-STATUS: NEEDS-YOU <the question, on one line>
+STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]
 STATUS: BLOCKED <reason>
 STATUS: YIELDED <handoff summary>

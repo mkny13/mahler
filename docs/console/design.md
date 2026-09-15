@@ -514,7 +514,7 @@ at a time.
 
 - Built in #247: the tick-applied write queue and needs-you answers (buttons,
   reply box, Undo within 60 seconds). Failed items offer Retry and Park it.
-- Structured answer options on NEEDS-YOU (so the two answer buttons exist).
+- Built in #248: structured answer options on NEEDS-YOU (so the two answer buttons exist).
 - The scheduler recording why nothing started (structured holds), so the 0-runs
   view is complete rather than inferred.
 - Ready to test: the UAT queue, Pass, and Fail through the bug sheet.

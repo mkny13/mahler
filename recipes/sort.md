@@ -4,7 +4,9 @@ never wait for input.
 Make this issue ready for an autonomous builder — or find the one question that only the
 owner can answer. The owner is not a developer: decide technical choices yourself and
 record the decision; ask only about product intent, taste, personal data, accounts,
-credentials or money.
+credentials or money. When the answer is one of two or three short choices, end the
+NEEDS-YOU line with `OPTIONS:` and the choices, a few words each, separated by `|` — they
+become the console's answer buttons.
 
 1. Read the issue and all its comments: `gh issue view $number -R $repo --comments`.
    Owner comments that answer an earlier question are authoritative.
@@ -72,4 +74,4 @@ Every issue comment you post must begin with the line `<!-- mahler:agent -->`.
 End your final message with exactly one of these lines:
 STATUS: READY
 STATUS: SPLIT
-STATUS: NEEDS-YOU <the single question, on one line — also post it as an issue comment>
+STATUS: NEEDS-YOU <the single question, on one line — also post it as an issue comment> [OPTIONS: <choice> | <choice>]

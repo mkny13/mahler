@@ -17,6 +17,25 @@ from .usage import record_claude_usage
 
 NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent", "handoff")
 
+MAX_OPTIONS = 3
+MAX_OPTION_LEN = 40
+
+
+def split_needs_you(rest):
+    """A NEEDS-YOU line's rest, split on its last ` OPTIONS:` (case-insensitive,
+    mahler#248) -> (question, options). Options are the `|`-separated choices
+    after it: stripped, blanks dropped, capped at 3, each cut to 40 characters.
+    With no `OPTIONS:`, the question is the whole rest and options are empty."""
+    if not rest:
+        return rest, []
+    idx = rest.lower().rfind(" options:")
+    if idx == -1:
+        return rest, []
+    question = rest[:idx].rstrip()
+    choices = rest[idx + len(" options:"):].split("|")
+    options = [c.strip()[:MAX_OPTION_LEN] for c in choices if c.strip()]
+    return question, options[:MAX_OPTIONS]
+
 
 class Ending:
     """One run's ending, as the outcome handlers below need it.
@@ -58,8 +77,9 @@ def _retry(e):
 
 def _needs_you(e):
     """The agent asked a question only the owner can answer (DESIGN D13)."""
-    e.set_state("needs_you", e.rest)
-    e.ping(f"Mahler needs you — {e.project} #{e.number}", e.rest or e.item["title"],
+    question, options = split_needs_you(e.rest)
+    e.set_state("needs_you", question, question=question, options=json.dumps(options))
+    e.ping(f"Mahler needs you — {e.project} #{e.number}", question or e.item["title"],
            priority="high", tags="question", console=True)
     return True
 
@@ -433,8 +453,8 @@ def _setup_failure(ctx, run, item):
     stuck = fails >= SETUP_FAIL_CAP
     _setup_failed_comment(ctx, run, fails, tail, stuck)
     if stuck:
-        led.set_state(project, n, "needs_you",
-                      f"setup failed {fails} times in a row — the environment, not the task")
+        reason = f"setup failed {fails} times in a row — the environment, not the task"
+        led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
         ctx.ping(f"Mahler needs you — {project} #{n}",
                  f"setup failed {fails} times in a row (setup.log tail is in the handoff comment).",
                  project, n, priority="high", tags="warning")

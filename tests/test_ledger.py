@@ -546,7 +546,7 @@ class SchemaDriftTests(unittest.TestCase):
     way to finish CREATE TABLE on fresh ones."""
 
     MIGRATED_ITEM_COLS = ("pr", "summary", "setup_fails", "parent",
-                          "esc_tier", "esc_fails")
+                          "esc_tier", "esc_fails", "question", "options")
 
     def _cols(self, con, table):
         return {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -573,6 +573,24 @@ class SchemaDriftTests(unittest.TestCase):
             self.addCleanup(led.close)
             self.assertIn("summary", self._cols(led.con, "items"))
             self.assertIsNone(led.item("p", 1)["summary"])
+
+    def test_legacy_items_table_without_question_or_options_is_migrated(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(l for l in SCHEMA.splitlines()
+                                        if "question" not in l and "options" not in l))
+            con.execute("INSERT INTO items (project, number, state) VALUES ('p', 1, 'ready')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            cols = self._cols(led.con, "items")
+            self.assertIn("question", cols)
+            self.assertIn("options", cols)
+            item = led.item("p", 1)
+            self.assertIsNone(item["question"])
+            self.assertEqual(item["options"], "[]")
 
 
 class MaintenanceConfigTests(unittest.TestCase):

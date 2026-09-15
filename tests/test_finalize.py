@@ -119,6 +119,56 @@ class RunTests(unittest.TestCase):
         self.assertEqual(ping.call_args.kwargs["tags"], "question")
         self.assertTrue(ping.call_args.kwargs["console"])
 
+    def test_needs_you_without_options_stores_the_whole_rest_as_the_question(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU which licence key?\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["question"], "which licence key?")
+        self.assertEqual(json.loads(item["options"]), [])
+
+    def test_needs_you_options_split_from_the_question(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU Create a staging key or reuse prod? "
+                     "OPTIONS: I'll create it | Reuse prod\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["question"], "Create a staging key or reuse prod?")
+        self.assertEqual(json.loads(item["options"]), ["I'll create it", "Reuse prod"])
+        # the stored question and the event both exclude the OPTIONS suffix
+        self.assertIn("Create a staging key or reuse prod?", self.last_event())
+        self.assertNotIn("OPTIONS", self.last_event())
+        # the ping carries the question, not the raw STATUS line
+        ping.assert_called_once()
+        self.assertEqual(ping.call_args.args[1], "Create a staging key or reuse prod?")
+
+    def test_needs_you_options_case_insensitive_marker(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU pick one options: A | B\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["question"], "pick one")
+        self.assertEqual(json.loads(item["options"]), ["A", "B"])
+
+    def test_needs_you_options_capped_at_three_and_blanks_dropped(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU pick one OPTIONS: A ||  B  | | C | D\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(json.loads(item["options"]), ["A", "B", "C"])
+
+    def test_needs_you_option_text_cut_to_forty_characters(self):
+        long_choice = "x" * 60
+        with open(self.log, "w") as fh:
+            fh.write(f"STATUS: NEEDS-YOU pick one OPTIONS: {long_choice} | short\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        options = json.loads(item["options"])
+        self.assertEqual(options[0], "x" * 40)
+        self.assertEqual(options[1], "short")
+
     def test_a_real_stop_keeps_its_own_handoff(self):
         with open(self.log, "w") as fh:
             fh.write("STATUS: DONE almost\n")
