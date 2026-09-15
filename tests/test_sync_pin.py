@@ -251,6 +251,40 @@ class FilesOfParsingTests(unittest.TestCase):
         body = "## Plan\n**Files:** `a.py`\nSteps:\n- x\n## Done when\n"
         self.assertEqual(files_of(body), ["a.py"])
 
+    def test_backtick_paths_with_trailing_parentheticals(self):
+        from mahler.gh import files_of
+        body = ("## Plan\nFiles:\n- `a/b.kt`\n"
+                "- `a/c.kts` (already present)\n"
+                "- `x/YouTubeApi.kt` (new, added by #232)\n")
+        self.assertEqual(files_of(body), ["a/b.kt", "a/c.kts", "x/YouTubeApi.kt"])
+
+    def test_files_label_with_extra_words(self):
+        from mahler.gh import files_of
+        for label in ("**Files to change:**", "Files touched:", "- **Files:**"):
+            with self.subTest(label=label):
+                body = f"## Plan\n{label} `x/A.swift`, `x/B.swift`\n"
+                self.assertEqual(files_of(body), ["x/A.swift", "x/B.swift"])
+
+    def test_files_label_requires_colon(self):
+        from mahler.gh import files_of
+        for label in ("Files", "**Files**", "Files to change", "Files `a.py`"):
+            with self.subTest(label=label):
+                self.assertEqual(files_of(f"## Plan\n{label}\n- `a.py`\n"), [])
+
+    def test_prose_bullet_is_dropped_without_losing_clean_paths(self):
+        from mahler.gh import files_of
+        body = ("## Plan\nFiles:\n"
+                "- and update `README.md` only if the count changes.\n"
+                "- `mahler/gh.py`\n")
+        self.assertEqual(files_of(body), ["mahler/gh.py"])
+
+    def test_path_wrappers_and_invalid_tokens(self):
+        from mahler.gh import files_of
+        body = ("## Plan\nFiles: 'a.py', \"b.py\", **c.py**, **`d.py`**, "
+                "src/module, none, n/a, to change, README, `bad path.py`, "
+                "bad\tpath.py, `unclosed.py, stray`tick.py, Start with `e.py`\n")
+        self.assertEqual(files_of(body), ["a.py", "b.py", "c.py", "d.py", "src/module"])
+
     def test_no_plan_section_returns_empty(self):
         from mahler.gh import files_of
         self.assertEqual(files_of("## Problem\nNo plan here"), [])
