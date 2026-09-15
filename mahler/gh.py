@@ -238,7 +238,7 @@ class GH:
     def pr_view(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
-                              "headRefOid,baseRefName"))
+                                   "headRefOid,baseRefName,mergeCommit"))
 
     def pr_merge_info(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",

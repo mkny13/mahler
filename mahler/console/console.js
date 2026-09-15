@@ -11,6 +11,7 @@
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
   var openRevert = null;
+  var openBug = null;           // the ref whose bug sheet is open (mahler#250)
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
 
   function store(kind, key, value) {
@@ -55,6 +56,14 @@
       revertShown = revertShown || visible;
     }
     if (!revertShown) { openRevert = null; }
+    var bugs = app.querySelectorAll("[data-bug-detail]");
+    var bugShown = false;
+    for (var b = 0; b < bugs.length; b++) {
+      var bugOn = bugs[b].getAttribute("data-bug-detail") === openBug;
+      bugs[b].classList.toggle("show", bugOn);
+      bugShown = bugShown || bugOn;
+    }
+    if (!bugShown) { openBug = null; }
     applyCaptureProject();
   }
 
@@ -150,6 +159,17 @@
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
     }
     if (act === "revert") { return { event: Number(el.getAttribute("data-event")) }; }
+    if (act === "uat_pass") {
+      return { project: el.getAttribute("data-project"),
+        number: Number(el.getAttribute("data-number")) };
+    }
+    if (act === "uat_fail") {
+      var bug = el.closest(".bugov");
+      var ta = bug && bug.querySelector("textarea");
+      return { project: el.getAttribute("data-project"),
+        number: Number(el.getAttribute("data-number")),
+        note: ta ? ta.value : "" };
+    }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
       var input = el.parentElement.querySelector("input");
@@ -228,6 +248,13 @@
       return;
     }
     if (el.hasAttribute("data-close-revert")) { openRevert = null; apply(); return; }
+    if (el.hasAttribute("data-open-bug")) {
+      openBug = el.getAttribute("data-open-bug"); apply();
+      var sheet = app.querySelector('.bugov.show textarea');
+      if (sheet) { sheet.focus(); }
+      return;
+    }
+    if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
     if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); apply(); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
     if (el.hasAttribute("data-act")) {
@@ -246,6 +273,7 @@
 
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
+    if (ev.key === "Escape" && openBug) { openBug = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });

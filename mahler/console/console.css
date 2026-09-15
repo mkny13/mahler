@@ -357,3 +357,37 @@ a { color: var(--acc); text-decoration: none; }
   .revertov .box { width: 100%; border-radius: 6px 6px 0 0; }
   .revertfoot .btn { min-height: 48px; }
 }
+
+/* Ready to test — the UAT queue (mahler#250). */
+.uat { border-top: 1px solid var(--line); padding: 13px 0; display: flex; gap: 16px; align-items: flex-start; }
+.uat .body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.uat .t { font-size: 14.5px; line-height: 1.45; }
+.uat .check, .puat .check { color: var(--mut); font-size: 13px; overflow-wrap: anywhere; }
+.uat .lnk, .puat .lnk { font-size: 13px; }
+.uat .lnk a, .puat .lnk a { color: var(--acc); }
+.uatbtns { display: flex; gap: 8px; flex: none; }
+.uatbtns .btn { min-height: 36px; }
+.uat-pass { background: var(--accq); border-color: var(--acc); color: var(--acc); font-weight: 600; }
+.uat-fail { border-color: var(--bad); color: var(--bad); }
+.uat-done { font-size: 13px; align-self: center; }
+.puat { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+        display: flex; flex-direction: column; gap: 9px; }
+.puat .t { font-size: 14px; line-height: 1.4; }
+.puat .uatbtns .btn { min-height: 44px; flex: 1; }
+
+/* The bug sheet: Fail opens it, 'File p1 bug' confirms (mahler#250). */
+.bugov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.bugov .box { width: 430px; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px;
+  display: flex; flex-direction: column; gap: 10px; }
+.bugov h2 { margin: 0; font-size: 17px; }
+.bugov textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 4px;
+  padding: 9px 10px; background: var(--bg); color: var(--ink); font: inherit; resize: vertical; }
+.bugfoot { display: flex; gap: 10px; }
+.bugfoot .btn { flex: 1; min-height: 38px; }
+.bug-confirm { background: var(--bad); border-color: var(--bad); color: var(--on); font-weight: 600; }
+@media (max-width: 759px) {
+  .bugov { align-items: flex-end; }
+  .bugov .box { width: 100%; border-radius: 6px 6px 0 0; }
+  .bugfoot .btn { min-height: 48px; }
+}

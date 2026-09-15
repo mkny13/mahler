@@ -172,9 +172,57 @@ def revert(cfg, led, body):
     return {"id": id}
 
 
+# ---------- Ready to test (the UAT queue) ----------
+
+def _uat_target(cfg, led, body):
+    project, number = body.get("project"), body.get("number")
+    if not isinstance(project, str) or \
+            project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be an enabled project")
+    if type(number) is not int or number <= 0:
+        raise ActionError("number must be a positive issue number")
+    row = led.uat(project, number)
+    if row is None:
+        raise ActionError("no such UAT item")
+    return row
+
+
+def _verdict_pending(led, project, number):
+    """A verdict queued but not yet run (capture can lag): nothing else may
+    queue a second one."""
+    for kind in ("uat_pass", "uat_fail"):
+        for r in led.pending_actions(kind):
+            if r["project"] == project and r["number"] == number:
+                return True
+    return False
+
+
+def _queue_verdict(cfg, led, kind, body, payload, verdict):
+    with led._tx():
+        row = _uat_target(cfg, led, body)
+        if row["verdict"] or _verdict_pending(led, row["project"], row["number"]):
+            raise ActionError("the verdict is already recorded or queued")
+        id = led.queue_action(kind, row["project"], row["number"], payload,
+                              delay_seconds=0)
+        led.event("console_uat_queued", row["project"], row["number"],
+                  {"verdict": verdict, "id": id})
+    return {"id": id}
+
+
+def uat_pass(cfg, led, body):
+    return _queue_verdict(cfg, led, "uat_pass", body, {}, "pass")
+
+
+def uat_fail(cfg, led, body):
+    note = body.get("note")
+    if not isinstance(note, str) or len(note) > 2000:
+        raise ActionError("note must be a string of at most 2000 characters")
+    return _queue_verdict(cfg, led, "uat_fail", body, {"note": note}, "fail")
+
+
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, answer, answer_undo, stop_run,
-                                   capture, revert)}
+                                   capture, revert, uat_pass, uat_fail)}
 
 
 def run(cfg, led, name, body):

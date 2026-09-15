@@ -900,6 +900,60 @@ class PlatformOutcomeTests(unittest.TestCase):
         self.assertEqual(self.led.platform_escalations(since=cutoff), {"kilo": 1})
 
 
+class UatTests(unittest.TestCase):
+    """The UAT queue's rows (mahler#250): what shipped with a needs-human
+    list, and the verdict you record from the console."""
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(':memory:', clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def test_add_pending_and_verdict(self):
+        self.led.add_uat('x', 5, 88, '4c1f0ab0123', 'Wired the exporter',
+                         '- the new ping arrives')
+        row = self.led.uat('x', 5)
+        self.assertEqual((row['pr'], row['sha'], row['title'], row['needs']),
+                         (88, '4c1f0ab0123', 'Wired the exporter',
+                          '- the new ping arrives'))
+        self.assertEqual(row['shipped_at'], iso(self.clock()))
+        self.assertIsNone(row['verdict'])
+        self.assertEqual([r['number'] for r in self.led.pending_uat()], [5])
+
+    def test_add_is_idempotent(self):
+        self.led.add_uat('x', 5, 88, 'a', 't', 'n')
+        self.led.add_uat('x', 5, 89, 'b', 'other', 'other')
+        row = self.led.uat('x', 5)
+        self.assertEqual((row['pr'], row['title']), (88, 't'))
+
+    def test_pending_uat_is_newest_first(self):
+        for n in (5, 6, 7):
+            self.led.add_uat('x', n, n * 10, 'a', f't{n}', 'n')
+        self.assertEqual([r['number'] for r in self.led.pending_uat()], [7, 6, 5])
+        # a decided item stops being pending
+        self.led.set_uat_verdict('x', 6, 'pass')
+        self.assertEqual([r['number'] for r in self.led.pending_uat()], [7, 5])
+
+    def test_set_verdict_records_pass_and_fail(self):
+        self.led.add_uat('x', 5, 88, 'a', 't', 'n')
+        self.led.add_uat('x', 6, 89, 'b', 't', 'n')
+        self.clock.advance(minutes=1)
+        self.assertTrue(self.led.set_uat_verdict('x', 5, 'pass'))
+        self.assertTrue(self.led.set_uat_verdict('x', 6, 'fail', bug=42,
+                                                 note='the ping never arrived'))
+        p, f = self.led.uat('x', 5), self.led.uat('x', 6)
+        self.assertEqual((p['verdict'], p['verdict_at'], p['bug'], p['note']),
+                         ('pass', iso(self.clock()), None, None))
+        self.assertEqual((f['verdict'], f['bug'], f['note']),
+                         ('fail', 42, 'the ping never arrived'))
+
+    def test_a_recorded_verdict_never_changes(self):
+        self.led.add_uat('x', 5, 88, 'a', 't', 'n')
+        self.assertTrue(self.led.set_uat_verdict('x', 5, 'pass'))
+        self.assertFalse(self.led.set_uat_verdict('x', 5, 'fail', bug=1, note='no'))
+        row = self.led.uat('x', 5)
+        self.assertEqual((row['verdict'], row['bug'], row['note']), ('pass', None, None))
+
+
 if __name__ == "__main__":
     unittest.main()
 

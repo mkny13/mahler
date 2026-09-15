@@ -121,6 +121,20 @@ CREATE TABLE IF NOT EXISTS console_actions (
     done_at TEXT, result TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_console_actions_due ON console_actions(status, due_at);
+CREATE TABLE IF NOT EXISTS uat (
+    project     TEXT NOT NULL,
+    number      INTEGER NOT NULL,
+    pr          INTEGER,                -- the PR the change shipped in (D18)
+    sha         TEXT,                   -- the merge commit
+    title       TEXT,
+    needs       TEXT,                   -- the 'Needs a human to check' list, verbatim
+    shipped_at  TEXT,
+    verdict     TEXT,                   -- pass | fail, once you've checked
+    verdict_at  TEXT,
+    bug         INTEGER,                -- the p1 bug a fail filed
+    note        TEXT,                   -- the fail's note
+    PRIMARY KEY (project, number)
+);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 
 -- Query indexes (issue #89): every column below is part of the original
@@ -280,6 +294,30 @@ class Ledger:
         self.con.execute("UPDATE console_actions SET status=?,done_at=?,result=? "
                          "WHERE id=? AND status='pending'",
                          (status, iso(self.now()), result, id))
+
+    # ---------- the UAT queue (D10, D27) ----------
+
+    def add_uat(self, project, number, pr, sha, title, needs):
+        self.con.execute(
+            "INSERT OR IGNORE INTO uat(project,number,pr,sha,title,needs,shipped_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (project, number, pr, sha, title, needs, iso(self.now())))
+
+    def uat(self, project, number):
+        return self.q1("SELECT * FROM uat WHERE project=? AND number=?", (project, number))
+
+    def pending_uat(self):
+        """Rows with no verdict yet, newest shipment first."""
+        return self.q("SELECT * FROM uat WHERE verdict IS NULL "
+                      "ORDER BY shipped_at DESC, number DESC")
+
+    def set_uat_verdict(self, project, number, verdict, bug=None, note=None):
+        """Record pass or fail exactly once: a row that already has a verdict
+        stays as it is, so a double-tap can't overwrite a recorded one."""
+        return bool(self.con.execute(
+            "UPDATE uat SET verdict=?,verdict_at=?,bug=?,note=? "
+            "WHERE project=? AND number=? AND verdict IS NULL",
+            (verdict, iso(self.now()), bug, note, project, number)).rowcount)
 
     # ---------- plumbing ----------
 

@@ -62,10 +62,11 @@ var b=sessionStorage.getItem("mahler.tab");if(b)d.setAttribute("data-tab",b);}ca
 
 def app(s):
     """The #app fragment — what the 30-second refresh replaces."""
-    counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": len(s["uat"]),
+    counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": s["uat_count"],
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
-            + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s))
+            + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s)
+            + _bug_overlays(s))
 
 
 # ---------- shared pieces ----------
@@ -196,7 +197,7 @@ def _desktop(s):
     rail_counts = {
         "now": (str(len(s["runs"])) if s["runs"] else "", "acc"),
         "needs": (str(s["needs_count"]) if s["needs"] else "", "bad"),
-        "test": (str(len(s["uat"])), "mut"),
+        "test": (str(s["uat_count"]) if s["uat"] else "", "mut"),
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
@@ -286,8 +287,42 @@ def _d_needs(s):
     return "".join(out)
 
 
+def _uat_link(u):
+    if not u["link"]:
+        return ""
+    return f'<span class="lnk">{_a(u["link"], u["link_label"] + " ↗")}</span>'
+
+
+def _uat_left(u):
+    return (f'<div class="body"><span class="t">{e(u["title"])}</span>'
+            f'<span class="meta">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span>'
+            f'<span class="check">{e(u["check"])}</span>{_uat_link(u)}</div>')
+
+
+def _uat_buttons(u):
+    return ('<div class="uatbtns">'
+            f'<button class="btn uat-pass" data-act="uat_pass" '
+            f'data-project="{e(u["project"])}" data-number="{u["number"]}">Pass</button>'
+            f'<button class="btn uat-fail" data-open-bug="{e(u["ref"])}">Fail</button></div>')
+
+
+def _uat_done(u):
+    """A verdict queued but not yet run shows the copy it will become."""
+    if u["pending"] == "uat_pass":
+        return '<span class="uat-done t-good">Passed — issue closed, UAT recorded.</span>'
+    if u["pending"] == "uat_fail":
+        return ('<span class="uat-done t-bad">Failed — p1 bug filed and routed. '
+                'The revert is one tap away in History.</span>')
+    return ""
+
+
 def _d_test(s):
-    return '<section class="view view-test"></section>'
+    out = ['<section class="view view-test">']
+    for u in s["uat"]:
+        out.append(f'<div class="uat" data-uat="{e(u["ref"])}">'
+                   f'{_uat_left(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+    out.append("</section>")
+    return "".join(out)
 
 
 def _d_capture(s):
@@ -409,6 +444,17 @@ def _p_triage(s):
         out.append('<div class="empty" style="font-size:13.5px;padding:4px 0">Nothing waiting on '
                    'you. Runs continue on their own.</div>')
     out.append("</div>")
+    if s["uat"]:
+        out.append(f'<div class="psect" style="gap:12px"><span class="lbl">Ready to test · '
+                   f'{s["uat_count"]}</span>')
+        for u in s["uat"]:
+            out.append(f'<div class="puat" data-uat="{e(u["ref"])}">'
+                       f'<div class="row"><span class="meta">{_a(u["url"], u["ref"])}</span>'
+                       f'<span class="meta" style="font-size:10.5px">{e(u["meta"])}</span></div>'
+                       f'<div class="t">{e(u["title"])}</div>'
+                       f'<div class="check">{e(u["check"])}</div>'
+                       f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+        out.append("</div>")
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Capture</span>'
                f'<div class="cap">{_composer(s, 3, "Save")}</div></div>')
     out.append("</div></section>")
@@ -482,4 +528,22 @@ def _revert_overlays(s):
                    '<button class="btn" data-close-revert>Keep it</button>'
                    f'<button class="btn revert-confirm" data-act="revert" '
                    f'data-event="{ev["id"]}">Open revert PR</button></div></div></div>')
+    return "".join(out)
+
+
+def _bug_overlays(s):
+    """The bug sheet (mahler#250): Fail opens it, 'File p1 bug' confirms."""
+    out = []
+    for u in s["uat"]:
+        out.append(f'<div class="ov bugov" data-bug-detail="{e(u["ref"])}">'
+                   f'<div class="box" role="dialog" aria-modal="true">'
+                   f'<h2>What went wrong?</h2>'
+                   f'<span class="meta">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span>'
+                   f'<textarea rows="3" maxlength="2000" data-keep="bug:{e(u["ref"])}" '
+                   f'placeholder="One line is enough — it opens a p1 bug with the '
+                   f'build SHA and your note."></textarea>'
+                   f'<div class="bugfoot"><button class="btn" data-close-bug>Cancel</button>'
+                   f'<button class="btn bug-confirm" data-act="uat_fail" '
+                   f'data-project="{e(u["project"])}" data-number="{u["number"]}">'
+                   f'File p1 bug</button></div></div></div>')
     return "".join(out)
