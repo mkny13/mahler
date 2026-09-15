@@ -536,6 +536,32 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         self.assertEqual((self.item()["state"], self.item()["pr"]), ("working", 88))
 
+    def test_preemption_during_failed_fetch_keeps_human_ownership(self):
+        self.led.upsert_item("x", 5, pr=88)
+        # Start the verification deadline, then fail after it expires.
+        with mock.patch.object(self.gh, "base_in_head", return_value=None):
+            self.ship()
+        self.led.now = lambda: NOW + timedelta(minutes=90)
+
+        def preempt(*args):
+            self.led.claim("x", 5, "interactive:mike", "interactive", 30)
+            raise gh_module.GHError("fetch failed")
+
+        with mock.patch.object(self.gh, "base_in_head", side_effect=preempt):
+            self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual((self.item()["state"], self.item()["pr"]), ("working", 88))
+        self.assertEqual(self.led.lease("x", 5)["holder"], "interactive:mike")
+
+    def test_incomplete_check_does_not_authorize_merge(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"status": "COMPLETED", "conclusion": None}]
+        with mock.patch.object(self.gh, "base_in_head") as guard:
+            self.ship()
+        guard.assert_not_called()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(self.item()["state"], "verifying")
+
     def test_queued_request_does_not_recheck_freshness(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.queue = True
@@ -758,6 +784,41 @@ class FreshnessAdapterTests(unittest.TestCase):
         call.assert_called_once_with("pr", "merge", "88", "-R", "x/y", "--squash",
                                      "--delete-branch", "--match-head-commit", "a" * 40,
                                      env=env)
+
+    def test_fetch_order_and_git_account_are_preserved(self):
+        env = {"GH_CONFIG_DIR": "/test/account"}
+        head, base = "a" * 40, "b" * 40
+        with mock.patch.object(gh_module, "_git", side_effect=[
+                "", "", "", base, "false"]) as git, mock.patch.object(
+                subprocess, "run", return_value=subprocess.CompletedProcess(
+                    [], 0, "", "")) as ancestry:
+            self.assertTrue(gh_module.GH("x/y", env=env).base_in_head(
+                "/test/checkout", "release/v2", head))
+        self.assertEqual(git.call_args_list, [
+            mock.call("/test/checkout", "check-ref-format", "refs/heads/release/v2", env=env),
+            mock.call("/test/checkout", "fetch", "--quiet", "--no-tags", "origin", head, env=env),
+            mock.call("/test/checkout", "fetch", "--quiet", "--no-tags", "origin",
+                      "+refs/heads/release/v2:refs/remotes/origin/release/v2", env=env),
+            mock.call("/test/checkout", "rev-parse", "--verify",
+                      "refs/remotes/origin/release/v2^{commit}", env=env),
+            mock.call("/test/checkout", "rev-parse", "--is-shallow-repository", env=env),
+        ])
+        ancestry.assert_called_once_with(
+            ["git", "-C", "/test/checkout", "merge-base", "--is-ancestor", base, head],
+            capture_output=True, text=True, timeout=90, env=env)
+
+    def test_shallow_history_is_unknown(self):
+        gh = gh_module.GH("x/y")
+        with mock.patch.object(gh, "_git", side_effect=["", "", "", "b" * 40, "true"]), \
+                self.assertRaisesRegex(gh_module.GHError, "complete checkout"):
+            gh.base_in_head("unused", "main", "a" * 40)
+
+    def test_ancestry_timeout_is_unknown(self):
+        gh = gh_module.GH("x/y")
+        with mock.patch.object(gh, "_git", side_effect=["", "", "", "b" * 40, "false"]), \
+                mock.patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 90)), \
+                self.assertRaisesRegex(gh_module.GHError, "ancestry check failed"):
+            gh.base_in_head("unused", "main", "a" * 40)
 
     def test_missing_metadata_and_indeterminate_git_fail_closed(self):
         gh = gh_module.GH("x/y")
