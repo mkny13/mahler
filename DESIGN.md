@@ -798,9 +798,11 @@ Throughput counts merged changes, not finished runs. So:
 ### D20 — Maintenance passes are triggered by time and shipped volume
 
 Each managed project may enable periodic reviews for security, code health, architecture drift,
-test health, token/quota hygiene, and agent guidance. They default to a 30-day cadence and an
-early trigger after 20 merged PRs since that pass was last filed, with a 14-day cooldown after
-filing. A project can disable maintenance or select a subset of the six passes.
+test health, token/quota hygiene, agent guidance, issue backlog pruning, and a correctness bug
+scan (`mahler/tick.py`'s `MAINTENANCE_TEXT`, added 2026-09-14 — the first six were the original
+set). They default to a 30-day cadence and an early trigger after 20 merged PRs since that pass
+was last filed, with a 14-day cooldown after filing. A project can disable maintenance or select
+a subset of the eight passes.
 
 The ledger owns one checkpoint per project and pass: `last_filed_at` plus `merged_since`. Every
 conductor-confirmed shipped PR increments `merged_since` for the project's enabled passes. A pass

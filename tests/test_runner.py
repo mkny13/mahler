@@ -146,6 +146,12 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(depends_of("Blah\nDepends on: #3, #7\n"), [3, 7])
         self.assertEqual(depends_of(None), [])
 
+    def test_depends_inside_a_blockquote(self):
+        # a "Depends on:" line quoted under "> **Original request:**" must
+        # still parse — same class of bug as part_of's blockquote handling
+        self.assertEqual(
+            depends_of("> **Original request:**\n> Depends on: #3, #7\n"), [3, 7])
+
     def test_slug(self):
         self.assertEqual(runner.slug("Add dark mode (Settings)!"), "add-dark-mode-settings")
 

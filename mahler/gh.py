@@ -30,8 +30,14 @@ PIN_COLOR = "d4c5f9"        # platform:* labels, created on the fly (mahler#20)
 AREA_COLOR = "0052cc"       # area:* labels, created on the fly (mahler#197)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
-DEPENDS_RE = re.compile(r"^\s*Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-PART_OF_RE = re.compile(r"^\s*(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+)", re.IGNORECASE | re.MULTILINE)
+# `(?:>\s*)?` tolerates the line living inside a markdown blockquote (a "Part
+# of #N" written under a quoted "> **Original request:**" preamble) — without
+# it, the reference silently fails to parse and the item never gets linked to
+# its parent, so close_finished_parents can never close the parent (found
+# 2026-09-14 auditing why mahler#83's tree never auto-closed).
+DEPENDS_RE = re.compile(r"^\s*(?:>\s*)?Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+PART_OF_RE = re.compile(r"^\s*(?:>\s*)?(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+)",
+                        re.IGNORECASE | re.MULTILINE)
 
 
 

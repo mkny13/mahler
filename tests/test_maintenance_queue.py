@@ -30,6 +30,16 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.led.set_maintenance_checkpoint("mahler", "security", 
                                             last_filed_at=NOW - timedelta(days=40))
 
+    def test_every_pass_has_maintenance_text(self):
+        # regression guard: tick.MAINTENANCE_TEXT[pass_name] is a plain dict
+        # lookup with no default — a name in config.MAINTENANCE_PASSES without
+        # a matching entry here would KeyError the first time it's due.
+        for pass_name in config.MAINTENANCE_PASSES:
+            self.assertIn(pass_name, tick.MAINTENANCE_TEXT)
+            title, body = tick.MAINTENANCE_TEXT[pass_name]
+            self.assertTrue(title)
+            self.assertTrue(body)
+
     def test_files_due_pass_and_resets(self):
         tick.queue_maintenance(self.ctx, [proj()])
         
