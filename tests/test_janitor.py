@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from unittest import mock
 
 from mahler import config, janitor, runner
 from mahler.ledger import Ledger, iso
@@ -211,13 +212,30 @@ class BehaviorTests(Base):
         self.assertTrue(os.path.isdir(os.path.join(self.wtroot, "t", "14-run2")))
 
     def test_never_raises_over_an_unreachable_project(self):
+        # "t2" is skipped outright (unreachable path); "t3" is reachable but
+        # its sweep blows up mid-tick — that one must be caught and logged
+        # without stopping "t"'s own sweep or the daily gate from being set.
+        run_id = self.make_run(12)
+        wt = os.path.join(self.wtroot, "t", f"12-run{run_id}")
         self.cfg["projects"]["t2"] = {"enabled": True, "repo": "x/y",
                                       "path": os.path.join(self.tmp.name, "gone")}
         self.cfg["projects"]["t3"] = {"enabled": True, "repo": "x/y",
                                       "path": os.path.join(self.tmp.name, "plain")}
         os.makedirs(os.path.join(self.tmp.name, "plain"))
-        janitor.maybe_run(self.ctx)
-        self.assertEqual([l for l in self.ctx.lines if "janitor failed" in l], [])
+        real_sweep = janitor.sweep
+
+        def flaky(ctx, pol):
+            if pol["name"] == "t3":
+                raise RuntimeError("boom")
+            return real_sweep(ctx, pol)
+
+        with mock.patch.object(janitor, "sweep", side_effect=flaky):
+            janitor.maybe_run(self.ctx)      # a broken project must not stop the tick
+
+        self.assertTrue(any("t3" in l and "boom" in l for l in self.ctx.lines))
+        self.assertFalse(os.path.isdir(wt))                      # t's own sweep still ran
+        today = datetime.now().astimezone().date().isoformat()
+        self.assertEqual(self.led.get_kv(janitor.KV_KEY), today)  # day still marked swept
 
 
 if __name__ == "__main__":

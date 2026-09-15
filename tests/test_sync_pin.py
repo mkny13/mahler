@@ -169,14 +169,19 @@ class SubIssueScopeTests(unittest.TestCase):
         cfg["defaults"]["scope_label"] = "mahler"
         cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y"}
 
-        # Issue 1 has the mahler label.
-        # Issue 2 has no labels, but body says Part of #1.
-        # Issue 3 has no labels, but body says Part of #2.
+        # Numbered out of chain order on purpose: the grandchild (#1) is
+        # discovered before its child (#2) resolves into scope, so a single
+        # pass over the issues can't find the chain — only fixed-point
+        # iteration (inherit, then re-scan) can. A monotonically increasing
+        # numbering here would pass even without that iteration.
+        # Issue 3 has the mahler label.
+        # Issue 2 has no labels, but body says Part of #3.
+        # Issue 1 has no labels, but body says Part of #2.
         # Issue 4 has no labels and no Part of line.
         issues = {
-            1: {"title": "Parent task", "labels": ["mahler"], "body": "Parent"},
-            2: {"title": "Child task", "labels": [], "body": "Part of #1\nDo step 1"},
-            3: {"title": "Grandchild task", "labels": [], "body": "**Part of:** #2\nDo step 2"},
+            3: {"title": "Parent task", "labels": ["mahler"], "body": "Parent"},
+            2: {"title": "Child task", "labels": [], "body": "Part of #3\nDo step 1"},
+            1: {"title": "Grandchild task", "labels": [], "body": "**Part of:** #2\nDo step 2"},
             4: {"title": "Unrelated backlog issue", "labels": [], "body": "Not in mahler"},
         }
         gh = FakeGH(issues)
@@ -193,9 +198,9 @@ class SubIssueScopeTests(unittest.TestCase):
         # 4 should not be in the ledger
         self.assertIsNone(led.item("proj", 4))
 
-        # GitHub issues 2 and 3 should have gained the 'mahler' label
+        # GitHub issues 1 and 2 should have gained the 'mahler' label
+        self.assertIn("mahler", gh.issues[1]["labels"])
         self.assertIn("mahler", gh.issues[2]["labels"])
-        self.assertIn("mahler", gh.issues[3]["labels"])
         self.assertNotIn("mahler", gh.issues[4]["labels"])
 
     def test_sub_issue_inherits_scope_from_closed_parent_in_ledger(self):
