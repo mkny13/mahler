@@ -7,9 +7,10 @@ work is stopped at the *hard* line (see watchdog.py).
 """
 
 from datetime import timedelta
+from itertools import zip_longest
 from zoneinfo import ZoneInfo
 
-from .config import DEFAULT_ACCOUNT, account_of
+from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of
 from .ledger import parse
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
@@ -276,6 +277,27 @@ def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
             and account_of(cfg["platforms"][n]) == account]
 
 
+def candidates_for_accounts(cfg, role, accounts, pin=None, burst_lines=None):
+    """Merged candidates across several accounts (DESIGN D26 "equal" mode):
+    a round-robin interleave of each account's own candidate list — first
+    candidate from the first account, then the second, then the first
+    account's second candidate, and so on — so no one account's list is
+    exhausted before another account gets a turn. Each account's internal
+    preference order is preserved; tier values across accounts are not
+    compared."""
+    if pin:
+        for account in accounts:
+            found = candidates(cfg, role, pin, burst_lines, account)
+            if found:
+                return found
+        return []
+    per_account = [candidates(cfg, role, None, burst_lines, account) for account in accounts]
+    merged = []
+    for group in zip_longest(*per_account):
+        merged.extend(name for name in group if name is not None)
+    return merged
+
+
 def tier_of(pconf):
     return pconf.get("tier", 1)
 
@@ -300,7 +322,7 @@ def risk_min_tier(text):
 
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
-         account=DEFAULT_ACCOUNT, min_tier=0):
+         account=DEFAULT_ACCOUNT, min_tier=0, accounts=None):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -310,13 +332,21 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     skipped with the reason `peak hours until HH:MM (in Xh Ym) — mahler peak off
     to override`, unless the item is pinned to it (`pin` is not None). Running
     Claude runs are unaffected — this only gates new starts.
+
+    `accounts`, when given, routes across several accounts at once (DESIGN
+    D26 "equal" mode): candidates are the round-robin merge of each account's
+    own list, rather than the single `account`'s list.
     """
     reasons = []
-    if pin and pin in cfg["platforms"] and account_of(cfg["platforms"][pin]) != account:
+    accts = list(accounts) if accounts is not None else [account]
+    if pin and pin in cfg["platforms"] and account_of(cfg["platforms"][pin]) not in accts:
+        target = accts[0] if len(accts) == 1 else ", ".join(accts)
         reasons.append(f"{pin}: pinned, but it spends the "
-                       f"{account_of(cfg['platforms'][pin])} account, not {account}")
+                       f"{account_of(cfg['platforms'][pin])} account, not {target}")
     peak_active, peak_until = peak_state(cfg, led)
-    for name in candidates(cfg, role, pin, burst_lines, account):
+    cand = (candidates_for_accounts(cfg, role, accts, pin, burst_lines) if accounts is not None
+            else candidates(cfg, role, pin, burst_lines, account))
+    for name in cand:
         if name in busy:
             reasons.append(f"{name}: busy")
             continue
@@ -349,4 +379,27 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         if state == "ok":
             return name, reasons
         reasons.append(f"{name}: {state} ({detail})")
+    return None, reasons
+
+
+def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
+                      burst_lines=None, min_tier=0):
+    """Route within a project's declared accounts (DESIGN D26).
+
+    Default ("order"): tries each account in turn, spending the first with
+    headroom — reasons pool across the misses. "equal": merges every
+    account's candidates round-robin and picks once, so a dual-use project
+    doesn't exhaust one account before an idle other one is ever tried.
+    """
+    accts = accounts_of(pol)
+    if account_mode_of(pol) == "equal":
+        return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
+                    min_tier=min_tier, accounts=accts)
+    reasons = []
+    for account in accts:
+        platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
+                             account=account, min_tier=min_tier)
+        reasons += why
+        if platform:
+            return platform, reasons
     return None, reasons
