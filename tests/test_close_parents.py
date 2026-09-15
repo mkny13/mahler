@@ -178,6 +178,28 @@ class SyncStoresParentTests(unittest.TestCase):
         item = self.led.item("mahler", 11)
         self.assertEqual(item["parent"], 10)
 
+    def test_sync_handles_blockquoted_part_of(self):
+        """sync handles a 'Part of #N' line quoted under an '> **Original
+        request:**' preamble (mahler#14/#64/#83's actual shape — this is what
+        silently broke close_finished_parents for them)."""
+        self.gh_mock.open_issues.return_value = [
+            {
+                "number": 11,
+                "title": "Child issue",
+                "labels": [],
+                "body": "> **Original request:**\n"
+                        "> Part of #10 (Some Goal)\n\n## Plan\n...\n## Done when\n...",
+                "createdAt": "2026-09-13T10:00:00Z",
+                "updatedAt": "2026-09-13T10:00:00Z",
+                "comments": [],
+            }
+        ]
+
+        sync.sync(self.ctx, "mahler")
+
+        item = self.led.item("mahler", 11)
+        self.assertEqual(item["parent"], 10)
+
     def test_sync_no_parent_when_no_part_of(self):
         """sync stores None when no 'Part of' line present."""
         self.gh_mock.open_issues.return_value = [
