@@ -1092,6 +1092,29 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - The event stream is a view one click away, never ambient. Banners appear only in Triage
   and Needs you, one expanded at a time.
 
+### D28 — Wait for GitHub to confirm a requested merge
+
+Decided 2026-09-15 (mahler#211; D28 reserved in the issue). A successful
+`gh pr merge` can request an asynchronous merge. The conductor must observe
+GitHub's PR state before announcing that the change shipped.
+
+- Request the merge once per PR head SHA, recording the SHA and request time
+  in ledger KV. Re-read the PR immediately so synchronous merges still finish
+  in the same tick. Otherwise keep the item verifying and retain its slot.
+- Poll on later ticks. An open, green PR that has not merged after
+  `verify_timeout_minutes` goes to `needs_you`, releases the conductor lease,
+  and sends the same console-linked notification as a pending-CI timeout.
+  A new head SHA gets a fresh request and timeout; red CI and textual conflicts
+  keep their existing fix/rebuild paths.
+- CI also listens for `merge_group`, allowing the workflow to test a queue's
+  combined state on repositories where a native queue is enabled.
+- **No queue is enabled here.** The earlier run reported GitHub rejecting the
+  merge-queue ruleset for this personal-account repository, and Mike ruled out
+  moving it to an organization. This change lands the asynchronous plumbing.
+  The stale-base safety guarantee remains separate work in mahler#239, using
+  D19's rebuild-on-base machinery; interactive merges make that gap relevant
+  even with `max_parallel = 1`.
+
 ### D29 — Console: hold-reason rows link to their items; a Dependencies graph for the big picture
 
 Decided 2026-09-15, from feedback on the shipped 0-runs and Backlog views (mahler#249, mahler#260):
