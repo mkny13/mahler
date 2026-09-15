@@ -206,7 +206,7 @@ def _red_ci(ctx, project, item, pr, view):
                     if conductor and (conductor["holder"] == CONDUCTOR
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from):
+             handoff_from=handoff_from, size=size):
         led.upsert_item(project, n, attempts=attempts)
 
 

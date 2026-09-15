@@ -188,7 +188,7 @@ class ShipTests(unittest.TestCase):
         but launches nothing."""
         led = self.led
 
-        def fake_start(ctx, project, it, role, platform, handoff_from=None):
+        def fake_start(ctx, project, it, role, platform, handoff_from=None, size=None):
             led.claim(project, it["number"], "run:14", "auto", 30,
                       platform=platform, run_id=14, handoff_from=handoff_from)
             led.set_state(project, it["number"], "working")
