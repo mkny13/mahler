@@ -68,11 +68,12 @@ def _rebuild_on_base(ctx, project, item, pr, base):
 
 def _watch_pr(ctx, project, item, pr):
     """One step of the open PR's state machine, one step per tick: gone,
-    conflicting, CI still running, CI red, or green and merged."""
+    conflicting, CI still running, CI red, or green and (queued to be)
+    merged."""
     led, n = ctx.led, item["number"]
     gh = ctx.gh(project)
     view = gh.pr_view(pr)
-    if view["state"] != "OPEN":                 # merged or closed outside Mahler
+    if view["state"] != "OPEN":                 # merged or closed, by us or outside Mahler
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
     if view.get("mergeable") == "CONFLICTING":
@@ -87,8 +88,7 @@ def _watch_pr(ctx, project, item, pr):
         # failing log in its prompt. The conductor's lease goes to the run.
         _red_ci(ctx, project, item, pr, view)
         return
-    gh.pr_merge(pr)
-    _shipped(ctx, project, n, pr, led.item(project, n), view)
+    _merge_queued(ctx, project, item, pr, view)
 
 
 def _ship_item(ctx, project, item):
@@ -131,6 +131,49 @@ def _ci_pending(ctx, project, item, pr, view):
     ctx.ping(f"Mahler needs you — {project} #{n}",
              f"CI on PR #{pr} hasn't finished in {elapsed} min; "
              "the PR stays open, unmerged",
+             project, n, priority="high", tags="question", console=True)
+    led.release(project, n, holder=CONDUCTOR)
+
+
+def _merge_queued(ctx, project, item, pr, view):
+    """Checks are green: request the merge, then watch for it to land.
+
+    mahler#211 — GitHub's native merge queue (once enabled on the base branch)
+    re-tests the PR against the *actual* combined state before merging, not
+    just the PR in isolation, so `gh pr merge` may only enqueue it rather than
+    merge it on the spot. Re-viewing right after the request catches the
+    common case (no queue, or the queue was empty and free) in the same tick,
+    the same way a direct merge always has. A PR that stays open and green
+    past `verify_timeout_minutes` — the queue's re-test failed and it was
+    kicked back out, or the queue is stuck — goes to needs-you exactly like
+    pending CI does, rather than waiting silently forever."""
+    led, n = ctx.led, item["number"]
+    gh = ctx.gh(project)
+    pol = ctx.policy(project)
+    key = f"queue:{project}#{n}:{pr}"
+    sha = view.get("headRefOid") or ""
+    seen = led.get_kv(key)
+    info = json.loads(seen) if seen else None
+    if not info or info.get("sha") != sha:
+        gh.pr_merge(pr)
+        led.set_kv(key, json.dumps({"sha": sha, "since": iso(led.now())}))
+        after = gh.pr_view(pr)
+        if after["state"] != "OPEN":
+            _shipped(ctx, project, n, pr, led.item(project, n), after,
+                     merged=after["state"] == "MERGED")
+        else:
+            ctx.say(f"{project}#{n}: PR #{pr} — checks green, merge requested; waiting for GitHub")
+        return
+    if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
+        ctx.say(f"{project}#{n}: PR #{pr} — waiting for the merge queue")
+        return
+    elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
+    led.set_state(project, n, "needs_you",
+                  f"PR #{pr} passed checks but hasn't merged in {elapsed} min — "
+                  "check the merge queue")
+    ctx.ping(f"Mahler needs you — {project} #{n}",
+             f"PR #{pr} passed checks but hasn't merged in {elapsed} min "
+             "(the merge queue?); the PR stays open, unmerged",
              project, n, priority="high", tags="question", console=True)
     led.release(project, n, holder=CONDUCTOR)
 
