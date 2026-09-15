@@ -163,6 +163,71 @@ class ParsingTests(unittest.TestCase):
     def test_slug(self):
         self.assertEqual(runner.slug("Add dark mode (Settings)!"), "add-dark-mode-settings")
 
+    def test_slug_of_empty_title_falls_back_to_item(self):
+        self.assertEqual(runner.slug(""), "item")
+        self.assertEqual(runner.slug(None), "item")
+        self.assertEqual(runner.slug("!!!"), "item")     # nothing survives the strip
+
+    def test_slug_drops_non_ascii(self):
+        self.assertEqual(runner.slug("Fix café préférence — now"),
+                         "fix-caf-pr-f-rence-now")
+
+    def test_slug_is_truncated_to_n_chars(self):
+        self.assertEqual(runner.slug("a" * 45), "a" * 40)
+
+    def test_slug_cut_never_ends_in_a_hyphen(self):
+        self.assertEqual(runner.slug("ab cd", n=3), "ab")     # "ab-"[:3].rstrip("-")
+
+    def test_slug_of_already_hyphenated_title_is_unchanged(self):
+        self.assertEqual(runner.slug("already-hyphenated-title"), "already-hyphenated-title")
+
+
+class ExitCodeTests(unittest.TestCase):
+    def test_normal_exit_code_is_an_int(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "exit")
+            write(path, "0\n")
+            self.assertEqual(runner.exit_code({"status_path": path}), 0)
+            write(path, "137\n")
+            self.assertEqual(runner.exit_code({"status_path": path}), 137)
+
+    def test_missing_status_file_is_none(self):
+        self.assertIsNone(runner.exit_code({"status_path": "/nonexistent/path/exit"}))
+
+    def test_non_numeric_content_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "exit")
+            write(path, "not a number\n")
+            self.assertIsNone(runner.exit_code({"status_path": path}))
+
+
+class CommitsAheadTests(unittest.TestCase):
+    def test_missing_worktree_is_zero(self):
+        self.assertEqual(runner.commits_ahead("/nonexistent/worktree", "main"), 0)
+
+    def test_empty_worktree_path_is_zero(self):
+        self.assertEqual(runner.commits_ahead(None, "main"), 0)
+        self.assertEqual(runner.commits_ahead("", "main"), 0)
+
+
+class PromptRenderTests(unittest.TestCase):
+    """prompt.render (mahler#70 split runner and prompt apart): string.Template's
+    safe_substitute leaves an unrecognized escape or a missing key untouched
+    rather than raising — the recipes rely on that contract."""
+
+    def render(self, text, **vars):
+        with tempfile.TemporaryDirectory() as d:
+            write(os.path.join(d, "t.md"), text)
+            with mock.patch.object(prompt, "RECIPES", d):
+                return prompt.render("t", **vars)
+
+    def test_double_dollar_is_an_escaped_literal_dollar(self):
+        self.assertEqual(self.render("cost: $$5 for ${name}", name="x"), "cost: $5 for x")
+
+    def test_missing_key_is_left_as_the_literal_placeholder(self):
+        self.assertEqual(self.render("hello ${missing}, ${present}", present="you"),
+                         "hello ${missing}, you")
+
 
 class SetupTailTests(unittest.TestCase):
     def test_setup_tail_reads_the_last_lines(self):
