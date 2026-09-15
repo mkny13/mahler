@@ -185,7 +185,7 @@ def cmd_hooks(a, cfg, led):
     # "command": ...}]} entries. A bare {"command": ...} entry never fires.
     # 1. SessionStart (D6 layer 2: held-items nudge, claim prompt, other-session note)
     hooks["SessionStart"] = [{
-        "hooks": [{"type": "command", "command": f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}"]}
+        "hooks": [{"type": "command", "command": f"python3 {os.path.join('.claude', 'hooks', 'session_start.py')}"}]
     }]
     with open(os.path.join(hooks_dir, "session_start.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
