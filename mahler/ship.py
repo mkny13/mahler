@@ -283,6 +283,13 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     needs = needs_human_of(view.get("body"))
     if needs:
         lines += ["", "## Needs a human to check", needs]
+        # UAT queue (D10): the change lands in Ready to test until you pass
+        # or fail it. Bookkeeping — a failure here never stops the ship.
+        sha = (view.get("mergeCommit") or {}).get("oid") or ""
+        try:
+            led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs)
+        except Exception as e:                  # noqa: BLE001 — a ship must not break
+            ctx.say(f"{project}#{n}: couldn't record the UAT item — {e}")
     try:
         ctx.gh(project).comment(n, "\n".join(lines))
     except GHError as e:

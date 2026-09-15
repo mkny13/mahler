@@ -56,7 +56,8 @@ class FakeGH:
         return {"state": self.view_state, "body": self.view_body,
                 "statusCheckRollup": self.rollup, "mergeable": self.mergeable,
                 "headRefName": "mahler/5-x", "headRefOid": self.head_sha,
-                "baseRefName": "main"}
+                "baseRefName": "main",
+                "mergeCommit": {"oid": "4c1f0abfeed5"}}
 
     def issue_state(self, number):
         return "OPEN"
@@ -162,6 +163,31 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.lease("x", 5))
         ping.assert_called_once()
         self.assertIn("couldn't post the shipped comment", " ".join(self.ctx.lines))
+
+    def test_shipped_needs_human_lands_in_the_uat_queue(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        row = self.led.uat("x", 5)
+        self.assertEqual((row["pr"], row["sha"], row["title"]), (88, "4c1f0abfeed5",
+                                                                "Wired the exporter"))
+        self.assertIn("- the new ping arrives", row["needs"])
+        self.assertIn("- nothing else", row["needs"])
+        self.assertIsNone(row["verdict"])
+        self.assertEqual(row["shipped_at"], iso(NOW))
+
+    def test_shipped_without_a_needs_human_list_skips_the_uat_queue(self):
+        self.gh.view_body = "plain ship, nothing to check."
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        self.assertIsNone(self.led.uat("x", 5))
+
+    def test_a_failing_uat_write_does_not_stop_the_ship(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.led, "add_uat",
+                               side_effect=sqlite3.OperationalError("db locked")):
+            self.ship()   # must not raise
+        self.assertEqual(self.item()["state"], "done")
+        self.assertIn("couldn't record the UAT item", " ".join(self.ctx.lines))
 
     def test_shipped_event_tracks_enabled_maintenance_passes(self):
         self.cfg["projects"]["x"]["maintenance"] = {
