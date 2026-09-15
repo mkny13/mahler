@@ -3,6 +3,7 @@ import io
 import unittest
 import os
 import json
+import stat
 import tempfile
 import subprocess
 from types import SimpleNamespace
@@ -95,17 +96,26 @@ class TestHooks(unittest.TestCase):
             def say(self, msg): pass
             
         watchdog.watchdog(Ctx())
-        
+
         yield_file = os.path.join(config.RUNS_DIR, "10", "yield")
         self.assertTrue(os.path.exists(yield_file))
+        self.assertEqual(stat.S_IMODE(os.stat(yield_file).st_mode), 0o600)
+        with open(yield_file) as f:
+            self.assertEqual(f.read(), "")
+
+        # The expired yield must also have moved the run to stopping, or the
+        # yield file alone (with nothing acting on it) is a dead signal.
+        row = self.led.q1("SELECT status, stop_reason FROM runs WHERE id=?", (10,))
+        self.assertEqual(row["status"], "stopping")
+        self.assertEqual(row["stop_reason"], "preempted")
 
     def test_yield_hook_logic(self):
         class Args:
             project = "testproj"
         cli.cmd_hooks(Args(), self.cfg, self.led)
-        
+
         pre_tool_script = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
-        
+
         # The hook must read the yield file from the runs dir it is told
         # about (MAHLER_RUNS_DIR): tests must never touch the real
         # ~/.mahler state (mahler#93).
@@ -117,42 +127,69 @@ class TestHooks(unittest.TestCase):
             yield_file = os.path.join(yield_dir, "yield")
             with open(yield_file, "w") as f:
                 pass
-                
-            res = subprocess.run(["python3", pre_tool_script], capture_output=True, text=True)
+
+            res = subprocess.run(["python3", pre_tool_script], input="",
+                                 capture_output=True, text=True)
             self.assertEqual(res.returncode, 1)
             self.assertIn("yield delivered", res.stdout)
+
+            # Without the yield file the same tool call must go through: the
+            # block above has to come from the yield check specifically, not
+            # from the hook failing (or blocking) unconditionally.
+            os.remove(yield_file)
+            res = subprocess.run(["python3", pre_tool_script], input="",
+                                 capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0)
+            self.assertEqual(res.stdout, "")
 
     def test_merge_fence_logic(self):
         class Args:
             project = "testproj"
         cli.cmd_hooks(Args(), self.cfg, self.led)
         pre_tool_script = os.path.join(self.repo_dir, ".claude", "hooks", "pre_tool_use.py")
-        
-        run_id = "124"
-        
-        # Mock lease-check failure by setting up environment and running the script
-        # The script calls `mahler lease-check`.
-        # To fail `mahler lease-check`, we can set MAHLER_PROJECT, MAHLER_ISSUE, MAHLER_EPOCH and let it fail.
-        env_extra = {"MAHLER_RUN_ID": run_id,
-                     "MAHLER_PROJECT": "testproj",
-                     "MAHLER_ISSUE": "1",
-                     "MAHLER_EPOCH": "1"}
-        # No item in DB, so lease-check fails.
-        with patch.dict(os.environ, env_extra):
+        bin_dir = os.path.abspath("bin")
+
+        # A live lease at epoch 2: a run still claiming epoch 1 must be
+        # fenced off from `gh pr merge|create`, and the current epoch must
+        # not be. Asserting only "no item in the DB fails" (the old version
+        # of this test) would pass even if the epoch comparison were
+        # deleted entirely, since a missing item fails lease_check either way.
+        self.led.set_state("testproj", 1, "ready")
+        self.led.claim("testproj", 1, "run:124", "auto", 30)
+        self.led.con.execute("UPDATE leases SET epoch = 2 WHERE project='testproj' AND number=1")
+        self.led.con.commit()
+
+        def run_hook(command, epoch):
             env = os.environ.copy()
-            env["PATH"] = os.path.abspath("bin") + os.pathsep + env.get("PATH", "")
-            # D6 fences both outward-facing steps: `gh pr create|merge`.
-            for fenced in ("gh pr merge -s", "gh pr create --title x"):
-                stdin_data = json.dumps({"command": fenced})
-                res = subprocess.run(["python3", pre_tool_script], input=stdin_data,
-                                     capture_output=True, text=True, env=env)
-                self.assertEqual(res.returncode, 1, fenced)
-                self.assertIn("STALE", res.stdout)
-            # Anything else a run does is not fenced on the epoch.
-            stdin_data = json.dumps({"command": "gh pr checks 5"})
-            res = subprocess.run(["python3", pre_tool_script], input=stdin_data,
-                                 capture_output=True, text=True, env=env)
-            self.assertEqual(res.returncode, 0)
+            env.update({
+                "MAHLER_RUN_ID": "124",
+                # The hook's `mahler lease-check` runs in its own process:
+                # MAHLER_HOME must point it at the temp ledger, or it falls
+                # back to the real ~/.mahler state (mahler#93).
+                "MAHLER_HOME": self.tmp.name,
+                "MAHLER_PROJECT": "testproj",
+                "MAHLER_ISSUE": "1",
+                "MAHLER_EPOCH": epoch,
+            })
+            env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+            return subprocess.run(["python3", pre_tool_script],
+                                  input=json.dumps({"command": command}),
+                                  capture_output=True, text=True, env=env)
+
+        # D6 fences both outward-facing steps: `gh pr create|merge`.
+        for fenced in ("gh pr merge -s", "gh pr create --title x"):
+            res = run_hook(fenced, "1")
+            self.assertEqual(res.returncode, 1, fenced)
+            self.assertIn("STALE", res.stdout)
+
+        # The live epoch is not fenced off.
+        res = run_hook("gh pr merge -s", "2")
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(res.stdout, "")
+
+        # Anything else a run does is not fenced on the epoch at all.
+        res = run_hook("gh pr checks 5", "1")
+        self.assertEqual(res.returncode, 0)
 
 
 class TestSessionIdentity(unittest.TestCase):
