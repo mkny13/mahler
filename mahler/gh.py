@@ -43,7 +43,7 @@ PART_OF_RE = re.compile(r"^\s*(?:>\s*)?(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+
 # when their planned files intersect — mechanical detection instead of
 # relying on the sort agent to notice and hand-label an `area:` collision.
 PLAN_SECTION_RE = re.compile(r"^##\s*Plan\s*$(.*?)(?=^##\s|\Z)", re.IGNORECASE | re.MULTILINE | re.DOTALL)
-FILES_LABEL_RE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\*{0,2}Files:?\*{0,2}[ \t]*(.*)$",
+FILES_LABEL_RE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\*{0,2}Files\b[^:\n]{0,30}:\*{0,2}[ \t]*(.*)$",
                             re.IGNORECASE | re.MULTILINE)
 FILE_BULLET_RE = re.compile(r"^\s*[-*]\s*(.+?)\s*$")
 
@@ -317,8 +317,17 @@ def files_of(body):
             raw.append(bullet.group(1))
     files = []
     for tok in raw:
-        tok = tok.strip().strip("`").strip()
-        if tok and tok.lower() not in ("none", "n/a"):
+        tok = tok.strip().strip("\"'*")
+        if "`" in tok:
+            # A path may have a trailing explanation, but prose mentioning a
+            # path is not a file declaration (mahler#230).
+            quoted = re.match(r"^`([^`]+)`", tok)
+            if not quoted:
+                continue
+            tok = quoted.group(1)
+        if (tok and tok.lower() not in ("none", "n/a")
+                and not any(c.isspace() for c in tok)
+                and "`" not in tok and ("/" in tok or "." in tok)):
             files.append(tok)
     return files
 
