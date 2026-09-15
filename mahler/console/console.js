@@ -10,6 +10,7 @@
   var REFRESH_MS = 30000;
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
+  var openRevert = null;
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
 
   function store(kind, key, value) {
@@ -46,6 +47,14 @@
       shown = shown || on;
     }
     if (!shown) { openRun = null; }
+    var reverts = app.querySelectorAll("[data-revert-detail]");
+    var revertShown = false;
+    for (var r = 0; r < reverts.length; r++) {
+      var visible = reverts[r].getAttribute("data-revert-detail") === openRevert;
+      reverts[r].classList.toggle("show", visible);
+      revertShown = revertShown || visible;
+    }
+    if (!revertShown) { openRevert = null; }
     applyCaptureProject();
   }
 
@@ -140,6 +149,7 @@
     if (act === "clear_backoff") {
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
     }
+    if (act === "revert") { return { event: Number(el.getAttribute("data-event")) }; }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
       var input = el.parentElement.querySelector("input");
@@ -211,6 +221,13 @@
       apply();
       return;
     }
+    if (el.hasAttribute("data-open-revert")) {
+      openRevert = el.getAttribute("data-open-revert"); apply();
+      var keep = app.querySelector('.revertov.show [data-close-revert]');
+      if (keep) { keep.focus(); }
+      return;
+    }
+    if (el.hasAttribute("data-close-revert")) { openRevert = null; apply(); return; }
     if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); apply(); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
     if (el.hasAttribute("data-act")) {
@@ -228,6 +245,7 @@
   });
 
   document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });

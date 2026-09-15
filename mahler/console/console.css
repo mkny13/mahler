@@ -339,3 +339,21 @@ a { color: var(--acc); text-decoration: none; }
 .cap-save { flex: none; min-height: 38px; }
 .capnote { font-size: 13px; line-height: 1.45; }
 .ph .cap-select, .ph .cap-save { min-height: 44px; }
+
+/* Merge Undo always opens a confirmation dialog (D27). */
+.undo { height: 30px; border: 1px solid var(--line); border-radius: 4px; color: var(--acc); }
+.revert-status { font-size: 11px; color: var(--mut); }
+.revertov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.revertov .box { width: 430px; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; }
+.revertov h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.revertov p { font-size: 14px; line-height: 1.5; }
+.revertfoot { display: flex; gap: 10px; }
+.revertfoot .btn { flex: 1; min-height: 38px; }
+.revert-confirm { background: var(--acc); border-color: var(--acc); color: var(--bg); }
+@media (max-width: 759px) {
+  .pev .undo { min-height: 36px; padding: 0 10px; }
+  .revertov { align-items: flex-end; }
+  .revertov .box { width: 100%; border-radius: 6px 6px 0 0; }
+  .revertfoot .btn { min-height: 48px; }
+}

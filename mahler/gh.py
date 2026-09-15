@@ -204,8 +204,13 @@ class GH:
 
         `ref` is an already-pushed ref (a mahler/snapshot/* branch). No-op when
         `branch` is already there. Returns the sha now at `branch`."""
-        self._git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
-        sha = self._git(path, "rev-parse", "FETCH_HEAD")
+        if re.fullmatch(r"mahler/revert-\d+", ref):
+            # Console reverts are prepared locally by the tick; only the
+            # conductor pushes them, after acquiring its lease.
+            sha = self._git(path, "rev-parse", "--verify", f"refs/heads/{ref}^{{commit}}")
+        else:
+            self._git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
+            sha = self._git(path, "rev-parse", "FETCH_HEAD")
         out = subprocess.run(["git", "-C", path, "ls-remote", "origin",
                               f"refs/heads/{branch}"], capture_output=True, text=True,
                              timeout=90, env=self.env)
@@ -234,6 +239,10 @@ class GH:
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
                               "headRefOid,baseRefName"))
+
+    def pr_merge_info(self, number):
+        return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
+                                   "state,mergeCommit,title,baseRefName"))
 
     def pr_merge(self, number):
         self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")

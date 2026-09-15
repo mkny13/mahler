@@ -29,6 +29,8 @@ KV_KEY = "last_janitor_date"
 WT_RE = re.compile(r"(\d+)-run(\d+)$")
 SNAP = "mahler/snapshot/"
 ABAN = "mahler/abandoned/"
+# Console mahler/revert-* refs are deliberately outside the deletion prefixes.
+# They retain the prepared revert for at least 14 days, including after shipping.
 RETENTION_DAYS = 14
 WORKTREE_GRACE_HOURS = 24
 

@@ -501,6 +501,12 @@ def _describe(cfg, e):
 
 def _rows(cfg, led, where="", args=(), limit=EVENTS_SHOWN):
     marks = ",".join("?" * len(QUIET_KINDS))
+    reverts = {}
+    for action in led.q("SELECT * FROM console_actions WHERE kind='revert' ORDER BY id"):
+        payload = _detail_json(action["payload"])
+        if action["status"] in ("pending", "done"):
+            reverts[(action["project"], payload.get("pr"))] = (
+                "revert queued" if action["status"] == "pending" else "revert requested")
     out = []
     for e in led.q(f"SELECT * FROM events WHERE kind NOT IN ({marks}) {where}"
                    f" ORDER BY id DESC LIMIT ?", (*QUIET_KINDS, *args, limit * 4)):
@@ -508,10 +514,17 @@ def _rows(cfg, led, where="", args=(), limit=EVENTS_SHOWN):
         if described is None:
             continue
         kind, text, attention, undoable = described
+        revert_status = ""
+        if undoable:
+            pr = _detail_json(e["detail"]).get("pr")
+            revert_status = reverts.get((e["project"], pr), "")
+            if not revert_status and led.get_kv(f"revert:{e['project']}:{pr}"):
+                revert_status = "revert requested"
+            undoable = not revert_status
         at = parse(e["at"])
         out.append({"id": e["id"], "at": at, "when": _hhmm(at) if at else "",
                     "kind": kind, "text": text, "attention": attention,
-                    "undoable": undoable, "project": e["project"], "number": e["number"]})
+                    "undoable": undoable, "revert_status": revert_status, "project": e["project"], "number": e["number"]})
         if len(out) >= limit:
             break
     return out
