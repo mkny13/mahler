@@ -74,7 +74,7 @@ class CopilotFallbackTests(unittest.TestCase):
         self.refresh(platforms.CopilotNoQuota()).assert_called_once()
         for name in self.peers:
             self.assertEqual(self.led.usage(name), {})
-            self.assertFalse(self.led.get_kv(f"probe:{name}"))
+            self.assertIsNone(self.led.get_kv(f"probe:{name}"))
             self.assertEqual(router.usage_state(self.led, name, self.cfg["platforms"][name]),
                              ("ok", "unknown limit (platform reports no quota signal)"))
         self.assertIsNone(self.led.get_kv("copilot:no-quota:copilot"))
@@ -111,7 +111,7 @@ class CopilotFallbackTests(unittest.TestCase):
         for name in self.peers:
             self.assertEqual(router.usage_state(self.led, name, self.cfg["platforms"][name])[0],
                              "stale")
-            self.assertFalse(self.led.get_kv(f"probe:{name}"))
+            self.assertIsNone(self.led.get_kv(f"probe:{name}"))
 
     def test_manual_override_skips_probing_even_with_old_samples(self):
         for name in self.peers:

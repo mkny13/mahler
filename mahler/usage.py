@@ -146,7 +146,7 @@ def refresh_usage(ctx, projects):
                     continue
                 no_quota = isinstance(samples, platforms.CopilotNoQuota)
                 led.set_kv(f"copilot:no-quota:{peer}", iso(led.now()) if no_quota else "")
-                if no_quota:
+                if no_quota and led.get_kv(f"probe:{peer}"):
                     led.set_kv(f"probe:{peer}", "")
                 for w, pct, resets in samples:
                     led.record_usage(peer, w, pct, resets)
