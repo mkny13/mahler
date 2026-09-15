@@ -14,7 +14,7 @@ from .finalize import finalize
 from .ledger import iso, parse
 from .usage import record_claude_usage
 
-STOP_NOW = ("parked",)                               # no grace period
+STOP_NOW = ("parked", "handoff")                     # no grace period
 
 
 def watchdog(ctx):

@@ -210,6 +210,21 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 0)          # not a failed attempt
         self.assertIn("handoff (lost-lease)", self.last_event())
 
+    def test_stop_and_hand_off_returns_to_ready_with_no_attempt(self):
+        """A run stopped from the console (mahler#252) is a handoff, not a
+        failed attempt: the item goes back to ready and the owner is pinged,
+        exactly like a quota or lost-lease stop."""
+        with open(self.log, "w") as fh:
+            fh.write("stopped for a console handoff\n")
+        self.run["stop_reason"] = "handoff"
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 0)          # not a failed attempt
+        self.assertIn("handoff (handoff)", self.last_event())
+        ping.assert_called_once()
+
     def test_claude_usage_and_quota_mirrors_to_opus_on_finalize(self):
         self.run["platform"] = "claude"
         ev = {

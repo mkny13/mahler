@@ -181,6 +181,14 @@ class YieldGraceTests(unittest.TestCase):
         term.assert_called_once_with(999)
         self.assertEqual(self.led.run(1)["stop_reason"], "parked")
 
+    def test_console_handoff_stops_at_once_with_no_grace(self):
+        """Stop & hand off (mahler#252) must land within about a minute — one
+        tick to queue it, one to act — so it skips the yield grace period
+        like a park does."""
+        term = self.watch("handoff", yield_seconds_ago=1)
+        term.assert_called_once_with(999)
+        self.assertEqual(self.led.run(1)["stop_reason"], "handoff")
+
     def test_another_reason_waits_out_the_grace_period(self):
         term = self.watch("preempted", yield_seconds_ago=1)
         term.assert_not_called()
