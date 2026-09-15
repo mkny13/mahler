@@ -71,11 +71,16 @@
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) { if (inputs[i].value) { keep[inputs[i].getAttribute("data-keep")] = inputs[i].value; } }
+      // Both layouts carry the same key; the active draft wins over its hidden twin.
+      var focused = document.activeElement;
+      if (focused && focused.hasAttribute("data-keep")) {
+        keep[focused.getAttribute("data-keep")] = focused.value;
+      }
       app.innerHTML = html;
       var again = app.querySelectorAll("[data-keep]");
       for (var j = 0; j < again.length; j++) {
         var v = keep[again[j].getAttribute("data-keep")];
-        if (v) { again[j].value = v; }
+        if (v !== undefined) { again[j].value = v; }
       }
       apply();
       applyHash();

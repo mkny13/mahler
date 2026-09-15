@@ -717,3 +717,13 @@ class AnswerTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(scheduler, 'compute_burst', side_effect=lambda *a: order.append('burst')))
             scheduler.tick(self.ctx)
         self.assertEqual(order, ['drain', 'burst'])
+
+    def test_cancel_after_due_snapshot_prevents_send(self):
+        id = self.answer()
+        self.led.clock.t += timedelta(seconds=60)
+        snapshot = self.led.due_actions()
+        self.led.cancel_action(id)
+        with mock.patch.object(self.led, 'due_actions', return_value=snapshot):
+            self.outbox.drain(self.ctx)
+        self.gh.comment.assert_not_called()
+        self.assertEqual(self.row(id)['status'], 'cancelled')
