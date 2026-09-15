@@ -925,6 +925,48 @@ class HighTierSiblingsTests(unittest.TestCase):
                       platforms.codex_argv(self.cfg["platforms"]["codex-high"],
                                            "hi", "wt", "build"))
 
+    def test_copilot_uses_auto_with_the_configured_tier_but_high_stays_pinned(self):
+        # copilot: "auto" + --auto-tier gets the 10% discount for routine
+        # size:s work; copilot-high stays pinned — its only job is a
+        # capability guarantee, and auto is turn-complexity-adaptive (a live
+        # check with --auto-tier intelligence still picked claude-haiku-4.5
+        # for a trivial prompt, mahler#192's follow-up research).
+        argv = platforms.copilot_argv(self.cfg["platforms"]["copilot"], "hi", "wt", "build")
+        self.assertEqual(argv[argv.index("--model") + 1], "auto")
+        self.assertEqual(argv[argv.index("--auto-tier") + 1], "balance")
+        high_argv = platforms.copilot_argv(self.cfg["platforms"]["copilot-high"],
+                                           "hi", "wt", "build")
+        self.assertNotIn("--auto-tier", high_argv)
+
+
+class CopilotQuotaFanOutTests(unittest.TestCase):
+    """copilot-high shares copilot's AI-credits quota_group, so the periodic
+    probe (usage.refresh_usage) must fan its one reading out to both — same
+    account, same credits, one `gh api` call — the way record_claude_usage
+    already does for claude/claude-opus."""
+
+    def setUp(self):
+        self.cfg = config.resolve_platforms(config._merge(config.DEFAULTS, {
+            "projects": {"acme": {"enabled": True, "repo": "x/acme", "path": "/tmp/acme"}},
+        }))
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
+        self.led.upsert_item("acme", 1, state="ready", priority=2)
+        self.projects = [config.project_policy(self.cfg, "acme")]
+
+    def test_a_single_probe_reading_lands_on_both_platforms(self):
+        later = iso(NOW + timedelta(days=5))
+        with mock.patch.object(platforms, "probe_copilot",
+                               return_value=[("monthly", 42.0, later)]) as probe, \
+                mock.patch.object(platforms, "probe_claude", return_value=[]), \
+                mock.patch.object(platforms, "oauth_usage", return_value=[]), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(router, "peak_state", return_value=(False, None)):
+            usage.refresh_usage(self.ctx, self.projects)
+        probe.assert_called_once()     # not called twice for copilot and copilot-high
+        self.assertEqual(self.led.usage("copilot")["monthly"]["used_pct"], 42.0)
+        self.assertEqual(self.led.usage("copilot-high")["monthly"]["used_pct"], 42.0)
+
 
 if __name__ == "__main__":
     unittest.main()

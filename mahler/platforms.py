@@ -186,6 +186,8 @@ def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
         argv += ["--deny-tool", pattern]
     if pconf.get("model"):
         argv += ["--model", pconf["model"]]
+    if pconf.get("auto_tier"):
+        argv += ["--auto-tier", pconf["auto_tier"]]
     return argv
 
 

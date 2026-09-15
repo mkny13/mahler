@@ -255,8 +255,16 @@ DEFAULTS["platforms"]["kilo"] = {
 # scope) reports this month's consumption, so Copilot gets a single "monthly"
 # window instead of the usual 5h/weekly pair (see router.py's per-platform
 # `windows` override).
+# `model: "auto"` (verified 2026-09-14, mahler#192) lets Copilot pick per-turn
+# instead of pinning claude-sonnet-5, and gets a 10% multiplier discount on
+# every request for it (GitHub's "Copilot auto model selection"). `auto_tier:
+# "balance"` is the CLI's own middle profile between "efficiency" and
+# "intelligence" — auto is turn-complexity-adaptive either way (confirmed live:
+# even "intelligence" picked claude-haiku-4.5 for a trivial one-line reply), so
+# this is about nudging routine size:s work toward cheaper models on the easy
+# turns, not a capability guarantee — copilot-high below stays pinned instead.
 DEFAULTS["platforms"]["copilot"] = {
-    "enabled": True, "kind": "copilot", "model": "",
+    "enabled": True, "kind": "copilot", "model": "auto", "auto_tier": "balance",
     "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
     "backoff_minutes": 60, "max_size": "s", "tier": 2,
     "soft": {"monthly": 80}, "hard": {"monthly": 95},

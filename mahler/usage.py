@@ -131,11 +131,17 @@ def refresh_usage(ctx, projects):
             last = parse(led.get_kv(f"probe:{name}"))
             if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
                 continue
-            for w, pct, resets in platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500),
-                                                          env=config.run_env(cfg, account)):
-                led.record_usage(name, w, pct, resets)
-            if led.usage(name).get("monthly"):
-                led.set_kv(f"probe:{name}", iso(led.now()))
+            # Fan the one AI-credits reading out to every platform sharing this
+            # account's Copilot quota_group (e.g. copilot-high) — same account,
+            # same credits, one `gh api` call — mirroring record_claude_usage's
+            # peer fan-out below.
+            samples = platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500),
+                                              env=config.run_env(cfg, account))
+            for peer in quota_peers(cfg, name):
+                for w, pct, resets in samples:
+                    led.record_usage(peer, w, pct, resets)
+                if samples:
+                    led.set_kv(f"probe:{peer}", iso(led.now()))
             continue
         if pconf.get("kind") != "claude":
             continue
