@@ -301,7 +301,10 @@ class TestServer(unittest.TestCase):
                         "load_cfg": staticmethod(lambda: self.cfg)})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        # A short poll_interval keeps shutdown() fast (mahler#95): the default
+        # 0.5s poll makes every test in this class pay a ~0.5s teardown tax.
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -360,7 +363,8 @@ class TestDynamicConfigReload(unittest.TestCase):
                         "load_cfg": staticmethod(serve.config.load)})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread = threading.Thread(
+            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
