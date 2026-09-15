@@ -532,9 +532,11 @@ def _banners(cfg, led, paused, quota, hot, now):
         ago = (f"{h['ago']} minute{'s' if h['ago'] != 1 else ''} ago" if h["ago"]
                else "under a minute ago")
         out.append({"kind": f"HOT HOLD · {h['project'].upper()}", "tone": "warn",
-                    "text": f"You have uncommitted edits in {h['project']} from {ago}. No new "
-                            f"runs start there until {h['hold_minutes']} minutes after you "
-                            f"stop. Work in flight continues."})
+                    # what presence sees is a Claude Code session, and a hot
+                    # hold only holds builds (D6 layer 2)
+                    "text": f"You were working in {h['project']} with Claude Code {ago}. No "
+                            f"new builds start there until {h['hold_minutes']} minutes after "
+                            f"you stop. Work in flight continues."})
     for name, r in _silent_runs(led, quota):
         mins = config.project_policy(cfg, r["project"]).get("startup_timeout_minutes", 10)
         out.append({"kind": f"RUN SAT SILENT · {name.upper()}", "tone": "bad",
