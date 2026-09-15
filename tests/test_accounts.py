@@ -1,8 +1,8 @@
 """Accounts (DESIGN D25): work logins beside this machine's own, never crossed.
 
 A project spends only its own account's platforms, pins included; each
-account's Claude login is its own run slot and quota; the burst and the
-human-use flag stay with this machine's own Claude account.
+account's Claude login is its own run slot and quota; bursts and usage-rise
+human flags use each login's own quota group.
 """
 
 import os
@@ -177,7 +177,7 @@ class RouterTests(unittest.TestCase):
         self.assertIn("claude-other: pinned, but it spends the other account, "
                       "not personal, work", reasons)
 
-    def test_burst_never_lifts_work_claude(self):
+    def test_personal_burst_never_lifts_work_claude(self):
         seed(self.led, **{"claude": (85, 85), "claude-work": (85, 85)})
         burst = {"5h": (90, 97), "weekly": (90, 97)}
         pc = self.cfg["platforms"]

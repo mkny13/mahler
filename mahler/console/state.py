@@ -212,7 +212,7 @@ def _quota(cfg, led, peak):
     """One gauge per quota group (platforms sharing a login and quota share a
     gauge, D21): the worst window fills the bar, the soft line is the tick."""
     now = led.now()
-    burst = router.burst_status(cfg, led)
+    burst = router.all_bursts(cfg, led)
     builders = set(_routed(cfg, ("build",)))
     groups, rows = {}, []
     for name in _routed(cfg):
@@ -240,9 +240,7 @@ def _quota(cfg, led, peak):
             u = usage.get(w)
             if u is None:
                 continue
-            soft = pconf.get("soft", {}).get(w, 100)
-            if claude and burst and w in burst:
-                soft = burst[w][0]
+            soft, _ = router.effective_lines(led, name, pconf, w, burst)
             windows.append({"window": w, "pct": max(min(u["used_pct"], 100), 0),
                             "soft": soft, "resets": router._ts(u.get("resets_at"))})
         worst = max(windows, key=lambda x: x["pct"], default=None)
