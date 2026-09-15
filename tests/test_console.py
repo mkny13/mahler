@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, router
+from mahler import config, router, scheduler
 from mahler.console import actions, page, state
 from mahler.ledger import Ledger, iso
 
@@ -431,6 +431,80 @@ class PageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NeedsYouPingTests(unittest.TestCase):
+    """mahler#257: a needs-you push deep-links into the console on that item."""
+
+    def cfg(self, public_url=""):
+        c = make_cfg()
+        c["serve"]["public_url"] = public_url
+        return c
+
+    def ping(self, public_url="", console=False, project="mahler", number=9):
+        cfg, led = self.cfg(public_url), make_led()
+        ctx = scheduler.Ctx(cfg, led, dry_run=False)
+        with mock.patch("mahler.scheduler.notify.send") as send:
+            ctx.ping("Mahler needs you — mahler #9", "which key?",
+                     project=project, number=number, priority="high",
+                     tags="question", console=console)
+        return send
+
+    def test_without_public_url_the_click_is_the_github_issue(self):
+        send = self.ping(public_url="")
+        self.assertTrue(send.called)
+        self.assertEqual(send.call_args.kwargs["click"],
+                         "https://github.com/mkny13/mahler/issues/9")
+        self.assertEqual(send.call_args.kwargs["priority"], "high")
+        self.assertEqual(send.call_args.kwargs["tags"], "question")
+
+    def test_with_public_url_a_needs_you_ping_opens_the_console(self):
+        send = self.ping(public_url="https://mac-mini.example.ts.net", console=True)
+        self.assertEqual(send.call_args.kwargs["click"],
+                         "https://mac-mini.example.ts.net/#needs/mahler/9")
+
+    def test_console_flag_is_ignored_when_public_url_is_unset(self):
+        send = self.ping(public_url="", console=True)
+        self.assertEqual(send.call_args.kwargs["click"],
+                         "https://github.com/mkny13/mahler/issues/9")
+
+    def test_console_flag_needs_a_project(self):
+        send = self.ping(public_url="https://mac-mini.example.ts.net", console=True,
+                         project=None)
+        self.assertIsNone(send.call_args.kwargs["click"])
+
+    def test_fyi_pings_never_open_the_console(self):
+        send = self.ping(public_url="https://mac-mini.example.ts.net", console=False)
+        self.assertEqual(send.call_args.kwargs["click"],
+                         "https://github.com/mkny13/mahler/issues/9")
+
+    def test_trailing_slash_on_public_url_is_tolerated(self):
+        send = self.ping(public_url="https://mac-mini.example.ts.net/", console=True)
+        self.assertEqual(send.call_args.kwargs["click"],
+                         "https://mac-mini.example.ts.net/#needs/mahler/9")
+
+
+class ConsoleHashTests(unittest.TestCase):
+    """mahler#257: #needs/<project>/<n> lands the console on that item."""
+
+    def page(self, needs):
+        cfg, led = make_cfg(), make_led()
+        for n in needs:
+            led.upsert_item(n[0], n[1], title=n[2], state="needs_you")
+        return page.document(state.build(cfg, led))
+
+    def test_needs_items_carry_a_data_need_anchor(self):
+        doc = self.page([("mahler", 9, "Which key?"), ("groundwork", 81, "Date format")])
+        self.assertIn('data-need="mahler#9"', doc)
+        self.assertIn('data-need="groundwork#81"', doc)
+        self.assertIn('class="view view-needs"', doc)
+        self.assertIn('class="tabv tabv-triage"', doc)
+
+    def test_the_script_handles_the_needs_you_hash(self):
+        doc = self.page([("mahler", 9, "Which key?")])
+        self.assertIn("applyHash", doc)
+        self.assertIn("#needs/", doc)
+        self.assertIn("hashchange", doc)
 
 
 class RecordedIdleTests(unittest.TestCase):

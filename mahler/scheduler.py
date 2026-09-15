@@ -51,11 +51,23 @@ class Ctx:
     def url(self, project, number):
         return f"https://github.com/{self.policy(project)['repo']}/issues/{number}"
 
-    def ping(self, title, message="", project=None, number=None, priority="default", tags=""):
+    def _console_url(self, project, number):
+        """The deep link into the console for one item (mahler#257): when
+        `serve.public_url` is set, a needs-you ping opens the console on that
+        item in Triage; otherwise the click stays the GitHub issue."""
+        base = (self.cfg.get("serve") or {}).get("public_url") or ""
+        if base:
+            return f"{base.rstrip('/')}/#needs/{project}/{number}"
+        return self.url(project, number)
+
+    def ping(self, title, message="", project=None, number=None, priority="default",
+             tags="", console=False):
         if self.dry_run:
             return
+        click = self._console_url(project, number) if (console and project) else \
+            (self.url(project, number) if project else None)
         notify.send(self.cfg, title, message,
-                    click=self.url(project, number) if project else None,
+                    click=click,
                     priority=priority, tags=tags)
 
 

@@ -347,6 +347,9 @@ class ShipTests(unittest.TestCase):
             self.led.now = lambda: NOW
         ping.assert_called_once()
         self.assertIn("needs you", ping.call_args[0][0])
+        self.assertEqual(ping.call_args.kwargs["priority"], "high")
+        self.assertEqual(ping.call_args.kwargs["tags"], "question")
+        self.assertTrue(ping.call_args.kwargs["console"])
         self.assertEqual(self.item()["state"], "needs_you")
         self.assertIsNone(self.led.lease("x", 5))               # the slot is released
         self.assertIn("90 min", self.last_event())

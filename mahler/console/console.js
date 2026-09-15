@@ -78,6 +78,7 @@
         if (v) { again[j].value = v; }
       }
       apply();
+      applyHash();
     }).catch(function (err) { if (window.console) { console.warn(err); } });
   }
 
@@ -105,6 +106,19 @@
     }
     if (act === "digest_seen") { return { upto: Number(el.getAttribute("data-upto")) || 0 }; }
     return {};
+  }
+
+  // a needs-you ping deep-links here: #needs/<project>/<n> lands the console on
+  // that item in Triage (phone) / Needs you (desktop), no animation (mahler#257)
+  function applyHash() {
+    var m = /^#needs\/([^/]+)\/(\d+)$/.exec(location.hash || "");
+    if (!m) { return; }
+    var ref = m[1] + "#" + m[2];
+    setView("needs");
+    setTab("triage");
+    apply();
+    var el = app.querySelector('[data-need="' + ref.replace(/"/g, "") + '"]');
+    if (el) { el.scrollIntoView({ behavior: "auto", block: "nearest" }); }
   }
 
   document.addEventListener("click", function (ev) {
@@ -166,5 +180,7 @@
   if (!app.querySelector(".tabv-" + root.getAttribute("data-tab"))) { root.setAttribute("data-tab", "now"); }
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
+  applyHash();
   setInterval(refresh, REFRESH_MS);
+  window.addEventListener("hashchange", applyHash);
 })();

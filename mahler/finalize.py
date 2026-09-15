@@ -60,7 +60,7 @@ def _needs_you(e):
     """The agent asked a question only the owner can answer (DESIGN D13)."""
     e.set_state("needs_you", e.rest)
     e.ping(f"Mahler needs you — {e.project} #{e.number}", e.rest or e.item["title"],
-           priority="high", tags="question")
+           priority="high", tags="question", console=True)
     return True
 
 
