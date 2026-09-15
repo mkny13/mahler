@@ -485,12 +485,14 @@ def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duratio
         new_tier = max(cur_tier, run_tier) + 1
         new_fails = 0
         ctx.say(f"{project}#{n}: escalated to tier {new_tier} — size:s overrun on tier {run_tier} ({int(duration_mins)}m >= 10m)")
-        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (duration overrun {int(duration_mins)}m)")
+        led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
+                  "platform": platform, "reason": f"duration overrun {int(duration_mins)}m"})
     elif new_fails >= 2:
         new_tier = max(cur_tier, run_tier) + 1
         new_fails = 0
         ctx.say(f"{project}#{n}: escalated to tier {new_tier} after 2 failures on tier <= {max(cur_tier, run_tier)}")
-        led.event("escalated", project, n, f"tier {cur_tier} -> {new_tier} (after 2 failures)")
+        led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
+                  "platform": platform, "reason": "2 failures"})
 
     if attempts >= ctx.policy(project)["max_attempts"]:
         led.set_state(project, n, "failed", f"{attempts} failed attempts — last: {outcome}",

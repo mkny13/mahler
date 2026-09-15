@@ -12,7 +12,7 @@ import fcntl
 import os
 import sys
 
-from . import backup, config, digest, janitor, notify
+from . import backup, config, digest, janitor, notify, platform_audit
 from .gh import GH, GHError
 from .ship import ship
 from .sync import close_finished_parents, mirror_labels, sync
@@ -81,6 +81,7 @@ def tick(ctx):
     else:
         refresh_usage(ctx, projects)
         queue_maintenance(ctx, projects)
+        platform_audit.queue(ctx, projects)
         schedule(ctx, projects)
         ship(ctx, projects)
     for p in projects:

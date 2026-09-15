@@ -71,7 +71,9 @@ e.g. decision numbers — never invent one).
   - one module per pass: `watchdog.py` (process health, heartbeats), `sync.py`
     (GitHub in, labels out), `finalize.py` (every exit is a handoff),
     `ship.py` (the conductor's PR/CI/merge pass), `tick.py` (maintenance,
-    lease expiry, scheduling, `start`), `usage.py` (quota readings, D23 burst)
+    lease expiry, scheduling, `start`), `usage.py` (quota readings, D23 burst),
+    `platform_audit.py` (D20's periodic self-audit of Mahler's own platform
+    tier/capability assumptions, mahler#206 — not a managed-project pass)
   - `runner.py`: worktrees, launch, snapshot — `prompt.py` writes what a run is told
   - `router.py`: quota policy
   - `platforms.py`: CLI adapters and usage readers

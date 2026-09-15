@@ -828,6 +828,25 @@ project's scope label; a project has **at most one pass in flight** (a new one i
 no `pass:*` item of that project is open); and a goal closes once all its sub-issues are done
 (D21), which is what lets a pass recur.
 
+**Platform tier/capability assumptions get the same treatment, on their own track**
+(mahler#206). Time estimates already self-calibrate (`ledger.calibrate_estimates()`, mahler#59),
+but `config.py`'s per-platform `tier`/`max_size`/`min_size` are point-in-time judgment calls, and
+nothing re-checks them as a provider's model quietly changes under the same CLI/account. This
+isn't a ninth entry in the eight passes above — it's not about a managed project's codebase at
+all, it's about Mahler's own config — so it lives in `platform_audit.py` and anchors its
+checkpoint on one configured project's (default: `mahler`, since Mahler manages itself) merged-PR
+throughput instead of every project's. It reuses the exact same checkpoint shape
+(`last_filed_at`/`merged_since`, `Ledger.maintenance_due`) and the same at-most-one-pass-in-flight
+discipline (a `pass:platform-audit` label sorts into the same `pass:*` check), so it can't crowd
+the queue independently of the other eight. Each tick it: greps `DESIGN.md` for a "verified
+<date>" mention near each platform's name and flags any older than `stale_verified_days` (default
+90) or missing entirely; and cross-checks `runs`/`events` for each platform's done-rate,
+needs-you-rate, and how often the *item* it was working escalated a tier away from it
+(`ship._red_ci`/`finalize.retry_or_fail` now record the platform in the `escalated` event's
+detail for exactly this). It only files the finding as an issue — never changes `config.py`
+itself, since re-ranking tiers is a judgment call, not a mechanical recalibration like time
+estimates.
+
 ### D21 — Opus plans; the free tiers build what it planned
 
 Decided 2026-09-13. The research agrees on the split and on its limits:

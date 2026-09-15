@@ -51,6 +51,24 @@ DEFAULT_MAINTENANCE = {
     "passes": list(MAINTENANCE_PASSES),
 }
 
+# Periodic self-audit of Mahler's own platform tier/capability assumptions
+# (mahler#206) — distinct from the per-managed-project D20 passes above: this
+# is about mahler/config.py's own tier/max_size/min_size judgment calls and
+# each platform's DESIGN.md "verified" annotation, not a managed project's
+# codebase. It reuses D20's checkpoint machinery (`Ledger.maintenance_due`,
+# keyed on `project`'s own merged-PR throughput) rather than a second
+# scheduler, so it shares the same cadence/threshold shape, but it is its own
+# pass — not one of the eight in a project's `maintenance.passes` list.
+PLATFORM_AUDIT_PASS = "platform-audit"
+DEFAULT_PLATFORM_AUDIT = {
+    "enabled": True,
+    "project": "mahler",        # whose merged-PR throughput anchors the checkpoint
+    "cadence_days": 30,
+    "merged_threshold": 20,
+    "cooldown_days": 14,
+    "stale_verified_days": 90,  # DESIGN.md "verified" date older than this is flagged
+}
+
 DEFAULTS = {
     "defaults": {
         "enabled": False,
@@ -105,6 +123,7 @@ DEFAULTS = {
         "calibration_interval": 10,
         "calibration_window": 20,
     },
+    "platform_audit": DEFAULT_PLATFORM_AUDIT,
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
@@ -434,6 +453,13 @@ def project_policy(cfg, name):
 
 def maintenance_policy(cfg, name):
     return project_policy(cfg, name).get("maintenance", DEFAULT_MAINTENANCE)
+
+
+def platform_audit_policy(cfg):
+    """Global, not per-project (mahler#206): merged with the default shape so
+    a minimal test/partial cfg dict (no [platform_audit] section) still has
+    every key `Ledger.maintenance_due` and `platform_audit.queue` expect."""
+    return _merge(DEFAULT_PLATFORM_AUDIT, cfg.get("platform_audit") or {})
 
 
 def enabled_projects(cfg):
