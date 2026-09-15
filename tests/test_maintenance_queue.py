@@ -161,5 +161,60 @@ class MaintenanceQueueTests(unittest.TestCase):
         tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
+    def test_due_but_open_issue_with_matching_title_and_no_pass_label(self):
+        """An open type:goal item with a title matching a pass title but no
+        pass:* label blocks filing a duplicate pass (issue #204)."""
+        self.led.upsert_item("mahler", 57, title="Security & Surface Area Audit",
+                              labels=json.dumps(["type:goal"]), state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_open_issue_with_matching_title_case_and_whitespace_blocks_pass(self):
+        """Title matching handles case and whitespace normalization."""
+        self.led.upsert_item("mahler", 57, title="  security & surface area audit  ",
+                              labels=json.dumps(["type:goal", "mahler:parent"]), state="working")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_open_issue_with_matching_title_of_another_pass_blocks_all_passes(self):
+        """D20: an open manual issue matching Codebase Health blocks the due security pass."""
+        self.led.upsert_item("mahler", 58, title="Codebase Health & Refactoring Pass",
+                              labels=json.dumps(["type:goal"]), state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_closed_issue_with_matching_title_respects_cooldown(self):
+        """A completed issue with a matching title respects the cooldown window."""
+        self.led.upsert_item("mahler", 57, title="Security & Surface Area Audit",
+                              labels=json.dumps(["type:goal"]))
+        self.led.set_state("mahler", 57, "done")
+        self.led.upsert_item("mahler", 57, state_changed_at=iso(NOW - timedelta(days=5)))
+
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_closed_issue_with_matching_title_past_cooldown_allows_filing(self):
+        """A completed issue with a matching title past cooldown allows filing."""
+        self.led.upsert_item("mahler", 57, title="Security & Surface Area Audit",
+                              labels=json.dumps(["type:goal"]))
+        self.led.set_state("mahler", 57, "done")
+        self.led.upsert_item("mahler", 57, state_changed_at=iso(NOW - timedelta(days=20)))
+
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        args, kwargs = self.gh_mock.create_issue.call_args
+        self.assertIn("pass:security", args[2])
+
+    def test_manual_pass_with_undone_parent_is_skipped(self):
+        """A manual pass item whose parent is not done blocks re-filing that pass."""
+        self.led.upsert_item("mahler", 50, state="ready")
+        self.led.upsert_item("mahler", 57, title="Security & Surface Area Audit",
+                              labels=json.dumps(["type:goal"]), parent=50)
+        self.led.set_state("mahler", 57, "done")
+        self.led.upsert_item("mahler", 57, state_changed_at=iso(NOW - timedelta(days=20)))
+
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
