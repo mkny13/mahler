@@ -1,5 +1,6 @@
 """Tests for the 'parent' item state and migration from 'tracking'."""
 
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -29,16 +30,38 @@ class ParentStateTests(unittest.TestCase):
         self.assertEqual(led.item("testproj", 1)["state"], "parent")
 
     def test_db_migration_from_tracking(self):
-        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
-            # Seed an old database directly with 'tracking' state
-            con = sqlite3.connect(tmp.name)
-            con.executescript(SCHEMA)
-            con.execute("INSERT INTO items (project, number, title, state) VALUES (?, ?, ?, ?)",
-                        ("testproj", 10, "Old tracking issue", "tracking"))
-            con.commit()
-            con.close()
+        with tempfile.TemporaryDirectory() as tmp:
+            # Seed an old database directly with 'tracking' state — a mix of
+            # rows, so the migration's WHERE clause is pinned down rather
+            # than a coincidence of there being only one row to touch.
+            path = os.path.join(tmp, "mahler.db")
+            con = sqlite3.connect(path)
+            try:
+                con.executescript(SCHEMA)
+                con.executemany(
+                    "INSERT INTO items (project, number, title, state) VALUES (?, ?, ?, ?)",
+                    [("testproj", 10, "Old tracking issue", "tracking"),
+                     ("testproj", 11, "Another tracking issue", "tracking"),
+                     ("testproj", 12, "Plain ready issue", "ready")])
+                con.commit()
+            finally:
+                con.close()
 
-            # Ledger init should migrate it
-            led = Ledger(tmp.name)
-            item = led.item("testproj", 10)
-            self.assertEqual(item["state"], "parent")
+            # Ledger init should migrate every 'tracking' row to 'parent',
+            # preserve their other columns, and leave unrelated states alone.
+            led = Ledger(path)
+            try:
+                self.assertEqual(led.item("testproj", 10)["state"], "parent")
+                self.assertEqual(led.item("testproj", 10)["title"], "Old tracking issue")
+                self.assertEqual(led.item("testproj", 11)["state"], "parent")
+                self.assertEqual(led.item("testproj", 12)["state"], "ready")
+            finally:
+                led.close()
+
+            # Reopening an already-migrated database must be a no-op, not an
+            # error or a second migration that clobbers state again.
+            led = Ledger(path)
+            try:
+                self.assertEqual(led.item("testproj", 10)["state"], "parent")
+            finally:
+                led.close()
