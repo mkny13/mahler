@@ -178,6 +178,57 @@ class TestDynamicConfigReload(_Served):
         self.assertIn('href="https://github.com/mkny13/couch-tour/issues/3"', body)
 
 
+class TestAutoRestart(unittest.TestCase):
+    """mahler#256: serve restarts itself when its code updates."""
+
+    def test_head_change_triggers_shutdown(self):
+        httpd = self._make_server()
+        get_head = self._make_get_head(["abc123", "def456"])
+        old_head = ["abc123"]
+        with mock.patch.object(httpd, "shutdown") as mock_shutdown:
+            t = threading.Thread(
+                target=serve._check_for_update,
+                args=(httpd, get_head, old_head, 0.05),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=5)
+        mock_shutdown.assert_called_once()
+        self.assertEqual(old_head[0], "def456")
+
+    def test_git_error_never_shutdown(self):
+        httpd = self._make_server()
+        get_head = self._make_get_head([None])
+        old_head = [None]
+        with mock.patch.object(httpd, "shutdown") as mock_shutdown:
+            t = threading.Thread(
+                target=serve._check_for_update,
+                args=(httpd, get_head, old_head, 0.05),
+                daemon=True,
+            )
+            t.start()
+            t.join(timeout=0.3)
+        mock_shutdown.assert_not_called()
+
+    @staticmethod
+    def _make_get_head(values):
+        i = [0]
+        def get_head():
+            if i[0] < len(values):
+                v = values[i[0]]
+                i[0] += 1
+                return v
+            return values[-1]
+        return get_head
+
+    @staticmethod
+    def _make_server():
+        handler = type("Handler", (serve._Handler,),
+                       {"led": None, "lock": threading.Lock(),
+                        "load_cfg": staticmethod(lambda: {})})
+        return ThreadingHTTPServer(("127.0.0.1", 0), handler)
+
+
 class TestCliWiring(unittest.TestCase):
     def test_serve_subcommand_passes_args(self):
         from mahler import cli
