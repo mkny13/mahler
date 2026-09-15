@@ -30,7 +30,10 @@ credentials or money.
        ## Context
        ## Out of scope
 
-   Keep any existing `Depends on: #N` line. The `Files:` list right under `## Plan` is parsed
+   Keep existing `Part of #N` and `Depends on: #N` lines, each on its own unquoted line,
+   never inside the original-request quote: Mahler parses them line by line. Quote only the
+   owner's free-form words; if the body already has this shape, edit its sections in place.
+   The `Files:` list right under `## Plan` is parsed
    mechanically on every sync (`gh.files_of`, mahler#210): the scheduler blocks two
    `ready`/`working` issues from building at once whenever their `Files:` lists share a path —
    the same tick it checks `area:` collisions, and it needs no label or judgment call from you.
@@ -63,6 +66,9 @@ credentials or money.
    `## Done when`, a `Part of #$number` line, `Depends on: #N` where order matters,
    exactly one `size:s` or `size:m` label (never `size:l`), a `type:` label, and
    this repo's scope label if it uses one. Then relabel this one `type:goal`.
+   Every sub-issue must end in a commit: DONE with nothing to push counts as a failed attempt.
+   Do GitHub-only housekeeping or writing (closing/relinking issues, fixing labels, summary
+   comments) in this planning run, record each action in an issue comment, and file no sub-issue for it.
 6. If this issue has a `Part of #N` line, it was already planned. Do not split it.
    If it is too big, keep it `size:m`, write the best Plan you can, and end `READY`.
 
