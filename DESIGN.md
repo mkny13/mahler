@@ -1092,6 +1092,37 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - The event stream is a view one click away, never ambient. Banners appear only in Triage
   and Needs you, one expanded at a time.
 
+### D29 — Console: hold-reason rows link to their items; a Dependencies graph for the big picture
+
+Decided 2026-09-15, from feedback on the shipped 0-runs and Backlog views (mahler#249, mahler#260):
+the console can now say *why* nothing is running, but the aggregated sentences ("27 build item(s)
+have no platform with headroom — busy: kilo; past the line: agy-claude, agy-gemini…") don't say
+*which* items, and there's no way to see parent/child or depends-on relationships across a project's
+backlog at a glance — with couch-tour alone running 25+ open items under several `parent` trackers,
+that's the thing actually missing.
+
+- **Hold-reason rows expand in place.** The scheduler already threads `project`/`number` through
+  almost every hold (mahler#249's `ctx.hold(...)` calls); the console just isn't showing them.
+  Attach the concrete item list to each reason and render it with the same client-only `data-toggle`
+  mechanism the digest chip already uses (`console.js`) — no new POST, no new server state, just more
+  of what `state._idle` already computes exposed to the page.
+- **A Dependencies view, not a literal force-directed graph.** A spatial node-link layout at this
+  density invites exactly the clutter the console's "no shadows, no filled cards" ethos exists to
+  avoid, and pulling in a layout library would cross the "no dependency outside the standard library"
+  line before the MCP phase means to. Instead: one **server-rendered SVG per project**, laid out in
+  ranked columns — a plain longest-path rank computed in `state.py` (root items with no parent and no
+  unmet dependency at rank 0, everything else one rank past its farthest predecessor), no client
+  layout code. Node color reuses the existing three-tone system (`_state_tone`: bad/acc/mut); edges
+  are solid for parent→child and dashed for depends-on; every node links straight to its GitHub
+  issue, same as a backlog row does today.
+- **Desktop only.** The phone console's whole premise is triage from a Pixel in under a minute
+  (docs/console/design.md's overview); a ranked graph doesn't fit 390px or that job. The `List` /
+  `Graph` toggle lives only in the desktop Backlog view, next to the existing per-project group
+  headers; phone Browse keeps its flat list.
+- This is new surface beyond the Phase 2 mock, not a deviation from it — `docs/console/design.md`'s
+  screens don't cover it. It's designed here, in the same voice and constraints as D27, rather than
+  redone in Claude Design, since it's additive to an existing view rather than a new screen.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
