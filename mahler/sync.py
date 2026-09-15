@@ -9,7 +9,8 @@ import json
 from datetime import timedelta
 
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
-                 has_sections, label_names, parse_command, part_of, pin_of, priority_of)
+                 files_of, has_sections, label_names, parse_command, part_of, pin_of,
+                 priority_of)
 from .ledger import iso, parse
 from .watchdog import request_stop
 
@@ -68,7 +69,8 @@ def sync(ctx, project):
         ctx._labels[(project, n)] = labels
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
                       depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels),
-                      parent=part_of(iss.get("body")))
+                      parent=part_of(iss.get("body")),
+                      files=json.dumps(files_of(iss.get("body"))))
         item = led.item(project, n)
         if item is None:
             state = _state_from_labels(labels)

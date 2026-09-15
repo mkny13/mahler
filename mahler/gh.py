@@ -38,6 +38,14 @@ AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start wit
 DEPENDS_RE = re.compile(r"^\s*(?:>\s*)?Depends on:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 PART_OF_RE = re.compile(r"^\s*(?:>\s*)?(?:\*{1,2})?Part of:?(?:\*{1,2})?\s*#(\d+)",
                         re.IGNORECASE | re.MULTILINE)
+# mahler#210: the `## Plan` section's `Files:` line/list, parsed at every sync
+# so the scheduler can block two ready/working items from building at once
+# when their planned files intersect — mechanical detection instead of
+# relying on the sort agent to notice and hand-label an `area:` collision.
+PLAN_SECTION_RE = re.compile(r"^##\s*Plan\s*$(.*?)(?=^##\s|\Z)", re.IGNORECASE | re.MULTILINE | re.DOTALL)
+FILES_LABEL_RE = re.compile(r"^[ \t]*(?:[-*][ \t]*)?\*{0,2}Files:?\*{0,2}[ \t]*(.*)$",
+                            re.IGNORECASE | re.MULTILINE)
+FILE_BULLET_RE = re.compile(r"^\s*[-*]\s*(.+?)\s*$")
 
 
 
@@ -279,6 +287,40 @@ def part_of(body):
     """Parent issue number if body has 'Part of #N' (case-insensitive), or None."""
     m = PART_OF_RE.search(body or "")
     return int(m.group(1)) if m else None
+
+
+def files_of(body):
+    """The planned file list from the issue's `## Plan` section (mahler#210):
+    a `Files:` line naming paths inline, comma-separated, or a bullet list
+    under a bare `Files:` line — whichever the sort agent wrote. [] if the
+    section or line is missing, so an old-shaped or hand-written body just
+    never blocks anything on file overlap."""
+    section = PLAN_SECTION_RE.search(body or "")
+    if not section:
+        return []
+    label = FILES_LABEL_RE.search(section.group(1))
+    if not label:
+        return []
+    inline = label.group(1).strip()
+    if inline:
+        raw = inline.split(",")
+    else:
+        raw = []
+        for line in section.group(1)[label.end():].splitlines():
+            if not line.strip():
+                if raw:
+                    break
+                continue
+            bullet = FILE_BULLET_RE.match(line)
+            if not bullet:
+                break
+            raw.append(bullet.group(1))
+    files = []
+    for tok in raw:
+        tok = tok.strip().strip("`").strip()
+        if tok and tok.lower() not in ("none", "n/a"):
+            files.append(tok)
+    return files
 
 
 def has_sections(body, *headings):
