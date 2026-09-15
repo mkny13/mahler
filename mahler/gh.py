@@ -437,7 +437,7 @@ _WAIT_CHECKS = {"PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING", "EXP
 
 def checks_state(rollup):
     """A PR's statusCheckRollup -> green | pending | red | none."""
-    states = [(c.get("state") or c.get("status") or "").upper() for c in (rollup or [])]
+    states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper() for c in (rollup or [])]
     if not states:
         return "none"                       # no CI configured: nothing to wait for
     if any(s in _BAD_CHECKS for s in states):

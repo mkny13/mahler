@@ -426,6 +426,7 @@ class ShipTests(unittest.TestCase):
                        {"headRefOid": None}, {"baseRefName": None},
                        {"statusCheckRollup": [{"state": "PENDING"}]},
                        {"statusCheckRollup": [{"state": "FAILURE"}]},
+                       {"statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}]},
                        {"mergeable": "UNKNOWN"}):
             with self.subTest(change=change), mock.patch.object(
                     self.gh, "pr_view", side_effect=[view, dict(view, **change)]), \
@@ -463,6 +464,28 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("fetch failed", self.last_event())
+
+    def test_lookup_failure_keeps_existing_verification_deadline(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "base_in_head", return_value=None):
+            self.ship()
+        self.led.now = lambda: NOW + timedelta(minutes=90)
+        self.gh.fail_view = {88}
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.gh.merged, [])
+
+    def test_missing_metadata_on_first_observation_waits(self):
+        self.led.upsert_item("x", 5, pr=88)
+        for key in ("headRefOid", "baseRefName"):
+            view = self.gh.pr_view(88)
+            view.pop(key)
+            with self.subTest(key=key), mock.patch.object(self.gh, "pr_view", return_value=view), \
+                    mock.patch.object(self.gh, "base_in_head") as guard:
+                self.ship()
+                guard.assert_not_called()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(self.gh.merged, [])
 
     def test_unknown_ancestry_and_api_failure_wait(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -623,6 +646,12 @@ class HelpersTests(unittest.TestCase):
                          "- the new ping arrives\n- nothing else")
         self.assertEqual(gh_module.needs_human_of("no section here"), "")
         self.assertEqual(gh_module.needs_human_of(""), "")
+
+    def test_completed_check_uses_its_conclusion(self):
+        self.assertEqual(gh_module.checks_state(
+            [{"status": "COMPLETED", "conclusion": "FAILURE"}]), "red")
+        self.assertEqual(gh_module.checks_state(
+            [{"status": "COMPLETED", "conclusion": "SUCCESS"}]), "green")
 
     def test_checks_state(self):
         self.assertEqual(gh_module.checks_state(None), "none")

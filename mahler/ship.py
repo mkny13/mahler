@@ -124,7 +124,7 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
     sha = view.get("headRefOid") or ""
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else None
-    if not info or info.get("sha") != sha:
+    if not info or (sha and info.get("sha") != sha):
         info = {"sha": sha, "since": iso(led.now())}
         led.set_kv(key, json.dumps(info))
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
@@ -141,7 +141,7 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
 
 
 def _merge_queued(ctx, project, item, pr, view):
-    """Checks are green: request the merge, then watch for it to land.
+    """Checks are acceptable: request the merge, then watch for it to land.
 
     mahler#211 — GitHub's native merge queue (once enabled on the base branch)
     re-tests the PR against the *actual* combined state before merging, not

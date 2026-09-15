@@ -1,0 +1,57 @@
+.........................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 403 -
+serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 403 -
+serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 415 -
+................serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+....................................serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PUT / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "DELETE / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PATCH / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message Method Not Allowed
+serve: 127.0.0.1 "POST / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "POST /api/drop_tables HTTP/1.1" 404 -
+........................................................................................................................serve: 127.0.0.1 "POST /api/answer HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 400 -
+..........serve: code updated abc123 -> def456, restarting
+........................................................................................................................serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+..................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+..........................................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/resume HTTP/1.1" 200 -
+.................................................serve: 127.0.0.1 "GET /fragment HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/state HTTP/1.1" 200 -
+..............................................................................................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 400 -
+serve: 127.0.0.1 "POST /api/clear_backoff HTTP/1.1" 400 -
+...................................................serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /status HTTP/1.1" 404 -
+............................................................................................................................................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.........................serve: cannot read HEAD, will retry
+....
+----------------------------------------------------------------------
+Ran 758 tests in 15.110s
+
+OK
+random order seed: 239
+  claude       stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude-opus  stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  agy-claude   stale  5h: no sample, weekly: no sample
+  agy-gemini   stale  5h: no sample, weekly: no sample
+  codex        ok     unknown limit (platform reports no quota signal)
+  codex-high   ok     unknown limit (platform reports no quota signal)
+  cline-free   ok     unknown limit (platform reports no quota signal)
+  kilo         ok     unknown limit (platform reports no quota signal)
+  copilot      stale  monthly: no sample
+  copilot-high stale  monthly: no sample
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpkoajtw75/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpzj10ffq3/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpibnnrxw5/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpcf_snig0/repo/.claude
