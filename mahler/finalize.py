@@ -141,13 +141,16 @@ def _ended_unconfirmed(e):
 
 # Tried in order: the first rule that matches decides the ending. The order is
 # the contract — a NEEDS-YOU question outranks the reason the run stopped, and
-# the verify-green fallback is the last word before an attempt is counted.
+# a confirmed yield outranks watchdog stop reasons. The verify-green fallback
+# is the last word before an attempt is counted.
 ENDINGS = (
     (lambda e: e.verb == "NEEDS-YOU", _needs_you),
     (lambda e: e.verb == "DONE" and e.reason in (None, "quota"), _ended_done),
+    (lambda e: e.verb == "YIELDED", _ended_preempted),
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in ("quota", "lost-lease"), _ended_out_of_reach),
+    (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),
 )
@@ -261,6 +264,8 @@ def finalize(ctx, run):
              ("setup-failed" if setup_failed else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
+    if verb == "BLOCKED" and rest and not setup_failed:
+        outcome = f"{verb} {rest}"
     ctx.say(f"{project}#{n}: run {run['id']} ({run['role']} on {run['platform']}) ended — "
             f"{outcome}{f' [{reason}]' if reason else ''}")
     if ctx.dry_run:
