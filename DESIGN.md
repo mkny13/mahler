@@ -990,9 +990,19 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
 - A project names `accounts = [...]` instead of the singular `account` when it may spend more
   than one. `account = "x"` stays shorthand for `accounts = ["x"]`; a project sets one or the
   other, never both. Compute routing and quota still work exactly as D25 describes *per
-  account* — a multi-account project tries each of its accounts in turn (personal first, since
-  that's the pool D23's burst favors), and spends the first with headroom, rather than drawing
-  from some merged pool.
+  account*.
+- **`account_mode` says how those accounts are tried.** Default (`"order"`, the flag absent):
+  a multi-account project tries each of its accounts in turn (personal first, since that's the
+  pool D23's burst favors), and spends the first with headroom — a fallback chain, not a merged
+  pool. Updated 2026-09-14 (mahler#209): that default under-serves a project that's genuinely
+  dual-use rather than personal-with-a-work-fallback — mahler's own personal build list has
+  ten platforms, so `work` was essentially never tried even with `codex-work`/`copilot-work`
+  idle and fully quota'd. `account_mode = "equal"` opts a project into round-robin merging
+  each account's candidate list instead (first candidate from the first account, then the
+  second account, then the first account's second candidate, and so on) and picking once
+  across the merge — each account's own preference order is preserved, but neither account is
+  favored over the other. This is scoped to an explicit opt-in per project: it changes nothing
+  for a project that doesn't set it, and nothing for a project with a single `account`.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the

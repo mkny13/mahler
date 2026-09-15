@@ -80,6 +80,23 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.run_env(work_cfg(), "wrok")
 
+    def test_account_mode_defaults_to_order(self):
+        self.assertEqual(config.account_mode_of(config.project_policy(work_cfg(), "home")),
+                         "order")
+
+    def test_account_mode_equal_is_read_through(self):
+        cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                             "accounts": ["personal", "work"], "account_mode": "equal"})
+        self.assertEqual(config.account_mode_of(config.project_policy(cfg, "both")), "equal")
+
+    def test_bad_account_mode_fails_closed(self):
+        with self.assertRaises(ValueError):
+            config.account_mode_of({"account_mode": "first"})
+        cfg = config._merge(config.DEFAULTS, {"projects": {"x": {
+            "enabled": True, "account_mode": "first"}}})
+        with self.assertRaises(ValueError):
+            config.validate_accounts(cfg)
+
     def test_work_env_drops_inherited_logins_and_sets_its_own(self):
         base = {"PATH": "/bin", "GH_TOKEN": "personal", "ANTHROPIC_API_KEY": "personal",
                 "CLAUDE_CONFIG_DIR": "/Users/me/.claude"}
@@ -124,6 +141,41 @@ class RouterTests(unittest.TestCase):
 
     def test_account_without_routing_gets_nothing(self):
         self.assertEqual(router.candidates(self.cfg, "build", account="other"), [])
+
+    def test_candidates_for_accounts_round_robin_interleaves(self):
+        # personal build: agy-claude, agy-gemini, cline-free, copilot,
+        # copilot-high, kilo, claude-opus, claude
+        # work build: copilot-work, codex-work, claude-opus-work, claude-work
+        merged = router.candidates_for_accounts(self.cfg, "build", ["personal", "work"])
+        self.assertEqual(merged, [
+            "agy-claude", "copilot-work", "agy-gemini", "codex-work",
+            "cline-free", "claude-opus-work", "copilot", "claude-work",
+            "copilot-high", "kilo", "claude-opus", "claude"])
+
+    def test_candidates_for_accounts_preserves_order_when_one_account_runs_out(self):
+        merged = router.candidates_for_accounts(self.cfg, "sort", ["personal", "work"])
+        self.assertEqual(merged, ["claude", "claude-work", "agy-gemini", "agy-claude"])
+
+    def test_pick_with_accounts_merges_instead_of_falling_back_by_order(self):
+        # agy-claude and agy-gemini (personal's first two picks) are busy;
+        # copilot-work is size-blocked at the default size:m, so the next
+        # merged candidate is codex-work — equal-mode reaches it without
+        # ever exhausting the rest of personal's own list first
+        name, _ = router.pick(self.cfg, self.led, "build",
+                              busy=["agy-claude", "agy-gemini"],
+                              accounts=["personal", "work"])
+        self.assertEqual(name, "codex-work")
+
+    def test_pick_with_accounts_pin_reason_names_every_declared_account(self):
+        cfg = work_cfg()
+        cfg["accounts"]["other"] = {"env": {"CLAUDE_CONFIG_DIR": "~/.claude-other"}}
+        cfg["platforms"]["claude-other"] = {"from": "claude", "account": "other"}
+        cfg = config.resolve_platforms(cfg)
+        name, reasons = router.pick(cfg, self.led, "build", pin="claude-other",
+                                    accounts=["personal", "work"])
+        self.assertIsNone(name)
+        self.assertIn("claude-other: pinned, but it spends the other account, "
+                      "not personal, work", reasons)
 
     def test_burst_never_lifts_work_claude(self):
         seed(self.led, **{"claude": (85, 85), "claude-work": (85, 85)})
@@ -302,6 +354,51 @@ class MultiAccountTests(unittest.TestCase):
                                 platform=platform, epoch=1)
         self.item("both", 1)
         self.assertIn("both#1: would build on codex-work", self.plan(total=10))
+
+    def test_order_account_mode_still_exhausts_personal_first_by_default(self):
+        # agy-claude and agy-gemini (personal's first two picks) are busy;
+        # every other personal candidate is size-blocked at the default
+        # size:m except claude itself, which has headroom. Default "order"
+        # mode reaches all the way down to it rather than ever trying work,
+        # even though work's codex-work sits idle with full quota headroom.
+        for platform in ("agy-claude", "agy-gemini"):
+            self.led.create_run(project="zz", number=1, role="build",
+                                platform=platform, epoch=1)
+        seed(self.led, **{"claude": (30, 30)})
+        self.item("both", 1)
+        self.assertIn("both#1: would build on claude", self.plan(total=10))
+
+    def test_equal_account_mode_interleaves_instead_of_exhausting_one_account(self):
+        # same setup as above, but account_mode = "equal": work's codex-work
+        # (round-robin's second work turn) gets picked well before personal's
+        # own fallback-of-last-resort (claude) is ever reached
+        self.cfg["projects"]["both"]["account_mode"] = "equal"
+        for platform in ("agy-claude", "agy-gemini"):
+            self.led.create_run(project="zz", number=1, role="build",
+                                platform=platform, epoch=1)
+        seed(self.led, **{"claude": (30, 30)})
+        self.item("both", 1)
+        self.assertIn("both#1: would build on codex-work", self.plan(total=10))
+
+    def test_pick_for_project_honors_account_mode_for_fix_runs_too(self):
+        # ship.py routes CI-red fix runs through the same helper (D26): both
+        # modes should behave for "fix" exactly as they do for "build"
+        pol = config.project_policy(self.cfg, "both")
+        for platform in ("agy-claude", "agy-gemini"):
+            self.led.create_run(project="zz", number=1, role="build",
+                                platform=platform, epoch=1)
+        seed(self.led, **{"claude": (30, 30)})
+        name, _ = router.pick_for_project(self.cfg, self.led, pol, "fix")
+        self.assertEqual(name, "claude")
+        pol = {**pol, "account_mode": "equal"}
+        name, _ = router.pick_for_project(self.cfg, self.led, pol, "fix")
+        self.assertEqual(name, "codex-work")
+
+    def test_equal_account_mode_leaves_single_account_projects_unaffected(self):
+        self.cfg["projects"]["acme"]["account_mode"] = "equal"
+        seed(self.led, **{"codex-work": (10, 10)})
+        self.item("acme", 1)
+        self.assertIn("acme#1: would build on codex-work", self.plan())
 
     def test_multi_account_pin_on_either_declared_account_works(self):
         seed(self.led, **{"agy-claude": (10, 10), "claude-work": (5, 5)})

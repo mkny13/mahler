@@ -372,6 +372,26 @@ def gh_account_of(conf):
     return conf.get("gh_account") or accounts_of(conf)[0]
 
 
+ACCOUNT_MODES = ("order", "equal")
+
+
+def account_mode_of(conf):
+    """How a multi-account project's declared accounts are routed (D26).
+
+    "order" (default) tries them in declared order, spending the first with
+    headroom — a fallback chain. "equal" merges every account's candidate
+    list round-robin instead, so a genuinely dual-use project (e.g. mahler
+    itself) doesn't exhaust one account's whole list before an idle other
+    account is ever tried; it expresses whose quota gets spent, not which
+    account gets tried first.
+    """
+    mode = conf.get("account_mode", "order")
+    if mode not in ACCOUNT_MODES:
+        raise ValueError(f"account_mode must be one of {ACCOUNT_MODES}, "
+                         f"got {mode!r} (DESIGN D26)")
+    return mode
+
+
 def validate_accounts(cfg):
     """A project sets `account` or `accounts`, never both (D26)."""
     for name, proj in cfg.get("projects", {}).items():
@@ -384,6 +404,9 @@ def validate_accounts(cfg):
                     and all(isinstance(a, str) and a for a in accts)):
                 raise ValueError(f"project {name!r}: 'accounts' must be a "
                                  "non-empty list of account names (DESIGN D26)")
+        if "account_mode" in proj and proj["account_mode"] not in ACCOUNT_MODES:
+            raise ValueError(f"project {name!r}: account_mode must be one of "
+                             f"{ACCOUNT_MODES} (DESIGN D26)")
 
 
 def run_env(cfg, account, base=None):

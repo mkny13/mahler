@@ -190,18 +190,11 @@ def _red_ci(ctx, project, item, pr, view):
     effective_min_tier = max(new_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
-    # D26: a multi-account project tries its accounts in declared order and
-    # spends the first with a fix platform; never fall through on anything
-    # but "no platform from this account".
-    reasons = []
-    platform = None
-    for account in config.accounts_of(pol):
-        platform, why = router.pick(cfg, led, "fix", item["pin"], busy,
-                                    size=size, burst_lines=ctx.burst_lines,
-                                    account=account, min_tier=effective_min_tier)
-        reasons += why
-        if platform:
-            break
+    # D26: route within the project's declared accounts, in order by default
+    # or merged round-robin for account_mode = "equal".
+    platform, reasons = router.pick_for_project(
+        cfg, led, pol, "fix", item["pin"], busy, size=size,
+        burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
