@@ -131,7 +131,7 @@ def _ci_pending(ctx, project, item, pr, view):
     ctx.ping(f"Mahler needs you — {project} #{n}",
              f"CI on PR #{pr} hasn't finished in {elapsed} min; "
              "the PR stays open, unmerged",
-             project, n, priority="high", tags="question")
+             project, n, priority="high", tags="question", console=True)
     led.release(project, n, holder=CONDUCTOR)
 
 

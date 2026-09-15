@@ -114,6 +114,10 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["state"], "needs_you")
         self.assertIn("which licence key?", self.last_event())
         ping.assert_called_once()
+        # mahler#257: a needs-you ping opens the console on that item
+        self.assertEqual(ping.call_args.kwargs["priority"], "high")
+        self.assertEqual(ping.call_args.kwargs["tags"], "question")
+        self.assertTrue(ping.call_args.kwargs["console"])
 
     def test_a_real_stop_keeps_its_own_handoff(self):
         with open(self.log, "w") as fh:
