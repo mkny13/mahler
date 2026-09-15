@@ -441,7 +441,7 @@ def schedule(ctx, projects):
                 continue
             if ctx.dry_run:
                 ctx.say(f"{name}#{n}: would {role} on {platform}")
-            elif not start(ctx, name, it, role, platform):
+            elif not start(ctx, name, it, role, platform, size=effective_size):
                 continue
             total += 1
             in_project[name] = in_project.get(name, 0) + 1
@@ -459,11 +459,11 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform, handoff_from=None):
+def start(ctx, project, item, role, platform, handoff_from=None, size=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     ests = led.estimates()
-    est = led.run_estimate(ests, platform, role)
-    run_id = led.create_run(project=project, number=n, role=role, platform=platform,
+    est = led.run_estimate(ests, platform, role, size)
+    run_id = led.create_run(project=project, number=n, role=role, platform=platform, size=size,
                             epoch=0, status="running", est_mins=round(est, 2))
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],
                             platform=platform, run_id=run_id, capacity=role != "sort",

@@ -33,7 +33,7 @@ def snapshot(cfg, led):
 
     runs = [dict(r) for r in led.active_runs()]
     for r in runs:
-        r["est"] = int(led.run_estimate(ests, r["platform"], r["role"]))
+        r["est"] = int(led.run_estimate(ests, r["platform"], r["role"], r.get("size")))
         # fetch parent info for this run's issue
         item = led.item(r["project"], r["number"])
         if item:

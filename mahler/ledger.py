@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS runs (
     number      INTEGER NOT NULL,
     role        TEXT NOT NULL,           -- sort | build
     platform    TEXT NOT NULL,
+    size        TEXT,                    -- s | m | l at launch, from effective_size (mahler#207)
     epoch       INTEGER NOT NULL,
     pid         INTEGER,
     worktree    TEXT,
@@ -204,6 +205,8 @@ class Ledger:
             self.con.execute("ALTER TABLE runs ADD COLUMN est_mins REAL")
         if "actual_mins" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN actual_mins REAL")
+        if "size" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN size TEXT")
         lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
         if "capacity" not in lease_cols:
             self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
@@ -554,7 +557,8 @@ class Ledger:
         cols.setdefault("started_at", iso(self.now()))
         if "est_mins" not in cols and cols.get("platform") and cols.get("role"):
             ests = self.estimates()
-            cols["est_mins"] = round(self.run_estimate(ests, cols["platform"], cols["role"]), 2)
+            cols["est_mins"] = round(
+                self.run_estimate(ests, cols["platform"], cols["role"], cols.get("size")), 2)
         keys = list(cols)
         cur = self.con.execute(
             f"INSERT INTO runs ({','.join(keys)}) VALUES ({','.join('?' * len(keys))})",
@@ -651,6 +655,12 @@ class Ledger:
                    avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
             FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform, role
         """)
+        size_rows = self.q("""
+            SELECT platform, role, size, count(*) as c,
+                   avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
+            FROM runs WHERE ended_at IS NOT NULL AND status='ended' AND size IS NOT NULL
+            GROUP BY platform, role, size
+        """)
         plat_rows = self.q("""
             SELECT platform, count(*) as c, avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
             FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform
@@ -662,6 +672,8 @@ class Ledger:
         global_avg = global_row["avg_mins"] if (global_row and global_row["avg_mins"]) else 15.0
 
         by_pr = {(r["platform"], r["role"]): r["avg_mins"] for r in rows if r["c"] >= 3}
+        by_prs = {(r["platform"], r["role"], r["size"]): r["avg_mins"]
+                  for r in size_rows if r["c"] >= 3}
         by_p = {r["platform"]: r["avg_mins"] for r in plat_rows if r["c"] >= 3}
 
         issue_avg = self.q("""
@@ -690,6 +702,7 @@ class Ledger:
 
         return {
             "run_avg": by_pr,
+            "run_avg_size": by_prs,
             "plat_avg": by_p,
             "global_run_avg": global_avg,
             "proj_issue_avg": proj_issue_avg,
@@ -752,8 +765,13 @@ class Ledger:
         self.event("estimate_calibration", detail=stats)
         return stats
 
-    def run_estimate(self, ests, platform, role):
-        raw = ests["run_avg"].get((platform, role)) or ests["plat_avg"].get(platform) or ests["global_run_avg"]
+    def run_estimate(self, ests, platform, role, size=None):
+        raw = (
+            (ests.get("run_avg_size", {}).get((platform, role, size)) if size else None)
+            or ests["run_avg"].get((platform, role))
+            or ests["plat_avg"].get(platform)
+            or ests["global_run_avg"]
+        )
         return raw * ests.get("calibration_factor", 1.0)
 
     def issue_estimate(self, ests, project):

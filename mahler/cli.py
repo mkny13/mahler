@@ -55,7 +55,7 @@ def cmd_status(a, cfg, led):
         ests = led.estimates()
         runs = [dict(r) for r in led.active_runs()]
         for r in runs:
-            r["est_mins"] = int(led.run_estimate(ests, r["platform"], r["role"]))
+            r["est_mins"] = int(led.run_estimate(ests, r["platform"], r["role"], r.get("size")))
         items = [dict(i) for i in led.items() if i["state"] != "done"]
         for i in items:
             i["est_mins"] = int(led.issue_estimate(ests, i["project"]))
@@ -100,7 +100,7 @@ def cmd_status(a, cfg, led):
     ests = led.estimates()
     for r in runs:
         mins = int((now - parse(r["started_at"])).total_seconds() // 60)
-        est = int(led.run_estimate(ests, r["platform"], r["role"]))
+        est = int(led.run_estimate(ests, r["platform"], r["role"], r["size"]))
         time_str = f"{mins}m / ~{est}m" if mins <= est else f"{mins}m (+{mins-est}m past est)"
         url = item_url(r["project"], r["number"])
         model = f" {r['model']}" if r["model"] else ""

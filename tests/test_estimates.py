@@ -37,6 +37,27 @@ class EstimateTrackingTests(unittest.TestCase):
         """)
         con.close()
 
+    def test_size_column_is_added_to_legacy_databases(self):
+        # A database predating mahler#207 has no `size` column on runs.
+        import os
+        import tempfile
+        from mahler.ledger import SCHEMA
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(
+                l for l in SCHEMA.splitlines()
+                if not l.strip().startswith("size ")))
+            con.execute(
+                "INSERT INTO runs (project, number, role, platform, epoch, status, started_at) "
+                "VALUES ('p', 1, 'build', 'claude', 0, 'ended', '2026-09-12T12:00:00+00:00')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            r = led.q1("SELECT * FROM runs WHERE project='p' AND number=1")
+            self.assertIsNone(r["size"])
+
     def test_create_run_records_predicted_est_mins(self):
         # Default global fallback is 15.0 mins when no runs exist
         run_id = self.led.create_run(project="p", number=1, role="build", platform="claude", epoch=0)
@@ -49,6 +70,63 @@ class EstimateTrackingTests(unittest.TestCase):
                                       epoch=0, est_mins=4.5)
         r2 = self.led.run(run_id2)
         self.assertEqual(r2["est_mins"], 4.5)
+
+    def test_create_run_stamps_size(self):
+        run_id = self.led.create_run(project="p", number=1, role="build", platform="claude",
+                                     epoch=0, size="m")
+        r = self.led.run(run_id)
+        self.assertEqual(r["size"], "m")
+
+        run_id2 = self.led.create_run(project="p", number=2, role="build", platform="claude",
+                                      epoch=0)
+        r2 = self.led.run(run_id2)
+        self.assertIsNone(r2["size"])
+
+    def test_estimates_group_by_platform_role_size(self):
+        t0 = self.clock()
+
+        def seed(n, size, mins):
+            self.led.create_run(
+                project="p", number=n, role="build", platform="claude", epoch=0, size=size,
+                status="ended", started_at=iso(t0), ended_at=iso(t0 + timedelta(minutes=mins)))
+
+        # Three size:s runs averaging 5m, three size:l runs averaging 50m —
+        # both buckets clear the count>=3 guard.
+        for i, mins in enumerate((4, 5, 6)):
+            seed(i, "s", mins)
+        for i, mins in enumerate((45, 50, 55)):
+            seed(100 + i, "l", mins)
+
+        ests = self.led.estimates()
+        self.assertAlmostEqual(ests["run_avg_size"][("claude", "build", "s")], 5.0, places=2)
+        self.assertAlmostEqual(ests["run_avg_size"][("claude", "build", "l")], 50.0, places=2)
+
+        self.assertAlmostEqual(self.led.run_estimate(ests, "claude", "build", "s"), 5.0, places=2)
+        self.assertAlmostEqual(self.led.run_estimate(ests, "claude", "build", "l"), 50.0, places=2)
+        # (platform, role) blend still reflects every run regardless of size
+        self.assertAlmostEqual(self.led.run_estimate(ests, "claude", "build"),
+                               (4 + 5 + 6 + 45 + 50 + 55) / 6, places=2)
+
+    def test_thin_size_bucket_falls_back_to_platform_role(self):
+        t0 = self.clock()
+        # Only two size:s runs — short of the count>=3 guard used elsewhere
+        # (by_pr/by_p), so the size bucket must not be trusted.
+        for i, mins in enumerate((4, 6)):
+            self.led.create_run(
+                project="p", number=i, role="build", platform="claude", epoch=0, size="s",
+                status="ended", started_at=iso(t0), ended_at=iso(t0 + timedelta(minutes=mins)))
+
+        ests = self.led.estimates()
+        self.assertNotIn(("claude", "build", "s"), ests["run_avg_size"])
+        self.assertAlmostEqual(self.led.run_estimate(ests, "claude", "build", "s"),
+                               self.led.run_estimate(ests, "claude", "build"))
+
+    def test_run_estimate_falls_back_without_size(self):
+        # No size given at all (e.g. an older run, or a sort/plan role) still
+        # resolves through the (platform, role) / platform / global chain.
+        ests = self.led.estimates()
+        self.assertEqual(self.led.run_estimate(ests, "claude", "build"),
+                         self.led.run_estimate(ests, "claude", "build", None))
 
     def test_update_run_computes_actual_mins(self):
         run_id = self.led.create_run(project="p", number=1, role="build", platform="claude", epoch=0)
