@@ -1014,7 +1014,14 @@ a personal project must never spend a work login.
   work environment. The Antigravity probe, and a Copilot probe with no GitHub login of the
   account's own, would read the personal logins, so they never feed another account's
   platforms. Work Copilot is therefore configured unmetered (backoff on a limit error), unless
-  the account has its own `gh` login.
+  the account has its own `gh` login. An empty personal AI-credits report does not
+  measure org-assigned Business/Enterprise usage (mahler#265): it yields an unmetered
+  "no quota signal" state, shared only within that login's quota group and retried
+  after the normal stale interval. This is a missing-meter heuristic, not seat-type
+  identification; a personal plan with no report rows also has no signal until rows
+  appear. API failures remain unavailable, not evidence of an unmetered seat.
+  `metered = false` remains the manual override and disables probing. No org roster
+  or colleagues' usage is queried.
 - **Bursts are per quota group** (amended 2026-09-15, mahler#283). D23 applies to work
   Claude logins too, using their own fresh samples and reset times. Personal reset times
   never lift work lines, or vice versa. Each bursting group's platforms move forward in

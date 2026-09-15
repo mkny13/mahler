@@ -59,6 +59,7 @@ per-platform `pconf["windows"]`), re-probed at most every `stale_minutes`.
 """
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -366,9 +367,17 @@ def _gh_login(env=None):
     try:
         r = subprocess.run(["gh", "api", "user", "--jq", ".login"],
                            capture_output=True, text=True, timeout=15, env=env)
-        return r.stdout.strip() or None
+        return (r.stdout.strip() or None) if r.returncode == 0 else None
     except (subprocess.SubprocessError, OSError):
         return None
+
+
+class CopilotNoQuota(list):
+    """An empty successful billing report, distinct from a failed probe.
+
+    Org-assigned seats can return this from the personal credits endpoint.
+    It is evidence of no usable meter, not proof of a particular seat type.
+    """
 
 
 def probe_copilot(monthly_cap_credits, env=None):
@@ -385,8 +394,22 @@ def probe_copilot(monthly_cap_credits, env=None):
         data = json.loads(r.stdout)
     except (subprocess.SubprocessError, OSError, ValueError):
         return []
-    used = sum(item.get("grossQuantity", 0) for item in data.get("usageItems", []))
-    if not monthly_cap_credits:
+    if r.returncode != 0 or not isinstance(data, dict):
+        return []
+    items = data.get("usageItems")
+    if not isinstance(items, list):
+        return []
+    if not items:
+        return CopilotNoQuota()
+    # A missing quantity is not a measured zero. Reject malformed reports.
+    if any(not isinstance(item, dict)
+           or isinstance(item.get("grossQuantity"), bool)
+           or not isinstance(item.get("grossQuantity"), (int, float))
+           or not math.isfinite(item["grossQuantity"])
+           or item["grossQuantity"] < 0 for item in items):
+        return []
+    used = sum(item["grossQuantity"] for item in items)
+    if not monthly_cap_credits or monthly_cap_credits < 0:
         return []
     pct = round(100 * used / monthly_cap_credits, 1)
     resets = _next_month_start(datetime.now(timezone.utc)).isoformat()

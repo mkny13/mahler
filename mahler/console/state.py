@@ -251,7 +251,7 @@ def _quota(cfg, led, peak):
         usage = led.usage(name)
         hold = usage.pop(router.HOLD, None)
         hold_until = router._ts(hold.get("resets_at")) if hold else None
-        metered = pconf.get("metered", True)
+        metered = router.is_metered(led, name, pconf)
         windows = []
         for w in pconf.get("windows", router.WINDOWS):
             u = usage.get(w)
