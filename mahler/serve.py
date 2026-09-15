@@ -19,33 +19,41 @@ launchd plist template in launcher/ says how.
 
 import ipaddress
 import json
+import subprocess
 import sys
+import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 from . import config
 from .console import actions, page, state
+from . import version as _version
 
 MAX_BODY = 64 * 1024
 TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 
 
-def _json_default(o):
-    if isinstance(o, datetime):
-        return o.isoformat()
-    raise TypeError(f"not JSON serializable: {type(o).__name__}")
+def _default_get_head():
+    return _version._short_head(config.REPO_ROOT)
 
 
-def write_allowed_from(addr):
-    """True for loopback and Tailscale addresses — who may use the writes."""
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
-        return False
-    if getattr(ip, "ipv4_mapped", None):
-        ip = ip.ipv4_mapped
-    return ip.is_loopback or any(ip in net for net in TAILNET)
+def _check_for_update(httpd, get_head, old_head, interval):
+    """Daemon thread: poll HEAD; restart server when it changes."""
+    while True:
+        time.sleep(interval)
+        new_head = get_head()
+        if new_head is None:
+            sys.stderr.write("serve: cannot read HEAD, will retry\n")
+            continue
+        if new_head != old_head[0]:
+            sys.stderr.write(
+                f"serve: code updated {old_head[0]} -> {new_head}, restarting\n"
+            )
+            old_head[0] = new_head
+            httpd.shutdown()
+            break
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -146,20 +154,50 @@ class _Handler(BaseHTTPRequestHandler):
         sys.stderr.write("serve: %s %s\n" % (self.address_string(), fmt % args))
 
 
-def serve(cfg, led, host="127.0.0.1", port=8787):
+def _json_default(o):
+    if isinstance(o, datetime):
+        return o.isoformat()
+    raise TypeError(f"not JSON serializable: {type(o).__name__}")
+
+
+def write_allowed_from(addr):
+    """True for loopback and Tailnet addresses — who may use the writes."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or any(ip in net for net in TAILNET)
+
+
+def serve(cfg, led, host="127.0.0.1", port=8787,
+          get_head=_default_get_head, check_interval=60):
     """Start the console server. Blocks until interrupted.
 
     `cfg` is only used to resolve the initial bind address by the caller;
     the server itself re-reads `~/.mahler/config.toml` on every request
     (`config.load()`), so projects added to config after the server started
     show up without a restart (mahler#50).
+
+    If the checkout's git HEAD changes while serving (code updated by the
+    launcher), the server shuts itself down so launchd's KeepAlive restarts
+    it on the new code.  *get_head* and *check_interval* are parameters so
+    tests can drive them.
     """
-    import threading
     handler = type("Handler", (_Handler,),
                    {"led": led, "lock": threading.Lock(),
                     "load_cfg": staticmethod(config.load)})
     httpd = ThreadingHTTPServer((host, port), handler)
     print(f"mahler console: http://{host}:{port}/ (Ctrl-C to stop)")
+    old_head = [get_head()]
+    if old_head[0] is not None:
+        t = threading.Thread(
+            target=_check_for_update,
+            args=(httpd, get_head, old_head, check_interval),
+            daemon=True,
+        )
+        t.start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
