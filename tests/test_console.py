@@ -721,6 +721,10 @@ class RecordedIdleTests(unittest.TestCase):
     def hold(self, kind, number=1, **data):
         return {"kind": kind, "project": "mahler", "number": number, **data}
 
+    def item(self, n, title=None):
+        return {"ref": f"mahler#{n}",
+                "url": f"https://github.com/mkny13/mahler/issues/{n}", "title": title}
+
     def test_route_grouping_and_size_only(self):
         holds = [self.hold("no_platform", n, role="build", size="m", blockers={"size": ["kilo"]})
                  for n in (1, 2)]
@@ -728,9 +732,16 @@ class RecordedIdleTests(unittest.TestCase):
                             blockers={"busy": ["kilo"], "over": ["agy-gemini", "agy-claude"],
                                       "peak": ["claude"], "size": ["cline-free"]})]
         self.assertEqual(self.idle(holds)["reasons"], [
-            {"text": "2 item(s) need a builder that takes size:m, and none in the route does."},
+            {"text": "2 item(s) need a builder that takes size:m, and none in the route does.",
+             "items": [self.item(1), self.item(2)]},
             {"text": "1 plan item(s) have no platform with headroom — busy: kilo; past the line: "
-                     "agy-claude, agy-gemini; peak hours: claude; too small: cline-free."}])
+                     "agy-claude, agy-gemini; peak hours: claude; too small: cline-free.",
+             "items": [self.item(3)]}])
+
+    def test_route_items_carry_the_title(self):
+        self.led.upsert_item("mahler", 1, title="Fix the thing", state="ready")
+        holds = [self.hold("no_platform", 1, role="build", size="m", blockers={"busy": ["kilo"]})]
+        self.assertEqual(self.idle(holds)["reasons"][0]["items"], [self.item(1, "Fix the thing")])
 
     def test_settling_dependencies_overlap_and_capacity(self):
         minutes = config.project_policy(self.cfg, "mahler")["settle_minutes"]
@@ -741,16 +752,56 @@ class RecordedIdleTests(unittest.TestCase):
         reasons = self.idle(holds)["reasons"]
         self.assertIn({"text": f"1 item(s) were just sorted and settle for {minutes} minutes "
                               "before a build starts.", "countdown": "first in 2m"}, reasons)
-        for text in ("mahler#2 waits for mahler#6 and mahler#7 to close.",
-                     "mahler#3 waits — area:console already in progress.",
-                     "mahler#4 waits — a.py, b.py already in progress.",
-                     "mahler is at its limit of 0 run(s)."):
+        for text in ("mahler#3 waits — area:console already in progress.",
+                     "mahler#4 waits — a.py, b.py already in progress."):
             self.assertIn({"text": text}, reasons)
+        self.assertIn({"text": "mahler#2 waits for mahler#6 and mahler#7 to close.",
+                       "items": [self.item(2)]}, reasons)
+        self.assertIn({"text": "mahler is at its limit of 0 run(s).",
+                       "items": [self.item(n) for n in range(1, 6)]}, reasons)
+
+    def test_capacity_lists_only_ready_items_and_lease_host_also_inbox(self):
+        self.led.upsert_item("mahler", 6, state="inbox")
+        holds = [{"kind": "capacity", "project": "mahler", "max_parallel": 0}]
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "mahler is at its limit of 0 run(s).",
+             "items": [self.item(n) for n in range(1, 6)]}])
+        holds = [{"kind": "lease_host", "project": "mahler"}]
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "mahler waits — its canonical lease host is unavailable.",
+             "items": [self.item(n) for n in range(1, 7)]}])
 
     def test_many_dependencies_are_grouped(self):
         holds = [self.hold("deps", n, on=[99]) for n in range(1, 5)]
         self.assertEqual(self.idle(holds)["reasons"], [
-            {"text": "4 items wait for other issues to close."}])
+            {"text": "4 items wait for other issues to close.",
+             "items": [self.item(n) for n in range(1, 5)]}])
+
+    def test_more_than_twenty_dependencies_truncate_with_a_note(self):
+        for n in range(1, 26):
+            self.led.upsert_item("mahler", n, title=f"item {n}", state="ready")
+        holds = [self.hold("deps", n, on=[99]) for n in range(1, 26)]
+        reasons = self.idle(holds)["reasons"]
+        self.assertEqual(reasons[0]["text"], "25 items wait for other issues to close.")
+        self.assertEqual(len(reasons[0]["items"]), 20)
+        self.assertEqual(reasons[0]["more"], 5)
+        self.assertEqual(reasons[0]["items"][0], self.item(1, "item 1"))
+        self.assertEqual(reasons[0]["items"][-1], self.item(20, "item 20"))
+
+    def test_page_renders_the_toggle_but_only_when_there_are_items(self):
+        idle = {"headline": "Nothing is running. Two things are holding it:",
+                "reasons": [
+                    {"text": "2 item(s) need a builder that takes size:m.",
+                     "items": [self.item(1, "Fix the thing"), self.item(2)], "more": 1},
+                    {"text": "claude is past its quota line."}]}
+        doc = page._idle({"idle": idle}, phone=False)
+        self.assertIn('data-why="why-0"', doc)
+        self.assertIn('data-toggle="why-0"', doc)
+        self.assertIn("▾ 3 items", doc)
+        self.assertIn("+1 more", doc)
+        self.assertIn('href="https://github.com/mkny13/mahler/issues/1"', doc)
+        self.assertIn("Fix the thing", doc)
+        self.assertNotIn('data-toggle="why-1"', doc)
 
     def test_freshness_empty_and_malformed_snapshots(self):
         holds = [self.hold("area", area="console")]

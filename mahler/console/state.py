@@ -22,6 +22,7 @@ DIGEST_SHOWN = 20
 SEEN_KEY = "console_seen_event"        # kv: the newest event id marked seen
 DIGEST_HOURS = 24                      # older unseen events stop counting as new
 CAPTURE_RECENT_MINUTES = 10            # how long a capture's confirmation note lingers
+REASON_ITEMS_CAP = 20                  # max items shown behind an expanded hold reason
 
 # bookkeeping the event stream leaves out: every lease and heartbeat, stats
 # rows, and the console's own read marker
@@ -127,6 +128,19 @@ def _ref(project, number):
 def _issue_url(cfg, project, number):
     repo = config.project_policy(cfg, project).get("repo")
     return f"https://github.com/{repo}/issues/{number}" if repo else None
+
+
+def _reason_items(cfg, pending, entries):
+    """The concrete items behind a hold reason, each as ref + GitHub url + title.
+
+    entries is [(project, number), ...]; a number no longer pending still
+    shows (the hold snapshot named it), just without a title."""
+    out = []
+    for project, number in entries:
+        full = next((i for i in pending.get(project, []) if i["number"] == number), None)
+        out.append({"ref": _ref(project, number), "url": _issue_url(cfg, project, number),
+                    "title": full["title"] if full else None})
+    return out
 
 
 def _pr_url(cfg, project, pr):
@@ -712,9 +726,13 @@ def _hold_reasons(cfg, holds, pending, hot, now):
         elif (kind, project) not in seen:
             seen.add((kind, project))
             if kind == "capacity":
-                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s)."})
+                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s).",
+                            "items": _reason_items(cfg, pending, [(project, i["number"])
+                                            for i in pending[project] if i["state"] == "ready"])})
             elif kind == "lease_host":
-                out.append({"text": f"{project} waits — its canonical lease host is unavailable."})
+                out.append({"text": f"{project} waits — its canonical lease host is unavailable.",
+                            "items": _reason_items(cfg, pending, [(project, i["number"])
+                                            for i in pending[project]])})
             elif kind == "hot_hold" and not any(x["project"] == project for x in hot):
                 out.append({"text": f"You have been working in {project}, so new builds there wait "
                                     f"until {pol['hot_hold_minutes']} minutes after you stop."})
@@ -732,18 +750,27 @@ def _hold_reasons(cfg, holds, pending, hot, now):
                                 for k, label in BLOCKER_LABELS.items() if k in groups)
             text = (f"{len(items)} {role} item(s) have no platform with headroom — "
                     f"{summary or 'no platforms in the route'}.")
-        out.append({"text": text})
+        out.append({"text": text,
+                    "items": _reason_items(cfg, pending,
+                                           [(h["project"], h["number"]) for h in items])})
     for minutes, times in settling.items():
         first = max(1, int((min(times) - now).total_seconds() / 60 + .999))
         out.append({"text": f"{len(times)} item(s) were just sorted and settle for "
                             f"{minutes} minutes before a build starts.",
                     "countdown": f"first in {first}m"})
     if len(deps) > 3:
-        out.append({"text": f"{len(deps)} items wait for other issues to close."})
+        reason = {"text": f"{len(deps)} items wait for other issues to close.",
+                  "items": _reason_items(cfg, pending,
+                                         [(h["project"], h["number"])
+                                          for h in deps[:REASON_ITEMS_CAP]])}
+        if len(deps) > REASON_ITEMS_CAP:
+            reason["more"] = len(deps) - REASON_ITEMS_CAP
+        out.append(reason)
     else:
         for h in deps:
             refs = _join(_ref(h["project"], n) for n in h["on"])
-            out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close."})
+            out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close.",
+                        "items": _reason_items(cfg, pending, [(h["project"], h["number"])])})
     return out
 
 

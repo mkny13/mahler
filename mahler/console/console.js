@@ -28,6 +28,17 @@
     try { return JSON.parse(el ? el.textContent : "{}"); } catch (e) { return {}; }
   }
 
+  // expanded hold-reason rows (mahler#269): the open state lives on <html> as
+  // data-why-<i>, which survives the 30s refresh; mirror it onto the row so
+  // CSS can show its item list
+  function syncWhy() {
+    var whys = app.querySelectorAll(".why[data-why]");
+    for (var w = 0; w < whys.length; w++) {
+      var key = whys[w].getAttribute("data-why");
+      whys[w].classList.toggle("open", root.getAttribute("data-" + key) === "open");
+    }
+  }
+
   // re-apply browser-side state to a freshly rendered #app
   function apply() {
     var theme = root.getAttribute("data-theme") || "auto";
@@ -40,6 +51,7 @@
     for (var j = 0; j < gs.length; j++) {
       gs[j].classList.toggle("open", !!groups[gs[j].getAttribute("data-group")]);
     }
+    syncWhy();
     var ovs = app.querySelectorAll("[data-run-detail]");
     var shown = false;
     for (var k = 0; k < ovs.length; k++) {
@@ -232,6 +244,7 @@
       var name = "data-" + el.getAttribute("data-toggle");
       if (root.getAttribute(name) === "open") { root.removeAttribute(name); }
       else { root.setAttribute(name, "open"); }
+      syncWhy();
       return;
     }
     if (el.hasAttribute("data-toggle-group")) {

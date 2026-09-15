@@ -111,6 +111,21 @@ a { color: var(--acc); text-decoration: none; }
 .why .txt { flex: 1; font-size: 13px; line-height: 1.45; }
 .why .cd { font-size: 11px; color: var(--mut); white-space: nowrap; }
 .why .btn { flex: none; font-size: 12px; }
+/* an aggregated hold reason that expands to the items behind it (mahler#269) */
+.why[data-why] { flex-direction: column; gap: 2px; align-items: stretch; }
+.why[data-why] .line { display: flex; gap: 14px; align-items: baseline; }
+.why-toggle { font-size: 12px; color: var(--mut); padding: 3px 0; align-self: flex-start;
+              display: flex; gap: 6px; align-items: center; }
+.why-toggle .o { display: none; }
+.why.open .why-toggle .c { display: none; }
+.why.open .why-toggle .o { display: inline; }
+.why-items { display: none; padding: 2px 0 4px; }
+.why.open .why-items { display: block; }
+.why-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 0;
+            border-top: 1px solid var(--line); font-size: 12.5px; }
+.why-item .ref { font-size: 11px; flex: none; color: var(--mut); }
+.why-item .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.why-item.more { color: var(--mut); font-size: 11.5px; }
 .capline { font-size: 13px; line-height: 1.55; color: var(--mut); }
 
 .banners { display: flex; flex-direction: column; gap: 10px; }

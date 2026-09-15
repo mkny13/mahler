@@ -117,7 +117,7 @@ def _banners(s):
 def _idle(s, phone):
     idle = s["idle"]
     out = [f'<div class="idle"><span class="idle-h">{e(idle["headline"])}</span>']
-    for r in idle["reasons"]:
+    for i, r in enumerate(idle["reasons"]):
         cd = f'<span class="cd mono">{e(r["countdown"])}</span>' if r.get("countdown") else ""
         btn = ""
         if r.get("act"):
@@ -126,13 +126,39 @@ def _idle(s, phone):
         elif r.get("href"):
             btn = (f'<a class="btn btn-acc" href="{e(r["href"])}" target="_blank" rel="noopener">'
                    f'{e(r["action"])}</a>')
-        if phone:
-            foot = f'<div class="foot">{cd}{btn}</div>' if cd or btn else ""
-            out.append(f'<div class="why"><span class="txt">{e(r["text"])}</span>{foot}</div>')
+        tail = (f'<div class="foot">{cd}{btn}</div>' if phone else f'{cd}{btn}') if cd or btn else ""
+        items = _why_items(r, i)
+        if items:
+            out.append(f'<div class="why" data-why="why-{i}">'
+                       f'<div class="line"><span class="txt">{e(r["text"])}</span>{tail}</div>'
+                       f'{items}</div>')
+        elif phone:
+            out.append(f'<div class="why"><span class="txt">{e(r["text"])}</span>{tail}</div>')
         else:
             out.append(f'<div class="why"><span class="txt">{e(r["text"])}</span>{cd}{btn}</div>')
     out.append("</div>")
     return "".join(out)
+
+
+def _why_items(r, i):
+    """The expandable list behind an aggregated hold reason, or "" when the
+    reason has no concrete items (so no toggle is rendered). The open state
+    lives on <html> as data-why-<i>; console.js mirrors it onto the row."""
+    entries = r.get("items")
+    if not entries:
+        return ""
+    rows = []
+    for it in entries:
+        title = it["title"] or it["ref"]
+        rows.append(f'<div class="why-item"><span class="mono ref">{_a(it["url"], it["ref"])}</span>'
+                    f'<span class="title">{_a(it["url"], title)}</span></div>')
+    if r.get("more"):
+        rows.append(f'<div class="why-item more">+{r["more"]} more</div>')
+    n = len(entries) + (r.get("more") or 0)
+    word = f'{n} item{"s" if n != 1 else ""}'
+    return (f'<button class="why-toggle" data-toggle="why-{i}">'
+            f'<span class="c">▾ {e(word)}</span><span class="o">▴ hide</span></button>'
+            f'<div class="why-items">{"".join(rows)}</div>')
 
 
 def _peak_act(peak):
