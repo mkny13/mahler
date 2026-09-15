@@ -71,6 +71,9 @@ def _sorted_ready(e):
 
 def _sorted_split(e):
     e.set_state("parent", "split into sub-issues")
+    # Children fetched during planning need reconsidering before scheduling,
+    # even when their GitHub content has not changed (D21, mahler#236).
+    e.led.set_kv(f"etag:{e.project}", None)
     return True
 
 
