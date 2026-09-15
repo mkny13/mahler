@@ -239,6 +239,19 @@ def area_of(labels_json):
     return None
 
 
+def files_of(files_json):
+    """The item's planned file list, parsed from its `## Plan` section's
+    `Files:` line at sync time (`gh.files_of`, mahler#210) — mechanical
+    mutual exclusion alongside `area_of`'s label-based one: two items whose
+    planned files intersect aren't run concurrently, even when neither
+    carries an `area:` label. `area:` stays as a manual override for overlap
+    the file list doesn't capture."""
+    try:
+        return json.loads(files_json or "[]")
+    except json.JSONDecodeError:
+        return []
+
+
 def needs_plan(labels_json):
     """True when the labels indicate this item needs Opus planning (DESIGN D21):
     type:goal, size:l, or any pass:* label."""
@@ -281,13 +294,17 @@ def schedule(ctx, projects):
 
     # area: label collision (D6): items sharing an area aren't run concurrently.
     # Seed busy_areas from what's currently running...
+    # Planned-file collision (mahler#210): same idea, mechanical — seed
+    # busy_files from the same running/verifying items' `## Plan` Files: list.
     busy_areas = set()
+    busy_files = set()
     for r in active:
         r_item = led.item(r["project"], r["number"])
         if r_item:
             area = area_of(row_get(r_item, "labels", "[]"))
             if area:
                 busy_areas.add(area)
+            busy_files.update(files_of(row_get(r_item, "files", "[]")))
 
     # a finished build keeps its project's build slot until it merges (D19)
     in_flight = {}
@@ -300,6 +317,7 @@ def schedule(ctx, projects):
             area = area_of(row_get(it, "labels", "[]"))
             if area:
                 busy_areas.add(area)
+            busy_files.update(files_of(row_get(it, "files", "[]")))
 
     hot = {}
     for p in projects:
@@ -371,6 +389,12 @@ def schedule(ctx, projects):
             if area and area in busy_areas:
                 ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
                 continue
+            item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
+            file_overlap = busy_files.intersection(item_files)
+            if file_overlap:
+                ctx.say(f"{name}#{n}: waiting — files already in progress: "
+                        f"{', '.join(sorted(file_overlap))}")
+                continue
             if led.lease(name, n):
                 continue
             remote_error = getattr(led, "remote_error", lambda _project: None)(name)
@@ -410,6 +434,7 @@ def schedule(ctx, projects):
             per_platform[platform] = per_platform.get(platform, 0) + 1
             if area:
                 busy_areas.add(area)
+            busy_files.update(item_files)
             group = cfg["platforms"][platform].get("quota_group", platform)
             if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
                 for p in cfg["platforms"]:

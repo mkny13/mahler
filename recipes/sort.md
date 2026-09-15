@@ -17,9 +17,12 @@ credentials or money.
 
        ## Problem / goal
        ## Plan
-       - files to change
+       Files:
+       - `path/to/file.py`
+       - `path/to/other.py`
+       Steps:
        - ordered steps
-       - test that proves it
+       Test: what proves it
        ## Done when
        - [ ] concrete, checkable acceptance checks an agent can verify
        ## Needs a human to check
@@ -27,7 +30,13 @@ credentials or money.
        ## Context
        ## Out of scope
 
-   Keep any existing `Depends on: #N` line.
+   Keep any existing `Depends on: #N` line. The `Files:` list right under `## Plan` is parsed
+   mechanically on every sync (`gh.files_of`, mahler#210): the scheduler blocks two
+   `ready`/`working` issues from building at once whenever their `Files:` lists share a path —
+   the same tick it checks `area:` collisions, and it needs no label or judgment call from you.
+   So list every file this issue's build will actually touch, one per bullet (or inline,
+   comma-separated, for a short list) — that's what makes the check work, not a guess about
+   whether some other issue happens to overlap.
 4. Labels (`gh issue edit … --add-label`): exactly one of `type:bug` `type:feature`
    `type:chore` `type:goal`; exactly one of `size:s` `size:m` `size:l`; and `p2` unless a
    p-label is already present. Never add or remove `mahler:*` labels — Mahler owns those.
@@ -39,13 +48,15 @@ credentials or money.
      (`AGENTS.md`, `CLAUDE.md`), and security/credential boundaries are ALWAYS `size:m` minimum (never `size:s`).
    - `size:l` (large / multi-step): broad refactors, new subsystems, or tasks spanning multiple
      domains. Must be split into sub-issues per rule 5.
-   Optional `area:<name>` (e.g. `area:router`, `area:scheduler-tick`): only when you're
-   confident this issue's work will touch the same files as another currently-open issue —
-   neither blocks the other, but Mahler won't run them at the same time. Keep the name short
+   Optional `area:<name>` (e.g. `area:router`, `area:scheduler-tick`): the scheduler's
+   `Files:`-list check (above) already catches literal file-level overlap on its own — you
+   don't need to hand-detect that. Use `area:` only for overlap the file list can't see: two
+   issues that touch the same runtime behavior through different files. Keep the name short
    and specific; a broad one (`area:mahler`) serializes everything and defeats the point.
-   Don't add it defensively — only on real, confident file-level overlap. Create the label
-   first if needed: `gh label create area:<name> --color 0052cc --force -R $repo`, then
-   `gh issue edit --add-label area:<name>` on both/all the colliding issues.
+   Don't add it defensively — only on real, confident behavioral overlap that isn't already a
+   shared file. Create the label first if needed: `gh label create area:<name> --color 0052cc
+   --force -R $repo`, then `gh issue edit --add-label area:<name>` on both/all the colliding
+   issues.
 5. If it is `size:l`, split it into 2–5 sub-issues, each small enough for one
    agent run and one mergeable PR with its own test. Never split below that. Give
    each sub-issue the full body shape above, including a concrete `## Plan` and

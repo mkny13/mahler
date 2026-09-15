@@ -292,6 +292,15 @@ Two rules use this:
   sharing an `area:` label aren't run concurrently — `tick.schedule()` gates `build`/`fix`
   starts on area collision against both running and in-flight (`verifying`) items
   (mahler#197). Per-project `max_parallel` defaults to 2.
+- **Planned-file collision is mechanical, not label-based** (mahler#210). `area:` adoption was
+  0%: the sort recipe's instruction to hand-label overlap had no procedure behind it — nothing
+  told the sort agent to look at *other* open issues at all. Rather than ask an LLM to predict a
+  collision in advance, `sync()` parses each issue's `## Plan` → `Files:` list into the item's
+  `files` column on every tick (`gh.files_of`), and `tick.schedule()` blocks a `build`/`fix`
+  start whenever its planned files intersect `busy_files` — seeded from running and `verifying`
+  items exactly like `busy_areas`. `area:` labels stay as a manual override for overlap the file
+  list can't see (two issues touching the same runtime behavior through different files), not
+  the primary mechanism.
 - **Shared counters** (like phish-in-app's `Dnnn` decision IDs, which collided in D208) are
   handed out by Mahler: `mahler next-id <project> D` is atomic. That removes a whole category of
   merge-time collision git can't detect.

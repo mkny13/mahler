@@ -9,6 +9,7 @@ down: a ledger-only pin used to be wiped by the next tick's upsert.
 """
 
 import copy
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -148,6 +149,98 @@ class PinTests(unittest.TestCase):
         self.sync()
         self.assertEqual(self.led.item("x", 5)["pin"], "agy-gemini")
         self.assertEqual(self.gh.edits, [])
+
+
+class SyncStoresFilesTests(unittest.TestCase):
+    """mahler#210: sync() parses each issue's `## Plan` Files: list into the
+    ledger's `files` column every tick, so the scheduler can check overlap
+    without an extra GitHub call."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["x"] = {"path": tmp.name, "repo": "x/y"}
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def sync(self, gh):
+        with mock.patch.object(self.ctx, "gh", return_value=gh):
+            sync.sync(self.ctx, "x")
+
+    def test_files_parsed_from_plan_section(self):
+        gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
+                        "body": "## Plan\nFiles:\n- `a.py`\n- `b.py`\nSteps:\n- x\n",
+                        "comments": []}})
+        self.sync(gh)
+        self.assertEqual(json.loads(self.led.item("x", 5)["files"]), ["a.py", "b.py"])
+
+    def test_files_updated_on_a_later_sync(self):
+        gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
+                        "body": "## Plan\nFiles: `a.py`\n", "comments": []}})
+        self.sync(gh)
+        self.assertEqual(json.loads(self.led.item("x", 5)["files"]), ["a.py"])
+        gh.issues[5]["body"] = "## Plan\nFiles: `a.py`, `c.py`\n"
+        self.sync(gh)
+        self.assertEqual(json.loads(self.led.item("x", 5)["files"]), ["a.py", "c.py"])
+
+    def test_missing_files_line_stores_empty_list(self):
+        gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
+                        "body": "## Plan\nSteps:\n- x\n", "comments": []}})
+        self.sync(gh)
+        self.assertEqual(json.loads(self.led.item("x", 5)["files"]), [])
+
+
+class FilesOfParsingTests(unittest.TestCase):
+    """mahler#210: the `## Plan` section's `Files:` list, parsed mechanically
+    so the scheduler can block file-overlapping builds without relying on
+    the sort agent to notice and hand-label an `area:` collision."""
+
+    def test_inline_comma_separated(self):
+        from mahler.gh import files_of
+        body = "## Plan\nFiles: `mahler/tick.py`, `mahler/gh.py`\nSteps:\n- do it\n## Done when\n"
+        self.assertEqual(files_of(body), ["mahler/tick.py", "mahler/gh.py"])
+
+    def test_bullet_list_under_bare_files_label(self):
+        from mahler.gh import files_of
+        body = (
+            "## Plan\n"
+            "Files:\n"
+            "- `mahler/tick.py`\n"
+            "- `mahler/gh.py`\n"
+            "\n"
+            "Steps:\n"
+            "- do it\n"
+            "## Done when\n"
+        )
+        self.assertEqual(files_of(body), ["mahler/tick.py", "mahler/gh.py"])
+
+    def test_bold_files_label(self):
+        from mahler.gh import files_of
+        body = "## Plan\n**Files:** `a.py`\nSteps:\n- x\n## Done when\n"
+        self.assertEqual(files_of(body), ["a.py"])
+
+    def test_no_plan_section_returns_empty(self):
+        from mahler.gh import files_of
+        self.assertEqual(files_of("## Problem\nNo plan here"), [])
+        self.assertEqual(files_of(None), [])
+
+    def test_plan_section_without_files_line_returns_empty(self):
+        from mahler.gh import files_of
+        body = "## Plan\nSteps:\n- do it\n## Done when\n"
+        self.assertEqual(files_of(body), [])
+
+    def test_none_placeholder_yields_no_files(self):
+        from mahler.gh import files_of
+        body = "## Plan\nFiles: none\nSteps:\n- x\n## Done when\n"
+        self.assertEqual(files_of(body), [])
+
+    def test_only_reads_the_plan_sections_own_files_line(self):
+        """A `Files:` mention outside `## Plan` must not leak in."""
+        from mahler.gh import files_of
+        body = "## Context\nFiles: `unrelated.py`\n## Plan\nSteps:\n- x\n## Done when\n"
+        self.assertEqual(files_of(body), [])
 
 
 class SubIssueScopeTests(unittest.TestCase):
@@ -300,9 +393,9 @@ class SortRecipeTests(unittest.TestCase):
     def test_recipe_includes_plan_and_no_split_rule(self):
         rendered = prompt.render("sort", number=6, repo="x/y", title="Child", rules="")
         self.assertIn("## Plan", rendered)
-        self.assertIn("files to change", rendered)
+        self.assertIn("Files:", rendered)
         self.assertIn("ordered steps", rendered)
-        self.assertIn("test that proves it", rendered)
+        self.assertIn("what proves it", rendered)
         self.assertIn("Do not split it", rendered)
         self.assertIn("Part of #N", rendered)
 

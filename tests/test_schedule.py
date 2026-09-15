@@ -492,6 +492,70 @@ class AreaLabelTests(unittest.TestCase):
         self.assertEqual(lines, ["a#2: would build on agy-claude"])
 
 
+class FileOverlapTests(unittest.TestCase):
+    """mahler#210: the `## Plan` Files: list, parsed at sync time into the
+    `files` column, gives mutual exclusion the same shape as `area:` labels
+    but mechanically — no label, no judgment call needed from the sort
+    agent."""
+
+    def test_overlapping_files_serializes_only_one_starts(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="ready", priority=2,
+                        files='["mahler/tick.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=30)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        led.upsert_item("a", 2, state="ready", priority=2,
+                        files='["mahler/tick.py", "mahler/gh.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#1: would build on agy-claude"])
+        self.assertIn("a#2: waiting — files already in progress: mahler/tick.py", ctx.lines)
+
+    def test_disjoint_files_both_start(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
+        led.upsert_item("a", 1, state="ready", priority=2,
+                        files='["mahler/tick.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=30)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        led.upsert_item("a", 2, state="ready", priority=2,
+                        files='["mahler/router.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(any("a#1: would build" in l for l in lines))
+        self.assertTrue(any("a#2: would build" in l for l in lines))
+
+    def test_verifying_item_holds_its_files_against_a_ready_item(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="verifying", priority=2,
+                        files='["mahler/tick.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=40)))
+        led.upsert_item("a", 2, state="ready", priority=2,
+                        files='["mahler/tick.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, [])
+        self.assertIn("a#2: waiting — files already in progress: mahler/tick.py", ctx.lines)
+
+    def test_item_with_no_files_is_never_blocked(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.upsert_item("a", 1, state="verifying", priority=2,
+                        files='["mahler/tick.py"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=40)))
+        led.upsert_item("a", 2, state="ready", priority=2, files="[]",
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(lines, ["a#2: would build on agy-claude"])
+
+
 class TierBudgetUnitTests(unittest.TestCase):
     """mahler#200: tick.tier_budget_busy() in isolation — the pure function
     behind concurrency.by_tier, before it's wired into a full schedule()

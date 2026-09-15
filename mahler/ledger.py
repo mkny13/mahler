@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS items (
     labels           TEXT NOT NULL DEFAULT '[]',
     priority         INTEGER NOT NULL DEFAULT 2,
     depends          TEXT NOT NULL DEFAULT '[]',
+    files            TEXT NOT NULL DEFAULT '[]',   -- `## Plan` Files: list (mahler#210)
     pin              TEXT,
     branch           TEXT,
     pr               INTEGER,             -- the PR the conductor opened (D18)
@@ -190,7 +191,8 @@ class Ledger:
                          ("setup_fails", "INTEGER NOT NULL DEFAULT 0"),
                          ("parent", "INTEGER"),
                          ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),
-                         ("esc_fails", "INTEGER NOT NULL DEFAULT 0")):
+                         ("esc_fails", "INTEGER NOT NULL DEFAULT 0"),
+                         ("files", "TEXT NOT NULL DEFAULT '[]'")):
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
