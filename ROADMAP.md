@@ -22,6 +22,50 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 ---
 
+## Current state (2026-09-14)
+
+Phases 0, B and 1 are done and the project has been running past the original phase
+sequence for a while — the day-to-day reality no longer matches "one phase at a time,"
+so this section says where things actually stand; the phase list below stays as the
+detailed record.
+
+- **Three projects self-managed:** `mahler`, `groundwork`, and `phish-in` (Couch Tour) are
+  all `enabled = true` and running under the same daemon (`com.mike.mahler`, launchd,
+  60s tick). Recent throughput: ~90 mahler PRs, ~45 groundwork PRs and ~50 couch-tour PRs
+  merged in the trailing 14 days. 551 unit tests pass.
+- **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
+  as any managed project, with CI-gated self-update and rollback.
+- **Interaction today is GitHub + chat + ntfy, not a phone console.** Phase 2's
+  phone-first console and Phase 3's full MCP tool set were never built as designed —
+  what shipped instead was simpler and has been enough so far:
+  - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
+    `heartbeat`, `release`, `handoff`, `next_id` — missing `ask_user`, `report_progress`,
+    `get_context` from the original Phase 3 list
+  - a read-only web status page (`mahler/serve.py`, its own launchd job) — running work,
+    quota gauges, recent events; no capture, no one-tap answers, no undo (`PATCH` is
+    rejected)
+  - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
+    a plain reply on a `needs-you` item
+  - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
+    (`mahler hooks`), and a daily digest (`digest.maybe_send`, wired into every tick)
+  - The console and the rest of the MCP tool set (Phase 2/3) remain queued, not dropped.
+- **Onboarding order diverged from the Phase 5 plan.** Couch Tour (phish-in-app) is live
+  and generating/shipping issues; **mental-jukebox, puppy-growth-chart and movebreak are
+  not onboarded** (not present in `~/.mahler/config.toml` at all) — the opposite of the
+  planned order, which put those three first and Couch Tour last pending its staging
+  sync backend.
+- **A live growing pain:** self-generated maintenance-pass audits (Phase "steady state,"
+  not an original phase — see D20) are outproducing what gets worked. Couch Tour has 72
+  open issues, 21 of them (29%) `Part N of #X` fragments of earlier audits recursively
+  splitting. The fix is already diagnosed and queued: mahler#204 (`queue_maintenance`
+  doesn't dedupe against manually-created audits with the same scope).
+- **Two other queued self-improvements** filed from a 2026-09-14 chat-session review:
+  mahler#206 (platform tier/capability assumptions never get re-verified, unlike time
+  estimates which already self-calibrate — mahler#59) and mahler#207 (time estimates
+  should be crossed by platform × size, not just platform × role).
+
+---
+
 ## Phase 0 — Spikes
 
 - [x] **S1 — Claude usage in headless runs.** Every `claude -p --output-format stream-json
@@ -109,37 +153,52 @@ and pings you. No Claude Code session involved.
 
 ## Phase 1 — POC on groundwork (built by Mahler)
 
+**Status: done.** groundwork has been running under Mahler for weeks with real throughput
+(~45 PRs merged in the trailing 14 days as of 2026-09-14); the checkpoint below happened
+in substance, even though it was never written up as a standalone doc — its answers are
+what DESIGN.md's D17–D26 decisions are.
+
 Prove the hard parts on a real app. Each bullet is an issue in the Mahler repo.
 
-1. **Interactive participation:**
-   - Claude `SessionStart` + `PreToolUse` hooks (claim nudges, heartbeat, yield delivery,
-     fence on `gh pr merge`)
-   - Mahler section in groundwork's CLAUDE.md/AGENTS.md
-   - a minimal **MCP server** (`add_item`, `claim`, `heartbeat`, `handoff`, `list_items`), so
-     Cline and Antigravity chats participate too
-2. **S3 Cline spike → Cline backend** (free models, `s` items).
-3. **groundwork onboarding:**
-   - `.mahler/project.toml` (verify, preview, smoke, release, data, environments)
-   - backlog migrated from TASKS.md and Cline Kanban into issues
-   - a Neon backup restored once
-   - groundwork disabled in `dispatch.toml`
-4. **Deploy tracking:** register each Vercel deploy as a build; run the smoke check; `shipped`
-   only when independent signals agree (D11).
-5. **Status page** over `tailscale serve` (S4 first): running work, quota gauges, recent
-   events.
+1. **Interactive participation:** [x] done
+   - [x] Claude `SessionStart` + `PreToolUse` hooks (claim nudges, heartbeat, yield delivery,
+     fence on `gh pr merge`) — plus `PostToolUse`/`UserPromptSubmit` for heartbeat, all
+     installed via `mahler hooks` (mahler/cli.py)
+   - [x] Mahler section in groundwork's CLAUDE.md/AGENTS.md
+   - [x] a minimal **MCP server** (mahler/mcp.py): `list_items`, `add_item`, `claim`,
+     `heartbeat`, `release`, `handoff`, `next_id` — Cline and Antigravity chats can
+     participate, though `ask_user`/`report_progress`/`get_context` (Phase 3) aren't there yet
+2. [x] **S3 Cline spike → Cline backend** (free models, `s` items) — `cline-free` platform.
+3. [x] **groundwork onboarding:**
+   - [x] project policy in `~/.mahler/config.toml` (verify, `scope = "label"`, `worktree_root`,
+     `link`, production-migration rules)
+   - [x] backlog migrated into issues
+   - [x] a Neon backup restored once (see Phase 4 — nightly nightly job is live)
+   - [x] groundwork disabled in the old `dispatch.toml`
+4. **Deploy tracking:** not directly verified from this review — worth a status check next
+   time groundwork ships a deploy-sensitive change.
+5. [x] **Status page** (mahler/serve.py, own launchd job): running work, quota gauges, recent
+   events. Read-only (no capture/undo) — `tailscale serve` exposure from S4 not confirmed.
 
 **Done when**, on groundwork over one real week:
 
-- at least 5 items shipped hands-off
-- at least 1 item completed after a cross-platform handoff
-- at least 1 pre-emption by a phone chat (Remote Control) with no lost work
-- zero double assignments
-- zero autonomous extra-usage spend
-- Pause works
+- [x] at least 5 items shipped hands-off
+- [x] at least 1 item completed after a cross-platform handoff (D9 handoff protocol is in
+  daily use across all three projects)
+- [ ] at least 1 pre-emption by a phone chat (Remote Control) with no lost work — not
+  confirmed either way
+- [x] zero double assignments (lease compare-and-set with epochs, unit-tested)
+- [x] zero autonomous extra-usage spend (D8: unknown usage counts as over the line)
+- [x] Pause works (`mahler pause`/`resume`)
 
 ### ◆ Checkpoint after the POC
 
-A short review before investing in UI:
+**Status: happened, informally.** No standalone writeup exists, but every question below
+has a real answer baked into DESIGN.md's decision log by now (D8 evolved into D17
+self-hosting, D20 maintenance passes, D21 size-based routing, D22 peak windows, D23 quota
+burst, D25/D26 multi-account routing — all things the POC would have surfaced). Worth a
+real half-hour review if you want the answers written down explicitly rather than inferred
+from the decisions that came out of them:
 
 - What broke? What were the real quota numbers?
 - Were the free models good enough, and how often did work escalate to Claude?
@@ -151,6 +210,12 @@ DESIGN.md gets updated with the answers.
 ---
 
 ## Phase 2 — Claude Design: Mahler's own screens
+
+**Status: not built, still queued — not superseded.** The read-only status page
+(mahler/serve.py) covers a slice of "Now" and "Backlog" viewing, but there's no capture,
+no one-tap "needs you" answers, and no Undo from a phone. Control today is GitHub
+(app/comments), ntfy pings, and chat sessions. Revisit this phase when that combination
+starts feeling like the bottleneck, rather than on a fixed schedule.
 
 Your request: a design phase after the POC for Mahler's own interfaces.
 
@@ -178,16 +243,16 @@ Your request: a design phase after the POC for Mahler's own interfaces.
 
 - [ ] The console, built to the Phase 2 designs, served over Tailscale. It needs `uv`-managed
       dependencies; this is the kernel's first step beyond the standard library.
-- [ ] Full MCP tool set (`ask_user`, `report_progress`, `next_id`, `get_context`), registered
-      in Claude Code, Cline and Antigravity. `/mahler` skill. The `handoff`/`pickup` skills
-      become Mahler-aware.
+- [~] Full MCP tool set — `next_id` shipped with the Phase 1 minimal server; `ask_user`,
+      `report_progress`, `get_context` still open. `/mahler` skill and Mahler-aware
+      `handoff`/`pickup` skills not confirmed.
 - [ ] `/mahler undo`.
 - [ ] Build registration on each deploy. A `uat-author` recipe turns each shipped issue's
       "needs a human to check" section into UAT items.
 - [ ] `mahler-uat.js` web panel in groundwork's staging/preview builds. A fail reopens the
       issue or opens a linked p1 bug with your note and screenshot. Offline queue +
       GitHub-URL fallback.
-- [ ] Daily digest ping.
+- [x] Daily digest ping — `digest.maybe_send()` runs every tick (mahler/scheduler.py).
 
 **Done when:** you log a groundwork bug from your phone, it gets fixed and deployed, you check
 it in the in-app panel and mark it passed, all without touching a laptop. A failed UAT check
@@ -220,6 +285,12 @@ store.
 
 ## Phase 5 — Cutover and rollout
 
+**Status: reordered by reality.** Couch Tour (phish-in-app) is onboarded and live —
+last in the original plan, first in practice, presumably because its own momentum outran
+the plan. **mental-jukebox, puppy-growth-chart and movebreak are not onboarded** — none
+appear in `~/.mahler/config.toml`. Worth deciding explicitly whether they're still coming
+or the plan has changed, rather than leaving it implicit.
+
 - [ ] **thread as a sensor:** anomaly flags become `type:anomaly` issues.
 - [ ] Per-project onboarding checklist, run by an agent:
   - private GitHub repo
@@ -230,15 +301,14 @@ store.
   - data inventory + first restore drill
   - disable in `dispatch.toml`
 - [ ] Onboard in this order:
-  1. **mental-jukebox**
-  2. **puppy-growth-chart**
-  3. **movebreak**
-  4. **phish-in-app / Couch Tour**:
-     - single release channel, with manual promotion dropped
-     - **a staging sync backend + side-by-side test app** so UAT listening stays out of your
-       real history (D16)
-     - `gated` lifted
-     - local Xcode/Gradle verify with canary checks
+  1. **mental-jukebox** — not started
+  2. **puppy-growth-chart** — not started
+  3. **movebreak** — not started
+  4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
+     - single release channel / staging sync backend status not confirmed from this review
+     - `gated` status not confirmed
+     - local Xcode/Gradle verify with canary checks: `canary` referenced in DESIGN D-table
+       and ROADMAP's own onboarding checklist above, not independently verified here
   5. Non-git projects, as you choose to activate them
 - [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
 - [ ] Retire the dispatch launchd timer and Cline Kanban. Point ThreadBar at Mahler, or
