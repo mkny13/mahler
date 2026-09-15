@@ -23,8 +23,8 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
   has no effect until someone re-runs `launcher/install.sh`. Say so in your final DONE
   summary (the conductor puts it on the PR), and ping via `mahler notify`.
 - **The daemon must never break itself.** Keep `mahler tick` exception-safe per project.
-  Don't add a dependency outside the standard library until the console/MCP phase
-  introduces `uv` deliberately.
+  Don't add a dependency outside the standard library until the MCP phase introduces
+  `uv` deliberately. The console stays standard library (DESIGN D27).
 - `max_parallel = 1` for this repo: one change to the conductor at a time.
 
 ## Verify
@@ -79,8 +79,11 @@ e.g. decision numbers — never invent one).
   - `platforms.py`: CLI adapters and usage readers
   - `gh.py`: GitHub — the conductor's push/PR/CI/merge machinery (D18)
   - `cli.py`: the command line
+  - `console/`: the operator console (DESIGN D27) — `state.py` (everything it shows,
+    copy included), `page.py` (phone and desktop layouts), `actions.py` (its writes),
+    `console.css`, `console.js`; the spec and screenshots are in `docs/console/`
   - the rest: `config.py` (paths and config), `notify.py` (ntfy pings), `serve.py`
-    (read-only status page), `mcp.py` (MCP server), `digest.py` (daily digest),
+    (serves the console), `mcp.py` (MCP server), `digest.py` (daily digest),
     `janitor.py` (stale worktree/old-ref cleanup), `backup.py` (database backups),
     `presence.py` (human-session detection), `redact.py` (credential redaction),
     `version.py` (version info)

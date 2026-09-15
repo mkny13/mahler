@@ -113,7 +113,7 @@ DEFAULTS = {
     "concurrency": {"total": 2},
     "scheduling": {"priority_projects": ["mahler"]},
     "ntfy": {"server": "https://ntfy.sh", "topic": "", "topic_high": ""},
-    # the read-only status page (`mahler serve`, DESIGN D10)
+    # the operator console (`mahler serve`, DESIGN D10, D27)
     "serve": {"host": "127.0.0.1", "port": 8787},
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
     # tick at/after `hour` local time; once-only via the ledger kv table
@@ -218,7 +218,7 @@ DEFAULTS = {
 # held for a short backoff. It is deliberately absent from the default routes;
 # installations opt in according to which account they want Mahler to spend.
 DEFAULTS["platforms"]["codex"] = {
-    "enabled": True, "kind": "codex", "model": "",
+    "enabled": True, "kind": "codex", "model": "", "plan": "free tier",
     "metered": False, "backoff_minutes": 60, "tier": 2,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
@@ -236,7 +236,7 @@ DEFAULTS["platforms"]["codex"] = {
 # routes — a project opting into codex adds codex-high alongside it in its own
 # routing.build override if it wants the escalation tier.
 DEFAULTS["platforms"]["codex-high"] = {
-    "enabled": True, "kind": "codex", "model": "gpt-5.6-sol",
+    "enabled": True, "kind": "codex", "model": "gpt-5.6-sol", "plan": "free tier",
     "min_size": "l", "tier": 3,
     "metered": False, "backoff_minutes": 60,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
@@ -248,7 +248,7 @@ DEFAULTS["platforms"]["codex-high"] = {
 # "unmetered" — available until a rate-limit/quota error, then backed off.
 # Its free models are weaker, so it only takes small items.
 DEFAULTS["platforms"]["cline-free"] = {
-    "enabled": True, "kind": "cline", "model": "",
+    "enabled": True, "kind": "cline", "model": "", "plan": "free tier",
     "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
@@ -341,9 +341,12 @@ def resolve_platforms(cfg):
             return {**own, "enabled": False, "error": f"bad from = {base!r}"}
         parent = resolve(base, seen | {base})
         merged = _merge(parent, own)
-        if "quota_group" not in own and "quota_group" in merged \
-                and account_of(merged) != account_of(parent):
-            merged["quota_group"] = f"{merged['quota_group']}@{account_of(merged)}"
+        if account_of(merged) != account_of(parent):
+            if "quota_group" not in own and "quota_group" in merged:
+                merged["quota_group"] = f"{merged['quota_group']}@{account_of(merged)}"
+            # a plan belongs to a login, not to the CLI it inherits from
+            if "plan" not in own:
+                merged.pop("plan", None)
         return merged
 
     cfg["platforms"] = {n: resolve(n, {n}) for n in plats}

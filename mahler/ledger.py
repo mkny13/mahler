@@ -177,7 +177,7 @@ class Ledger:
         if path != ":memory:":
             ensure_private_dir(os.path.dirname(path) or ".")
         # thread_safe=True lets a server thread use a connection made on the
-        # main thread (the status page does this); callers must then serialise
+        # main thread (the console server does this); callers must then serialise
         # access around one connection, which mahler.serve does with a lock.
         self.path = path
         self.con = sqlite3.connect(path, isolation_level=None, timeout=10,
@@ -648,6 +648,19 @@ class Ledger:
     def usage(self, platform):
         return {r["window"]: dict(r) for r in
                 self.q("SELECT * FROM usage WHERE platform=?", (platform,))}
+
+    def clear_usage(self, platform, windows):
+        """Drop `platform`'s readings for `windows` — how a backoff or hold is
+        cleared by hand (the console's Clear backoff, D27). An unmetered
+        platform with no row is available again; a metered one reads as
+        unknown until the next probe, which D8 still treats as over the line."""
+        windows = list(windows)
+        if not windows:
+            return 0
+        cur = self.con.execute(
+            f"DELETE FROM usage WHERE platform=? AND window IN ({','.join('?' * len(windows))})",
+            (platform, *windows))
+        return cur.rowcount
 
     def estimates(self):
         rows = self.q("""

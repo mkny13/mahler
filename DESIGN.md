@@ -510,6 +510,7 @@ doesn't rely on that and stops on its own thresholds regardless.
 
   The POC version is plain server-rendered pages. The real screens come from the Claude Design
   phase after the POC (ROADMAP Phase 2).
+  The designed console and how it's built: D27.
 - **MCP server** (`mahler`), registered with Claude Code, Cline and Antigravity. Tools:
   `list_items`, `add_item`, `claim`, `heartbeat`, `release`, `handoff`, `ask_user`,
   `report_progress`, `next_id`, `get_context`. This is what makes a chat an input: in any
@@ -683,10 +684,12 @@ doesn't rely on that and stops on its own thresholds regardless.
 
 - **Hub:** the Mac mini. It's already always-on and hosts Remote Control and dispatch. The
   MacBook and the Pixel are clients only. No multi-machine scheduling.
-- **Language:** Python 3.12+, like thread and dispatch. Dependencies are pinned with `uv`, since
-  Mahler needs a web server and the MCP SDK, unlike the stdlib-only thread.
+- **Language:** Python 3.12+, like thread and dispatch. Dependencies would be pinned with `uv`;
+  so far none are needed (the console is standard library, D27), and the MCP SDK is the
+  likely first.
 - **Components:**
-  - web: FastAPI + server-rendered HTML (HTMX); minimal JavaScript, phone-friendly
+  - web: server-rendered HTML with minimal JavaScript, phone-friendly — standard
+    library, not the FastAPI + HTMX first planned here (D27)
   - database: SQLite, WAL
   - MCP: the official Python SDK (streamable HTTP on the tailnet, stdio shim for local clients)
   - GitHub: `gh` / REST, using your existing `gh` auth
@@ -747,9 +750,8 @@ itself needs a stable place to stand:
      ticks
 - Mahler's own repo runs with `max_parallel = 1`, so changes to the conductor land one at a
   time.
-- The bootstrap is **Python standard library only**, like thread and dispatch. The web
-  console and the MCP server (which need `uv`-managed dependencies) are later issues Mahler
-  builds for itself.
+- The bootstrap is **Python standard library only**, like thread and dispatch. The MCP
+  server may bring the first `uv`-managed dependency; the console doesn't need one (D27).
 
 ### D18 — Agents build; the conductor ships
 
@@ -1046,6 +1048,49 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   no override even though it spends two compute accounts.
 - Only `mahler` sets `accounts = ["personal", "work"]`. Nothing else changes: a project that
   still names a single `account` keeps D25's exact behaviour, unchanged.
+
+### D27 — The operator console: server-rendered, standard library, writes through the tick
+
+Decided 2026-09-15, when the Phase 2 design came back from Claude Design. The approved spec
+is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, copy final.
+
+- **Standard library, not FastAPI and HTMX** (this amends D14). The console is HTML rendered
+  by `mahler serve` plus a small vanilla script. No framework, no bundler, no `uv`. The
+  design needs none of them, and the daemon must never break itself on a dependency.
+- **One state, two layouts.** `mahler/console/state.py` builds one plain-data snapshot,
+  including every sentence the page shows, and `page.py` lays it out for desktop and for
+  phone in the same document; a media query picks. What only the browser needs to know
+  (view, tab, theme, expanded groups, an open overlay) lives on `<html>`, and the 30-second
+  refresh swaps the rest. The server is the only renderer: after every write the page
+  simply re-renders from it.
+- **Writes are `POST /api/<action>`**, and each one writes a ledger event. They're accepted
+  only from this machine (which is how `tailscale serve` connects) or a Tailscale address,
+  with an `X-Mahler-Console: 1` header, a JSON body, and a same-origin `Origin`. A cross-site
+  page can't send that header without a CORS preflight, and the server answers none.
+  - Writes that only touch the ledger apply at once, as `mahler pause` and `mahler peak off`
+    already do from outside the tick: pause and resume, the peak override, clearing a
+    backoff, marking the digest seen.
+  - Writes that reach GitHub or a running agent (answering a needs-you item, UAT pass and
+    fail, capture, stop-and-hand-off, a revert) are queued in the ledger and applied by the
+    tick. Every GitHub call keeps the project's own login (D25), and only the tick touches
+    runs and leases.
+- **An answer is a GitHub comment.** The tick posts it on the issue after a 60-second grace,
+  which is what Undo cancels, and the existing reply-means-answer path re-sorts the item.
+  No second state machine.
+- **Ready to test** lists shipped issues whose PR carried a "Needs a human to check" list
+  and that have no verdict yet (D10). Pass records the verdict. Fail files a linked
+  `type:bug p1` with your note and the SHA, which routes like any other bug.
+- **Undo a merge goes through the normal pipeline.** The tick makes the revert commit,
+  files the issue and hands it to the conductor, so CI gates a revert like any change. The
+  console always asks first.
+- **Why nothing is running** is recorded by the scheduler every tick, not guessed by the
+  page. Until it is, the page derives what it can see from the ledger: peak hours, quota
+  lines, backoffs, a project slot held by an unmerged change, hot holds.
+- **The peak override from the console holds until you switch it back**, as the design's
+  copy says. `mahler peak off` keeps its timed default, and `mahler peak on` or Restore
+  clears either.
+- The event stream is a view one click away, never ambient. Banners appear only in Triage
+  and Needs you, one expanded at a time.
 
 ### D15 — Deliberately not doing
 

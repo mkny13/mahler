@@ -41,14 +41,15 @@ detailed record.
   - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
     `heartbeat`, `release`, `handoff`, `next_id` — missing `ask_user`, `report_progress`,
     `get_context` from the original Phase 3 list
-  - a read-only web status page (`mahler/serve.py`, its own launchd job) — running work,
-    quota gauges, recent events; no capture, no one-tap answers, no undo (`PATCH` is
-    rejected)
+  - the operator console (`mahler serve`, its own launchd job; DESIGN D27), replacing the
+    read-only status page on 2026-09-15 — every view read-only so far, plus pause, the peak
+    override, clearing a backoff and marking the digest seen
   - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
     a plain reply on a `needs-you` item
   - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
     (`mahler hooks`), and a daily digest (`digest.maybe_send`, wired into every tick)
-  - The console and the rest of the MCP tool set (Phase 2/3) remain queued, not dropped.
+  - The console's remaining writes (`area:console` issues) and the rest of the MCP tool set
+    (Phase 3) remain queued, not dropped.
 - **Onboarding order diverged from the Phase 5 plan.** Couch Tour (phish-in-app) is live
   and generating/shipping issues; **mental-jukebox, puppy-growth-chart and movebreak are
   not onboarded** (not present in `~/.mahler/config.toml` at all) — the opposite of the
@@ -211,15 +212,13 @@ DESIGN.md gets updated with the answers.
 
 ## Phase 2 — Claude Design: Mahler's own screens
 
-**Status: not built, still queued — not superseded.** The read-only status page
-(mahler/serve.py) covers a slice of "Now" and "Backlog" viewing, but there's no capture,
-no one-tap "needs you" answers, and no Undo from a phone. Control today is GitHub
-(app/comments), ntfy pings, and chat sessions. Revisit this phase when that combination
-starts feeling like the bottleneck, rather than on a fixed schedule.
+**Status: the console is designed (2026-09-15).** The approved canvas and spec are in
+[docs/console/design.md](docs/console/design.md), and building it is Phase 3's first item
+(DESIGN D27). The in-app UAT panel and the notification copy are not designed yet.
 
 Your request: a design phase after the POC for Mahler's own interfaces.
 
-- [ ] **Console, phone-first:**
+- [x] **Console, phone-first** (approved 2026-09-15, docs/console/design.md):
   - **Capture:** text, voice via the keyboard, photo or screenshot, project picker
   - **Needs you:** one-tap answers
   - **Ready to test**
@@ -241,8 +240,11 @@ Your request: a design phase after the POC for Mahler's own interfaces.
 
 ## Phase 3 — Intake and the UAT loop
 
-- [ ] The console, built to the Phase 2 designs, served over Tailscale. It needs `uv`-managed
-      dependencies; this is the kernel's first step beyond the standard library.
+- [~] The console, built to the Phase 2 designs, served over Tailscale — standard library,
+      no `uv` (DESIGN D27). Shipped 2026-09-15: every read-only view on phone and desktop,
+      plus pause, the peak override, clearing a backoff and marking the digest seen. The rest
+      (answers, UAT, capture, stop, revert, the live log, scheduler-recorded idle reasons)
+      is filed as `area:console` issues.
 - [~] Full MCP tool set — `next_id` shipped with the Phase 1 minimal server; `ask_user`,
       `report_progress`, `get_context` still open. `/mahler` skill and Mahler-aware
       `handoff`/`pickup` skills not confirmed.
