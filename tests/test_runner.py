@@ -17,8 +17,16 @@ def write(path, text, mode="w"):
         fh.write(text)
 
 
-def sh(cwd, *args):
-    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+def _no_git_config_overrides(env):
+    return {k: v for k, v in env.items()
+            if not (k == "GIT_CONFIG_COUNT" or k.startswith("GIT_CONFIG_KEY_")
+                    or k.startswith("GIT_CONFIG_VALUE_"))}
+
+
+def sh(cwd, *args, env=None):
+    full = _no_git_config_overrides({**os.environ, **(env or {})})
+    return subprocess.run(args, cwd=cwd, check=True, capture_output=True,
+                          text=True, env=full).stdout.strip()
 
 
 class SnapshotTests(unittest.TestCase):

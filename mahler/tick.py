@@ -43,11 +43,23 @@ def queue_maintenance(ctx, projects):
         items = led.items(p["name"])
         
         # D20: at most one pass in flight per project. If any pass:* item
-        # is still open, skip all passes for now.
+        # or manually-created audit with a matching pass title is still open,
+        # skip all passes for now (issue #204).
+        #
+        # Note on scope matching (issue #204): we match explicit pass:* labels
+        # and exact/normalized MAINTENANCE_TEXT titles. Free-form manual audit
+        # titles with different wording (e.g. #57 vs #81) are intentionally not
+        # heuristically guessed here to avoid false positives against unrelated
+        # type:goal / feature items; manual audits should use the canonical pass
+        # title or carry a pass:<name> label.
+        pass_titles = {text[0].strip().lower() for text in MAINTENANCE_TEXT.values()}
         has_open_pass = False
         for it in items:
+            if it["state"] == "done":
+                continue
             labels = json.loads(it["labels"] or "[]")
-            if any(l.startswith("pass:") for l in labels) and it["state"] != "done":
+            title = (it["title"] or "").strip().lower()
+            if any(l.startswith("pass:") for l in labels) or title in pass_titles:
                 has_open_pass = True
                 break
         if has_open_pass:
@@ -55,12 +67,14 @@ def queue_maintenance(ctx, projects):
         
         for pass_name in passes:
             label = f"pass:{pass_name}"
+            pass_title = MAINTENANCE_TEXT[pass_name][0].strip().lower()
             skip = False
             for it in items:
                 labels = json.loads(it["labels"] or "[]")
-                if label not in labels:
+                title = (it["title"] or "").strip().lower()
+                if label not in labels and title != pass_title:
                     continue
-                # D20: only one pass in flight per project — an open pass:* item
+                # D20: only one pass in flight per project — an open pass item
                 # was already caught above, so here we only handle done items.
                 if it["state"] != "done":
                     skip = True
