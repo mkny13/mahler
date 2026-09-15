@@ -157,6 +157,60 @@ class BacklogTests(unittest.TestCase):
         self.assertEqual(s["backlog_total"], 4)
         self.assertNotIn("old", [g["project"] for g in s["backlog"]])
 
+    def test_items_carry_parent_and_depends(self):
+        """mahler#270: depends excludes numbers that are done or belong to
+        another project, mirroring the filter tick._candidates already
+        applies when it raises a deps hold."""
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 1, title="a", state="done")
+        led.upsert_item("mahler", 2, title="b", state="ready")
+        led.upsert_item("groundwork", 99, title="cross-project", state="ready")
+        led.upsert_item("mahler", 3, title="c", state="ready", parent=2,
+                        depends=json.dumps([1, 2, 99]))
+        s = state.build(cfg, led)
+        g = next(g for g in s["backlog"] if g["project"] == "mahler")
+        row = next(i for i in g["items"] if i["ref"] == "mahler#3")
+        self.assertEqual(row["parent"], 2)
+        self.assertEqual(row["depends"], [2])   # not the done #1 or groundwork's #99
+
+
+class DepGraphTests(unittest.TestCase):
+    def fixture(self, number, parent=None, depends=None, priority=2):
+        return {"number": number, "parent": parent, "depends": depends or [],
+                "priority": priority, "ref": f"mahler#{number}", "url": None,
+                "title": f"item {number}", "state": "ready", "tone": "mut",
+                "p": "p2", "p1": False}
+
+    def test_ranks_and_edge_kinds(self):
+        """A parent with two children, one depending on the other: both edge
+        kinds appear, and rank follows the longest path to each node."""
+        items = [self.fixture(1), self.fixture(2, parent=1), self.fixture(3, parent=1, depends=[2])]
+        g = state._graph(items)
+        self.assertEqual({n["number"]: n["rank"] for n in g["nodes"]}, {1: 0, 2: 1, 3: 2})
+        self.assertEqual({(e["from"], e["to"], e["kind"]) for e in g["edges"]},
+                         {(1, 2, "parent"), (1, 3, "parent"), (2, 3, "depends")})
+
+    def test_cycle_terminates_instead_of_hanging(self):
+        items = [self.fixture(1, depends=[2]), self.fixture(2, depends=[1])]
+        g = state._graph(items)   # must return, not loop forever
+        self.assertEqual({n["number"] for n in g["nodes"]}, {1, 2})
+        self.assertEqual({n["rank"] for n in g["nodes"]}, {0})   # neither side resolves
+
+    def test_no_relationships_still_graphs_every_item_at_rank_0(self):
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 1, title="a", state="ready")
+        led.upsert_item("mahler", 2, title="b", state="ready")
+        s = state.build(cfg, led)
+        g = s["dep_graph"]["mahler"]
+        self.assertEqual(g["edges"], [])
+        self.assertTrue(all(n["rank"] == 0 for n in g["nodes"]))
+
+    def test_single_item_project_is_skipped(self):
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 1, title="a", state="ready")
+        s = state.build(cfg, led)
+        self.assertNotIn("mahler", s["dep_graph"])
+
 
 class QuotaTests(unittest.TestCase):
     def rows(self, cfg, led):
@@ -502,6 +556,18 @@ class PageTests(unittest.TestCase):
         frag = page.app(state.build(self.cfg, self.led))
         self.assertNotIn("<html", frag)
         self.assertIn('id="counts"', frag)
+
+    def test_dependencies_graph_toggle_is_desktop_only(self):
+        """mahler#270: a project with more than one open item gets a List/Graph
+        toggle and an SVG graph on desktop; phone Browse never renders it."""
+        self.led.upsert_item("mahler", 10, title="another one", state="ready")
+        s = state.build(self.cfg, self.led)
+        desktop = page._desktop(s)
+        phone = page._phone(s)
+        self.assertIn('data-toggle-view="mahler"', desktop)
+        self.assertIn('class="dep-graph"', desktop)
+        self.assertNotIn('data-toggle-view', phone)
+        self.assertNotIn('class="dep-graph"', phone)
 
     def test_design_non_negotiables(self):
         for prop in ("transition", "animation", "box-shadow"):
