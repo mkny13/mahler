@@ -492,6 +492,128 @@ class AreaLabelTests(unittest.TestCase):
         self.assertEqual(lines, ["a#2: would build on agy-claude"])
 
 
+class TierBudgetUnitTests(unittest.TestCase):
+    """mahler#200: tick.tier_budget_busy() in isolation — the pure function
+    behind concurrency.by_tier, before it's wired into a full schedule()
+    pass. Tiers here are config.py's current cline-free/kilo=1, agy-claude/
+    codex/copilot=2, agy-gemini/claude/codex-high/copilot-high=3, claude-opus=4."""
+
+    def test_absent_by_tier_blocks_nothing(self):
+        cfg = mk_cfg({"a": proj()})
+        self.assertEqual(tick.tier_budget_busy(cfg, [1, 1, 3, 4]), set())
+
+    def test_below_cap_blocks_nothing(self):
+        cfg = mk_cfg({"a": proj()})
+        cfg["concurrency"]["by_tier"] = {1: 3}
+        self.assertEqual(tick.tier_budget_busy(cfg, [1, 1]), set())
+
+    def test_at_cap_blocks_its_own_tier(self):
+        cfg = mk_cfg({"a": proj()})
+        cfg["concurrency"]["by_tier"] = {3: 1}
+        busy = tick.tier_budget_busy(cfg, [3])
+        self.assertIn("claude", busy)
+        self.assertIn("agy-gemini", busy)
+
+    def test_at_cap_also_blocks_tiers_above_it(self):
+        """'At or above': a budget keyed at tier 3 also blocks tier 4
+        (claude-opus) — a scarcer run can't dodge a laxer cap."""
+        cfg = mk_cfg({"a": proj()})
+        cfg["concurrency"]["by_tier"] = {3: 1}
+        busy = tick.tier_budget_busy(cfg, [3])
+        self.assertIn("claude-opus", busy)
+
+    def test_at_cap_leaves_lower_tiers_free(self):
+        cfg = mk_cfg({"a": proj()})
+        cfg["concurrency"]["by_tier"] = {3: 1}
+        busy = tick.tier_budget_busy(cfg, [3])
+        self.assertNotIn("cline-free", busy)
+        self.assertNotIn("kilo", busy)
+        self.assertNotIn("agy-claude", busy)
+
+    def test_a_scarcer_run_counts_against_a_laxer_budget(self):
+        """A tier-4 (claude-opus) run also counts against a tier-'2 and up'
+        budget — it can't evade the cap by running at an even scarcer tier."""
+        cfg = mk_cfg({"a": proj()})
+        cfg["concurrency"]["by_tier"] = {2: 1}
+        busy = tick.tier_budget_busy(cfg, [4])
+        self.assertIn("claude-opus", busy)   # tier 4
+        self.assertIn("claude", busy)        # tier 3, >= 2
+        self.assertIn("agy-claude", busy)    # tier 2
+        self.assertNotIn("cline-free", busy)  # tier 1, below the budget's floor
+
+
+class TierBudgetScheduleTests(unittest.TestCase):
+    """mahler#200: concurrency.by_tier wired into tick.schedule() — a
+    finer-grained cap layered under the existing concurrency.total ceiling,
+    never a replacement for it."""
+
+    def test_absent_by_tier_reproduces_current_behavior(self):
+        """Regression guard: with no by_tier configured, two active
+        cline-free (tier 1) runs don't stop a third from starting."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
+        led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
+        led.upsert_item("a", 3, state="ready", priority=2, labels='["size:s"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        self.assertEqual(plan(ctx, led), ["a#3: would build on cline-free"])
+
+    def test_by_tier_budget_allows_up_to_its_cap(self):
+        """by_tier = {1: 3}: two active tier-1 runs (cline-free) leave room
+        for a third — the budget isn't reached yet."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        ctx.cfg["concurrency"]["by_tier"] = {1: 3}
+        led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
+        led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
+        led.upsert_item("a", 3, state="ready", priority=2, labels='["size:s"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        self.assertEqual(plan(ctx, led), ["a#3: would build on cline-free"])
+
+    def test_by_tier_budget_blocks_once_its_cap_is_reached(self):
+        """by_tier = {1: 3}: three active tier-1 runs (cline-free + kilo)
+        block a fourth, even though each platform's own max_runs has
+        headroom left."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        ctx.cfg["concurrency"]["by_tier"] = {1: 3}
+        led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
+        led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
+        led.create_run(project="a", number=3, role="build", platform="kilo", epoch=1)
+        led.upsert_item("a", 4, state="ready", priority=2, labels='["size:s"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        self.assertEqual(plan(ctx, led), [])
+        self.assertTrue(any("a#4: no platform for build" in l for l in ctx.lines))
+
+    def test_by_tier_budget_blocks_a_second_concurrent_scarce_run(self):
+        """by_tier = {4: 1}: a size:l item that would otherwise route to
+        claude-opus (the only size:l-fitting platform seeded here) is
+        blocked while one claude-opus run is already active."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=4)}, total=4, max_runs=5)
+        ctx.cfg["concurrency"]["by_tier"] = {4: 1}
+        seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
+        led.create_run(project="a", number=1, role="build", platform="claude-opus", epoch=1)
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["size:l"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        self.assertEqual(plan(ctx, led), [])
+
+    def test_total_still_wins_even_when_by_tier_allows_more(self):
+        """concurrency.total stays the hard outer ceiling: a generous
+        by_tier budget (10) doesn't let a second run start past total=2."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=2, max_runs=5)
+        ctx.cfg["concurrency"]["by_tier"] = {1: 10}
+        led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["size:s"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=20)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        led.upsert_item("a", 3, state="ready", priority=2, labels='["size:s"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        self.assertEqual(len(lines), 1)
+
+
 class HotHoldTests(unittest.TestCase):
     """D6 layer 2: recent Claude transcript activity in a project holds its
     new builds (not sorts, not running work) until hot_hold_minutes pass.

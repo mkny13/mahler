@@ -118,6 +118,25 @@ def busy_platforms(cfg, active):
     return busy
 
 
+def tier_budget_busy(cfg, tiers):
+    """Platforms whose tier bucket has hit its concurrency budget
+    (`concurrency.by_tier`, optional, mahler#200): a budget keyed at tier T
+    caps concurrent runs at tier T *or above* — a scarcer run also counts
+    against a laxer budget, so it can't dodge a tier-3-and-up cap by running
+    at tier 4. `tiers` is the list of tiers of every active-or-just-started
+    run this tick. Layered under `concurrency.total`, never a replacement for
+    it: an absent/empty `by_tier` returns an empty set every time.
+    """
+    by_tier = cfg["concurrency"].get("by_tier") or {}
+    exhausted = [int(t) for t, cap in by_tier.items()
+                 if sum(1 for x in tiers if x >= int(t)) >= cap]
+    if not exhausted:
+        return set()
+    floor = min(exhausted)
+    return {name for name, pconf in cfg["platforms"].items()
+            if router.tier_of(pconf) >= floor}
+
+
 def sweep_orphans(ctx):
     """Orphan sweep keyed on items (not just expiring leases):
     1. Items in 'working' with no lease row and no active run -> return to 'ready'.
@@ -251,6 +270,12 @@ def schedule(ctx, projects):
         in_project[r["project"]] = in_project.get(r["project"], 0) + 1
         per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
     busy = busy_platforms(cfg, active)
+    # concurrency.by_tier (mahler#200): a finer-grained cap layered under
+    # `total` — tracked as a running list of tiers so it can be recomputed
+    # after each start this pass, same as the quota-group busy set below.
+    tiers = [router.tier_of(cfg["platforms"][r["platform"]])
+             for r in active if r["platform"] in cfg["platforms"]]
+    busy |= tier_budget_busy(cfg, tiers)
 
     # area: label collision (D6): items sharing an area aren't run concurrently.
     # Seed busy_areas from what's currently running...
@@ -394,6 +419,8 @@ def schedule(ctx, projects):
                 for p in cfg["platforms"]:
                     if cfg["platforms"][p].get("quota_group", p) == group:
                         busy.add(p)
+            tiers.append(router.tier_of(cfg["platforms"][platform]))
+            busy |= tier_budget_busy(cfg, tiers)
             started.add(name)
 
 
