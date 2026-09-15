@@ -326,3 +326,16 @@ a { color: var(--acc); text-decoration: none; }
 .pneed .reply input { height: 44px; max-width: none; }
 .pneed .reply .btn { width: 44px; height: 44px; }
 .pneed .answered { color: var(--mut); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+
+/* Capture composer (mahler#251): one composer, no second step. */
+.view-capture { max-width: 560px; }
+.cap { display: flex; flex-direction: column; gap: 10px; }
+.cap-ta { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px;
+          background: var(--bg); color: var(--ink); font-size: 13px; resize: vertical; }
+.cap-row { display: flex; gap: 8px; }
+.cap-select { flex: 1; min-width: 0; min-height: 38px; border: 1px solid var(--line);
+              border-radius: 4px; background: var(--bg); color: var(--ink); font-size: 13px;
+              padding: 0 8px; }
+.cap-save { flex: none; min-height: 38px; }
+.capnote { font-size: 13px; line-height: 1.45; }
+.ph .cap-select, .ph .cap-save { min-height: 44px; }

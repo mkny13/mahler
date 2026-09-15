@@ -5,6 +5,36 @@ import json
 from .. import config, redact, watchdog
 
 
+def capture_title(text, limit=80):
+    """The new issue's title: the capture's first line, cut at a word
+    boundary to at most `limit` characters."""
+    line = text.split("\n", 1)[0].strip()
+    if len(line) <= limit:
+        return line
+    cut = line[:limit]
+    sp = cut.rfind(" ")
+    return cut[:sp] if sp > 0 else cut
+
+
+def capture(ctx, row, payload):
+    project = row["project"]
+    if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
+        return "skipped", "the project is disabled"
+    pol = config.project_policy(ctx.cfg, project)
+    text = payload["text"]
+    labels = ["type:feature", "p2", "mahler:inbox"]
+    if pol.get("scope") == "label":
+        labels.append(pol["scope_label"])
+    url = ctx.gh(project).create_issue(capture_title(text),
+                                       f"{text}\n\n— captured from the Mahler console", labels)
+    try:
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError:
+        raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
+    ctx.led.event("captured", project, number, {"via": "console"})
+    return "done", str(number)
+
+
 def answer(ctx, row, payload):
     project, number = row['project'], row['number']
     if project not in {p['name'] for p in config.enabled_projects(ctx.cfg)}:
@@ -25,7 +55,7 @@ def stop_run(ctx, row, payload):
     return 'done', 'stop requested'
 
 
-HANDLERS = {'answer': answer, 'stop_run': stop_run}
+HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture}
 
 
 def _report(ctx, message):

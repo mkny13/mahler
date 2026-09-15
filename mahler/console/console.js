@@ -10,6 +10,7 @@
   var REFRESH_MS = 30000;
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
+  var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
 
   function store(kind, key, value) {
     try { (kind === "local" ? localStorage : sessionStorage).setItem(key, value); } catch (e) {}
@@ -45,6 +46,27 @@
       shown = shown || on;
     }
     if (!shown) { openRun = null; }
+    applyCaptureProject();
+  }
+
+  // the capture select remembers the last project you saved to, in
+  // localStorage rather than data-keep, so it survives a real page load too
+  function updateCaptureSave(sel) {
+    var cap = sel.closest(".cap");
+    var save = cap && cap.querySelector("[data-capture-save]");
+    if (save) { save.disabled = !sel.value; }
+  }
+  function applyCaptureProject() {
+    var saved = load("local", "mahler.capture.project");
+    var sels = app.querySelectorAll("[data-capture-select]");
+    for (var i = 0; i < sels.length; i++) {
+      if (saved) {
+        for (var j = 0; j < sels[i].options.length; j++) {
+          if (sels[i].options[j].value === saved) { sels[i].value = saved; break; }
+        }
+      }
+      updateCaptureSave(sels[i]);
+    }
   }
 
   function setView(view) {
@@ -64,16 +86,21 @@
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
     }
+    var skip = suppressKeep;
+    suppressKeep = null;
     return fetch("/fragment", { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
-      for (var i = 0; i < inputs.length; i++) { if (inputs[i].value) { keep[inputs[i].getAttribute("data-keep")] = inputs[i].value; } }
+      for (var i = 0; i < inputs.length; i++) {
+        var k = inputs[i].getAttribute("data-keep");
+        if (inputs[i].value && k !== skip) { keep[k] = inputs[i].value; }
+      }
       // Both layouts carry the same key; the active draft wins over its hidden twin.
       var focused = document.activeElement;
-      if (focused && focused.hasAttribute("data-keep")) {
+      if (focused && focused.hasAttribute("data-keep") && focused.getAttribute("data-keep") !== skip) {
         keep[focused.getAttribute("data-keep")] = focused.value;
       }
       app.innerHTML = html;
@@ -95,7 +122,12 @@
     }).then(function (r) {
       return r.json().catch(function () { return { ok: false }; });
     }).then(function (res) {
-      if (!res.ok && window.console) { console.warn(action, res.error || "failed"); }
+      if (!res.ok) {
+        if (window.console) { console.warn(action, res.error || "failed"); }
+      } else if (action === "capture") {
+        suppressKeep = "capture";   // clear the draft on the next restore, keep the project
+        if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
+      }
       return refresh(true);
     });
   }
@@ -117,6 +149,12 @@
     }
     if (act === "digest_seen") { return { upto: Number(el.getAttribute("data-upto")) || 0 }; }
     if (act === "stop_run") { return { run: Number(el.getAttribute("data-run")) }; }
+    if (act === "capture") {
+      var cap = el.closest(".cap");
+      var ta = cap && cap.querySelector(".cap-ta");
+      var sel = cap && cap.querySelector("[data-capture-select]");
+      return { text: ta ? ta.value : "", project: sel ? sel.value : "" };
+    }
     return {};
   }
 
@@ -181,6 +219,11 @@
       post(act, payloadFor(el, act)).catch(function (err) { if (window.console) { console.warn(err); } })
         .finally(function () { el.disabled = false; });
     }
+  });
+
+  document.addEventListener("change", function (ev) {
+    var el = ev.target;
+    if (el && el.hasAttribute && el.hasAttribute("data-capture-select")) { updateCaptureSave(el); }
   });
 
   document.addEventListener("keydown", function (ev) {
