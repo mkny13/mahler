@@ -101,11 +101,24 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.assertIn("project-scope", args[2])
 
     def test_pass_issue_no_scope_label_when_scope_all(self):
-        """When scope=all, no scope_label is added to the pass issue."""
+        """When scope=all, no scope_label is added to the pass issue: the
+        label list is exactly the base set, nothing extra appended."""
         tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_called_once()
         args, kwargs = self.gh_mock.create_issue.call_args
-        self.assertNotIn("mahler", args[2])
+        self.assertEqual(args[2], ["type:chore", "size:l", "p2", "pass:security"])
+
+    def test_pass_with_undone_parent_is_skipped(self):
+        """A pass item whose parent (e.g. a sub-issue split) isn't done yet
+        blocks re-filing that pass, even though the pass item itself is done."""
+        self.led.upsert_item("mahler", 50, state="ready")   # parent: not done
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:security"]),
+                              parent=50)
+        self.led.set_state("mahler", 99, "done")
+        self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=20)))
+
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
 
     def test_one_pass_in_flight_blocks_all_passes(self):
         """D20: if any pass:* item is open, no new passes are filed."""

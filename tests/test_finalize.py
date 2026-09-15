@@ -82,6 +82,11 @@ class RunTests(unittest.TestCase):
         snap.assert_called_once()      # the work is saved before every handoff
         rm.assert_called_once()        # and the worktree is cleaned up
         ping.assert_called_once()
+        # D18/D19: the item's canonical lease transfers to the conductor —
+        # it is not simply released back to the pool.
+        lease = self.led.lease("x", 5)
+        self.assertIsNotNone(lease)
+        self.assertEqual(lease["holder"], "conductor")
 
     def test_done_build_is_not_a_schedule_candidate(self):
         with open(self.log, "w") as fh:
@@ -138,6 +143,19 @@ class RunTests(unittest.TestCase):
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertIsNone(self.led.lease("x", 5))
+
+    def test_lost_lease_also_returns_to_ready(self):
+        """A run that lost its lease (D6: stolen or reaped elsewhere) hands
+        the item back to the queue exactly like a quota stop — reason
+        'lost-lease' is its own branch, not covered by the quota case."""
+        with open(self.log, "w") as fh:
+            fh.write("someone else holds the lease now\n")
+        self.run["stop_reason"] = "lost-lease"
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 0)          # not a failed attempt
+        self.assertIn("handoff (lost-lease)", self.last_event())
 
     def test_claude_usage_and_quota_mirrors_to_opus_on_finalize(self):
         self.run["platform"] = "claude"
