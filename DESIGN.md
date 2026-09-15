@@ -803,6 +803,27 @@ Throughput counts merged changes, not finished runs. So:
   returns the item to `ready`, with no attempt counted. If the rebuild's rebase applies, it
   updates the same PR. If not, dropping the branch closes that PR, and the conductor opens a
   new one.
+- **Freshness before a new merge request** (mahler#239): re-read the PR's exact head,
+  actual target and checks, then fetch the head and the current target tip in the configured
+  checkout with the project's credentials, without switching branches or working files.
+  Require `git merge-base --is-ancestor <base-tip> <checked-head>` to succeed. This is a
+  conservative proof that the inspected head contains current base, not an inference about
+  historical CI from today's `baseRefOid`, synthetic merge ref, or a first-seen KV value.
+  Even successful synthetic-merge checks trigger a rebuild if the head lacks current base.
+  No configured checks remains acceptable, but still requires ancestry; it isn't green CI.
+- Proven stale ancestry uses the same rebuild path as a textual conflict: clear the PR link,
+  keep saved work and attempts, return to ready and release the conductor lease. The later
+  builder replays the work onto current configured base; the guard itself doesn't rebase or
+  repush. Changed head/target/check observations wait for the next tick's state machine.
+  Missing metadata, fetch/API errors, shallow history and indeterminate ancestry wait with
+  an actionable reason and the existing verification timeout, without consuming attempts.
+- Re-check the lease after network work and pin each merge request with
+  [`--match-head-commit`](https://cli.github.com/manual/gh_pr_merge) to the inspected SHA.
+  **The base check and merge are not atomic.** An independent writer can advance the base
+  after the final fetch; this narrows the window and detects visible drift, but cannot offer
+  a server-side merge queue's atomic guarantee. Interactive sessions follow the same rule
+  in CLAUDE.md. D28's `queue:` request deduplication, timeout and confirmed-merge polling
+  remain separate; already requested heads don't enter the freshness rebuild path.
 - Snapshot diffstats are measured from the merge base, so a stale branch no longer looks like
   it deletes everything that landed after it.
 
@@ -1111,9 +1132,9 @@ GitHub's PR state before announcing that the change shipped.
 - **No queue is enabled here.** The earlier run reported GitHub rejecting the
   merge-queue ruleset for this personal-account repository, and Mike ruled out
   moving it to an organization. This change lands the asynchronous plumbing.
-  The stale-base safety guarantee remains separate work in mahler#239, using
-  D19's rebuild-on-base machinery; interactive merges make that gap relevant
-  even with `max_parallel = 1`.
+  D19 now documents mahler#239's conservative pre-request ancestry check and
+  its residual base-write race; interactive merges make it relevant even with
+  `max_parallel = 1`.
 
 ### D29 — Console: hold-reason rows link to their items; a Dependencies graph for the big picture
 

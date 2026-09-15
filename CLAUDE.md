@@ -59,6 +59,26 @@ another session has uncommitted. This happened on 2026-09-12 (mahler#27).
 git -C ~/Mahler worktree add ../Mahler-12 -b mahler/12-short-slug origin/main
 ```
 
+**Before merging by hand**, inspect the PR's actual `baseRefName`, `headRefOid`, and
+checks (`gh pr view <pr> --json baseRefName,headRefOid,statusCheckRollup`). Record the
+checked head SHA and target; require successful checks (or no checks configured).
+Fetch that head, then fetch the actual target with an explicit refspec:
+
+```bash
+git fetch origin <checked-head-sha>
+git fetch origin +refs/heads/<base>:refs/remotes/origin/<base>
+git rev-parse refs/remotes/origin/<base>
+git merge-base --is-ancestor <fetched-base-sha> <checked-head-sha>
+```
+
+If ancestry exits 1, rebase/repush onto current base and wait for fresh checks on the
+new head. Any lookup/Git error means stop the merge and retry verification. Re-read
+the PR to confirm the same head, target and acceptable checks, repeat the base fetch
+and ancestry check immediately before merging, then use
+`gh pr merge <pr> --squash --match-head-commit <checked-head-sha>`.
+This detects observed drift; an independent base push after the check remains a race
+(D19). Build agents still stop at their push (D18).
+
 Other useful commands: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
 `mahler add mahler "title"`, `mahler next-id mahler <prefix>` (shared sequential IDs,
 e.g. decision numbers — never invent one).

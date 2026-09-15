@@ -54,15 +54,16 @@ def _ship_lease(ctx, project, item):
     return False
 
 
-def _rebuild_on_base(ctx, project, item, pr, base):
+def _rebuild_on_base(ctx, project, item, pr, base, *, stale=False):
     """The base moved under the PR: drop it and build again on current base
     (D19). No attempt is counted — the work was fine, the ground moved."""
     led, n = ctx.led, item["number"]
+    reason = f"does not contain current {base}" if stale else f"conflicts with {base}"
     led.upsert_item(project, n, pr=None)
-    led.set_state(project, n, "ready", f"PR #{pr} conflicts with {base} — rebuilding on it")
+    led.set_state(project, n, "ready", f"PR #{pr} {reason} — rebuilding on it")
     led.release(project, n, holder=CONDUCTOR)
     ctx.ping(f"Rebuilding — {project} #{n}",
-             f"PR #{pr} no longer merges into {base}; the next build starts on current {base}",
+             f"PR #{pr} {reason}; the next build starts on current {base}",
              project, n, priority="low")
 
 
@@ -72,12 +73,16 @@ def _watch_pr(ctx, project, item, pr):
     merged."""
     led, n = ctx.led, item["number"]
     gh = ctx.gh(project)
-    view = gh.pr_view(pr)
+    try:
+        view = gh.pr_view(pr)
+    except (GHError, ValueError) as e:
+        _ci_pending(ctx, project, item, pr, {}, reason=f"PR lookup failed: {e}")
+        return
     if view["state"] != "OPEN":                 # merged or closed, by us or outside Mahler
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
     if view.get("mergeable") == "CONFLICTING":
-        _rebuild_on_base(ctx, project, item, pr, ctx.policy(project).get("base", "main"))
+        _rebuild_on_base(ctx, project, item, pr, view.get("baseRefName") or ctx.policy(project).get("base", "main"))
         return
     state = checks_state(view.get("statusCheckRollup"))
     if state == "pending" or view.get("mergeable") == "UNKNOWN":
@@ -108,7 +113,7 @@ def _ship_item(ctx, project, item):
              unconfirmed=unconfirmed)
 
 
-def _ci_pending(ctx, project, item, pr, view):
+def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
     """CI still running. It is watched across ticks (the 30s loop never blocks
     a tick), but a hung CI must not park the item silently: past
     verify_timeout_minutes it goes to needs-you with a ping. A new head SHA
@@ -123,13 +128,13 @@ def _ci_pending(ctx, project, item, pr, view):
         info = {"sha": sha, "since": iso(led.now())}
         led.set_kv(key, json.dumps(info))
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
-        ctx.say(f"{project}#{n}: PR #{pr} — CI still running")
+        ctx.say(f"{project}#{n}: PR #{pr} — {reason}")
         return
     elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
     led.set_state(project, n, "needs_you",
-                  f"CI on PR #{pr} still pending after {elapsed} min")
+                  f"PR #{pr}: {reason} after {elapsed} min")
     ctx.ping(f"Mahler needs you — {project} #{n}",
-             f"CI on PR #{pr} hasn't finished in {elapsed} min; "
+             f"PR #{pr}: {reason} after {elapsed} min; "
              "the PR stays open, unmerged",
              project, n, priority="high", tags="question", console=True)
     led.release(project, n, holder=CONDUCTOR)
@@ -155,14 +160,37 @@ def _merge_queued(ctx, project, item, pr, view):
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else None
     if not info or info.get("sha") != sha:
-        gh.pr_merge(pr)
+        try:
+            fresh = gh.pr_view(pr)
+            if (not sha or not view.get("baseRefName") or
+                    fresh.get("headRefOid") != sha or
+                    fresh.get("baseRefName") != view.get("baseRefName") or
+                    fresh.get("state") != "OPEN" or
+                    fresh.get("mergeable") != "MERGEABLE" or
+                    checks_state(fresh.get("statusCheckRollup")) not in ("green", "none")):
+                _ci_pending(ctx, project, item, pr, fresh,
+                            reason="PR changed or metadata incomplete; retrying verification")
+                return
+            contains = gh.base_in_head(pol["path"], fresh["baseRefName"], sha)
+            if contains is not True and contains is not False:
+                raise GHError("freshness: ancestry is unknown")
+        except (GHError, ValueError) as e:
+            _ci_pending(ctx, project, item, pr, view, reason=f"freshness check failed: {e}")
+            return
+        # Fetch/API calls can take long enough for an interactive claim (D6).
+        if not _ship_lease(ctx, project, item):
+            return
+        if not contains:
+            _rebuild_on_base(ctx, project, item, pr, fresh["baseRefName"], stale=True)
+            return
+        gh.pr_merge(pr, sha)
         led.set_kv(key, json.dumps({"sha": sha, "since": iso(led.now())}))
         after = gh.pr_view(pr)
         if after["state"] != "OPEN":
             _shipped(ctx, project, n, pr, led.item(project, n), after,
                      merged=after["state"] == "MERGED")
         else:
-            ctx.say(f"{project}#{n}: PR #{pr} — checks green, merge requested; waiting for GitHub")
+            ctx.say(f"{project}#{n}: PR #{pr} — checks acceptable, merge requested; waiting for GitHub")
         return
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
         ctx.say(f"{project}#{n}: PR #{pr} — waiting for the merge queue")
