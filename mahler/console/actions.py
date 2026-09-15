@@ -99,6 +99,19 @@ def stop_run(cfg, led, body):
     return {"id": id}
 
 
+def capture(cfg, led, body):
+    """Type-or-dictate capture (mahler#251): files straight into a project's
+    backlog — there is no inbox (owner, 2026-09-15)."""
+    text, project = body.get("text"), body.get("project")
+    if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
+        raise ActionError("text must be 1-8000 characters")
+    id = led.queue_action("capture", project, None, {"text": text.strip()})
+    led.event("console_capture_queued", project, None, {"id": id})
+    return {"id": id}
+
+
 def answer(cfg, led, body):
     project, number, text = (body.get(k) for k in ("project", "number", "text"))
     if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
@@ -134,7 +147,8 @@ def answer_undo(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
-                                   clear_backoff, digest_seen, answer, answer_undo, stop_run)}
+                                   clear_backoff, digest_seen, answer, answer_undo, stop_run,
+                                   capture)}
 
 
 def run(cfg, led, name, body):

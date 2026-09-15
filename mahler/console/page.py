@@ -18,7 +18,7 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
     JS = _fh.read()
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
-         ("backlog", "Backlog"), ("history", "Event stream"))
+         ("capture", "Capture"), ("backlog", "Backlog"), ("history", "Event stream"))
 
 
 def e(s):
@@ -138,6 +138,33 @@ def _peak_act(peak):
     return "peak_restore" if peak["overridden"] else "peak_override"
 
 
+def _capture_opts(cap):
+    opts = ['<option value="" disabled>Project</option>']
+    opts += [f'<option value="{e(p)}">{e(p)}</option>' for p in cap["projects"]]
+    return "".join(opts)
+
+
+def _capture_notes(s):
+    out = []
+    for r in s["capture"]["recent"]:
+        if r["status"] not in ("pending", "done"):
+            continue
+        out.append(f'<div class="capnote t-good">Saved to {e(r["repo"] or r["project"])} as a new '
+                   f'issue · sorting run queued. It settles 10 minutes before anything picks it up.'
+                   f'</div>')
+    return "".join(out)
+
+
+def _composer(s, rows, save_label):
+    cap = s["capture"]
+    return (f'<textarea class="cap-ta" data-keep="capture" placeholder="Type or dictate." '
+            f'maxlength="8000" rows="{rows}"></textarea>'
+            f'<div class="cap-row">'
+            f'<select class="cap-select" data-capture-select>{_capture_opts(cap)}</select>'
+            f'<button class="btn btn-pri cap-save" data-act="capture" data-capture-save disabled>'
+            f'{e(save_label)}</button></div>{_capture_notes(s)}')
+
+
 def _backlog_groups(s, phone):
     out = []
     for g in s["backlog"]:
@@ -170,6 +197,7 @@ def _desktop(s):
         "now": (str(len(s["runs"])) if s["runs"] else "", "acc"),
         "needs": (str(s["needs_count"]) if s["needs"] else "", "bad"),
         "test": (str(len(s["uat"])), "mut"),
+        "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
     }
@@ -191,7 +219,7 @@ def _desktop(s):
                     f'<span class="mono t-{tone}">{e(peak["action"])}</span></button>')
     head = f'<div class="dhead"><span class="dtitle">{titles}</span>{peak_btn}</div>'
 
-    views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_backlog(s) + _d_history(s))
+    views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s) + _d_history(s))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -260,6 +288,11 @@ def _d_needs(s):
 
 def _d_test(s):
     return '<section class="view view-test"></section>'
+
+
+def _d_capture(s):
+    return (f'<section class="view view-capture"><div class="cap">'
+            f'{_composer(s, 4, "Save to backlog")}</div></section>')
 
 
 def _d_backlog(s):
@@ -375,7 +408,10 @@ def _p_triage(s):
     if not s["needs"]:
         out.append('<div class="empty" style="font-size:13.5px;padding:4px 0">Nothing waiting on '
                    'you. Runs continue on their own.</div>')
-    out.append("</div></div></section>")
+    out.append("</div>")
+    out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Capture</span>'
+               f'<div class="cap">{_composer(s, 3, "Save")}</div></div>')
+    out.append("</div></section>")
     return "".join(out)
 
 

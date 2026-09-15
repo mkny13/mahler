@@ -14,12 +14,14 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from .. import config, presence, router
-from ..ledger import parse, row_get
+from ..ledger import iso, parse, row_get
+from . import outbox
 
 EVENTS_SHOWN = 50
 DIGEST_SHOWN = 20
 SEEN_KEY = "console_seen_event"        # kv: the newest event id marked seen
 DIGEST_HOURS = 24                      # older unseen events stop counting as new
+CAPTURE_RECENT_MINUTES = 10            # how long a capture's confirmation note lingers
 
 # bookkeeping the event stream leaves out: every lease and heartbeat, stats
 # rows, and the console's own read marker
@@ -60,6 +62,7 @@ def build(cfg, led):
     digest = _digest(cfg, led, now)
     paused = led.paused()
     hot = _hot_holds(led, projects, now)
+    project_names = [p["name"] for p in projects]
     s = {
         "paused": paused,
         "system": ({"label": "PAUSED", "tone": "warn"} if paused else
@@ -77,7 +80,8 @@ def build(cfg, led):
         "events": events,
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
-        "projects": [p["name"] for p in projects],
+        "projects": project_names,
+        "capture": _capture(cfg, led, project_names, now),
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
     s["landing"] = {
@@ -409,6 +413,9 @@ def _state_tone(state):
 
 def _backlog(cfg, led, projects):
     rank = {s: i for i, s in enumerate(STATE_ORDER)}
+    pending = {}
+    for r in led.pending_actions("capture"):
+        pending.setdefault(r["project"], []).append(r)
     out = []
     for p in projects:
         name = p["name"]
@@ -417,15 +424,40 @@ def _backlog(cfg, led, projects):
         ready = sum(1 for i in items if i["state"] in ("ready", "inbox"))
         live = sum(1 for i in items if i["state"] in ("working", "verifying"))
         you = sum(1 for i in items if i["state"] in ATTENTION_STATES)
+        # a queued capture shows as a placeholder inbox row until the tick
+        # creates the issue and sync() pulls in the real item (mahler#251)
+        rows = [{"ref": None, "url": None,
+                 "title": outbox.capture_title(json.loads(r["payload"])["text"]),
+                 "p": "p2", "p1": False, "state": "inbox", "tone": "mut"}
+                for r in pending.get(name, [])]
+        rows += [{"ref": _ref(name, i["number"]), "url": _issue_url(cfg, name, i["number"]),
+                  "title": i["title"] or "", "p": f"p{i['priority']}",
+                  "p1": i["priority"] == 1, "state": i["state"].replace("_", "-"),
+                  "tone": _state_tone(i["state"])} for i in items]
         out.append({
             "project": name,
             "counts": f"{len(items)} · {ready} ready · {live} live" + (f" · {you} you" if you else ""),
-            "items": [{"ref": _ref(name, i["number"]), "url": _issue_url(cfg, name, i["number"]),
-                       "title": i["title"] or "", "p": f"p{i['priority']}",
-                       "p1": i["priority"] == 1, "state": i["state"].replace("_", "-"),
-                       "tone": _state_tone(i["state"])} for i in items],
+            "items": rows,
         })
     return out
+
+
+# ---------- capture (mahler#251) ----------
+
+def _capture(cfg, led, project_names, now):
+    """The capture composer's state: the dropdown's projects, and captures
+    from the last few minutes so the console can show its confirmation."""
+    names = set(project_names)
+    cutoff = iso(now - timedelta(minutes=CAPTURE_RECENT_MINUTES))
+    recent = []
+    for r in led.q("SELECT * FROM console_actions WHERE kind='capture' AND created_at >= ?"
+                   " ORDER BY id DESC", (cutoff,)):
+        if r["project"] not in names:
+            continue
+        recent.append({"id": r["id"], "project": r["project"],
+                       "repo": config.project_policy(cfg, r["project"]).get("repo"),
+                       "status": r["status"]})
+    return {"projects": project_names, "recent": recent}
 
 
 # ---------- events ----------

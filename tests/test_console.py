@@ -784,3 +784,180 @@ class AnswerTests(unittest.TestCase):
             self.outbox.drain(self.ctx)
         self.gh.comment.assert_not_called()
         self.assertEqual(self.row(id)['status'], 'cancelled')
+
+
+class CaptureActionTests(unittest.TestCase):
+    """Capture: type or dictate an idea, pick a project (mahler#251)."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def capture(self, text='Buy milk', project='mahler'):
+        return actions.run(self.cfg, self.led, 'capture', {'text': text, 'project': project})['id']
+
+    def test_bad_input_is_refused(self):
+        for body in ({}, {'text': 'hi'}, {'project': 'mahler'}, {'text': 'hi', 'project': None},
+                     {'text': 'hi', 'project': 7}, {'text': 'hi', 'project': 'old'},
+                     {'text': 'hi', 'project': 'nope'}, {'text': None, 'project': 'mahler'},
+                     {'text': '   ', 'project': 'mahler'}, {'text': 'x' * 8001, 'project': 'mahler'}):
+            with self.assertRaises(actions.ActionError, msg=body):
+                actions.run(self.cfg, self.led, 'capture', body)
+
+    def test_accepts_the_full_range(self):
+        self.capture(text='x')                  # 1 char
+        self.capture(text='x' * 8000)            # 8000 chars
+
+    def test_queues_with_no_delay_and_strips_the_text(self):
+        id = self.capture(text='  Buy milk  ')
+        row = self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
+        self.assertEqual(row['kind'], 'capture')
+        self.assertEqual(row['project'], 'mahler')
+        self.assertIsNone(row['number'])
+        self.assertEqual(row['due_at'], row['created_at'])
+        self.assertEqual(json.loads(row['payload'])['text'], 'Buy milk')
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_capture_queued'")
+        self.assertEqual(json.loads(ev['detail'])['id'], id)
+
+
+class CaptureOutboxTests(unittest.TestCase):
+    def setUp(self):
+        from mahler.console import outbox
+        self.outbox = outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = mock.Mock()
+        self.ctx._gh['mkny13/mahler'] = self.gh
+
+    def capture(self, text='Buy milk\nmore detail', project='mahler'):
+        return actions.run(self.cfg, self.led, 'capture', {'text': text, 'project': project})['id']
+
+    def row(self, id):
+        return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
+
+    def test_creates_an_issue_with_title_body_and_labels(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
+        id = self.capture()
+        self.outbox.drain(self.ctx)
+        title, body, labels = self.gh.create_issue.call_args[0]
+        self.assertEqual(title, 'Buy milk')
+        self.assertTrue(body.startswith('Buy milk\nmore detail'))
+        self.assertTrue(body.endswith('\n\n— captured from the Mahler console'))
+        self.assertEqual(labels, ['type:feature', 'p2', 'mahler:inbox'])
+        row = self.row(id)
+        self.assertEqual(row['status'], 'done')
+        self.assertEqual(row['result'], '42')
+        ev = self.led.q1("SELECT * FROM events WHERE kind='captured'")
+        self.assertEqual(ev['number'], 42)
+
+    def test_title_is_the_first_line_cut_at_a_word_boundary(self):
+        self.assertEqual(self.outbox.capture_title('Title line\nrest of the idea'), 'Title line')
+        long_word = 'x' * 90
+        self.assertEqual(self.outbox.capture_title(long_word), long_word[:80])
+        text = ('lorem ipsum ' * 10).strip()
+        title = self.outbox.capture_title(text)
+        self.assertLessEqual(len(title), 80)
+        self.assertTrue(text.startswith(title))
+        self.assertFalse(title.endswith(' '))
+
+    def test_scope_label_is_added_when_the_project_scopes_by_label(self):
+        cfg = make_cfg(projects={'mahler': {'scope': 'label', 'scope_label': 'triage'}})
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/9'
+        actions.run(cfg, self.led, 'capture', {'text': 'hi', 'project': 'mahler'})
+        self.ctx.cfg = cfg
+        self.outbox.drain(self.ctx)
+        labels = self.gh.create_issue.call_args[0][2]
+        self.assertIn('triage', labels)
+
+    def test_a_github_failure_marks_the_action_failed(self):
+        from mahler.gh import GHError
+        self.gh.create_issue.side_effect = GHError('boom')
+        id = self.capture()
+        self.outbox.drain(self.ctx)
+        self.assertEqual(self.row(id)['status'], 'failed')
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_action_failed'")
+        self.assertIsNotNone(ev)
+
+    def test_a_disabled_project_is_skipped(self):
+        id = self.capture()
+        cfg = make_cfg()
+        cfg['projects']['mahler']['enabled'] = False
+        self.ctx.cfg = cfg
+        self.outbox.drain(self.ctx)
+        self.gh.create_issue.assert_not_called()
+        self.assertEqual(self.row(id)['status'], 'skipped')
+
+
+class CaptureStateTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def test_dropdown_lists_enabled_projects(self):
+        s = state.build(self.cfg, self.led)
+        self.assertEqual(s['capture']['projects'], ['mahler', 'groundwork'])
+
+    def test_pending_row_shows_at_the_top_of_the_backlog_group(self):
+        actions.run(self.cfg, self.led, 'capture', {'text': 'New idea here', 'project': 'mahler'})
+        self.led.upsert_item('mahler', 3, title='An older item', state='ready')
+        s = state.build(self.cfg, self.led)
+        g = next(g for g in s['backlog'] if g['project'] == 'mahler')
+        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'title': 'New idea here',
+                                         'p': 'p2', 'p1': False, 'state': 'inbox', 'tone': 'mut'})
+        self.assertEqual(g['items'][1]['ref'], 'mahler#3')
+
+    def test_the_placeholder_is_gone_once_the_outbox_finishes_it(self):
+        from mahler.console import outbox as ob
+        actions.run(self.cfg, self.led, 'capture', {'text': 'New idea here', 'project': 'mahler'})
+        ctx = scheduler.Ctx(self.cfg, self.led)
+        ctx._gh['mkny13/mahler'] = mock.Mock(create_issue=mock.Mock(
+            return_value='https://github.com/mkny13/mahler/issues/7'))
+        ob.drain(ctx)
+        g = next(g for g in state.build(self.cfg, self.led)['backlog'] if g['project'] == 'mahler')
+        self.assertEqual(g['items'], [])   # sync() hasn't run yet — no placeholder, no real item
+
+    def test_recent_captures_carry_their_status(self):
+        id = self.capture_id()
+        s = state.build(self.cfg, self.led)
+        self.assertEqual(s['capture']['recent'],
+                         [{'id': id, 'project': 'mahler', 'repo': 'mkny13/mahler', 'status': 'pending'}])
+
+    def capture_id(self):
+        return actions.run(self.cfg, self.led, 'capture', {'text': 'hi', 'project': 'mahler'})['id']
+
+    def test_recent_drops_off_after_ten_minutes(self):
+        self.capture_id()
+        self.led.clock.t += timedelta(minutes=11)
+        self.assertEqual(state.build(self.cfg, self.led)['capture']['recent'], [])
+
+    def test_a_capture_for_a_now_disabled_project_is_ignored(self):
+        self.capture_id()
+        cfg = make_cfg()
+        cfg['projects']['mahler']['enabled'] = False
+        self.assertEqual(state.build(cfg, self.led)['capture']['recent'], [])
+
+
+class CapturePageTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def test_composer_has_the_dropdown_and_starts_with_save_disabled(self):
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertIn('placeholder="Type or dictate."', doc)
+        self.assertIn('<option value="" disabled>Project</option>', doc)
+        self.assertIn('<option value="mahler">mahler</option>', doc)
+        self.assertIn('<option value="groundwork">groundwork</option>', doc)
+        self.assertIn('data-act="capture" data-capture-save disabled', doc)
+        self.assertIn('class="view view-capture"', doc)
+
+    def test_confirmation_note_after_saving(self):
+        actions.run(self.cfg, self.led, 'capture', {'text': 'hi', 'project': 'mahler'})
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertIn('Saved to mkny13/mahler as a new issue', doc)
+        self.assertIn('It settles 10 minutes before anything picks it up.', doc)
+
+    def test_no_note_without_a_recent_capture(self):
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertNotIn('Saved to', doc)
