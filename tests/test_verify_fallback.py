@@ -310,12 +310,36 @@ class ClineNudgeTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 1)
 
     def test_cline_nudge_skipped_on_non_zero_exit(self):
-        """Cline exit=1 → no nudge, straight to failed attempt."""
-        self._write_cline_log_error_no_status()
+        """Cline exit=1 → no nudge, straight to failed attempt. finishReason
+        is still 'completed' (log["ok"]=True) so only the exit-code guard
+        can be responsible for skipping the nudge here."""
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "text": "partway there",
+                                 "finishReason": "completed"}) + "\n")
+        with open(self.exit_path, "w") as fh:
+            fh.write("1\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
-                mock.patch.object(runner, "remove_worktree"):
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch("subprocess.Popen") as popen:
             finalize.finalize(self.ctx, self.run)
+        popen.assert_not_called()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 1)
+
+    def test_cline_nudge_skipped_when_not_completed_despite_zero_exit(self):
+        """Cline exit=0 but finishReason != 'completed' (log["ok"]=False) →
+        no nudge. Isolates the ok-flag guard from the exit-code guard above."""
+        self._write_cline_log_error_no_status()      # finishReason=error, exit=1
+        with open(self.exit_path, "w") as fh:
+            fh.write("0\n")                           # override: exit is clean
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch("subprocess.Popen") as popen:
+            finalize.finalize(self.ctx, self.run)
+        popen.assert_not_called()
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)

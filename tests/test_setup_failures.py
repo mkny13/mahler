@@ -87,6 +87,16 @@ class SetupFailureTests(unittest.TestCase):
         self.assertIn("npm ERR! missing package.json", body)
         self.assertIn("Last 20 lines of setup.log", body)
 
+    def test_first_setup_failure_on_a_sorted_item_goes_to_ready_not_inbox(self):
+        """A setup failure retries an already-sorted item into 'ready', not
+        back to 'inbox' — only unsorted items land in inbox."""
+        self.led.upsert_item("p", 8, sorted_at="2026-09-12T12:00:00+00:00")
+        self.end()
+        item = self.led.item("p", 8)
+        self.assertEqual(item["setup_fails"], 1)
+        self.assertEqual(item["attempts"], 0)
+        self.assertEqual(item["state"], "ready")
+
     def test_second_consecutive_setup_failure_needs_you_with_the_log_tail(self):
         self.end()
         self.end()

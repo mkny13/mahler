@@ -381,6 +381,35 @@ class FakeGH:
         self.comments.append(body)
 
 
+class LeaseLossTests(unittest.TestCase):
+    """A run whose lease no longer matches its holder/epoch — taken over or
+    reaped elsewhere — is stopped with reason 'lost-lease' (D6) rather than
+    left to keep working past its authority."""
+
+    def test_a_run_that_lost_its_lease_is_stopped(self):
+        ctx = ctx_for()
+        led = ctx.led
+        led.upsert_item("x", 1, state="working", sorted_at=iso(NOW))
+        led.claim("x", 1, "run:11", "auto", 10)
+        epoch = led.lease("x", 1)["epoch"]
+        led.create_run(id=11, project="x", number=1, role="build",
+                       platform="cline-free", epoch=epoch,
+                       pid=5151, worktree="/tmp/wt11", branch="b11", base_ref="main",
+                       log_path="/nonexistent/11/agent.log",
+                       status_path="/nonexistent/11/exit",
+                       started_at=iso(NOW - timedelta(minutes=1)))
+        # Someone else now holds the lease: heartbeat("run:11", epoch) can no
+        # longer land, exactly as if the lease were stolen or reaped.
+        led.release("x", 1, holder="run:11", epoch=epoch, to_state=None)
+        led.claim("x", 1, "run:99", "auto", 10)
+        with mock.patch.object(runner, "alive", return_value=True), \
+                mock.patch.object(runner, "terminate") as term:
+            watchdog.watchdog(ctx)
+        term.assert_called_once_with(5151)
+        row = led.run(11)
+        self.assertEqual((row["status"], row["stop_reason"]), ("stopping", "lost-lease"))
+
+
 class TimeoutHandoffTests(unittest.TestCase):
     """A run stopped past a duration limit is snapshotted and handed off with
     an automatic comment on the issue (mahler#91)."""
