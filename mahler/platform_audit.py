@@ -125,9 +125,22 @@ def _pct(n, d):
     return round(100.0 * n / d, 1) if d else None
 
 
+def size_gate(pconf):
+    """Item sizes admitted by the router's ordinary builder size bounds."""
+    minimum = pconf.get("min_size")
+    maximum = pconf.get("max_size")
+    return {size for size, rank in router.SIZES.items()
+            if (not minimum or rank >= router.SIZES[minimum])
+            and (not maximum or rank <= router.SIZES[maximum])}
+
+
+def _sizes_text(sizes):
+    return "+".join(sorted(sizes, key=router.SIZES.get)) or "none"
+
+
 def outcome_report(cfg, outcomes, escalations):
     """One row per enabled platform, ordered by declared tier (`router.tier_of`):
-    (name, tier, runs, done_pct, needs_you_pct, escalated_from)."""
+    (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes)."""
     rows = []
     for name, pconf in cfg["platforms"].items():
         if not pconf.get("enabled", True):
@@ -136,20 +149,20 @@ def outcome_report(cfg, outcomes, escalations):
         rows.append((name, router.tier_of(pconf), stats["runs"],
                      _pct(stats["done"], stats["runs"]),
                      _pct(stats["needs_you"], stats["runs"]),
-                     escalations.get(name, 0)))
+                     escalations.get(name, 0), size_gate(pconf)))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
 def tier_inversions(rows, min_runs=3, margin=15.0):
     """Flag a lower-tier platform whose done-rate beats a higher-tier one by
-    more than `margin` points, both with at least `min_runs` observed runs —
-    a mechanical signal for the review issue, not a conclusion: the finding
-    still needs a human judgment call (mahler#206 proposal item 3)."""
+    at least `margin` points, both with at least `min_runs` observed runs —
+    with overlapping size gates. This is a mechanical signal, not a conclusion:
+    the finding still needs a human judgment call (mahler#206 proposal item 3)."""
     sample = [r for r in rows if r[2] >= min_runs and r[3] is not None]
     found = []
     for lo in sample:
         for hi in sample:
-            if hi[1] > lo[1] and lo[3] - hi[3] >= margin:
+            if hi[1] > lo[1] and lo[6] & hi[6] and lo[3] - hi[3] >= margin:
                 found.append((lo[0], lo[1], lo[3], hi[0], hi[1], hi[3]))
     return found
 
@@ -163,7 +176,10 @@ def build_body(cfg, led, pol):
     outcomes = led.platform_outcomes(since=since)
     escalations = led.platform_escalations(since=since)
     out_rows = outcome_report(cfg, outcomes, escalations)
-    inversions = tier_inversions(out_rows)
+    min_runs = pol["inversion_min_runs"]
+    inversions = tier_inversions(out_rows, min_runs=min_runs,
+                                margin=pol["inversion_margin_pct"])
+    by_name = {row[0]: row for row in out_rows}
 
     lines = [
         "Periodic self-audit of `config.py`'s platform tier/capability assumptions "
@@ -186,24 +202,28 @@ def build_body(cfg, led, pol):
         "",
         "## Observed ledger outcomes (build/fix runs, last 180 days)",
         "",
-        "| Platform | Tier | Runs | Done % | Needs-you % | Escalated away from (count) |",
-        "|---|---|---|---|---|---|",
+        "| Platform | Tier | Runs | Done % | Needs-you % | Escalated away from (count) | Sizes |",
+        "|---|---|---|---|---|---|---|",
     ]
-    for name, tier, runs, done_pct, needs_you_pct, esc in out_rows:
+    for name, tier, runs, done_pct, needs_you_pct, esc, sizes in out_rows:
         lines.append(f"| {name} | {tier} | {runs} | "
                      f"{done_pct if done_pct is not None else '—'} | "
-                     f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} |")
+                     f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} | {_sizes_text(sizes)} |")
 
     lines += ["", "## Possible tier inconsistencies"]
     if inversions:
         lines.append("")
         for lo_name, lo_tier, lo_pct, hi_name, hi_tier, hi_pct in inversions:
-            lines.append(f"- `{lo_name}` (tier {lo_tier}, {lo_pct}% done) outperforms "
-                         f"`{hi_name}` (tier {hi_tier}, {hi_pct}% done) by "
+            lo, hi = by_name[lo_name], by_name[hi_name]
+            lines.append(f"- `{lo_name}` (tier {lo_tier}, sizes {_sizes_text(lo[6])}, "
+                         f"{lo_pct}% of {lo[2]} runs) outperforms "
+                         f"`{hi_name}` (tier {hi_tier}, sizes {_sizes_text(hi[6])}, "
+                         f"{hi_pct}% of {hi[2]} runs) by "
                          f"{round(lo_pct - hi_pct, 1)} points — worth a look.")
     else:
-        lines.append("None found (or too little data — needs at least 3 runs on both sides "
-                     "of a comparison).")
+        lines.append(f"None found (comparisons require overlapping size gates and at least "
+                     f"{min_runs} runs on both sides, with a done-rate gap of at least "
+                     f"{pol['inversion_margin_pct']} points).")
 
     return "\n".join(lines)
 

@@ -845,7 +845,9 @@ needs-you-rate, and how often the *item* it was working escalated a tier away fr
 (`ship._red_ci`/`finalize.retry_or_fail` now record the platform in the `escalated` event's
 detail for exactly this). It only files the finding as an issue — never changes `config.py`
 itself, since re-ranking tiers is a judgment call, not a mechanical recalibration like time
-estimates.
+estimates. Done-rate comparisons require overlapping size gates and at least
+`inversion_min_runs` observed runs on each side (default 10). This avoids comparing
+escalation-only siblings against platforms that never receive the same item sizes.
 
 ### D21 — Opus plans; the free tiers build what it planned
 
