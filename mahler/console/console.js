@@ -110,7 +110,6 @@
         if (v !== undefined) { again[j].value = v; }
       }
       apply();
-      applyHash();
     }).catch(function (err) { if (window.console) { console.warn(err); } });
   }
 
@@ -165,10 +164,12 @@
     if (!m) { return; }
     var ref = m[1] + "#" + m[2];
     setView("needs");
-    setTab("triage");
+    root.setAttribute("data-tab", "triage");
+    store("session", "mahler.tab", "triage");
     apply();
     var el = app.querySelector('[data-need="' + ref.replace(/"/g, "") + '"]');
     if (el) { el.scrollIntoView({ behavior: "auto", block: "nearest" }); }
+    history.replaceState(null, "", location.pathname + location.search);
   }
 
   document.addEventListener("click", function (ev) {
