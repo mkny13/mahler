@@ -146,9 +146,35 @@ def answer_undo(cfg, led, body):
         led.event("console_answer_cancelled", row["project"], row["number"], {"id": id})
 
 
+def revert(cfg, led, body):
+    event = body.get("event")
+    if type(event) is not int or event <= 0:
+        raise ActionError("event must be a positive shipped event id")
+    with led._tx():
+        row = led.q1("SELECT * FROM events WHERE id=? AND kind='shipped'", (event,))
+        if row is None:
+            raise ActionError("the event is not a merged change")
+        if row["project"] not in {p["name"] for p in config.enabled_projects(cfg)}:
+            raise ActionError("project must be enabled")
+        pr = json.loads(row["detail"]).get("pr")
+        if type(pr) is not int or pr <= 0 or not row["number"]:
+            raise ActionError("the event has no pull request")
+        for action in led.q("SELECT * FROM console_actions WHERE kind='revert'"):
+            payload = json.loads(action["payload"])
+            if (action["project"] == row["project"] and payload.get("pr") == pr
+                    and action["status"] in ("pending", "done")):
+                raise ActionError("a revert is already queued or requested")
+        if led.get_kv(f"revert:{row['project']}:{pr}"):
+            raise ActionError("a revert issue already exists")
+        id = led.queue_action("revert", row["project"], row["number"],
+                              {"event": event, "pr": pr})
+        led.event("console_revert_queued", row["project"], row["number"], {"id": id})
+    return {"id": id}
+
+
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, answer, answer_undo, stop_run,
-                                   capture)}
+                                   capture, revert)}
 
 
 def run(cfg, led, name, body):

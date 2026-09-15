@@ -55,7 +55,14 @@ def stop_run(ctx, row, payload):
     return 'done', 'stop requested'
 
 
-HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture}
+def revert(ctx, row, payload):
+    from .revert import revert as prepare
+    if row["project"] not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
+        return "skipped", "the project is disabled"
+    return prepare(ctx, row["project"], row["number"], payload["pr"])
+
+
+HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert}
 
 
 def _report(ctx, message):

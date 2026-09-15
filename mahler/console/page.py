@@ -65,7 +65,7 @@ def app(s):
     counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": len(s["uat"]),
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
-            + _desktop(s) + _phone(s) + _run_overlays(s))
+            + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s))
 
 
 # ---------- shared pieces ----------
@@ -305,7 +305,7 @@ def _d_history(s):
         tone, text = _event_text(ev)
         rows.append(f'<div class="ev"><span class="when mono">{e(ev["when"])}</span>'
                     f'<span class="kind mono">{e(ev["kind"])}</span>'
-                    f'<span class="txt t-{tone}">{text}</span><span></span></div>')
+                    f'<span class="txt t-{tone}">{text}</span>{_undo(ev)}</div>')
     return f'<section class="view view-history" style="gap:2px">{"".join(rows)}</section>'
 
 
@@ -436,7 +436,7 @@ def _p_browse(s):
         tone, text = _event_text(ev)
         rows.append(f'<div class="pev"><span class="when mono">{e(ev["when"])}</span>'
                     f'<span class="txt t-{tone}"><span class="kind mono t-ink">{e(ev["kind"])}</span> '
-                    f'{text}</span></div>')
+                    f'{text}</span>{_undo(ev)}</div>')
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">History</span>{"".join(rows)}</div>')
     out.append("</div></section>")
     return "".join(out)
@@ -459,4 +459,27 @@ def _run_overlays(s):
                    f'<button class="btn" data-close-run>Leave running</button>'
                    f'<button class="btn btn-bad" data-act="stop_run" data-run="{r["id"]}">'
                    f'Stop &amp; hand off</button></div></div></div>')
+    return "".join(out)
+
+
+def _undo(ev):
+    if ev["undoable"]:
+        return f'<button class="undo" data-open-revert="{ev["id"]}">Undo</button>'
+    return f'<span class="revert-status">{e(ev.get("revert_status", ""))}</span>'
+
+
+def _revert_overlays(s):
+    out = []
+    for ev in s["events"]:
+        if not ev["undoable"]:
+            continue
+        out.append(f'<div class="ov revertov" data-revert-detail="{ev["id"]}">'
+                   f'<div class="box" role="dialog" aria-modal="true" '
+                   f'aria-labelledby="revert-title-{ev["id"]}">'
+                   f'<h2 id="revert-title-{ev["id"]}">Revert {e(ev["text"])}?</h2>'
+                   '<p>This opens a revert PR, waits for CI, merges it and redeploys. '
+                   'The branch is kept for 14 days.</p><div class="revertfoot">'
+                   '<button class="btn" data-close-revert>Keep it</button>'
+                   f'<button class="btn revert-confirm" data-act="revert" '
+                   f'data-event="{ev["id"]}">Open revert PR</button></div></div></div>')
     return "".join(out)
