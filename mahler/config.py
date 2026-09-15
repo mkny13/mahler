@@ -67,6 +67,9 @@ DEFAULT_PLATFORM_AUDIT = {
     "merged_threshold": 20,
     "cooldown_days": 14,
     "stale_verified_days": 90,  # DESIGN.md "verified" date older than this is flagged
+    # Gate tier comparisons by samples on each side and done-rate gap in points.
+    "inversion_min_runs": 10,
+    "inversion_margin_pct": 15.0,
 }
 
 DEFAULTS = {
