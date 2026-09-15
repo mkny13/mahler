@@ -166,7 +166,16 @@ def _composer(s, rows, save_label):
             f'{e(save_label)}</button></div>{_capture_notes(s)}')
 
 
-def _backlog_groups(s, phone):
+def _view_toggle(project):
+    """The desktop-only List/Graph switch (D29). Purely CSS-driven: which
+    button reads active comes from the `mode-graph` class console.js sets on
+    the ancestor `.grp`, scoped to `.dk` so phone never picks it up."""
+    return (f'<div class="viewtog">'
+            f'<button data-toggle-view="{e(project)}" data-mode="list">List</button>'
+            f'<button data-toggle-view="{e(project)}" data-mode="graph">Graph</button></div>')
+
+
+def _backlog_groups(s, phone, dep_graph=None):
     out = []
     for g in s["backlog"]:
         n = len(g["items"])
@@ -177,13 +186,69 @@ def _backlog_groups(s, phone):
             title = _a(i["url"], i["title"] or i["ref"], "title")
             st = f'<span class="st mono t-{i["tone"]}">{e(i["state"])}</span>'
             rows.append(f'<div class="{"pbl" if phone else "bl"}">{p}{title}{st}</div>')
+        toggle, graph = "", ""
+        if dep_graph and g["project"] in dep_graph:
+            toggle = _view_toggle(g["project"])
+            graph = f'<div class="grp-graph">{_graph_svg(dep_graph[g["project"]])}</div>'
         out.append(f'<div class="grp" data-group="{e(g["project"])}">'
                    f'<button class="grp-h" data-toggle-group="{e(g["project"])}">'
                    f'<span class="name">{e(g["project"])}</span>'
                    f'<span class="mono">{n} open · <span class="sh-show">show</span>'
                    f'<span class="sh-hide">hide</span></span></button>'
-                   f'<div class="grp-items">{"".join(rows)}</div></div>')
+                   f'<div class="grp-body">{toggle}'
+                   f'<div class="grp-items">{"".join(rows)}</div>{graph}</div></div>')
     return "".join(out)
+
+
+# ---------- dependencies graph (D29) ----------
+
+GRAPH_COL_W, GRAPH_ROW_H = 200, 44
+GRAPH_NODE_W, GRAPH_NODE_H = 180, 36
+GRAPH_PAD = 16
+
+
+def _graph_node(n):
+    inner = (f'<span class="ref mono">{e(n["ref"])}</span>'
+             f'<span class="title">{e(n["title"] or n["ref"])}</span>')
+    if n["url"]:
+        return (f'<a xmlns="http://www.w3.org/1999/xhtml" href="{e(n["url"])}" target="_blank" '
+                f'rel="noopener" class="gnode t-{n["tone"]}">{inner}</a>')
+    return f'<div xmlns="http://www.w3.org/1999/xhtml" class="gnode t-{n["tone"]}">{inner}</div>'
+
+
+def _graph_edge(by_number, edge):
+    src, dst = by_number.get(edge["from"]), by_number.get(edge["to"])
+    if not src or not dst:
+        return ""
+    x1 = GRAPH_PAD + src["rank"] * GRAPH_COL_W + GRAPH_NODE_W
+    y1 = GRAPH_PAD + src["order"] * GRAPH_ROW_H + GRAPH_NODE_H / 2
+    x2 = GRAPH_PAD + dst["rank"] * GRAPH_COL_W
+    y2 = GRAPH_PAD + dst["order"] * GRAPH_ROW_H + GRAPH_NODE_H / 2
+    mx = (x1 + x2) / 2
+    cls = "edge-parent" if edge["kind"] == "parent" else "edge-depends"
+    return f'<path class="{cls}" d="M{x1},{y1} C{mx},{y1} {mx},{y2} {x2},{y2}"/>'
+
+
+def _graph_svg(g):
+    """One server-rendered SVG per project (D29): ranked columns, no client
+    layout code. Nodes are `<foreignObject>` so the title can ellipsis via
+    plain CSS, which SVG `<text>` can't do."""
+    nodes = g["nodes"]
+    if not nodes:
+        return ""
+    by_number = {n["number"]: n for n in nodes}
+    max_rank = max(n["rank"] for n in nodes)
+    max_rows = max(n["order"] for n in nodes) + 1
+    width = GRAPH_PAD * 2 + max_rank * GRAPH_COL_W + GRAPH_NODE_W
+    height = GRAPH_PAD * 2 + (max_rows - 1) * GRAPH_ROW_H + GRAPH_NODE_H
+    edges = "".join(_graph_edge(by_number, edge) for edge in g["edges"])
+    boxes = "".join(
+        f'<foreignObject x="{GRAPH_PAD + n["rank"] * GRAPH_COL_W}" '
+        f'y="{GRAPH_PAD + n["order"] * GRAPH_ROW_H}" '
+        f'width="{GRAPH_NODE_W}" height="{GRAPH_NODE_H}">{_graph_node(n)}</foreignObject>'
+        for n in nodes)
+    return (f'<div class="graph-wrap"><svg class="dep-graph" viewBox="0 0 {width} {height}" '
+            f'width="{width}" height="{height}">{edges}{boxes}</svg></div>')
 
 
 def _event_text(ev):
@@ -331,7 +396,8 @@ def _d_capture(s):
 
 
 def _d_backlog(s):
-    return f'<section class="view view-backlog">{_backlog_groups(s, phone=False)}</section>'
+    return (f'<section class="view view-backlog">'
+            f'{_backlog_groups(s, phone=False, dep_graph=s["dep_graph"])}</section>')
 
 
 def _d_history(s):

@@ -1203,8 +1203,10 @@ class CaptureStateTests(unittest.TestCase):
         self.led.upsert_item('mahler', 3, title='An older item', state='ready')
         s = state.build(self.cfg, self.led)
         g = next(g for g in s['backlog'] if g['project'] == 'mahler')
-        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'title': 'New idea here',
-                                         'p': 'p2', 'p1': False, 'state': 'inbox', 'tone': 'mut'})
+        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'number': None,
+                                         'title': 'New idea here', 'p': 'p2', 'p1': False,
+                                         'priority': 2, 'state': 'inbox', 'tone': 'mut',
+                                         'parent': None, 'depends': []})
         self.assertEqual(g['items'][1]['ref'], 'mahler#3')
 
     def test_the_placeholder_is_gone_once_the_outbox_finishes_it(self):

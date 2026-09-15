@@ -23,6 +23,9 @@
   function openGroups() {
     try { return JSON.parse(load("local", "mahler.open") || "{}"); } catch (e) { return {}; }
   }
+  function viewModes() {
+    try { return JSON.parse(load("local", "mahler.viewmode") || "{}"); } catch (e) { return {}; }
+  }
   function counts() {
     var el = document.getElementById("counts");
     try { return JSON.parse(el ? el.textContent : "{}"); } catch (e) { return {}; }
@@ -39,6 +42,13 @@
     var gs = app.querySelectorAll("[data-group]");
     for (var j = 0; j < gs.length; j++) {
       gs[j].classList.toggle("open", !!groups[gs[j].getAttribute("data-group")]);
+    }
+    // Graph mode is desktop-only (D29): scoped to .dk so phone's Browse list
+    // never picks up a mode toggled on the desktop layout of the same DOM.
+    var modes = viewModes();
+    var dkgs = app.querySelectorAll(".dk [data-group]");
+    for (var m = 0; m < dkgs.length; m++) {
+      dkgs[m].classList.toggle("mode-graph", modes[dkgs[m].getAttribute("data-group")] === "graph");
     }
     var ovs = app.querySelectorAll("[data-run-detail]");
     var shown = false;
@@ -238,6 +248,13 @@
       var key = el.getAttribute("data-toggle-group");
       var gs = openGroups(); gs[key] = !gs[key];
       store("local", "mahler.open", JSON.stringify(gs));
+      apply();
+      return;
+    }
+    if (el.hasAttribute("data-toggle-view")) {
+      var proj = el.getAttribute("data-toggle-view");
+      var vs = viewModes(); vs[proj] = el.getAttribute("data-mode");
+      store("local", "mahler.viewmode", JSON.stringify(vs));
       apply();
       return;
     }
