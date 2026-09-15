@@ -16,6 +16,7 @@ from .ledger import parse
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
 PEAK_OVERRIDE = "peak_override_until"   # kv: an ISO time the peak window is overridden until
+PEAK_MANUAL = "manual"   # PEAK_OVERRIDE value: overridden until switched back (the console, D27)
 
 # short chip labels for countdowns (mahler#52): "5h" reads fine as-is, but
 # "weekly" is shortened to "wk" to keep the CLI/web chips compact.
@@ -66,10 +67,20 @@ def peak_state(cfg, led):
     end = local.replace(hour=eh, minute=em, second=0, microsecond=0)
     if not (start <= local < end):
         return False, None
-    override = _ts(led.get_kv(PEAK_OVERRIDE))
-    if override and override > now:
+    if peak_overridden(led):
         return False, None
     return True, end.astimezone(now.tzinfo)
+
+
+def peak_overridden(led):
+    """True while an override of the peak window is live: a manual one (set
+    from the console, held until switched back) or a timed one (`mahler peak
+    off`) that hasn't run out yet."""
+    raw = led.get_kv(PEAK_OVERRIDE)
+    if raw == PEAK_MANUAL:
+        return True
+    override = _ts(raw)
+    return bool(override and override > led.now())
 
 
 def peak_status_line(cfg, led):
@@ -82,7 +93,10 @@ def peak_status_line(cfg, led):
     if not pc.get("enabled", True):
         return None
     now = led.now()
-    override = _ts(led.get_kv(PEAK_OVERRIDE))
+    raw = led.get_kv(PEAK_OVERRIDE)
+    if raw == PEAK_MANUAL:
+        return "peak hours: overridden until you switch back"
+    override = _ts(raw)
     if override and override > now:
         tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
         return (f"peak hours: overridden until {override.astimezone(tz):%H:%M} "

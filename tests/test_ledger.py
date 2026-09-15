@@ -495,6 +495,24 @@ class StateTests(unittest.TestCase):
         self.assertIn("inbox -> ready", ev["detail"])
 
 
+class ClearUsageTests(unittest.TestCase):
+    def test_clears_only_named_windows_of_one_platform(self):
+        led = Ledger(":memory:")
+        led.record_usage("kilo", "5h", 100.0, "2026-09-12T13:00:00+00:00")
+        led.record_usage("kilo", "hold", 100.0, "2026-09-12T13:00:00+00:00")
+        led.record_usage("kilo", "weekly", 40.0)
+        led.record_usage("cline-free", "5h", 100.0, "2026-09-12T13:00:00+00:00")
+        self.assertEqual(led.clear_usage("kilo", ["5h", "hold"]), 2)
+        self.assertEqual(set(led.usage("kilo")), {"weekly"})
+        self.assertEqual(set(led.usage("cline-free")), {"5h"})
+
+    def test_no_windows_is_a_no_op(self):
+        led = Ledger(":memory:")
+        led.record_usage("kilo", "5h", 100.0)
+        self.assertEqual(led.clear_usage("kilo", []), 0)
+        self.assertEqual(set(led.usage("kilo")), {"5h"})
+
+
 class SetupFailCounterTests(unittest.TestCase):
     def test_bump_counts_consecutively_and_reset_clears(self):
         led = Ledger(":memory:")

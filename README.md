@@ -2,13 +2,14 @@
 
 Mahler conducts coding agents (Claude Code, Antigravity's `agy`, Cline) through each project's GitHub-issue backlog. It is quota-aware, and hands work off across platforms.
 
-## Status page (read-only)
+## The console
 
-`mahler serve` starts a standard-library (`http.server`) web server that renders
-what `mahler status` shows as a single phone-friendly HTML page: running work
-with minutes elapsed and platform, items by state with links to their GitHub
-issues, quota gauges per platform, and the last 30 events. It auto-refreshes
-every 30 seconds and follows the OS light/dark setting.
+`mahler serve` starts a standard-library (`http.server`) web server for the
+operator console (DESIGN D27; the design is in `docs/console/`): what is
+running, what needs you, why nothing is running when nothing is, quota per
+platform, each project's backlog and the event stream. It has a phone layout
+and a desktop layout, follows the OS light/dark setting (or a theme you pick),
+and refreshes every 30 seconds.
 
 ```bash
 mahler serve                  # http://127.0.0.1:8787
@@ -24,13 +25,16 @@ host = "127.0.0.1"
 port = 8787
 ```
 
-The page is strictly read-only: only `GET /` is served; anything else gets a
-404 or 405. By default, the server binds to `127.0.0.1`. You can expose it
-to your local network using `--host 0.0.0.0`.
+The console can also act: pause and resume, override Claude's peak hours, clear
+a platform's backoff. Those writes are `POST /api/<action>` and are refused
+unless they come from this machine or a Tailscale address, carry an
+`X-Mahler-Console: 1` header and a JSON body, and are same-origin. By default,
+the server binds to `127.0.0.1`; `--host 0.0.0.0` lets your local network *view*
+it, but only this machine and the tailnet can use the writes.
 
 ### Viewing it from your phone (Tailscale)
 
-Exposing the page over your tailnet is a machine setting you turn on yourself.
+Exposing the console over your tailnet is a machine setting you turn on yourself.
 On the machine running Mahler, run once:
 
 ```bash

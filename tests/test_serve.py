@@ -1,5 +1,6 @@
-"""Tests for the read-only status page (`mahler serve`, DESIGN D10)."""
+"""`mahler serve`: the console's HTTP surface (DESIGN D10, D27)."""
 
+import json
 import os
 import tempfile
 import threading
@@ -9,300 +10,43 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
-from mahler import serve
+from mahler import config, serve
 from mahler.ledger import Ledger
 
 
 def make_cfg():
-    # same shape config.load() returns: defaults + platforms + projects
-    return {
-        "defaults": {},
-        "burst": {"enabled": True, "weekly_lead_hours": 5,
-                  "session_lead_minutes": 60, "soft": 90, "hard": 97},
-        "platforms": {
-            "claude": {"enabled": True, "kind": "claude",
-                       "soft": {"5h": 60, "weekly": 70},
-                       "hard": {"5h": 70, "weekly": 80},
-                       "stale_minutes": 15},
-            "cline-free": {"enabled": True, "kind": "cline", "metered": False,
-                           "soft": {"5h": 100, "weekly": 100},
-                           "hard": {"5h": 100, "weekly": 100},
-                           "stale_minutes": 60},
-        },
-        "projects": {"mahler": {"repo": "mkny13/mahler"}},
-    }
+    """What config.load() returns: the defaults plus one enabled project."""
+    user = {"projects": {"mahler": {"enabled": True, "repo": "mkny13/mahler",
+                                    "path": "/nonexistent/mahler", "hot_hold": False}}}
+    return config.resolve_platforms(config._merge(config.DEFAULTS, user))
 
 
 def make_led():
     # thread_safe=True: request threads read this connection, exactly like
     # cmd_serve re-opens the real DB thread-safe
     led = Ledger(":memory:", thread_safe=True)
-    led.upsert_item("mahler", 5, title="Read-only status page",
-                    state="working", priority=2)
-    led.upsert_item("mahler", 9, title="A needs-you item <script>",
-                    state="needs_you", priority=1)
-    led.claim("mahler", 5, "run-32", "auto", 10, platform="cline-free", run_id=1)
-    led.create_run(project="mahler", number=5, role="build",
-                   platform="cline-free", epoch=1)
-    led.record_usage("claude", "5h", 42.0)
+    led.upsert_item("mahler", 5, title="Console", state="working", priority=2)
+    led.upsert_item("mahler", 9, title="A needs-you item <script>", state="needs_you",
+                    priority=1)
+    led.create_run(project="mahler", number=5, role="build", platform="cline-free", epoch=1)
     return led
 
 
-def render(led, cfg=None):
-    cfg = cfg or make_cfg()
-    return serve.render_page(serve.snapshot(cfg, led), cfg)
+class _Served(unittest.TestCase):
+    """A real server on an ephemeral localhost port."""
 
-
-class TestRender(unittest.TestCase):
-    def setUp(self):
-        self.cfg = make_cfg()
-        self.led = make_led()
-
-    def test_running_shows_minutes_and_platform(self):
-        html = render(self.led, self.cfg)
-        self.assertIn("mahler#5", html)
-        self.assertIn("cline-free", html)
-        self.assertIn("min", html)
-        self.assertIn("build", html)
-
-    def test_running_links_to_github_issue(self):
-        # mahler#50: the Running section should link project#number too,
-        # consistent with the Items section.
-        html = render(self.led, self.cfg)
-        self.assertIn('<a href="https://github.com/mkny13/mahler/issues/5">mahler#5</a>',
-                      html)
-
-    def test_running_without_repo_renders_without_link(self):
-        html = render(self.led, {"defaults": {}, "platforms": self.cfg["platforms"],
-                                 "projects": {}})
-        self.assertIn("mahler#5", html)
-        self.assertNotIn("https://github.com", html)
-
-    def test_items_by_state_with_github_links(self):
-        html = render(self.led, self.cfg)
-        self.assertIn('href="https://github.com/mkny13/mahler/issues/5"', html)
-        self.assertIn("Read-only status page", html)
-        self.assertIn("held by", html)
-        self.assertIn("run-32", html)
-
-    def test_title_is_escaped(self):
-        html = render(self.led, self.cfg)
-        self.assertIn("A needs-you item &lt;script&gt;", html)
-        # mahler#134: the page now has its own <script> (collapse-state), so
-        # assert on the raw unescaped title rather than the bare tag.
-        self.assertNotIn("A needs-you item <script>", html)
-
-    def test_quota_gauges(self):
-        html = render(self.led, self.cfg)
-        self.assertIn("claude", html)
-        self.assertIn("42%", html)          # gauge label
-        self.assertIn("width:42%", html)    # gauge fill
-        self.assertIn("unknown limit", html)    # cline-free
-
-    def test_quota_reset_countdown_chips(self):
-        # mahler#52: badge chips show reset countdowns on the quota card header
-        from datetime import timedelta
-        from mahler.ledger import iso
-        led = make_led()
-        later = iso(led.now() + timedelta(hours=2, minutes=5))
-        led.record_usage("claude", "weekly", 10.0, later)
-        html = render(led, self.cfg)
-        self.assertRegex(html, r'class="chip">wk in 2h [0-5]?\dm</span>')
-
-    def test_paused_banner(self):
-        self.led.set_kv("paused", "1")
-        html = render(self.led, self.cfg)
-        self.assertIn("PAUSED", html)
-
-    def test_burst_indicator_in_quota(self):
-        """D23: during a burst, the status page shows a burst banner."""
-        from datetime import timedelta
-        from mahler.ledger import iso
-        led = make_led()
-        five_reset = iso(led.now() + timedelta(minutes=30))
-        weekly_reset = iso(led.now() + timedelta(hours=2))
-        led.record_usage("claude", "5h", 85.0, five_reset)
-        led.record_usage("claude", "weekly", 85.0, weekly_reset)
-        html = render(led, self.cfg)
-        self.assertIn("burst active", html)
-        snap = serve.snapshot(self.cfg, led)
-        self.assertEqual(snap["burst"], "weekly")
-
-    def test_events_capped_at_30(self):
-        for j in range(40):
-            self.led.event("tick", detail=f"event {j}")
-        snap = serve.snapshot(self.cfg, self.led)
-        self.assertEqual(len(snap["events"]), serve.EVENTS_SHOWN)
-        self.assertEqual(snap["events"][0]["detail"], "event 10")   # oldest kept
-        self.assertEqual(snap["events"][-1]["detail"], "event 39")  # newest
-        html = render(self.led, self.cfg)
-        self.assertIn("event 39", html)
-        self.assertNotIn("event 0<", html)
-
-    def test_page_contract(self):
-        html = render(self.led, self.cfg)
-        self.assertIn('http-equiv="refresh" content="30"', html)   # auto-refresh
-        self.assertIn('name="viewport"', html)                     # phone-friendly
-        self.assertIn("prefers-color-scheme: dark", html)          # dark theme
-        self.assertIn("color-scheme", html)
-        self.assertIn("<!DOCTYPE html>", html)
-
-    def test_items_without_repo_render_without_link(self):
-        html = render(self.led, {"defaults": {}, "platforms": self.cfg["platforms"],
-                                 "projects": {}})
-        self.assertNotIn("https://github.com", html)
-        self.assertIn("mahler#5", html)     # still listed, just not linked
-
-    def test_child_items_show_parent(self):
-        self.led.upsert_item("mahler", 10, title="Child issue", state="ready",
-                            priority=2, parent=5)
-        html = render(self.led, self.cfg)
-        self.assertIn("mahler#10", html)
-        self.assertIn("part of", html)
-        self.assertIn("mahler#5", html)
-
-    def test_running_child_shows_parent(self):
-        self.led.upsert_item("mahler", 12, title="Another child", state="working",
-                            priority=2, parent=5)
-        self.led.claim("mahler", 12, "run-33", "auto", 10, platform="cline-free", run_id=2)
-        self.led.create_run(project="mahler", number=12, role="build",
-                           platform="cline-free", epoch=1)
-        html = render(self.led, self.cfg)
-        self.assertIn("mahler#12", html)
-        self.assertIn("part of", html)
-        self.assertIn("mahler#5", html)
-
-    def test_ui_order_is_running_quota_items_events(self):
-        # Issue: UI should show Running, then Quota, then the rest
-        html = render(self.led, self.cfg)
-        running_pos = html.find("<h2>Running")
-        quota_pos = html.find("<h2>Quota")
-        items_pos = html.find("<h2>Items")
-        events_pos = html.find("<h2>Events")
-        self.assertLess(running_pos, quota_pos, "Running should appear before Quota")
-        self.assertLess(quota_pos, items_pos, "Quota should appear before Items")
-        self.assertLess(items_pos, events_pos, "Events should appear after Items")
-
-    def test_header_has_jump_links(self):
-        # mahler#134: compact header with anchors to each section
-        html = render(self.led, self.cfg)
-        self.assertIn('<header class="topbar">', html)
-        self.assertIn('<nav class="jump"', html)
-        for sid in ("running", "quota", "items", "events"):
-            self.assertIn(f'href="#{sid}"', html)
-
-    def test_sections_are_collapsible_details(self):
-        # mahler#134: each section wraps in details/summary, open by default
-        html = render(self.led, self.cfg)
-        for sid in ("running", "quota", "items", "events"):
-            self.assertIn(f'<details class="section" id="{sid}" open>', html)
-        self.assertEqual(html.count("<summary>"), 4)
-        self.assertIn("<summary><h2>Running", html)
-        self.assertIn("<summary><h2>Events", html)
-
-    def test_collapse_state_persists_via_local_storage(self):
-        # mahler#134: open/closed state survives the 30s meta-refresh
-        html = render(self.led, self.cfg)
-        self.assertIn("localStorage", html)
-        self.assertIn("mahler.section.", html)
-        self.assertIn('http-equiv="refresh" content="30"', html)  # refresh unchanged
-
-
-def make_idle_led():
-    """Like make_led(), but with no active run — for exercising idle_reasons."""
-    led = Ledger(":memory:", thread_safe=True)
-    led.upsert_item("mahler", 5, title="Read-only status page",
-                    state="ready", priority=2)
-    return led
-
-
-class TestIdleReasons(unittest.TestCase):
-    """mahler#187: when Running is empty, the page explains why in plain English."""
-
-    def setUp(self):
-        self.cfg = make_cfg()
-        self.cfg["claude_peak"] = {"enabled": False}   # deterministic unless a test opts in
-
-    def test_no_reasons_block_when_something_is_running(self):
-        html = render(make_led(), self.cfg)
-        self.assertNotIn('<div class="idle-why">', html)
-
-    def test_paused_explains_idle(self):
-        led = make_idle_led()
-        led.set_kv("paused", "1")
-        html = render(led, self.cfg)
-        self.assertIn('<div class="idle-why">', html)
-        self.assertIn("Mahler is paused globally", html)
-
-    def test_empty_backlog_explains_idle(self):
-        led = Ledger(":memory:", thread_safe=True)   # no items at all
-        html = render(led, self.cfg)
-        self.assertIn("backlog is empty", html)
-
-    def test_project_max_parallel_zero_explains_idle(self):
-        led = make_idle_led()
-        cfg = make_cfg()
-        cfg["claude_peak"] = {"enabled": False}
-        cfg["projects"]["mahler"]["max_parallel"] = 0
-        html = render(led, cfg)
-        self.assertIn('<div class="idle-why">', html)
-        self.assertIn("max_parallel is 0", html)
-        self.assertIn("mahler", html)
-
-    def test_quota_capped_explains_idle(self):
-        led = make_idle_led()
-        led.record_usage("claude", "5h", 75.0)
-        led.record_usage("claude", "weekly", 75.0)
-        html = render(led, self.cfg)
-        self.assertIn('<div class="idle-why">', html)
-        self.assertIn("claude is at its quota limit", html)
-
-    def test_peak_hours_explains_idle(self):
-        from datetime import datetime, timezone
-        led = Ledger(":memory:", thread_safe=True,
-                     clock=lambda: datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc))  # a Monday
-        led.upsert_item("mahler", 5, title="Read-only status page",
-                        state="ready", priority=2)
-        cfg = make_cfg()
-        cfg["claude_peak"] = {"enabled": True, "tz": "UTC",
-                              "weekdays": [0, 1, 2, 3, 4],
-                              "start": "00:00", "end": "23:59"}
-        html = render(led, cfg)
-        self.assertIn('<div class="idle-why">', html)
-        self.assertIn("Peak hours", html)
-
-    def test_reasons_can_combine(self):
-        led = make_idle_led()
-        led.set_kv("paused", "1")
-        led.record_usage("claude", "5h", 75.0)
-        led.record_usage("claude", "weekly", 75.0)
-        html = render(led, self.cfg)
-        self.assertIn("Mahler is paused globally", html)
-        self.assertIn("claude is at its quota limit", html)
-
-    def test_idle_reasons_function_returns_list_of_strings(self):
-        led = make_idle_led()
-        led.set_kv("paused", "1")
-        snap = serve.snapshot(self.cfg, led)
-        reasons = serve.idle_reasons(self.cfg, snap)
-        self.assertIsInstance(reasons, list)
-        self.assertTrue(all(isinstance(r, str) for r in reasons))
-        self.assertTrue(any("paused" in r for r in reasons))
-
-
-class TestServer(unittest.TestCase):
-    """The real HTTP surface, on an ephemeral localhost port."""
+    load_cfg = None
 
     def setUp(self):
         self.cfg = make_cfg()
         self.led = make_led()
+        load = self.load_cfg or (lambda: self.cfg)
         handler = type("Handler", (serve._Handler,),
                        {"led": self.led, "lock": threading.Lock(),
-                        "load_cfg": staticmethod(lambda: self.cfg)})
+                        "load_cfg": staticmethod(load)})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
-        # A short poll_interval keeps shutdown() fast (mahler#95): the default
-        # 0.5s poll makes every test in this class pay a ~0.5s teardown tax.
+        # A short poll_interval keeps shutdown() fast (mahler#95).
         self.thread = threading.Thread(
             target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
         self.thread.start()
@@ -312,9 +56,9 @@ class TestServer(unittest.TestCase):
         self.httpd.server_close()
         self.thread.join(timeout=5)
 
-    def get(self, path, method="GET", data=None):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}",
-                                     method=method, data=data)
+    def request(self, path, method="GET", data=None, headers=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", method=method,
+                                     data=data, headers=headers or {})
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status, dict(r.headers), r.read().decode()
@@ -324,73 +68,114 @@ class TestServer(unittest.TestCase):
             finally:
                 e.close()
 
+    def post(self, action, body=None, headers=None):
+        h = {"Content-Type": "application/json", "X-Mahler-Console": "1"}
+        h.update(headers or {})
+        return self.request(f"/api/{action}", "POST", json.dumps(body or {}).encode(), h)
+
+
+class TestPages(_Served):
     def test_binds_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
 
-    def test_get_root_is_html(self):
-        status, headers, body = self.get("/")
+    def test_root_is_the_console(self):
+        status, headers, body = self.request("/")
         self.assertEqual(status, 200)
         self.assertTrue(headers["Content-Type"].startswith("text/html"))
-        self.assertIn("Mahler", body)
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertIn("<title>Mahler</title>", body)
+        self.assertIn("A needs-you item &lt;script&gt;", body)
+
+    def test_fragment_and_state(self):
+        status, _, frag = self.request("/fragment")
+        self.assertEqual(status, 200)
+        self.assertNotIn("<html", frag)
+        status, headers, body = self.request("/api/state")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        s = json.loads(body)
+        self.assertEqual(s["system"]["label"], "RUNNING · 1")
+        self.assertEqual([n["ref"] for n in s["needs"]], ["mahler#9"])
 
     def test_unknown_path_404(self):
-        status, _, _ = self.get("/status")
-        self.assertEqual(status, 404)
+        self.assertEqual(self.request("/status")[0], 404)
 
-    def test_write_methods_rejected(self):
-        for method in ("POST", "PUT", "DELETE", "PATCH"):
-            status, _, _ = self.get("/", method=method, data=b"{}")
-            self.assertEqual(status, 405, method)
+    def test_other_methods_rejected(self):
+        for method in ("PUT", "DELETE", "PATCH"):
+            self.assertEqual(self.request("/", method=method, data=b"{}")[0], 405, method)
+        self.assertEqual(self.request("/", "POST", b"{}")[0], 405)
+        self.assertEqual(self.post("drop_tables")[0], 404)
 
 
-class TestDynamicConfigReload(unittest.TestCase):
+class TestWrites(_Served):
+    def test_pause_then_resume(self):
+        status, _, body = self.post("pause")
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
+        self.assertTrue(self.led.paused())
+        self.post("resume")
+        self.assertFalse(self.led.paused())
+
+    def test_same_origin_is_allowed(self):
+        status, _, _ = self.post("pause", headers={"Origin": f"http://127.0.0.1:{self.port}"})
+        self.assertEqual(status, 200)
+
+    def test_guard(self):
+        cases = [
+            ({"X-Mahler-Console": ""}, 403),                         # no header
+            ({"Origin": "https://evil.example"}, 403),               # cross-site
+            ({"Content-Type": "application/x-www-form-urlencoded"}, 415),
+        ]
+        for headers, code in cases:
+            status, _, body = self.post("pause", headers=headers)
+            self.assertEqual(status, code, headers)
+            self.assertFalse(json.loads(body)["ok"])
+        self.assertFalse(self.led.paused())
+
+    def test_bad_json_and_bad_input(self):
+        h = {"Content-Type": "application/json", "X-Mahler-Console": "1"}
+        self.assertEqual(self.request("/api/pause", "POST", b"{not json", h)[0], 400)
+        status, _, body = self.post("clear_backoff", {"platforms": []})
+        self.assertEqual(status, 400)
+        self.assertIn("platforms", json.loads(body)["error"])
+
+    def test_only_this_machine_and_the_tailnet_may_write(self):
+        for addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "100.101.2.3", "fd7a:115c:a1e0::1"):
+            self.assertTrue(serve.write_allowed_from(addr), addr)
+        for addr in ("192.168.1.20", "10.0.0.2", "8.8.8.8", "not an ip"):
+            self.assertFalse(serve.write_allowed_from(addr), addr)
+
+
+class TestDynamicConfigReload(_Served):
     """mahler#50: a project added to config.toml after `mahler serve` starts
-    must get GitHub links without restarting the server."""
+    shows up without restarting the server."""
 
     def setUp(self):
-        self.led = make_led()
-        self.led.upsert_item("phish-in", 3, title="Some new-project item",
-                              state="ready", priority=2)
         self.tmp = tempfile.TemporaryDirectory()
         self.config_path = os.path.join(self.tmp.name, "config.toml")
-        with open(self.config_path, "w") as fh:
-            fh.write('[projects.mahler]\nrepo = "mkny13/mahler"\n')
+        self.write_config(extra="")
         self.patcher = mock.patch.object(serve.config, "CONFIG_PATH", self.config_path)
         self.patcher.start()
-
-        handler = type("Handler", (serve._Handler,),
-                       {"led": self.led, "lock": threading.Lock(),
-                        "load_cfg": staticmethod(serve.config.load)})
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        self.port = self.httpd.server_address[1]
-        self.thread = threading.Thread(
-            target=self.httpd.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
-        self.thread.start()
+        self.load_cfg = serve.config.load
+        super().setUp()
+        self.led.upsert_item("phish-in", 3, title="Some new-project item", state="ready")
 
     def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-        self.thread.join(timeout=5)
+        super().tearDown()
         self.patcher.stop()
         self.tmp.cleanup()
 
-    def get(self):
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/", timeout=5) as r:
-            return r.read().decode()
-
-    def test_project_added_after_start_gets_links_without_restart(self):
-        # phish-in isn't in config.toml yet: item renders, but no link.
-        body = self.get()
-        self.assertIn("phish-in#3", body)
-        self.assertNotIn('href="https://github.com/mkny13/phish-in', body)
-
-        # Add phish-in to config.toml while the server is already running.
+    def write_config(self, extra):
         with open(self.config_path, "w") as fh:
-            fh.write('[projects.mahler]\nrepo = "mkny13/mahler"\n'
-                      '[projects.phish-in]\nrepo = "mkny13/phish-in"\n')
+            fh.write('[projects.mahler]\nenabled = true\nrepo = "mkny13/mahler"\n'
+                     'hot_hold = false\n' + extra)
 
-        body = self.get()
-        self.assertIn('href="https://github.com/mkny13/phish-in/issues/3"', body)
+    def test_project_added_after_start_shows_without_restart(self):
+        body = self.request("/")[2]
+        self.assertNotIn("phish-in", body)
+        self.write_config('[projects.phish-in]\nenabled = true\nrepo = "mkny13/couch-tour"\n'
+                          'hot_hold = false\n')
+        body = self.request("/")[2]
+        self.assertIn('href="https://github.com/mkny13/couch-tour/issues/3"', body)
 
 
 class TestCliWiring(unittest.TestCase):
@@ -419,7 +204,5 @@ class TestCliWiring(unittest.TestCase):
         self.assertEqual(mock_serve.call_args.args[3], 8787)
 
 
-
 if __name__ == "__main__":
     unittest.main()
-

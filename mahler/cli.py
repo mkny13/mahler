@@ -622,7 +622,7 @@ def main(argv=None):
     s.add_argument("--project", help="filter by project")
     s.set_defaults(fn=cmd_status)
 
-    s = sub.add_parser("serve", help="read-only status page (D10)")
+    s = sub.add_parser("serve", help="the operator console (D27)")
     s.add_argument("--host", type=str, default=None,
                    help="interface to bind (default: serve.host in config, else 127.0.0.1)")
     s.add_argument("--port", type=int, default=None,
