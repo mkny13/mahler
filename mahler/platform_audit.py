@@ -79,13 +79,42 @@ def _age_days(date_str, now):
     return (now.date() - datetime.fromisoformat(date_str).date()).days
 
 
+def _root_platform(cfg, name):
+    """Walk a platform's `from` chain (DESIGN D25) to its root, mirroring
+    `config.resolve_platforms`'s own cycle/bad-base handling. Returns the
+    root platform's name for a platform that is actually derived through a
+    valid acyclic chain, or `None` if the platform isn't derived, or the
+    chain cycles or names an unknown base. Never mutates `cfg` or raises."""
+    plats = cfg.get("platforms", {})
+    seen = {name}
+    current = name
+    while True:
+        pconf = plats.get(current)
+        if pconf is None:
+            return None
+        base = pconf.get("from")
+        if not base:
+            return current if current != name else None
+        if base in seen or base not in plats:
+            return None
+        seen.add(base)
+        current = base
+
+
 def stale_report(cfg, dates, now, stale_days):
-    """One row per enabled platform: (name, date_or_None, age_or_None, stale)."""
+    """One row per enabled platform: (name, date_or_None, age_or_None, stale).
+    A derived platform (`from = "<base>"`, D25) with no annotation of its own
+    inherits its root base's date, since that date is evidence about the CLI
+    and model it shares (mahler#227)."""
     rows = []
     for name, pconf in cfg["platforms"].items():
         if not pconf.get("enabled", True):
             continue
         date = dates.get(name)
+        if date is None:
+            root = _root_platform(cfg, name)
+            if root:
+                date = dates.get(root)
         age = _age_days(date, now) if date else None
         stale = date is None or age >= stale_days
         rows.append((name, date, age, stale))
@@ -148,7 +177,10 @@ def build_body(cfg, led, pol):
     ]
     for name, date, age, stale in stale_rows:
         flag = "**STALE**" if stale and date else ("**NO ANNOTATION FOUND**" if stale else "ok")
-        lines.append(f"| {name} | {date or '—'} | {age if age is not None else '—'} | {flag} |")
+        root = _root_platform(cfg, name) if dates.get(name) is None else None
+        platform_cell = f"`{name}` (via `{root}`)" if root else name
+        lines.append(f"| {platform_cell} | {date or '—'} | "
+                     f"{age if age is not None else '—'} | {flag} |")
 
     lines += [
         "",

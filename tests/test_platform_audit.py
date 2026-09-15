@@ -169,6 +169,75 @@ class StaleReportTests(unittest.TestCase):
         self.assertNotIn("c", {r[0] for r in rows})
 
 
+class DerivedPlatformInheritanceTests(unittest.TestCase):
+    """mahler#227: a `from = "<base>"` derived platform (D25) inherits its
+    root base's verified date instead of being permanently flagged."""
+
+    def _cfg(self, **platforms):
+        base = {"claude": {"enabled": True}, "claude-work": {"enabled": True, "from": "claude"}}
+        base.update(platforms)
+        return {"platforms": base}
+
+    def test_derived_platform_inherits_base_date(self):
+        rows = platform_audit.stale_report(
+            self._cfg(), {"claude": "2026-09-01"}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertEqual(by_name["claude-work"][1], "2026-09-01")
+        self.assertFalse(by_name["claude-work"][3])
+
+    def test_inherited_staleness_fires_when_base_is_old(self):
+        rows = platform_audit.stale_report(
+            self._cfg(), {"claude": "2026-01-01"}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertEqual(by_name["claude-work"][1], "2026-01-01")
+        self.assertTrue(by_name["claude-work"][3])
+
+    def test_two_hop_chain_resolves_to_root_date(self):
+        cfg = self._cfg(**{
+            "claude-work": {"enabled": True, "from": "claude"},
+            "claude-work-2": {"enabled": True, "from": "claude-work"},
+        })
+        rows = platform_audit.stale_report(cfg, {"claude": "2026-09-01"}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertEqual(by_name["claude-work-2"][1], "2026-09-01")
+
+    def test_from_cycle_does_not_raise_and_reports_no_date(self):
+        cfg = self._cfg(**{
+            "claude": {"enabled": True, "from": "claude-work"},
+            "claude-work": {"enabled": True, "from": "claude"},
+        })
+        rows = platform_audit.stale_report(cfg, {}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertIsNone(by_name["claude-work"][1])
+        self.assertTrue(by_name["claude-work"][3])
+
+    def test_unknown_base_does_not_raise_and_reports_no_date(self):
+        cfg = self._cfg(**{"claude-work": {"enabled": True, "from": "nonexistent"}})
+        rows = platform_audit.stale_report(cfg, {}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertIsNone(by_name["claude-work"][1])
+        self.assertTrue(by_name["claude-work"][3])
+
+    def test_base_also_missing_date_still_flags(self):
+        rows = platform_audit.stale_report(self._cfg(), {}, NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertIsNone(by_name["claude-work"][1])
+        self.assertTrue(by_name["claude-work"][3])
+
+    def test_own_date_takes_precedence_over_base_date(self):
+        rows = platform_audit.stale_report(
+            self._cfg(), {"claude": "2026-01-01", "claude-work": "2026-09-10"},
+            NOW, stale_days=90)
+        by_name = {r[0]: r for r in rows}
+        self.assertEqual(by_name["claude-work"][1], "2026-09-10")
+
+    def test_root_platform_none_for_non_derived_platform(self):
+        self.assertIsNone(platform_audit._root_platform(self._cfg(), "claude"))
+
+    def test_root_platform_none_for_unknown_platform(self):
+        self.assertIsNone(platform_audit._root_platform(self._cfg(), "nope"))
+
+
 class TierInversionTests(unittest.TestCase):
     def test_flags_lower_tier_outperforming_higher_tier(self):
         rows = [("kilo", 1, 10, 90.0, 0.0, 0), ("claude", 3, 10, 50.0, 0.0, 0)]
@@ -200,6 +269,37 @@ class BuildBodyTests(unittest.TestCase):
         self.assertIn("DESIGN.md verified-date staleness", body)
         self.assertIn("Observed ledger outcomes", body)
         self.assertIn("Possible tier inconsistencies", body)
+
+    def test_derived_platform_row_shows_via_base(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"]["claude-work"] = {"enabled": True, "from": "claude"}
+        pol = config.platform_audit_policy(cfg)
+        body = platform_audit.build_body(cfg, led, pol)
+        self.assertIn("`claude-work` (via `claude`)", body)
+
+    def test_platform_with_own_date_has_no_via_suffix(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"]["claude-work"] = {"enabled": True, "from": "claude"}
+        pol = config.platform_audit_policy(cfg)
+        with mock.patch.object(platform_audit, "verified_dates",
+                                return_value={"claude-work": "2026-09-10"}):
+            body = platform_audit.build_body(cfg, led, pol)
+        self.assertIn("| claude-work | 2026-09-10 |", body)
+        self.assertNotIn("(via", body)
+
+    def test_cycle_has_no_via_suffix(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"]["claude"]["from"] = "claude-work"
+        cfg["platforms"]["claude-work"] = {"enabled": True, "from": "claude"}
+        pol = config.platform_audit_policy(cfg)
+        body = platform_audit.build_body(cfg, led, pol)
+        self.assertNotIn("via", body[:body.index("Observed ledger outcomes")])
 
 
 if __name__ == "__main__":
