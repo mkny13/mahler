@@ -419,5 +419,8 @@ def _run_overlays(s):
                    f'<div style="display:flex;flex-direction:column;gap:6px">'
                    f'<span class="bar"><span class="f-{r["tone"]}" style="width:{r["progress"]}%">'
                    f'</span></span><span class="timing mono t-{r["tone"]}">{e(r["timing"])}</span>'
-                   f'</div></div></div></div>')
+                   f'</div></div><div class="runfoot">'
+                   f'<button class="btn" data-close-run>Leave running</button>'
+                   f'<button class="btn btn-bad" data-act="stop_run" data-run="{r["id"]}">'
+                   f'Stop &amp; hand off</button></div></div></div>')
     return "".join(out)

@@ -400,6 +400,63 @@ class ActionTests(unittest.TestCase):
         self.assertEqual(led.get_kv(state.SEEN_KEY), "9")
 
 
+class StopRunTests(unittest.TestCase):
+    """Stop & hand off from the run detail (mahler#252, DESIGN D27)."""
+
+    def setUp(self):
+        from mahler.console import outbox
+        self.outbox = outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("mahler", 41, title="Split runner yield", state="working")
+        self.run_id = self.led.create_run(project="mahler", number=41, role="build",
+                                          platform="agy-claude", epoch=1)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def test_bad_or_stale_run_is_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "positive run id"):
+            actions.run(self.cfg, self.led, "stop_run", {"run": "x"})
+        with self.assertRaisesRegex(actions.ActionError, "already ended"):
+            actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id + 1})
+        self.led.update_run(self.run_id, status="ended")
+        with self.assertRaisesRegex(actions.ActionError, "already ended"):
+            actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})
+
+    def test_queuing_is_idempotent(self):
+        first = actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})["id"]
+        second = actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})["id"]
+        self.assertEqual(first, second)
+        self.assertEqual(len(self.led.pending_actions("stop_run")), 1)
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_stop_queued'")
+        self.assertEqual(json.loads(ev["detail"])["run"], self.run_id)
+
+    def test_active_run_gets_yield_at_and_stop_reason(self):
+        actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})
+        self.outbox.drain(self.ctx)
+        run = self.led.run(self.run_id)
+        self.assertEqual(run["stop_reason"], "handoff")
+        self.assertIsNotNone(run["yield_at"])
+        row = self.led.q1("SELECT * FROM console_actions WHERE kind='stop_run'")
+        self.assertEqual(row["status"], "done")
+
+    def test_a_run_that_already_ended_is_skipped(self):
+        actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})
+        self.led.update_run(self.run_id, status="ended", stop_reason=None)
+        self.outbox.drain(self.ctx)
+        run = self.led.run(self.run_id)
+        self.assertIsNone(run["stop_reason"])
+        self.assertIsNone(run["yield_at"])
+        row = self.led.q1("SELECT * FROM console_actions WHERE kind='stop_run'")
+        self.assertEqual(row["status"], "skipped")
+
+    def test_run_shows_stopping_once_queued(self):
+        self.led.claim("mahler", 41, f"run:{self.run_id}", "auto", 10,
+                       platform="agy-claude", run_id=self.run_id)
+        actions.run(self.cfg, self.led, "stop_run", {"run": self.run_id})
+        run = state.build(self.cfg, self.led)["runs"][0]
+        self.assertEqual(run["status"], "stopping")
+
+
 class PageTests(unittest.TestCase):
     def setUp(self):
         self.cfg, self.led = make_cfg(), make_led()

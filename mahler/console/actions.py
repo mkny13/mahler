@@ -7,6 +7,8 @@ they apply at once. Writes that reach GitHub or a running agent go through the
 tick instead, so all GitHub traffic keeps the project's own login (D25).
 """
 
+import json
+
 from .. import config, router
 from ..gh import AGENT_MARK
 from .state import SEEN_KEY
@@ -79,6 +81,24 @@ def digest_seen(cfg, led, body):
         led.event("console_seen", detail={"upto": upto})
 
 
+def stop_run(cfg, led, body):
+    """Stop & hand off (DESIGN D27): queue the run for a watchdog-driven stop
+    so the tick's own login does the terminating, not the console process."""
+    run_id = body.get("run")
+    if type(run_id) is not int or run_id <= 0:
+        raise ActionError("run must be a positive run id")
+    with led._tx():
+        run = led.run(run_id)
+        if run is None or run["status"] not in ("running", "stopping"):
+            raise ActionError("the run has already ended")
+        for row in led.pending_actions("stop_run"):
+            if json.loads(row["payload"]).get("run") == run_id:
+                return {"id": row["id"]}          # already queued
+        id = led.queue_action("stop_run", run["project"], run["number"], {"run": run_id})
+        led.event("console_stop_queued", run["project"], run["number"], {"id": id, "run": run_id})
+    return {"id": id}
+
+
 def answer(cfg, led, body):
     project, number, text = (body.get(k) for k in ("project", "number", "text"))
     if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
@@ -114,7 +134,7 @@ def answer_undo(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
-                                   clear_backoff, digest_seen, answer, answer_undo)}
+                                   clear_backoff, digest_seen, answer, answer_undo, stop_run)}
 
 
 def run(cfg, led, name, body):

@@ -312,6 +312,7 @@ def _capacity_line(quota):
 
 def _runs(cfg, led, now):
     ests = led.estimates()
+    stop_queued = {json.loads(r["payload"]).get("run") for r in led.pending_actions("stop_run")}
     out = []
     for r in sorted(led.active_runs(), key=lambda r: r["started_at"] or ""):
         project, n = r["project"], r["number"]
@@ -330,7 +331,7 @@ def _runs(cfg, led, now):
             meta.append(f"worktree {wt}")
         meta += [f"epoch {r['epoch']}", "lease held" if held else "no lease"]
         status = (f"stopping · {r['stop_reason']}" if r["status"] == "stopping" and r["stop_reason"]
-                  else "stopping" if r["status"] == "stopping"
+                  else "stopping" if r["status"] == "stopping" or r["id"] in stop_queued
                   else ROLE_WORDS.get(r["role"], r["role"]))
         out.append({
             "id": r["id"], "ref": _ref(project, n), "url": _issue_url(cfg, project, n),

@@ -15,7 +15,7 @@ from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
 
-NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent")
+NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent", "handoff")
 
 
 class Ending:
@@ -152,7 +152,7 @@ ENDINGS = (
     (lambda e: e.verb == "YIELDED", _ended_preempted),
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
-    (lambda e: e.reason in ("quota", "lost-lease"), _ended_out_of_reach),
+    (lambda e: e.reason in ("quota", "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),

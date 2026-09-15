@@ -2,7 +2,7 @@
 
 import json
 
-from .. import config, redact
+from .. import config, redact, watchdog
 
 
 def answer(ctx, row, payload):
@@ -17,7 +17,15 @@ def answer(ctx, row, payload):
     return 'done', 'answer posted'
 
 
-HANDLERS = {'answer': answer}
+def stop_run(ctx, row, payload):
+    run = ctx.led.run(payload['run'])
+    if run is None or run['status'] not in ('running', 'stopping'):
+        return 'skipped', 'the run already ended'
+    watchdog.request_stop(ctx, run, 'handoff')
+    return 'done', 'stop requested'
+
+
+HANDLERS = {'answer': answer, 'stop_run': stop_run}
 
 
 def _report(ctx, message):
