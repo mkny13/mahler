@@ -518,8 +518,8 @@ at a time.
 - The scheduler recording why nothing started (structured holds), so the 0-runs
   view is complete rather than inferred.
 - Ready to test: the UAT queue, Pass, and Fail through the bug sheet.
-- Capture to a GitHub issue in the project you pick, then attachments for capture
-  and the bug sheet.
+- Capture to a GitHub issue in the project picked from a dropdown, then
+  attachments for capture and the bug sheet.
 - Stop & hand off from the run detail, and the live log tail.
 - Undo a merge: the revert PR through the normal pipeline.
 - The serve process restarting itself when its code updates, and ntfy
@@ -534,9 +534,12 @@ These override the verbatim spec above.
   hot hold only holds builds. It now reads: *"You were working
   in groundwork with Claude Code 4 minutes ago. No new builds start there until 20
   minutes after you stop. Work in flight continues."*
-- **No inbox.** Capture always files into a project you pick. The `inbox (no
-  project)` chip, "the inbox repo" and the inbox backlog group are dropped; no project is preselected, and Save waits until you pick one. The
-  placeholder becomes *"Type or dictate, then pick a project."*
+- **No inbox; a project dropdown.** Capture always files into a project, chosen
+  from a dropdown beside the text box: one composer, no second step. The design's
+  `inbox (no project)` chip, the project chips, the target line, "the inbox repo"
+  and the inbox backlog group are all dropped. The dropdown remembers the last
+  project you saved to; the very first time it reads `Project` and Save waits for
+  a choice. The placeholder becomes *"Type or dictate."*
 
 ### Judgment calls the design didn't settle
 
