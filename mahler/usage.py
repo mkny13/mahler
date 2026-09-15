@@ -50,6 +50,12 @@ def _usage_needs_refresh(led, name, pconf):
     - any window's sample age exceeds stale_minutes - 3 (proactive), or
     - for claude platforms, oauth_usage hasn't been checked in >5 minutes.
     """
+    if not pconf.get("metered", True):
+        return False
+    if pconf.get("kind") == "copilot":
+        checked = parse(led.get_kv(f"copilot:no-quota:{name}"))
+        if checked:
+            return led.now() - checked >= timedelta(minutes=pconf.get("stale_minutes", 15))
     state, _ = router.usage_state(led, name, pconf)
     if state == "stale":
         return True
@@ -136,6 +142,12 @@ def refresh_usage(ctx, projects):
             samples = platforms.probe_copilot(pconf.get("monthly_cap_credits", 1500),
                                               env=config.run_env(cfg, account))
             for peer in quota_peers(cfg, name):
+                if not cfg["platforms"][peer].get("metered", True):
+                    continue
+                no_quota = isinstance(samples, platforms.CopilotNoQuota)
+                led.set_kv(f"copilot:no-quota:{peer}", iso(led.now()) if no_quota else "")
+                if no_quota:
+                    led.set_kv(f"probe:{peer}", "")
                 for w, pct, resets in samples:
                     led.record_usage(peer, w, pct, resets)
                 if samples:

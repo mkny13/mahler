@@ -239,6 +239,17 @@ def window_countdowns(led, name, pconf):
     return out
 
 
+def is_metered(led, name, pconf):
+    """Configured meter, unless a fresh Copilot report has no quota signal."""
+    if not pconf.get("metered", True):
+        return False
+    if pconf.get("kind") == "copilot":
+        checked = _ts(led.get_kv(f"copilot:no-quota:{name}"))
+        if checked and led.now() - checked < timedelta(minutes=pconf.get("stale_minutes", 15)):
+            return False
+    return True
+
+
 def usage_state(led, name, pconf, burst_lines=None):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins.
 
@@ -256,7 +267,7 @@ def usage_state(led, name, pconf, burst_lines=None):
         until = hold_until
         return "soft", (f"on hold until {until.astimezone():%H:%M} "
                         f"(in {fmt_countdown(until - now)}) (a run never started)")
-    if not pconf.get("metered", True):
+    if not is_metered(led, name, pconf):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():
             until = _ts(u.get("resets_at"))

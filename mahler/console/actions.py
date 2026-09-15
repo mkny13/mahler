@@ -59,7 +59,7 @@ def clear_backoff(cfg, led, body):
             if pc.get("quota_group", peer) != group:
                 continue
             windows = [router.HOLD]
-            if not pc.get("metered", True):
+            if not router.is_metered(led, peer, pc):
                 windows += [w for w, u in led.usage(peer).items() if u["used_pct"] >= 100]
             if led.clear_usage(peer, windows):
                 cleared.append(peer)
