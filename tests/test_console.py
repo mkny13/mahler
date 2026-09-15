@@ -1,6 +1,7 @@
 """The operator console (DESIGN D27): its state, its copy, its page, its writes."""
 
 import copy
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -430,3 +431,74 @@ class PageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecordedIdleTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        for n in range(1, 6):
+            self.led.upsert_item("mahler", n, state="ready")
+
+    def idle(self, holds, age=0):
+        self.led.set_kv("schedule_holds", json.dumps({
+            "at": iso(self.led.now() - timedelta(seconds=age)), "holds": holds}))
+        return state._idle(self.cfg, self.led, {"paused": False, "peak": None, "quota": []},
+                           [], self.led.now())
+
+    def hold(self, kind, number=1, **data):
+        return {"kind": kind, "project": "mahler", "number": number, **data}
+
+    def test_route_grouping_and_size_only(self):
+        holds = [self.hold("no_platform", n, role="build", size="m", blockers={"size": ["kilo"]})
+                 for n in (1, 2)]
+        holds += [self.hold("no_platform", 3, role="plan", size="l",
+                            blockers={"busy": ["kilo"], "over": ["agy-gemini", "agy-claude"],
+                                      "peak": ["claude"], "size": ["cline-free"]})]
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "2 item(s) need a builder that takes size:m, and none in the route does."},
+            {"text": "1 plan item(s) have no platform with headroom — busy: kilo; past the line: "
+                     "agy-claude, agy-gemini; peak hours: claude; too small: cline-free."}])
+
+    def test_settling_dependencies_overlap_and_capacity(self):
+        minutes = config.project_policy(self.cfg, "mahler")["settle_minutes"]
+        holds = [self.hold("settling", until=iso(self.led.now() + timedelta(minutes=2))),
+                 self.hold("deps", 2, on=[6, 7]), self.hold("area", 3, area="console"),
+                 self.hold("files", 4, files=["a.py", "b.py"]),
+                 {"kind": "capacity", "project": "mahler", "max_parallel": 0}]
+        reasons = self.idle(holds)["reasons"]
+        self.assertIn({"text": f"1 item(s) were just sorted and settle for {minutes} minutes "
+                              "before a build starts.", "countdown": "first in 2m"}, reasons)
+        for text in ("mahler#2 waits for mahler#6 and mahler#7 to close.",
+                     "mahler#3 waits — area:console already in progress.",
+                     "mahler#4 waits — a.py, b.py already in progress.",
+                     "mahler is at its limit of 0 run(s)."):
+            self.assertIn({"text": text}, reasons)
+
+    def test_many_dependencies_are_grouped(self):
+        holds = [self.hold("deps", n, on=[99]) for n in range(1, 5)]
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "4 items wait for other issues to close."}])
+
+    def test_freshness_empty_and_malformed_snapshots(self):
+        holds = [self.hold("area", area="console")]
+        self.assertIn("area:console", self.idle(holds, 180)["reasons"][0]["text"])
+        for age in (181, -1):
+            self.assertIn("queued, but no platform", self.idle(holds, age)["reasons"][0]["text"])
+        self.assertEqual(self.idle([])["reasons"], [])
+        for raw in ("broken", "{}", "null", '[1]', '{"at": "oops", "holds": []}'):
+            self.led.set_kv("schedule_holds", raw)
+            self.assertIsNone(state._schedule_holds(self.led, self.led.now()))
+
+    def test_disabled_projects_and_items_no_longer_pending_are_ignored(self):
+        holds = [self.hold("area", 99, area="console"),
+                 {"kind": "capacity", "project": "old", "max_parallel": 0}]
+        self.assertEqual(self.idle(holds)["reasons"], [])
+
+    def test_existing_slot_and_hot_hold_explanations_are_not_duplicated(self):
+        self.led.upsert_item("mahler", 10, state="verifying", pr=20)
+        self.cfg["projects"]["mahler"]["max_parallel"] = 1
+        holds = [{"kind": "slot", "project": "mahler", "verifying": [10]}]
+        reasons = self.idle(holds)["reasons"]
+        self.assertEqual(len(reasons), 1)
+        self.assertEqual(reasons[0]["action"], "Open PR #20")

@@ -8,12 +8,14 @@ This module is the entry only: each pass it calls lives in its own module
 (mahler#70) — watchdog.py, sync.py, finalize.py, ship.py, tick.py, usage.py.
 """
 
+import json
 import fcntl
 import os
 import sys
 
 from . import backup, config, digest, janitor, notify, platform_audit
 from .gh import GH, GHError
+from .ledger import iso
 from .ship import ship
 from .sync import close_finished_parents, mirror_labels, sync
 from .tick import expire, queue_maintenance, schedule
@@ -25,6 +27,7 @@ class Ctx:
     def __init__(self, cfg, led, dry_run=False, hot_hold=True):
         self.cfg, self.led, self.dry_run, self.hot_hold = cfg, led, dry_run, hot_hold
         self.lines = []
+        self.holds = []
         self._gh = {}
         self._labels = {}          # (project, number) -> labels from this tick's sync
         self.burst_lines = None    # D23: set by compute_burst during this tick
@@ -41,6 +44,9 @@ class Ctx:
 
     def say(self, msg):
         self.lines.append(msg)
+
+    def hold(self, kind, **data):
+        self.holds.append({"kind": kind, **data})
 
     def url(self, project, number):
         return f"https://github.com/{self.policy(project)['repo']}/issues/{number}"
@@ -66,6 +72,7 @@ def take_lock():
 
 
 def tick(ctx):
+    ctx.holds = []
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
     compute_burst(ctx, projects)    # D23: before watchdog so running runs
     watchdog(ctx)                   #   see burst lines too
@@ -78,11 +85,14 @@ def tick(ctx):
     close_finished_parents(ctx, projects)
     if ctx.led.paused():
         ctx.say("paused — not starting anything (mahler resume)")
+        ctx.hold("paused")
     else:
         refresh_usage(ctx, projects)
         queue_maintenance(ctx, projects)
         platform_audit.queue(ctx, projects)
         schedule(ctx, projects)
+    record_holds(ctx)
+    if not ctx.led.paused():
         ship(ctx, projects)
     for p in projects:
         mirror_labels(ctx, p["name"])
@@ -96,6 +106,17 @@ def tick(ctx):
     digest.maybe_send(ctx)                  # informational: also runs while paused
     janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
     return ctx.lines
+
+
+def record_holds(ctx):
+    """Diagnostic writes must never prevent shipping or the rest of a tick."""
+    if ctx.dry_run:
+        return
+    try:
+        ctx.led.set_kv("schedule_holds", json.dumps({
+            "at": iso(ctx.led.now()), "holds": ctx.holds[:200]}))
+    except Exception as e:
+        ctx.say(f"couldn't record schedule holds — {e}")
 
 
 def _project_ok(ctx, p):

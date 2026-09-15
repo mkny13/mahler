@@ -977,3 +977,18 @@ class CopilotQuotaFanOutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReasonGroupsTests(unittest.TestCase):
+    def test_all_router_reason_categories_and_duplicate_accounts(self):
+        reasons = ["kilo: busy", "cline-free: only takes size:s", "copilot: requires size:m",
+                   "small: tier 1 below escalation tier 3", "claude: peak hours until 11:00",
+                   "agy-claude: soft (weekly 90%)", "agy-gemini: hard (weekly 99%)",
+                   "codex: stale (5h: no sample)",
+                   "work: pinned, but it spends the work account, not personal",
+                   "unknown: disabled", "kilo: busy"]
+        self.assertEqual(router.reason_groups(reasons), {
+            "busy": ["kilo"], "size": ["cline-free", "copilot"], "tier": ["small"],
+            "peak": ["claude"], "over": ["agy-claude", "agy-gemini"], "stale": ["codex"],
+            "account": ["work"], "other": ["unknown"]})
+        self.assertEqual(router.reason_groups([]), {})

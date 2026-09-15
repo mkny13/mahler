@@ -417,3 +417,30 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
         if platform:
             return platform, reasons
     return None, reasons
+
+
+def reason_groups(reasons):
+    """Group router diagnostics by blocker, keeping each platform once."""
+    groups = {}
+    for reason in reasons:
+        name, _, detail = reason.partition(": ")
+        if detail == "busy":
+            kind = "busy"
+        elif detail.startswith(("only takes size:", "requires size:")):
+            kind = "size"
+        elif detail.startswith("tier "):
+            kind = "tier"
+        elif detail.startswith("peak hours"):
+            kind = "peak"
+        elif detail.startswith(("soft (", "hard (")):
+            kind = "over"
+        elif detail.startswith("stale ("):
+            kind = "stale"
+        elif "account" in detail:
+            kind = "account"
+        else:
+            kind = "other"
+        names = groups.setdefault(kind, [])
+        if name not in names:
+            names.append(name)
+    return groups

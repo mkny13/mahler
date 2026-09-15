@@ -581,3 +581,20 @@ place:
 - Event kinds shown: `run_started`, `pr_opened`, `pr_merged`, `escalated`
   (*"retried a tier up (2 → 3)"*), `handoff`, `backoff_cleared` (*"cleared by hand
   on kilo"*), and the state an item moved to (`needs_you`, `ready`, …).
+
+- Scheduler holds (fresh for three minutes): *"{n} item(s) need a builder that
+  takes size:{size}, and none in the route does."* · *"{n} {role} item(s) have
+  no platform with headroom — {summary}."* Summary groups use `busy`, `past the
+  line`, `peak hours`, `too small`, `below required tier`, `no fresh reading`,
+  `wrong account`, and `unavailable`; an empty route says `no platforms in the route`.
+- *"{n} item(s) were just sorted and settle for {settle_minutes} minutes before
+  a build starts."* · countdown `first in {m}m`.
+- *"{ref} waits for {refs} to close."* With more than three: *"{n} items wait
+  for other issues to close."*
+- *"{ref} waits — {area or files} already in progress."* · *"{project} is at
+  its limit of {max_parallel} run(s)."* · *"{project} waits — its canonical
+  lease host is unavailable."*
+- The generic queued/no-headroom sentence is only a fallback when there is no
+  fresh scheduler snapshot. Existing quota, peak, backoff, slot and hot-hold
+  explanations keep their countdowns and actions. Dry runs print decisions and
+  collect holds without replacing the live snapshot.
