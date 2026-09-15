@@ -58,10 +58,10 @@
     window.scrollTo(0, 0);
   }
 
-  function refresh() {
+  function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
     var active = document.activeElement;
-    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
+    if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
     }
     return fetch("/fragment", { cache: "no-store" }).then(function (r) {
@@ -70,12 +70,17 @@
     }).then(function (html) {
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
-      for (var i = 0; i < inputs.length; i++) { keep[inputs[i].getAttribute("data-keep")] = inputs[i].value; }
+      for (var i = 0; i < inputs.length; i++) { if (inputs[i].value) { keep[inputs[i].getAttribute("data-keep")] = inputs[i].value; } }
+      // Both layouts carry the same key; the active draft wins over its hidden twin.
+      var focused = document.activeElement;
+      if (focused && focused.hasAttribute("data-keep")) {
+        keep[focused.getAttribute("data-keep")] = focused.value;
+      }
       app.innerHTML = html;
       var again = app.querySelectorAll("[data-keep]");
       for (var j = 0; j < again.length; j++) {
         var v = keep[again[j].getAttribute("data-keep")];
-        if (v) { again[j].value = v; }
+        if (v !== undefined) { again[j].value = v; }
       }
       apply();
       applyHash();
@@ -91,7 +96,7 @@
       return r.json().catch(function () { return { ok: false }; });
     }).then(function (res) {
       if (!res.ok && window.console) { console.warn(action, res.error || "failed"); }
-      return refresh();
+      return refresh(true);
     });
   }
 
@@ -103,6 +108,12 @@
   function payloadFor(el, act) {
     if (act === "clear_backoff") {
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
+    }
+    if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
+    if (act === "answer") {
+      var input = el.parentElement.querySelector("input");
+      return { project: el.getAttribute("data-project"), number: Number(el.getAttribute("data-number")),
+        text: el.hasAttribute("data-text") ? el.getAttribute("data-text") : (input ? input.value : "") };
     }
     if (act === "digest_seen") { return { upto: Number(el.getAttribute("data-upto")) || 0 }; }
     return {};
@@ -166,7 +177,8 @@
       var act = el.getAttribute("data-act");
       el.disabled = true;
       if (act === "digest_seen") { root.removeAttribute("data-digest"); }
-      post(act, payloadFor(el, act));
+      post(act, payloadFor(el, act)).catch(function (err) { if (window.console) { console.warn(err); } })
+        .finally(function () { el.disabled = false; });
     }
   });
 
@@ -181,6 +193,6 @@
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
   applyHash();
-  setInterval(refresh, REFRESH_MS);
+  setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();

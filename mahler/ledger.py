@@ -114,6 +114,13 @@ CREATE TABLE IF NOT EXISTS counters (
     value   INTEGER NOT NULL,
     PRIMARY KEY (project, name)
 );
+CREATE TABLE IF NOT EXISTS console_actions (
+    id INTEGER PRIMARY KEY, kind TEXT NOT NULL, project TEXT, number INTEGER,
+    payload TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+    due_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+    done_at TEXT, result TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_console_actions_due ON console_actions(status, due_at);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 
 -- Query indexes (issue #89): every column below is part of the original
@@ -243,6 +250,36 @@ class Ledger:
             self.close()
         except Exception:
             pass
+
+    # ---------- console outbox (D27) ----------
+
+    def queue_action(self, kind, project=None, number=None, payload=None, delay_seconds=0):
+        now = self.now()
+        return self.con.execute(
+            "INSERT INTO console_actions(kind,project,number,payload,created_at,due_at) "
+            "VALUES(?,?,?,?,?,?)", (kind, project, number, json.dumps(payload or {}),
+                                    iso(now), iso(now + timedelta(seconds=delay_seconds)))).lastrowid
+
+    def cancel_action(self, id):
+        return bool(self.con.execute(
+            "UPDATE console_actions SET status='cancelled',done_at=? "
+            "WHERE id=? AND status='pending'", (iso(self.now()), id)).rowcount)
+
+    def due_actions(self, limit=20):
+        return self.q("SELECT * FROM console_actions WHERE status='pending' AND due_at<=? "
+                      "ORDER BY due_at,id LIMIT ?", (iso(self.now()), limit))
+
+    def pending_actions(self, kind=None):
+        return self.q("SELECT * FROM console_actions WHERE status='pending'" +
+                      (" AND kind=?" if kind is not None else "") + " ORDER BY created_at,id",
+                      (kind,) if kind is not None else ())
+
+    def finish_action(self, id, status, result=None):
+        if status not in ("done", "failed", "cancelled", "skipped"):
+            raise ValueError("invalid action status")
+        self.con.execute("UPDATE console_actions SET status=?,done_at=?,result=? "
+                         "WHERE id=? AND status='pending'",
+                         (status, iso(self.now()), result, id))
 
     # ---------- plumbing ----------
 

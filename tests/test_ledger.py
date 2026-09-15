@@ -903,3 +903,25 @@ class PlatformOutcomeTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class ConsoleQueueTests(unittest.TestCase):
+    def test_queue_due_cancel_finish(self):
+        clock = Clock()
+        led = Ledger(':memory:', clock=clock)
+        self.addCleanup(led.close)
+        first = led.queue_action('answer', 'p', 1, {'text': 'yes'}, 60)
+        second = led.queue_action('other')
+        self.assertEqual([r['id'] for r in led.due_actions()], [second])
+        self.assertEqual(json.loads(led.pending_actions('answer')[0]['payload']), {'text': 'yes'})
+        self.assertTrue(led.cancel_action(second))
+        self.assertFalse(led.cancel_action(second))
+        clock.advance(seconds=60)
+        self.assertEqual([r['id'] for r in led.due_actions(limit=1)], [first])
+        led.finish_action(first, 'done', 'posted')
+        self.assertFalse(led.cancel_action(first))
+        self.assertEqual(led.pending_actions(), [])
+        row = led.q1('SELECT * FROM console_actions WHERE id=?', (first,))
+        self.assertEqual((row['status'], row['result'], row['done_at']), ('done', 'posted', iso(clock())))
+        with self.assertRaises(ValueError):
+            led.finish_action(first, 'pending')

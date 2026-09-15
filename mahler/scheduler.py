@@ -14,6 +14,7 @@ import os
 import sys
 
 from . import backup, config, digest, janitor, notify, platform_audit
+from .console import outbox
 from .gh import GH, GHError
 from .ledger import iso
 from .ship import ship
@@ -86,6 +87,7 @@ def take_lock():
 def tick(ctx):
     ctx.holds = []
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
+    outbox.drain(ctx)
     compute_burst(ctx, projects)    # D23: before watchdog so running runs
     watchdog(ctx)                   #   see burst lines too
     for p in projects:

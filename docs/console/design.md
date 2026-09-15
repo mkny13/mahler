@@ -512,8 +512,8 @@ The code is `mahler/console/` (state, page, actions, CSS, JS), served by
 Each is a planned issue for Mahler to build; the `area:` label makes them land one
 at a time.
 
-- The tick-applied write queue, and answering a needs-you item (buttons, reply box,
-  Undo within 60 seconds).
+- Built in #247: the tick-applied write queue and needs-you answers (buttons,
+  reply box, Undo within 60 seconds). Failed items offer Retry and Park it.
 - Structured answer options on NEEDS-YOU (so the two answer buttons exist).
 - The scheduler recording why nothing started (structured holds), so the 0-runs
   view is complete rather than inferred.
@@ -558,8 +558,7 @@ These override the verbatim spec above.
 - **Event stream** leaves out lease and stats bookkeeping, and the state changes
   that repeat a `run_started`, `pr_opened` or `pr_merged` row.
 - **Until their issues land**, Capture is not in the rail, Ready to test shows 0,
-  and a needs-you item links to its GitHub issue, where a reply already counts as
-  the answer.
+  and needs-you answers use the console queue as well as direct GitHub replies.
 
 ### Copy added during implementation
 
@@ -601,3 +600,18 @@ place:
   fresh scheduler snapshot. Existing quota, peak, backoff, slot and hot-hold
   explanations keep their countdowns and actions. Dry runs print decisions and
   collect holds without replacing the live snapshot.
+
+
+### Answer delivery (#247)
+
+Answers stay in the ledger for at least 60 seconds, then the next tick posts the
+reply using the project's GitHub login, even while paused. Pending answers show
+`You said: …` and `Undo`, and do not count as needing attention. Failed sends
+return to the open list; their failure is recorded in the event stream.
+
+The tick rechecks each pending row inside a write transaction so Undo cannot
+succeed while that row is being sent. This briefly serializes ledger writes during
+the GitHub call. Delivery is not exactly-once across a process crash between the
+GitHub post and the local commit; the queue does not automatically retry recorded
+failures. Console replies explicitly bypass the GitHub wrapper's agent marker so
+the existing comment sync handles answers and `/mahler` commands.
