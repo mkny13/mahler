@@ -170,8 +170,7 @@ class ShipTests(unittest.TestCase):
         row = self.led.uat("x", 5)
         self.assertEqual((row["pr"], row["sha"], row["title"]), (88, "4c1f0abfeed5",
                                                                 "Wired the exporter"))
-        self.assertIn("- the new ping arrives", row["needs"])
-        self.assertIn("- nothing else", row["needs"])
+        self.assertEqual(row["needs"], "- the new ping arrives")
         self.assertIsNone(row["verdict"])
         self.assertEqual(row["shipped_at"], iso(NOW))
 
