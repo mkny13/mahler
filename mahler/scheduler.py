@@ -29,6 +29,7 @@ class Ctx:
         self.cfg, self.led, self.dry_run, self.hot_hold = cfg, led, dry_run, hot_hold
         self.lines = []
         self.holds = []
+        self.passes_filed = set()  # projects with a pass filed (or dry-run queued) this tick
         self._gh = {}
         self._labels = {}          # (project, number) -> labels from this tick's sync
         self.burst_lines = None    # D23: set by compute_burst during this tick

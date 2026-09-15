@@ -252,7 +252,7 @@ def queue(ctx, projects):
     project = pol["project"]
     if project not in {p["name"] for p in projects}:
         return
-    if _has_open_pass(led, project):
+    if project in ctx.passes_filed or _has_open_pass(led, project):
         return
     if not led.maintenance_due(project, config.PLATFORM_AUDIT_PASS, policy=pol):
         return
@@ -261,10 +261,12 @@ def queue(ctx, projects):
     body = build_body(ctx.cfg, led, pol)
     ctx.say(f"{project}: queuing {config.PLATFORM_AUDIT_PASS} pass")
     if ctx.dry_run:
+        ctx.passes_filed.add(project)
         return
     try:
         ctx.gh(project).ensure_pass_label(config.PLATFORM_AUDIT_PASS)
         ctx.gh(project).create_issue(TITLE, body, ["type:chore", "size:l", "p2", label])
+        ctx.passes_filed.add(project)
         led.reset_maintenance(project, config.PLATFORM_AUDIT_PASS)
     except GHError as e:
         ctx.say(f"{project}: failed to file {config.PLATFORM_AUDIT_PASS} pass — {e}")

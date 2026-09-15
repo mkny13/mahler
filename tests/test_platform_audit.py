@@ -6,7 +6,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, platform_audit, scheduler
+from mahler import config, platform_audit, scheduler, tick
+from mahler.gh import GHError
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 14, 12, 0, tzinfo=timezone.utc)
@@ -41,6 +42,44 @@ class QueueTests(unittest.TestCase):
 
         cp = self.led.maintenance_checkpoint("mahler", config.PLATFORM_AUDIT_PASS)
         self.assertEqual(iso(NOW), cp["last_filed_at"])
+
+    def test_pass_filed_this_tick_blocks_audit(self):
+        self.ctx.passes_filed.add("mahler")
+        platform_audit.queue(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_maintenance_and_audit_share_one_filing(self):
+        tick.queue_maintenance(self.ctx, [proj()])
+        platform_audit.queue(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        self.assertTrue(self.led.maintenance_due("mahler", config.PLATFORM_AUDIT_PASS))
+
+    def test_combined_dry_run_names_only_one_pass(self):
+        self.ctx.dry_run = True
+        tick.queue_maintenance(self.ctx, [proj()])
+        platform_audit.queue(self.ctx, [proj()])
+        self.assertEqual(self.ctx.lines, ["mahler: queuing security pass"])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_audit_blocks_later_maintenance_even_in_dry_run(self):
+        for dry_run in (False, True):
+            with self.subTest(dry_run=dry_run):
+                ctx = scheduler.Ctx(self.cfg, self.led, dry_run=dry_run)
+                ctx._gh["mkny13/mahler"] = self.gh_mock
+                self.led.set_maintenance_checkpoint(
+                    "mahler", config.PLATFORM_AUDIT_PASS,
+                    last_filed_at=NOW - timedelta(days=40))
+                platform_audit.queue(ctx, [proj()])
+                tick.queue_maintenance(ctx, [proj()])
+                self.assertEqual(ctx.lines, ["mahler: queuing platform-audit pass"])
+                self.assertEqual(ctx.passes_filed, {"mahler"})
+
+    def test_failed_audit_does_not_claim_tick_or_reset_checkpoint(self):
+        self.gh_mock.create_issue.side_effect = GHError("unavailable")
+        platform_audit.queue(self.ctx, [proj()])
+        self.assertEqual(self.ctx.passes_filed, set())
+        self.assertIsNone(self.led.maintenance_checkpoint(
+            "mahler", config.PLATFORM_AUDIT_PASS)["last_filed_at"])
 
     def test_not_due_skips(self):
         self.led.set_maintenance_checkpoint("mahler", config.PLATFORM_AUDIT_PASS,

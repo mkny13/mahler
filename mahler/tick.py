@@ -32,7 +32,7 @@ def queue_maintenance(ctx, projects):
     led, now = ctx.led, ctx.led.now()
     for p in projects:
         pol = config.maintenance_policy(ctx.cfg, p["name"])
-        if not pol["enabled"]:
+        if not pol["enabled"] or p["name"] in ctx.passes_filed:
             continue
         passes = pol["passes"]
         if not passes:
@@ -110,6 +110,10 @@ def queue_maintenance(ctx, projects):
                     led.reset_maintenance(p["name"], pass_name)
                 except GHError as e:
                     ctx.say(f"{p['name']}: failed to file {pass_name} pass — {e}")
+                    continue
+            # Sync will not see the new issue until the next tick.
+            ctx.passes_filed.add(p["name"])
+            break
 
 
 def busy_platforms(cfg, active):

@@ -30,6 +30,72 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.led.set_maintenance_checkpoint("mahler", "security", 
                                             last_filed_at=NOW - timedelta(days=40))
 
+    def make_health_due(self):
+        self.led.set_maintenance_checkpoint(
+            "mahler", "health", last_filed_at=NOW - timedelta(days=40),
+            merged_since=25)
+
+    def test_only_one_due_pass_files_and_other_waits_until_closed(self):
+        self.make_health_due()
+        before = {name: self.led.maintenance_checkpoint("mahler", name)
+                  for name in config.MAINTENANCE_PASSES}
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        changed = [name for name, cp in before.items()
+                   if self.led.maintenance_checkpoint("mahler", name) != cp]
+        self.assertEqual(changed, ["security"])
+        self.assertTrue(self.led.maintenance_due("mahler", "health"))
+
+        # Re-entry before sync must also respect this tick's filing.
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+        # Next tick's sync sees the open issue; health remains due.
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:security"]),
+                             state="ready")
+        next_ctx = scheduler.Ctx(self.cfg, self.led)
+        next_ctx._gh["mkny13/mahler"] = self.gh_mock
+        tick.queue_maintenance(next_ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        self.assertTrue(self.led.maintenance_due("mahler", "health"))
+
+        self.led.set_state("mahler", 99, "done")
+        tick.queue_maintenance(next_ctx, [proj()])
+        self.assertEqual(self.gh_mock.create_issue.call_count, 2)
+        self.assertIn("pass:health", self.gh_mock.create_issue.call_args.args[2])
+
+    def test_multiple_due_dry_run_names_one_and_preserves_checkpoints(self):
+        self.make_health_due()
+        before = {name: self.led.maintenance_checkpoint("mahler", name)
+                  for name in config.MAINTENANCE_PASSES}
+        self.ctx.dry_run = True
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(self.ctx.lines, ["mahler: queuing security pass"])
+        self.gh_mock.create_issue.assert_not_called()
+        self.assertEqual(before, {
+            name: self.led.maintenance_checkpoint("mahler", name)
+            for name in config.MAINTENANCE_PASSES})
+
+    def test_filing_failure_allows_next_due_pass(self):
+        self.make_health_due()
+        before = self.led.maintenance_checkpoint("mahler", "security")
+        self.gh_mock.create_issue.side_effect = [GHError("unavailable"), 100]
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(self.gh_mock.create_issue.call_count, 2)
+        self.assertEqual(before, self.led.maintenance_checkpoint("mahler", "security"))
+        self.assertEqual(self.ctx.passes_filed, {"mahler"})
+        self.assertIn("pass:health", self.gh_mock.create_issue.call_args.args[2])
+
+    def test_one_filing_per_project(self):
+        other = proj(name="other", repo="mkny13/other")
+        self.cfg["projects"]["other"] = other
+        other_gh = mock.Mock()
+        self.ctx._gh["mkny13/other"] = other_gh
+        tick.queue_maintenance(self.ctx, [proj(), other])
+        self.gh_mock.create_issue.assert_called_once()
+        other_gh.create_issue.assert_called_once()
+        self.assertEqual(self.ctx.passes_filed, {"mahler", "other"})
+
     def test_every_pass_has_maintenance_text(self):
         # regression guard: tick.MAINTENANCE_TEXT[pass_name] is a plain dict
         # lookup with no default — a name in config.MAINTENANCE_PASSES without
