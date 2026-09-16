@@ -1181,10 +1181,14 @@ class UatOutboxTests(unittest.TestCase):
         id = self.queue('uat_fail', note='the ping never arrived')
         self.drain()
         title, body, labels = self.gh.create_issue.call_args[0]
-        self.assertEqual(title, 'UAT failed: Wired the exporter')
-        self.assertIn('> the ping never arrived', body)
-        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
-        self.assertIn('## Needs a human to check\n- the new ping arrives', body)
+        self.assertEqual(title, 'UAT fail: Wired the exporter (mahler#9)')
+        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertIn('**Area:** none', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
+        self.assertIn('the ping never arrived', body)
+        self.assertIn('---', body)
+        self.assertIn('Filed automatically from the in-app UAT check. '
+                      'Passing this item again does not close this issue.', body)
         self.assertEqual(labels, ['type:bug', 'p1'])
         self.gh.comment.assert_called_once_with(9, "❌ **UAT failed** — filed #42.",
                                                 agent=False)
@@ -1202,8 +1206,11 @@ class UatOutboxTests(unittest.TestCase):
         self.queue('uat_fail', note='')
         self.drain()
         body = self.gh.create_issue.call_args[0][1]
-        self.assertNotIn('>', body)
-        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
+        self.assertNotIn('>', body)                         # no blockquote
+        self.assertIn('**UAT item:** `mahler#9`', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
+        self.assertIn('---', body)
+        self.assertIn('Filed automatically from the in-app UAT check.', body)
         self.assertIsNone(self.uat()['note'])
 
     def test_fail_labels_the_project_scope(self):
@@ -1238,6 +1245,86 @@ class UatOutboxTests(unittest.TestCase):
         self.gh.comment.assert_not_called()
         self.assertEqual((self.row(id)['status'], self.row(id)['result']),
                          ('skipped', 'the project is disabled'))
+
+    def test_fail_comments_on_existing_open_bug(self):
+        """mahler#292: a fail when the item already has a linked open bug
+        adds a comment to that bug instead of opening a second issue."""
+        self.gh.issue_state.return_value = 'OPEN'
+        self.led.con.execute("UPDATE uat SET bug=42 WHERE project='mahler' AND number=9")
+        id = self.queue('uat_fail', note='still broken after the fix')
+        self.drain()
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment.assert_any_call(42, 'still broken after the fix', agent=False)
+        self.gh.comment.assert_any_call(9, "❌ **UAT failed** — added to #42.",
+                                        agent=False)
+        row = self.uat()
+        self.assertEqual((row['verdict'], row['bug'], row['note']),
+                         ('fail', 42, 'still broken after the fix'))
+        self.assertEqual(self.row(id)['status'], 'done')
+        self.assertEqual(self.row(id)['result'], 'added to #42')
+
+    def test_fail_opens_new_bug_when_previous_is_closed(self):
+        """mahler#292: a regression — the linked bug was closed but the item
+        fails again — opens a brand-new issue rather than reopening the old one."""
+        self.gh.issue_state.return_value = 'CLOSED'
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/99'
+        self.led.con.execute("UPDATE uat SET bug=42 WHERE project='mahler' AND number=9")
+        id = self.queue('uat_fail', note='regression')
+        self.drain()
+        self.gh.create_issue.assert_called_once()
+        self.gh.comment.assert_any_call(9, "❌ **UAT failed** — filed #99.",
+                                        agent=False)
+        row = self.uat()
+        self.assertEqual((row['bug'], row['verdict']), (99, 'fail'))
+        self.assertEqual(self.row(id)['status'], 'done')
+        self.assertEqual(self.row(id)['result'], 'filed #99')
+
+    def test_fail_without_note_on_open_bug_uses_default_comment(self):
+        """mahler#292: a note-less fail on an open bug still comments with a
+        default message rather than creating a second issue."""
+        self.gh.issue_state.return_value = 'OPEN'
+        self.led.con.execute("UPDATE uat SET bug=42 WHERE project='mahler' AND number=9")
+        id = self.queue('uat_fail', note='')
+        self.drain()
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment.assert_any_call(42, 'Re-checked — still UAT failing.',
+                                        agent=False)
+        self.assertEqual(self.row(id)['result'], 'added to #42')
+
+
+class UatBugShapeTests(unittest.TestCase):
+    """mahler#292: the bug-shape contract shared across all three UAT trackers."""
+
+    def test_title_is_uat_fail_id_in_parens(self):
+        from mahler.console import outbox
+        self.assertEqual(outbox.uat_bug_title('mahler#9', 'Wired the exporter'),
+                         'UAT fail: Wired the exporter (mahler#9)')
+
+    def test_body_has_all_shape_fields(self):
+        from mahler.console import outbox
+        body = outbox.uat_bug_body('mahler#9', 'Wired the exporter', 'console',
+                                   'https://github.com/mkny13/mahler/pull/88',
+                                   'the ping never arrived')
+        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertIn('**Area:** console', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
+        self.assertIn('the ping never arrived', body)
+        self.assertIn('---', body)
+        self.assertIn('Filed automatically from the in-app UAT check. '
+                      'Passing this item again does not close this issue.', body)
+
+    def test_body_without_note_has_no_dangling_section(self):
+        from mahler.console import outbox
+        body = outbox.uat_bug_body('couch-tour#258', 'Gradient', None, '', '')
+        self.assertIn('**Area:** none', body)
+        self.assertIn('**Source:** none', body)
+        # the note paragraph should be absent
+        self.assertIn('---', body)
+        lines = body.split('\n')
+        # Source line is immediately followed by blank then ---
+        src_idx = next(i for i, l in enumerate(lines) if '**Source:**' in l)
+        self.assertEqual(lines[src_idx + 1], '')
+        self.assertEqual(lines[src_idx + 2], '---')
 
 
 class CaptureStateTests(unittest.TestCase):

@@ -3,6 +3,7 @@
 import json
 
 from .. import config, redact, watchdog
+from ..gh import GHError
 
 
 def capture_title(text, limit=80):
@@ -14,6 +15,29 @@ def capture_title(text, limit=80):
     cut = line[:limit]
     sp = cut.rfind(" ")
     return cut[:sp] if sp > 0 else cut
+
+
+def uat_bug_title(item_id, title):
+    """Title for a UAT-failure bug (mahler#292 bug-shape contract):
+    `UAT fail: <item title> (<item id>)`."""
+    return f"UAT fail: {title} ({item_id})"
+
+
+def uat_bug_body(item_id, title, area, source, note):
+    """Body for a UAT-failure bug (mahler#292 bug-shape contract).
+
+    The shared shape across all three UAT trackers: Mahler's console,
+    groundwork (#125) and couch-tour (#258).  The note is included
+    verbatim; passing the item again never closes this issue."""
+    lines = [f"**UAT item:** `{item_id}` — {title}",
+             f"**Area:** {area or 'none'}",
+             f"**Source:** {source or 'none'}"]
+    if note:
+        lines += ["", note]
+    lines += ["", "---",
+              "Filed automatically from the in-app UAT check. "
+              "Passing this item again does not close this issue."]
+    return "\n".join(lines)
 
 
 def capture(ctx, row, payload):
@@ -93,21 +117,43 @@ def uat_fail(ctx, row, payload):
     if pol.get("scope") == "label":
         labels.append(pol["scope_label"])
     note = payload.get("note") or ""
-    lines = []
-    if note:
-        lines += ["> " + line for line in note.splitlines()] + [""]
-    lines += [f"Found checking #{number} — PR #{r['pr'] or '?'}, "
-              f"build {r['sha'] or 'unknown'}.", "",
-              "## Needs a human to check", r["needs"] or ""]
-    url = ctx.gh(project).create_issue(f"UAT failed: {r['title'] or f'{project}#{number}'}",
-                                       "\n".join(lines), labels)
+    gh = ctx.gh(project)
+    item_id = f"{project}#{number}"
+    if r["pr"]:
+        source = f"https://github.com/{pol['repo']}/pull/{r['pr']}"
+    else:
+        source = ctx.url(project, number)
+    area = "none"
+    item = ctx.led.item(project, number)
+    if item and item["labels"]:
+        for l in json.loads(item["labels"]):
+            if isinstance(l, str) and l.startswith("area:"):
+                area = l.split(":", 1)[1]
+                break
+    if r["bug"]:
+        try:
+            bug_state = gh.issue_state(r["bug"])
+        except GHError:
+            bug_state = "UNKNOWN"
+        if bug_state == "OPEN":
+            gh.comment(r["bug"], note or "Re-checked — still UAT failing.", agent=False)
+            if not ctx.led.set_uat_verdict(project, number, "fail", bug=r["bug"],
+                                           note=note or None):
+                return "skipped", "the verdict is already recorded"
+            ctx.led.event("uat_verdict", project, number,
+                          {"verdict": "fail", "bug": r["bug"], "via": "console", "existing": True})
+            ctx.gh(project).comment(number, f"❌ **UAT failed** — added to #{r['bug']}.",
+                                    agent=False)
+            return "done", f"added to #{r['bug']}"
+    title = uat_bug_title(item_id, r["title"] or item_id)
+    body = uat_bug_body(item_id, r["title"] or item_id, area, source, note)
+    url = gh.create_issue(title, body, labels)
     try:
         bug = int(url.rstrip("/").rsplit("/", 1)[-1])
     except ValueError:
         raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
     ctx.gh(project).comment(number, f"❌ **UAT failed** — filed #{bug}.", agent=False)
-    if not ctx.led.set_uat_verdict(project, number, "fail", bug=bug,
-                                   note=note or None):
+    if not ctx.led.set_uat_verdict(project, number, "fail", bug=bug, note=note or None):
         return "skipped", "the verdict is already recorded"
     ctx.led.event("uat_verdict", project, number,
                   {"verdict": "fail", "bug": bug, "via": "console"})
