@@ -89,7 +89,7 @@ class SyncETagTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
-        self.led.set_kv("depends_format:mahler", "2")
+        self.led.set_kv("depends_format:mahler", "3")
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = mock.Mock()
         self.ctx._gh["mkny13/mahler"] = self.gh
@@ -116,7 +116,19 @@ class SyncETagTests(unittest.TestCase):
         sync.sync(self.ctx, "mahler")
         self.assertEqual(json.loads(self.led.item("mahler", 11)["depends"]),
                          [{"repo": "mkny13/groundwork", "number": 125}, 7])
-        self.assertEqual(self.led.get_kv("depends_format:mahler"), "2")
+        self.assertEqual(self.led.get_kv("depends_format:mahler"), "3")
+        sync.sync(self.ctx, "mahler")
+        self.gh.open_issues.assert_called_once()
+
+    def test_ancestor_guard_upgrade_reparses_even_on_304(self):
+        self.led.set_kv("depends_format:mahler", "2")
+        self.led.upsert_item("mahler", 11, depends="[10, 12]")
+        issue = self.issue()
+        issue["body"] = "Part of #10\nDepends on: #10, #12"
+        self.gh.issues_changed.return_value = (False, 'W/"e1"')
+        self.gh.open_issues.return_value = [issue]
+        sync.sync(self.ctx, "mahler")
+        self.assertEqual(json.loads(self.led.item("mahler", 11)["depends"]), [12])
         sync.sync(self.ctx, "mahler")
         self.gh.open_issues.assert_called_once()
 
