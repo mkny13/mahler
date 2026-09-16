@@ -69,9 +69,13 @@ def _maybe_run(ctx):
 def sweep(ctx, pol):
     """One project's sweep. Returns True if it did (or would do) anything."""
     repo, acts = pol["path"], []
+    # git hosting credentials are the project's own identity (D25/D26), not
+    # this machine's default — a work project's private repo otherwise gets
+    # fetched/pruned with the wrong account's git credential helper (mahler#296).
+    env = config.run_env(ctx.cfg, config.gh_account_of(pol))
     for wt, branch in _stale_worktrees(ctx, pol):
         acts.append(("worktree", wt, branch))
-    for name in _stale_branches(ctx, pol, repo):
+    for name in _stale_branches(ctx, pol, repo, env):
         acts.append(("branch", name))
     for act in acts:
         if act[0] == "worktree":
@@ -84,7 +88,7 @@ def sweep(ctx, pol):
             if act[0] == "worktree":
                 runner.remove_worktree(repo, act[1], act[2], runner.worktree_root(pol))
             else:
-                _delete_remote_branch(repo, act[1])
+                _delete_remote_branch(repo, act[1], env)
     runner.git(repo, "worktree", "prune", check=False)   # stale entries go either way
     return bool(acts)
 
@@ -117,13 +121,13 @@ def _stale_worktrees(ctx, pol):
     return out
 
 
-def _stale_branches(ctx, pol, repo):
+def _stale_branches(ctx, pol, repo, env=None):
     """Remote snapshot/abandoned branches past the D12 retention whose item is
     closed. -> [branch names]."""
     led = ctx.led
     cutoff = led.now() - timedelta(days=_cfg(pol, "retention_days", RETENTION_DAYS))
     try:
-        runner.git(repo, "fetch", "--quiet", "--prune", "origin")
+        runner.git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
     except runner.GitError as e:
         _say(ctx, f"skipping branch sweep, fetch failed — {e}")
         return []
@@ -153,11 +157,11 @@ def _stale_branches(ctx, pol, repo):
     return out
 
 
-def _delete_remote_branch(repo, branch):
+def _delete_remote_branch(repo, branch, env=None):
     """Last line of defence: only these two prefixes are ever deletable."""
     if not (branch.startswith(SNAP) or branch.startswith(ABAN)):
         raise RuntimeError(f"janitor refused to delete {branch!r}")
-    runner.git(repo, "push", "--quiet", "origin", "--delete", f"refs/heads/{branch}")
+    runner.git(repo, "push", "--quiet", "origin", "--delete", f"refs/heads/{branch}", env=env)
 
 
 def _cfg(pol, key, default):

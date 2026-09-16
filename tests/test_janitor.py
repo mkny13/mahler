@@ -185,6 +185,29 @@ class BranchTests(Base):
             self.assertIn(ref, heads)
 
 
+class AccountEnvTests(Base):
+    """A work project's own repo is fetched/pruned with its own git-hosting
+    identity (D25/D26), not this machine's default — the sweep's counterpart
+    to test_accounts.py's GH-client coverage (mahler#296)."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["accounts"] = {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}}
+        self.cfg["projects"]["t"]["account"] = "work"
+        self.ctx = Ctx(self.cfg, self.led)
+
+    def test_sweep_fetches_and_deletes_with_the_project_s_account_env(self):
+        self.push_branch("mahler/snapshot/12-run5")
+        self.led.upsert_item("t", 12, state="done")
+        with mock.patch.object(runner, "git", wraps=runner.git) as git:
+            self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        network_calls = [c for c in git.call_args_list if c.args[1] in ("fetch", "push")]
+        self.assertTrue(network_calls)
+        for call in network_calls:
+            self.assertEqual(call.kwargs.get("env", {}).get("GH_CONFIG_DIR"),
+                             os.path.expanduser("~/.config/gh-work"))
+
+
 class BehaviorTests(Base):
     def test_dry_run_reports_without_deleting(self):
         run_id = self.make_run(12)
