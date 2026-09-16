@@ -10,7 +10,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from . import config, platforms, presence, prompt, router, runner
-from .gh import GHError
+from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
 
@@ -204,11 +204,13 @@ def _candidates(ctx, projects):
     projects — sorts and settled builds compete for the same slots (mahler#9)."""
     led = ctx.led
     work = []
+    enabled = config.enabled_projects(ctx.cfg)
+    done = {(p["name"], i["number"]) for p in enabled
+            for i in led.items(p["name"], ["done"])}
     planning = {(r["project"], r["number"]) for r in led.active_runs()
                 if r["role"] == "sort"}
     for p in projects:
         name = p["name"]
-        done = {i["number"] for i in led.items(name, ["done"])}
         for it in led.items(name, ["inbox"]):
             if (name, it["parent"]) in planning:
                 continue  # The parent planner is still writing this child.
@@ -219,7 +221,8 @@ def _candidates(ctx, projects):
                 ctx.hold("settling", project=name, number=it["number"],
                          until=iso(sorted_at + timedelta(minutes=p["settle_minutes"])))
                 continue
-            deps = [d for d in json.loads(it["depends"] or "[]") if d not in done]
+            deps = [d for d in json.loads(it["depends"] or "[]")
+                    if dependency_target(d, name, enabled) not in done]
             if deps:
                 ctx.hold("deps", project=name, number=it["number"], on=deps)
                 continue

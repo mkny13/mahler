@@ -15,6 +15,7 @@ from unittest import mock
 
 from mahler import config, platforms, presence, router, scheduler, ship, tick, usage
 from mahler.ledger import Ledger, RoutedLedger, iso
+from mahler.gh import depends_of
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -78,6 +79,70 @@ def seed_burst(led, claude_pct=(85, 85), free_pct=(10, 10)):
     for name in ("agy-claude", "agy-gemini"):
         led.record_usage(name, "5h", free_pct[0], later6)
         led.record_usage(name, "weekly", free_pct[1], later6)
+
+
+class DependencyTests(unittest.TestCase):
+    def setup_dependencies(self, body, extra=None):
+        projects = {"a": proj(repo="mkny13/mahler"),
+                    "ground": proj(repo="mkny13/groundwork"),
+                    "tour": proj(repo="mkny13/couch-tour")}
+        projects.update(extra or {})
+        ctx, led = mk_ctx(projects)
+        self.addCleanup(led.close)
+        item(led, "a", 292)
+        led.upsert_item("a", 292, depends=json.dumps(depends_of(body)))
+        seed(led, **{"agy-claude": (10, 10)})
+        return ctx, led
+
+    def test_cross_repo_build_waits_for_both_target_issues(self):
+        ctx, led = self.setup_dependencies(
+            "Depends on: mkny13/groundwork#125, couch-tour#258")
+        item(led, "a", 125, state="done")
+        item(led, "a", 258, state="done")
+        item(led, "ground", 125, state="parked")
+        item(led, "tour", 258, state="shipped")
+        self.assertEqual(plan(ctx, led), [])
+        self.assertEqual(ctx.holds[0]["on"], [
+            {"repo": "mkny13/groundwork", "number": 125},
+            {"repo": "couch-tour", "number": 258}])
+        led.set_state("ground", 125, "done", "test")
+        self.assertEqual(plan(ctx, led), [])
+        led.set_state("tour", 258, "done", "test")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
+
+    def test_unknown_disabled_and_ambiguous_refs_remain_blocked(self):
+        for ref, extra in [
+            ("unknown/groundwork#125", {}),
+            ("missing#125", {}),
+            ("mkny13/groundwork#125", {"ground": proj(
+                repo="mkny13/groundwork", enabled=False)}),
+            ("groundwork#125", {"other": proj(repo="else/groundwork")}),
+        ]:
+            with self.subTest(ref=ref, extra=extra):
+                ctx, led = self.setup_dependencies("Depends on: " + ref, extra)
+                for name in ("a", "ground", "other"):
+                    item(led, name, 125, state="done")
+                self.assertEqual(plan(ctx, led), [])
+                self.assertEqual(ctx.holds[0]["on"], depends_of("Depends on: " + ref))
+
+    def test_bare_dependency_only_uses_current_project(self):
+        ctx, led = self.setup_dependencies("Depends on: #125")
+        item(led, "ground", 125, state="done")
+        self.assertEqual(plan(ctx, led), [])
+        item(led, "a", 125, state="done")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
+
+    def test_qualified_local_ref_and_case_insensitive_matching(self):
+        ctx, led = self.setup_dependencies("Depends on: MKNY13/MAHLER#125")
+        self.assertEqual(plan(ctx, led), [])
+        item(led, "a", 125, state="done")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
+
+    def test_disabled_duplicate_does_not_make_shorthand_ambiguous(self):
+        ctx, led = self.setup_dependencies("Depends on: groundwork#125", {
+            "other": proj(repo="else/groundwork", enabled=False)})
+        item(led, "ground", 125, state="done")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
 
 
 class RemoteLeaseFailureTests(unittest.TestCase):

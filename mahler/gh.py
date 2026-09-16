@@ -317,10 +317,33 @@ def pin_of(labels):
 
 
 def depends_of(body):
+    """Keep local issue numbers as ints; qualified refs are JSON-safe objects."""
     deps = []
     for m in DEPENDS_RE.finditer(body or ""):
-        deps += [int(n) for n in re.findall(r"#(\d+)", m.group(1))]
+        for ref in re.finditer(
+                r"(?<![\w./#-])(?P<repo>[\w.-]+(?:/[\w.-]+)?)?"
+                r"#(?P<number>\d+)(?!\w)", m.group(1)):
+            number = int(ref["number"])
+            deps.append({"repo": ref["repo"], "number": number}
+                        if ref["repo"] else number)
     return deps
+
+
+def dependency_target(dep, project, projects):
+    """Resolve only against enabled config, never guess a qualified ref's owner."""
+    if isinstance(dep, int):
+        return project, dep
+    repo = dep["repo"].casefold()
+    matches = [p["name"] for p in projects if p.get("enabled") and
+               (p["repo"].casefold() if "/" in repo else
+                p["repo"].rsplit("/", 1)[-1].casefold()) == repo]
+    return (matches[0], dep["number"]) if len(matches) == 1 else None
+
+
+def dependency_ref(dep, project):
+    """Human-readable hold diagnostics, preserving the authored qualifier."""
+    return (f"{project}#{dep}" if isinstance(dep, int) else
+            f"{dep['repo']}#{dep['number']}")
 
 
 def part_of(body):

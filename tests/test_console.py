@@ -940,6 +940,14 @@ class RecordedIdleTests(unittest.TestCase):
             {"text": "mahler waits — its canonical lease host is unavailable.",
              "items": [self.item(n) for n in range(1, 7)]}])
 
+    def test_qualified_dependency_diagnostic(self):
+        holds = [self.hold("deps", 1, on=[
+            {"repo": "mkny13/groundwork", "number": 125},
+            {"repo": "couch-tour", "number": 258}])]
+        self.assertEqual(self.idle(holds)["reasons"][0]["text"],
+                         "mahler#1 waits for mkny13/groundwork#125 and "
+                         "couch-tour#258 to close.")
+
     def test_many_dependencies_are_grouped(self):
         holds = [self.hold("deps", n, on=[99]) for n in range(1, 5)]
         self.assertEqual(self.idle(holds)["reasons"], [
@@ -1517,6 +1525,14 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(ranks[3], 2)
         edges = sorted((e['from'], e['to'], e['kind']) for e in g['edges'])
         self.assertEqual(edges, [(1, 2, 'parent'), (1, 3, 'parent'), (2, 3, 'depends')])
+
+    def test_qualified_refs_do_not_create_false_local_graph_edges(self):
+        self.led.upsert_item("mahler", 1, state="ready")
+        self.led.upsert_item("mahler", 2, state="ready", depends=json.dumps([
+            {"repo": "else/other", "number": 1},
+            {"repo": "mkny13/mahler", "number": 1}]))
+        graph = state.build(self.cfg, self.led)["dep_graph"]["mahler"]
+        self.assertEqual(graph["edges"], [{"from": 1, "to": 2, "kind": "depends"}])
 
     def test_graph_terminates_on_cycle(self):
         self.led.upsert_item('mahler', 1, depends='[2]', state='ready')
