@@ -30,6 +30,7 @@ PIN_COLOR = "d4c5f9"        # platform:* labels, created on the fly (mahler#20)
 AREA_COLOR = "0052cc"       # area:* labels, created on the fly (mahler#197)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
+HELP_FOOTER = "\n\n<sub>[Mahler commands](https://github.com/mkny13/mahler/blob/main/docs/commands.md)</sub>"
 # `(?:>\s*)?` tolerates the line living inside a markdown blockquote (a "Part
 # of #N" written under a quoted "> **Original request:**" preamble) — without
 # it, the reference silently fails to parse and the item never gets linked to
@@ -139,8 +140,11 @@ class GH:
 
     def comment(self, number, body, *, agent=True):
         """Console answers are human replies; all conductor comments stay marked."""
-        if agent and not body.startswith(AGENT_MARK):
-            body = AGENT_NOTE + "\n" + body
+        if agent:
+            if not body.startswith(AGENT_MARK):
+                body = AGENT_NOTE + "\n" + body
+            if not body.endswith(HELP_FOOTER):
+                body += HELP_FOOTER
         self._gh("issue", "comment", str(number), "-R", self.repo, "--body-file", "-", input=body)
 
     def set_state_label(self, number, state, current_labels):
@@ -437,8 +441,11 @@ def parse_command(body):
 
 def needs_human_of(body):
     """The issue's 'Needs a human to check' section, verbatim (or empty)."""
+    body = (body or "")
+    if body.endswith(HELP_FOOTER):
+        body = body[:-len(HELP_FOOTER)]
     out, grab = [], False
-    for line in (body or "").splitlines():
+    for line in body.splitlines():
         h = re.match(r"^(#{1,6})\s+(.*?)\s*$", line)
         if h:
             grab = h.group(2).strip().lower() == "needs a human to check"
@@ -466,12 +473,19 @@ def pr_body(number, summary, needs="", unconfirmed=False):
                   "ahead of base and the project's verify passed.", ""]
     if needs:
         lines += ["## Needs a human to check", needs, ""]
-    return "\n".join(lines)
+    
+    body = "\n".join(lines)
+    if not body.endswith(HELP_FOOTER):
+        body += HELP_FOOTER
+    return body
 
 
 def pr_summary_of(body):
     """The agent summary out of a PR body the conductor wrote."""
-    m = re.search(r"^Fixes #\d+\s*$", body or "", re.MULTILINE)
+    body = (body or "")
+    if body.endswith(HELP_FOOTER):
+        body = body[:-len(HELP_FOOTER)]
+    m = re.search(r"^Fixes #\d+\s*$", body, re.MULTILINE)
     if not m:
         return ""
     out = []
