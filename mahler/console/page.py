@@ -261,6 +261,7 @@ def _d_now(s):
                    f'<span class="ref mono">{e(r["ref"])}</span>'
                    f'<span class="title">{e(r["title"])}</span>'
                    f'<span class="plat mono t-mut">{e(r["platform"])}</span>'
+                   f'<span class="mono t-{r["status_tone"]}" style="margin-right:auto">{e(r["status"])}</span>'
                    f'<span class="timing mono t-{r["tone"]}">{e(r["timing"])}</span>'
                    f'<span class="bar"><span class="f-{r["tone"]}" style="width:{r["progress"]}%">'
                    f'</span></span></button>')
@@ -441,7 +442,7 @@ def _p_now(s):
                    f'<span class="bar" style="width:100%"><span class="f-{r["tone"]}" '
                    f'style="width:{r["progress"]}%"></span></span>'
                    f'<span class="row"><span class="mono t-{r["tone"]}">{e(r["timing"])}</span>'
-                   f'<span class="mono t-mut">{e(r["status"])}</span></span></button>')
+                   f'<span class="mono t-{r["status_tone"]}">{e(r["status"])}</span></span></button>')
     if s["idle"]:
         out.append(_idle(s, phone=True))
     out.append('</div>')
@@ -526,7 +527,11 @@ def _run_overlays(s):
                    f'<div style="display:flex;flex-direction:column;gap:6px">'
                    f'<span class="bar"><span class="f-{r["tone"]}" style="width:{r["progress"]}%">'
                    f'</span></span><span class="timing mono t-{r["tone"]}">{e(r["timing"])}</span>'
-                   f'</div></div><div class="runfoot">'
+                   f'</div>'
+                   f'<div style="margin-top:16px"><span class="lbl" style="margin-bottom:8px;display:block">LIVE LOG</span>'
+                   f'<div class="log-panel" data-run-log="{r["id"]}">'
+                   f'</div></div>'
+                   f'</div><div class="runfoot">'
                    f'<button class="btn" data-close-run>Leave running</button>'
                    f'<button class="btn btn-bad" data-act="stop_run" data-run="{r["id"]}">'
                    f'Stop &amp; hand off</button></div></div></div>')

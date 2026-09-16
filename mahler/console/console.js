@@ -1,3 +1,5 @@
+
+
 /* The operator console's browser side (DESIGN D27).
    The server renders everything; this script only keeps browser-side state
    (view, tab, theme, expanded groups, an open overlay) as attributes on
@@ -41,6 +43,30 @@
   }
 
   // re-apply browser-side state to a freshly rendered #app
+  var runLogTimer = null;
+  function pollRunLog() {
+    if (!openRun) {
+      if (runLogTimer) { clearInterval(runLogTimer); runLogTimer = null; }
+      return;
+    }
+    var panel = app.querySelector('[data-run-log="' + openRun + '"]');
+    if (!panel) return;
+    fetch("/api/run/" + openRun + "/log")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (!data || !data.lines) return;
+        var html = [];
+        for (var i = 0; i < data.lines.length; i++) {
+          var ln = data.lines[i];
+          var tone = ln.tone || "mut";
+          html.push('<div class="log-line">' +
+                    '<span class="mono t-mut" style="flex-shrink:0">' + e(ln.t || "") + '</span>' +
+                    '<span class="mono t-' + tone + '">' + e(ln.text) + '</span>' +
+                    '</div>');
+        }
+        panel.innerHTML = html.join("");
+      }).catch(function () {});
+  }
   function apply() {
     var theme = root.getAttribute("data-theme") || "auto";
     var labels = app.querySelectorAll("[data-tl]");
@@ -61,6 +87,14 @@
       shown = shown || on;
     }
     if (!shown) { openRun = null; }
+    if (openRun) {
+      if (!runLogTimer) {
+        pollRunLog();
+        runLogTimer = setInterval(pollRunLog, 10000);
+      }
+    } else {
+      if (runLogTimer) { clearInterval(runLogTimer); runLogTimer = null; }
+    }
     var reverts = app.querySelectorAll("[data-revert-detail]");
     var revertShown = false;
     for (var r = 0; r < reverts.length; r++) {

@@ -349,9 +349,12 @@ def _runs(cfg, led, now):
         if wt:
             meta.append(f"worktree {wt}")
         meta += [f"epoch {r['epoch']}", "lease held" if held else "no lease"]
+        from . import logtail
+        ls = logtail.live_status(dict(r))
         status = (f"stopping · {r['stop_reason']}" if r["status"] == "stopping" and r["stop_reason"]
                   else "stopping" if r["status"] == "stopping" or r["id"] in stop_queued
-                  else ROLE_WORDS.get(r["role"], r["role"]))
+                  else ls["text"])
+        status_tone = ls["tone"] if r["status"] not in ("stopping",) and r["id"] not in stop_queued else "mut"
         out.append({
             "id": r["id"], "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": (item["title"] if item else None) or _ref(project, n),
@@ -360,7 +363,7 @@ def _runs(cfg, led, now):
             "progress": min(100, round(mins / est * 100)),
             "tone": "warn" if over else "acc",
             "timing": f"{mins}m · {mins - est}m past estimate" if over else f"{mins}m of ~{est}m",
-            "status": status, "meta": " · ".join(meta),
+            "status": status, "status_tone": status_tone, "meta": " · ".join(meta),
         })
     return out
 
