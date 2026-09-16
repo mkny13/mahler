@@ -200,9 +200,21 @@ def _backlog_groups(s, phone):
         for i in g["items"]:
             p = (f'<span class="pchip{" p1" if i["p1"] else ""}">{e(i["p"])}</span>' if phone
                  else f'<span class="p mono t-{"bad" if i["p1"] else "mut"}">{e(i["p"])}</span>')
+            
+            ref_str = e(i.get("ref") or "")
+            if ref_str:
+                r_link = _a(i["url"], ref_str) if i.get("url") else ref_str
+                if i.get("pr") and i.get("pr_url"):
+                    pr_num = i.get("pr")
+                    pr_txt = f"PR #{pr_num}"
+                    r_link += f' <span class="pr-link">{_a(i["pr_url"], pr_txt)}</span>'
+                ref_html = f'<span class="ref mono t-mut">{r_link}</span>'
+            else:
+                ref_html = '<span class="ref mono t-mut"></span>'
+
             title = _a(i["url"], i["title"] or i["ref"], "title")
             st = f'<span class="st mono t-{i["tone"]}">{e(i["state"])}</span>'
-            rows.append(f'<div class="{"pbl" if phone else "bl"}">{p}{title}{st}</div>')
+            rows.append(f'<div class="{"pbl" if phone else "bl"}">{p}{ref_html}{title}{st}</div>')
         out.append(f'<div class="grp" data-group="{e(g["project"])}">'
                    f'<button class="grp-h" data-toggle-group="{e(g["project"])}">'
                    f'<span class="name">{e(g["project"])}</span>'

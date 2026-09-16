@@ -493,11 +493,12 @@ def _backlog(cfg, led, projects):
         you = sum(1 for i in items if i["state"] in ATTENTION_STATES)
         # a queued capture shows as a placeholder inbox row until the tick
         # creates the issue and sync() pulls in the real item (mahler#251)
-        rows = [{"ref": None, "url": None,
+        rows = [{"ref": None, "url": None, "pr": None, "pr_url": None,
                  "title": outbox.capture_title(json.loads(r["payload"])["text"]),
                  "p": "p2", "p1": False, "state": "inbox", "tone": "mut"}
                 for r in pending.get(name, [])]
         rows += [{"ref": _ref(name, i["number"]), "url": _issue_url(cfg, name, i["number"]),
+                  "pr": i["pr"], "pr_url": _pr_url(cfg, name, i["pr"]) if i["pr"] else None,
                   "title": i["title"] or "", "p": f"p{i['priority']}",
                   "p1": i["priority"] == 1, "state": i["state"].replace("_", "-"),
                   "tone": _state_tone(i["state"])} for i in items]

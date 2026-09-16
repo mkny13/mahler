@@ -1377,7 +1377,7 @@ class CaptureStateTests(unittest.TestCase):
         self.led.upsert_item('mahler', 3, title='An older item', state='ready')
         s = state.build(self.cfg, self.led)
         g = next(g for g in s['backlog'] if g['project'] == 'mahler')
-        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'title': 'New idea here',
+        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'pr': None, 'pr_url': None, 'title': 'New idea here',
                                          'p': 'p2', 'p1': False, 'state': 'inbox', 'tone': 'mut'})
         self.assertEqual(g['items'][1]['ref'], 'mahler#3')
 
@@ -1439,3 +1439,13 @@ class CapturePageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_backlog_row_ref_and_pr_links(self):
+        self.led.upsert_item("mahler", 1, title="a", state="ready", priority=2, pr=42)
+        self.led.upsert_item("mahler", 2, title="b", state="inbox", priority=2)
+        self.led.queue_action("capture", project="mahler", payload={"text": "pending cap"})
+        s = state.build(self.cfg, self.led)
+        html = page.document(s)
+        self.assertIn('<span class="ref mono t-mut"></span>', html)
+        self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/1" target="_blank">mahler#1</a> <span class="pr-link"><a href="https://github.com/mkny13/mahler/pull/42" target="_blank">PR #42</a></span></span>', html)
+        self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/2" target="_blank">mahler#2</a></span>', html)
