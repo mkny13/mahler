@@ -14,6 +14,7 @@
   var openRun = null;
   var openRevert = null;
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
+  var openCapture = false;
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
   var errorToastTimer = null;   // timer for auto-dismissing error toast
 
@@ -111,6 +112,10 @@
       bugShown = bugShown || bugOn;
     }
     if (!bugShown) { openBug = null; }
+    var caps = app.querySelectorAll("[data-capture-detail]");
+    for (var c = 0; c < caps.length; c++) {
+      caps[c].classList.toggle("show", openCapture);
+    }
     
     var wraps = app.querySelectorAll(".attach-wrap");
     for (var w = 0; w < wraps.length; w++) {
@@ -234,6 +239,7 @@
       } else if (action === "capture") {
         suppressKeep = "capture";   // clear the draft on the next restore, keep the project
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
+        openCapture = false;
       }
       return refresh(true);
     });
@@ -351,6 +357,13 @@
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
     if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); apply(); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
+    if (el.hasAttribute("data-open-capture")) {
+      openCapture = true; apply();
+      var ta = app.querySelector('.captureov.show textarea');
+      if (ta) { ta.focus(); }
+      return;
+    }
+    if (el.hasAttribute("data-close-capture")) { openCapture = false; apply(); return; }
     if (el.hasAttribute("data-attach")) {
       var wrap = el.closest(".attach-wrap");
       if (wrap) {
@@ -422,6 +435,7 @@
     if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
     if (ev.key === "Escape" && openBug) { openBug = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }
+    if (ev.key === "Escape" && openCapture) { openCapture = false; apply(); }
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });
 
