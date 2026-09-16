@@ -322,6 +322,7 @@ or the plan has changed, rather than leaving it implicit.
 
 ## Phase 6 — A deeper feedback loop
 
+- [x] Console walkthrough for Mahler (manually triggered agent UI sweep)
 - [ ] Playwright screenshot checks against preview URLs, attached to PRs and handoffs.
 - [ ] Android emulator + `adb` screencaps; Maestro flows.
 - [ ] Runtime error capture → auto-filed issues.

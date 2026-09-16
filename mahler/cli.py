@@ -608,6 +608,10 @@ def cmd_peak(a, cfg, led):
     return 0
 
 
+def cmd_console_walkthrough(a, cfg, led):
+    from . import console_walkthrough
+    return console_walkthrough.run(cfg, a.platform)
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -701,6 +705,10 @@ def main(argv=None):
 
     sub.add_parser("version", help="show commit, known-good status, behind-count"
                    ).set_defaults(fn=cmd_version)
+
+    s = sub.add_parser("console-walkthrough", help="agent-driven manual UAT of the console")
+    s.add_argument("platform", nargs="?", default="agy-gemini", help="platform to run on (e.g. agy-gemini)")
+    s.set_defaults(fn=cmd_console_walkthrough)
 
     a = ap.parse_args(argv)
     cfg = config.load()
