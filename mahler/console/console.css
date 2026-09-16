@@ -406,3 +406,23 @@ a { color: var(--acc); text-decoration: none; }
   .bugov .box { width: 100%; border-radius: 6px 6px 0 0; }
   .bugfoot .btn { min-height: 48px; }
 }
+
+.log-panel {
+    background: var(--surf);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    overflow-y: auto;
+    height: 300px;
+    display: flex;
+    flex-direction: column;
+}
+
+.log-line {
+    display: flex;
+    gap: 8px;
+    word-break: break-all;
+}

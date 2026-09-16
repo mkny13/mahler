@@ -255,6 +255,36 @@ class TestCliWiring(unittest.TestCase):
         self.assertEqual(mock_serve.call_args.args[3], 8787)
 
 
+
+class TestRunLog(_Served):
+    def test_log_returns_lines_and_status(self):
+        # Insert a running run
+        run_id = 9999
+        self.led.con.execute("INSERT INTO runs (id, project, number, role, platform, epoch, status, started_at) VALUES (?, 'mahler', 1, 'build', 'agy-gemini', 1, 'running', 1)", (run_id,))
+        
+        status, headers, body = self.request(f"/api/run/{run_id}/log")
+        self.assertEqual(status, 200)
+        
+        import json
+        obj = json.loads(body)
+        self.assertIn("lines", obj)
+        self.assertIn("status", obj)
+
+    def test_log_404_for_unknown_run(self):
+        status, _, _ = self.request("/api/run/9998/log")
+        self.assertEqual(status, 404)
+
+    def test_log_404_for_ended_run(self):
+        run_id = 9997
+        self.led.con.execute("INSERT INTO runs (id, project, number, role, platform, epoch, status, started_at) VALUES (?, 'mahler', 1, 'build', 'agy-gemini', 1, 'ended', 1)", (run_id,))
+        status, _, _ = self.request(f"/api/run/{run_id}/log")
+        self.assertEqual(status, 404)
+        
+    def test_log_404_for_bad_id(self):
+        status, _, _ = self.request("/api/run/abc/log")
+        self.assertEqual(status, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
 
