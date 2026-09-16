@@ -286,22 +286,22 @@ class DerivedPlatformInheritanceTests(unittest.TestCase):
 
 class TierInversionTests(unittest.TestCase):
     def test_flags_lower_tier_outperforming_higher_tier(self):
-        rows = [("kilo", 1, 10, 90.0, 0.0, 0, {"s", "m", "l"}), ("claude", 3, 10, 50.0, 0.0, 0, {"s", "m", "l"})]
+        rows = [("kilo", 1, 10, 90.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 10, "done": 9}}), ("claude", 3, 10, 50.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 10, "done": 5}})]
         found = platform_audit.tier_inversions(rows)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0][0], "kilo")
         self.assertEqual(found[0][3], "claude")
 
     def test_no_flag_within_margin(self):
-        rows = [("kilo", 1, 10, 85.0, 0.0, 0, {"s", "m", "l"}), ("claude", 3, 10, 80.0, 0.0, 0, {"s", "m", "l"})]
+        rows = [("kilo", 1, 10, 85.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 10, "done": 8.5}}), ("claude", 3, 10, 80.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 10, "done": 8}})]
         self.assertEqual(platform_audit.tier_inversions(rows), [])
 
     def test_no_flag_with_insufficient_runs(self):
-        rows = [("kilo", 1, 1, 100.0, 0.0, 0, {"s", "m", "l"}), ("claude", 3, 1, 0.0, 0.0, 0, {"s", "m", "l"})]
+        rows = [("kilo", 1, 1, 100.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 1, "done": 1}}), ("claude", 3, 1, 0.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 1, "done": 0}})]
         self.assertEqual(platform_audit.tier_inversions(rows), [])
 
     def test_no_flag_when_missing_data(self):
-        rows = [("kilo", 1, 10, None, None, 0, {"s", "m", "l"}), ("claude", 3, 10, 50.0, 0.0, 0, {"s", "m", "l"})]
+        rows = [("kilo", 1, 10, None, None, 0, {"s", "m", "l"}, {}), ("claude", 3, 10, 50.0, 0.0, 0, {"s", "m", "l"}, {"s": {"runs": 10, "done": 5}})]
         self.assertEqual(platform_audit.tier_inversions(rows), [])
 
     def test_size_gate_bounds(self):
@@ -326,16 +326,16 @@ class TierInversionTests(unittest.TestCase):
             with self.subTest(lower=lower, upper=upper):
                 cfg = {"platforms": {"lo": dict(lower, tier=1),
                                      "hi": dict(upper, tier=3)}}
-                outcomes = {"lo": {"runs": 100, "done": 90, "needs_you": 0},
-                            "hi": {"runs": 100, "done": 0, "needs_you": 0}}
+                outcomes = {"lo": {"runs": 100, "done": 90, "needs_you": 0, "by_size": {"s": {"runs": 100, "done": 90}, "m": {"runs": 100, "done": 90}, "l": {"runs": 100, "done": 90}}},
+                            "hi": {"runs": 100, "done": 0, "needs_you": 0, "by_size": {"s": {"runs": 100, "done": 0}, "m": {"runs": 100, "done": 0}, "l": {"runs": 100, "done": 0}}}}
                 rows = platform_audit.outcome_report(cfg, outcomes, {})
                 self.assertEqual(bool(platform_audit.tier_inversions(rows)), expected)
 
     def test_minimum_applies_to_each_side(self):
         for lo_runs, hi_runs in [(9, 20), (20, 9), (10, 10)]:
             with self.subTest(lo_runs=lo_runs, hi_runs=hi_runs):
-                rows = [("lo", 1, lo_runs, 90.0, 0.0, 0, {"s"}),
-                        ("hi", 3, hi_runs, 0.0, 0.0, 0, {"s"})]
+                rows = [("lo", 1, lo_runs, 90.0, 0.0, 0, {"s"}, {"s": {"runs": lo_runs, "done": lo_runs * 0.9}}),
+                        ("hi", 3, hi_runs, 0.0, 0.0, 0, {"s"}, {"s": {"runs": hi_runs, "done": 0}})]
                 found = platform_audit.tier_inversions(rows, min_runs=10)
                 self.assertEqual(bool(found), lo_runs >= 10 and hi_runs >= 10)
 
@@ -357,8 +357,8 @@ class BuildBodyTests(unittest.TestCase):
         led = mock.Mock()
         led.now.return_value = NOW
         led.platform_outcomes.return_value = {
-            "copilot": {"runs": 10, "done": 9, "needs_you": 0},
-            "agy-gemini": {"runs": 20, "done": 14, "needs_you": 0}}
+            "copilot": {"runs": 10, "done": 9, "needs_you": 0, "by_size": {"s": {"runs": 10, "done": 9}}},
+            "agy-gemini": {"runs": 20, "done": 14, "needs_you": 0, "by_size": {"s": {"runs": 10, "done": 7}, "m": {"runs": 10, "done": 7}}}}
         led.platform_escalations.return_value = {}
         pol = config.platform_audit_policy(cfg)
         self.assertEqual(pol["inversion_min_runs"], 10)
@@ -377,7 +377,7 @@ class BuildBodyTests(unittest.TestCase):
                 self.assertNotIn("outperforms", body)
                 self.assertIn(f"{pol['inversion_min_runs']} runs on both sides", body)
         led.platform_outcomes.return_value["copilot"] = {
-            "runs": 4, "done": 4, "needs_you": 0}
+            "runs": 4, "done": 4, "needs_you": 0, "by_size": {"s": {"runs": 4, "done": 4}}}
         cfg["platform_audit"] = {}
         self.assertNotIn("outperforms", platform_audit.build_body(
             cfg, led, config.platform_audit_policy(cfg)))

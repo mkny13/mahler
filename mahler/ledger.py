@@ -673,23 +673,28 @@ class Ledger:
 
     def platform_outcomes(self, since=None):
         """Per-platform build/fix run outcomes (mahler#206): {platform:
-        {"runs": n, "done": n, "needs_you": n}} — the observed half of the
-        periodic platform-tier/capability audit, alongside
+        {"runs": n, "done": n, "needs_you": n, "by_size": {size: {"runs": n, "done": n}}}}
+        — the observed half of the periodic platform-tier/capability audit, alongside
         `platform_escalations` below. `since` (a datetime) restricts to runs
         started at/after it; None is all-time."""
-        sql = ("SELECT platform, outcome, COUNT(*) c FROM runs "
+        sql = ("SELECT platform, size, outcome, COUNT(*) c FROM runs "
                "WHERE role IN ('build','fix') AND status='ended'")
         args = []
         if since is not None:
             sql += " AND started_at >= ?"
             args.append(iso(since))
-        sql += " GROUP BY platform, outcome"
+        sql += " GROUP BY platform, size, outcome"
         stats = {}
         for row in self.q(sql, args):
-            s = stats.setdefault(row["platform"], {"runs": 0, "done": 0, "needs_you": 0})
+            s = stats.setdefault(row["platform"], {"runs": 0, "done": 0, "needs_you": 0, "by_size": {}})
+            sz = row["size"]
+            sz_dict = s["by_size"].setdefault(sz, {"runs": 0, "done": 0})
+            
             s["runs"] += row["c"]
+            sz_dict["runs"] += row["c"]
             if row["outcome"] == "DONE":
                 s["done"] += row["c"]
+                sz_dict["done"] += row["c"]
             elif row["outcome"] == "NEEDS-YOU":
                 s["needs_you"] += row["c"]
         return stats

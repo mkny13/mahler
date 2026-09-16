@@ -879,7 +879,7 @@ class PlatformOutcomeTests(unittest.TestCase):
         self._run("kilo", "NEEDS-YOU")
         self._run("kilo", "exit 1")
         stats = self.led.platform_outcomes()
-        self.assertEqual(stats["kilo"], {"runs": 4, "done": 2, "needs_you": 1})
+        self.assertEqual(stats["kilo"], {"runs": 4, "done": 2, "needs_you": 1, "by_size": {None: {"runs": 4, "done": 2}}})
 
     def test_platform_outcomes_ignores_sort_role(self):
         self._run("claude", "READY", role="sort")
