@@ -1389,8 +1389,8 @@ class CaptureStateTests(unittest.TestCase):
         self.led.upsert_item('mahler', 3, title='An older item', state='ready')
         s = state.build(self.cfg, self.led)
         g = next(g for g in s['backlog'] if g['project'] == 'mahler')
-        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'pr': None, 'pr_url': None, 'title': 'New idea here',
-                                         'p': 'p2', 'p1': False, 'state': 'inbox', 'tone': 'mut'})
+        self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'number': None, 'pr': None, 'pr_url': None, 'title': 'New idea here',
+                                         'p': 'p2', 'p1': False, 'priority': 2, 'state': 'inbox', 'tone': 'mut', 'parent': None, 'depends': []})
         self.assertEqual(g['items'][1]['ref'], 'mahler#3')
 
     def test_the_placeholder_is_gone_once_the_outbox_finishes_it(self):
@@ -1461,3 +1461,56 @@ if __name__ == "__main__":
         self.assertIn('<span class="ref mono t-mut"></span>', html)
         self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/1" target="_blank">mahler#1</a> <span class="pr-link"><a href="https://github.com/mkny13/mahler/pull/42" target="_blank">PR #42</a></span></span>', html)
         self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/2" target="_blank">mahler#2</a></span>', html)
+
+class GraphTests(unittest.TestCase):
+    def setUp(self):
+        self.maxDiff = None
+        self.cfg, self.led = make_cfg(), make_led()
+        
+    def tearDown(self):
+        self.led.close()
+
+    def test_graph_produces_ranks_and_edges(self):
+        self.led.upsert_item('mahler', 1, title='Parent', state='ready')
+        self.led.upsert_item('mahler', 2, title='Child1', parent=1, state='ready')
+        self.led.upsert_item('mahler', 3, title='Child2', parent=1, depends='[2]', state='ready')
+        s = state.build(self.cfg, self.led)
+        g = s['dep_graph']['mahler']
+        self.assertEqual(len(g['nodes']), 3)
+        ranks = {n['number']: n['rank'] for n in g['nodes']}
+        self.assertEqual(ranks[1], 0)
+        self.assertEqual(ranks[2], 1)
+        self.assertEqual(ranks[3], 2)
+        edges = sorted((e['from'], e['to'], e['kind']) for e in g['edges'])
+        self.assertEqual(edges, [(1, 2, 'parent'), (1, 3, 'parent'), (2, 3, 'depends')])
+
+    def test_graph_terminates_on_cycle(self):
+        self.led.upsert_item('mahler', 1, depends='[2]', state='ready')
+        self.led.upsert_item('mahler', 2, depends='[1]', state='ready')
+        s = state.build(self.cfg, self.led)
+        g = s['dep_graph']['mahler']
+        self.assertEqual(len(g['nodes']), 2)
+        self.assertEqual({n['rank'] for n in g['nodes']}, {0})
+
+    def test_backlog_items_carry_parent_and_depends(self):
+        self.led.upsert_item('mahler', 1, state='ready')
+        self.led.upsert_item('mahler', 2, parent=1, depends='[1, 999]', state='ready')
+        s = state.build(self.cfg, self.led)
+        g = next(g for g in s['backlog'] if g['project'] == 'mahler')
+        i1 = next(i for i in g['items'] if i['number'] == 1)
+        i2 = next(i for i in g['items'] if i['number'] == 2)
+        self.assertEqual(i1['parent'], None)
+        self.assertEqual(i1['depends'], [])
+        self.assertEqual(i2['parent'], 1)
+        # 999 is not open
+        self.assertEqual(i2['depends'], [1])
+
+    def test_graph_produced_even_if_no_relationships(self):
+        self.led.upsert_item('mahler', 1, state='ready')
+        self.led.upsert_item('mahler', 2, state='ready')
+        s = state.build(self.cfg, self.led)
+        g = s['dep_graph']['mahler']
+        self.assertEqual(len(g['nodes']), 2)
+        self.assertEqual({n['rank'] for n in g['nodes']}, {0})
+        self.assertEqual(g['edges'], [])
+
