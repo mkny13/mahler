@@ -402,8 +402,11 @@ def probe_codex(env=None, timeout=15):
         return []
     finally:
         if proc is not None:
-            if proc.poll() is None:
-                proc.kill()
+            try:
+                if proc.poll() is None:
+                    proc.kill()
+            except ProcessLookupError:
+                pass
             proc.wait()
             proc.stdin.close()
             proc.stdout.close()

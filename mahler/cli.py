@@ -345,6 +345,9 @@ def cmd_usage(a, cfg, led):
             if pconf["kind"] == "agy" and account == config.DEFAULT_ACCOUNT:
                 for w, pct, resets in pools.get(pconf.get("pool"), []):
                     led.record_usage(name, w, pct, resets)
+            elif pconf["kind"] == "codex" and name not in done:
+                done |= set(usage_mod.quota_peers(cfg, name))
+                usage_mod.refresh_codex(cfg, led, name, force=True)
             elif pconf["kind"] == "claude" and name not in done:
                 # one reading per Claude login, recorded only on its own platforms (D25)
                 peers = usage_mod.quota_peers(cfg, name)

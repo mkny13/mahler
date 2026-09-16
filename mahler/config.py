@@ -213,7 +213,8 @@ DEFAULTS = {
 }
 
 # Codex uses the locally authenticated ChatGPT account through `codex exec`.
-# Account quota comes from the zero-token app-server probe (mahler#276). It is deliberately absent from the default routes;
+# Account quota comes from the zero-token app-server probe (mahler#276).
+# Codex is deliberately absent from the default routes;
 # installations opt in according to which account they want Mahler to spend.
 DEFAULTS["platforms"]["codex"] = {
     "enabled": True, "kind": "codex", "model": "", "plan": "free tier",

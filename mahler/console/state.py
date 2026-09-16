@@ -310,6 +310,9 @@ def _quota(cfg, led, peak):
                        tone="bad" if state == "hard" else "warn" if state == "soft" else "acc",
                        width=100 if state == "hard" else (worst["pct"] if worst else 0),
                        detail=" · ".join(parts), over=over)
+        codex = router.codex_detail(led, name, pconf)
+        if codex:
+            row["detail"] += " · " + codex
         if worst:
             row["soft_pct"] = worst["soft"]
         # held by the peak window even when its quota is fine (D22)

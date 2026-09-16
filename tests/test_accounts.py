@@ -114,7 +114,7 @@ class RouterTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=lambda: NOW)
         seed(self.led, **{"claude": (5, 5), "claude-opus": (5, 5), "agy-claude": (10, 10),
                           "agy-gemini": (10, 10), "claude-work": (5, 5),
-                          "claude-opus-work": (5, 5)})
+                          "claude-opus-work": (5, 5), "codex-work": (10, 10)})
 
     def test_work_project_routes_only_to_work_platforms(self):
         for role in ("sort", "plan", "build", "fix"):
@@ -217,7 +217,8 @@ class SlotAndUsageTests(unittest.TestCase):
     def test_refresh_probes_the_work_login_with_its_own_env(self):
         self.led.upsert_item("acme", 1, state="ready", priority=2)
         projects = [config.project_policy(self.cfg, "acme")]
-        with mock.patch.object(platforms, "oauth_usage",
+        with mock.patch.object(usage, "refresh_codex"), \
+                mock.patch.object(platforms, "oauth_usage",
                                return_value=[("5h", 11.0, LATER), ("weekly", 12.0, LATER)]) as oauth, \
                 mock.patch.object(platforms, "probe_claude",
                                   return_value=[("5h", 21.0, LATER), ("weekly", 22.0, LATER)]) as probe, \
@@ -237,7 +238,8 @@ class SlotAndUsageTests(unittest.TestCase):
         self.cfg["accounts"]["work"]["claude_keychain_service"] = "Claude Code-credentials-abc"
         self.led.upsert_item("acme", 1, state="ready", priority=2)
         projects = [config.project_policy(self.cfg, "acme")]
-        with mock.patch.object(platforms, "oauth_usage",
+        with mock.patch.object(usage, "refresh_codex"), \
+                mock.patch.object(platforms, "oauth_usage",
                                return_value=[("5h", 11.0, LATER), ("weekly", 12.0, LATER)]) as oauth, \
                 mock.patch.object(platforms, "probe_claude") as probe, \
                 mock.patch.object(platforms, "probe_copilot", return_value=[]), \
@@ -253,7 +255,7 @@ class ScheduleTests(unittest.TestCase):
         cfg = work_cfg()
         led = Ledger(":memory:", clock=lambda: NOW)
         seed(led, **{"agy-claude": (10, 10), "agy-gemini": (10, 10), "claude": (5, 5),
-                     "claude-work": (5, 5), "claude-opus-work": (5, 5)})
+                     "claude-work": (5, 5), "claude-opus-work": (5, 5), "codex-work": (10, 10)})
         for project in ("acme", "home"):
             led.upsert_item(project, 1, state="ready", priority=2,
                             state_changed_at=iso(NOW - timedelta(minutes=30)),
@@ -286,6 +288,8 @@ class MultiAccountTests(unittest.TestCase):
         self.cfg["platforms"]["claude-other"] = {"from": "claude", "account": "other"}
         self.cfg = config.resolve_platforms(self.cfg)
         self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        seed(self.led, **{"codex-work": (10, 10)})
 
     def item(self, project, number, state="ready", age_minutes=30, **kw):
         fields = dict(priority=2,
@@ -342,7 +346,7 @@ class MultiAccountTests(unittest.TestCase):
 
     def test_multi_account_builds_on_its_first_account_with_headroom(self):
         seed(self.led, **{"agy-claude": (10, 10), "agy-gemini": (10, 10),
-                          "claude-work": (5, 5), "claude-opus-work": (5, 5)})
+                          "claude-work": (5, 5), "claude-opus-work": (5, 5), "codex-work": (10, 10)})
         self.item("both", 1)
         self.assertIn("both#1: would build on agy-claude", self.plan())
 

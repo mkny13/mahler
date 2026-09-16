@@ -6,6 +6,8 @@ so a missing reading can never push Claude into paid extra usage. Running
 work is stopped at the *hard* line (see watchdog.py).
 """
 
+import json
+
 from datetime import timedelta
 from itertools import zip_longest
 from math import ceil
@@ -262,6 +264,37 @@ def is_metered(led, name, pconf):
     return True
 
 
+def codex_quota(led, name, pconf):
+    if pconf.get("kind") != "codex":
+        return {}
+    try:
+        return json.loads(led.get_kv(f"codex:quota:{name}") or "{}")
+    except (ValueError, TypeError):
+        return {}
+
+
+def codex_detail(led, name, pconf):
+    quota = codex_quota(led, name, pconf)
+    if not quota:
+        return ""
+    parts = []
+    for w in quota.get("windows", []):
+        parts.append(f"{w['window']} {w['used_pct']:.0f}%" +
+                     (f" resets {w['resets_at']}" if w.get("resets_at") else " reset unknown"))
+    if quota.get("blocked"):
+        parts.append("account usage blocked")
+    count = quota.get("reset_credits")
+    if count is not None:
+        parts.append(f"{count} reset credits available")
+        expiries = quota.get("credit_expiries") or []
+        if expiries:
+            parts.append(f"next expires {expiries[0]}")
+    sampled = _ts(quota.get("sampled_at"))
+    if not sampled or led.now() - sampled >= timedelta(minutes=pconf.get("stale_minutes", 15)):
+        parts.append("last reading is stale")
+    return " · ".join(parts)
+
+
 def usage_state(led, name, pconf, burst_lines=None):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins.
 
@@ -287,6 +320,12 @@ def usage_state(led, name, pconf, burst_lines=None):
                 return "hard", f"backing off until {until.astimezone():%H:%M} (in {fmt_countdown(until - now)})"
         return "ok", "unknown limit (platform reports no quota signal)"
     stale_after = timedelta(minutes=pconf.get("stale_minutes", 15))
+    quota = codex_quota(led, name, pconf)
+    sampled = _ts(quota.get("sampled_at"))
+    if quota.get("blocked") and sampled and now - sampled < stale_after:
+        return "hard", codex_detail(led, name, pconf)
+    if quota and {w["window"] for w in quota.get("windows", [])} != set(WINDOWS):
+        return "stale", "unrecognized or incomplete quota windows · " + codex_detail(led, name, pconf)
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
     for w in pconf.get("windows", WINDOWS):
@@ -314,7 +353,8 @@ def usage_state(led, name, pconf, burst_lines=None):
                 detail.append(f"{w} {pct:.0f}%")
         if rank[state] > rank[worst]:
             worst = state
-    return worst, ", ".join(detail)
+    extra = codex_detail(led, name, pconf)
+    return worst, ", ".join(detail) + (" · " + extra if extra else "")
 
 
 def burst_build_order(cfg):

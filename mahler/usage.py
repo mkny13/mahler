@@ -6,6 +6,7 @@ them.
 """
 
 import os
+import json
 from datetime import timedelta
 
 from . import config, platforms, presence, router
@@ -103,6 +104,43 @@ def _has_own_github_login(cfg, account):
     return any(k in env for k in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"))
 
 
+def refresh_codex(cfg, led, name, force=False):
+    """One bounded probe per login, including failures; never fall back accounts."""
+    pc = cfg["platforms"][name]
+    if not pc.get("metered", True):
+        return
+    last = parse(led.get_kv(f"probe:{name}"))
+    if not force and last and led.now() - last < timedelta(minutes=pc.get("stale_minutes", 15)):
+        return
+    account = config.account_of(pc)
+    own_env = (cfg.get("accounts", {}).get(account) or {}).get("env") or {}
+    if account != config.DEFAULT_ACCOUNT and not own_env.get("CODEX_HOME"):
+        return
+    try:
+        env = dict(config.run_env(cfg, account) or os.environ)
+    except ValueError:
+        return
+    # The conductor may itself run under codex-work. Personal means the
+    # default login, not whichever CODEX_HOME the calling agent inherited.
+    home = os.path.expanduser(str(own_env.get("CODEX_HOME") or "~/.codex"))
+    env["CODEX_HOME"] = home
+    for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
+        env.pop(key, None)
+    if not os.path.isfile(os.path.join(home, "auth.json")):
+        return
+    samples = platforms.probe_codex(env=env)
+    for peer in quota_peers(cfg, name):
+        peer_pc = cfg["platforms"][peer]
+        if config.account_of(peer_pc) != account or not peer_pc.get("metered", True):
+            continue
+        led.set_kv(f"probe:{peer}", iso(led.now()))
+        if isinstance(samples, platforms.CodexUsage):
+            led.set_kv(f"codex:quota:{peer}", json.dumps({
+                **samples.metadata, "sampled_at": iso(led.now())}))
+        for w, pct, resets in samples:
+            led.record_usage(peer, w, pct, resets)
+
+
 def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     wanted = set()
@@ -128,6 +166,9 @@ def refresh_usage(ctx, projects):
         pconf = cfg["platforms"][name]
         account = config.account_of(pconf)
         if not _usage_needs_refresh(led, name, pconf):
+            continue
+        if pconf.get("kind") == "codex":
+            refresh_codex(cfg, led, name)
             continue
         if pconf.get("kind") == "copilot":
             if name not in own and not _has_own_github_login(cfg, account):
