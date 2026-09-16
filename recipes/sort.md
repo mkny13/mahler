@@ -52,7 +52,7 @@ become the console's answer buttons.
      concurrency/leases/transactions. Golden rule: prompt recipes (`recipes/*.md`), system rules
      (`AGENTS.md`, `CLAUDE.md`), and security/credential boundaries are ALWAYS `size:m` minimum (never `size:s`).
    - `size:l` (large / multi-step): broad refactors, new subsystems, or tasks spanning multiple
-     domains. Must be split into sub-issues per rule 5.
+     domains. Must be split into sub-issues per rule 5.$sizing
    Optional `area:<name>` (e.g. `area:router`, `area:scheduler-tick`): the scheduler's
    `Files:`-list check (above) already catches literal file-level overlap on its own — you
    don't need to hand-detect that. Use `area:` only for overlap the file list can't see: two

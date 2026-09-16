@@ -71,10 +71,22 @@ def build(ctx, project, item, role, platform, prep):
     base = pol.get("base", "main")
     handoff = (ci_handoff(ctx, project, item, prep["branch"]) if role == "fix"
                else handoff_text(base, prep["replayed"], prep["kept"]))
+
+    sizing = ""
+    if role == "sort" and config.size_target_of(pol) == "s":
+        sizing = ("\nSizing for this project (from Mahler's config): its daytime builder takes only "
+                  "size:s, and size:m waits for scarce, off-peak capacity. Aim for size:s. If the work "
+                  "would be size:m but splits cleanly into sequential, single-responsibility size:s pieces, "
+                  "split it as in rule 5, even though it isn't size:l. Each piece is one mergeable PR with "
+                  "its own test, chained with `Depends on: #N`. Keep size:m only when a split would leave a "
+                  "broken or untested intermediate state, or when it touches security/credential boundaries. "
+                  "Such an item waits for a larger builder. When you split a size:l item, prefer size:s "
+                  "sub-issues too.\n")
+
     return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
                   platform=platform,
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
-                  mahler=config.MAHLER_BIN, handoff=handoff,
+                  mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"
                          + pol["rules"].strip() + "\n") if pol.get("rules") else "")
