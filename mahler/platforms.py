@@ -14,7 +14,8 @@ Verified against the real CLI on 2026-09-13 (mahler#157):
     --color never --json -C <worktree> <prompt>` uses the Codex CLI's existing
     ChatGPT login and emits JSONL. Final text is an `item.completed` event whose
     item type is `agent_message`; a successful turn ends with `turn.completed`.
-    There is no account-wide quota field, so limit errors trigger a backoff.
+    The exec stream has no account-wide quota field. The zero-token app-server
+    account/rateLimits/read probe supplies it separately (mahler#276).
 
 Verified against the real CLIs on 2026-09-13 (mahler#25):
   * `copilot -p <prompt> --allow-all-tools --output-format json -C <dir>`
@@ -63,6 +64,8 @@ import math
 import os
 import re
 import subprocess
+import selectors
+import time
 from datetime import datetime, timezone
 
 from . import redact
@@ -306,6 +309,104 @@ def oauth_usage(keychain_service="Claude Code-credentials", credentials_file=Non
         if w.get("utilization") is not None:
             out.append((dst, float(w["utilization"]), w.get("resets_at")))
     return out
+
+
+class CodexUsage(list):
+    """Routing samples plus a sanitized, read-only account summary."""
+
+    def __init__(self, samples, metadata):
+        super().__init__(samples)
+        self.metadata = metadata
+
+
+def _codex_usage(result):
+    limits = result["rateLimits"]
+    samples, windows = [], []
+    for key in ("primary", "secondary"):
+        window = limits.get(key)
+        if window is None:
+            continue
+        minutes, pct = window["windowDurationMins"], window["usedPercent"]
+        if (type(minutes) is not int or minutes <= 0 or
+                type(pct) not in (int, float) or not math.isfinite(pct) or pct < 0):
+            raise ValueError("invalid quota window")
+        reset = _epoch_iso(window.get("resetsAt"))
+        label = {300: "5h", 10080: "weekly"}.get(minutes)
+        if label:
+            samples.append((label, pct, reset))
+        windows.append({"window": label or f"{minutes}m", "used_pct": pct,
+                        "resets_at": reset})
+    credits = result.get("rateLimitResetCredits") or {}
+    count = credits.get("availableCount")
+    if count is not None and (type(count) is not int or count < 0):
+        raise ValueError("invalid reset credit count")
+    expiries = [_epoch_iso(c.get("expiresAt")) for c in credits.get("credits", [])
+                if c.get("status") == "available"]
+    return CodexUsage(samples, {
+        "windows": windows,
+        "blocked": result.get("ordinaryUsageAllowed") is False,
+        "reset_credits": count,
+        "credit_expiries": sorted(e for e in expiries if e),
+    })
+
+
+def probe_codex(env=None, timeout=15):
+    """Read account quota over newline JSON-RPC, without starting a model turn.
+
+    stdio is app-server's default transport (older CLIs lack --stdio).
+    A single deadline covers initialization and the read; always reap the child.
+    No credentials, credit IDs, or server diagnostics are retained.
+    """
+    exe = codex_exe()
+    if not exe:
+        return []
+    proc = None
+    try:
+        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        deadline, pending = time.monotonic() + timeout, b""
+        with selectors.DefaultSelector() as selector:
+            selector.register(proc.stdout, selectors.EVENT_READ)
+
+            def send(message):
+                proc.stdin.write((json.dumps(message) + "\n").encode())
+                proc.stdin.flush()
+
+            def receive(wanted):
+                nonlocal pending
+                while time.monotonic() < deadline:
+                    if b"\n" not in pending:
+                        if not selector.select(max(0, deadline - time.monotonic())):
+                            raise TimeoutError()
+                        chunk = os.read(proc.stdout.fileno(), 65536)
+                        if not chunk:
+                            raise ValueError("app-server closed")
+                        pending += chunk
+                        if len(pending) > 1048576:
+                            raise ValueError("oversized response")
+                        continue
+                    line, pending = pending.split(b"\n", 1)
+                    message = json.loads(line)
+                    if message.get("id") == wanted:
+                        return message["result"]
+                raise TimeoutError()
+
+            send({"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "mahler-probe", "version": "0.1.0"}}})
+            receive(1)
+            send({"method": "initialized"})
+            send({"id": 2, "method": "account/rateLimits/read", "params": {}})
+            return _codex_usage(receive(2))
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError,
+            AttributeError, OverflowError):
+        return []
+    finally:
+        if proc is not None:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            proc.stdin.close()
+            proc.stdout.close()
 
 
 def probe_claude(env=None):
