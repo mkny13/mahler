@@ -445,7 +445,15 @@ def needs_human_of(body):
             continue
         if grab:
             out.append(line)
-    return "\n".join(out).strip()
+    
+    text = "\n".join(out).strip()
+    cmp_text = re.sub(r"^[-*]\s*", "", text).strip().lower()
+    if cmp_text in ("nothing", "nothing.", "nothing to check", "none", "n/a"):
+        return ""
+    if cmp_text.startswith("nothing known yet"):
+        return ""
+        
+    return text
 
 
 def pr_body(number, summary, needs="", unconfirmed=False):

@@ -727,6 +727,17 @@ class HelpersTests(unittest.TestCase):
                          "- the new ping arrives\n- nothing else")
         self.assertEqual(gh_module.needs_human_of("no section here"), "")
         self.assertEqual(gh_module.needs_human_of(""), "")
+        
+        # Placeholders should be stripped
+        for p in ("Nothing", "Nothing.", "- Nothing", "* Nothing.", "Nothing to check",
+                  "- none", "N/a", "Nothing known yet — if X, list it here"):
+            self.assertEqual(gh_module.needs_human_of(f"## Needs a human to check\n{p}"), "")
+            
+        # Real checklist items are preserved
+        self.assertEqual(gh_module.needs_human_of("## Needs a human to check\n- Confirm login"),
+                         "- Confirm login")
+        self.assertEqual(gh_module.needs_human_of("## Needs a human to check\n- Nothing\n- Also check login"),
+                         "- Nothing\n- Also check login")
 
     def test_completed_check_uses_its_conclusion(self):
         self.assertEqual(gh_module.checks_state(
