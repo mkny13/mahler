@@ -45,6 +45,8 @@ class TestGuardrails(unittest.TestCase):
         deny_values = [argv[i + 1] for i, a in enumerate(argv) if a == "--deny-tool"]
         self.assertEqual(deny_values, platforms.COPILOT_DENY)
         self.assertIn("--allow-all-tools", argv)  # non-interactive mode stays intact
+        self.assertIn("--allow-all-paths", argv)
+        self.assertIn("--allow-all-urls", argv)
 
     def test_flagless_platforms_still_build_argv(self):
         # The documented-gap platforms must keep building argv after any

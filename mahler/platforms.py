@@ -182,9 +182,10 @@ def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
 
 
 def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
-    argv = [copilot_exe(), "-p", prompt, "-C", worktree, "--allow-all-tools",
+    argv = [copilot_exe(), "-p", prompt, "-C", worktree,
+            "--allow-all-tools", "--allow-all-paths", "--allow-all-urls",
             "--output-format", "json", "--no-color", "--no-auto-update"]
-    # Denials take precedence over --allow-all-tools (`copilot help
+    # Denials take precedence over allow rules (`copilot help
     # permissions`), so these stay enforced in the all-tools mode runs need.
     for pattern in COPILOT_DENY:
         argv += ["--deny-tool", pattern]
