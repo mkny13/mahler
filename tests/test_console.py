@@ -385,6 +385,18 @@ class PeakOverrideTests(unittest.TestCase):
             actions.run(cfg, make_led(), "peak_override", {})
         self.assertIsNone(state.build(cfg, make_led())["peak"])
 
+    def test_page_renders_peak_banner_only_when_active(self):
+        cfg = make_cfg()
+        off_peak_doc = page.document(state.build(cfg, make_led(SAT_NOON)))
+        self.assertNotIn('class="peakline"', off_peak_doc)
+        self.assertNotIn('class="peakrow"', off_peak_doc)
+        self.assertNotIn("Claude peak hours 05:00", off_peak_doc)
+
+        peak_doc = page.document(state.build(cfg, make_led(MON_PEAK)))
+        self.assertIn('class="peakline"', peak_doc)
+        self.assertIn('class="peakrow"', peak_doc)
+        self.assertIn("Claude peak hours 05:00", peak_doc)
+
 
 class ActionTests(unittest.TestCase):
     def test_pause_and_resume_write_events(self):
