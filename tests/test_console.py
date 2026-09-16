@@ -7,6 +7,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from local_timezone import local_timezone
+
 from mahler import config, router, scheduler
 from mahler.console import actions, page, state
 from mahler.ledger import Ledger, iso
@@ -236,6 +238,7 @@ class IdleReasonTests(unittest.TestCase):
         led.create_run(project="mahler", number=1, role="build", platform="kilo", epoch=1)
         self.assertIsNone(self.idle(cfg, led))
 
+    @local_timezone("America/Los_Angeles")
     def test_peak_hours_with_an_override(self):
         cfg, led = make_cfg(), make_led(MON_PEAK)
         all_fresh(led)
@@ -357,6 +360,7 @@ class EventTests(unittest.TestCase):
 
 
 class PeakOverrideTests(unittest.TestCase):
+    @local_timezone("America/Los_Angeles")
     def test_manual_override_holds_until_restored(self):
         cfg, led = make_cfg(), make_led(MON_PEAK)
         self.assertEqual(router.peak_state(cfg, led)[0], True)
@@ -373,11 +377,40 @@ class PeakOverrideTests(unittest.TestCase):
         peak = state.build(cfg, led)["peak"]
         self.assertEqual(peak["short"], "Peak hours until 11:00 · Claude plans only")
 
+    @local_timezone("America/Los_Angeles")
     def test_header_only_inside_the_window(self):
         peak = state.build(make_cfg(), make_led(SAT_NOON))["peak"]
         self.assertFalse(peak["header"])
         self.assertEqual(peak["line"], "Claude peak hours 05:00–11:00 PT — planning only, "
                                        "free tiers build")
+
+    def test_peak_times_use_system_timezone(self):
+        for zone, label, window, until in (
+            ("America/New_York", "ET", "08:00–14:00", "14:00"),
+            ("America/Los_Angeles", "PT", "05:00–11:00", "11:00"),
+            ("UTC", "UTC", "12:00–18:00", "18:00"),
+        ):
+            with self.subTest(zone=zone), local_timezone(zone):
+                led = make_led(MON_PEAK)
+                self.addCleanup(led.close)
+                peak = state._peak(make_cfg(), led)
+                self.assertTrue(peak["active"])
+                self.assertEqual((peak["until"], peak["tz"]), (until, label))
+                self.assertIn(f"{window} {label}", peak["line"])
+                self.assertEqual(peak["left"], "4h 0m left")
+
+    @local_timezone("America/New_York")
+    def test_window_uses_schedule_date_and_dst_at_endpoints(self):
+        # 'Now' precedes the Pacific DST change: localize each endpoint
+        # using its own offset, rather than the offset at the frozen 'now'.
+        for now in (datetime(2026, 3, 8, 9, tzinfo=timezone.utc),
+                    datetime(2026, 11, 1, 8, tzinfo=timezone.utc),
+                    datetime(2026, 1, 5, 16, tzinfo=timezone.utc)):
+            with self.subTest(now=now):
+                led = make_led(now)
+                self.addCleanup(led.close)
+                peak = state._peak(make_cfg(), led)
+                self.assertIn("08:00–14:00 ET", peak["line"])
 
     def test_refused_when_the_window_is_off(self):
         cfg = make_cfg(claude_peak={"enabled": False})
@@ -385,6 +418,7 @@ class PeakOverrideTests(unittest.TestCase):
             actions.run(cfg, make_led(), "peak_override", {})
         self.assertIsNone(state.build(cfg, make_led())["peak"])
 
+    @local_timezone("America/Los_Angeles")
     def test_page_renders_peak_banner_only_when_active(self):
         cfg = make_cfg()
         off_peak_doc = page.document(state.build(cfg, make_led(SAT_NOON)))
@@ -1513,4 +1547,3 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(g['nodes']), 2)
         self.assertEqual({n['rank'] for n in g['nodes']}, {0})
         self.assertEqual(g['edges'], [])
-

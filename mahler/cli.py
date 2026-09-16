@@ -576,7 +576,6 @@ def cmd_peak(a, cfg, led):
     `peak off` pauses new Claude runs until the current (or next) window ends,
     or for `--for DURATION`. `peak on` clears the override.
     """
-    from zoneinfo import ZoneInfo
     pc = cfg.get("claude_peak") or {}
     if not pc.get("enabled", True):
         print("claude_peak is disabled in config — nothing to override")
@@ -589,11 +588,10 @@ def cmd_peak(a, cfg, led):
             if until is None:
                 print("peak window has no end configured")
                 return 1
-        led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+        led.set_kv(router.PEAK_OVERRIDE, iso(until))
         led.event("peak_override", detail=f"peak override until {until.isoformat()}")
-        tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
         print(f"peak override on — Claude runs allowed until "
-              f"{until.astimezone(tz):%H:%M} PT "
+              f"{until.astimezone():%H:%M} {router.local_time_label(until)} "
               f"(in {router.fmt_countdown(until - led.now())})")
         return 0
     if a.on:
