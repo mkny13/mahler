@@ -776,7 +776,7 @@ def _schedule_holds(led, now):
         return None
 
 
-def _hold_reasons(cfg, holds, pending, hot, now):
+def _hold_reasons(cfg, holds, pending, hot, now, led=None):
     out, routes, settling, deps = [], {}, {}, []
     seen = set()
     for h in holds:
@@ -818,9 +818,16 @@ def _hold_reasons(cfg, holds, pending, hot, now):
             for category, names in h["blockers"].items():
                 groups.setdefault(category, set()).update(names)
         groups = {k: v for k, v in groups.items() if v}
+        active, until = router.peak_state(cfg, led) if led else (False, None)
         if set(groups) == {"size"}:
             text = (f"{len(items)} item(s) need a builder that takes size:{size}, "
                     "and none in the route does.")
+        elif active and "peak" in groups and set(groups) <= {"size", "over", "busy", "stale", "peak"}:
+            platforms = ", ".join(sorted(groups["peak"]))
+            text = (f"{len(items)} {role} item(s) (size:{size}) wait for off-peak hours: "
+                    f"{platforms} resumes at {until.astimezone():%H:%M} "
+                    f"{router.local_time_label(until)} "
+                    f"(in {router.fmt_countdown(until - now)})")
         else:
             summary = "; ".join(f"{label}: {', '.join(sorted(groups[k]))}"
                                 for k, label in BLOCKER_LABELS.items() if k in groups)
@@ -943,7 +950,7 @@ def _idle(cfg, led, s, hot, now):
                         f"until {h['hold_minutes']} minutes after you stop.",
                 "countdown": f"{_dur(h['until'] - now)} left"})
     if schedule_holds is not None:
-        reasons.extend(_hold_reasons(cfg, schedule_holds, pending, hot, now))
+        reasons.extend(_hold_reasons(cfg, schedule_holds, pending, hot, now, led=led))
     if not reasons and schedule_holds is None:
         reasons.append({"text": f"{n_pending} item(s) queued, but no platform has "
                                 f"headroom for them right now."})

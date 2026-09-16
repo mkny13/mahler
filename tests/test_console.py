@@ -948,6 +948,36 @@ class RecordedIdleTests(unittest.TestCase):
                          "mahler#1 waits for mkny13/groundwork#125 and "
                          "couch-tour#258 to close.")
 
+    @local_timezone("America/Los_Angeles")
+    def test_off_peak_hold_reason(self):
+        self.led.close()
+        self.led = make_led(MON_PEAK)
+        for n in range(1, 4):
+            self.led.upsert_item("mahler", n, state="ready")
+
+        holds = [self.hold("no_platform", 1, role="build", size="m",
+                           blockers={"peak": ["claude-work"], "size": ["copilot-work"]})]
+        
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "1 build item(s) (size:m) wait for off-peak hours: claude-work resumes at "
+                     "11:00 PT (in 4h 0m)",
+             "items": [self.item(1)]}])
+
+        size_holds = [self.hold("no_platform", 2, role="build", size="m",
+                                blockers={"size": ["copilot-work"]})]
+        self.assertEqual(self.idle(size_holds)["reasons"], [
+            {"text": "1 item(s) need a builder that takes size:m, and none in the route does.",
+             "items": [self.item(2)]}])
+
+        self.led.close()
+        self.led = make_led(SAT_NOON)
+        for n in range(1, 4):
+            self.led.upsert_item("mahler", n, state="ready")
+        self.assertEqual(self.idle(holds)["reasons"], [
+            {"text": "1 build item(s) have no platform with headroom — peak hours: claude-work; "
+                     "too small: copilot-work.",
+             "items": [self.item(1)]}])
+
     def test_many_dependencies_are_grouped(self):
         holds = [self.hold("deps", n, on=[99]) for n in range(1, 5)]
         self.assertEqual(self.idle(holds)["reasons"], [
