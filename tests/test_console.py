@@ -620,6 +620,18 @@ class UatPageTests(unittest.TestCase):
         self.assertIn("Ready to test · 1", frag)
         self.assertIn('class="puat"', frag)
 
+    def test_phone_ready_to_test_card_glues_ref_to_meta(self):
+        s = {"needs": [], "needs_count": 0,
+             "uat": [{"ref": "mahler#239", "url": "https://github.com/mkny13/mahler/issues/239",
+                      "meta": "merged 20:01 · sha f259e84", "title": "t", "check": "c",
+                      "link": "", "link_label": "", "project": "mahler", "number": 239,
+                      "pending": None}],
+             "uat_count": 1, "banners": [],
+             "capture": {"recent": [], "projects": []}}
+        html = page._p_triage(s)
+        self.assertIn('mahler#239</a> · merged 20:01', html)
+        self.assertNotIn('mahler#239merged', html)
+
     def test_an_empty_queue_renders_no_section(self):
         self.led.set_uat_verdict('mahler', 9, 'pass')
         frag = self.frag()

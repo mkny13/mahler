@@ -475,8 +475,7 @@ def _p_triage(s):
                    f'{s["uat_count"]}</span>')
         for u in s["uat"]:
             out.append(f'<div class="puat" data-uat="{e(u["ref"])}">'
-                       f'<div class="row"><span class="meta">{_a(u["url"], u["ref"])}</span>'
-                       f'<span class="meta" style="font-size:10.5px">{e(u["meta"])}</span></div>'
+                       f'<div class="row"><span class="meta" style="font-size:10.5px">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span></div>'
                        f'<div class="t">{e(u["title"])}</div>'
                        f'<div class="check">{e(u["check"])}</div>'
                        f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
