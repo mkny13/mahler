@@ -418,6 +418,7 @@ class PeakOverrideTests(unittest.TestCase):
             actions.run(cfg, make_led(), "peak_override", {})
         self.assertIsNone(state.build(cfg, make_led())["peak"])
 
+    @local_timezone("America/Los_Angeles")
     def test_page_renders_peak_banner_only_when_active(self):
         cfg = make_cfg()
         off_peak_doc = page.document(state.build(cfg, make_led(SAT_NOON)))
@@ -1546,4 +1547,3 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(g['nodes']), 2)
         self.assertEqual({n['rank'] for n in g['nodes']}, {0})
         self.assertEqual(g['edges'], [])
-

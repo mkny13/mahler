@@ -588,7 +588,7 @@ def cmd_peak(a, cfg, led):
             if until is None:
                 print("peak window has no end configured")
                 return 1
-        led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+        led.set_kv(router.PEAK_OVERRIDE, iso(until))
         led.event("peak_override", detail=f"peak override until {until.isoformat()}")
         print(f"peak override on — Claude runs allowed until "
               f"{until.astimezone():%H:%M} {router.local_time_label(until)} "
