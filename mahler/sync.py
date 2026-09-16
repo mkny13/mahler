@@ -12,6 +12,7 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  files_of, has_sections, label_names, parse_command, part_of, pin_of,
                  priority_of)
 from .ledger import iso, parse
+from .ship import record_uat_if_needed
 from .watchdog import request_stop
 
 
@@ -109,6 +110,19 @@ def sync(ctx, project):
                 if not run["yield_at"]:
                     request_stop(ctx, run, "closed")
             if not running:
+                # The issue closed without ship.py's own watch catching the
+                # merge first — a by-hand merge (CLAUDE.md's protocol) or a
+                # same-tick race where sync() (which runs first) sees the
+                # closed issue before ship() gets to it. Either way, the
+                # merged PR's 'Needs a human to check' list must still reach
+                # the UAT queue, or it's lost for good (mahler#285).
+                if item["pr"]:
+                    try:
+                        view = gh.pr_view(item["pr"])
+                    except (GHError, ValueError):
+                        pass
+                    else:
+                        record_uat_if_needed(ctx, project, item["number"], item["pr"], item, view)
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
 
