@@ -466,6 +466,64 @@ class LaunchAndGitHubTests(unittest.TestCase):
             GH("acme/app", env={"GH_CONFIG_DIR": "/w"}).issue_state(3)
         self.assertEqual(run.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/w"})
 
+    @mock.patch.dict(os.environ, {"GH_TOKEN": "system-token", "GH_CONFIG_DIR": "/sys/gh"})
+    def test_run_environment_github_identity_overlay(self):
+        cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                             "accounts": ["personal", "work"]},
+                       acme={"enabled": True, "repo": "acme/app", "path": "/tmp/acme",
+                             "account": "work"},
+                       custom={"enabled": True, "repo": "c/c", "path": "/tmp/c",
+                               "accounts": ["work", "personal"], "gh_account": "other"})
+        cfg["accounts"]["work"]["env"]["GH_CONFIG_DIR"] = "~/.gh-work"
+        cfg["accounts"]["work"]["env"]["GH_TOKEN"] = "work-token"
+        cfg["accounts"]["other"] = {"env": {"GH_CONFIG_DIR": "~/.gh-other"}}
+        cfg["platforms"]["claude-other"] = {"from": "claude", "account": "other"}
+        cfg = config.resolve_platforms(cfg)
+        
+        ctx = scheduler.Ctx(cfg, Ledger(":memory:", clock=lambda: NOW), dry_run=True)
+        item = {"number": 1, "title": "t", "branch": None}
+        prep = {"worktree": "/tmp", "run_dir": "/tmp", "branch": "b", "base_ref": "main", "replayed": False, "kept": None}
+
+        # 1. Project whose gh_account resolves to 'personal', run on a platform with 'account' = 'work':
+        # The built env has no GH_CONFIG_DIR from the work account, and every non-GitHub work variable is present.
+        with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+            runner.launch(ctx, "both", item, "build", "claude-work", 7, 1, "prompt", prep)
+            
+        env = spawn.call_args.kwargs["env"]
+        self.assertNotIn("GH_CONFIG_DIR", env)
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
+        
+        # 2. The same project on a personal platform: env unchanged from today
+        with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+            runner.launch(ctx, "both", item, "build", "claude", 7, 1, "prompt", prep)
+            
+        env = spawn.call_args.kwargs["env"]
+        self.assertEqual(env["GH_CONFIG_DIR"], "/sys/gh")
+        self.assertEqual(env["GH_TOKEN"], "system-token")
+        
+        # 3. A work-account project on a work platform keeps the work GH_CONFIG_DIR
+        with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+            runner.launch(ctx, "acme", item, "build", "claude-work", 7, 1, "prompt", prep)
+            
+        env = spawn.call_args.kwargs["env"]
+        self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.gh-work"))
+        self.assertEqual(env["GH_TOKEN"], "work-token")
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
+        
+        # 4. An explicit gh_account that is neither the platform's account nor the first declared account is honoured.
+        with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+            runner.launch(ctx, "custom", item, "build", "claude-work", 7, 1, "prompt", prep)
+            
+        env = spawn.call_args.kwargs["env"]
+        self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.gh-other"))
+        self.assertNotIn("GH_TOKEN", env)
+        self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
+
 
 if __name__ == "__main__":
     unittest.main()
