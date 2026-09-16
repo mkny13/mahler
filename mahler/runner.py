@@ -193,8 +193,22 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
         raise RuntimeError(f"{platform} CLI not found")
 
     hooks = fence_hooks(pol["path"], run_dir)
-    env = dict(config.run_env(ctx.cfg, account) or os.environ,
-               MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
+    
+    base_env = config.run_env(ctx.cfg, account) or os.environ
+    env = dict(base_env)
+    
+    if account != config.gh_account_of(pol):
+        overlay = config.gh_identity_env(ctx.cfg, pol)
+        if overlay is None:
+            for var in config.GH_IDENTITY_VARS:
+                env.pop(var, None)
+        else:
+            set_vars, drop_vars = overlay
+            for var in drop_vars:
+                env.pop(var, None)
+            env.update(set_vars)
+        
+    env.update(MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(item["number"]), MAHLER_EPOCH=str(epoch),
                MAHLER_HOME=config.STATE,
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",

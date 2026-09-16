@@ -375,6 +375,28 @@ CREDENTIAL_VARS = (
     "CODEX_HOME",
 )
 
+GH_IDENTITY_VARS = ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST")
+
+
+def gh_identity_env(cfg, pol):
+    """The GitHub-identity variables for the project's gh_account, as a dict
+    and a list of names to drop, or None meaning 'drop them all'."""
+    gh_acct = gh_account_of(pol)
+    acct = cfg.get("accounts", {}).get(gh_acct, {})
+    acct_env = acct.get("env") or {}
+    
+    if gh_acct == DEFAULT_ACCOUNT and not acct_env:
+        return None
+        
+    result = {}
+    drop = []
+    for var in GH_IDENTITY_VARS:
+        if var in acct_env:
+            result[var] = os.path.expanduser(str(acct_env[var]))
+        else:
+            drop.append(var)
+    return result, drop
+
 
 def account_of(conf):
     """The account a platform or project policy belongs to."""
