@@ -60,6 +60,7 @@ def build(cfg, led):
     needs = _needs(cfg, led, projects, now)
     uat = _uat(cfg, led, projects)
     backlog = _backlog(cfg, led, projects)
+    dep_graph = {g["project"]: _graph(g["items"]) for g in backlog if len(g["items"]) > 1}
     events = _events(cfg, led)
     digest = _digest(cfg, led, now)
     paused = led.paused()
@@ -79,6 +80,7 @@ def build(cfg, led):
         "uat_count": sum(u["pending"] is None for u in uat),
         "backlog": backlog,
         "backlog_total": sum(len(g["items"]) for g in backlog),
+        "dep_graph": dep_graph,
         "quota": quota,
         "capacity": _capacity_line(quota),
         "events": events,
@@ -491,17 +493,23 @@ def _backlog(cfg, led, projects):
         ready = sum(1 for i in items if i["state"] in ("ready", "inbox"))
         live = sum(1 for i in items if i["state"] in ("working", "verifying"))
         you = sum(1 for i in items if i["state"] in ATTENTION_STATES)
+        open_numbers = {i["number"] for i in items}
         # a queued capture shows as a placeholder inbox row until the tick
         # creates the issue and sync() pulls in the real item (mahler#251)
-        rows = [{"ref": None, "url": None, "pr": None, "pr_url": None,
+        rows = [{"ref": None, "url": None, "number": None, "pr": None, "pr_url": None,
                  "title": outbox.capture_title(json.loads(r["payload"])["text"]),
-                 "p": "p2", "p1": False, "state": "inbox", "tone": "mut"}
+                 "p": "p2", "p1": False, "priority": 2, "state": "inbox", "tone": "mut",
+                 "parent": None, "depends": []}
                 for r in pending.get(name, [])]
         rows += [{"ref": _ref(name, i["number"]), "url": _issue_url(cfg, name, i["number"]),
+                  "number": i["number"],
                   "pr": i["pr"], "pr_url": _pr_url(cfg, name, i["pr"]) if i["pr"] else None,
                   "title": i["title"] or "", "p": f"p{i['priority']}",
-                  "p1": i["priority"] == 1, "state": i["state"].replace("_", "-"),
-                  "tone": _state_tone(i["state"])} for i in items]
+                  "p1": i["priority"] == 1, "priority": i["priority"],
+                  "state": i["state"].replace("_", "-"), "tone": _state_tone(i["state"]),
+                  "parent": i["parent"],
+                  "depends": [d for d in json.loads(i["depends"] or "[]") if d in open_numbers]}
+                 for i in items]
         out.append({
             "project": name,
             "counts": f"{len(items)} · {ready} ready · {live} live" + (f" · {you} you" if you else ""),
@@ -509,6 +517,41 @@ def _backlog(cfg, led, projects):
         })
     return out
 
+
+def _graph(items):
+    """Rank one project's backlog rows (D29) into a longest-path DAG layout:
+    a node with no unresolved predecessor sits at rank 0, everything else one
+    rank past its farthest predecessor. Capture placeholders (no number yet,
+    so no issue to link or depend on) are left out."""
+    by_number = {i["number"]: i for i in items if i["number"] is not None}
+    preds = {n: [] for n in by_number}
+    edges = []
+    for n, it in by_number.items():
+        if it["parent"] in by_number:
+            preds[n].append(it["parent"])
+            edges.append({"from": it["parent"], "to": n, "kind": "parent"})
+        for d in it["depends"]:
+            if d in by_number:
+                preds[n].append(d)
+                edges.append({"from": d, "to": n, "kind": "depends"})
+    rank = {n: 0 for n in by_number}
+    ranked = {n for n in by_number if not preds[n]}
+    for _ in range(len(by_number)):
+        progressed = False
+        for n in by_number:
+            if n in ranked or not all(p in ranked for p in preds[n]):
+                continue
+            rank[n] = 1 + max(rank[p] for p in preds[n])
+            ranked.add(n)
+            progressed = True
+        if not progressed:
+            break   # a cycle: whatever's left stays at rank 0 rather than hang
+    nodes = []
+    order_in_rank = {}
+    for n, it in sorted(by_number.items(), key=lambda kv: (rank[kv[0]], kv[1]["priority"], kv[0])):
+        order_in_rank[rank[n]] = order_in_rank.get(rank[n], -1) + 1
+        nodes.append({**it, "rank": rank[n], "order": order_in_rank[rank[n]]})
+    return {"nodes": nodes, "edges": edges}
 
 # ---------- capture (mahler#251) ----------
 
