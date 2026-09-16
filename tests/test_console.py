@@ -2,6 +2,7 @@
 
 import copy
 import json
+import re
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -623,12 +624,25 @@ class UatPageTests(unittest.TestCase):
     def test_phone_ready_to_test_card_glues_ref_to_meta(self):
         s = {"needs": [], "needs_count": 0,
              "uat": [{"ref": "mahler#239", "url": "https://github.com/mkny13/mahler/issues/239",
-                      "meta": "merged 20:01 · sha f259e84", "title": "t", "check": "c",
-                      "link": "", "link_label": "", "project": "mahler", "number": 239,
-                      "pending": None}],
+                       "meta": "merged 20:01 · sha f259e84", "title": "t", "check": "c",
+                       "link": "", "link_label": "", "project": "mahler", "number": 239,
+                       "pending": None}],
              "uat_count": 1, "banners": [],
              "capture": {"recent": [], "projects": []}}
         html = page._p_triage(s)
+        self.assertIn('mahler#239</a> · merged 20:01', html)
+        self.assertNotIn('mahler#239merged', html)
+
+    def test_desktop_ready_to_test_meta_line_join(self):
+        """Desktop _d_test via _uat_left joins ref and meta with ' · '."""
+        s = {"needs": [], "needs_count": 0,
+             "uat": [{"ref": "mahler#239", "url": "https://github.com/mkny13/mahler/issues/239",
+                       "meta": "merged 20:01 · sha f259e84", "title": "t", "check": "c",
+                       "link": "", "link_label": "", "project": "mahler", "number": 239,
+                       "pending": None}],
+             "uat_count": 1, "banners": [],
+             "capture": {"recent": [], "projects": []}}
+        html = page._d_test(s)
         self.assertIn('mahler#239</a> · merged 20:01', html)
         self.assertNotIn('mahler#239merged', html)
 
@@ -638,9 +652,106 @@ class UatPageTests(unittest.TestCase):
         self.assertNotIn("Ready to test ·", frag)
         self.assertNotIn('class="puat"', frag)
 
+    def test_adjacent_inline_content_spans_have_separators(self):
+        """Guard against glued adjacent content spans (.t/.meta/.check/.lnk/.q/.pchip).
 
-if __name__ == "__main__":
-    unittest.main()
+        Scans the full phone+desktop app fragment for </span><span where both spans
+        carry a content-bearing inline class. Legitimate chrome adjacencies (rail
+        buttons, theme toggle, tabs, backlog group headers, quota rows) are
+        explicitly allowlisted; any other adjacency is a regression.
+        """
+        cfg, led = make_cfg(), make_led()
+        led.add_uat('mahler', 9, 88, '4c1f0abfeed5', 'Wired the exporter',
+                     '- the new ping arrives')
+        led.upsert_item('mahler', 10, title='Needs you item', state='needs_you')
+        led.set_state('mahler', 10, 'needs_you', 'Pick one?')
+        led.upsert_item('mahler', 11, title='Ready item', state='ready')
+        led.upsert_item('groundwork', 5, title='Backlog item', state='inbox')
+        s = state.build(cfg, led)
+        html = page.app(s)
+
+        # Content-bearing inline span classes that must not sit directly adjacent
+        # without a text separator. Chrome/structural classes are excluded.
+        content_classes = (
+            't', 'meta', 'check', 'lnk', 'q', 'pchip', 'p1', 'ref', 'title',
+            'why-item', 'more', 'lbl', 'val', 'detail', 'model', 'name', 'kind',
+            'when', 'txt', 'sh-show', 'sh-hide', 'c', 'o', 'dot'
+        )
+        pattern = re.compile(
+            r'</span><span\s+class="([^"]*(?:' + '|'.join(content_classes) + ')[^"]*)"'
+        )
+
+        # Known-safe adjacent pairs: (first_span_class_substring, second_span_class_substring)
+        # These occur in chrome/navigation and are structurally intentional.
+        allowlist = {
+            # rail buttons: <span>Label</span><span class="mono t-tone">count</span>
+            ('', 'mono t-'),
+            # theme toggle: <span class="tl ...">Auto</span><span class="tl ...">Light</span>
+            ('tl ', 'tl '),
+            # view title tabs: <span class="vt vt-x">...</span><span class="vt vt-y">...</span>
+            ('vt vt-', 'vt vt-'),
+            # backlog group header: <span class="name">...</span><span class="mono">...</span>
+            ('name', 'mono'),
+            # backlog group header (phone): same
+            # quota rows: <span class="name mono">...</span><span class="bar">...
+            #            <span class="val mono t-tone">...</span></div><span class="model mono">...
+            ('name mono', 'val mono t-'),
+            ('val mono t-', 'model mono'),
+            # quota bar internals: <span class="f-tone">...</span><span class="tick">...
+            ('f-', 'tick'),
+            ('tick', 'detail'),
+            ('f-', 'detail'),
+            # phone tabs: <span>Tab</span><span class="mono t-tone">count</span>
+            # (same as rail buttons pattern)
+            # need card: <span class="lbl">...</span><span class="q">...</span>
+            ('lbl', 'q'),
+            # need card meta: <span class="meta">...</span><span class="meta">... (the fixed case)
+            # This used to be the bug; now it's one span. Keep allowlisted in case it reappears.
+            ('meta', 'meta'),
+            # phone needs row: <span class="meta">...</span><span class="pchip">...</span><span class="meta">...
+            ('meta', 'pchip'),
+            ('pchip', 'meta'),
+            # phone uat row: <span class="meta">...</span> (single span now)
+            # backlog items: <span class="pchip">...</span><span class="title">...</span><span class="st mono t-tone">...
+            ('pchip', 'title'),
+            ('title', 'st mono t-'),
+            # phone backlog items: <span class="pbl">...<span class="pchip">...</span><span class="title">...</span><span class="st mono t-">...
+            # event stream: <span class="when mono">...</span><span class="kind mono">...</span><span class="txt t-tone">...
+            ('when mono', 'kind mono'),
+            ('kind mono', 'txt t-'),
+            # side backlog buttons: <span>project</span><span class="mono">counts</span>
+            # (covered by name/mono above)
+            # run timing: <span class="mono t-tone">...</span><span class="mono t-mut">...
+            ('mono t-', 'mono t-'),
+        }
+
+        def is_allowed(first_class, second_class):
+            for a, b in allowlist:
+                if a in first_class and b in second_class:
+                    return True
+            return False
+
+        violations = []
+        for m in pattern.finditer(html):
+            # Get the full class attribute of the second span
+            second_class = m.group(1)
+            # Find the first span's class by looking backwards
+            before = html[max(0, m.start() - 200):m.start()]
+            first_match = re.search(r'<span\s+class="([^"]*)"[^>]*></span>$', before)
+            if not first_match:
+                # Might be a span without class, or different structure; skip
+                continue
+            first_class = first_match.group(1)
+            if not is_allowed(first_class, second_class):
+                context_start = max(0, m.start() - 80)
+                context_end = min(len(html), m.end() + 80)
+                violations.append(
+                    f'First span class="{first_class}", second span class="{second_class}"\n'
+                    f'Context: ...{html[context_start:context_end]}...'
+                )
+
+        if violations:
+            self.fail('Found adjacent content spans without separator:\n' + '\n\n'.join(violations))
 
 
 class NeedsYouPingTests(unittest.TestCase):
@@ -1324,3 +1435,7 @@ class CapturePageTests(unittest.TestCase):
     def test_no_note_without_a_recent_capture(self):
         doc = page.document(state.build(self.cfg, self.led))
         self.assertNotIn('Saved to', doc)
+
+
+if __name__ == "__main__":
+    unittest.main()
