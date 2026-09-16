@@ -66,7 +66,7 @@ def app(s):
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
             + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s)
-            + _bug_overlays(s))
+            + _bug_overlays(s) + _capture_overlay(s))
 
 
 # ---------- shared pieces ----------
@@ -488,6 +488,7 @@ def _phone(s):
     head = (f'<header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span>'
             f'{_state_label(s)}</div><div class="phead-btns">'
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
+            f'<button class="btn" style="font-weight:bold" data-open-capture>+</button>'
             f'{_pause_button(s)}</div></div><div class="tabs">'
             f'<button class="tab" data-tab-go="now"><span>Now</span>'
             f'<span class="mono t-acc">{runs or ""}</span></button>'
@@ -566,8 +567,6 @@ def _p_triage(s):
                        f'<div class="check">{e(u["check"])}</div>'
                        f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
         out.append("</div>")
-    out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Capture</span>'
-               f'<div class="cap">{_composer(s, 3, "Save")}</div></div>')
     out.append("</div></section>")
     return "".join(out)
 
@@ -666,3 +665,12 @@ def _bug_overlays(s):
                    f'data-project="{e(u["project"])}" data-number="{u["number"]}">'
                    f'File p1 bug</button></div></div></div>')
     return "".join(out)
+
+
+def _capture_overlay(s):
+    return (f'<div class="ov captureov" data-capture-detail="1">'
+            f'<div class="box" role="dialog" aria-modal="true">'
+            f'<h2>Capture</h2>'
+            f'<div class="cap">{_composer(s, 3, "Save")}</div>'
+            f'<div class="capturefoot" style="margin-top:16px;display:flex;justify-content:flex-end"><button class="btn" data-close-capture>Cancel</button></div>'
+            f'</div></div>')

@@ -437,3 +437,17 @@ a { color: var(--acc); text-decoration: none; }
     gap: 8px;
     word-break: break-all;
 }
+
+/* Capture overlay */
+.captureov { background: rgba(10, 12, 14, .45); align-items: flex-end; justify-content: center; }
+.captureov .box { width: 100%; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px 6px 0 0;
+  display: flex; flex-direction: column; gap: 10px; }
+.captureov h2 { margin: 0; font-size: 17px; }
+.capturefoot { display: flex; gap: 10px; }
+.capturefoot .btn { flex: 1; min-height: 48px; }
+@media (min-width: 760px) {
+  .captureov { align-items: center; }
+  .captureov .box { width: 430px; border-radius: 6px; }
+  .capturefoot .btn { min-height: 38px; }
+}
