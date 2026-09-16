@@ -98,6 +98,7 @@ DEFAULTS = {
         "link": [],                    # untracked files to symlink from the primary checkout
         "setup": "",                   # shell run in a new worktree before the agent starts
         "rules": "",                   # extra project rules appended to build/sort prompts
+        "size_target": None,           # "" (no preference) or "s" (decompose to small PRs); default depends on accounts
         "maintenance": DEFAULT_MAINTENANCE,
     },
     # `total` is the hard overall ceiling (blast radius). `by_tier` (optional,
@@ -411,6 +412,19 @@ def accounts_of(conf):
     if accts is None:
         return [account_of(conf)]
     return list(accts)
+
+
+def size_target_of(pol):
+    """The project's compute strategy (size:s decomposition vs standard sizing)."""
+    val = pol.get("size_target")
+    if val is None:
+        if all(a != DEFAULT_ACCOUNT for a in accounts_of(pol)):
+            val = "s"
+        else:
+            val = ""
+    if val not in ("", "s"):
+        return ""
+    return val
 
 
 def gh_account_of(conf):

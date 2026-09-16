@@ -90,6 +90,7 @@ verify = "python3 -m unittest discover -s tests"
 # account = "work"
 # repo = "acme-corp/app"
 # path = "/Users/mike/Work/app"
+# size_target = "s"                 # "" or "s" (decompose to small PRs). Default: "s" for work projects, "" for others.
 
 # [claude_peak]
 # # Claude's peak window (D22): on weekdays 5-11am Pacific, Mahler starts no new

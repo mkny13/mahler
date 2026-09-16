@@ -1194,6 +1194,15 @@ that's the thing actually missing.
   screens don't cover it. It's designed here, in the same voice and constraints as D27, rather than
   redone in Claude Design, since it's additive to an existing view rather than a new screen.
 
+### D30 — Work-repo compute strategy: decompose to size:s
+
+Decided 2026-09-16 (mahler#331). Work repos use a specific compute strategy (`size_target = "s"`): their daytime builders take only `size:s`, and `size:m` waits for scarce, off-peak capacity. To avoid waiting, the sort agent decomposes `size:m` items into sequential, single-responsibility `size:s` pieces when possible.
+
+- **Where it lives**: `size_target` in `[projects.<name>]` controls this.
+- **The default**: If `size_target` is not set, a project that spends only work accounts (all differing from `personal`, see D25) defaults to `"s"`. Other projects default to `""` (no preference).
+- **Who decomposes**: The sort agent receives an extra sizing instruction for `"s"` projects to split `size:m` items into `size:s` sub-issues, each one mergeable PR with its test, chained with `Depends on: #N`.
+- **Off-peak policy**: `size:m` is kept only when a split would leave a broken or untested intermediate state, or when it touches security/credential boundaries. Those wait for a larger, off-peak builder.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no scheduling across multiple machines.
