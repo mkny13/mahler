@@ -10,7 +10,7 @@ import json
 import subprocess
 from datetime import timedelta
 
-from . import platforms, router, runner
+from . import config, platforms, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
@@ -229,7 +229,8 @@ def _save_work(e):
         return
     try:
         e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
-                                  e.pol.get("base", "main"))
+                                  e.pol.get("base", "main"),
+                                  env=config.run_env(ctx.cfg, config.gh_account_of(e.pol)))
     except runner.GitError as err:
         e.keep_worktree = True
         ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")

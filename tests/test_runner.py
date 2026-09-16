@@ -74,6 +74,19 @@ class SnapshotTests(unittest.TestCase):
         saved = runner.snapshot(self.repo, self.repo, 5, 12, "main")
         self.assertEqual(saved["ahead"], 1)
 
+    def test_push_carries_the_given_account_env(self):
+        # mahler#296: a work project's snapshot push must go out under its own
+        # git-hosting identity, not this machine's default git credentials.
+        write(os.path.join(self.repo, "b.txt"), "b\n")
+        sh(self.repo, "git", "add", ".")
+        sh(self.repo, "git", "commit", "-qm", "local only")
+        account_env = dict(os.environ, GH_CONFIG_DIR=os.path.expanduser("~/.config/gh-work"))
+        with mock.patch.object(runner, "git", wraps=runner.git) as git:
+            runner.snapshot(self.repo, self.repo, 5, 12, "main", env=account_env)
+        push = next(c for c in git.call_args_list if c.args[1] == "push")
+        self.assertEqual(push.kwargs["env"]["GH_CONFIG_DIR"],
+                         os.path.expanduser("~/.config/gh-work"))
+
 
 class CatchUpTests(unittest.TestCase):
     """Resumed work starts on current base (DESIGN D19, mahler#27)."""
@@ -141,6 +154,17 @@ class CatchUpTests(unittest.TestCase):
         self.assertEqual(sh(self.wt, "git", "status", "--porcelain"), "")
         # the agent can read the old work from its worktree, as the prompt says
         self.assertIn("item work", sh(self.wt, "git", "log", f"origin/main..origin/{kept}"))
+
+    def test_pushes_carry_the_given_account_env(self):
+        self.main_moves("b.txt", "unrelated\n")
+        account_env = dict(os.environ, GH_CONFIG_DIR=os.path.expanduser("~/.config/gh-work"))
+        with mock.patch.object(runner, "git", wraps=runner.git) as git:
+            runner.catch_up(self.wt, "mahler/7-x", "main", 7, 9, env=account_env)
+        pushes = [c for c in git.call_args_list if c.args[1] == "push"]
+        self.assertTrue(pushes)
+        for push in pushes:
+            self.assertEqual(push.kwargs["env"]["GH_CONFIG_DIR"],
+                             os.path.expanduser("~/.config/gh-work"))
 
 
 class ParsingTests(unittest.TestCase):
@@ -345,6 +369,46 @@ class PlatformLaunchTests(unittest.TestCase):
             env = popen.call_args.kwargs["env"]
             self.assertEqual(env["MAHLER_EPOCH"], "4")
             self.assertEqual(env["GIT_CONFIG_VALUE_0"], hooks_dir)
+
+
+class PrepareAccountEnvTests(unittest.TestCase):
+    """A work project's repo is fetched with its own git-hosting identity
+    (D25/D26's gh_account), not this machine's default git credentials —
+    otherwise a private work repo 404s as "Repository not found" against the
+    wrong account's credential helper (mahler#296)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.remote = os.path.join(t, "remote.git")
+        self.repo = os.path.join(t, "repo")
+        sh(t, "git", "init", "-q", "--bare", "-b", "main", self.remote)
+        sh(t, "git", "clone", "-q", self.remote, self.repo)
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            sh(self.repo, "git", "config", k, v)
+        sh(self.repo, "git", "commit", "--allow-empty", "-qm", "init")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        self.worktrees = os.path.join(t, "worktrees")
+        policy = {
+            "path": self.repo, "repo": "acme/x", "base": "main", "link": [],
+            "account": "work", "worktree_root": self.worktrees,
+        }
+        self.ctx = SimpleNamespace(
+            cfg={"platforms": {"claude-work": {"account": "work"}},
+                 "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}}},
+            policy=lambda project: policy,
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_fetch_carries_the_project_s_account_env(self):
+        item = {"number": 3, "title": "t", "branch": None}
+        with mock.patch.object(runner, "git", wraps=runner.git) as git:
+            runner.prepare(self.ctx, "acme", item, "build", "claude-work", 1)
+        fetch = next(c for c in git.call_args_list if c.args[1] == "fetch")
+        self.assertEqual(fetch.kwargs["env"]["GH_CONFIG_DIR"],
+                         os.path.expanduser("~/.config/gh-work"))
 
 
 class ShellSanitizationTests(unittest.TestCase):

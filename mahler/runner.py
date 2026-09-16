@@ -55,7 +55,7 @@ def start_ref(repo, base, handoff_branch, run_branch):
     return f"origin/{options[0]}"
 
 
-def catch_up(wt, branch, base, number, run_id):
+def catch_up(wt, branch, base, number, run_id, env=None):
     """Replay the saved work checked out in `wt` onto the current base, and make
     the remote branch match (DESIGN D19). When it no longer applies cleanly,
     keep the old tip on a snapshot ref and start the branch from base.
@@ -68,16 +68,17 @@ def catch_up(wt, branch, base, number, run_id):
         git(wt, "rebase", "--abort", check=False)
         kept = f"mahler/snapshot/{number}-stale-run{run_id}"
         git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
-            f"HEAD:refs/heads/{kept}")
+            f"HEAD:refs/heads/{kept}", env=env)
         git(wt, "reset", "--quiet", "--hard", onto)
     # The remote branch must not keep the stale history, or the agent's first push
     # is rejected and a weak model "fixes" that by pulling it back in. But a branch
     # sitting at base's tip reads as merged on an open PR, so drop it instead.
     if int(git(wt, "rev-list", "--count", f"{onto}..HEAD") or 0):
         git(wt, "push", "--quiet", "--no-verify", "--force", "origin",
-            f"HEAD:refs/heads/{branch}")
+            f"HEAD:refs/heads/{branch}", env=env)
     else:
-        git(wt, "push", "--quiet", "--no-verify", "origin", "--delete", branch, check=False)
+        git(wt, "push", "--quiet", "--no-verify", "origin", "--delete", branch, check=False,
+            env=env)
     return kept
 
 
@@ -128,12 +129,17 @@ def prepare(ctx, project, item, role, platform, run_id):
     pol = ctx.policy(project)
     repo, base = pol["path"], pol.get("base", "main")
     check_account(ctx, project, platform)
+    # git hosting credentials are the project's own identity (D26's gh_account),
+    # not the run's AI-platform account — the same env gh.py's GH client uses,
+    # so a work project's private repo isn't fetched/pushed with this machine's
+    # default (personal) git credential helper (mahler#296).
+    env = config.run_env(ctx.cfg, config.gh_account_of(pol))
     run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     config.ensure_private_dir(run_dir)
     wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")
     config.ensure_private_dir(os.path.dirname(wt))
 
-    git(repo, "fetch", "--quiet", "--prune", "origin")
+    git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
     branch, start = None, f"origin/{base}"
     if role == "sort":
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
@@ -160,7 +166,7 @@ def prepare(ctx, project, item, role, platform, run_id):
     replayed, kept = False, None
     if role == "build" and start != f"origin/{base}":
         replayed = True
-        kept = catch_up(wt, branch, base, item["number"], run_id)
+        kept = catch_up(wt, branch, base, item["number"], run_id, env=env)
         if kept:
             start = f"origin/{base}"
     return {"run_dir": run_dir, "worktree": wt, "branch": branch,
@@ -278,14 +284,15 @@ def setup_tail(run, lines=20):
     return redact.redact(tail)
 
 
-def snapshot(repo, wt, run_id, number, base):
+def snapshot(repo, wt, run_id, number, base, env=None):
     """Save everything a run left — commits *and* uncommitted/untracked files —
     to refs/heads/mahler/snapshot/<n>-run<id>, without touching the worktree,
-    its index, or the stash. -> dict or None when there was nothing new."""
+    its index, or the stash. `env` is the project's git-hosting account (D25/D26);
+    None inherits this machine's own. -> dict or None when there was nothing new."""
     if not os.path.isdir(wt):
         return None
     idx = os.path.join(config.RUNS_DIR, str(run_id), "snapshot.index")
-    env = dict(os.environ, GIT_INDEX_FILE=idx)
+    env = dict(env or os.environ, GIT_INDEX_FILE=idx)
     try:
         head = git(wt, "rev-parse", "HEAD")
         git(wt, "read-tree", "HEAD", env=env)
@@ -299,7 +306,8 @@ def snapshot(repo, wt, run_id, number, base):
         if ahead == 0:
             return None
         ref = f"mahler/snapshot/{number}-run{run_id}"
-        git(wt, "push", "--quiet", "--no-verify", "--force", "origin", f"{sha}:refs/heads/{ref}")
+        git(wt, "push", "--quiet", "--no-verify", "--force", "origin", f"{sha}:refs/heads/{ref}",
+            env=env)
         stat = git(wt, "diff", "--shortstat", f"origin/{base}...{sha}", check=False)
         return {"ref": ref, "sha": sha[:9], "ahead": ahead, "stat": stat}
     finally:
