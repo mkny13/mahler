@@ -1257,6 +1257,14 @@ class CaptureOutboxTests(unittest.TestCase):
         self.gh.create_issue.assert_not_called()
         self.assertEqual(self.row(id)['status'], 'skipped')
 
+    def test_attachment_is_linked(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/43'
+        self.ctx.cfg['serve']['public_url'] = 'https://console.example.com/'
+        id = actions.run(self.cfg, self.led, 'capture', {'text': 'Idea', 'project': 'mahler', 'attachment': 'some-uuid.png'})['id']
+        self.outbox.drain(self.ctx)
+        body = self.gh.create_issue.call_args[0][1]
+        self.assertIn('\n\nAttachment: [some-uuid.png](https://console.example.com/attachments/some-uuid.png) (`~/.mahler/attachments/some-uuid.png`)', body)
+
 
 class UatActionTests(unittest.TestCase):
     """Ready to test (mahler#250): the Pass and Fail buttons queue a verdict."""
@@ -1415,6 +1423,14 @@ class UatOutboxTests(unittest.TestCase):
         self.gh.comment.assert_not_called()
         self.assertEqual((self.row(id)['status'], self.row(id)['result']),
                          ('skipped', 'the project is disabled'))
+
+    def test_attachment_is_linked(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/43'
+        self.ctx.cfg['serve']['public_url'] = 'https://console.example.com/'
+        id = self.queue('uat_fail', note='Idea', attachment='some-uuid.png')
+        self.drain()
+        body = self.gh.create_issue.call_args[0][1]
+        self.assertIn('\n\nAttachment: [some-uuid.png](https://console.example.com/attachments/some-uuid.png) (`~/.mahler/attachments/some-uuid.png`)', body)
 
 
 class CaptureStateTests(unittest.TestCase):

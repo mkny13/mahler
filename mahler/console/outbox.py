@@ -16,6 +16,17 @@ def capture_title(text, limit=80):
     return cut[:sp] if sp > 0 else cut
 
 
+def format_attachment(cfg, payload):
+    filename = payload.get("attachment")
+    if not filename:
+        return ""
+    public_url = cfg.get("serve", {}).get("public_url", "")
+    local_path = f"~/.mahler/attachments/{filename}"
+    if public_url:
+        return f"\n\nAttachment: [{filename}]({public_url.rstrip('/')}/attachments/{filename}) (`{local_path}`)"
+    return f"\n\nAttachment: `{local_path}`"
+
+
 def capture(ctx, row, payload):
     project = row["project"]
     if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
@@ -25,8 +36,13 @@ def capture(ctx, row, payload):
     labels = ["type:feature", "p2", "mahler:inbox"]
     if pol.get("scope") == "label":
         labels.append(pol["scope_label"])
-    url = ctx.gh(project).create_issue(capture_title(text),
-                                       f"{text}\n\n— captured from the Mahler console", labels)
+    
+    body = f"{text}\n\n— captured from the Mahler console"
+    att = format_attachment(ctx.cfg, payload)
+    if att:
+        body += att
+
+    url = ctx.gh(project).create_issue(capture_title(text), body, labels)
     try:
         number = int(url.rstrip("/").rsplit("/", 1)[-1])
     except ValueError:
@@ -97,8 +113,13 @@ def uat_fail(ctx, row, payload):
     if note:
         lines += ["> " + line for line in note.splitlines()] + [""]
     lines += [f"Found checking #{number} — PR #{r['pr'] or '?'}, "
-              f"build {r['sha'] or 'unknown'}.", "",
-              "## Needs a human to check", r["needs"] or ""]
+              f"build {r['sha'] or 'unknown'}."]
+    
+    att = format_attachment(ctx.cfg, payload)
+    if att:
+        lines += [att]
+        
+    lines += ["", "## Needs a human to check", r["needs"] or ""]
     url = ctx.gh(project).create_issue(f"UAT failed: {r['title'] or f'{project}#{number}'}",
                                        "\n".join(lines), labels)
     try:

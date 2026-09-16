@@ -104,6 +104,44 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"lines": lines, "status": status_obj})
             return
 
+        if path.startswith("/attachments/"):
+            import re, os
+            filename = path[len("/attachments/"):]
+            if not re.match(r"^[0-9a-f]{32}\.(png|jpe?g|gif|webp|heic)$", filename):
+                self.send_error(404)
+                return
+            
+            file_path = os.path.join(config.ATTACHMENTS_DIR, filename)
+            if not os.path.isfile(file_path):
+                self.send_error(404)
+                return
+                
+            ext = filename.rsplit(".", 1)[-1]
+            ctype = {
+                "png": "image/png",
+                "jpg": "image/jpeg",
+                "jpeg": "image/jpeg",
+                "gif": "image/gif",
+                "webp": "image/webp",
+                "heic": "image/heic"
+            }.get(ext, "application/octet-stream")
+            
+            try:
+                with open(file_path, "rb") as f:
+                    data = f.read()
+            except OSError:
+                self.send_error(404)
+                return
+                
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if path not in ("/", "/fragment", "/api/state"):
             self.send_error(404)
             return
@@ -136,7 +174,10 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return 400, "bad Content-Length"
-        if length > MAX_BODY:
+        
+        path = urlsplit(self.path).path
+        max_body = 14 * 1024 * 1024 if path == "/api/attach" else MAX_BODY
+        if length > max_body:
             return 413, "body too large"
         return None
 

@@ -298,3 +298,57 @@ class TestAnswers(_Served):
         self.assertIsInstance(result['id'], int)
         self.assertEqual(self.post('answer_undo', {'id': result['id']})[0], 200)
         self.assertEqual(self.post('answer_undo', {'id': result['id']})[0], 400)
+
+
+class TestAttachments(_Served):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.patcher = mock.patch.object(serve.config, "ATTACHMENTS_DIR", self.tmp.name)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.tmp.cleanup()
+        super().tearDown()
+
+    def test_upload(self):
+        import base64
+        data = b"\x89PNG\r\n\x1a\n" + b"some_data"
+        status, _, body = self.post("attach", {"name": "test.png", "type": "image/png", "data": base64.b64encode(data).decode()})
+        self.assertEqual(status, 200)
+        res = json.loads(body)
+        self.assertTrue(res["ok"])
+        self.assertIn("id", res)
+        self.assertEqual(res["name"], "test.png")
+        filename = res["id"]
+        self.assertTrue(filename.endswith(".png"))
+        
+        path = os.path.join(self.tmp.name, filename)
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(oct(os.stat(path).st_mode)[-3:], "600")
+
+    def test_upload_magic_bytes_check(self):
+        import base64
+        data = b"wrong_magic_bytes"
+        status, _, body = self.post("attach", {"name": "test.png", "type": "image/png", "data": base64.b64encode(data).decode()})
+        self.assertEqual(status, 400)
+        self.assertIn("magic bytes", json.loads(body)["error"])
+        
+    def test_download(self):
+        import base64
+        data = b"\x89PNG\r\n\x1a\n" + b"some_data"
+        status, _, body = self.post("attach", {"name": "test.png", "type": "image/png", "data": base64.b64encode(data).decode()})
+        filename = json.loads(body)["id"]
+
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/attachments/{filename}", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            self.assertEqual(r.status, 200)
+            self.assertEqual(dict(r.headers)["Content-Type"], "image/png")
+            self.assertEqual(dict(r.headers)["Cache-Control"], "private, max-age=86400")
+            self.assertEqual(dict(r.headers)["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(r.read(), data)
+
+    def test_download_path_traversal(self):
+        status, _, _ = self.request("/attachments/../config.toml")
+        self.assertEqual(status, 404)
