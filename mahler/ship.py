@@ -318,6 +318,24 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")
 
 
+def record_uat_if_needed(ctx, project, n, pr, item, view):
+    """UAT queue (D10): a merged PR whose body carries a 'Needs a human to
+    check' list lands in Ready to test until you pass or fail it. Used both
+    by the conductor's own merge (_shipped, below) and by sync.py's fallback
+    for issues closed outside the conductor — by hand, per CLAUDE.md's merge
+    protocol, or a merge sync notices before ship.py's own watch does
+    (mahler#285). Bookkeeping — a failure here never stops the ship."""
+    needs = needs_human_of(view.get("body"))
+    if not needs:
+        return needs
+    sha = (view.get("mergeCommit") or {}).get("oid") or ""
+    try:
+        ctx.led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs)
+    except Exception as e:                  # noqa: BLE001 — a ship must not break
+        ctx.say(f"{project}#{n}: couldn't record the UAT item — {e}")
+    return needs
+
+
 def _shipped(ctx, project, n, pr, item, view, merged=True):
     """Close the loop: comment the summary plus the issue's 'Needs a human to
     check' list, ping, and mark the item done."""
@@ -325,16 +343,9 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     how = "squash-merged" if merged else view["state"].lower()
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
              item["summary"] or pr_summary_of(view.get("body")) or ""]
-    needs = needs_human_of(view.get("body"))
+    needs = record_uat_if_needed(ctx, project, n, pr, item, view)
     if needs:
         lines += ["", "## Needs a human to check", needs]
-        # UAT queue (D10): the change lands in Ready to test until you pass
-        # or fail it. Bookkeeping — a failure here never stops the ship.
-        sha = (view.get("mergeCommit") or {}).get("oid") or ""
-        try:
-            led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs)
-        except Exception as e:                  # noqa: BLE001 — a ship must not break
-            ctx.say(f"{project}#{n}: couldn't record the UAT item — {e}")
     try:
         ctx.gh(project).comment(n, "\n".join(lines))
     except GHError as e:
