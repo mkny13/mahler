@@ -214,7 +214,7 @@ def _backlog_groups(s, phone):
 
 def _event_text(ev):
     tone = "ink" if ev["attention"] else "mut"
-    return tone, e(ev["text"])
+    return tone, _a(ev.get("url"), ev["text"])
 
 
 # ---------- desktop ----------
