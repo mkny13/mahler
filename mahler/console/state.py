@@ -587,10 +587,19 @@ def _rows(cfg, led, where="", args=(), limit=EVENTS_SHOWN):
             if not revert_status and led.get_kv(f"revert:{e['project']}:{pr}"):
                 revert_status = "revert requested"
             undoable = not revert_status
+        url = None
+        if e["project"]:
+            if e["kind"] in ("pr_opened", "shipped"):
+                pr = _detail_json(e["detail"]).get("pr")
+                if pr:
+                    url = _pr_url(cfg, e["project"], pr)
+            elif e["number"]:
+                url = _issue_url(cfg, e["project"], e["number"])
         at = parse(e["at"])
         out.append({"id": e["id"], "at": at, "when": _hhmm(at) if at else "",
                     "kind": kind, "text": text, "attention": attention,
-                    "undoable": undoable, "revert_status": revert_status, "project": e["project"], "number": e["number"]})
+                    "undoable": undoable, "revert_status": revert_status, 
+                    "project": e["project"], "number": e["number"], "url": url})
         if len(out) >= limit:
             break
     return out
