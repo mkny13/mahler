@@ -8,9 +8,10 @@ all done is the same kind of work, so it lives here too.
 import json
 from datetime import timedelta
 
+from . import config
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
-                 files_of, has_sections, label_names, parse_command, part_of, pin_of,
-                 priority_of)
+                 dependency_ref, dependency_target, files_of, has_sections,
+                 label_names, parse_command, part_of, pin_of, priority_of)
 from .ledger import iso, parse
 from .ship import record_uat_if_needed
 from .watchdog import request_stop
@@ -26,10 +27,10 @@ def sync(ctx, project):
     # mid-tick, the next tick probes with the old etag and re-fetches.
     etag_key = f"etag:{project}"
     poll_changed, poll_etag = gh.issues_changed(led.get_kv(etag_key))
-    # Reparse cached issue bodies once after adding qualified dependencies (#296).
-    # An unchanged GitHub collection can still contain old, lossy integer refs.
+    # Reparse once after dependency rules change, even on an unchanged collection.
+    # Version 3 removes self/ancestor deadlocks as well as preserving qualifiers.
     depends_key = f"depends_format:{project}"
-    if not poll_changed and led.get_kv(depends_key) == "2":
+    if not poll_changed and led.get_kv(depends_key) == "3":
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
         return
     issues = gh.open_issues()
@@ -56,6 +57,8 @@ def sync(ctx, project):
     else:
         in_scope_nums = None
 
+    # Prefer this poll over cached ancestry, regardless of GitHub issue ordering.
+    parents = {iss["number"]: part_of(iss.get("body")) for iss in issues}
     open_nums = set()
     for iss in issues:
         n = iss["number"]
@@ -71,9 +74,12 @@ def sync(ctx, project):
                     pass
         open_nums.add(n)
         ctx._labels[(project, n)] = labels
+        parent = parents[n]
+        deps = _satisfiable_depends(ctx, project, n, parent,
+                                    depends_of(iss.get("body")), parents)
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
-                      depends=json.dumps(depends_of(iss.get("body"))), pin=pin_of(labels),
-                      parent=part_of(iss.get("body")),
+                      depends=json.dumps(deps), pin=pin_of(labels),
+                      parent=parent,
                       files=json.dumps(files_of(iss.get("body"))))
         item = led.item(project, n)
         if item is None:
@@ -131,7 +137,42 @@ def sync(ctx, project):
 
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
-    led.set_kv(depends_key, "2")
+    led.set_kv(depends_key, "3")
+
+
+def _satisfiable_depends(ctx, project, number, parent, deps, parents):
+    """Remove proven self/ancestor waits; keep unknown and external targets."""
+    reasons = {number: "the item itself"}
+    ancestor = parent
+    for _ in range(100):
+        if ancestor is None or ancestor in reasons:
+            break
+        reasons[ancestor] = ("this item's own parent" if ancestor == parent
+                             else "an ancestor of this item")
+        if ancestor in parents:
+            ancestor = parents[ancestor]
+        else:
+            item = ctx.led.item(project, ancestor)
+            ancestor = item["parent"] if item is not None else None
+
+    enabled = config.enabled_projects(ctx.cfg)
+    kept, dropped = [], {}
+    for dep in deps:
+        target = dependency_target(dep, project, enabled)
+        if target and target[0] == project and target[1] in reasons:
+            dropped[dependency_ref(dep, project)] = reasons[target[1]]
+        else:
+            kept.append(dep)
+
+    # Report each correction once, until the body or ancestry changes it again.
+    key = f"dropped_depends:{project}:{number}"
+    previous = json.loads(ctx.led.get_kv(key) or "{}")
+    for ref, reason in dropped.items():
+        if previous.get(ref) != reason:
+            ctx.say(f"{project}#{number}: dropped depends on {ref} — it is {reason}")
+    if dropped != previous:
+        ctx.led.set_kv(key, json.dumps(dropped))
+    return kept
 
 
 def _born_ready(led, project, number, iss):

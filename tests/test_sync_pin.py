@@ -468,6 +468,87 @@ class PlannedChildTests(unittest.TestCase):
         self.assertFalse(has_sections(body, "Context"))
 
 
+class SatisfiableDependsTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["proj"] = {"path": tmp.name, "repo": "x/y", "enabled": True}
+        self.cfg["defaults"]["settle_minutes"] = 0
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def sync_body(self, body, extra=None):
+        issues = {5: {"title": "Child", "labels": ["mahler:ready"], "body": body}}
+        issues.update(extra or {})
+        gh = FakeGH(issues)
+        with mock.patch.object(self.ctx, "gh", return_value=gh):
+            sync.sync(self.ctx, "proj")
+        self.assertEqual(gh.issues[5]["body"], body)
+        return json.loads(self.led.item("proj", 5)["depends"])
+
+    def test_parent_is_removed_and_correction_logged_once(self):
+        body = "Part of #10\nDepends on: #10, #10"
+        self.assertEqual(self.sync_body(body), [])
+        self.assertEqual(self.sync_body(body), [])
+        lines = [line for line in self.ctx.lines if "dropped depends" in line]
+        self.assertEqual(lines, ["proj#5: dropped depends on proj#10 — "
+                                 "it is this item's own parent"])
+        candidates = tick._candidates(self.ctx, [self.ctx.policy("proj")])
+        self.assertEqual([it["number"] for _, _, it in candidates], [5])
+
+    def test_sibling_survives_and_still_blocks_until_done(self):
+        self.led.upsert_item("proj", 11, parent=10, state="working")
+        self.assertEqual(self.sync_body("Part of #10\nDepends on: #10, #11"), [11])
+        self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("proj")]), [])
+        self.led.set_state("proj", 11, "done", "test")
+        self.assertEqual([it["number"] for _, _, it in
+                          tick._candidates(self.ctx, [self.ctx.policy("proj")])], [5])
+
+    def test_self_is_removed(self):
+        self.assertEqual(self.sync_body("Depends on: #5"), [])
+        self.assertIn("it is the item itself", "\n".join(self.ctx.lines))
+
+    def test_cached_grandparent_is_removed(self):
+        self.led.upsert_item("proj", 10, parent=20, state="parent")
+        self.assertEqual(self.sync_body("Part of #10\nDepends on: #20"), [])
+        self.assertIn("proj#20 — it is an ancestor", "\n".join(self.ctx.lines))
+
+    def test_current_parents_override_cache_and_issue_order(self):
+        self.led.upsert_item("proj", 10, parent=30, state="parent")
+        extra = {10: {"title": "Parent", "labels": ["mahler:parent"],
+                      "body": "Part of #20"}}
+        self.assertEqual(self.sync_body("Part of #10\nDepends on: #20, #30", extra), [30])
+
+    def test_cycles_terminate_and_preserve_unrelated_dependencies(self):
+        for parents in ({10: 10}, {10: 20, 20: 10}, {10: 5}):
+            with self.subTest(parents=parents):
+                for number, parent in parents.items():
+                    self.led.upsert_item("proj", number, parent=parent, state="parent")
+                self.assertEqual(self.sync_body("Part of #10\nDepends on: #10, #99"), [99])
+
+    def test_qualified_local_refs_removed_but_other_repos_kept(self):
+        self.cfg["projects"]["other"] = {"path": self.cfg["projects"]["proj"]["path"],
+                                          "repo": "x/other", "enabled": True}
+        self.assertEqual(self.sync_body(
+            "Part of #10\nDepends on: x/y#10, y#5, x/other#10, unknown#5"),
+            [{"repo": "x/other", "number": 10}, {"repo": "unknown", "number": 5}])
+
+    def test_ambiguous_qualified_ref_is_preserved(self):
+        self.cfg["projects"]["other"] = {"path": self.cfg["projects"]["proj"]["path"],
+                                          "repo": "other/y", "enabled": True}
+        self.assertEqual(self.sync_body("Part of #10\nDepends on: y#10"),
+                         [{"repo": "y", "number": 10}])
+
+    def test_walk_has_a_fixed_bound(self):
+        parents = {n: n + 1 for n in range(10, 1000)}
+        with mock.patch.object(self.led, "item", wraps=self.led.item) as item:
+            self.assertEqual(sync._satisfiable_depends(
+                self.ctx, "proj", 5, 10, [10, 999], parents), [999])
+        item.assert_not_called()
+
+
 class MirrorLabelsTests(unittest.TestCase):
     """mirror_labels writes Mahler's state label back to GitHub each tick."""
 
