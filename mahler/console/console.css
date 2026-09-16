@@ -361,7 +361,10 @@ a { color: var(--acc); text-decoration: none; }
               padding: 0 8px; }
 .cap-save { flex: none; min-height: 38px; }
 .capnote { font-size: 13px; line-height: 1.45; }
-.ph .cap-select, .ph .cap-save { min-height: 44px; }
+.attach-wrap { margin-bottom: 10px; }
+.attach-btn { border: 1px dashed var(--mut); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--mut); min-height: 38px; width: 100%; background: transparent; }
+.attach-btn.attached { border-style: solid; border-color: var(--acc); color: var(--acc); background: var(--accq); font-weight: 600; }
+.ph .cap-select, .ph .cap-save, .ph .attach-btn { min-height: 44px; }
 
 /* Merge Undo always opens a confirmation dialog (D27). */
 .undo { height: 30px; border: 1px solid var(--line); border-radius: 4px; color: var(--acc); }

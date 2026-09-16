@@ -111,6 +111,21 @@
       bugShown = bugShown || bugOn;
     }
     if (!bugShown) { openBug = null; }
+    
+    var wraps = app.querySelectorAll(".attach-wrap");
+    for (var w = 0; w < wraps.length; w++) {
+      var idIn = wraps[w].querySelector(".attach-id");
+      var nameIn = wraps[w].querySelector(".attach-name");
+      var btn = wraps[w].querySelector(".attach-btn");
+      if (idIn && idIn.value) {
+        btn.textContent = (nameIn ? nameIn.value : "Attached") + " ✓";
+        btn.classList.add("attached");
+      } else if (btn) {
+        btn.textContent = "Attach photo or screenshot";
+        btn.classList.remove("attached");
+      }
+    }
+    
     applyCaptureProject();
   }
 
@@ -241,9 +256,11 @@
     if (act === "uat_fail") {
       var bug = el.closest(".bugov");
       var ta = bug && bug.querySelector("textarea");
+      var attachId = bug && bug.querySelector(".attach-id");
       return { project: el.getAttribute("data-project"),
         number: Number(el.getAttribute("data-number")),
-        note: ta ? ta.value : "" };
+        note: ta ? ta.value : "",
+        attachment: (attachId && attachId.value) ? attachId.value : null };
     }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
@@ -257,7 +274,8 @@
       var cap = el.closest(".cap");
       var ta = cap && cap.querySelector(".cap-ta");
       var sel = cap && cap.querySelector("[data-capture-select]");
-      return { text: ta ? ta.value : "", project: sel ? sel.value : "" };
+      var attachId = cap && cap.querySelector(".attach-id");
+      return { text: ta ? ta.value : "", project: sel ? sel.value : "", attachment: (attachId && attachId.value) ? attachId.value : null };
     }
     return {};
   }
@@ -333,6 +351,14 @@
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
     if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); apply(); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
+    if (el.hasAttribute("data-attach")) {
+      var wrap = el.closest(".attach-wrap");
+      if (wrap) {
+        var input = wrap.querySelector(".attach-in");
+        if (input) { input.click(); }
+      }
+      return;
+    }
     if (el.hasAttribute("data-act")) {
       var act = el.getAttribute("data-act");
       el.disabled = true;
@@ -345,6 +371,51 @@
   document.addEventListener("change", function (ev) {
     var el = ev.target;
     if (el && el.hasAttribute && el.hasAttribute("data-capture-select")) { updateCaptureSave(el); }
+    if (el && el.classList && el.classList.contains("attach-in") && el.files && el.files.length > 0) {
+      var file = el.files[0];
+      var wrap = el.closest(".attach-wrap");
+      var btn = wrap.querySelector(".attach-btn");
+      var idIn = wrap.querySelector(".attach-id");
+      var nameIn = wrap.querySelector(".attach-name");
+      
+      btn.textContent = "Uploading...";
+      btn.disabled = true;
+      
+      var reader = new FileReader();
+      reader.onload = function(e) {
+        var dataUrl = e.target.result;
+        var b64 = dataUrl.split(",")[1];
+        
+        fetch("/api/attach", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
+          body: JSON.stringify({ name: file.name, type: file.type || "application/octet-stream", data: b64 }),
+        }).then(function(r) { return r.json(); }).then(function(res) {
+          if (!res.ok) {
+            showErrorToast(res.error || "Failed to attach file.");
+            btn.textContent = "Attach photo or screenshot";
+            btn.classList.remove("attached");
+            idIn.value = "";
+            nameIn.value = "";
+          } else {
+            idIn.value = res.id;
+            nameIn.value = res.name;
+            btn.textContent = res.name + " ✓";
+            btn.classList.add("attached");
+          }
+        }).catch(function(err) {
+          showErrorToast("Failed to attach file.");
+          btn.textContent = "Attach photo or screenshot";
+          btn.classList.remove("attached");
+          idIn.value = "";
+          nameIn.value = "";
+        }).finally(function() {
+          btn.disabled = false;
+          el.value = "";
+        });
+      };
+      reader.readAsDataURL(file);
+    }
   });
 
   document.addEventListener("keydown", function (ev) {

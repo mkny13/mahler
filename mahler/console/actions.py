@@ -107,7 +107,10 @@ def capture(cfg, led, body):
         raise ActionError("project must be enabled")
     if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
         raise ActionError("text must be 1-8000 characters")
-    id = led.queue_action("capture", project, None, {"text": text.strip()})
+    payload = {"text": text.strip()}
+    if body.get("attachment"):
+        payload["attachment"] = body["attachment"]
+    id = led.queue_action("capture", project, None, payload)
     led.event("console_capture_queued", project, None, {"id": id})
     return {"id": id}
 
@@ -217,12 +220,89 @@ def uat_fail(cfg, led, body):
     note = body.get("note")
     if not isinstance(note, str) or len(note) > 2000:
         raise ActionError("note must be a string of at most 2000 characters")
-    return _queue_verdict(cfg, led, "uat_fail", body, {"note": note}, "fail")
+    payload = {"note": note}
+    if body.get("attachment"):
+        payload["attachment"] = body["attachment"]
+    return _queue_verdict(cfg, led, "uat_fail", body, payload, "fail")
+
+
+def attach(cfg, led, body):
+    import base64
+    import os
+    import uuid
+    import binascii
+    
+    name = body.get("name")
+    ctype = body.get("type")
+    data_b64 = body.get("data")
+    
+    if not isinstance(name, str) or not name:
+        raise ActionError("name is required")
+    if not isinstance(ctype, str) or not ctype:
+        raise ActionError("type is required")
+    if not isinstance(data_b64, str):
+        raise ActionError("data must be base64 string")
+        
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "heic"):
+        raise ActionError(f"unsupported extension: {ext}")
+        
+    expected_ctype = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "gif": "image/gif",
+        "webp": "image/webp",
+        "heic": "image/heic"
+    }.get(ext)
+    
+    if ctype != expected_ctype:
+        raise ActionError(f"content type mismatch: {ctype} for ext {ext}")
+        
+    try:
+        data = base64.b64decode(data_b64)
+    except binascii.Error:
+        raise ActionError("invalid base64 data")
+        
+    if len(data) > 10 * 1024 * 1024:
+        raise ActionError("attachment too large (10MB limit)")
+        
+    valid = False
+    if ext == "png":
+        valid = data.startswith(b"\x89PNG\r\n\x1a\n")
+    elif ext in ("jpg", "jpeg"):
+        valid = data.startswith(b"\xff\xd8\xff")
+    elif ext == "gif":
+        valid = data.startswith(b"GIF87a") or data.startswith(b"GIF89a")
+    elif ext == "webp":
+        valid = data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP"
+    elif ext == "heic":
+        valid = len(data) >= 12 and data[4:8] == b"ftyp" and data[8:12] in (b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1")
+        
+    if not valid:
+        raise ActionError("magic bytes do not match extension")
+        
+    config.ensure_private_dir(config.ATTACHMENTS_DIR, mode=0o700)
+    
+    file_id = uuid.uuid4().hex
+    filename = f"{file_id}.{ext}"
+    file_path = os.path.join(config.ATTACHMENTS_DIR, filename)
+    
+    fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except Exception:
+        os.remove(file_path)
+        raise ActionError("failed to write attachment")
+        
+    led.event("attachment_saved", detail={"id": filename, "name": name})
+    return {"id": filename, "name": name}
 
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail)}
+                                   capture, revert, uat_pass, uat_fail, attach)}
 
 
 def run(cfg, led, name, body):
