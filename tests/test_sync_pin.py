@@ -232,6 +232,21 @@ class FilesOfParsingTests(unittest.TestCase):
         body = "## Plan\nFiles: `mahler/tick.py`, `mahler/gh.py`\nSteps:\n- do it\n## Done when\n"
         self.assertEqual(files_of(body), ["mahler/tick.py", "mahler/gh.py"])
 
+    def test_inline_wrapped_list(self):
+        from mahler.gh import files_of
+        body = "## Plan\nFiles: `state.py`, `page.py`, `console.js`,\n`console.css`, `tests/test_console.py`\nSteps:\n"
+        self.assertEqual(files_of(body), ["state.py", "page.py", "console.js", "console.css", "tests/test_console.py"])
+
+    def test_inline_prose_on_next_line_is_not_swallowed(self):
+        from mahler.gh import files_of
+        body = "## Plan\nFiles: `a.py`, `b.py`\n1. Do the thing\n"
+        self.assertEqual(files_of(body), ["a.py", "b.py"])
+
+    def test_inline_wrapped_list_stops_at_blank_line(self):
+        from mahler.gh import files_of
+        body = "## Plan\nFiles: `a.py`,\n\n`b.py`\n"
+        self.assertEqual(files_of(body), ["a.py"])
+
     def test_bullet_list_under_bare_files_label(self):
         from mahler.gh import files_of
         body = (
