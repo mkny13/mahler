@@ -1,0 +1,3 @@
+{"type":"assistant.message_delta","data":{"deltaContent":"I will "}}
+{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"cat foo.txt"}}}}
+{"event":"result","result":{"status":"SUCCESS","response":"Done"}}

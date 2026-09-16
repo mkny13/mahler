@@ -1,0 +1,3 @@
+{"type":"agent_event","event":{"type":"content_start","contentType":"reasoning","reasoning":"Let me start by reading"}}
+{"type":"agent_event","event":{"type":"tool_call","tool":"Bash","command":"ls -la"}}
+{"type":"agent_event","event":{"type":"result","success":true,"output":"Done"}}
