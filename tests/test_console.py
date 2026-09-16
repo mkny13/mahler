@@ -608,7 +608,7 @@ class UatPageTests(unittest.TestCase):
 
     def test_a_queued_verdict_shows_its_copy(self):
         actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
-        self.assertIn("Passed — issue closed, UAT recorded.", self.frag())
+        self.assertIn("Passed — UAT recorded.", self.frag())
         self.led2 = make_led()
         self.led2.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter', '- x')
         actions.run(self.cfg, self.led2, 'uat_fail',

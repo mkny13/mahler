@@ -335,7 +335,7 @@ def _uat_buttons(u):
 def _uat_done(u):
     """A verdict queued but not yet run shows the copy it will become."""
     if u["pending"] == "uat_pass":
-        return '<span class="uat-done t-good">Passed — issue closed, UAT recorded.</span>'
+        return '<span class="uat-done t-good">Passed — UAT recorded.</span>'
     if u["pending"] == "uat_fail":
         return ('<span class="uat-done t-bad">Failed — p1 bug filed and routed. '
                 'The revert is one tap away in History.</span>')

@@ -13,6 +13,7 @@
   var openRevert = null;
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
+  var errorToastTimer = null;   // timer for auto-dismissing error toast
 
   function store(kind, key, value) {
     try { (kind === "local" ? localStorage : sessionStorage).setItem(key, value); } catch (e) {}
@@ -116,6 +117,10 @@
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
     }
+    // Clear any error toast on successful refresh
+    if (errorToastTimer) { clearTimeout(errorToastTimer); errorToastTimer = null; }
+    var toast = document.getElementById("error-toast");
+    if (toast) { toast.remove(); }
     var skip = suppressKeep;
     suppressKeep = null;
     return fetch("/fragment", { cache: "no-store" }).then(function (r) {
@@ -143,6 +148,29 @@
     }).catch(function (err) { if (window.console) { console.warn(err); } });
   }
 
+  function showErrorToast(message) {
+    if (errorToastTimer) { clearTimeout(errorToastTimer); }
+    var toast = document.getElementById("error-toast");
+    if (toast) { toast.remove(); }
+    toast = document.createElement("div");
+    toast.id = "error-toast";
+    toast.className = "bn bn-bad";
+    toast.style.position = "fixed";
+    toast.style.top = "12px";
+    toast.style.right = "12px";
+    toast.style.left = "12px";
+    toast.style.zIndex = "30";
+    toast.style.maxWidth = "560px";
+    toast.style.margin = "0 auto";
+    toast.innerHTML = '<span class="kind mono">Action failed</span>' +
+                      '<span class="txt">' + message + '</span>';
+    document.body.appendChild(toast);
+    errorToastTimer = setTimeout(function () {
+      if (toast.parentNode) { toast.remove(); }
+      errorToastTimer = null;
+    }, 5000);
+  }
+
   function post(action, payload) {
     return fetch("/api/" + action, {
       method: "POST",
@@ -153,6 +181,7 @@
     }).then(function (res) {
       if (!res.ok) {
         if (window.console) { console.warn(action, res.error || "failed"); }
+        showErrorToast(res.error || "The action was refused or failed.");
       } else if (action === "capture") {
         suppressKeep = "capture";   // clear the draft on the next restore, keep the project
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
