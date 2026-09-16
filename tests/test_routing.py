@@ -225,12 +225,14 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(name, "kilo")     # next in order now that copilot's ahead of kilo
         self.assertTrue(any("copilot: hard" in r for r in reasons))
 
-    def test_codex_is_opt_in_and_unmetered(self):
+    def test_codex_is_opt_in_and_metered(self):
         self.assertNotIn("codex", self.cfg["routing"]["build"])
         custom = copy.deepcopy(self.cfg)
         custom["routing"]["build"] = ["codex", "copilot"]
-        self.assertEqual(router.pick(custom, Ledger(":memory:"), "build", size="m")[0],
-                         "codex")
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        self.assertEqual(router.usage_state(led, "codex", custom["platforms"]["codex"])[0],
+                         "stale")
 
     def test_codex_argv_is_ephemeral_unattended_jsonl_in_worktree(self):
         with mock.patch.object(platforms, "codex_exe", return_value="/app/codex"):
@@ -823,6 +825,7 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         sample = [("5h", 25.0, iso(NOW + timedelta(hours=4)))]
         with mock.patch("mahler.platforms.probe_agy", return_value={}), \
              mock.patch("mahler.platforms.oauth_usage", return_value=sample), \
+             mock.patch("mahler.usage.refresh_codex"), \
              mock.patch("mahler.platforms.probe_copilot", return_value=[]):
             cli.cmd_usage(args, self.cfg, self.led)
 

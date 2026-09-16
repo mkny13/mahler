@@ -236,6 +236,7 @@ class FairnessTests(unittest.TestCase):
     def test_opted_in_codex_route_is_scheduled(self):
         ctx, led = mk_ctx({"a": proj()}, total=1)
         ctx.cfg["routing"]["build"] = ["codex"]
+        seed(led, codex=(10, 10))
         item(led, "a", 1, age_minutes=10)
         self.assertEqual(plan(ctx, led), ["a#1: would build on codex"])
 
