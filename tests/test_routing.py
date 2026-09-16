@@ -1,6 +1,7 @@
 """Routing policy (DESIGN D8) and platform output parsing."""
 
 import copy
+import io
 import json
 import os
 import subprocess
@@ -8,6 +9,8 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
+
+from local_timezone import local_timezone
 
 from mahler import cli, config, platforms, router, scheduler, tick, usage
 from mahler.ledger import Ledger, iso
@@ -992,3 +995,29 @@ class ReasonGroupsTests(unittest.TestCase):
             "peak": ["claude"], "over": ["agy-claude", "agy-gemini"], "stale": ["codex"],
             "account": ["work"], "other": ["unknown"]})
         self.assertEqual(router.reason_groups([]), {})
+
+
+class PeakLocalTimeTests(unittest.TestCase):
+    def test_status_and_override_use_system_timezone(self):
+        for month, hour in ((9, 14), (1, 15)):
+            for zone, label, end in (("America/New_York", "ET", "14:00"),
+                                     ("America/Los_Angeles", "PT", "11:00"),
+                                     ("Asia/Kolkata", "IST", "23:30" if month == 9 else "00:30")):
+                with self.subTest(month=month, zone=zone), local_timezone(zone):
+                    now = datetime(2026, month, 14 if month == 9 else 5,
+                                   hour, tzinfo=timezone.utc)
+                    led = Ledger(":memory:", clock=lambda: now)
+                    self.addCleanup(led.close)
+                    self.assertEqual(router.peak_status_line(config.DEFAULTS, led),
+                                     f"peak hours: Claude paused until {end} {label} (in 4h 0m)")
+                    out = io.StringIO()
+                    with mock.patch("sys.stdout", out):
+                        result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                                              config.DEFAULTS, led)
+                    self.assertEqual(result, 0)
+                    self.assertEqual(out.getvalue().strip(),
+                                     f"peak override on — Claude runs allowed until {end} {label} (in 4h 0m)")
+                    self.assertEqual(router.peak_status_line(config.DEFAULTS, led),
+                                     f"peak hours: overridden until {end} {label} (4h 0m)")
+                    self.assertEqual(led.get_kv(router.PEAK_OVERRIDE),
+                                     iso(now + timedelta(hours=4)))

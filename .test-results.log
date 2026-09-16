@@ -1,0 +1,175 @@
+...............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................EEEEEE.........................................................................................................................serve: 127.0.0.1 "POST /api/answer HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 400 -
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: code updated abc123 -> def456, restarting
+/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:615: ResourceWarning: unclosed <socket.socket fd=4, family=2, type=1, proto=0, laddr=('127.0.0.1', 64727)>
+  result = method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.serve: cannot read HEAD, will retry
+..serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+..serve: 127.0.0.1 "GET /fragment HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/state HTTP/1.1" 200 -
+serve: cannot read HEAD, will retry
+.serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PUT / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "DELETE / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PATCH / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message Method Not Allowed
+serve: 127.0.0.1 "POST / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "POST /api/drop_tables HTTP/1.1" 404 -
+.serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+.serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /status HTTP/1.1" 404 -
+serve: cannot read HEAD, will retry
+.serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 400 -
+serve: 127.0.0.1 "POST /api/clear_backoff HTTP/1.1" 400 -
+.serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 403 -
+serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 403 -
+serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 415 -
+..serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/resume HTTP/1.1" 200 -
+.serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+serve: cannot read HEAD, will retry
+............serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+................serve: cannot read HEAD, will retry
+............................................................................................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+.......................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...............
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=9, zone='America/New_York')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=9, zone='America/Los_Angeles')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=9, zone='Asia/Kolkata')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=1, zone='America/New_York')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=1, zone='America/Los_Angeles')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+======================================================================
+ERROR: test_status_and_override_use_system_timezone (test_routing.PeakLocalTimeTests.test_status_and_override_use_system_timezone) (month=1, zone='Asia/Kolkata')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/tests/test_routing.py", line 1015, in test_status_and_override_use_system_timezone
+    result = cli.cmd_peak(mock.Mock(off=True, for_duration=None),
+                          config.DEFAULTS, led)
+  File "/Users/mike/.mahler/worktrees/mahler/275-run1189/mahler/cli.py", line 591, in cmd_peak
+    led.set_kv(router.PEAK_OVERRIDE, router.iso(until))
+                                     ^^^^^^^^^^
+AttributeError: module 'mahler.router' has no attribute 'iso'
+
+----------------------------------------------------------------------
+Ran 856 tests in 19.283s
+
+FAILED (errors=6)
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmptedcrcya/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpjobeitbi/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpg55ppb_n/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpr127zgc1/.claude
+  claude       stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude-opus  stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  agy-claude   stale  5h: no sample, weekly: no sample
+  agy-gemini   stale  5h: no sample, weekly: no sample
+  codex        ok     unknown limit (platform reports no quota signal)
+  codex-high   ok     unknown limit (platform reports no quota signal)
+  cline-free   ok     unknown limit (platform reports no quota signal)
+  kilo         ok     unknown limit (platform reports no quota signal)
+  copilot      stale  monthly: no sample
+  copilot-high stale  monthly: no sample

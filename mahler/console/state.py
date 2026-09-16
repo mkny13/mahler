@@ -38,8 +38,6 @@ ATTENTION_KINDS = ("launch_failed", "backup_failed")
 STATE_ORDER = ("needs_you", "failed", "working", "verifying", "ready", "inbox",
                "parked", "parent")
 ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI"}
-TZ_LABELS = {"America/Los_Angeles": "PT", "America/New_York": "ET",
-             "America/Chicago": "CT", "America/Denver": "MT"}
 NUMBER_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
                 "Eight", "Nine")
 DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"
@@ -168,13 +166,28 @@ def _peak(cfg, led):
     if not pc.get("enabled", True):
         return None
     now = led.now()
-    tzname = pc.get("tz", "America/Los_Angeles")
-    tz = ZoneInfo(tzname)
-    label = TZ_LABELS.get(tzname) or now.astimezone(tz).tzname()
+    scheduled = now.astimezone(ZoneInfo(pc.get("tz", "America/Los_Angeles")))
+    label = router.local_time_label(now)
     active, until = router.peak_state(cfg, led)
     overridden = router.peak_overridden(led)
-    window = f"{pc.get('start', '05:00')}–{pc.get('end', '11:00')} {label}"
-    until_s = until.astimezone(tz).strftime("%H:%M") if until else None
+    # Anchor configured clock times to the schedule's date before converting;
+    # the viewer's date or today's fixed UTC offset can differ at DST boundaries.
+    endpoints = []
+    for key, default in (("start", "05:00"), ("end", "11:00")):
+        try:
+            hour, minute = map(int, pc.get(key, default).split(":"))
+            endpoints.append(scheduled.replace(hour=hour, minute=minute,
+                                               second=0, microsecond=0).astimezone())
+        except (ValueError, AttributeError):
+            endpoints = []
+            break
+    if endpoints:
+        start, end = endpoints
+        label = router.local_time_label(end)
+        window = f"{start:%H:%M}–{end:%H:%M} {label}"
+    else:
+        window = "(invalid schedule)"
+    until_s = until.astimezone().strftime("%H:%M") if until else None
     return {
         "active": active,
         "overridden": overridden,
