@@ -8,6 +8,7 @@ and only after a clean pass: a failed tick must re-fetch next time, not
 skip on a stale etag.
 """
 
+import json
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -88,6 +89,7 @@ class SyncETagTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
+        self.led.set_kv("depends_format:mahler", "2")
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = mock.Mock()
         self.ctx._gh["mkny13/mahler"] = self.gh
@@ -102,6 +104,21 @@ class SyncETagTests(unittest.TestCase):
         sync.sync(self.ctx, "mahler")
         self.assertEqual(self.led.item("mahler", 11)["title"], "T")
         self.assertEqual(self.led.get_kv("etag:mahler"), 'W/"e1"')
+
+    def test_dependency_format_upgrade_reparses_even_on_304(self):
+        self.led.set_kv("depends_format:mahler", None)
+        self.led.set_kv("etag:mahler", 'W/"e1"')
+        self.led.upsert_item("mahler", 11, depends="[125]")
+        issue = self.issue()
+        issue["body"] = "Depends on: mkny13/groundwork#125, #7"
+        self.gh.issues_changed.return_value = (False, 'W/"e1"')
+        self.gh.open_issues.return_value = [issue]
+        sync.sync(self.ctx, "mahler")
+        self.assertEqual(json.loads(self.led.item("mahler", 11)["depends"]),
+                         [{"repo": "mkny13/groundwork", "number": 125}, 7])
+        self.assertEqual(self.led.get_kv("depends_format:mahler"), "2")
+        sync.sync(self.ctx, "mahler")
+        self.gh.open_issues.assert_called_once()
 
     def test_304_skips_the_fetch(self):
         self.led.set_kv("etag:mahler", 'W/"e1"')

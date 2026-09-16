@@ -14,6 +14,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from .. import config, presence, router
+from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
 
@@ -495,6 +496,7 @@ def _state_tone(state):
 
 def _backlog(cfg, led, projects):
     rank = {s: i for i, s in enumerate(STATE_ORDER)}
+    enabled = config.enabled_projects(cfg)
     pending = {}
     for r in led.pending_actions("capture"):
         pending.setdefault(r["project"], []).append(r)
@@ -521,7 +523,9 @@ def _backlog(cfg, led, projects):
                   "p1": i["priority"] == 1, "priority": i["priority"],
                   "state": i["state"].replace("_", "-"), "tone": _state_tone(i["state"]),
                   "parent": i["parent"],
-                  "depends": [d for d in json.loads(i["depends"] or "[]") if d in open_numbers]}
+                  "depends": [target[1] for d in json.loads(i["depends"] or "[]")
+                              if (target := dependency_target(d, name, enabled))
+                              and target[0] == name and target[1] in open_numbers]}
                  for i in items]
         out.append({
             "project": name,
@@ -837,7 +841,7 @@ def _hold_reasons(cfg, holds, pending, hot, now):
         out.append(reason)
     else:
         for h in deps:
-            refs = _join(_ref(h["project"], n) for n in h["on"])
+            refs = _join(dependency_ref(d, h["project"]) for d in h["on"])
             out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close.",
                         "items": _reason_items(cfg, pending, [(h["project"], h["number"])])})
     return out

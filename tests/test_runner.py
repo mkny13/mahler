@@ -154,6 +154,15 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(depends_of("Blah\nDepends on: #3, #7\n"), [3, 7])
         self.assertEqual(depends_of(None), [])
 
+    def test_qualified_dependencies_preserve_repository(self):
+        expected = [3, {"repo": "mkny13/groundwork", "number": 125},
+                    {"repo": "couch-tour", "number": 258}, 7]
+        for prefix in ("", "> "):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(depends_of(
+                    prefix + "Depends on: #3, mkny13/groundwork#125, "
+                    "`couch-tour#258`, #7\n"), expected)
+
     def test_depends_inside_a_blockquote(self):
         # a "Depends on:" line quoted under "> **Original request:**" must
         # still parse — same class of bug as part_of's blockquote handling

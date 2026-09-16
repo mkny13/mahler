@@ -167,8 +167,13 @@ All of it is glue between adopted parts.
 
 - **One issue = one work item**, in the repo it concerns. Goals are parent issues with
   sub-issues (GitHub sub-issues). Dependencies are written as a `Depends on: #12` line in the
-  body, which Mahler parses. That's simple and portable. GitHub's native "blocked by" can be
-  adopted later.
+  body, which Mahler parses (including blockquotes). Bare `#12` means the same project;
+  `owner/repo#12` names that exact repository. `repo#12` is shorthand only when exactly
+  one enabled project has that repository basename. Qualified references retain their
+  repository in the existing JSON dependency list and hold diagnostics. Builds wait until
+  every target is `done` in the local ledger. Unknown, disabled, unmanaged or ambiguous
+  repositories remain blocked; the scheduler never falls back to a local issue number or
+  queries GitHub to resolve them. GitHub's native "blocked by" can be adopted later.
 - **Labels** (created at onboarding):
   - `type:` `bug` · `feature` · `chore` · `goal` · `uat` · `anomaly`
   - `p1` · `p2` · `p3` (default p2; UAT failures default to p1)

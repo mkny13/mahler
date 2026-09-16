@@ -26,7 +26,10 @@ def sync(ctx, project):
     # mid-tick, the next tick probes with the old etag and re-fetches.
     etag_key = f"etag:{project}"
     poll_changed, poll_etag = gh.issues_changed(led.get_kv(etag_key))
-    if not poll_changed:
+    # Reparse cached issue bodies once after adding qualified dependencies (#296).
+    # An unchanged GitHub collection can still contain old, lossy integer refs.
+    depends_key = f"depends_format:{project}"
+    if not poll_changed and led.get_kv(depends_key) == "2":
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
         return
     issues = gh.open_issues()
@@ -128,6 +131,7 @@ def sync(ctx, project):
 
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
+    led.set_kv(depends_key, "2")
 
 
 def _born_ready(led, project, number, iss):
