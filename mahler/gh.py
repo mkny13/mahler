@@ -343,6 +343,20 @@ def files_of(body):
         return []
     inline = label.group(1).strip()
     if inline:
+        lines = section.group(1)[label.end():].splitlines()
+        if lines:
+            lines = lines[1:]
+        consumed = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                break
+            if not inline.endswith(","):
+                break
+            inline += " " + line
+            consumed += 1
+            if consumed >= 10:
+                break
         raw = inline.split(",")
     else:
         raw = []
