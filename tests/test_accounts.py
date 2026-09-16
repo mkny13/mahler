@@ -487,7 +487,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
         # 1. Project whose gh_account resolves to 'personal', run on a platform with 'account' = 'work':
         # The built env has no GH_CONFIG_DIR from the work account, and every non-GitHub work variable is present.
         with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
-             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"), \
+             mock.patch("mahler.platforms.argv_for", return_value=["/usr/bin/true"]):
             runner.launch(ctx, "both", item, "build", "claude-work", 7, 1, "prompt", prep)
             
         env = spawn.call_args.kwargs["env"]
@@ -497,7 +498,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
         
         # 2. The same project on a personal platform: env unchanged from today
         with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
-             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"), \
+             mock.patch("mahler.platforms.argv_for", return_value=["/usr/bin/true"]):
             runner.launch(ctx, "both", item, "build", "claude", 7, 1, "prompt", prep)
             
         env = spawn.call_args.kwargs["env"]
@@ -506,7 +508,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
         
         # 3. A work-account project on a work platform keeps the work GH_CONFIG_DIR
         with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
-             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"), \
+             mock.patch("mahler.platforms.argv_for", return_value=["/usr/bin/true"]):
             runner.launch(ctx, "acme", item, "build", "claude-work", 7, 1, "prompt", prep)
             
         env = spawn.call_args.kwargs["env"]
@@ -516,7 +519,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
         
         # 4. An explicit gh_account that is neither the platform's account nor the first declared account is honoured.
         with mock.patch("mahler.runner.spawn", return_value=123) as spawn, \
-             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"):
+             mock.patch("mahler.runner.fence_hooks", return_value="/hooks"), \
+             mock.patch("mahler.platforms.argv_for", return_value=["/usr/bin/true"]):
             runner.launch(ctx, "custom", item, "build", "claude-work", 7, 1, "prompt", prep)
             
         env = spawn.call_args.kwargs["env"]
