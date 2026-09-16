@@ -2,45 +2,38 @@
 
 ## Status
 
-2026-09-15 chat session: built the operator console from the Claude Design handoff (DESIGN
-D27, spec in `docs/console/design.md`) — every read-only view on phone and desktop plus
-pause, peak override, clear backoff and digest-seen, merged in #246, #259, #261. The rest is
-queued as `area:console` issues; Mahler has already shipped #249 (scheduler holds), #256
-(serve self-restart) and #257 (needs-you deep links). Nothing is mid-flight in this session.
+2026-09-16 chat session: diagnosed and fixed `sit-stand-walk#2`'s `launch_failed`
+("Repository not found" / "Authentication failed" against
+`github.com/makastel_ncstate/sit-stand-walk.git`). Root cause: `runner.py`'s raw
+`git fetch`/`push` calls (`prepare()`, `catch_up()`, `snapshot()`) and `janitor.py`'s
+branch sweep never threaded the project's account-scoped env the way `gh.py`'s `GH`
+client already does (D25/D26), so a work-account project's private repo got
+fetched/pushed under this machine's default personal git credential helper. Fixed,
+tested (857 tests + random-order check green), committed, pushed, and opened as
+[mkny13/mahler#306](https://github.com/mkny13/mahler/pull/306). CI auto-fix monitor is
+on for this session. Nothing mid-flight.
 
 ## Next steps
 
-1. Set `[serve] public_url = "https://mac-mini.bandicoot-vimba.ts.net"` in
-   `~/.mahler/config.toml`, so needs-you pings open the console on the item (#257 is merged
-   but does nothing until this is set). Owner action, or ask a session to do it.
-2. Let Mahler work the queue (one at a time via `area:console`): #247 (p1: the write queue
-   and needs-you answers — #250, #251, #252, #254 depend on it), then #248, #250, #251,
-   #252, #253, #254, #255.
-3. UAT on the phone as they land: answer a needs-you item (#247), capture with the project
-   dropdown (#251), fail a UAT item (#250), revert a harmless merge (#254).
-4. #266 (p2): #257's deep link re-applies on every 30s refresh and yanks the view back to
-   Needs you — queued; set `public_url` (step 1) only after it lands, or expect that.
-5. When #211's merge-queue branch lands, its DESIGN entry must be **D28**, not D27 (noted on
-   #211 and #239).
+1. Let #306 merge once CI is green (auto-fix monitor will wake this session if it
+   fails; no manual polling needed).
+2. Once merged, `sit-stand-walk#2` should be able to launch again on its next tick —
+   worth a quick check that it actually does (Mahler self-heals via the daemon's
+   own update path, no manual redeploy needed since the daemon runs from
+   `~/.mahler/app` pinned to a known-good commit and self-updates on green CI).
+3. Not investigated: whether other raw-git call sites exist beyond
+   `runner.py`/`janitor.py` (e.g. any future module that shells to `git` directly)
+   — worth a grep for `subprocess.*git` without an `env=` the next time this pattern
+   comes up.
 
 ## Context
 
-- **Served at** https://mac-mini.bandicoot-vimba.ts.net/ via `tailscale serve` → launchd job
-  `com.mike.mahler.serve` (installed 2026-09-15) → `127.0.0.1:8787`. Since #256 it restarts
-  itself when `~/.mahler/app` updates; before that, `launchctl kickstart -k
-  gui/$(id -u)/com.mike.mahler.serve` was needed.
-- **Owner decisions that override the design** (recorded in `docs/console/design.md`,
-  "Changed from the design"): no inbox — Capture picks its project from a dropdown beside the
-  text box, one composer, remembers the last project; the hot-hold banner says "You were
-  working in <project> with Claude Code…", because presence detects a Claude session, not
-  uncommitted edits.
-- **Writes** are accepted only from loopback or a Tailscale address, with the
-  `X-Mahler-Console: 1` header, JSON and same origin — `serve.host = "0.0.0.0"` in config lets
-  the LAN view it but not write.
-- `codex` is the personal free tier; `codex-work` is a business plan (`plan` key in
-  config.toml, shown on the quota gauge).
-- Not taken up from the handoff: surfacing routing order and Claude's tighter thresholds in
-  the console (the designer's open question 4) — out of scope unless asked.
-- Older open items from the 2026-09-14 review still stand: #239 (hand-rolled pre-merge
-  freshness check, since GitHub's merge queue isn't available on personal repos) before any
-  `max_parallel > 1`, then #209, #206, #207.
+- The bug was specific to **work-account projects** (D25: separate GitHub identity,
+  `~/.config/gh-work` etc.) — personal-account projects were unaffected because
+  `config.run_env()` returns `None` (inherit as-is) for the default account, which is
+  what the old code effectively always did.
+- The fix follows an existing, documented invariant: `gh.py`'s `_git()` docstring says
+  it "goes through the same credential setup as the run's own pushes" — that
+  invariant was true for `gh.py` but not for `runner.py`/`janitor.py` until this fix.
+- User's own comment mid-diagnosis: "I can't make any work repos public" — correctly
+  pushing back on the wrong fix; the actual fix has nothing to do with repo visibility.
