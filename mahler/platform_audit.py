@@ -140,16 +140,17 @@ def _sizes_text(sizes):
 
 def outcome_report(cfg, outcomes, escalations):
     """One row per enabled platform, ordered by declared tier (`router.tier_of`):
-    (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes)."""
+    (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes, by_size)."""
     rows = []
     for name, pconf in cfg["platforms"].items():
         if not pconf.get("enabled", True):
             continue
-        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0})
+        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0, "by_size": {}})
         rows.append((name, router.tier_of(pconf), stats["runs"],
                      _pct(stats["done"], stats["runs"]),
                      _pct(stats["needs_you"], stats["runs"]),
-                     escalations.get(name, 0), size_gate(pconf)))
+                     escalations.get(name, 0), size_gate(pconf),
+                     stats.get("by_size", {})))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
@@ -158,12 +159,22 @@ def tier_inversions(rows, min_runs=3, margin=15.0):
     at least `margin` points, both with at least `min_runs` observed runs —
     with overlapping size gates. This is a mechanical signal, not a conclusion:
     the finding still needs a human judgment call (mahler#206 proposal item 3)."""
-    sample = [r for r in rows if r[2] >= min_runs and r[3] is not None]
     found = []
-    for lo in sample:
-        for hi in sample:
-            if hi[1] > lo[1] and lo[6] & hi[6] and lo[3] - hi[3] >= margin:
-                found.append((lo[0], lo[1], lo[3], hi[0], hi[1], hi[3]))
+    for lo in rows:
+        for hi in rows:
+            if hi[1] > lo[1]:
+                common_sizes = lo[6] & hi[6]
+                if not common_sizes:
+                    continue
+                lo_runs = sum(lo[7].get(sz, {}).get("runs", 0) for sz in common_sizes)
+                hi_runs = sum(hi[7].get(sz, {}).get("runs", 0) for sz in common_sizes)
+                if lo_runs >= min_runs and hi_runs >= min_runs:
+                    lo_done = sum(lo[7].get(sz, {}).get("done", 0) for sz in common_sizes)
+                    hi_done = sum(hi[7].get(sz, {}).get("done", 0) for sz in common_sizes)
+                    lo_pct = round(100.0 * lo_done / lo_runs, 1) if lo_runs else 0.0
+                    hi_pct = round(100.0 * hi_done / hi_runs, 1) if hi_runs else 0.0
+                    if lo_pct - hi_pct >= margin:
+                        found.append((lo[0], lo[1], lo_pct, hi[0], hi[1], hi_pct))
     return found
 
 
@@ -205,7 +216,7 @@ def build_body(cfg, led, pol):
         "| Platform | Tier | Runs | Done % | Needs-you % | Escalated away from (count) | Sizes |",
         "|---|---|---|---|---|---|---|",
     ]
-    for name, tier, runs, done_pct, needs_you_pct, esc, sizes in out_rows:
+    for name, tier, runs, done_pct, needs_you_pct, esc, sizes, by_size in out_rows:
         lines.append(f"| {name} | {tier} | {runs} | "
                      f"{done_pct if done_pct is not None else '—'} | "
                      f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} | {_sizes_text(sizes)} |")
