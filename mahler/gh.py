@@ -244,8 +244,38 @@ class GH:
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,mergeCommit,title,baseRefName"))
 
-    def pr_merge(self, number):
-        self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch")
+    def base_in_head(self, path, base, head):
+        """Fetch exact objects without changing working files; prove ancestry.
+
+        False is proven drift. Any failed/indeterminate operation raises GHError.
+        Fetch the target last, with an explicit refspec independent of fetch config.
+        """
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+            raise GHError("freshness: missing or invalid PR head SHA")
+        if not isinstance(base, str) or not base:
+            raise GHError("freshness: missing PR target branch")
+        self._git(path, "check-ref-format", f"refs/heads/{base}")
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin", head)
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin",
+                  f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        tip = self._git(path, "rev-parse", "--verify", f"refs/remotes/origin/{base}^{{commit}}")
+        # Shallow history cannot prove a negative ancestry result.
+        if self._git(path, "rev-parse", "--is-shallow-repository") != "false":
+            raise GHError("freshness: use a complete checkout to prove base ancestry")
+        try:
+            result = subprocess.run(
+                ["git", "-C", path, "merge-base", "--is-ancestor", tip, head],
+                capture_output=True, text=True, timeout=90, env=self.env)
+        except (subprocess.SubprocessError, OSError) as e:
+            raise GHError(f"freshness: ancestry check failed: {e}") from e
+        if result.returncode not in (0, 1):
+            raise GHError("freshness: ancestry check failed: " +
+                          redact.redact(result.stderr.strip()[:400]))
+        return result.returncode == 0
+
+    def pr_merge(self, number, head):
+        self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch",
+                 "--match-head-commit", head)
 
     def failed_run_log(self, branch, tail=150):
         """The latest failed CI run on a branch: (run id, tail of its failing
@@ -416,11 +446,13 @@ _WAIT_CHECKS = {"PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING", "EXP
 
 def checks_state(rollup):
     """A PR's statusCheckRollup -> green | pending | red | none."""
-    states = [(c.get("state") or c.get("status") or "").upper() for c in (rollup or [])]
+    states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+              for c in (rollup or [])]
     if not states:
         return "none"                       # no CI configured: nothing to wait for
     if any(s in _BAD_CHECKS for s in states):
         return "red"
-    if any(s in _WAIT_CHECKS for s in states):
+    if any(s in _WAIT_CHECKS or s not in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+           for s in states):
         return "pending"
     return "green"
