@@ -265,8 +265,9 @@ def _desktop(s):
 
 def _d_now(s):
     out = ['<section class="view view-now">']
-    if s["peak"]:
-        out.append(f'<div class="peakline">{e(s["peak"]["line"])}</div>')
+    peak = s["peak"]
+    if peak and peak["header"]:
+        out.append(f'<div class="peakline">{e(peak["line"])}</div>')
     out.append(f'<div class="sect"><span class="lbl">Active runs · {len(s["runs"])}</span>')
     for r in s["runs"]:
         out.append(f'<button class="drun" data-open-run="{r["id"]}">'
@@ -427,7 +428,7 @@ def _phone(s):
 def _p_now(s):
     out = ['<section class="tabv tabv-now"><div class="pad">']
     peak = s["peak"]
-    if peak:
+    if peak and peak["header"]:
         tone = "acc" if peak["overridden"] else "warn"
         out.append(f'<button class="peakrow" data-act="{_peak_act(peak)}">'
                    f'<span class="txt">{e(peak["line"])}</span>'
