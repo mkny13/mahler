@@ -84,6 +84,18 @@ def peak_overridden(led):
     return bool(override and override > led.now())
 
 
+def local_time_label(dt):
+    """Short zone label for a system-local display time, including DST names."""
+    local = dt.astimezone()
+    name = local.tzname()
+    # Abbreviations are not unique: CST at UTC+8 is China, not US Central.
+    labels = {("PST", -8): "PT", ("PDT", -7): "PT",
+              ("EST", -5): "ET", ("EDT", -4): "ET",
+              ("CST", -6): "CT", ("CDT", -5): "CT",
+              ("MST", -7): "MT", ("MDT", -6): "MT"}
+    return labels.get((name, local.utcoffset() / timedelta(hours=1)), name)
+
+
 def peak_status_line(cfg, led):
     """One-line human-readable peak state for `mahler status` / the web page.
 
@@ -99,14 +111,14 @@ def peak_status_line(cfg, led):
         return "peak hours: overridden until you switch back"
     override = _ts(raw)
     if override and override > now:
-        tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
-        return (f"peak hours: overridden until {override.astimezone(tz):%H:%M} "
+        return (f"peak hours: overridden until {override.astimezone():%H:%M} "
+                f"{local_time_label(override)} "
                 f"({fmt_countdown(override - now)})")
     active, until = peak_state(cfg, led)
     if not active:
         return None
-    tz = ZoneInfo(pc.get("tz", "America/Los_Angeles"))
-    return (f"peak hours: Claude paused until {until.astimezone(tz):%H:%M} PT "
+    return (f"peak hours: Claude paused until {until.astimezone():%H:%M} "
+            f"{local_time_label(until)} "
             f"(in {fmt_countdown(until - now)})")
 
 
