@@ -89,9 +89,10 @@ class SyncETagTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
-        self.led.set_kv("depends_format:mahler", "3")
+        self.led.set_kv("depends_format:mahler", "4")
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = mock.Mock()
+        self.gh.blocked_by_of.return_value = []
         self.ctx._gh["mkny13/mahler"] = self.gh
 
     def issue(self, n=11):
@@ -116,7 +117,7 @@ class SyncETagTests(unittest.TestCase):
         sync.sync(self.ctx, "mahler")
         self.assertEqual(json.loads(self.led.item("mahler", 11)["depends"]),
                          [{"repo": "mkny13/groundwork", "number": 125}, 7])
-        self.assertEqual(self.led.get_kv("depends_format:mahler"), "3")
+        self.assertEqual(self.led.get_kv("depends_format:mahler"), "4")
         sync.sync(self.ctx, "mahler")
         self.gh.open_issues.assert_called_once()
 

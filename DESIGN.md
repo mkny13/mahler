@@ -186,8 +186,9 @@ All of it is glue between adopted parts.
   repositories remain blocked; the scheduler never falls back to a local issue number or
   queries GitHub to resolve them. Sync drops references to the item itself or its known
   parent/ancestors, logging each correction once: a parent cannot finish until its children
-  finish (D21). Ancestry walks are cycle-safe and capped at 100 hops; unproven dependencies
-  remain enforced. GitHub's native "blocked by" can be adopted later.
+  finish (D21). GitHub's native "blocked by" relationships feed the same dependency list;
+  body and native references are deduplicated. Ancestry walks are cycle-safe and capped at
+  100 hops; unproven dependencies remain enforced.
 - **Labels** (created at onboarding):
   - `type:` `bug` · `feature` · `chore` · `goal` · `uat` · `anomaly`
   - `p1` · `p2` · `p3` (default p2; UAT failures default to p1)

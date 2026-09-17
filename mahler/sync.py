@@ -28,9 +28,10 @@ def sync(ctx, project):
     etag_key = f"etag:{project}"
     poll_changed, poll_etag = gh.issues_changed(led.get_kv(etag_key))
     # Reparse once after dependency rules change, even on an unchanged collection.
-    # Version 3 removes self/ancestor deadlocks as well as preserving qualifiers.
+    # Version 4 adds GitHub's native blocked-by relationships. Version 3 removed
+    # self/ancestor deadlocks as well as preserving qualifiers.
     depends_key = f"depends_format:{project}"
-    if not poll_changed and led.get_kv(depends_key) == "3":
+    if not poll_changed and led.get_kv(depends_key) == "4":
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
         return
     issues = gh.open_issues()
@@ -75,8 +76,11 @@ def sync(ctx, project):
         open_nums.add(n)
         ctx._labels[(project, n)] = labels
         parent = parents[n]
-        deps = _satisfiable_depends(ctx, project, n, parent,
-                                    depends_of(iss.get("body")), parents)
+        deps = depends_of(iss.get("body"))
+        for blocker in gh.blocked_by_of(n):
+            if blocker not in deps:
+                deps.append(blocker)
+        deps = _satisfiable_depends(ctx, project, n, parent, deps, parents)
         fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
                       depends=json.dumps(deps), pin=pin_of(labels),
                       parent=parent,
@@ -137,7 +141,7 @@ def sync(ctx, project):
 
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
-    led.set_kv(depends_key, "3")
+    led.set_kv(depends_key, "4")
 
 
 def _satisfiable_depends(ctx, project, number, parent, deps, parents):
