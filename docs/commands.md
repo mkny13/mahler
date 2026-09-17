@@ -1,6 +1,8 @@
-# Mahler Commands
+# GitHub Comment Commands
 
-Mahler automates the codebase directly from GitHub issues. You can control its behavior by leaving a comment on any open issue.
+Mahler automates the codebase directly from GitHub issues. This reference documents the `/mahler` commands you can drop as a comment on any open issue.
+
+> **Looking for local CLI commands?** Run `mahler --help` (or `mahler <command> --help`) from your terminal. See [README.md](../README.md#operate-mahler) for common CLI workflows like `mahler status`, `mahler usage`, `mahler pause`, and `mahler serve`.
 
 ## Commands
 

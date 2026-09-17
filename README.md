@@ -23,6 +23,8 @@ separate optional console process.
 - Conductor-owned PR creation, CI watching, merge confirmation, and revert PRs.
 - A phone and desktop console for status, backlog, capture, needs-you answers,
   live logs, stop-and-handoff, quota controls, merge reverts, and UAT pass/fail.
+- Phone notifications via ntfy for questions, handoffs, shipped work, and
+  quota exhaustion alerts.
 - A small local MCP server for queue and lease operations.
 - Scheduled backups, digests, cleanup, calibration, and recurring maintenance
   reviews.
@@ -110,7 +112,7 @@ and the commented examples in `config.example.toml`.
 
 ## Operate Mahler
 
-Useful commands:
+Useful local CLI commands:
 
 ```bash
 mahler status
@@ -121,6 +123,8 @@ mahler resume
 mahler version
 ```
 
+Run `mahler --help` (or `mahler <command> --help`) for the full local CLI reference.
+
 On a managed GitHub issue, these comments take effect on the next tick:
 
 - `/mahler go` — retry or make the item ready
@@ -129,7 +133,7 @@ On a managed GitHub issue, these comments take effect on the next tick:
 - `/mahler platform auto` — clear a pin
 
 A normal human comment on a `needs-you` item supplies the answer and sends the
-item back through sorting. The complete command reference is in
+item back through sorting. The reference for GitHub issue comment commands is in
 [docs/commands.md](docs/commands.md).
 
 ## Operator console

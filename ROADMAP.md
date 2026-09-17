@@ -45,7 +45,9 @@ detailed record.
   - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
     a plain reply on a `needs-you` item
   - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
-    (`mahler hooks`), and a daily digest (`digest.maybe_send`, wired into every tick)
+    (`mahler hooks`), a daily digest (`digest.maybe_send`, wired into every tick), and
+    a deduplicated high-priority ntfy alert when Codex quota is exhausted during probe
+    refreshes (cleared upon recovery; prompts to reset in ChatGPT if reset credits exist)
   - the rest of the MCP tool set and app-embedded UAT surfaces remain queued, not dropped
 - **Onboarding order diverged from the Phase 5 plan.** Couch Tour went live before the
   projects originally listed ahead of it. The operator's `~/.mahler/config.toml`, not this
@@ -165,7 +167,7 @@ Prove the hard parts on a real app. Each bullet is an issue in the Mahler repo.
    - [x] project policy in `~/.mahler/config.toml` (verify, `scope = "label"`, `worktree_root`,
      `link`, production-migration rules)
    - [x] backlog migrated into issues
-   - [x] a Neon backup restored once (see Phase 4 — nightly nightly job is live)
+   - [x] a Neon backup restored once (see Phase 4 — nightly job is live)
    - [x] groundwork disabled in the old `dispatch.toml`
 4. **Deploy tracking:** not directly verified from this review — worth a status check next
    time groundwork ships a deploy-sensitive change.
