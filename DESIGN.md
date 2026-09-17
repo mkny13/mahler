@@ -60,9 +60,9 @@ agents that will build it.
 
 | Thing | Where | Role today | Fate under Mahler |
 |---|---|---|---|
-| `thread` | `~/ai-tools/thread.py` | Read-only anomaly scanner (dead sessions, stray branches, WIP) | **Absorbed as a sensor.** Its scan code is reused unchanged in character; its flags become issues (D2) |
-| `dispatch` | `~/ai-tools/dispatch.py`, launchd `com.mike.dispatch` | Launches agents at thread's flags; claim/cooldown store, caps | **Superseded.** Its machinery is generalised into leases/runs; timer retired at cutover |
-| ThreadBar | `~/ai-tools/ThreadBar` | Menu-bar view of thread/dispatch | Re-pointed at Mahler's API (it's a thin display), or retired |
+| `thread` | `~/ai-tools/thread.py` | Legacy anomaly scanner (dead sessions, stray branches, WIP) | **Retired with `ai-tools`.** A future Mahler-native sensor may preserve its useful scan behaviour, but the legacy scanner must not watch Mahler refs or worktrees (D2) |
+| `dispatch` | `~/ai-tools/dispatch.py`, launchd `com.mike.dispatch` | Legacy anomaly-driven agent launcher; claim/cooldown store, caps | **Retired 2026-09-16.** The owner unloaded its launchd timer; Mahler is the sole autonomous dispatcher |
+| ThreadBar | `~/ai-tools/ThreadBar` | Legacy menu-bar view of thread/dispatch | **Retired 2026-09-16.** It will not be repointed at Mahler |
 | Cline Kanban | `kanban`, `127.0.0.1:3484` | Per-card worktrees for phish-in-app, groundwork | **Retired.** A second board recreates the lost-threads problem |
 | TASKS.md | each repo | Session continuity *and* (accidentally) backlog | **Session continuity only**, as its own header says in phish-in-app |
 | ROADMAP.md | some repos | Vision + "suggested build order" | Vision stays; build order becomes issue priority |
@@ -121,7 +121,7 @@ rollback → backups, for every project you opt in. Some of this goes beyond "or
 included because each missing piece is a place where a thread gets lost, or where an agent
 can't see its own results.
 
-### D2 — Supersede dispatch; absorb thread as a sensor
+### D2 — Retire dispatch; absorb thread's behaviour, not its runtime
 
 - **dispatch is replaced, not wrapped.** Its load-bearing ideas carry over directly:
   - per-project opt-in,
@@ -134,16 +134,24 @@ can't see its own results.
 
   Wrapping it would mean two claim stores keyed differently (flag fingerprint vs item), which is
   exactly the duplication BACKLOG warned about.
-- **thread's scanner stays read-only and becomes one of Mahler's sensors.** Every 10 minutes
-  Mahler runs the scan. It turns each actionable flag into an issue labelled `type:anomaly`, using
-  the same flag codes and fingerprint rules dispatch uses for dedupe (so one open issue per
-  fingerprint). Anomalies then flow through the same queue, leases and routing as planned
-  work: one queue, one lock system. All of thread's calibration (the squash-merge `git cherry`
-  check, the default-branch exclusion, `died_mid_task` requiring TASKS.md) is kept verbatim.
-- `thread` the CLI keeps working for as long as it's useful. Mahler imports its scan
-  functions rather than re-deriving git state.
-- **Cutover is per project.** Disable a project in `dispatch.toml` in the same step it's enabled
-  in Mahler. Retire the launchd timer when the last project moves.
+- **The useful behaviour of `thread` becomes a Mahler-native, read-only sensor.** When that
+  sensor is built, every actionable flag becomes an issue labelled `type:anomaly`, with one
+  open issue per fingerprint. Anomalies then flow through the same queue, leases and routing
+  as planned work: one queue, one lock system. Preserve the proven calibration where it still
+  applies (the squash-merge `git cherry` check, default-branch exclusion, and
+  `died_mid_task` requiring TASKS.md), but do not import or run the legacy `ai-tools` scanner.
+- **Mahler is the sole autonomous dispatch authority for a managed project.** No external
+  scheduler, scanner, menu-bar helper, or agent launcher may treat `origin/mahler/*` as an
+  anomaly, inspect a configured Mahler worktree root (including `.mahler-worktrees`) as an
+  ordinary checkout, or launch remediation against either. A read-only repository health
+  tool must ignore those refs and paths and must never trigger an agent. This is a safety
+  invariant, not a scanner calibration preference: a second dispatcher has a separate claim
+  store and can spend quota or rewrite work without Mahler's lease fence.
+- **Legacy cutover is complete.** On 2026-09-16 the owner unloaded
+  `com.mike.dispatch`; `dispatch.py`, `thread.py`, ThreadBar, and their `ai-tools` state are
+  retired rather than operated beside Mahler. Cline Kanban is retired for the same one-queue
+  reason. Any future onboarding confirms that no external dispatcher targets the project;
+  it does not add the project to `dispatch.toml` temporarily.
 
 ### D3 — Borrow vs build
 
