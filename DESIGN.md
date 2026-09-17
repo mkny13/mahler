@@ -935,8 +935,8 @@ never run.
   split again.
 - **The smallest useful piece is one mergeable PR with its own test.** Don't split below it.
 - **Opus builds only by escalation** (D8 rule 4, now built): two failed attempts on a tier move
-  the item up a tier. Each platform has a `tier`: Cline and Kilo 1, Antigravity and Copilot 2,
-  Claude 3, Claude Opus 4. Fix runs never route to Opus by size alone.
+  the item up a tier. Each platform has a `tier`: Cline and Kilo 1, agy-claude and Copilot 2,
+  agy-gemini and Claude 3, Claude Opus 4. Fix runs never route to Opus by size alone.
 - **Haiku is not a builder.** It draws on the same Claude windows as Opus and Sonnet. The free
   tiers are Mahler's small models.
 - **One Claude account, one run slot.** `claude` and `claude-opus` share the same 5-hour and
