@@ -276,7 +276,7 @@ def queue(ctx, projects):
         return
     try:
         ctx.gh(project).ensure_pass_label(config.PLATFORM_AUDIT_PASS)
-        ctx.gh(project).create_issue(TITLE, body, ["type:chore", "size:l", "p2", label])
+        ctx.gh(project).create_issue(TITLE, body, ["type:chore", "size:s", "p2", label])
         ctx.passes_filed.add(project)
         led.reset_maintenance(project, config.PLATFORM_AUDIT_PASS)
     except GHError as e:

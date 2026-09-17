@@ -37,7 +37,7 @@ class QueueTests(unittest.TestCase):
         args, kwargs = self.gh_mock.create_issue.call_args
         self.assertEqual(args[0], platform_audit.TITLE)
         self.assertIn("type:chore", args[2])
-        self.assertIn("size:l", args[2])
+        self.assertIn("size:s", args[2])
         self.assertIn("pass:platform-audit", args[2])
 
         cp = self.led.maintenance_checkpoint("mahler", config.PLATFORM_AUDIT_PASS)
