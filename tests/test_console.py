@@ -2,7 +2,10 @@
 
 import copy
 import json
+import os
 import re
+import tempfile
+import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -66,6 +69,53 @@ class SystemStateTests(unittest.TestCase):
         self.assertEqual(state.build(cfg, led)["system"]["label"], "RUNNING · 1")
         led.set_kv("paused", "1")
         self.assertEqual(state.build(cfg, led)["system"], {"label": "PAUSED", "tone": "warn"})
+
+
+class SettingsConfigTests(unittest.TestCase):
+    def test_projection_never_exposes_account_environment(self):
+        cfg = make_cfg(accounts={"work": {
+            "env": {"ANTHROPIC_AUTH_TOKEN": "secret"},
+            "routing": {"sort": ["claude"], "plan": [], "build": ["agy-claude"]},
+        }})
+        view = config.settings(cfg)
+        self.assertNotIn("secret", json.dumps(view))
+        self.assertEqual([r["key"] for r in view["routing"]], ["default", "account:work"])
+
+    def test_validation_and_toml_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('[projects.mahler]\nenabled = true\n'
+                         '[[projects.mahler.backups]]\nname = "db"\nkind = "postgres"\n')
+            form = config.settings(config.load(path))
+            form["platforms"][0]["model"] = 'model-"one"'
+            form["routing"][0]["build"] = list(reversed(form["routing"][0]["build"]))
+            form["concurrency"] = {"total": 4, "by_tier": {"1": 3, "2": 2}}
+            form["projects"][0]["max_parallel"] = 2
+            form["scheduler"]["settle_minutes"] = 12
+            saved = config.save_settings(form, path)
+            with open(path, "rb") as fh:
+                raw = tomllib.load(fh)
+            loaded = config.load(path)
+
+        self.assertEqual(raw["projects"]["mahler"]["backups"][0]["name"], "db")
+        self.assertEqual(loaded["concurrency"], {"total": 4, "by_tier": {"1": 3, "2": 2}})
+        self.assertEqual(loaded["defaults"]["settle_minutes"], 12)
+        self.assertEqual(saved["platforms"][0]["model"], 'model-"one"')
+
+    def test_invalid_settings_do_not_touch_file(self):
+        cfg = make_cfg()
+        form = config.settings(cfg)
+        form["routing"][0]["build"] = ["not-a-platform"]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            original = '[projects.mahler]\nenabled = true\n'
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(original)
+            with self.assertRaisesRegex(ValueError, "configured platforms"):
+                config.save_settings(form, path)
+            with open(path, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), original)
 
 
 class RunTests(unittest.TestCase):

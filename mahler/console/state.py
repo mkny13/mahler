@@ -89,6 +89,7 @@ def build(cfg, led, stats_range="week"):
         "banners": _banners(cfg, led, paused, quota, hot, now),
         "projects": project_names,
         "capture": _capture(cfg, led, project_names, now),
+        "settings": config.settings(cfg),
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
     s["landing"] = {

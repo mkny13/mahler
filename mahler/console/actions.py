@@ -78,7 +78,20 @@ def digest_seen(cfg, led, body):
         seen = 0
     if upto > seen:
         led.set_kv(SEEN_KEY, str(upto))
-        led.event("console_seen", detail={"upto": upto})
+    led.event("console_seen", detail={"upto": upto})
+
+
+def save_settings(cfg, led, body):
+    """Validate and atomically replace the editable config projection."""
+    try:
+        saved = config.save_settings(body)
+    except (OSError, ValueError) as exc:
+        raise ActionError(str(exc)) from exc
+    led.event("settings_saved", detail={
+        "platforms": len(saved["platforms"]),
+        "routes": len(saved["routing"]),
+    })
+    return {"settings": saved}
 
 
 def stop_run(cfg, led, body):
@@ -302,7 +315,7 @@ def attach(cfg, led, body):
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail, attach)}
+                                   capture, revert, uat_pass, uat_fail, attach, save_settings)}
 
 
 def run(cfg, led, name, body):
