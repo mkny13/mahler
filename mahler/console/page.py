@@ -11,7 +11,8 @@ import html
 import json
 import os
 
-from .state import STATS_RANGES
+from .state import STATS_RANGES, _hhmm
+from ..ledger import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(HERE, "console.css"), encoding="utf-8") as _fh:

@@ -841,6 +841,22 @@ class PageTests(unittest.TestCase):
             self.assertNotIn(gold, page.CSS.lower())
         self.assertNotIn("serif", page.CSS.replace("sans-serif", ""))
 
+    def test_releases_card_renders_a_pending_cut_release_and_a_published_release(self):
+        # Reproduces the 500 from a pending cut_release console_action (no
+        # done_at yet — state._releases read the nonexistent "updated_at"
+        # column) and a published release with published_at set (page.py's
+        # published-history block called an unimported ledger.parse/_hhmm).
+        self.led.snapshot_release_item("mahler", 10, pr=100, title="Add dark mode",
+                                       merge_sha="sha10", labels=["type:feature"])
+        self.led.create_release("mahler", version="1.0.0", checkpoint_sha="sha_rel1",
+                                published_at="2026-09-14T12:00:00Z",
+                                remote_url="https://github.com/mkny13/mahler/releases/tag/v1.0.0")
+        self.led.queue_action("cut_release", project="mahler",
+                              payload={"version": "1.1.0", "checkpoint_sha": "sha_head"})
+
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertIn("v1.0.0", doc)
+
 
 class UatStateTests(unittest.TestCase):
     """Ready to test (mahler#250): what shipped lands there, until a verdict."""
