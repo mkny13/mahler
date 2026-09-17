@@ -78,7 +78,7 @@ def peak_state(cfg, led):
 def peak_overridden(led):
     """True while an override of the peak window is live: a manual one (set
     from the console, held until switched back) or a timed one (`mahler peak
-    off`) that hasn't run out yet."""
+    --off`) that hasn't run out yet."""
     raw = led.get_kv(PEAK_OVERRIDE)
     if raw == PEAK_MANUAL:
         return True
@@ -444,7 +444,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     Claude first and Claude platforms use the burst soft/hard lines.
 
     During Claude's peak window (D22), a candidate whose `kind == "claude"` is
-    skipped with the reason `peak hours until HH:MM (in Xh Ym) — mahler peak off
+    skipped with the reason `peak hours until HH:MM (in Xh Ym) — mahler peak --off
     to override`, unless the item is pinned to it (`pin` is not None). Running
     Claude runs are unaffected — this only gates new starts.
 
@@ -487,7 +487,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             reasons.append(
                 f"{name}: peak hours until {peak_until.astimezone():%H:%M} "
                 f"(in {fmt_countdown(peak_until - led.now())}) "
-                f"— mahler peak off to override")
+                f"— mahler peak --off to override")
             continue
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
         state, detail = usage_state(led, name, pconf, burst_lines=claude_lines)

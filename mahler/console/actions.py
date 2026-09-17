@@ -2,7 +2,7 @@
 
 Each is a POST to /api/<name> that records a ledger event, like the CLI
 command it mirrors. The ones here only touch the ledger, which other
-processes already do outside the tick (`mahler pause`, `mahler peak off`), so
+processes already do outside the tick (`mahler pause`, `mahler peak --off`), so
 they apply at once. Writes that reach GitHub or a running agent go through the
 tick instead, so all GitHub traffic keeps the project's own login (D25).
 """

@@ -981,10 +981,6 @@ class CopilotQuotaFanOutTests(unittest.TestCase):
         self.assertEqual(self.led.usage("copilot-high")["monthly"]["used_pct"], 42.0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReasonGroupsTests(unittest.TestCase):
     def test_all_router_reason_categories_and_duplicate_accounts(self):
         reasons = ["kilo: busy", "cline-free: only takes size:s", "copilot: requires size:m",
@@ -1024,3 +1020,50 @@ class PeakLocalTimeTests(unittest.TestCase):
                                      f"peak hours: overridden until {end} {label} (4h 0m)")
                     self.assertEqual(led.get_kv(router.PEAK_OVERRIDE),
                                      iso(now + timedelta(hours=4)))
+
+
+class PeakOverrideCommandTests(unittest.TestCase):
+    def test_peak_hold_reason_mentions_flag_override(self):
+        now = datetime(2026, 9, 14, 14, 0, tzinfo=timezone.utc)
+        led = Ledger(":memory:", clock=lambda: now)
+        self.addCleanup(led.close)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["routing"]["build"] = ["claude"]
+        name, reasons = router.pick(cfg, led, "build")
+        self.assertIsNone(name)
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("— mahler peak --off to override", reasons[0])
+        self.assertNotIn("mahler peak off", reasons[0])
+
+    def test_peak_cli_help_documents_correct_flags(self):
+        buf = io.StringIO()
+        with self.assertRaises(SystemExit) as cm, mock.patch("sys.stdout", buf):
+            cli.main(["peak", "--help"])
+        self.assertEqual(cm.exception.code, 0)
+        help_out = buf.getvalue()
+        self.assertIn("--off", help_out)
+        self.assertIn("allow Claude through the peak hold", help_out)
+        self.assertIn("--on", help_out)
+        self.assertIn("restore normal scheduling", help_out)
+        self.assertNotIn("pause new Claude runs", help_out)
+        self.assertNotIn("peak off", help_out)
+
+    def test_peak_cmd_on_clears_override_and_restores_scheduling(self):
+        now = datetime(2026, 9, 14, 14, 0, tzinfo=timezone.utc)
+        led = Ledger(":memory:", clock=lambda: now)
+        self.addCleanup(led.close)
+        cli.cmd_peak(mock.Mock(off=True, on=False, for_duration=None), config.DEFAULTS, led)
+        self.assertIsNotNone(led.get_kv(router.PEAK_OVERRIDE))
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            ret = cli.cmd_peak(mock.Mock(off=False, on=True, for_duration=None),
+                               config.DEFAULTS, led)
+        self.assertEqual(ret, 0)
+        self.assertEqual(out.getvalue().strip(), "peak override cleared")
+        self.assertIsNone(led.get_kv(router.PEAK_OVERRIDE))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
