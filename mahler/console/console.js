@@ -604,6 +604,49 @@
     }
   });
 
+  function uploadAttachment(file, wrap) {
+    var btn = wrap.querySelector(".attach-btn");
+    var idIn = wrap.querySelector(".attach-id");
+    var nameIn = wrap.querySelector(".attach-name");
+
+    btn.textContent = "Uploading...";
+    btn.disabled = true;
+
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      var dataUrl = e.target.result;
+      var b64 = dataUrl.split(",")[1];
+
+      fetch("/api/attach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
+        body: JSON.stringify({ name: file.name, type: file.type || "application/octet-stream", data: b64 }),
+      }).then(function(r) { return r.json(); }).then(function(res) {
+        if (!res.ok) {
+          showErrorToast(res.error || "Failed to attach file.");
+          btn.textContent = "Attach photo or screenshot";
+          btn.classList.remove("attached");
+          idIn.value = "";
+          nameIn.value = "";
+        } else {
+          idIn.value = res.id;
+          nameIn.value = res.name;
+          btn.textContent = res.name + " ✓";
+          btn.classList.add("attached");
+        }
+      }).catch(function(err) {
+        showErrorToast("Failed to attach file.");
+        btn.textContent = "Attach photo or screenshot";
+        btn.classList.remove("attached");
+        idIn.value = "";
+        nameIn.value = "";
+      }).finally(function() {
+        btn.disabled = false;
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
   document.addEventListener("change", function (ev) {
     var el = ev.target;
     if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
@@ -611,48 +654,31 @@
     if (el && el.classList && el.classList.contains("attach-in") && el.files && el.files.length > 0) {
       var file = el.files[0];
       var wrap = el.closest(".attach-wrap");
-      var btn = wrap.querySelector(".attach-btn");
-      var idIn = wrap.querySelector(".attach-id");
-      var nameIn = wrap.querySelector(".attach-name");
-      
-      btn.textContent = "Uploading...";
-      btn.disabled = true;
-      
-      var reader = new FileReader();
-      reader.onload = function(e) {
-        var dataUrl = e.target.result;
-        var b64 = dataUrl.split(",")[1];
-        
-        fetch("/api/attach", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
-          body: JSON.stringify({ name: file.name, type: file.type || "application/octet-stream", data: b64 }),
-        }).then(function(r) { return r.json(); }).then(function(res) {
-          if (!res.ok) {
-            showErrorToast(res.error || "Failed to attach file.");
-            btn.textContent = "Attach photo or screenshot";
-            btn.classList.remove("attached");
-            idIn.value = "";
-            nameIn.value = "";
-          } else {
-            idIn.value = res.id;
-            nameIn.value = res.name;
-            btn.textContent = res.name + " ✓";
-            btn.classList.add("attached");
-          }
-        }).catch(function(err) {
-          showErrorToast("Failed to attach file.");
-          btn.textContent = "Attach photo or screenshot";
-          btn.classList.remove("attached");
-          idIn.value = "";
-          nameIn.value = "";
-        }).finally(function() {
-          btn.disabled = false;
-          el.value = "";
-        });
-      };
-      reader.readAsDataURL(file);
+      uploadAttachment(file, wrap);
+      el.value = "";
     }
+  });
+
+  document.addEventListener("paste", function (ev) {
+    if (!openCapture) { return; }
+    var capture = app.querySelector(".captureov.show");
+    if (!capture) { return; }
+    var items = ev.clipboardData && ev.clipboardData.items;
+    if (!items || !items.length) { return; }
+    var lastImage = null;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf("image/") === 0) { lastImage = items[i]; }
+    }
+    if (!lastImage) { return; }
+    ev.preventDefault();
+    var blob = lastImage.getAsFile();
+    if (!blob) { return; }
+    var mime = blob.type || lastImage.type;
+    var ext = mime.replace(/^image\//, "");
+    if (ext === "jpeg") { ext = "jpg"; }
+    var file = new File([blob], "paste." + ext, { type: mime });
+    var wrap = capture.querySelector(".attach-wrap");
+    if (wrap) { uploadAttachment(file, wrap); }
   });
 
   document.addEventListener("input", function (ev) {
