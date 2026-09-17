@@ -766,7 +766,7 @@ def _releases(cfg, led, projects, now):
                 "version": act_payload.get("version", ""),
                 "checkpoint_sha": act_payload.get("checkpoint_sha", ""),
                 "result": act_row["result"] or "",
-                "updated_at": act_row["updated_at"],
+                "updated_at": act_row["done_at"] or act_row["created_at"],
             }
 
         out.append({
