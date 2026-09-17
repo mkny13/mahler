@@ -39,6 +39,18 @@
     try { return JSON.parse(el ? el.textContent : "{}"); } catch (e) { return {}; }
   }
 
+  function openNeedDetails() {
+    try { return JSON.parse(load("session", "mahler.needDetails") || "[]"); }
+    catch (e) { return []; }
+  }
+  function syncNeedDetails() {
+    var open = openNeedDetails();
+    var details = app.querySelectorAll("details[data-need-details]");
+    for (var i = 0; i < details.length; i++) {
+      details[i].open = open.indexOf(details[i].getAttribute("data-need-details")) !== -1;
+    }
+  }
+
   // expanded hold-reason rows (mahler#269): the open state lives on <html> as
   // data-why-<i>, which survives the 30s refresh; mirror it onto the row so
   // CSS can show its item list
@@ -87,6 +99,7 @@
       gs[j].classList.toggle("open", !!groups[gs[j].getAttribute("data-group")]);
     }
     syncWhy();
+    syncNeedDetails();
     var ovs = app.querySelectorAll("[data-run-detail]");
     var shown = false;
     for (var k = 0; k < ovs.length; k++) {
@@ -695,6 +708,23 @@
       }
     }
   });
+
+  // Native details are duplicated across the phone and desktop layouts. Keep
+  // both copies in sync, and restore the expanded item after a fragment swap.
+  document.addEventListener("toggle", function (ev) {
+    var detail = ev.target;
+    if (!detail || !detail.hasAttribute || !detail.hasAttribute("data-need-details")) { return; }
+    var key = detail.getAttribute("data-need-details");
+    var open = openNeedDetails();
+    var at = open.indexOf(key);
+    if (detail.open && at === -1) { open.push(key); }
+    if (!detail.open && at !== -1) { open.splice(at, 1); }
+    store("session", "mahler.needDetails", JSON.stringify(open));
+    var twins = app.querySelectorAll('details[data-need-details="' + key.replace(/"/g, "") + '"]');
+    for (var i = 0; i < twins.length; i++) {
+      if (twins[i] !== detail) { twins[i].open = detail.open; }
+    }
+  }, true);
 
   document.addEventListener("submit", function (ev) {
     var form = ev.target.closest && ev.target.closest("[data-settings-form]");

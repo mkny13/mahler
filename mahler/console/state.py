@@ -516,6 +516,26 @@ def _answer_options(item):
     return [{"label": o, "text": o} for o in options if isinstance(o, str)] if isinstance(options, list) else []
 
 
+_LEGACY_OPTIONS = re.compile(r"\s*\[?OPTIONS:\s*(.*?)\]?\s*$", re.I | re.S)
+
+
+def _legacy_question_options(question):
+    """Recover pre-mahler#248 choices that only survived in the question.
+
+    New handoffs store question/options separately. Older rows may contain a
+    terminal ``OPTIONS: a | b`` (optionally bracketed), which the console used
+    to display as question text. Keep the same three-choice/40-character caps
+    as finalize's current STATUS parser.
+    """
+    question = question or ""
+    match = _LEGACY_OPTIONS.search(question)
+    if not match:
+        return question, []
+    choices = [choice.strip()[:40] for choice in match.group(1).split("|")
+               if choice.strip()]
+    return question[:match.start()].rstrip(), choices[:3]
+
+
 def _needs(cfg, led, projects, now):
     names = {p["name"] for p in projects}
     pending = {(r["project"], r["number"]): {"id": r["id"], "text": json.loads(r["payload"])["text"]}
@@ -530,15 +550,21 @@ def _needs(cfg, led, projects, now):
         meta = [f"waiting {_dur(waited)}"]
         if it["attempts"] and it["attempts"] >= 2:
             meta.append(f"{it['attempts']} attempts")
+        question = _question(led, project, n, it["state"], it) or it["title"] or ""
+        options = _answer_options(it)
+        if it["state"] == "needs_you" and not options:
+            question, legacy_options = _legacy_question_options(question)
+            options = [{"label": option, "text": option} for option in legacy_options]
         out.append({
             "id": _ref(project, n), "project": project, "number": n,
             "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": it["title"] or "",
-            "question": _question(led, project, n, it["state"], it) or it["title"] or "",
+            "body": row_get(it, "issue_body", ""),
+            "question": question,
             "pending": pending.get((project, n)),
             "options": ([{"label": "Retry", "text": "/mahler go"},
                          {"label": "Park it", "text": "/mahler park"}]
-                        if it["state"] == "failed" else _answer_options(it)),
+                        if it["state"] == "failed" else options),
             "p": f"p{it['priority']}", "p1": it["priority"] == 1,
             "state": it["state"], "waited_s": waited.total_seconds(),
             "meta": " · ".join(meta),

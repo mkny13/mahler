@@ -81,7 +81,8 @@ def sync(ctx, project):
             if blocker not in deps:
                 deps.append(blocker)
         deps = _satisfiable_depends(ctx, project, n, parent, deps, parents)
-        fields = dict(title=iss["title"], labels=json.dumps(labels), priority=priority_of(labels),
+        fields = dict(title=iss["title"], issue_body=iss.get("body") or "",
+                      labels=json.dumps(labels), priority=priority_of(labels),
                       depends=json.dumps(deps), pin=pin_of(labels),
                       parent=parent,
                       files=json.dumps(files_of(iss.get("body"))))
