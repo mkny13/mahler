@@ -6,17 +6,22 @@ import unittest
 
 from mahler.ledger import Ledger, iso
 from mahler.releases import (
+    ReleaseConflictError,
     ReleaseDraft,
     ReleaseItem,
     check_readiness,
     create_release,
+    format_preview,
     get_draft,
     get_release,
     get_release_items,
     list_releases,
+    normalize_semver,
     parse_semver,
     propose_next_version,
+    publish_release,
     synthesize_notes,
+    validate_semver,
 )
 
 
@@ -270,6 +275,234 @@ class RollingDraftIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(past_rel)
         past_items = get_release_items(self.led, "proj", "0.1.0")
         self.assertEqual([i.number for i in past_items], [1, 2])
+
+
+class SemVerValidationTests(unittest.TestCase):
+    def test_valid_strict_semver(self):
+        self.assertEqual(validate_semver("0.1.0"), (0, 1, 0))
+        self.assertEqual(validate_semver("v1.2.3"), (1, 2, 3))
+        self.assertEqual(validate_semver("10.20.30"), (10, 20, 30))
+        self.assertEqual(normalize_semver("v1.2.3"), "1.2.3")
+        self.assertEqual(normalize_semver("0.1.0"), "0.1.0")
+
+    def test_invalid_strict_semver(self):
+        for invalid in ["", "   ", "1.0", "1.2.3.4", "01.2.3", "1.02.3", "abc", "v", "1.2.3-beta"]:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    validate_semver(invalid)
+
+
+class PreviewFormattingTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def test_preview_output_contents(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Add export",
+                                      summary="added CSV export",
+                                      merge_sha="sha001", labels=["type:feature"])
+        self.led.snapshot_release_item("proj", 2, pr=11, title="Fix bug",
+                                      summary="fixed null pointer",
+                                      merge_sha="sha002", labels=["type:bug"])
+        self.led.snapshot_release_item("proj", 3, pr=12, title="Cleanup",
+                                      summary="cleaned dead code",
+                                      merge_sha="sha003", labels=["type:chore"])
+        draft = get_draft(self.led, "proj", now=self.clock())
+
+        # Preview with proposed version
+        preview = format_preview(draft, checkpoint_sha="base_sha_123")
+        self.assertIn("Release preview for proj:", preview)
+        self.assertIn("Proposed version:  0.1.0", preview)
+        self.assertIn("Checkpoint SHA:    base_sha_123", preview)
+        self.assertIn("Item count:        3", preview)
+        self.assertIn("Release suggested: no", preview)
+        self.assertIn("### Features", preview)
+        self.assertIn("- Add export: added CSV export (#1, PR #10)", preview)
+        self.assertIn("### Fixes", preview)
+        self.assertIn("- Fix bug: fixed null pointer (#2, PR #11)", preview)
+        self.assertIn("<details>", preview)
+        self.assertIn("<summary>Maintenance details (1)</summary>", preview)
+        self.assertIn("- Cleanup: cleaned dead code (#3, PR #12)", preview)
+
+        # Preview with explicit selected version
+        preview_sel = format_preview(draft, version="0.2.0", checkpoint_sha="base_sha_123")
+        self.assertIn("Selected version:  0.2.0", preview_sel)
+        self.assertIn("Proposed version:  0.1.0", preview_sel)
+
+
+class MockGH:
+    def __init__(self, repo="mkny13/mahler"):
+        self.repo = repo
+        self.releases = {}
+        self.tags = {}
+        self.created_releases = []
+
+    def get_release(self, tag):
+        return self.releases.get(tag)
+
+    def get_tag_sha(self, tag):
+        return self.tags.get(tag)
+
+    def release_create(self, tag, target, title, notes):
+        url = f"https://github.com/{self.repo}/releases/tag/{tag}"
+        rel = {
+            "tagName": tag,
+            "targetCommitish": target,
+            "body": notes,
+            "url": url,
+        }
+        self.releases[tag] = rel
+        self.tags[tag] = target
+        self.created_releases.append(rel)
+        return url
+
+
+class PublishReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+        self.gh = MockGH()
+
+    def test_publish_initial_release_success(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Add feature",
+                                      summary="added feature",
+                                      merge_sha="sha001", labels=["type:feature"])
+        self.led.snapshot_release_item("proj", 2, pr=11, title="Fix bug",
+                                      summary="fixed bug",
+                                      merge_sha="sha002", labels=["type:bug"])
+
+        res = publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha002")
+        self.assertEqual(res["status"], "published")
+        self.assertEqual(res["url"], "https://github.com/mkny13/mahler/releases/tag/v0.1.0")
+
+        # GitHub release was created
+        self.assertIn("v0.1.0", self.gh.releases)
+        self.assertEqual(self.gh.releases["v0.1.0"]["targetCommitish"], "sha002")
+
+        # Local ledger record created and items sealed
+        local_rel = self.led.get_release("proj", version="0.1.0")
+        self.assertIsNotNone(local_rel)
+        self.assertEqual(local_rel["checkpoint_sha"], "sha002")
+        self.assertEqual(len(self.led.unreleased_items("proj")), 0)
+        sealed_items = self.led.release_items_for_release(local_rel["id"])
+        self.assertEqual([i["number"] for i in sealed_items], [1, 2])
+
+    def test_publish_requires_checkpoint_sha(self):
+        with self.assertRaises(ValueError):
+            publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="")
+
+    def test_publish_rejects_non_increasing_version(self):
+        create_release(self.led, "proj", version="0.2.0", checkpoint_sha="sha001")
+
+        # Attempt to publish 0.1.0 when 0.2.0 is latest
+        with self.assertRaises(ValueError) as cm:
+            publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha002")
+        self.assertIn("must be greater than latest recorded version 0.2.0", str(cm.exception))
+
+    def test_publish_reconciles_partially_successful_attempt(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Feature",
+                                      summary="added feat",
+                                      merge_sha="sha001", labels=["type:feature"])
+        draft = get_draft(self.led, "proj", now=self.clock())
+        notes = draft.notes.render(include_maintenance=True, collapsed_maintenance=True)
+
+        # Pre-seed remote release on GitHub (simulating remote release created but local process crashed)
+        self.gh.releases["v0.1.0"] = {
+            "tagName": "v0.1.0",
+            "targetCommitish": "sha001",
+            "body": notes,
+            "url": "https://github.com/mkny13/mahler/releases/tag/v0.1.0",
+        }
+        self.gh.tags["v0.1.0"] = "sha001"
+
+        # Publish should reconcile
+        res = publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertEqual(res["status"], "reconciled")
+        self.assertEqual(len(self.gh.created_releases), 0)  # No second release created!
+
+        # Local ledger record now completed and items sealed
+        local_rel = self.led.get_release("proj", version="0.1.0")
+        self.assertIsNotNone(local_rel)
+        self.assertEqual(len(self.led.unreleased_items("proj")), 0)
+
+    def test_publish_idempotent_on_repeated_success(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Feature",
+                                      summary="added feat",
+                                      merge_sha="sha001", labels=["type:feature"])
+
+        # First publish
+        res1 = publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertEqual(res1["status"], "published")
+        self.assertEqual(len(self.gh.created_releases), 1)
+
+        # Repeating the exact command
+        res2 = publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertEqual(res2["status"], "reconciled")
+        self.assertEqual(len(self.gh.created_releases), 1)  # Still only 1 release created
+
+    def test_publish_refuses_conflicting_remote_release_sha(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Feature",
+                                      summary="added feat",
+                                      merge_sha="sha001", labels=["type:feature"])
+        draft = get_draft(self.led, "proj", now=self.clock())
+        notes = draft.notes.render(include_maintenance=True, collapsed_maintenance=True)
+
+        # Remote release exists with conflicting SHA
+        self.gh.releases["v0.1.0"] = {
+            "tagName": "v0.1.0",
+            "targetCommitish": "different_sha_999",
+            "body": notes,
+            "url": "https://github.com/mkny13/mahler/releases/tag/v0.1.0",
+        }
+        self.gh.tags["v0.1.0"] = "different_sha_999"
+
+        with self.assertRaises(ReleaseConflictError) as cm:
+            publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertIn("conflicting with previewed SHA", str(cm.exception))
+
+        # Draft items remain unsealed
+        self.assertEqual(len(self.led.unreleased_items("proj")), 1)
+        self.assertIsNone(self.led.get_release("proj", version="0.1.0"))
+
+    def test_publish_refuses_conflicting_remote_release_notes(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Feature",
+                                      summary="added feat",
+                                      merge_sha="sha001", labels=["type:feature"])
+
+        # Remote release exists with different notes
+        self.gh.releases["v0.1.0"] = {
+            "tagName": "v0.1.0",
+            "targetCommitish": "sha001",
+            "body": "Completely different notes",
+            "url": "https://github.com/mkny13/mahler/releases/tag/v0.1.0",
+        }
+        self.gh.tags["v0.1.0"] = "sha001"
+
+        with self.assertRaises(ReleaseConflictError) as cm:
+            publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertIn("notes conflict", str(cm.exception))
+
+        # Draft items remain unsealed
+        self.assertEqual(len(self.led.unreleased_items("proj")), 1)
+        self.assertIsNone(self.led.get_release("proj", version="0.1.0"))
+
+    def test_publish_refuses_conflicting_remote_tag(self):
+        self.led.snapshot_release_item("proj", 1, pr=10, title="Feature",
+                                      summary="added feat",
+                                      merge_sha="sha001", labels=["type:feature"])
+
+        # Git tag exists at different SHA, but no release
+        self.gh.tags["v0.1.0"] = "different_tag_sha_888"
+
+        with self.assertRaises(ReleaseConflictError) as cm:
+            publish_release(self.led, self.gh, "proj", version="0.1.0", checkpoint_sha="sha001")
+        self.assertIn("remote tag v0.1.0 already exists at SHA different_tag_sha_888", str(cm.exception))
+
+        # Draft items remain unsealed
+        self.assertEqual(len(self.led.unreleased_items("proj")), 1)
+        self.assertIsNone(self.led.get_release("proj", version="0.1.0"))
 
 
 if __name__ == "__main__":
