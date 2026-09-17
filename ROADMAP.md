@@ -281,7 +281,9 @@ store.
 original sequence. Current enablement is machine state in `~/.mahler/config.toml`; the
 unchecked entries below are remaining roadmap candidates, not a claim about live config.
 
-- [ ] **thread as a sensor:** anomaly flags become `type:anomaly` issues.
+- [ ] **Mahler-native anomaly sensor:** useful legacy `thread` flags become `type:anomaly`
+      issues. The retired `~/ai-tools/thread.py` is not run or imported; the native sensor
+      must ignore `origin/mahler/*` and Mahler worktree roots (DESIGN D2).
 - [ ] Per-project onboarding checklist, run by an agent:
   - private GitHub repo
   - labels
@@ -289,7 +291,7 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
   - backlog migration
   - CLAUDE.md/AGENTS.md section
   - data inventory + first restore drill
-  - disable in `dispatch.toml`
+  - confirm no external agent dispatcher targets the project
 - [ ] Onboard in this order:
   1. **mental-jukebox** — original candidate
   2. **puppy-growth-chart** — original candidate
@@ -301,10 +303,17 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
        and ROADMAP's own onboarding checklist above, not independently verified here
   5. Non-git projects, as you choose to activate them
 - [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
-- [ ] Retire the dispatch launchd timer and Cline Kanban. Point ThreadBar at Mahler, or
-      retire it. Update `~/ai-tools` NOTES/TASKS.
+- [x] **Retire the legacy agent dispatchers.** The owner unloaded
+      `com.mike.dispatch` on 2026-09-16; `dispatch.py`, the legacy `thread.py` runtime,
+      ThreadBar, and Cline Kanban are retired. ThreadBar will not be repointed at Mahler.
+      Mahler is the only autonomous dispatcher for managed projects (DESIGN D2).
+  - **Manual machine cleanup still required:** stop/remove the currently running ThreadBar;
+    disable every entry in `~/ai-tools/dispatch.toml` (especially `mental-jukebox`); then
+    archive or remove the unloaded dispatch plist and update/archive `~/ai-tools` NOTES/TASKS.
+    These files and processes live outside this repository and are not changed by a Mahler PR.
 
-**Done when:** every active project runs through Mahler, and dispatch and Kanban are off.
+**Done when:** every active project runs through Mahler; dispatch and Kanban are off; and no
+external scanner or dispatcher acts on Mahler refs or worktrees.
 
 ---
 
