@@ -8,7 +8,10 @@ from .. import config, redact, watchdog
 def capture_title(text, limit=80):
     """The new issue's title: the capture's first line, cut at a word
     boundary to at most `limit` characters."""
-    line = text.split("\n", 1)[0].strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return "Empty capture"
+    line = lines[0]
     if len(line) <= limit:
         return line
     cut = line[:limit]

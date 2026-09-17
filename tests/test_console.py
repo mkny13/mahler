@@ -1306,6 +1306,8 @@ class CaptureOutboxTests(unittest.TestCase):
 
     def test_title_is_the_first_line_cut_at_a_word_boundary(self):
         self.assertEqual(self.outbox.capture_title('Title line\nrest of the idea'), 'Title line')
+        self.assertEqual(self.outbox.capture_title('\n\nTitle line\nrest of the idea'), 'Title line')
+        self.assertEqual(self.outbox.capture_title(' \n \n Title line \n '), 'Title line')
         long_word = 'x' * 90
         self.assertEqual(self.outbox.capture_title(long_word), long_word[:80])
         text = ('lorem ipsum ' * 10).strip()
