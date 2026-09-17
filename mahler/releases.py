@@ -544,3 +544,84 @@ def publish_release(led: Any, gh: Any, project: str, version: str,
         "release": local_rel,
         "url": url,
     }
+
+
+def semver_options(last_version: Optional[str], proposed_version: str) -> dict[str, str]:
+    """Calculate SemVer choices (proposed, patch, minor, major) for operator selection."""
+    if not last_version:
+        return {
+            "proposed": proposed_version,
+            "patch": "0.1.1",
+            "minor": "0.2.0",
+            "major": "1.0.0",
+        }
+    parsed = parse_semver(last_version)
+    if not parsed:
+        return {
+            "proposed": proposed_version,
+            "patch": "0.1.1",
+            "minor": "0.2.0",
+            "major": "1.0.0",
+        }
+    maj, min_, pat = parsed
+    return {
+        "proposed": proposed_version,
+        "patch": f"{maj}.{min_}.{pat + 1}",
+        "minor": f"{maj}.{min_ + 1}.0",
+        "major": f"{maj + 1}.0.0",
+    }
+
+
+def build_feed(led: Any, project: str, limit: int = 20) -> dict[str, Any]:
+    """Build the What's New JSON feed for a project (schema v1, DESIGN D31 / #358).
+
+    Strictly read-only, project-scoped, privacy-conscious:
+    - Backed only by published releases.
+    - Ordered newest first (descending by published_at / ID).
+    - Excludes sensitive operational data (prompts, logs, comments, credentials, checklist items).
+    - Items contain only number, pr, title, summary.
+    - Sections contain features, fixes, other; maintenance list separated.
+    - Empty state: HTTP 200 with "releases": [].
+    """
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    rows = led.list_releases(project)
+    published_rows = [r for r in rows if r["state"] == "published"][:limit]
+
+    now_dt = led.now() if hasattr(led, "now") else datetime.now(timezone.utc)
+    feed_releases = []
+
+    for r in published_rows:
+        item_rows = led.release_items_for_release(r["id"])
+        notes = synthesize_notes(item_rows)
+
+        def _feed_item(it: ReleaseItem) -> dict[str, Any]:
+            return {
+                "number": it.number,
+                "pr": it.pr,
+                "title": it.title,
+                "summary": it.summary,
+            }
+
+        rel_obj = {
+            "version": normalize_semver(r["version"]),
+            "checkpoint_sha": r["checkpoint_sha"],
+            "published_at": (r["published_at"] or "").replace("+00:00", "Z"),
+            "remote_url": r["remote_url"] or None,
+            "sections": {
+                "features": [_feed_item(it) for it in notes.features],
+                "fixes": [_feed_item(it) for it in notes.fixes],
+                "other": [_feed_item(it) for it in notes.other],
+            },
+            "maintenance": [_feed_item(it) for it in notes.maintenance],
+        }
+        feed_releases.append(rel_obj)
+
+    return {
+        "schema_version": 1,
+        "project": project,
+        "generated_at": (iso(now_dt) or "").replace("+00:00", "Z"),
+        "releases": feed_releases,
+    }
+

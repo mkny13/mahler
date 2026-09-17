@@ -20,8 +20,8 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
     JS = _fh.read()
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
-         ("capture", "Capture"), ("backlog", "Backlog"), ("capacity", "Capacity"),
-         ("stats", "Stats"), ("history", "Event stream"))
+         ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
+         ("capacity", "Capacity"), ("stats", "Stats"), ("history", "Event stream"))
 
 
 def e(s):
@@ -71,7 +71,7 @@ def app(s):
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
             + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s)
-            + _bug_overlays(s) + _capture_overlay(s))
+            + _bug_overlays(s) + _capture_overlay(s) + _release_preview_overlays(s))
 
 
 # ---------- shared pieces ----------
@@ -314,6 +314,7 @@ def _desktop(s):
         "test": (str(s["uat_count"]) if s["uat"] else "", "mut"),
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
+        "releases": (str(s["releases_suggested"]) if s.get("releases_suggested") else "", "acc"),
         "capacity": ("", "mut"),
         "stats": ("", "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
@@ -337,7 +338,7 @@ def _desktop(s):
     head = f'<div class="dhead"><span class="dtitle">{titles}</span>{peak_btn}</div>'
 
     views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
-             + _d_capacity(s) + _d_stats(s) + _d_history(s))
+             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_history(s))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -453,6 +454,185 @@ def _d_capture(s):
 def _d_backlog(s):
     return (f'<section class="view view-backlog">'
             f'{_backlog_groups(s, phone=False, dep_graph=s.get("dep_graph"))}</section>')
+
+
+def _d_releases(s):
+    out = ['<section class="view view-releases">']
+    for r in s["releases"]:
+        out.append(_project_releases_card(r, phone=False))
+    if not s["releases"]:
+        out.append('<div class="empty">No enabled projects.</div>')
+    out.append('</section>')
+    return "".join(out)
+
+
+def _p_releases(s):
+    out = ['<section class="tabv tabv-releases"><div class="pad">']
+    for r in s["releases"]:
+        out.append(_project_releases_card(r, phone=True))
+    if not s["releases"]:
+        out.append('<div class="empty">No enabled projects.</div>')
+    out.append('</div></section>')
+    return "".join(out)
+
+
+def _project_releases_card(r, phone=False):
+    proj = r["project"]
+    draft = r["draft"]
+    published = r["published"]
+    action = r.get("action") or {}
+
+    out = [f'<div class="grp rel-grp open" data-group="rel-{e(proj)}">']
+    out.append('<div class="grp-h-row">')
+    out.append(f'<div class="rel-proj-h"><span class="name">{e(proj)}</span></div>')
+
+    if action.get("status") == "pending":
+        out.append(f'<span class="rel-status rel-queued mono t-acc">Release v{e(action.get("version"))} queued…</span>')
+    elif draft["count"] > 0:
+        out.append(f'<button class="btn btn-acc" data-open-release="{e(proj)}">Cut release…</button>')
+    else:
+        out.append('<span class="mono t-mut rel-nodraft">No draft changes</span>')
+    out.append('</div>')
+
+    if action.get("status") == "pending":
+        out.append(f'<div class="bn bn-warn rel-banner">'
+                   f'<span class="kind mono">QUEUED</span>'
+                   f'<span class="txt">Release v{e(action.get("version"))} queued for publication on next tick.</span>'
+                   f'</div>')
+    elif action.get("status") == "failed":
+        out.append(f'<div class="bn bn-bad rel-banner">'
+                   f'<span class="kind mono">FAILED</span>'
+                   f'<span class="txt">Publication of v{e(action.get("version"))} failed: {e(action.get("result"))}</span>'
+                   f'</div>')
+    elif action.get("status") == "done" and action.get("result"):
+        out.append(f'<div class="bn bn-good rel-banner" style="border-color:var(--good)">'
+                   f'<span class="kind mono t-good">PUBLISHED</span>'
+                   f'<span class="txt">Release v{e(action.get("version"))} published: {e(action.get("result"))}</span>'
+                   f'</div>')
+
+    # Rolling draft
+    out.append('<div class="rel-draft-block">')
+    out.append('<div class="rel-draft-head">')
+    count_label = f"{draft['count']} unreleased item{'s' if draft['count'] != 1 else ''}"
+    age_label = f" · {draft['age']}" if draft.get("age") else ""
+    out.append(f'<span class="lbl">Rolling draft · <span class="mono">{e(count_label)}{e(age_label)}</span></span>')
+
+    if draft["is_suggested"]:
+        reasons_text = "; ".join(draft["readiness_reasons"])
+        out.append(f'<span class="pchip t-good" style="border-color:var(--good);color:var(--good);background:transparent">Suggested · {e(reasons_text)}</span>')
+    elif draft["count"] > 0:
+        out.append('<span class="pchip" style="color:var(--mut);border-color:var(--line);background:transparent">Accumulating</span>')
+
+    if draft["count"] > 0:
+        out.append(f'<span class="mono rel-prop-ver" style="margin-left:auto">Proposed: <strong>v{e(draft["proposed_version"])}</strong></span>')
+    out.append('</div>')
+
+    if draft["count"] == 0:
+        out.append('<div class="empty rel-empty-draft">No unreleased changes in draft.</div>')
+    else:
+        def _pr_tag(it):
+            if not it.get("pr_url") or not it.get("pr"):
+                return ""
+            pr_label = f"PR #{it['pr']}"
+            return f' <span class="pr-link">{_a(it["pr_url"], pr_label)}</span>'
+
+        notes_parts = []
+        if draft["features"]:
+            notes_parts.append('<div class="rel-cat"><span class="rel-cat-title">Features</span>')
+            for it in draft["features"]:
+                pr_link = _pr_tag(it)
+                sum_text = f'<div class="summary t-mut">{e(it["summary"])}</div>' if it["summary"] and it["summary"].lower() != it["title"].lower() else ""
+                notes_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                   f'<span class="title">{_a(it["url"], it["title"])}</span>{pr_link}{sum_text}</div>')
+            notes_parts.append('</div>')
+
+        if draft["fixes"]:
+            notes_parts.append('<div class="rel-cat"><span class="rel-cat-title">Fixes</span>')
+            for it in draft["fixes"]:
+                pr_link = _pr_tag(it)
+                sum_text = f'<div class="summary t-mut">{e(it["summary"])}</div>' if it["summary"] and it["summary"].lower() != it["title"].lower() else ""
+                notes_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                   f'<span class="title">{_a(it["url"], it["title"])}</span>{pr_link}{sum_text}</div>')
+            notes_parts.append('</div>')
+
+        if draft["other"]:
+            notes_parts.append('<div class="rel-cat"><span class="rel-cat-title">Other changes</span>')
+            for it in draft["other"]:
+                pr_link = _pr_tag(it)
+                sum_text = f'<div class="summary t-mut">{e(it["summary"])}</div>' if it["summary"] and it["summary"].lower() != it["title"].lower() else ""
+                notes_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                   f'<span class="title">{_a(it["url"], it["title"])}</span>{pr_link}{sum_text}</div>')
+            notes_parts.append('</div>')
+
+        out.append(f'<div class="rel-notes-body">{"".join(notes_parts)}</div>')
+
+        if draft["maintenance"]:
+            m_items = []
+            for it in draft["maintenance"]:
+                pr_link = _pr_tag(it)
+                sum_text = f'<div class="summary t-mut">{e(it["summary"])}</div>' if it["summary"] and it["summary"].lower() != it["title"].lower() else ""
+                m_items.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                               f'<span class="title">{_a(it["url"], it["title"])}</span>{pr_link}{sum_text}</div>')
+            out.append(f'<details class="rel-maint"><summary class="rel-maint-sum">Maintenance details ({len(draft["maintenance"])})</summary>'
+                       f'<div class="rel-items">{"".join(m_items)}</div></details>')
+
+    out.append('</div>')
+
+    # Published history
+    out.append('<div class="rel-history-block">')
+    out.append(f'<div class="rel-hist-head"><span class="lbl">Published release history ({len(published)})</span></div>')
+    if not published:
+        out.append('<div class="empty rel-empty-history">No releases published yet.</div>')
+    else:
+        for pub in published:
+            pub_link = _a(pub["remote_url"], f"v{pub['version']}", "rel-tag-link mono")
+            when_dt = parse(pub["published_at"]) if pub.get("published_at") else None
+            when_str = _hhmm(when_dt) if when_dt else ""
+            sha_str = f"sha {pub['checkpoint_sha'][:7]}" if pub.get("checkpoint_sha") else ""
+            gh_link = f' · {_a(pub["remote_url"], "GitHub release ↗")}' if pub.get("remote_url") else ""
+            out.append(f'<div class="rel-pub-entry">'
+                       f'<div class="rel-pub-bar">'
+                       f'<span class="rel-pub-ver font-bold">{pub_link}</span>'
+                       f'<span class="mono t-mut">{e(when_str)}</span>'
+                       f'<span class="mono t-mut">{e(sha_str)}</span>'
+                       f'<span class="rel-pub-links">{gh_link}</span>'
+                       f'</div>')
+            pub_parts = []
+            if pub.get("features"):
+                pub_parts.append('<div class="rel-cat"><span class="rel-cat-title">Features</span>')
+                for it in pub["features"]:
+                    pub_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                     f'<span class="title">{_a(it["url"], it["title"])}</span></div>')
+                pub_parts.append('</div>')
+            if pub.get("fixes"):
+                pub_parts.append('<div class="rel-cat"><span class="rel-cat-title">Fixes</span>')
+                for it in pub["fixes"]:
+                    pub_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                     f'<span class="title">{_a(it["url"], it["title"])}</span></div>')
+                pub_parts.append('</div>')
+            if pub.get("other"):
+                pub_parts.append('<div class="rel-cat"><span class="rel-cat-title">Other changes</span>')
+                for it in pub["other"]:
+                    pub_parts.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                     f'<span class="title">{_a(it["url"], it["title"])}</span></div>')
+                pub_parts.append('</div>')
+            if pub_parts:
+                out.append(f'<div class="rel-notes-body">{"".join(pub_parts)}</div>')
+            elif pub.get("notes"):
+                out.append(f'<pre class="rel-notes-plain">{e(pub["notes"])}</pre>')
+
+            if pub.get("maintenance"):
+                m_items = []
+                for it in pub["maintenance"]:
+                    m_items.append(f'<div class="rel-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+                                   f'<span class="title">{_a(it["url"], it["title"])}</span></div>')
+                out.append(f'<details class="rel-maint"><summary class="rel-maint-sum">Maintenance details ({len(pub["maintenance"])})</summary>'
+                           f'<div class="rel-items">{"".join(m_items)}</div></details>')
+            out.append('</div>')
+
+    out.append('</div>')
+    out.append('</div>')
+    return "".join(out)
 
 
 def _d_history(s):
@@ -582,6 +762,7 @@ def _d_stats(s):
 
 def _phone(s):
     runs, needs = len(s["runs"]), s["needs_count"]
+    sugg = s.get("releases_suggested")
     head = (f'<header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span>'
             f'{_state_label(s)}</div><div class="phead-btns">'
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
@@ -591,10 +772,12 @@ def _phone(s):
             f'<span class="mono t-acc">{runs or ""}</span></button>'
             f'<button class="tab" data-tab-go="triage"><span>Triage</span>'
             f'<span class="mono t-bad">{needs or ""}</span></button>'
+            f'<button class="tab" data-tab-go="releases"><span>Releases</span>'
+            f'<span class="mono t-acc">{sugg or ""}</span></button>'
             f'<button class="tab" data-tab-go="browse"><span>Browse</span></button>'
             f'<button class="tab" data-tab-go="stats"><span>Stats</span></button></div></header>')
     return (f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}'
-            f'{_p_browse(s)}{_p_stats(s)}</div></div>')
+            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}</div></div>')
 
 
 def _p_stats(s):
@@ -691,6 +874,8 @@ def _p_browse(s):
                'Hard line yields work in flight.</div></div>')
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Backlog</span>'
                f'{_backlog_groups(s, phone=True)}</div>')
+    out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Releases</span>'
+               f'<button class="link" data-tab-go="releases">Releases timeline →</button></div>')
     rows = []
     for ev in s["events"]:
         tone, text = _event_text(ev)
@@ -778,3 +963,62 @@ def _capture_overlay(s):
             f'<div class="cap">{_composer(s, 3, "Save")}</div>'
             f'<div class="capturefoot" style="margin-top:16px;display:flex;justify-content:flex-end"><button class="btn" data-close-capture>Cancel</button></div>'
             f'</div></div>')
+
+
+def _release_preview_overlays(s):
+    out = []
+    for r in s["releases"]:
+        proj = r["project"]
+        draft = r["draft"]
+        vopts = draft["version_options"]
+        count = draft["count"]
+        checkpoint = draft["checkpoint_sha"] or "unknown"
+        item_nums = ",".join(str(n) for n in draft["item_numbers"])
+
+        out.append(f'<div class="ov releaseov" data-release-detail="{e(proj)}">'
+                   f'<div class="box" role="dialog" aria-modal="true">'
+                   f'<div class="top"><button type="button" class="back" data-close-release>← Cancel</button>'
+                   f'<span class="ref mono">{e(proj)}</span></div>'
+                   f'<div class="inner" style="display:flex;flex-direction:column;gap:12px">'
+                   f'<h2>Cut release · {e(proj)}</h2>'
+                   f'<div class="rel-ver-picker">'
+                   f'<span class="lbl" style="margin-bottom:6px;display:block">Select SemVer:</span>'
+                   f'<div class="rel-ver-pills" style="display:flex;gap:6px;flex-wrap:wrap">'
+                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["proposed"])}">Proposed v{e(vopts["proposed"])}</button>'
+                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["patch"])}">Patch v{e(vopts["patch"])}</button>'
+                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["minor"])}">Minor v{e(vopts["minor"])}</button>'
+                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["major"])}">Major v{e(vopts["major"])}</button>'
+                   f'</div>'
+                   f'<div style="display:flex;align-items:center;gap:8px;margin-top:8px">'
+                   f'<span class="mono" style="font-size:12px;color:var(--mut)">SemVer:</span>'
+                   f'<input type="text" class="ver-input mono" data-keep="release_ver:{e(proj)}" '
+                   f'value="{e(draft["proposed_version"])}" placeholder="X.Y.Z" style="width:120px;height:32px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink)" />'
+                   f'</div></div>'
+                   f'<div class="rel-confirm-meta" style="font-size:13px;line-height:1.6;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--surf)">'
+                   f'<div><strong>Version to cut:</strong> <span class="mono sel-ver-display">v{e(draft["proposed_version"])}</span></div>'
+                   f'<div><strong>Checkpoint SHA:</strong> <span class="mono">{e(checkpoint)}</span></div>'
+                   f'<div><strong>Included items:</strong> {count} item{"s" if count != 1 else ""}</div>'
+                   + (f'<div><strong>Readiness:</strong> Suggested ({e("; ".join(draft["readiness_reasons"]))})</div>' if draft["is_suggested"] else "")
+                   + f'</div>'
+                   f'<div><span class="lbl" style="display:block;margin-bottom:6px">EXACT NOTES</span>'
+                   f'<pre class="notes-pre" style="white-space:pre-wrap;font-family:monospace;font-size:12px;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--bg);max-height:180px;overflow-y:auto">{e(draft["expanded_notes"] or "(no notes)")}</pre>'
+                   f'</div>'
+                   f'<div><span class="lbl" style="display:block;margin-bottom:6px">INCLUDED CHANGES ({count})</span>'
+                   f'<div style="max-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:4px;padding:8px">'
+        )
+        for it in draft["items"]:
+            out.append(f'<div style="font-size:12px;display:flex;gap:8px;align-items:baseline">'
+                       f'<span class="mono ref">{e(it["ref"])}</span>'
+                       f'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{e(it["title"] or it["summary"])}</span>'
+                       f'</div>')
+        out.append(f'</div></div>'
+                   f'<input type="hidden" class="rel-sha" value="{e(draft["checkpoint_sha"])}" />'
+                   f'<input type="hidden" class="rel-items" value="{e(item_nums)}" />'
+                   f'</div>'
+                   f'<div class="runfoot" style="margin-top:16px;display:flex;justify-content:space-between;align-items:center">'
+                   f'<button type="button" class="btn" data-close-release>Cancel</button>'
+                   f'<button type="button" class="btn btn-acc rel-confirm-btn" data-act="cut_release" data-project="{e(proj)}">'
+                   f'Confirm cut release v<span class="sel-ver-btn-txt">{e(draft["proposed_version"])}</span>'
+                   f'</button>'
+                   f'</div></div></div>')
+    return "".join(out)

@@ -362,3 +362,65 @@ class TestAttachments(_Served):
     def test_download_path_traversal(self):
         status, _, _ = self.request("/attachments/../config.toml")
         self.assertEqual(status, 404)
+
+
+class TestReleasesFeed(_Served):
+    def test_releases_feed_empty_state_and_headers(self):
+        status, headers, body = self.request("/api/releases/mahler")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        self.assertEqual(headers["Cache-Control"], "no-store")
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+        feed = json.loads(body)
+        self.assertEqual(feed["schema_version"], 1)
+        self.assertEqual(feed["project"], "mahler")
+        self.assertTrue(feed["generated_at"].endswith("Z"))
+        self.assertEqual(feed["releases"], [])
+
+    def test_releases_feed_url_variants(self):
+        for path in ("/api/releases/mahler", "/api/releases/mahler.json", "/api/projects/mahler/releases.json"):
+            status, _, body = self.request(path)
+            self.assertEqual(status, 200)
+            feed = json.loads(body)
+            self.assertEqual(feed["project"], "mahler")
+
+    def test_releases_feed_unknown_or_disabled_project(self):
+        status, _, _ = self.request("/api/releases/nonexistent")
+        self.assertEqual(status, 404)
+
+        # Disabled project returns 404
+        self.cfg["projects"]["mahler"]["enabled"] = False
+        status, _, _ = self.request("/api/releases/mahler")
+        self.assertEqual(status, 404)
+
+    def test_releases_feed_limit_query_param(self):
+        status, _, _ = self.request("/api/releases/mahler?limit=0")
+        self.assertEqual(status, 400)
+        status, _, _ = self.request("/api/releases/mahler?limit=-5")
+        self.assertEqual(status, 400)
+        status, _, _ = self.request("/api/releases/mahler?limit=abc")
+        self.assertEqual(status, 400)
+
+    def test_releases_feed_populated_release(self):
+        self.led.snapshot_release_item("mahler", 42, pr=43, title="New feature", summary="Added awesome feature",
+                                       merge_sha="sha_feat", labels=["type:feature"])
+        self.led.create_release("mahler", "1.0.0", checkpoint_sha="sha_feat",
+                                published_at="2026-09-17T01:00:00Z", remote_url="https://github.com/mkny13/mahler/releases/tag/v1.0.0")
+
+        status, _, body = self.request("/api/releases/mahler?limit=5")
+        self.assertEqual(status, 200)
+        feed = json.loads(body)
+        self.assertEqual(len(feed["releases"]), 1)
+        rel = feed["releases"][0]
+        self.assertEqual(rel["version"], "1.0.0")
+        self.assertEqual(rel["checkpoint_sha"], "sha_feat")
+        self.assertEqual(rel["published_at"], "2026-09-17T01:00:00Z")
+        self.assertEqual(len(rel["sections"]["features"]), 1)
+        self.assertEqual(rel["sections"]["features"][0]["number"], 42)
+        self.assertEqual(rel["sections"]["features"][0]["pr"], 43)
+        self.assertEqual(rel["sections"]["features"][0]["title"], "New feature")
+        self.assertEqual(rel["sections"]["features"][0]["summary"], "Added awesome feature")
+        # Ensure no internal fields leaked
+        self.assertNotIn("merge_sha", rel["sections"]["features"][0])
+        self.assertNotIn("labels", rel["sections"]["features"][0])
