@@ -24,6 +24,7 @@ MAINTENANCE_TEXT = {
     "guidance": ("Agent Guidance & Rule Calibration", "Agent Guidance & Rule Calibration — reviewing `AGENTS.md` / `CLAUDE.md` / `recipes` against observed failure modes, pruning obsolete instructions."),
     "backlog": ("Issue Backlog Pruning Pass", "Issue Backlog Pruning Pass — parent/goal issues whose sub-issues are all closed but the parent itself wasn't, issues superseded by a later split or refactor (check against current module boundaries, not the description text), duplicate or overlapping issues covering the same ground, and stale mahler:parked items worth reviving or closing."),
     "bugs": ("Correctness Bug Scan", "Correctness Bug Scan — logic errors, off-by-one and boundary conditions, incorrect error handling or silently-swallowed exceptions, race conditions between concurrent runs, and edge cases (None/empty/malformed input) found by close reading or targeted tests. Not style, structure or refactoring — that's the health pass."),
+    "docs": ("Documentation Review Pass", "Documentation Review Pass — checking documentation against behavior."),
 }
 
 
