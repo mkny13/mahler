@@ -547,6 +547,8 @@ class SchemaDriftTests(unittest.TestCase):
 
     MIGRATED_ITEM_COLS = ("pr", "summary", "setup_fails", "parent",
                           "esc_tier", "esc_fails", "question", "options")
+    MIGRATED_UAT_COLS = ("pr", "sha", "title", "needs", "shipped_at",
+                         "verdict", "verdict_at", "bug", "note")
 
     def _cols(self, con, table):
         return {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -591,6 +593,28 @@ class SchemaDriftTests(unittest.TestCase):
             item = led.item("p", 1)
             self.assertIsNone(item["question"])
             self.assertEqual(item["options"], "[]")
+
+    def test_legacy_uat_table_with_missing_columns_is_migrated(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.execute("CREATE TABLE uat (project TEXT NOT NULL, number INTEGER NOT NULL, "
+                        "title TEXT, PRIMARY KEY (project, number))")
+            con.execute("INSERT INTO uat (project, number, title) "
+                        "VALUES ('p', 1, 'Legacy UAT')")
+            con.commit()
+            con.close()
+
+            led = Ledger(path)
+            self.addCleanup(led.close)
+
+            cols = self._cols(led.con, "uat")
+            for col in self.MIGRATED_UAT_COLS:
+                self.assertIn(col, cols)
+            rows = led.pending_uat()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], "Legacy UAT")
+            self.assertIsNone(rows[0]["verdict_at"])
 
 
 class MaintenanceConfigTests(unittest.TestCase):
@@ -1149,4 +1173,3 @@ class ReleaseLedgerTests(unittest.TestCase):
                 pass
         self.assertIsNotNone(self.led.item("p", 1))
         self.assertIsNone(self.led.item("p", 2))
-
