@@ -95,6 +95,7 @@ class GH:
     def __init__(self, repo, env=None):
         self.repo = repo
         self.env = env      # the project's account env (DESIGN D25); None = inherit
+        self._relationships = {}
 
     def _gh(self, *args, **kw):
         return _gh(*args, env=self.env, **kw)
@@ -104,8 +105,41 @@ class GH:
 
     def open_issues(self):
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
-                       "--json", "number,title,labels,body,createdAt,updatedAt,comments,url")
-        return json.loads(out)
+                       "--json", "number,title,labels,body,createdAt,updatedAt,comments,url,"
+                       "blocking,blockedBy")
+        issues = json.loads(out)
+        self._relationships = {
+            issue["number"]: {
+                "blocking": _relationship_numbers(issue.get("blocking")),
+                "blockedBy": _relationship_numbers(issue.get("blockedBy")),
+            }
+            for issue in issues
+        }
+        return issues
+
+    def _relationships_of(self, number):
+        """Both native GitHub dependency directions for one issue.
+
+        A full sync gets these fields in open_issues(), so this normally costs
+        no extra request. Direct callers still get a current issue view.
+        """
+        if number not in self._relationships:
+            out = self._gh("issue", "view", str(number), "-R", self.repo,
+                           "--json", "blocking,blockedBy")
+            issue = json.loads(out)
+            return {
+                "blocking": _relationship_numbers(issue.get("blocking")),
+                "blockedBy": _relationship_numbers(issue.get("blockedBy")),
+            }
+        return self._relationships[number]
+
+    def blocking_of(self, number):
+        """Issue numbers that ``number`` blocks through GitHub's native relation."""
+        return list(self._relationships_of(number)["blocking"])
+
+    def blocked_by_of(self, number):
+        """Issue numbers that natively block ``number`` on GitHub."""
+        return list(self._relationships_of(number)["blockedBy"])
 
     def issues_changed(self, etag=None):
         """Conditional probe of the open-issue collection (mahler#90).
@@ -304,6 +338,16 @@ class GH:
 
 def label_names(issue):
     return [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]
+
+
+def _relationship_numbers(relationship):
+    """Normalize gh's ``{nodes: [{number: N}]}`` relationship shape."""
+    numbers = []
+    for node in (relationship or {}).get("nodes", []):
+        number = node.get("number") if isinstance(node, dict) else None
+        if isinstance(number, int) and not isinstance(number, bool) and number not in numbers:
+            numbers.append(number)
+    return numbers
 
 
 def priority_of(labels):

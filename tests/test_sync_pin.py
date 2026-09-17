@@ -59,6 +59,9 @@ class FakeGH:
             raise GHError("github down")
         return "OPEN"
 
+    def blocked_by_of(self, number):
+        return list(self.issues[number].get("blocked_by", []))
+
     def comment(self, number, body):
         pass
 
@@ -479,8 +482,9 @@ class SatisfiableDependsTests(unittest.TestCase):
         self.addCleanup(self.led.close)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
 
-    def sync_body(self, body, extra=None):
-        issues = {5: {"title": "Child", "labels": ["mahler:ready"], "body": body}}
+    def sync_body(self, body, extra=None, blocked_by=()):
+        issues = {5: {"title": "Child", "labels": ["mahler:ready"], "body": body,
+                      "blocked_by": list(blocked_by)}}
         issues.update(extra or {})
         gh = FakeGH(issues)
         with mock.patch.object(self.ctx, "gh", return_value=gh):
@@ -505,6 +509,13 @@ class SatisfiableDependsTests(unittest.TestCase):
         self.led.set_state("proj", 11, "done", "test")
         self.assertEqual([it["number"] for _, _, it in
                           tick._candidates(self.ctx, [self.ctx.policy("proj")])], [5])
+
+    def test_native_blockers_merge_with_body_dependencies_and_deduplicate(self):
+        self.assertEqual(self.sync_body("Depends on: #11, #12", blocked_by=[12, 13]),
+                         [11, 12, 13])
+
+    def test_native_self_and_ancestor_blockers_are_removed(self):
+        self.assertEqual(self.sync_body("Part of #10", blocked_by=[5, 10, 11]), [11])
 
     def test_self_is_removed(self):
         self.assertEqual(self.sync_body("Depends on: #5"), [])

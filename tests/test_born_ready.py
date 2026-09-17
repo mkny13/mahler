@@ -32,6 +32,9 @@ class FakeGH:
     def issue_state(self, number):
         return "OPEN"
 
+    def blocked_by_of(self, number):
+        return []
+
 
 class BornReadyTests(unittest.TestCase):
     def setUp(self):
