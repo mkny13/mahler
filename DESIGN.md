@@ -712,7 +712,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   - MCP: the official Python SDK (streamable HTTP on the tailnet, stdio shim for local clients)
   - GitHub: `gh` / REST, using your existing `gh` auth
   - notifications: HTTP POST to ntfy
-- **Processes:** one launchd daemon, `com.mike.mahler`, with `KeepAlive` and an explicit `PATH`.
+- **Processes:** one launchd daemon, `local.mahler`, with `KeepAlive` and an explicit `PATH`.
   Loops:
   - GitHub sync 60s · scheduler 30s · watchdog 15s
   - usage probes 5 min · thread sensor 10 min
@@ -934,7 +934,7 @@ never run.
 
 Decided 2026-09-13 (your call). On weekdays from 5 to 11am Pacific (8am–2pm Eastern), Mahler
 starts no Claude runs (`claude`, `claude-opus`). Running work continues, and the hard lines still
-apply. To override: `mahler peak off [--for 2h]`, or pin an item to a Claude platform. The window
+apply. To override: `mahler peak --off [--for 2h]`, or pin an item to a Claude platform. The window
 lives in `[claude_peak]` in the config, and can be switched off.
 
 Why: from March 2026 Anthropic cut 5-hour limits in that window, and the Claude Usage menu-bar
@@ -1115,7 +1115,7 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
   only from this machine (which is how `tailscale serve` connects) or a Tailscale address,
   with an `X-Mahler-Console: 1` header, a JSON body, and a same-origin `Origin`. A cross-site
   page can't send that header without a CORS preflight, and the server answers none.
-  - Writes that only touch the ledger apply at once, as `mahler pause` and `mahler peak off`
+  - Writes that only touch the ledger apply at once, as `mahler pause` and `mahler peak --off`
     already do from outside the tick: pause and resume, the peak override, clearing a
     backoff, marking the digest seen.
   - Writes that reach GitHub or a running agent (answering a needs-you item, UAT pass and
@@ -1135,7 +1135,7 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
   page. Until it is, the page derives what it can see from the ledger: peak hours, quota
   lines, backoffs, a project slot held by an unmerged change, hot holds.
 - **The peak override from the console holds until you switch it back**, as the design's
-  copy says. `mahler peak off` keeps its timed default, and `mahler peak on` or Restore
+  copy says. `mahler peak --off` keeps its timed default, and `mahler peak --on` or Restore
   clears either.
 - The event stream is a view one click away, never ambient. Banners appear only in Triage
   and Needs you, one expanded at a time.

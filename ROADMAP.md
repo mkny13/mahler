@@ -30,7 +30,7 @@ so this section says where things actually stand; the phase list below stays as 
 detailed record.
 
 - **Three projects self-managed:** `mahler`, `groundwork`, and `phish-in` (Couch Tour) are
-  all `enabled = true` and running under the same daemon (`com.mike.mahler`, launchd,
+  all `enabled = true` and running under the same daemon (`local.mahler`, launchd,
   60s tick). Recent throughput: ~90 mahler PRs, ~45 groundwork PRs and ~50 couch-tour PRs
   merged in the trailing 14 days. 551 unit tests pass.
 - **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
@@ -125,7 +125,7 @@ project: Mahler itself.
 - **Recipes:** `sort` and `build`.
 - **ntfy** pings: needs-you, shipped, handoff, failed.
 - **Self-hosting** (D17): `~/.mahler/app` clone at known-good, the tiny launcher with CI-gated
-  self-update and rollback, launchd `com.mike.mahler`.
+  self-update and rollback, launchd `local.mahler`.
 - **Mahler repo:** private GitHub remote, CI (unit tests), labels, `CLAUDE.md`/`AGENTS.md`
   with the agent rules, `.mahler/project.toml`.
 
@@ -140,7 +140,7 @@ project: Mahler itself.
 - the statusline sidecar
 - groundwork onboarding
 
-**Status (2026-09-12):** kernel built and running under launchd (`com.mike.mahler`).
+**Status (2026-09-12):** kernel built and running under launchd (`local.mahler`).
 First pipeline run: issue mahler#1 sorted by Claude, built by Antigravity's Claude pool.
 groundwork was brought in early at your request, scoped to issues labelled `mahler`
 (#80, #81), with production data off-limits until Phase 4. Phase 1 items are filed as
