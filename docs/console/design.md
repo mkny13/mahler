@@ -306,7 +306,7 @@ each with a right-aligned mono count:
 
 `Now` (run count, `--acc`) · `Needs you` (open count, `--bad`) ·
 `Ready to test` (count) · `Capture` · `Backlog` (total items) ·
-`Event stream` (`3 new` until seen).
+`Capacity` · `Event stream` (`3 new` until seen).
 
 **The event stream is a rail item on purpose.** The user does not want a live
 feed in their peripheral vision — it must be one click away and otherwise
@@ -323,7 +323,14 @@ Header row: current view title, and right-aligned a bordered peak-hours button
   (`grid-template-columns: 124px 1fr 100px 116px 90px` — ref, title, platform,
   timing, mini bar), 1px rules, whole row clickable. 0-runs state is the same
   reason block, laid out horizontally: sentence, countdown, override button.
-  Capacity sentence below a rule.
+  Capacity sentence below a rule; the `Capacity` label is a link to the
+  full-screen Capacity view.
+- **Capacity** (mahler#335) — one bordered card per quota group: name, worst
+  label, model line, the gauge bar with its soft tick, and a row per quota
+  window (`5h · bar · 63% · soft 60% · resets 13:40`), then a meta line of
+  members, metered/unmetered, build role and availability. Reachable from any
+  view via the rail, the Now view's capacity line, or the sidebar's `CAPACITY`
+  header.
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
@@ -346,7 +353,8 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 3. **`BACKLOG`** — one row per project: name + `14 · 5 ready · 2 live · 1 you`.
    Clicking jumps to that project, expanded, in the Backlog view.
 4. **`CAPACITY`** — the compact quota gauges (76px name column, 9px bar, 52px
-   label) with the model name on a second line, then `Event stream →`.
+   label) with the model name on a second line, then `Event stream →`. The
+   header is a link to the full-screen Capacity view (mahler#335).
 
 There is deliberately **no quick-capture box here** — Capture is one rail click
 away, and a second composer was redundant.
