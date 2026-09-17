@@ -281,6 +281,13 @@ class Ledger:
                          ("shipped_at", "TEXT"), ("release_id", "INTEGER")):
             if col not in item_rel_cols:
                 self.con.execute(f"ALTER TABLE release_items ADD COLUMN {col} {ddl}")
+        uat_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(uat)")}
+        for col, ddl in (("pr", "INTEGER"), ("sha", "TEXT"), ("title", "TEXT"),
+                         ("needs", "TEXT"), ("shipped_at", "TEXT"),
+                         ("verdict", "TEXT"), ("verdict_at", "TEXT"),
+                         ("bug", "INTEGER"), ("note", "TEXT")):
+            if col not in uat_cols:
+                self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
         # migrate legacy 'tracking' state to 'parent'
         self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
         if path != ":memory:":
