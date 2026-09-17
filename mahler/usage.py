@@ -9,7 +9,7 @@ import os
 import json
 from datetime import timedelta
 
-from . import config, platforms, presence, router
+from . import config, notify, platforms, presence, router
 from .ledger import iso, parse
 
 
@@ -139,6 +139,25 @@ def refresh_codex(cfg, led, name, force=False):
                 **samples.metadata, "sampled_at": iso(led.now())}))
         for w, pct, resets in samples:
             led.record_usage(peer, w, pct, resets)
+    if isinstance(samples, platforms.CodexUsage):
+        is_exhausted = bool(samples.metadata.get("blocked") or any(pct >= 100.0 for _, pct, _ in samples))
+        notified_key = f"notified:codex-exhausted:{account}"
+        if is_exhausted:
+            if not led.get_kv(notified_key):
+                credits = samples.metadata.get("reset_credits")
+                if credits:
+                    msg = (f"Codex ({account}) reached 100% quota ({credits} reset credit"
+                           f"{'s' if credits != 1 else ''} available). Hit reset in ChatGPT to refresh.")
+                elif credits == 0:
+                    msg = f"Codex ({account}) reached 100% quota (no reset credits remaining)."
+                else:
+                    msg = f"Codex ({account}) reached 100% quota."
+                notify.send(cfg, f"Codex ({account}) quota exhausted", msg,
+                            priority="high", tags="warning,hourglass")
+                led.set_kv(notified_key, iso(led.now()))
+        else:
+            if led.get_kv(notified_key):
+                led.set_kv(notified_key, "")
 
 
 def refresh_usage(ctx, projects):

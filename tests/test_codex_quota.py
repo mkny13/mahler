@@ -169,3 +169,44 @@ class CodexRefreshTests(unittest.TestCase):
         env = probe.call_args.kwargs["env"]
         self.assertEqual(env["CODEX_HOME"], os.path.expanduser("~/.codex"))
         self.assertNotIn("OPENAI_API_KEY", env)
+
+    def test_notify_when_codex_exhausted_and_cleared_on_recovery(self):
+        with mock.patch("mahler.notify.send") as notify_send:
+            # 1. Exhausted with 3 reset credits -> sends high priority notification
+            exhausted_usage = platforms._codex_usage(response(blocked=True))
+            with mock.patch.object(platforms, "probe_codex", return_value=exhausted_usage):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_called_once()
+            args, kwargs = notify_send.call_args
+            self.assertEqual(args[1], "Codex (work) quota exhausted")
+            self.assertIn("3 reset credits available", args[2])
+            self.assertIn("Hit reset in ChatGPT to refresh", args[2])
+            self.assertEqual(kwargs.get("priority"), "high")
+            self.assertEqual(kwargs.get("tags"), "warning,hourglass")
+            self.assertTrue(self.led.get_kv("notified:codex-exhausted:work"))
+
+            # 2. Duplicate probe while still exhausted does not send again
+            notify_send.reset_mock()
+            with mock.patch.object(platforms, "probe_codex", return_value=exhausted_usage):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_not_called()
+
+            # 3. Recovers -> clears the notified flag
+            ok_usage = platforms._codex_usage(response(blocked=False))
+            with mock.patch.object(platforms, "probe_codex", return_value=ok_usage):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_not_called()
+            self.assertEqual(self.led.get_kv("notified:codex-exhausted:work"), "")
+
+    def test_notify_when_codex_exhausted_zero_credits(self):
+        with mock.patch("mahler.notify.send") as notify_send:
+            body = response(blocked=True)
+            body["rateLimitResetCredits"]["availableCount"] = 0
+            exhausted_usage = platforms._codex_usage(body)
+            with mock.patch.object(platforms, "probe_codex", return_value=exhausted_usage):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_called_once()
+            args, _ = notify_send.call_args
+            self.assertEqual(args[1], "Codex (work) quota exhausted")
+            self.assertIn("no reset credits remaining", args[2])
+
