@@ -460,6 +460,97 @@ class EventTests(unittest.TestCase):
         self.assertEqual(state.build(cfg, led)["digest"]["count"], 1)
 
 
+class ProjectBriefTests(unittest.TestCase):
+    def ship(self, led, project, number, title, labels=(), summary="", pr=None):
+        led.snapshot_release_item(project, number, pr=pr or number + 100,
+                                  title=title, summary=summary, labels=list(labels))
+        led.event("shipped", project, number, {"pr": pr or number + 100})
+        return led.q1("SELECT max(id) AS id FROM events")["id"]
+
+    def test_first_use_groups_captured_changes_and_collapses_maintenance(self):
+        cfg, led = make_cfg(), make_led()
+        first = self.ship(led, "mahler", 1, "New dashboard", ["type:feature"],
+                          "Show the whole system at a glance")
+        self.ship(led, "mahler", 2, "Fix stale count", ["type:bug"])
+        last = self.ship(led, "mahler", 3, "Refresh audit", ["type:chore"])
+
+        brief = state.build(cfg, led)["briefs"][0]
+        self.assertEqual((brief["project"], brief["seen"], brief["upto"], brief["count"]),
+                         ("mahler", 0, last, 3))
+        self.assertEqual([i["number"] for i in brief["features"]], [1])
+        self.assertEqual([i["number"] for i in brief["fixes"]], [2])
+        self.assertEqual([i["number"] for i in brief["maintenance"]], [3])
+        self.assertEqual(brief["features"][0]["summary"],
+                         "Show the whole system at a glance")
+        self.assertEqual(brief["maintenance_count"], 1)
+        self.assertEqual(brief["oldest_shipped_at"], iso(led.now()))
+        self.assertEqual(brief["newest_shipped_at"], iso(led.now()))
+        self.assertLess(first, last)
+
+        rendered = page._project_brief(brief)
+        # This exact shared renderer is called by both responsive layouts.
+        self.assertIn("New dashboard", rendered)
+        self.assertIn("Maintenance (1)", rendered)
+        self.assertIn('data-act="brief_seen"', rendered)
+
+    def test_acknowledgement_is_per_project_idempotent_and_race_safe(self):
+        cfg, led = make_cfg(), make_led()
+        old_cursor = self.ship(led, "mahler", 1, "First", ["type:feature"])
+        self.ship(led, "groundwork", 7, "Other project", ["type:bug"])
+        displayed = state.build(cfg, led)
+        self.assertEqual(next(b for b in displayed["briefs"] if b["project"] == "mahler")["upto"],
+                         old_cursor)
+
+        # This shipment races the acknowledgement of the already-rendered cursor.
+        new_cursor = self.ship(led, "mahler", 2, "Arrived later", ["type:bug"])
+        result = actions.run(cfg, led, "brief_seen",
+                             {"project": "mahler", "upto": old_cursor})
+        self.assertEqual(result, {"upto": old_cursor})
+        briefs = {b["project"]: b for b in state.build(cfg, led)["briefs"]}
+        self.assertEqual([i["number"] for i in briefs["mahler"]["fixes"]], [2])
+        self.assertEqual(briefs["mahler"]["upto"], new_cursor)
+        self.assertEqual(briefs["groundwork"]["count"], 1)
+
+        again = actions.run(cfg, led, "brief_seen",
+                            {"project": "mahler", "upto": old_cursor})
+        self.assertEqual(again, {"upto": old_cursor, "deduplicated": True})
+        self.assertEqual(led.q1("SELECT count(*) AS n FROM events "
+                                "WHERE kind='console_brief_seen'")["n"], 1)
+
+    def test_cursor_must_be_a_shipment_for_the_enabled_project(self):
+        cfg, led = make_cfg(), make_led()
+        other_cursor = self.ship(led, "groundwork", 7, "Other")
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "brief_seen",
+                        {"project": "mahler", "upto": other_cursor})
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "brief_seen", {"project": "old", "upto": other_cursor})
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "brief_seen", {"project": "groundwork", "upto": True})
+
+    def test_brief_spans_zero_one_and_multiple_releases_without_mutating_them(self):
+        cfg, led = make_cfg(), make_led()
+        self.assertTrue(state.build(cfg, led)["briefs"][0]["up_to_date"])
+        first = self.ship(led, "mahler", 1, "Released once", ["type:feature"])
+        led.create_release("mahler", "0.1.0", "sha1", item_numbers=[1])
+        self.ship(led, "mahler", 2, "Released twice", ["type:bug"])
+        led.create_release("mahler", "0.1.1", "sha2", item_numbers=[2])
+        self.ship(led, "mahler", 3, "Still unreleased", ["type:feature"])
+
+        brief = state.build(cfg, led)["briefs"][0]
+        self.assertEqual(brief["release_versions"], ["0.1.0", "0.1.1"])
+        self.assertEqual(brief["count"], 3)
+        before_releases = [(r["id"], r["state"]) for r in led.list_releases("mahler")]
+        before_items = [(r["number"], r["release_id"])
+                        for r in led.q("SELECT * FROM release_items ORDER BY number")]
+        actions.run(cfg, led, "brief_seen", {"project": "mahler", "upto": first})
+        self.assertEqual([(r["id"], r["state"]) for r in led.list_releases("mahler")],
+                         before_releases)
+        self.assertEqual([(r["number"], r["release_id"])
+                          for r in led.q("SELECT * FROM release_items ORDER BY number")],
+                         before_items)
+
+
 class PeakOverrideTests(unittest.TestCase):
     @local_timezone("America/Los_Angeles")
     def test_manual_override_holds_until_restored(self):

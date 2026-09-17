@@ -329,6 +329,10 @@
         text: el.hasAttribute("data-text") ? el.getAttribute("data-text") : (input ? input.value : "") };
     }
     if (act === "digest_seen") { return { upto: Number(el.getAttribute("data-upto")) || 0 }; }
+    if (act === "brief_seen") {
+      return { project: el.getAttribute("data-project"),
+        upto: Number(el.getAttribute("data-upto")) || 0 };
+    }
     if (act === "stop_run") { return { run: Number(el.getAttribute("data-run")) }; }
     if (act === "capture") {
       var cap = el.closest(".cap");

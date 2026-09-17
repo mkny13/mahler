@@ -458,8 +458,9 @@ def _d_backlog(s):
 
 def _d_releases(s):
     out = ['<section class="view view-releases">']
+    briefs = {b["project"]: b for b in s["briefs"]}
     for r in s["releases"]:
-        out.append(_project_releases_card(r, phone=False))
+        out.append(_project_releases_card(r, briefs[r["project"]], phone=False))
     if not s["releases"]:
         out.append('<div class="empty">No enabled projects.</div>')
     out.append('</section>')
@@ -468,15 +469,62 @@ def _d_releases(s):
 
 def _p_releases(s):
     out = ['<section class="tabv tabv-releases"><div class="pad">']
+    briefs = {b["project"]: b for b in s["briefs"]}
     for r in s["releases"]:
-        out.append(_project_releases_card(r, phone=True))
+        out.append(_project_releases_card(r, briefs[r["project"]], phone=True))
     if not s["releases"]:
         out.append('<div class="empty">No enabled projects.</div>')
     out.append('</div></section>')
     return "".join(out)
 
 
-def _project_releases_card(r, phone=False):
+def _brief_item(it):
+    summary = (f'<span class="summary t-mut">{e(it["summary"])}</span>'
+               if it["summary"] and it["summary"].lower() != it["title"].lower() else "")
+    version = (f'<span class="brief-ver mono">v{e(it["release_version"])}</span>'
+               if it["release_version"] else "")
+    return (f'<div class="brief-item"><span class="ref mono">{_a(it["url"], it["ref"])}</span>'
+            f'<span class="title">{_a(it["url"], it["title"])}</span>{version}{summary}</div>')
+
+
+def _project_brief(brief):
+    """One shared rendering used in the desktop and phone release layouts."""
+    out = ['<section class="brief">', '<div class="brief-head">',
+           '<span class="lbl">Since you last looked</span>']
+    if brief["count"]:
+        meta = f'{brief["count"]} change{"s" if brief["count"] != 1 else ""}'
+        if brief["range"]:
+            meta += f' · {brief["range"]}'
+        out.append(f'<span class="brief-meta mono t-acc">{e(meta)}</span>')
+        out.append(f'<button class="btn" data-act="brief_seen" '
+                   f'data-project="{e(brief["project"])}" data-upto="{brief["upto"]}">'
+                   'Mark caught up</button>')
+    else:
+        out.append('<span class="brief-meta mono t-mut">Up to date</span>')
+    out.append('</div>')
+    if not brief["count"]:
+        out.append('<div class="brief-empty">No changes since you last looked.</div>')
+    else:
+        for key, label in (("features", "Features"), ("fixes", "Fixes"),
+                           ("other", "Other changes")):
+            if brief[key]:
+                out.append(f'<div class="brief-cat"><span class="brief-cat-title">{label}</span>')
+                out.extend(_brief_item(it) for it in brief[key])
+                out.append('</div>')
+        if brief["maintenance"]:
+            out.append(f'<details class="brief-maint"><summary>Maintenance '
+                       f'({brief["maintenance_count"]})</summary>')
+            out.extend(_brief_item(it) for it in brief["maintenance"])
+            out.append('</details>')
+        if brief["release_versions"]:
+            versions = ", ".join(f'v{v}' for v in brief["release_versions"])
+            out.append(f'<div class="brief-context mono">Includes published {e(versions)}; '
+                       'the brief read state is independent of releases.</div>')
+    out.append('</section>')
+    return "".join(out)
+
+
+def _project_releases_card(r, brief, phone=False):
     proj = r["project"]
     draft = r["draft"]
     published = r["published"]
@@ -493,6 +541,8 @@ def _project_releases_card(r, phone=False):
     else:
         out.append('<span class="mono t-mut rel-nodraft">No draft changes</span>')
     out.append('</div>')
+
+    out.append(_project_brief(brief))
 
     if action.get("status") == "pending":
         out.append(f'<div class="bn bn-warn rel-banner">'

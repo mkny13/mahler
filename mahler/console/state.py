@@ -21,6 +21,7 @@ from . import outbox
 EVENTS_SHOWN = 50
 DIGEST_SHOWN = 20
 SEEN_KEY = "console_seen_event"        # kv: the newest event id marked seen
+BRIEF_SEEN_PREFIX = "console_brief_seen:"  # kv: per-project shipped event cursor
 DIGEST_HOURS = 24                      # older unseen events stop counting as new
 CAPTURE_RECENT_MINUTES = 10            # how long a capture's confirmation note lingers
 REASON_ITEMS_CAP = 20                  # max items shown behind an expanded hold reason
@@ -28,7 +29,7 @@ REASON_ITEMS_CAP = 20                  # max items shown behind an expanded hold
 # bookkeeping the event stream leaves out: every lease and heartbeat, stats
 # rows, and the console's own read marker
 QUIET_KINDS = ("lease", "release", "issue_done_stats", "estimate_calibration",
-               "console_seen")
+               "console_seen", "console_brief_seen")
 # state transitions worth a row; the rest repeat a run_start, pr_opened or
 # shipped event logged in the same tick
 STREAM_STATES = ("ready", "inbox", "needs_you", "failed", "parked", "parent")
@@ -66,6 +67,7 @@ def build(cfg, led, stats_range="week"):
     hot = _hot_holds(led, projects, now)
     project_names = [p["name"] for p in projects]
     releases_data = _releases(cfg, led, projects, now)
+    briefs = _briefs(cfg, led, projects, now)
     s = {
         "paused": paused,
         "system": ({"label": "PAUSED", "tone": "warn"} if paused else
@@ -87,6 +89,8 @@ def build(cfg, led, stats_range="week"):
         "stats_range": _stats_range_key(stats_range),
         "releases": releases_data,
         "releases_suggested": sum(1 for r in releases_data if r["draft"]["is_suggested"]),
+        "briefs": briefs,
+        "briefs_unread": sum(b["count"] for b in briefs),
         "events": events,
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
@@ -199,6 +203,16 @@ def _when(dt, now):
     if ahead < timedelta(days=6):
         return local.strftime("%a %H:%M")
     return f"{local:%b} {local.day}"
+
+
+def _brief_when(dt, now):
+    """A shipment time: time today, date for older catch-up material."""
+    local, local_now = dt.astimezone(), now.astimezone()
+    if local.date() == local_now.date():
+        return local.strftime("%H:%M")
+    if local.year == local_now.year:
+        return f"{local:%b} {local.day}"
+    return f"{local:%b} {local.day} {local.year}"
 
 
 def _ref(project, number):
@@ -759,6 +773,102 @@ def _releases(cfg, led, projects, now):
             "draft": draft_dict,
             "published": published,
             "action": action_state,
+        })
+    return out
+
+
+# ---------- since-last-look project briefs (mahler#360) ----------
+
+def brief_seen_key(project):
+    return f"{BRIEF_SEEN_PREFIX}{project}"
+
+
+def _briefs(cfg, led, projects, now):
+    """Shipped changes after each project's independently acknowledged event.
+
+    Event ids are the read cursor.  The release-item snapshot is the content,
+    so publishing a release can add context but never changes what is unread.
+    """
+    from .. import releases
+
+    out = []
+    for p in projects:
+        project = p["name"]
+        try:
+            seen = int(led.get_kv(brief_seen_key(project)) or 0)
+        except (TypeError, ValueError):
+            seen = 0
+        shipped = led.q(
+            "SELECT id, at, number, detail FROM events "
+            "WHERE kind='shipped' AND project=? AND id>? ORDER BY id",
+            (project, seen))
+        entries = []
+        times = []
+        release_versions = []
+        for event in shipped:
+            item_row = led.release_item(project, event["number"])
+            item = releases._to_release_item(item_row or {})
+            if not item.number:
+                current = led.item(project, event["number"])
+                item = releases.ReleaseItem(
+                    project=project, number=event["number"],
+                    title=row_get(current, "title", ""))
+            detail = _detail_json(event["detail"]) or {}
+            if not item.pr:
+                item.pr = detail.get("pr")
+            release_version = ""
+            if item.release_id:
+                release_row = led.get_release(project, release_id=item.release_id)
+                release_version = row_get(release_row, "version", "")
+                if release_version and release_version not in release_versions:
+                    release_versions.append(release_version)
+            at = parse(event["at"])
+            if at:
+                times.append(at)
+            entries.append({
+                "event_id": event["id"],
+                "number": item.number,
+                "pr": item.pr,
+                "title": item.title or f"Issue #{item.number}",
+                "summary": item.summary,
+                "ref": _ref(project, item.number),
+                "url": _issue_url(cfg, project, item.number),
+                "pr_url": _pr_url(cfg, project, item.pr) if item.pr else None,
+                "release_version": release_version,
+                "_item": item,
+            })
+
+        by_number = {entry["number"]: entry for entry in entries}
+        notes = releases.synthesize_notes([entry["_item"] for entry in entries])
+
+        def grouped(items):
+            return [{k: v for k, v in by_number[it.number].items() if k != "_item"}
+                    for it in items]
+
+        oldest, newest = (min(times), max(times)) if times else (None, None)
+        if oldest and newest:
+            if oldest == newest:
+                range_label = f"shipped {_brief_when(oldest, now)}"
+            else:
+                range_label = (f"shipped {_brief_when(oldest, now)}–"
+                               f"{_brief_when(newest, now)}")
+        else:
+            range_label = ""
+        out.append({
+            "project": project,
+            "count": len(entries),
+            "seen": seen,
+            "upto": entries[-1]["event_id"] if entries else seen,
+            "oldest_shipped_at": iso(oldest) if oldest else "",
+            "newest_shipped_at": iso(newest) if newest else "",
+            "range": range_label,
+            "features": grouped(notes.features),
+            "fixes": grouped(notes.fixes),
+            "other": grouped(notes.other),
+            "maintenance": grouped(notes.maintenance),
+            "maintenance_count": len(notes.maintenance),
+            "release_versions": release_versions,
+            "up_to_date": not entries,
         })
     return out
 
