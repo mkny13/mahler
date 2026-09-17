@@ -215,6 +215,60 @@ class QuotaTests(unittest.TestCase):
         self.assertTrue(line.startswith("2 of 3 platforms available — claude, agy-claude."), line)
         self.assertIn("kilo is backing off until", line)
 
+    def test_windows_carry_soft_line_and_reset(self):
+        """mahler#335: the Capacity view needs every window, not just the worst."""
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        fresh(led, "claude", "5h", 63)
+        rows = self.rows(cfg, led)
+        wins = {w["window"]: w for w in rows["claude"]["windows"]}
+        self.assertEqual(set(wins), {"5h", "weekly"})
+        self.assertEqual(wins["5h"]["pct"], 63)
+        self.assertEqual(wins["5h"]["soft"], 60)
+        self.assertTrue(wins["5h"]["resets_txt"])
+        self.assertEqual(wins["weekly"]["pct"], 10)
+
+
+class CapacityPageTests(unittest.TestCase):
+    """mahler#335: Capacity is a top-level view with full quota detail."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        all_fresh(self.led)
+        fresh(self.led, "claude", "5h", 63)
+        self.s = state.build(self.cfg, self.led)
+
+    def html(self):
+        return page.app(self.s)
+
+    def test_capacity_is_a_rail_item_and_a_view(self):
+        html = self.html()
+        self.assertIn('<button class="rail-i" data-go="capacity">', html)
+        self.assertIn('<section class="view view-capacity">', html)
+        self.assertIn(':root[data-view="capacity"] .view-capacity', page.CSS)
+        self.assertIn('.vt-capacity', page.CSS)
+
+    def test_every_page_links_to_it(self):
+        html = self.html()
+        # the left rail, the Now view's capacity line, and the sidebar block
+        self.assertEqual(html.count('data-go="capacity"'), 3)
+
+    def test_one_card_per_quota_group_with_its_windows(self):
+        html = self.html()
+        for q in self.s["quota"]:
+            self.assertIn(f'data-quota="{q["name"]}"', html)
+        claude = next(q for q in self.s["quota"] if q["name"] == "claude")
+        self.assertIn("claude, claude-opus", html)          # members share one gauge
+        self.assertIn("soft 60%", html)                     # per-window soft line
+        self.assertIn("resets", html)                       # per-window reset time
+        self.assertEqual(html.count('<div class="capwin">'),
+                         sum(len(q["windows"]) for q in self.s["quota"]))
+
+    def test_unmetered_groups_say_so(self):
+        html = self.html()
+        self.assertIn("unmetered — no quota signal", html)
+        self.assertIn('<span class="meta t-mut">unmetered</span>', html)
+
 
 class IdleReasonTests(unittest.TestCase):
     def idle(self, cfg, led):

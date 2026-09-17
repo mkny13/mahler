@@ -18,7 +18,8 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
     JS = _fh.read()
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
-         ("capture", "Capture"), ("backlog", "Backlog"), ("history", "Event stream"))
+         ("capture", "Capture"), ("backlog", "Backlog"), ("capacity", "Capacity"),
+         ("history", "Event stream"))
 
 
 def e(s):
@@ -309,6 +310,7 @@ def _desktop(s):
         "test": (str(s["uat_count"]) if s["uat"] else "", "mut"),
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
+        "capacity": ("", "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
     }
     rail = ['<nav class="rail"><div class="brand">Mahler</div>']
@@ -329,7 +331,8 @@ def _desktop(s):
                     f'<span class="mono t-{tone}">{e(peak["action"])}</span></button>')
     head = f'<div class="dhead"><span class="dtitle">{titles}</span>{peak_btn}</div>'
 
-    views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s) + _d_history(s))
+    views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
+             + _d_capacity(s) + _d_history(s))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -352,7 +355,8 @@ def _d_now(s):
     if s["idle"]:
         out.append(_idle(s, phone=False))
     out.append("</div>")
-    out.append(f'<div class="sect rule"><span class="lbl">Capacity</span>'
+    out.append(f'<div class="sect rule"><button class="link" data-go="capacity">'
+               f'<span class="lbl">Capacity</span></button>'
                f'<span class="capline">{e(s["capacity"])}</span></div>')
     out.append("</section>")
     return "".join(out)
@@ -471,13 +475,67 @@ def _d_side(s):
     for g in s["backlog"]:
         out.append(f'<button class="sproj" data-go="backlog" data-open-group="{e(g["project"])}">'
                    f'<span>{e(g["project"])}</span><span class="mono">{e(g["counts"])}</span></button>')
-    out.append('</div><div class="sblock" style="gap:7px"><span class="lbl">Capacity</span>')
+    out.append('</div><div class="sblock" style="gap:7px">'
+               '<button class="link" data-go="capacity"><span class="lbl">Capacity</span></button>')
     for q in s["quota"]:
         out.append(f'<div class="sq"><div class="sq-row"><span class="name mono">{e(q["name"])}</span>'
                    f'<span class="bar"><span class="f-{q["tone"]}" style="width:{q["width"]:.0f}%">'
                    f'</span></span><span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
                    f'<span class="model mono">{e(q["model"])}</span></div>')
     out.append('<button class="link" data-go="history">Event stream →</button></div></aside>')
+    return "".join(out)
+
+
+def _cap_windows(q):
+    """Per-window rows for the Capacity view: every window, its soft line and reset."""
+    wins = q.get("windows") or []
+    if not wins:
+        return ""
+    rows = []
+    for x in wins:
+        over = x["pct"] >= x["soft"]
+        resets = (f'resets {x["resets_txt"]}' if x["resets_txt"] else "no reset time")
+        rows.append(f'<div class="capwin"><span class="win mono">{e(x["window"])}</span> '
+                    f'<span class="bar"><span class="f-{q["tone"]}" '
+                    f'style="width:{min(x["pct"], 100):.0f}%"></span>'
+                    f'<span class="tick" style="left:{min(x["soft"], 100):.0f}%"></span></span> '
+                    f'<span class="wpct mono t-{"bad" if over else "ink"}">{x["pct"]:.0f}%</span> '
+                    f'<span class="soft mono t-mut">soft {x["soft"]:.0f}%</span> '
+                    f'<span class="resets mono t-mut">{e(resets)}</span></div>')
+    return f'<div class="capwins">{"".join(rows)}</div>'
+
+
+def _d_capacity(s):
+    """Full-screen quota detail (mahler#335): every routed platform's gauge,
+    all of its windows, soft lines and reset times, on one page."""
+    out = ['<section class="view view-capacity">']
+    if not s["quota"]:
+        out.append('<span class="empty">No platforms are routed yet.</span>')
+    for q in s["quota"]:
+        tick = ""
+        if q["metered"] and q["state"] not in ("backoff", "hold"):
+            tick = f'<span class="tick" style="left:{min(q["soft_pct"], 100):.0f}%"></span>'
+        meta = [", ".join(q["members"]), "metered" if q["metered"] else "unmetered"]
+        if q["builds"]:
+            meta.append("build role")
+        meta.append("available" if q["available"] else "not available")
+        out.append(
+            f'<div class="capcard" data-quota="{e(q["name"])}">'
+            f'<div class="capcard-h"><span class="name mono">{e(q["name"])}</span> '
+            f'<span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
+            f'<span class="model mono">{e(q["model"])}</span>'
+            f'<span class="bar capbar"><span class="f-{q["tone"]}" '
+            f'style="width:{q["width"]:.0f}%"></span>{tick}</span>'
+            f'<span class="detail">{e(q["detail"])}</span>'
+            f'{_cap_windows(q)}'
+            f'<div class="capmeta">'
+            + "".join(f'<span class="meta t-{"good" if q["available"] and m == meta[-1] else "mut"}">'
+                      f'{e(m)}</span> ' for m in meta)
+            + '</div></div>')
+    out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs '
+               'there. Hard line yields work in flight. Platforms sharing a login share one '
+               'gauge and one run slot.</div>')
+    out.append("</section>")
     return "".join(out)
 
 
