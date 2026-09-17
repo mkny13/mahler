@@ -80,6 +80,7 @@ This detects observed drift; an independent base push after the check remains a 
 (D19). Build agents still stop at their push (D18).
 
 Other useful commands: `mahler status`, `mahler usage --probe`, `mahler pause` / `resume`,
+`mahler release <project>` (preview or `--version X.Y.Z --publish`),
 `mahler add mahler "title"`, `mahler next-id mahler <prefix>` (shared sequential IDs,
 e.g. decision numbers — never invent one).
 

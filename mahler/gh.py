@@ -335,6 +335,57 @@ class GH:
             args += ["--comment", comment]
         self._gh(*args)
 
+    def branch_sha(self, branch):
+        """The current remote commit SHA of `branch`."""
+        out = self._gh("api", f"repos/{self.repo}/commits/{branch}")
+        data = json.loads(out)
+        return data["sha"]
+
+    def get_release(self, tag):
+        """Information about a GitHub release for `tag`, or None if not found."""
+        try:
+            out = self._gh("release", "view", tag, "-R", self.repo,
+                           "--json", "tagName,targetCommitish,body,url")
+            return json.loads(out)
+        except GHError as e:
+            msg = str(e).lower()
+            if "release not found" in msg or "not found" in msg or "404" in msg:
+                return None
+            raise
+
+    def get_tag_sha(self, tag):
+        """The commit SHA pointed to by git tag, or None if tag does not exist."""
+        try:
+            out = self._gh("api", f"repos/{self.repo}/git/ref/tags/{tag}")
+            data = json.loads(out)
+            obj = data.get("object", {})
+            if obj.get("type") == "commit":
+                return obj.get("sha")
+            elif obj.get("type") == "tag":
+                tag_obj = json.loads(self._gh("api", f"repos/{self.repo}/git/tags/{obj.get('sha')}"))
+                return tag_obj.get("object", {}).get("sha")
+            return obj.get("sha")
+        except GHError as e:
+            msg = str(e).lower()
+            if "not found" in msg or "404" in msg:
+                return None
+            raise
+
+    def release_create(self, tag, target, title, notes):
+        """Create a GitHub release and git tag pointing to `target`.
+        Returns the release URL."""
+        out = self._gh("release", "create", tag, "-R", self.repo,
+                       "--target", target, "--title", title,
+                       "--notes-file", "-", input=notes)
+        url = out.strip()
+        if not url.startswith("http"):
+            rel = self.get_release(tag)
+            if rel and rel.get("url"):
+                url = rel["url"]
+            else:
+                url = f"https://github.com/{self.repo}/releases/tag/{tag}"
+        return url
+
 
 def label_names(issue):
     return [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]

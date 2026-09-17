@@ -19,6 +19,28 @@ from typing import Any, List, Optional
 from .ledger import iso, parse, row_get
 
 SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
+STRICT_SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+class ReleaseConflictError(RuntimeError):
+    """Raised when remote or local tag/release state conflicts with the publish request."""
+    pass
+
+
+def validate_semver(version: str) -> tuple[int, int, int]:
+    """Validate strict SemVer (X.Y.Z, optional leading 'v') and return (major, minor, patch)."""
+    if not isinstance(version, str):
+        raise ValueError("version must be a string")
+    m = STRICT_SEMVER_RE.fullmatch(version.strip())
+    if not m:
+        raise ValueError(f"invalid SemVer {version!r}: expected X.Y.Z")
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def normalize_semver(version: str) -> str:
+    """Normalize a version string to X.Y.Z without leading 'v'."""
+    major, minor, patch = validate_semver(version)
+    return f"{major}.{minor}.{patch}"
 
 
 @dataclass
@@ -381,3 +403,144 @@ def get_release_items(led: Any, project: str, version_or_id: Any) -> List[Releas
         return []
     rows = led.release_items_for_release(rel["id"])
     return [_to_release_item(r) for r in rows]
+
+
+def format_preview(draft: ReleaseDraft, version: Optional[str] = None,
+                   checkpoint_sha: Optional[str] = None) -> str:
+    """Format the human-readable release preview."""
+    sha = checkpoint_sha or draft.checkpoint_sha or "unknown"
+    suggested_str = f"yes ({'; '.join(draft.readiness_reasons)})" if draft.is_suggested else "no"
+
+    lines = [f"Release preview for {draft.project}:"]
+    if version:
+        norm_v = normalize_semver(version)
+        lines.append(f"  Selected version:  {norm_v}")
+        lines.append(f"  Proposed version:  {draft.proposed_version}")
+    else:
+        lines.append(f"  Proposed version:  {draft.proposed_version}")
+    lines.append(f"  Checkpoint SHA:    {sha}")
+    lines.append(f"  Item count:        {draft.count}")
+    lines.append(f"  Release suggested: {suggested_str}")
+    lines.append("")
+    lines.append("Notes:")
+
+    notes_rendered = draft.notes.render(include_maintenance=True, collapsed_maintenance=True)
+    if notes_rendered.strip():
+        lines.append(notes_rendered)
+    else:
+        lines.append("  (no unreleased changes)")
+    return "\n".join(lines)
+
+
+def publish_release(led: Any, gh: Any, project: str, version: str,
+                    checkpoint_sha: str, notes: Optional[str] = None,
+                    item_numbers: Optional[List[int]] = None) -> dict:
+    """Publish a release to GitHub and atomically record it locally.
+
+    Validates strict SemVer and requires it to be greater than the latest
+    recorded version (unless idempotently reconciling an existing release).
+    Inspects remote release/tag:
+    - If matching remote release exists at same tag and SHA with matching notes,
+      finishes the local record and returns status='reconciled'.
+    - If tag, SHA, or notes conflict, raises ReleaseConflictError and leaves
+      the draft unsealed.
+    - Otherwise publishes tag vX.Y.Z and GitHub Release against checkpoint_sha,
+      and atomically seals the included draft items into the local release record.
+    """
+    if not checkpoint_sha:
+        raise ValueError("checkpoint_sha is required to publish a release")
+
+    norm_ver = normalize_semver(version)
+    parsed = validate_semver(norm_ver)
+
+    local_rel = led.get_release(project, version=norm_ver)
+    latest_rel = led.latest_release(project)
+
+    if latest_rel:
+        last_parsed = parse_semver(latest_rel["version"])
+        if last_parsed:
+            if parsed < last_parsed:
+                raise ValueError(
+                    f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}"
+                )
+            if parsed == last_parsed and not local_rel:
+                raise ValueError(
+                    f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}"
+                )
+
+    draft = get_draft(led, project)
+    if notes is not None:
+        rendered_notes = notes
+    elif local_rel and row_get(local_rel, "notes"):
+        rendered_notes = row_get(local_rel, "notes")
+    else:
+        rendered_notes = draft.notes.render(include_maintenance=True, collapsed_maintenance=True)
+
+    if item_numbers is None:
+        previewed_item_numbers = [it.number for it in draft.items]
+    else:
+        previewed_item_numbers = list(item_numbers)
+
+    tag = f"v{norm_ver}"
+    remote_rel = gh.get_release(tag)
+    tag_sha = gh.get_tag_sha(tag)
+
+    if remote_rel is not None:
+        remote_tag = remote_rel.get("tagName")
+        remote_target = remote_rel.get("targetCommitish")
+        remote_body = (remote_rel.get("body") or "").replace("\r\n", "\n").strip()
+        expected_body = rendered_notes.replace("\r\n", "\n").strip()
+
+        if remote_tag != tag:
+            raise ReleaseConflictError(
+                f"remote release tag mismatch: {remote_tag!r} != {tag!r}"
+            )
+        sha_matches = (remote_target == checkpoint_sha) or (tag_sha == checkpoint_sha)
+        if not sha_matches:
+            raise ReleaseConflictError(
+                f"remote release {tag} exists at target SHA {remote_target or tag_sha}, "
+                f"conflicting with previewed SHA {checkpoint_sha}"
+            )
+        if remote_body != expected_body:
+            raise ReleaseConflictError(
+                f"remote release {tag} exists but its notes conflict with previewed notes"
+            )
+
+        if not local_rel:
+            local_rel = create_release(
+                led, project, version=norm_ver, checkpoint_sha=checkpoint_sha,
+                notes=rendered_notes, remote_url=remote_rel.get("url"),
+                item_numbers=previewed_item_numbers
+            )
+        url = row_get(local_rel, "remote_url") or remote_rel.get("url")
+        led.event("release", project=project, detail=f"{tag} reconciled: {url}")
+        return {
+            "status": "reconciled",
+            "release": local_rel,
+            "url": url,
+        }
+
+    if tag_sha is not None and tag_sha != checkpoint_sha:
+        raise ReleaseConflictError(
+            f"remote tag {tag} already exists at SHA {tag_sha}, conflicting with previewed SHA {checkpoint_sha}"
+        )
+
+    if local_rel and row_get(local_rel, "checkpoint_sha") != checkpoint_sha:
+        raise ReleaseConflictError(
+            f"local release {norm_ver} already recorded at SHA {row_get(local_rel, 'checkpoint_sha')}, "
+            f"conflicting with previewed SHA {checkpoint_sha}"
+        )
+
+    url = gh.release_create(tag=tag, target=checkpoint_sha, title=tag, notes=rendered_notes)
+
+    if not local_rel:
+        local_rel = create_release(
+            led, project, version=norm_ver, checkpoint_sha=checkpoint_sha,
+            notes=rendered_notes, remote_url=url, item_numbers=previewed_item_numbers
+        )
+    led.event("release", project=project, detail=f"{tag} published: {url}")
+    return {
+        "status": "published",
+        "release": local_rel,
+        "url": url,
+    }

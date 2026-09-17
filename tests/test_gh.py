@@ -71,5 +71,69 @@ class TestGH(unittest.TestCase):
         self.assertEqual(self.gh.blocked_by_of(7), [6])
         self.gh._gh.assert_called_once()
 
+    def test_branch_sha(self):
+        self.gh._gh.return_value = json.dumps({"sha": "c0ffee1234567890"})
+        sha = self.gh.branch_sha("main")
+        self.assertEqual(sha, "c0ffee1234567890")
+        self.gh._gh.assert_called_once_with("api", "repos/mkny13/mahler/commits/main")
+
+    def test_get_release_found(self):
+        rel_data = {
+            "tagName": "v0.1.0",
+            "targetCommitish": "c0ffee",
+            "body": "Release notes",
+            "url": "https://github.com/mkny13/mahler/releases/tag/v0.1.0"
+        }
+        self.gh._gh.return_value = json.dumps(rel_data)
+        rel = self.gh.get_release("v0.1.0")
+        self.assertEqual(rel, rel_data)
+        self.gh._gh.assert_called_once_with("release", "view", "v0.1.0", "-R", "mkny13/mahler",
+                                           "--json", "tagName,targetCommitish,body,url")
+
+    def test_get_release_not_found(self):
+        from mahler.gh import GHError
+        self.gh._gh.side_effect = GHError("gh release view: release not found")
+        rel = self.gh.get_release("v0.1.0")
+        self.assertIsNone(rel)
+
+    def test_get_release_other_error_raises(self):
+        from mahler.gh import GHError
+        self.gh._gh.side_effect = GHError("gh release view: network timeout")
+        with self.assertRaises(GHError):
+            self.gh.get_release("v0.1.0")
+
+    def test_get_tag_sha_commit(self):
+        self.gh._gh.return_value = json.dumps({
+            "object": {"type": "commit", "sha": "commit_sha_123"}
+        })
+        sha = self.gh.get_tag_sha("v0.1.0")
+        self.assertEqual(sha, "commit_sha_123")
+        self.gh._gh.assert_called_once_with("api", "repos/mkny13/mahler/git/ref/tags/v0.1.0")
+
+    def test_get_tag_sha_annotated_tag(self):
+        self.gh._gh.side_effect = [
+            json.dumps({"object": {"type": "tag", "sha": "tag_obj_sha"}}),
+            json.dumps({"object": {"type": "commit", "sha": "target_commit_sha"}}),
+        ]
+        sha = self.gh.get_tag_sha("v0.1.0")
+        self.assertEqual(sha, "target_commit_sha")
+        self.assertEqual(self.gh._gh.call_count, 2)
+
+    def test_get_tag_sha_not_found(self):
+        from mahler.gh import GHError
+        self.gh._gh.side_effect = GHError("gh api: Not Found (HTTP 404)")
+        sha = self.gh.get_tag_sha("v0.1.0")
+        self.assertIsNone(sha)
+
+    def test_release_create(self):
+        self.gh._gh.return_value = "https://github.com/mkny13/mahler/releases/tag/v0.1.0\n"
+        url = self.gh.release_create("v0.1.0", "target_sha", "v0.1.0", "Notes content")
+        self.assertEqual(url, "https://github.com/mkny13/mahler/releases/tag/v0.1.0")
+        self.gh._gh.assert_called_once_with(
+            "release", "create", "v0.1.0", "-R", "mkny13/mahler",
+            "--target", "target_sha", "--title", "v0.1.0",
+            "--notes-file", "-", input="Notes content"
+        )
+
 if __name__ == '__main__':
     unittest.main()
