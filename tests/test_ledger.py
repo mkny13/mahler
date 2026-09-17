@@ -997,3 +997,136 @@ class ConsoleQueueTests(unittest.TestCase):
         self.assertEqual((row['status'], row['result'], row['done_at']), ('done', 'posted', iso(clock())))
         with self.assertRaises(ValueError):
             led.finish_action(first, 'pending')
+
+
+class ReleaseLedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(':memory:', clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def test_existing_ledger_migrates_without_data_loss(self):
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = f.name
+        self.addCleanup(lambda: os.unlink(db_path) if os.path.exists(db_path) else None)
+
+        # Create a database with old schema (without releases or release_items)
+        con = sqlite3.connect(db_path)
+        con.execute("CREATE TABLE items (project TEXT, number INTEGER, title TEXT, state TEXT, labels TEXT, priority INTEGER, depends TEXT, PRIMARY KEY (project, number))")
+        con.execute("CREATE TABLE uat (project TEXT, number INTEGER, pr INTEGER, sha TEXT, title TEXT, needs TEXT, shipped_at TEXT, verdict TEXT, verdict_at TEXT, bug INTEGER, note TEXT, PRIMARY KEY(project, number))")
+        con.execute("INSERT INTO items VALUES ('proj', 1, 'Legacy item', 'done', '[]', 2, '[]')")
+        con.execute("INSERT INTO uat (project, number, title) VALUES ('proj', 1, 'Legacy UAT')")
+        con.commit()
+        con.close()
+
+        # Open with Ledger
+        led = Ledger(db_path, clock=self.clock)
+        self.addCleanup(led.close)
+
+        # Confirm existing data was preserved
+        item = led.item('proj', 1)
+        self.assertIsNotNone(item)
+        self.assertEqual(item['title'], 'Legacy item')
+        uat = led.uat('proj', 1)
+        self.assertIsNotNone(uat)
+        self.assertEqual(uat['title'], 'Legacy UAT')
+
+        # Confirm new release tables exist and are functional
+        self.assertEqual(led.unreleased_items('proj'), [])
+        led.snapshot_release_item('proj', 1, pr=10, title='Legacy item', summary='shipped legacy',
+                                  merge_sha='abc1234', labels=['type:feature'])
+        unrel = led.unreleased_items('proj')
+        self.assertEqual(len(unrel), 1)
+        self.assertEqual(unrel[0]['number'], 1)
+        self.assertEqual(unrel[0]['merge_sha'], 'abc1234')
+
+    def test_release_items_snapshot_and_idempotent_retries(self):
+        self.led.snapshot_release_item(
+            'p', 42, pr=100, title='Add feature', summary='added feature',
+            merge_sha='sha42', labels=['type:feature'], shipped_at=iso(self.clock()))
+
+        unrel = self.led.unreleased_items('p')
+        self.assertEqual(len(unrel), 1)
+        item = unrel[0]
+        self.assertEqual(item['number'], 42)
+        self.assertEqual(item['pr'], 100)
+        self.assertEqual(item['title'], 'Add feature')
+        self.assertEqual(item['summary'], 'added feature')
+        self.assertEqual(item['merge_sha'], 'sha42')
+        self.assertEqual(json.loads(item['labels']), ['type:feature'])
+        self.assertEqual(item['shipped_at'], iso(self.clock()))
+        self.assertIsNone(item['release_id'])
+
+        # Retry snapshot (same item) must be idempotent and not duplicate
+        self.led.snapshot_release_item(
+            'p', 42, pr=100, title='Add feature', summary='added feature (updated)',
+            merge_sha='sha42', labels=['type:feature'])
+        unrel_after = self.led.unreleased_items('p')
+        self.assertEqual(len(unrel_after), 1)
+        self.assertEqual(unrel_after[0]['summary'], 'added feature (updated)')
+
+    def test_create_release_and_query_exact_items_after_later_shipments(self):
+        # Ship items 1 and 2
+        self.led.snapshot_release_item('p', 1, pr=11, title='First', summary='did 1',
+                                      merge_sha='sha1', labels=['type:feature'])
+        self.clock.advance(minutes=10)
+        self.led.snapshot_release_item('p', 2, pr=12, title='Second', summary='did 2',
+                                      merge_sha='sha2', labels=['type:bug'])
+
+        self.assertEqual(len(self.led.unreleased_items('p')), 2)
+
+        # Create release 0.1.0
+        rel = self.led.create_release('p', '0.1.0', checkpoint_sha='sha2', notes='Release 0.1.0 notes')
+        self.assertIsNotNone(rel)
+        self.assertEqual(rel['version'], '0.1.0')
+        self.assertEqual(rel['checkpoint_sha'], 'sha2')
+        self.assertEqual(rel['state'], 'published')
+        self.assertIsNotNone(rel['created_at'])
+        self.assertIsNotNone(rel['published_at'])
+
+        # Unreleased items is now empty
+        self.assertEqual(self.led.unreleased_items('p'), [])
+
+        # Exact items in release 0.1.0 are queryable
+        items_rel1 = self.led.release_items_for_release(rel['id'])
+        self.assertEqual([r['number'] for r in items_rel1], [1, 2])
+
+        # Ship items 3 and 4 later
+        self.clock.advance(days=1)
+        self.led.snapshot_release_item('p', 3, pr=13, title='Third', summary='did 3',
+                                      merge_sha='sha3', labels=['type:feature'])
+        self.led.snapshot_release_item('p', 4, pr=14, title='Fourth', summary='did 4',
+                                      merge_sha='sha4', labels=['type:bug'])
+
+        # Unreleased now has 3 and 4
+        self.assertEqual([r['number'] for r in self.led.unreleased_items('p')], [3, 4])
+
+        # Release 1 still has exactly items 1 and 2
+        self.assertEqual([r['number'] for r in self.led.release_items_for_release(rel['id'])], [1, 2])
+
+        # A retried snapshot for item 1 does NOT reassign it to unreleased
+        self.led.snapshot_release_item('p', 1, pr=11, title='First', summary='did 1 retry',
+                                      merge_sha='sha1', labels=['type:feature'])
+        self.assertEqual([r['number'] for r in self.led.unreleased_items('p')], [3, 4])
+        self.assertEqual([r['number'] for r in self.led.release_items_for_release(rel['id'])], [1, 2])
+
+    def test_partial_item_numbers_in_create_release(self):
+        self.led.snapshot_release_item('p', 1, title='One')
+        self.led.snapshot_release_item('p', 2, title='Two')
+        self.led.snapshot_release_item('p', 3, title='Three')
+
+        rel = self.led.create_release('p', '0.1.0', item_numbers=[1, 3])
+        self.assertEqual([r['number'] for r in self.led.release_items_for_release(rel['id'])], [1, 3])
+        self.assertEqual([r['number'] for r in self.led.unreleased_items('p')], [2])
+
+    def test_get_and_list_releases(self):
+        self.led.snapshot_release_item('p', 1, title='One')
+        r1 = self.led.create_release('p', '0.1.0', checkpoint_sha='sha1')
+        self.led.snapshot_release_item('p', 2, title='Two')
+        r2 = self.led.create_release('p', '0.2.0', checkpoint_sha='sha2')
+
+        self.assertEqual(self.led.get_release('p', version='0.1.0')['id'], r1['id'])
+        self.assertEqual(self.led.get_release('p', release_id=r2['id'])['version'], '0.2.0')
+        self.assertEqual(self.led.latest_release('p')['version'], '0.2.0')
+        self.assertEqual([r['version'] for r in self.led.list_releases('p')], ['0.2.0', '0.1.0'])
+

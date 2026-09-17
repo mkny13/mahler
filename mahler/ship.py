@@ -336,6 +336,21 @@ def record_uat_if_needed(ctx, project, n, pr, item, view):
     return needs
 
 
+def record_release_item_if_needed(ctx, project, n, pr, item, view):
+    """Snapshot shipped issue into the project's unreleased draft (DESIGN D31).
+    Bookkeeping — a failure here never stops the ship."""
+    sha = (view.get("mergeCommit") or {}).get("oid") or view.get("headRefOid") or ""
+    summary = row_get(item, "summary", "") or pr_summary_of(view.get("body")) or ""
+    labels = row_get(item, "labels", "[]")
+    title = row_get(item, "title", "")
+    try:
+        ctx.led.snapshot_release_item(
+            project, n, pr=pr, title=title, summary=summary,
+            merge_sha=sha, labels=labels, shipped_at=iso(ctx.led.now()))
+    except Exception as e:                  # noqa: BLE001 — a ship must not break
+        ctx.say(f"{project}#{n}: couldn't snapshot release item — {e}")
+
+
 def _shipped(ctx, project, n, pr, item, view, merged=True):
     """Close the loop: comment the summary plus the issue's 'Needs a human to
     check' list, ping, and mark the item done."""
@@ -344,6 +359,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
              item["summary"] or pr_summary_of(view.get("body")) or ""]
     needs = record_uat_if_needed(ctx, project, n, pr, item, view)
+    record_release_item_if_needed(ctx, project, n, pr, item, view)
     if needs:
         lines += ["", "## Needs a human to check", needs]
     try:

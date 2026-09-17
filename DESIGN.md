@@ -1219,6 +1219,17 @@ Decided 2026-09-16 (mahler#331). Work repos use a specific compute strategy (`si
 - **Who decomposes**: The sort agent receives an extra sizing instruction for `"s"` projects to split `size:m` items into `size:s` sub-issues, each one mergeable PR with its test, chained with `Depends on: #N`.
 - **Off-peak policy**: `size:m` is kept only when a split would leave a broken or untested intermediate state, or when it touches security/credential boundaries. Those wait for a larger, off-peak builder.
 
+### D31 — Release ledger and rolling synthesized draft
+
+Decided 2026-09-17 (mahler#356; D31 reserved in the issue). Mahler knows when individual issues ship, but needs a durable release model and a deterministic rolling draft for later CLI, console, and managed-app surfaces.
+
+- **Releases vs. Project Briefs**: A release is a durable, tagged checkpoint with a semantic version, a commit SHA, a frozen set of included shipped items, notes, and a remote release URL. It must not be conflated with the separate "since you last looked" project brief (an ephemeral operator catch-up view of recent activity).
+- **Semantic versions for every project**: Every project uses SemVer (`X.Y.Z`). An initial release proposes `0.1.0`. For subsequent releases, feature work (`type:feature`) proposes a minor bump (`X.(Y+1).0`), while bug fixes and other non-breaking changes propose a patch bump (`X.Y.(Z+1)`). Major versions are never inferred or proposed automatically — a major bump remains an explicit operator selection because Mahler cannot safely deduce breaking contracts from issue metadata alone.
+- **Rolling unreleased draft**: When conductor-ship completes (`ship._shipped`), the shipped issue number, PR, title, agent summary, merge SHA, labels, and shipped timestamp are snapshotted into the project's unreleased draft. Retries are idempotent, and an item belongs to at most one release across its lifetime.
+- **Deterministic synthesized notes**: Notes are synthesized purely in Python standard library without calling an LLM during the tick. Features and bug fixes form the main summary; other user-facing changes (e.g. goals, UAT items, untyped) appear in an additional section; and `type:chore` or maintenance-pass work is excluded from the main summary by default, retained in collapsible details.
+- **Readiness suggestion**: A draft is marked "release suggested" when it contains at least 5 unreleased items or its oldest unreleased item is at least 7 days old. This signal is advisory only and never publishes automatically.
+- **No automatic publishing initially**: Releases publish only when explicitly initiated by the operator. Goal-completion automation and automatic publishing are deferred until real release boundaries and notes have been validated in practice.
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no replicated/distributed scheduler. D24 can relay authoritative lease
