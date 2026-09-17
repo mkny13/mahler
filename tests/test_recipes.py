@@ -83,5 +83,77 @@ class SizeTargetTests(unittest.TestCase):
         self.assertNotIn("Sizing for this project", pers_build)
 
 
+class BuildRecipeTests(unittest.TestCase):
+    def setUp(self):
+        self.values = dict(
+            number=358,
+            repo="mkny13/example",
+            title="Define What's New contract",
+            platform="agy-gemini",
+            worktree="/tmp/worktree",
+            branch="mahler/358-whats-new",
+            handoff="",
+            verify="python3 -m unittest",
+            base="main",
+            rules="",
+        )
+        self.rendered = prompt.render("build", **self.values)
+        self.text = " ".join(self.rendered.split())
+
+    def test_whats_new_contract_guidance_present(self):
+        # Explicit trigger and scoping rule
+        self.assertIn("When (and only when) the issue explicitly asks for an in-app What's New surface or release feed", self.text)
+        self.assertIn("Do not add What's New UI or feed consumption to tasks that do not explicitly request it", self.text)
+
+        # Versioning and schema
+        self.assertIn("Follow DESIGN D31's schema v1 JSON contract", self.text)
+        self.assertIn("schema_version", self.text)
+        self.assertIn("SemVer-based", self.text)
+        self.assertIn("store the highest acknowledged version, show newer releases", self.text)
+
+        # Read-only transport and local acknowledgement
+        self.assertIn("Keep transport strictly read-only: apps consume the feed; they never publish releases or write read/acknowledgement state back to Mahler", self.text)
+        self.assertIn("Client acknowledgement is local to each app installation", self.text)
+        self.assertIn("marked read only after the user views or dismisses the surface", self.text)
+
+        # Fault tolerance: must not block startup
+        self.assertIn("Missing, unreachable, or malformed feed responses must degrade gracefully and never block app startup", self.text)
+
+        # Native design conventions
+        self.assertIn("Preserve the app's native design conventions", self.text)
+
+        # Maintenance visibility collapsed/hidden by default
+        self.assertIn("Hide maintenance details initially: render features and fixes prominently; keep maintenance collapsed or secondary", self.text)
+
+        # Operational privacy boundaries
+        self.assertIn("Exclude operational data: the feed provides release metadata only; never consume or display issue comments, run logs, credentials, or UAT notes", self.text)
+
+        # Automated testing requirements
+        self.assertIn("Add automated tests in the app covering JSON payload parsing, SemVer comparison, offline fallback, and local acknowledgement read-state persistence", self.text)
+
+    def test_unrelated_status_output_contract_unaffected(self):
+        # The STATUS line contract must remain exact and untampered
+        status_lines = [line.strip() for line in self.rendered.splitlines() if line.startswith("STATUS:")]
+        self.assertEqual(status_lines, [
+            "STATUS: DONE <one-line summary of what changed>",
+            "STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]",
+            "STATUS: BLOCKED <reason>",
+            "STATUS: YIELDED <handoff summary>",
+        ])
+        for line in status_lines:
+            self.assertNotIn("What's New", line)
+            self.assertNotIn("release", line)
+
+    def test_template_values_substituted_without_leftover_variables(self):
+        for k, v in self.values.items():
+            if k in ("handoff", "rules"):
+                continue
+            with self.subTest(variable=k):
+                self.assertNotIn(f"${k}", self.rendered)
+                self.assertIn(str(v), self.rendered)
+        self.assertNotIn("$", self.rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
+

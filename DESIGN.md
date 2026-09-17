@@ -1230,6 +1230,86 @@ Decided 2026-09-17 (mahler#356; D31 reserved in the issue). Mahler knows when in
 - **Readiness suggestion**: A draft is marked "release suggested" when it contains at least 5 unreleased items or its oldest unreleased item is at least 7 days old. This signal is advisory only and never publishes automatically.
 - **No automatic publishing initially**: Releases publish only when explicitly initiated by the operator. Goal-completion automation and automatic publishing are deferred until real release boundaries and notes have been validated in practice.
 
+#### Managed-app What's New feed contract (schema v1)
+
+Decided 2026-09-17 (mahler#358). Managed apps consume release notes via an HTTP JSON feed exposed by Mahler. The contract is versioned, strictly read-only, project-scoped, and privacy-conscious.
+
+- **Backed only by published releases**: The feed reflects only sealed, published releases from the release ledger (never unreleased drafts, in-progress runs, or unmerged branches).
+- **Schema versioning & compatibility**:
+  - The contract starts at `schema_version = 1`.
+  - Evolution within `schema_version = 1` is strictly additive (new fields may be added; existing fields cannot be removed or have their types altered).
+  - Clients must ignore unrecognized fields.
+  - Any breaking change (structural restructuring, field removal, or semantic changes) requires incrementing `schema_version` (e.g. `2`).
+- **Feed payload format (JSON)**:
+  Project-scoped feed (e.g., `GET /api/projects/<project>/releases.json` or `/api/releases/<project>.json`):
+  ```json
+  {
+    "schema_version": 1,
+    "project": "couch-tour",
+    "generated_at": "2026-09-17T02:00:00Z",
+    "releases": [
+      {
+        "version": "1.2.0",
+        "checkpoint_sha": "a1b2c3d4e5f678901234567890abcdef12345678",
+        "published_at": "2026-09-17T01:30:00Z",
+        "remote_url": "https://github.com/mkny13/couch-tour/releases/tag/v1.2.0",
+        "sections": {
+          "features": [
+            {
+              "number": 42,
+              "pr": 43,
+              "title": "Add dark mode toggle",
+              "summary": "Persist theme preference across launches"
+            }
+          ],
+          "fixes": [
+            {
+              "number": 45,
+              "pr": 46,
+              "title": "Fix audio stutter on route transition",
+              "summary": "Prevent audio buffer underrun when switching screens"
+            }
+          ],
+          "other": []
+        },
+        "maintenance": [
+          {
+            "number": 48,
+            "pr": 49,
+            "title": "Bump dependencies and update test harness",
+            "summary": "Update build tooling and library versions"
+          }
+        ]
+      }
+    ]
+  }
+  ```
+- **Fields & Stable Identifiers**:
+  - Top level: `schema_version` (integer), `project` (string), `generated_at` (ISO 8601 string), `releases` (array of release objects).
+  - Release object: `version` (SemVer `X.Y.Z`), `checkpoint_sha` (git commit SHA), `published_at` (ISO 8601 string), `remote_url` (GitHub release link or null/empty), `sections` (object with `features`, `fixes`, and `other` lists), and `maintenance` (list).
+  - Item object: `number` (issue integer, stable unique identifier), `pr` (pull request integer or null), `title` (string), `summary` (concise human-facing summary string).
+- **Ordering and limits**:
+  - Releases are ordered newest first (descending by `published_at` / SemVer).
+  - Feeds may accept an optional `limit` query parameter (defaulting to the latest 20 releases) to bound payload size on mobile networks.
+- **Empty state and error resilience**:
+  - If a project has no published releases, the feed returns HTTP 200 with `"releases": []`.
+  - Missing, network-unreachable, or HTTP error responses must be handled gracefully by client apps. An unreachable feed or invalid JSON payload must never crash the app or block app startup.
+- **Privacy and operational boundaries**:
+  - The feed contains release metadata only.
+  - Sensitive and operational data are strictly excluded: no issue comments, agent run logs, platform prompts, credentials/tokens, or D10 UAT checklist items are ever exposed in the feed.
+- **Client acknowledgement and read state**:
+  - Acknowledgement is **strictly local to each app installation** (stored in local SQLite, `localStorage`, `UserDefaults`, `SharedPreferences`, etc.).
+  - SemVer comparison: the client stores `last_acknowledged_version` (e.g. `"1.1.0"`). Any release with SemVer > `last_acknowledged_version` is treated as unread/new.
+  - Mark-read timing: a release is marked read/acknowledged **only after the user views or dismisses** the What's New surface, never automatically during background fetch or app boot.
+  - The client UI may link directly to the durable GitHub Release URL (`remote_url`) for users who want complete commit history.
+- **Maintenance visibility in clients**:
+  - Features and bug fixes form the primary human-facing surface.
+  - Maintenance entries (`maintenance`) are provided in the payload for completeness, but must be collapsed or hidden by default in client UIs to avoid cluttering the user experience with chore/audit noise.
+- **Read-only transport**:
+  - The feed transport is strictly read-only (`GET`).
+  - Managed apps **never** publish releases, modify draft state, or report acknowledgement state back to Mahler. All release publication remains on the Mahler host via operator command (`mahler release` / console).
+
+
 ### D15 — Deliberately not doing
 
 - Not multi-user, and no replicated/distributed scheduler. D24 can relay authoritative lease

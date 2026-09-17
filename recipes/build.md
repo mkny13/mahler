@@ -33,6 +33,26 @@ Rules:
    <prefix>` to avoid collisions.
 10. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
     avoid wiping other sessions' work.
+11. **In-app What's New contract:** When (and only when) the issue explicitly asks for an
+    in-app What's New surface or release feed:
+    - Follow DESIGN D31's schema v1 JSON contract (`schema_version`, `project`, `releases`
+      with `version`, `checkpoint_sha`, `published_at`, `remote_url`, `sections`, `maintenance`).
+    - Keep transport strictly read-only: apps consume the feed; they never publish releases or
+      write read/acknowledgement state back to Mahler.
+    - Client acknowledgement is local to each app installation, SemVer-based (store the highest
+      acknowledged version, show newer releases), and marked read only after the user views or
+      dismisses the surface.
+    - Missing, unreachable, or malformed feed responses must degrade gracefully and never block
+      app startup.
+    - Preserve the app's native design conventions (e.g. web, SwiftUI, Compose, CLI); do not force
+      foreign UI paradigms.
+    - Hide maintenance details initially: render features and fixes prominently; keep maintenance
+      collapsed or secondary so operational chores do not clutter user-facing notes.
+    - Exclude operational data: the feed provides release metadata only; never consume or display
+      issue comments, run logs, credentials, or UAT notes.
+    - Add automated tests in the app covering JSON payload parsing, SemVer comparison, offline fallback,
+      and local acknowledgement read-state persistence.
+    Do not add What's New UI or feed consumption to tasks that do not explicitly request it.
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
