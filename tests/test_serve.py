@@ -125,6 +125,17 @@ class TestWrites(_Served):
         self.post("resume")
         self.assertFalse(self.led.paused())
 
+    def test_project_brief_acknowledgement(self):
+        self.led.snapshot_release_item("mahler", 5, title="Console",
+                                       labels=["type:feature"])
+        self.led.event("shipped", "mahler", 5, {"pr": 12})
+        cursor = self.led.q1("SELECT max(id) AS id FROM events")["id"]
+        status, _, body = self.post("brief_seen", {"project": "mahler", "upto": cursor})
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True, "upto": cursor}))
+        status, _, body = self.request("/api/state")
+        brief = json.loads(body)["briefs"][0]
+        self.assertEqual((brief["count"], brief["seen"]), (0, cursor))
+
     def test_same_origin_is_allowed(self):
         status, _, _ = self.post("pause", headers={"Origin": f"http://127.0.0.1:{self.port}"})
         self.assertEqual(status, 200)

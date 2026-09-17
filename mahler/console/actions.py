@@ -11,7 +11,7 @@ import json
 
 from .. import config, router
 from ..gh import AGENT_MARK
-from .state import SEEN_KEY
+from .state import SEEN_KEY, brief_seen_key
 
 
 class ActionError(ValueError):
@@ -79,6 +79,32 @@ def digest_seen(cfg, led, body):
     if upto > seen:
         led.set_kv(SEEN_KEY, str(upto))
         led.event("console_seen", detail={"upto": upto})
+
+
+def brief_seen(cfg, led, body):
+    """Acknowledge exactly the shipped-event cursor shown for one project."""
+    project, upto = body.get("project"), body.get("upto")
+    if not isinstance(project, str) or \
+            project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    if type(upto) is not int or upto <= 0:
+        raise ActionError("upto must be a positive shipped event id")
+    with led._tx():
+        event = led.q1(
+            "SELECT id FROM events WHERE id=? AND kind='shipped' AND project=?",
+            (upto, project))
+        if event is None:
+            raise ActionError("upto must be a shipped event for this project")
+        key = brief_seen_key(project)
+        try:
+            seen = int(led.get_kv(key) or 0)
+        except (TypeError, ValueError):
+            seen = 0
+        if upto <= seen:
+            return {"upto": seen, "deduplicated": True}
+        led.set_kv(key, str(upto))
+        led.event("console_brief_seen", project, detail={"upto": upto})
+    return {"upto": upto}
 
 
 def stop_run(cfg, led, body):
@@ -363,7 +389,7 @@ def cut_release(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
-                                   clear_backoff, digest_seen, answer, answer_undo, stop_run,
+                                   clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_pass, uat_fail, attach, cut_release)}
 
 
