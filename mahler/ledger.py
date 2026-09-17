@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS items (
     project          TEXT NOT NULL,
     number           INTEGER NOT NULL,
     title            TEXT,
+    issue_body       TEXT,                -- cached GitHub body for console detail (mahler#378)
     state            TEXT NOT NULL DEFAULT 'inbox',
     labels           TEXT NOT NULL DEFAULT '[]',
     priority         INTEGER NOT NULL DEFAULT 2,
@@ -245,6 +246,7 @@ class Ledger:
         # columns added after the daemon's DB already existed
         cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
         for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"),
+                         ("issue_body", "TEXT"),
                          ("setup_fails", "INTEGER NOT NULL DEFAULT 0"),
                          ("parent", "INTEGER"),
                          ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),

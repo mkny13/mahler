@@ -218,6 +218,15 @@ class SyncStoresFilesTests(unittest.TestCase):
         self.sync(gh)
         self.assertEqual(json.loads(self.led.item("x", 5)["files"]), ["a.py", "c.py"])
 
+    def test_issue_body_is_cached_and_updated_on_a_later_sync(self):
+        gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
+                        "body": "First body", "comments": []}})
+        self.sync(gh)
+        self.assertEqual(self.led.item("x", 5)["issue_body"], "First body")
+        gh.issues[5]["body"] = "Updated body"
+        self.sync(gh)
+        self.assertEqual(self.led.item("x", 5)["issue_body"], "Updated body")
+
     def test_missing_files_line_stores_empty_list(self):
         gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
                         "body": "## Plan\nSteps:\n- x\n", "comments": []}})

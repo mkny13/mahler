@@ -217,6 +217,15 @@ class NeedsTests(unittest.TestCase):
         self.assertEqual(need["options"], [{"label": "I'll create it", "text": "I'll create it"},
                                            {"label": "Reuse prod", "text": "Reuse prod"}])
 
+    def test_legacy_options_are_removed_from_question_and_recovered_as_choices(self):
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 9, title="Staging key", state="ready")
+        led.set_state("mahler", 9, "needs_you",
+                      "Use staging? [OPTIONS: Create one | Reuse prod]")
+        need = state.build(cfg, led)["needs"][0]
+        self.assertEqual(need["question"], "Use staging?")
+        self.assertEqual([o["text"] for o in need["options"]], ["Create one", "Reuse prod"])
+
     def test_failed_question_ignores_a_stale_item_question_column(self):
         """A leftover 'question' column from an earlier needs_you round must not
         leak into a later failed item's displayed reason."""
@@ -817,7 +826,8 @@ class PageTests(unittest.TestCase):
     def setUp(self):
         self.cfg, self.led = make_cfg(), make_led()
         self.led.upsert_item("mahler", 9, title="A <script>alert(1)</script> title",
-                             state="ready")
+                             issue_body="Body <img src=x onerror=alert(2)>\nSecond line",
+                             state="ready", options=json.dumps(["First choice", "Second choice"]))
         self.led.set_state("mahler", 9, "needs_you", "Pick <b>one</b>?")
 
     def test_document_has_both_layouts_and_lands_on_needs(self):
@@ -828,6 +838,15 @@ class PageTests(unittest.TestCase):
         self.assertIn("Pick &lt;b&gt;one&lt;/b&gt;?", doc)
         self.assertNotIn("<script>alert", doc)
         self.assertIn('href="https://github.com/mkny13/mahler/issues/9"', doc)
+
+    def test_needs_details_and_choices_render_safely_in_both_layouts(self):
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertEqual(doc.count('data-need-details="mahler#9"'), 2)
+        self.assertGreaterEqual(doc.count("A &lt;script&gt;alert(1)&lt;/script&gt; title"), 2)
+        self.assertEqual(doc.count("Body &lt;img src=x onerror=alert(2)&gt;"), 2)
+        self.assertNotIn("<img src=x", doc)
+        self.assertGreaterEqual(doc.count('data-text="First choice"'), 2)
+        self.assertIn('store("session", "mahler.needDetails"', doc)
 
     def test_fragment_is_just_the_app(self):
         frag = page.app(state.build(self.cfg, self.led))

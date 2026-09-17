@@ -395,6 +395,13 @@ def _answer_input(n, phone=False):
             f'data-project="{e(n["project"])}" data-number="{n["number"]}">↑</button></div>')
 
 
+def _need_details(n):
+    return (f'<details class="need-details" data-need-details="{e(n["id"])}">'
+            f'<summary>More detail</summary><div class="need-detail-content">'
+            f'<span class="need-detail-title">{e(n["title"])}</span>'
+            f'<div class="need-detail-body">{e(n["body"])}</div></div></details>')
+
+
 def _answered(n):
     return (f'<div class="answered"><span>You said: {e(n["pending"]["text"])}</span>'
             f'<button class="link" data-act="answer_undo" '
@@ -406,7 +413,7 @@ def _d_needs(s):
     for n in s["needs"]:
         content = (_answered(n) if n["pending"] else
                    f'<div class="body"><span class="q">{e(n["question"])}</span>'
-                   f'{_need_meta(n)}{_answer_input(n)}</div>{_answer_buttons(n)}')
+                   f'{_need_meta(n)}{_need_details(n)}{_answer_input(n)}</div>{_answer_buttons(n)}')
         out.append(f'<div class="need" data-need="{e(n["id"])}">{content}</div>')
     if not s["needs"]:
         out.append('<span class="empty">Nothing waiting on you. Runs continue on their own.</span>')
@@ -996,7 +1003,7 @@ def _p_triage(s):
                    f'<span class="pchip{" p1" if n["p1"] else ""}">{e(n["p"])}</span>'
                    f'<span class="meta" style="font-size:10.5px">{e(n["meta"])}</span></div>'
                    f'<div class="q">{e(n["question"])}</div>'
-                   f'{_answer_buttons(n)}{_answer_input(n, phone=True)}</div>')
+                   f'{_need_details(n)}{_answer_buttons(n)}{_answer_input(n, phone=True)}</div>')
     if not s["needs"]:
         out.append('<div class="empty" style="font-size:13.5px;padding:4px 0">Nothing waiting on '
                    'you. Runs continue on their own.</div>')

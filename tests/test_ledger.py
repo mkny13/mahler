@@ -545,7 +545,7 @@ class SchemaDriftTests(unittest.TestCase):
     ALTER migrations exist for databases opened by older versions, not as a
     way to finish CREATE TABLE on fresh ones."""
 
-    MIGRATED_ITEM_COLS = ("pr", "summary", "setup_fails", "parent",
+    MIGRATED_ITEM_COLS = ("pr", "summary", "issue_body", "setup_fails", "parent",
                           "esc_tier", "esc_fails", "question", "options")
     MIGRATED_UAT_COLS = ("pr", "sha", "title", "needs", "shipped_at",
                          "verdict", "verdict_at", "bug", "note")
@@ -593,6 +593,20 @@ class SchemaDriftTests(unittest.TestCase):
             item = led.item("p", 1)
             self.assertIsNone(item["question"])
             self.assertEqual(item["options"], "[]")
+
+    def test_legacy_items_table_without_issue_body_is_migrated(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(l for l in SCHEMA.splitlines()
+                                        if "issue_body" not in l))
+            con.execute("INSERT INTO items (project, number, state) VALUES ('p', 1, 'ready')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            self.assertIn("issue_body", self._cols(led.con, "items"))
+            self.assertIsNone(led.item("p", 1)["issue_body"])
 
     def test_legacy_uat_table_with_missing_columns_is_migrated(self):
         with tempfile.TemporaryDirectory() as d:

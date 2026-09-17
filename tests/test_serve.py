@@ -27,7 +27,7 @@ def make_led():
     led = Ledger(":memory:", thread_safe=True)
     led.upsert_item("mahler", 5, title="Console", state="working", priority=2)
     led.upsert_item("mahler", 9, title="A needs-you item <script>", state="needs_you",
-                    priority=1)
+                    issue_body="Full body <b>must be escaped</b>", priority=1)
     led.create_run(project="mahler", number=5, role="build", platform="cline-free", epoch=1)
     return led
 
@@ -85,6 +85,9 @@ class TestPages(_Served):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertIn("<title>Mahler</title>", body)
         self.assertIn("A needs-you item &lt;script&gt;", body)
+        self.assertIn("Full body &lt;b&gt;must be escaped&lt;/b&gt;", body)
+        self.assertIn('data-need-details="mahler#9"', body)
+        self.assertIn('href="https://github.com/mkny13/mahler/issues/9"', body)
 
     def test_fragment_and_state(self):
         status, _, frag = self.request("/fragment")
