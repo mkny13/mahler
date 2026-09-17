@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from . import config
 from .console import actions, page, state
@@ -75,12 +75,13 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status, obj):
         self._send(status, json.dumps(obj, default=_json_default), "application/json")
 
-    def _state(self):
+    def _state(self, stats_range="week"):
         cfg = self.load_cfg()
-        return cfg, state.build(cfg, self.led)
+        return cfg, state.build(cfg, self.led, stats_range)
 
     def do_GET(self):
-        path = urlsplit(self.path).path
+        request = urlsplit(self.path)
+        path = request.path
         if path.startswith("/api/run/") and path.endswith("/log"):
             run_id_str = path[len("/api/run/"):-len("/log")]
             try:
@@ -147,7 +148,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             with self.lock:
-                _, s = self._state()
+                query = parse_qs(request.query)
+                range_key = (query.get("range") or ["week"])[0]
+                if range_key == "custom":
+                    range_key = ((query.get("start") or [""])[0],
+                                 (query.get("end") or [""])[0])
+                _, s = self._state(range_key)
                 if path == "/":
                     out, ctype = page.document(s), "text/html; charset=utf-8"
                 elif path == "/fragment":

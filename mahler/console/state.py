@@ -10,7 +10,7 @@ did not cover are listed at the end of that file.
 
 import json
 import re
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .. import config, presence, router
@@ -47,7 +47,7 @@ DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"
 _STATE_DETAIL = re.compile(r"^(\w+) -> (\w+)(?: \((.*)\))?$", re.S)
 
 
-def build(cfg, led):
+def build(cfg, led, stats_range="week"):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
     here; the page keeps that in the browser."""
@@ -82,6 +82,8 @@ def build(cfg, led):
         "dep_graph": dep_graph,
         "quota": quota,
         "capacity": _capacity_line(quota),
+        "stats": stats(led, stats_range, project_names),
+        "stats_range": _stats_range_key(stats_range),
         "events": events,
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
@@ -94,6 +96,80 @@ def build(cfg, led):
         "view": "needs" if needs else "test" if s["uat_count"] else "now",
     }
     return s
+
+
+# ---------- productivity stats ----------
+
+STATS_RANGES = (
+    ("today", "Today"),
+    ("week", "This week"),
+    ("month", "This month"),
+    ("last7", "Last 7 days"),
+    ("last30", "Last 30 days"),
+)
+
+
+def _stats_range_key(range_key):
+    if isinstance(range_key, (tuple, list)) and len(range_key) == 2:
+        try:
+            start, end = date.fromisoformat(range_key[0]), date.fromisoformat(range_key[1])
+            if end < start:
+                raise ValueError
+            return f"custom:{start.isoformat()}:{end.isoformat()}"
+        except (TypeError, ValueError):
+            return "week"
+    return range_key if any(range_key == key for key, _ in STATS_RANGES) else "week"
+
+
+def _stats_window(now, range_key):
+    """Return [start, end) and the equally long window immediately before it."""
+    local_now = now.astimezone()
+    local_midnight = datetime.combine(local_now.date(), time.min, local_now.tzinfo)
+    key = _stats_range_key(range_key)
+    if key.startswith("custom:"):
+        try:
+            _, start_s, end_s = key.split(":", 2)
+            start_d, end_d = date.fromisoformat(start_s), date.fromisoformat(end_s)
+            if end_d < start_d:
+                raise ValueError
+            start = datetime.combine(start_d, time.min, local_now.tzinfo)
+            end = datetime.combine(end_d + timedelta(days=1), time.min, local_now.tzinfo)
+        except (TypeError, ValueError):  # guarded by _stats_range_key; defensive for callers
+            key = "week"
+    if key == "today":
+        start, end = local_midnight, local_now
+    elif key == "week":
+        start, end = local_midnight - timedelta(days=local_now.weekday()), local_now
+    elif key == "month":
+        start, end = local_midnight.replace(day=1), local_now
+    elif key == "last7":
+        start, end = local_now - timedelta(days=7), local_now
+    elif key == "last30":
+        start, end = local_now - timedelta(days=30), local_now
+    duration = end - start
+    return start, end, start - duration, start
+
+
+def stats(led, range_key="week", projects=None):
+    """Closed-item counts by project for a range and its preceding peer."""
+    start, end, prev_start, prev_end = _stats_window(led.now(), range_key)
+    done = led.items(states=("done",))
+    names = list(projects) if projects is not None else sorted({row["project"] for row in done})
+    out = {name: {"closed": 0, "prev_closed": 0, "delta": 0} for name in names}
+    for row in done:
+        if row["project"] not in out:
+            continue
+        changed = parse(row["state_changed_at"])
+        if changed is None:
+            continue
+        changed = changed.astimezone(start.tzinfo)
+        if start <= changed < end:
+            out[row["project"]]["closed"] += 1
+        elif prev_start <= changed < prev_end:
+            out[row["project"]]["prev_closed"] += 1
+    for counts in out.values():
+        counts["delta"] = counts["closed"] - counts["prev_closed"]
+    return out
 
 
 # ---------- formatting ----------

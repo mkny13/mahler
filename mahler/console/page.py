@@ -11,6 +11,8 @@ import html
 import json
 import os
 
+from .state import STATS_RANGES
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(HERE, "console.css"), encoding="utf-8") as _fh:
     CSS = _fh.read()
@@ -19,7 +21,7 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
          ("capture", "Capture"), ("backlog", "Backlog"), ("capacity", "Capacity"),
-         ("history", "Event stream"))
+         ("stats", "Stats"), ("history", "Event stream"))
 
 
 def e(s):
@@ -38,7 +40,8 @@ def document(s):
     """The full page: head, the #app fragment, and the script."""
     land = s["landing"]
     return f"""<!DOCTYPE html>
-<html lang="en" data-theme="auto" data-view="{e(land['view'])}" data-tab="{e(land['tab'])}">
+<html lang="en" data-theme="auto" data-view="{e(land['view'])}" data-tab="{e(land['tab'])}"
+ data-stats-range="{e(s['stats_range'])}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -58,7 +61,8 @@ def document(s):
 # reload doesn't flash the landing view or the wrong theme
 _EARLY = """(function(){var d=document.documentElement;try{var t=localStorage.getItem("mahler.theme");
 if(t)d.setAttribute("data-theme",t);var v=sessionStorage.getItem("mahler.view");if(v)d.setAttribute("data-view",v);
-var b=sessionStorage.getItem("mahler.tab");if(b)d.setAttribute("data-tab",b);}catch(e){}})();"""
+var b=sessionStorage.getItem("mahler.tab");if(b)d.setAttribute("data-tab",b);
+var r=localStorage.getItem("mahler.stats.range");if(r)d.setAttribute("data-stats-range",r);}catch(e){}})();"""
 
 
 def app(s):
@@ -311,6 +315,7 @@ def _desktop(s):
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
         "capacity": ("", "mut"),
+        "stats": ("", "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
     }
     rail = ['<nav class="rail"><div class="brand">Mahler</div>']
@@ -332,7 +337,7 @@ def _desktop(s):
     head = f'<div class="dhead"><span class="dtitle">{titles}</span>{peak_btn}</div>'
 
     views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
-             + _d_capacity(s) + _d_history(s))
+             + _d_capacity(s) + _d_stats(s) + _d_history(s))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -539,6 +544,40 @@ def _d_capacity(s):
     return "".join(out)
 
 
+def _stats_controls(s):
+    buttons = "".join(
+        f'<button class="btn stats-range" data-stats-range="{e(key)}">{e(label)}</button>'
+        for key, label in STATS_RANGES)
+    custom = s["stats_range"].split(":", 2) if s["stats_range"].startswith("custom:") else []
+    start, end = (custom[1], custom[2]) if len(custom) == 3 else ("", "")
+    return (f'<div class="stats-controls">{buttons}'
+            f'<span class="stats-custom"><input type="date" aria-label="Stats start date" '
+            f'data-stats-start value="{e(start)}"><span>to</span>'
+            f'<input type="date" aria-label="Stats end date" data-stats-end value="{e(end)}">'
+            f'<button class="btn" data-stats-custom>Compare</button></span></div>')
+
+
+def _stats_rows(s):
+    rows = []
+    for project in s["projects"]:
+        counts = s["stats"][project]
+        delta = counts["delta"]
+        arrow = "↑" if delta > 0 else "↓" if delta < 0 else "→"
+        tone = "good" if delta > 0 else "bad" if delta < 0 else "mut"
+        rows.append(f'<div class="statcard" data-stats-project="{e(project)}">'
+                    f'<span class="name mono">{e(project)}</span>'
+                    f'<span class="statnum mono">{counts["closed"]}</span>'
+                    f'<span class="statlabel">closed</span>'
+                    f'<span class="statprev mono">previous {counts["prev_closed"]}</span>'
+                    f'<span class="statdelta mono t-{tone}">{arrow} {abs(delta)}</span></div>')
+    return "".join(rows)
+
+
+def _d_stats(s):
+    return (f'<section class="view view-stats">{_stats_controls(s)}'
+            f'<div class="stats-grid">{_stats_rows(s)}</div></section>')
+
+
 # ---------- phone ----------
 
 def _phone(s):
@@ -552,8 +591,15 @@ def _phone(s):
             f'<span class="mono t-acc">{runs or ""}</span></button>'
             f'<button class="tab" data-tab-go="triage"><span>Triage</span>'
             f'<span class="mono t-bad">{needs or ""}</span></button>'
-            f'<button class="tab" data-tab-go="browse"><span>Browse</span></button></div></header>')
-    return f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}{_p_browse(s)}</div></div>'
+            f'<button class="tab" data-tab-go="browse"><span>Browse</span></button>'
+            f'<button class="tab" data-tab-go="stats"><span>Stats</span></button></div></header>')
+    return (f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}'
+            f'{_p_browse(s)}{_p_stats(s)}</div></div>')
+
+
+def _p_stats(s):
+    return (f'<section class="tabv tabv-stats"><div class="pad view-stats">'
+            f'{_stats_controls(s)}<div class="stats-grid">{_stats_rows(s)}</div></div></section>')
 
 
 def _p_now(s):
