@@ -121,6 +121,8 @@ mahler add myapp "Describe the work"
 mahler pause
 mahler resume
 mahler version
+mahler release myapp                      # preview rolling draft release
+mahler release myapp --version X.Y.Z --publish  # publish git tag and GitHub release
 ```
 
 Run `mahler --help` (or `mahler <command> --help`) for the full local CLI reference.

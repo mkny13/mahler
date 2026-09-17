@@ -425,11 +425,97 @@ def cmd_heartbeat(a, cfg, led):
 
 
 def cmd_release(a, cfg, led):
-    project, n = a.item
-    ok = led.release(project, n, holder=f"interactive:{a.holder}",
-                     to_state="ready", why=f"released by {a.holder}")
-    print("released" if ok else "you didn't hold it")
-    return 0
+    target = getattr(a, "target", None)
+    if target is None:
+        target = getattr(a, "project", None)
+    if target is None:
+        target = getattr(a, "item", None)
+
+    if target is None:
+        print("mahler release: error: target project or <project>#<issue> required")
+        return 1
+
+    # Lease release if target is a tuple or contains "#"
+    if isinstance(target, tuple) or (isinstance(target, str) and "#" in target):
+        if isinstance(target, tuple):
+            project, n = target
+        else:
+            project, n = ref(target)
+        holder = getattr(a, "holder", None) or default_holder()
+        ok = led.release(project, n, holder=f"interactive:{holder}",
+                         to_state="ready", why=f"released by {holder}")
+        print("released" if ok else "you didn't hold it")
+        return 0
+
+    # Software release preview or publish
+    from . import releases
+    project = str(target)
+    pol = config.project_policy(cfg, project)
+    if not pol.get("repo"):
+        print(f"unknown project {project!r}")
+        return 1
+
+    base_branch = pol.get("base", "main")
+    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    draft = releases.get_draft(led, project)
+
+    version_arg = getattr(a, "version", None)
+    publish_arg = getattr(a, "publish", False)
+
+    if publish_arg and not version_arg:
+        print("mahler release: error: publishing requires both an explicit valid SemVer (--version X.Y.Z) and --publish")
+        return 1
+
+    selected_version = None
+    if version_arg:
+        try:
+            parsed = releases.validate_semver(version_arg)
+            selected_version = f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+            latest_rel = led.latest_release(project)
+            local_rel = led.get_release(project, version=selected_version)
+            if latest_rel:
+                last_parsed = releases.parse_semver(latest_rel["version"])
+                if last_parsed:
+                    if parsed < last_parsed:
+                        print(f"mahler release: error: version {selected_version} must be greater than latest recorded version {latest_rel['version']}")
+                        return 1
+                    if parsed == last_parsed and not local_rel and not publish_arg:
+                        print(f"mahler release: error: version {selected_version} must be greater than latest recorded version {latest_rel['version']}")
+                        return 1
+        except ValueError as e:
+            print(f"mahler release: error: {e}")
+            return 1
+
+    try:
+        checkpoint_sha = gh.branch_sha(base_branch)
+    except Exception as e:
+        if publish_arg:
+            print(f"mahler release: error: cannot resolve base branch {base_branch!r} SHA: {e}")
+            return 1
+        checkpoint_sha = draft.checkpoint_sha or "unknown"
+
+    preview = releases.format_preview(draft, version=selected_version, checkpoint_sha=checkpoint_sha)
+    print(preview)
+
+    if not publish_arg:
+        return 0
+
+    try:
+        res = releases.publish_release(led, gh, project, version=selected_version,
+                                       checkpoint_sha=checkpoint_sha)
+        status = res["status"]
+        url = res["url"]
+        if status == "reconciled":
+            print(f"\nRelease v{selected_version} already published (reconciled): {url}")
+        else:
+            print(f"\nPublished v{selected_version}: {url}")
+        return 0
+    except (releases.ReleaseConflictError, ValueError) as e:
+        print(f"mahler release: error: {e}")
+        return 1
+    except GHError as e:
+        print(f"mahler release: error: {e}")
+        return 1
 
 
 def cmd_lease_check(a, cfg, led):
@@ -644,14 +730,20 @@ def main(argv=None):
     s.set_defaults(fn=cmd_usage)
 
     for name, fn, hlp in (("claim", cmd_claim, "take an item for this session"),
-                          ("heartbeat", cmd_heartbeat, "keep your claim alive"),
-                          ("release", cmd_release, "give an item back")):
+                          ("heartbeat", cmd_heartbeat, "keep your claim alive")):
         s = sub.add_parser(name, help=hlp)
         s.add_argument("item", type=ref, help="<project>#<issue>")
         s.add_argument("--as", dest="holder", default=default_holder())
         if name == "claim":
             s.add_argument("--steal", action="store_true")
         s.set_defaults(fn=fn)
+
+    s = sub.add_parser("release", help="preview or publish a project release, or give an item back")
+    s.add_argument("target", help="<project> or <project>#<issue>")
+    s.add_argument("--version", help="semantic version to publish (X.Y.Z)")
+    s.add_argument("--publish", action="store_true", help="publish the release to GitHub")
+    s.add_argument("--as", dest="holder", default=default_holder(), help="holder name when giving an item back")
+    s.set_defaults(fn=cmd_release)
 
     s = sub.add_parser("lease-check", help="exit 0 only if this run still holds its lease")
     s.add_argument("item", type=ref, nargs="?")
