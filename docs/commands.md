@@ -15,11 +15,18 @@ Drop these commands as a comment on an issue to instruct the conductor. They tak
 - `/mahler platform <name>`
   Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for the next run. This adds a `platform:<name>` label. This overrides the automatic quota-based routing.
 
-- `/mahler undo`
-  Reverts the most recent agent's work. Moves the issue back to `ready` to try again, usually giving it to another agent if quota allows.
+- `/mahler platform auto` (or `/mahler platform none`)
+  Clears an existing platform pin and restores normal quota-based routing.
+
+Merge undo is available from the operator console: it creates a revert change
+and sends it through the normal CI-gated conductor pipeline. There is currently
+no `/mahler undo` comment command.
 
 ## Replying to `NEEDS-YOU`
 
 When an agent needs human input (e.g. to make a product decision, or provide credentials), it stops and puts the issue into the `needs-you` state.
 
-To reply, simply **add a comment on the issue with your answer**. Mahler will automatically read your comment, resume the item (moving it to `ready`), and provide your answer to the next agent so they can proceed.
+To reply, simply **add a comment on the issue with your answer**. Mahler will
+automatically read the comment and move the item back to `inbox`, so a sorting
+run can incorporate the answer before work resumes. The console provides the
+same flow with a 60-second Undo window.

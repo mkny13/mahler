@@ -106,6 +106,21 @@ class MaintenanceQueueTests(unittest.TestCase):
             self.assertTrue(title)
             self.assertTrue(body)
 
+    def test_docs_pass_files_actionable_review(self):
+        self.led.set_maintenance_checkpoint(
+            "mahler", "security", last_filed_at=NOW)
+        self.led.set_maintenance_checkpoint(
+            "mahler", "docs", last_filed_at=NOW - timedelta(days=40))
+
+        tick.queue_maintenance(self.ctx, [proj()])
+
+        self.gh_mock.ensure_pass_label.assert_called_once_with("docs")
+        title, body, labels = self.gh_mock.create_issue.call_args.args
+        self.assertEqual(title, "Documentation Accuracy & Onboarding Review")
+        self.assertIn("README", body)
+        self.assertIn("current code and CLI help", body)
+        self.assertEqual(labels, ["type:chore", "size:l", "p2", "pass:docs"])
+
     def test_files_due_pass_and_resets(self):
         tick.queue_maintenance(self.ctx, [proj()])
         
@@ -281,16 +296,6 @@ class MaintenanceQueueTests(unittest.TestCase):
 
         tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
-
-    def test_docs_pass_is_queued(self):
-        """Verify the docs pass is filed when due."""
-        self.led.set_maintenance_checkpoint("mahler", "security", last_filed_at=NOW)
-        self.led.set_maintenance_checkpoint("mahler", "docs", last_filed_at=NOW - timedelta(days=40))
-        tick.queue_maintenance(self.ctx, [proj()])
-        self.gh_mock.create_issue.assert_called_once()
-        args, kwargs = self.gh_mock.create_issue.call_args
-        self.assertIn("pass:docs", args[2])
-        self.assertEqual(args[0], "Documentation Review Pass")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- TEMPLATE — not installed automatically. The read-only status page
-     (`mahler serve`, DESIGN D10) as a launchd job.
+<!-- TEMPLATE — not installed automatically. The operator console
+     (`mahler serve`, DESIGN D27) as a launchd job.
 
      To install (a machine decision, like `tailscale serve` below):
 
        sed "s|__HOME__|$HOME|g" launcher/local.mahler.serve.plist \
          > ~/Library/LaunchAgents/local.mahler.serve.plist
-       launchctl load ~/Library/LaunchAgents/local.mahler.serve.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.mahler.serve.plist
 
      The server binds to 127.0.0.1 by default. To view it from your phone on the
      tailnet, run ONCE by hand (do not put this in a script or repo hook):

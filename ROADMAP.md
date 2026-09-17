@@ -22,48 +22,39 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 ---
 
-## Current state (2026-09-14)
+## Current state (2026-09-16)
 
 Phases 0, B and 1 are done and the project has been running past the original phase
 sequence for a while — the day-to-day reality no longer matches "one phase at a time,"
 so this section says where things actually stand; the phase list below stays as the
 detailed record.
 
-- **Three projects self-managed:** `mahler`, `groundwork`, and `phish-in` (Couch Tour) are
-  all `enabled = true` and running under the same daemon (`local.mahler`, launchd,
-  60s tick). Recent throughput: ~90 mahler PRs, ~45 groundwork PRs and ~50 couch-tour PRs
-  merged in the trailing 14 days. 551 unit tests pass.
+- **Multiple projects are self-managed** by the same 60-second launchd tick, including
+  Mahler itself. The full isolated unit suite and randomized-order runner are the release
+  contract; avoid embedding a test count here because it changes almost daily.
 - **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
   as any managed project, with CI-gated self-update and rollback.
-- **Interaction today is GitHub + chat + ntfy, not a phone console.** Phase 2's
-  phone-first console and Phase 3's full MCP tool set were never built as designed —
-  what shipped instead was simpler and has been enough so far:
+- **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
+  console is built; the full MCP and in-app UAT designs remain incomplete:
   - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
     `heartbeat`, `release`, `handoff`, `next_id` — missing `ask_user`, `report_progress`,
     `get_context` from the original Phase 3 list
-  - the operator console (`mahler serve`, its own launchd job; DESIGN D27), replacing the
-    read-only status page on 2026-09-15 — every view read-only so far, plus pause, the peak
-    override, clearing a backoff and marking the digest seen
+  - the operator console (`mahler serve`, its own launchd job; DESIGN D27): status, quota,
+    idle reasons, backlog and dependency views, capture with attachments, needs-you answers
+    with Undo, live logs, stop-and-handoff, UAT pass/fail, and CI-gated merge reverts
   - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
     a plain reply on a `needs-you` item
   - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
     (`mahler hooks`), and a daily digest (`digest.maybe_send`, wired into every tick)
-  - The console's remaining writes (`area:console` issues) and the rest of the MCP tool set
-    (Phase 3) remain queued, not dropped.
-- **Onboarding order diverged from the Phase 5 plan.** Couch Tour (phish-in-app) is live
-  and generating/shipping issues; **mental-jukebox, puppy-growth-chart and movebreak are
-  not onboarded** (not present in `~/.mahler/config.toml` at all) — the opposite of the
-  planned order, which put those three first and Couch Tour last pending its staging
-  sync backend.
-- **A live growing pain:** self-generated maintenance-pass audits (Phase "steady state,"
-  not an original phase — see D20) are outproducing what gets worked. Couch Tour has 72
-  open issues, 21 of them (29%) `Part N of #X` fragments of earlier audits recursively
-  splitting. The fix is already diagnosed and queued: mahler#204 (`queue_maintenance`
-  doesn't dedupe against manually-created audits with the same scope).
-- **Two other queued self-improvements** filed from a 2026-09-14 chat-session review:
-  mahler#206 (platform tier/capability assumptions never get re-verified, unlike time
-  estimates which already self-calibrate — mahler#59) and mahler#207 (time estimates
-  should be crossed by platform × size, not just platform × role).
+  - the rest of the MCP tool set and app-embedded UAT surfaces remain queued, not dropped
+- **Onboarding order diverged from the Phase 5 plan.** Couch Tour went live before the
+  projects originally listed ahead of it. The operator's `~/.mahler/config.toml`, not this
+  repository, is authoritative for which projects are enabled now; Phase 5 preserves the
+  intended/historical order rather than pretending to be live inventory.
+- **Maintenance is steady-state work.** Manual-audit deduplication (mahler#204), periodic
+  platform capability review (mahler#206), and platform × role × size estimates
+  (mahler#207) have shipped. Periodic documentation accuracy/onboarding review was added in
+  mahler#336 so these docs are checked by the same cadence/throughput scheduler.
 
 ---
 
@@ -178,14 +169,14 @@ Prove the hard parts on a real app. Each bullet is an issue in the Mahler repo.
    - [x] groundwork disabled in the old `dispatch.toml`
 4. **Deploy tracking:** not directly verified from this review — worth a status check next
    time groundwork ships a deploy-sensitive change.
-5. [x] **Status page** (mahler/serve.py, own launchd job): running work, quota gauges, recent
-   events. Read-only (no capture/undo) — `tailscale serve` exposure from S4 not confirmed.
+5. [x] **Operator console** (`mahler/serve.py`, own launchd job): the original status page
+   grew into the D27 phone/desktop console described in Phase 3. `tailscale serve` exposure
+   remains a machine setting rather than repository state.
 
 **Done when**, on groundwork over one real week:
 
 - [x] at least 5 items shipped hands-off
-- [x] at least 1 item completed after a cross-platform handoff (D9 handoff protocol is in
-  daily use across all three projects)
+- [x] at least 1 item completed after a cross-platform handoff (D9 handoffs are in daily use)
 - [ ] at least 1 pre-emption by a phone chat (Remote Control) with no lost work — not
   confirmed either way
 - [x] zero double assignments (lease compare-and-set with epochs, unit-tested)
@@ -240,17 +231,16 @@ Your request: a design phase after the POC for Mahler's own interfaces.
 
 ## Phase 3 — Intake and the UAT loop
 
-- [~] The console, built to the Phase 2 designs, served over Tailscale — standard library,
-      no `uv` (DESIGN D27). Shipped 2026-09-15: every read-only view on phone and desktop,
-      plus pause, the peak override, clearing a backoff and marking the digest seen. The rest
-      (answers, UAT, capture, stop, revert, the live log, scheduler-recorded idle reasons)
-      is filed as `area:console` issues.
+- [x] The standard-library console, built to the Phase 2 designs (DESIGN D27): phone and
+      desktop views; scheduler-recorded idle reasons; answers; UAT; capture and attachments;
+      stop-and-handoff; live logs; merge revert; pause, quota and digest controls. Tailscale
+      exposure remains an explicit per-machine operator setting.
 - [~] Full MCP tool set — `next_id` shipped with the Phase 1 minimal server; `ask_user`,
       `report_progress`, `get_context` still open. `/mahler` skill and Mahler-aware
       `handoff`/`pickup` skills not confirmed.
 - [ ] `/mahler undo`.
-- [ ] Build registration on each deploy. A `uat-author` recipe turns each shipped issue's
-      "needs a human to check" section into UAT items.
+- [~] Shipped issues whose PR has a "Needs a human to check" section register in the console
+      UAT queue. Full deploy/channel registration and a separate `uat-author` recipe remain.
 - [ ] `mahler-uat.js` web panel in groundwork's staging/preview builds. A fail reopens the
       issue or opens a linked p1 bug with your note and screenshot. Offline queue +
       GitHub-URL fallback.
@@ -274,7 +264,7 @@ has turned into a fix with no action from you beyond tapping "fails".
 - [ ] **Backup receipt before risky deploys.**
 - [ ] Migrations tested against a copy of real data.
 - [ ] Guardrail hooks for Claude, agy and Cline.
-- [ ] **Undo:** revert + platform rollback, end to end.
+- [~] **Undo:** CI-gated revert PRs ship from the console; platform rollback/redeploy remains.
 - [ ] Exclude `.mahler-worktrees` from Backblaze. Confirm Backblaze still covers the SSD
       (it's now the only non-GitHub file backup; Time Machine is dropped).
 - [ ] Secrets audit.
@@ -287,11 +277,9 @@ store.
 
 ## Phase 5 — Cutover and rollout
 
-**Status: reordered by reality.** Couch Tour (phish-in-app) is onboarded and live —
-last in the original plan, first in practice, presumably because its own momentum outran
-the plan. **mental-jukebox, puppy-growth-chart and movebreak are not onboarded** — none
-appear in `~/.mahler/config.toml`. Worth deciding explicitly whether they're still coming
-or the plan has changed, rather than leaving it implicit.
+**Status: reordered by reality.** Couch Tour (phish-in-app) went live ahead of the
+original sequence. Current enablement is machine state in `~/.mahler/config.toml`; the
+unchecked entries below are remaining roadmap candidates, not a claim about live config.
 
 - [ ] **thread as a sensor:** anomaly flags become `type:anomaly` issues.
 - [ ] Per-project onboarding checklist, run by an agent:
@@ -303,9 +291,9 @@ or the plan has changed, rather than leaving it implicit.
   - data inventory + first restore drill
   - disable in `dispatch.toml`
 - [ ] Onboard in this order:
-  1. **mental-jukebox** — not started
-  2. **puppy-growth-chart** — not started
-  3. **movebreak** — not started
+  1. **mental-jukebox** — original candidate
+  2. **puppy-growth-chart** — original candidate
+  3. **movebreak** — original candidate
   4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
      - single release channel / staging sync backend status not confirmed from this review
      - `gated` status not confirmed

@@ -59,7 +59,7 @@ DEFAULT_MAINTENANCE = {
 # codebase. It reuses D20's checkpoint machinery (`Ledger.maintenance_due`,
 # keyed on `project`'s own merged-PR throughput) rather than a second
 # scheduler, so it shares the same cadence/threshold shape, but it is its own
-# pass — not one of the eight in a project's `maintenance.passes` list.
+    # pass — not one of the nine in a project's `maintenance.passes` list.
 PLATFORM_AUDIT_PASS = "platform-audit"
 DEFAULT_PLATFORM_AUDIT = {
     "enabled": True,
