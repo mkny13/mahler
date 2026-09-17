@@ -74,9 +74,11 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="test"] .rail-i[data-go="test"],
 :root[data-view="capture"] .rail-i[data-go="capture"],
 :root[data-view="backlog"] .rail-i[data-go="backlog"],
+:root[data-view="releases"] .rail-i[data-go="releases"],
 :root[data-view="capacity"] .rail-i[data-go="capacity"],
 :root[data-view="stats"] .rail-i[data-go="stats"],
-:root[data-view="history"] .rail-i[data-go="history"] {
+:root[data-view="history"] .rail-i[data-go="history"],
+:root[data-view="settings"] .rail-i[data-go="settings"] {
   background: var(--bg); border-left-color: var(--acc); color: var(--ink); font-weight: 600;
 }
 
@@ -89,9 +91,12 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="test"] .vt-test, :root[data-view="capture"] .vt-capture,
 :root[data-view="backlog"] .vt-backlog, :root[data-view="releases"] .vt-releases,
 :root[data-view="capacity"] .vt-capacity, :root[data-view="stats"] .vt-stats,
-:root[data-view="history"] .vt-history { display: inline; }
+:root[data-view="history"] .vt-history, :root[data-view="settings"] .vt-settings { display: inline; }
 .peak-btn { margin-left: auto; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line);
             border-radius: 4px; padding: 0 10px; min-height: 32px; }
+.settings-head-link { margin-left: auto; }
+.settings-head-link + .peak-btn { margin-left: 0; }
+:root[data-view="settings"] .settings-head-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
 .peak-btn .txt { font-size: 12px; color: var(--mut); white-space: nowrap; }
 .peak-btn .mono { font-size: 11px; white-space: nowrap; }
 .dbody { padding: 16px 20px 22px; }
@@ -100,7 +105,46 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="test"] .view-test, :root[data-view="capture"] .view-capture,
 :root[data-view="backlog"] .view-backlog, :root[data-view="releases"] .view-releases,
 :root[data-view="capacity"] .view-capacity, :root[data-view="stats"] .view-stats,
-:root[data-view="history"] .view-history { display: flex; }
+:root[data-view="history"] .view-history, :root[data-view="settings"] .view-settings { display: flex; }
+
+/* Settings (#353): the same complete form is rendered for desktop and phone. */
+.settings-form { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 920px; }
+.settings-intro { margin: 0; color: var(--mut); line-height: 1.55; }
+.settings-section { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 10px; }
+.settings-section + .settings-section { border-top: 1px solid var(--line); padding-top: 16px; }
+.settings-section legend { padding: 0; margin-bottom: 4px; font-size: 14px; font-weight: 600; }
+.settings-help { color: var(--mut); font-size: 11.5px; line-height: 1.45; }
+.settings-section > .settings-help { margin: -4px 0 2px; }
+.platform-setting { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+                    display: flex; flex-direction: column; gap: 10px; }
+.platform-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.platform-head > .mono { font-size: 12.5px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--mut); }
+.check input { width: 16px; height: 16px; accent-color: var(--acc); }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; min-width: 0;
+                  font-size: 11.5px; color: var(--mut); }
+.settings-field input, .settings-field select, .route-add select {
+  min-height: 36px; width: 100%; border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 9px; background: var(--bg); color: var(--ink); font-size: 13px;
+}
+.route-scope { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+               display: flex; flex-direction: column; gap: 13px; }
+.settings-scope { font-size: 13px; font-weight: 600; }
+.settings-subtitle { font: 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+                     letter-spacing: .08em; text-transform: uppercase; color: var(--mut); }
+.route-role { display: flex; flex-direction: column; gap: 7px; }
+.route-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
+.route-list li { border-top: 1px solid var(--line); padding-top: 5px; min-height: 37px;
+                 display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.route-list li > .mono { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.route-buttons { display: flex; gap: 5px; flex: none; }
+.route-buttons .btn { min-width: 34px; padding: 0 8px; }
+.route-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.settings-actions { position: sticky; bottom: 0; z-index: 2; border-top: 1px solid var(--line);
+                    background: var(--bg); padding: 12px 0; display: flex; align-items: center;
+                    justify-content: space-between; gap: 12px; }
+.settings-actions .btn { flex: none; }
 
 /* Capacity (mahler#335): one bordered card per quota group, all its windows. */
 .view-capacity { gap: 12px; }
@@ -266,6 +310,8 @@ a { color: var(--acc); text-decoration: none; }
 .phead-btns .btn { min-height: 36px; }
 .phead-btns .theme { min-width: 44px; font-size: 12px; color: var(--mut); }
 .phead-btns .pause { font-size: 13px; padding: 0 12px; }
+.phead-btns .settings-link { font-size: 12px; padding: 0 8px; }
+:root[data-tab="settings"] .settings-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
 .tabs { display: flex; gap: 4px; }
 .tab { flex: 1; min-height: 46px; border-bottom: 2px solid transparent; display: flex;
        align-items: center; justify-content: center; gap: 6px; font-size: 15px; color: var(--mut); }
@@ -277,7 +323,16 @@ a { color: var(--acc); text-decoration: none; }
 .tabv { display: none; }
 :root[data-tab="now"] .tabv-now, :root[data-tab="triage"] .tabv-triage,
 :root[data-tab="releases"] .tabv-releases,
-:root[data-tab="browse"] .tabv-browse, :root[data-tab="stats"] .tabv-stats { display: block; }
+:root[data-tab="browse"] .tabv-browse, :root[data-tab="stats"] .tabv-stats,
+:root[data-tab="settings"] .tabv-settings { display: block; }
+.tabv-settings .settings-form { padding: 14px 14px 24px; }
+.ph .settings-grid { grid-template-columns: 1fr; }
+.ph .settings-field input, .ph .settings-field select, .ph .route-add select { min-height: 44px; }
+.ph .route-list li { min-height: 49px; }
+.ph .route-buttons .btn, .ph .route-add .btn { min-height: 44px; }
+.ph .settings-actions { padding: 12px 0 max(12px, env(safe-area-inset-bottom)); }
+.ph .settings-actions .settings-help { display: none; }
+.ph .settings-actions .btn { width: 100%; min-height: 48px; }
 .pad { padding: 14px 14px 24px; display: flex; flex-direction: column; gap: 22px; }
 .tabv-now .pad { gap: 18px; }
 .psect { display: flex; flex-direction: column; gap: 11px; }

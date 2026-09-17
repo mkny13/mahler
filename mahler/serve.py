@@ -174,6 +174,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, feed)
                 return
 
+        if path == "/api/settings":
+            try:
+                with self.lock:
+                    self._json(200, config.settings(self.load_cfg()))
+            except Exception:
+                self.send_error(500, "settings failed")
+                raise
+            return
+
         if path not in ("/", "/fragment", "/api/state"):
             self.send_error(404)
             return
@@ -221,6 +230,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlsplit(self.path).path
         name = path[len("/api/"):] if path.startswith("/api/") else None
+        if name == "settings":
+            name = "save_settings"
         if name not in actions.ACTIONS:
             self.send_error(404 if path.startswith("/api/") else 405)
             return

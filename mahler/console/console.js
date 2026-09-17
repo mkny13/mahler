@@ -18,7 +18,13 @@
   var openCapture = false;
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
   var errorToastTimer = null;   // timer for auto-dismissing error toast
+  var settingsDirty = false;    // never poll-refresh an unsaved settings form
 
+  function e(value) {
+    var span = document.createElement("span");
+    span.textContent = value == null ? "" : String(value);
+    return span.innerHTML;
+  }
   function store(kind, key, value) {
     try { (kind === "local" ? localStorage : sessionStorage).setItem(key, value); } catch (e) {}
   }
@@ -203,6 +209,7 @@
 
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
+    if (settingsDirty) { return Promise.resolve(); }
     var active = document.activeElement;
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
@@ -261,6 +268,26 @@
     }, 5000);
   }
 
+  function showSavedToast(message) {
+    var toast = document.getElementById("saved-toast");
+    if (toast) { toast.remove(); }
+    toast = document.createElement("div");
+    toast.id = "saved-toast";
+    toast.className = "bn";
+    toast.style.position = "fixed";
+    toast.style.top = "12px";
+    toast.style.right = "12px";
+    toast.style.left = "12px";
+    toast.style.zIndex = "30";
+    toast.style.maxWidth = "560px";
+    toast.style.margin = "0 auto";
+    toast.style.background = "var(--bg)";
+    toast.style.borderColor = "var(--good)";
+    toast.innerHTML = '<span class="kind mono t-good">Saved</span><span class="txt">' + e(message) + '</span>';
+    document.body.appendChild(toast);
+    setTimeout(function () { if (toast.parentNode) { toast.remove(); } }, 4000);
+  }
+
   function post(action, payload) {
     return fetch("/api/" + action, {
       method: "POST",
@@ -272,15 +299,91 @@
       if (!res.ok) {
         if (window.console) { console.warn(action, res.error || "failed"); }
         showErrorToast(res.error || "The action was refused or failed.");
+        if (action === "settings") { return; }
       } else if (action === "capture") {
         suppressKeep = "capture";   // clear the draft on the next restore, keep the project
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
         openCapture = false;
       } else if (action === "cut_release") {
         openRelease = null;
+      } else if (action === "settings") {
+        settingsDirty = false;
+        showSavedToast("Settings will apply on the next scheduler tick.");
       }
       return refresh(true);
     });
+  }
+
+  function numberValue(form, name) {
+    var el = form.querySelector('[data-setting="' + name + '"]');
+    return el && el.value !== "" ? Number(el.value) : "";
+  }
+
+  function settingsPayload(form) {
+    var payload = { platforms: [], routing: [], concurrency: { total: 0, by_tier: {} },
+      projects: [], scheduler: {} };
+    var platforms = form.querySelectorAll("[data-setting-platform]");
+    for (var i = 0; i < platforms.length; i++) {
+      var row = platforms[i];
+      function field(name) { return row.querySelector('[data-platform-field="' + name + '"]'); }
+      payload.platforms.push({
+        name: row.getAttribute("data-setting-platform"),
+        enabled: field("enabled").checked,
+        provider: field("provider").value,
+        model: field("model").value,
+        sort_model: field("sort_model").value,
+        build_model: field("build_model").value
+      });
+    }
+    var scopes = form.querySelectorAll("[data-route-scope]");
+    for (var s = 0; s < scopes.length; s++) {
+      var route = { key: scopes[s].getAttribute("data-route-scope") };
+      var roles = scopes[s].querySelectorAll("[data-route-role]");
+      for (var r = 0; r < roles.length; r++) {
+        var names = [];
+        var entries = roles[r].querySelectorAll("[data-route-platform]");
+        for (var n = 0; n < entries.length; n++) { names.push(entries[n].getAttribute("data-route-platform")); }
+        route[roles[r].getAttribute("data-route-role")] = names;
+      }
+      payload.routing.push(route);
+    }
+    payload.concurrency.total = numberValue(form, "concurrency.total");
+    for (var tier = 1; tier <= 4; tier++) {
+      var cap = numberValue(form, "concurrency.tier." + tier);
+      if (cap !== "") { payload.concurrency.by_tier[String(tier)] = cap; }
+    }
+    var projectInputs = form.querySelectorAll('[data-setting^="project."]');
+    for (var p = 0; p < projectInputs.length; p++) {
+      payload.projects.push({ name: projectInputs[p].getAttribute("data-setting").slice(8),
+        max_parallel: Number(projectInputs[p].value) });
+    }
+    var schedulerInputs = form.querySelectorAll('[data-setting^="scheduler."]');
+    for (var t = 0; t < schedulerInputs.length; t++) {
+      payload.scheduler[schedulerInputs[t].getAttribute("data-setting").slice(10)] = Number(schedulerInputs[t].value);
+    }
+    return payload;
+  }
+
+  function routeItem(name) {
+    var li = document.createElement("li");
+    li.setAttribute("data-route-platform", name);
+    var label = document.createElement("span");
+    label.className = "mono";
+    label.textContent = name;
+    li.appendChild(label);
+    var buttons = document.createElement("span");
+    buttons.className = "route-buttons";
+    [["↑", "up", "Move up"], ["↓", "down", "Move down"]].forEach(function (spec) {
+      var button = document.createElement("button");
+      button.type = "button"; button.className = "btn"; button.textContent = spec[0];
+      button.setAttribute("data-route-move", spec[1]); button.setAttribute("aria-label", spec[2]);
+      buttons.appendChild(button);
+    });
+    var remove = document.createElement("button");
+    remove.type = "button"; remove.className = "btn btn-bad"; remove.textContent = "Remove";
+    remove.setAttribute("data-route-remove", ""); buttons.appendChild(remove);
+    li.appendChild(buttons);
+    return li;
   }
 
   function markSeen() {
@@ -385,6 +488,35 @@
       return;
     }
     if (el.hasAttribute("data-tab-go")) { setTab(el.getAttribute("data-tab-go")); return; }
+    if (el.hasAttribute("data-route-move")) {
+      var item = el.closest("[data-route-platform]");
+      if (item && el.getAttribute("data-route-move") === "up" && item.previousElementSibling) {
+        item.parentNode.insertBefore(item, item.previousElementSibling);
+      } else if (item && el.getAttribute("data-route-move") === "down" && item.nextElementSibling) {
+        item.parentNode.insertBefore(item.nextElementSibling, item);
+      }
+      settingsDirty = true;
+      return;
+    }
+    if (el.hasAttribute("data-route-remove")) {
+      var removeItem = el.closest("[data-route-platform]");
+      if (removeItem) { removeItem.remove(); settingsDirty = true; }
+      return;
+    }
+    if (el.hasAttribute("data-route-add")) {
+      var role = el.closest("[data-route-role]");
+      var select = role && role.querySelector(".route-add select");
+      var list = role && role.querySelector(".route-list");
+      var exists = false;
+      var current = list ? list.querySelectorAll("[data-route-platform]") : [];
+      for (var ci = 0; ci < current.length; ci++) {
+        if (current[ci].getAttribute("data-route-platform") === select.value) { exists = true; }
+      }
+      if (select && list && !exists) {
+        list.appendChild(routeItem(select.value)); settingsDirty = true;
+      }
+      return;
+    }
     if (el.hasAttribute("data-stats-range")) {
       setRange(el.getAttribute("data-stats-range"));
       return;
@@ -474,6 +606,7 @@
 
   document.addEventListener("change", function (ev) {
     var el = ev.target;
+    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
     if (el && el.hasAttribute && el.hasAttribute("data-capture-select")) { updateCaptureSave(el); }
     if (el && el.classList && el.classList.contains("attach-in") && el.files && el.files.length > 0) {
       var file = el.files[0];
@@ -524,6 +657,7 @@
 
   document.addEventListener("input", function (ev) {
     var el = ev.target;
+    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
     if (el && el.classList && el.classList.contains("ver-input")) {
       var ov = el.closest(".releaseov");
       if (ov) {
@@ -534,6 +668,19 @@
         if (btnTxt) { btnTxt.textContent = val; }
       }
     }
+  });
+
+  document.addEventListener("submit", function (ev) {
+    var form = ev.target.closest && ev.target.closest("[data-settings-form]");
+    if (!form) { return; }
+    ev.preventDefault();
+    if (!form.reportValidity()) { return; }
+    var button = form.querySelector('[type="submit"]');
+    if (button) { button.disabled = true; }
+    post("settings", settingsPayload(form)).catch(function (err) {
+      if (window.console) { console.warn(err); }
+      showErrorToast("Settings could not be saved.");
+    }).finally(function () { if (button) { button.disabled = false; } });
   });
 
   document.addEventListener("keydown", function (ev) {
