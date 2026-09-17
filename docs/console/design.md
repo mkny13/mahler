@@ -539,7 +539,7 @@ These override the verbatim spec above.
 ### Judgment calls the design didn't settle
 
 - **Peak override.** From the console it holds until you switch it back, as the
-  copy says. `mahler peak off` keeps its timed default. The desktop header button
+  copy says. `mahler peak --off` keeps its timed default. The desktop header button
   only appears inside the window or while an override is live; the Now line
   always shows the schedule.
 - **Digest on desktop.** Opening the Event stream marks it seen (the desktop has

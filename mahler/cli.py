@@ -576,8 +576,9 @@ def cmd_version(a, cfg, led):
 def cmd_peak(a, cfg, led):
     """Override Claude's peak window (D22).
 
-    `peak off` pauses new Claude runs until the current (or next) window ends,
-    or for `--for DURATION`. `peak on` clears the override.
+    `peak --off` allows Claude runs until the current (or next) window ends,
+    or for `--for DURATION`. `peak --on` clears the override and restores
+    normal scheduling.
     """
     pc = cfg.get("claude_peak") or {}
     if not pc.get("enabled", True):
@@ -697,8 +698,8 @@ def main(argv=None):
 
     s = sub.add_parser("peak", help="override Claude's peak window (D22)")
     grp = s.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--off", action="store_true", help="pause new Claude runs")
-    grp.add_argument("--on", action="store_true", help="clear the override")
+    grp.add_argument("--off", action="store_true", help="allow Claude through the peak hold")
+    grp.add_argument("--on", action="store_true", help="restore normal scheduling")
     s.add_argument("--for", dest="for_duration", default=None,
                    help="override duration, e.g. 2h or 90m (default: until the window ends)")
     s.set_defaults(fn=cmd_peak)
