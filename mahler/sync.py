@@ -13,7 +13,7 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of)
 from .ledger import iso, parse
-from .ship import record_uat_if_needed
+from .ship import record_release_item_if_needed, record_uat_if_needed
 from .watchdog import request_stop
 
 
@@ -136,6 +136,7 @@ def sync(ctx, project):
                         pass
                     else:
                         record_uat_if_needed(ctx, project, item["number"], item["pr"], item, view)
+                        record_release_item_if_needed(ctx, project, item["number"], item["pr"], item, view)
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
 

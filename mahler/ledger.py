@@ -138,6 +138,32 @@ CREATE TABLE IF NOT EXISTS uat (
     PRIMARY KEY (project, number)
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS releases (
+    id             INTEGER PRIMARY KEY,
+    project        TEXT NOT NULL,
+    version        TEXT NOT NULL,
+    checkpoint_sha TEXT,
+    state          TEXT NOT NULL DEFAULT 'published',
+    created_at     TEXT NOT NULL,
+    published_at   TEXT,
+    updated_at     TEXT,
+    notes          TEXT NOT NULL DEFAULT '',
+    remote_url     TEXT,
+    UNIQUE (project, version)
+);
+CREATE TABLE IF NOT EXISTS release_items (
+    project     TEXT NOT NULL,
+    number      INTEGER NOT NULL,
+    pr          INTEGER,
+    title       TEXT,
+    summary     TEXT,
+    merge_sha   TEXT,
+    labels      TEXT NOT NULL DEFAULT '[]',
+    shipped_at  TEXT NOT NULL,
+    release_id  INTEGER,
+    PRIMARY KEY (project, number),
+    FOREIGN KEY (release_id) REFERENCES releases(id)
+);
 
 -- Query indexes (issue #89): every column below is part of the original
 -- schema, so these are safe on existing databases — executescript runs at
@@ -158,6 +184,12 @@ CREATE INDEX IF NOT EXISTS idx_events_kind_at
     ON events(kind, at);                          -- digest: kind + at >= cutoff
 CREATE INDEX IF NOT EXISTS idx_events_item
     ON events(project, number);                   -- item-scoped event lookups
+CREATE INDEX IF NOT EXISTS idx_releases_project
+    ON releases(project, id);
+CREATE INDEX IF NOT EXISTS idx_release_items_unreleased
+    ON release_items(project, release_id);
+CREATE INDEX IF NOT EXISTS idx_release_items_release
+    ON release_items(release_id);
 """
 
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
@@ -235,6 +267,19 @@ class Ledger:
         lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
         if "capacity" not in lease_cols:
             self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
+        rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(releases)")}
+        for col, ddl in (("checkpoint_sha", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'published'"),
+                         ("created_at", "TEXT"), ("published_at", "TEXT"),
+                         ("updated_at", "TEXT"), ("notes", "TEXT NOT NULL DEFAULT ''"),
+                         ("remote_url", "TEXT")):
+            if col not in rel_cols:
+                self.con.execute(f"ALTER TABLE releases ADD COLUMN {col} {ddl}")
+        item_rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(release_items)")}
+        for col, ddl in (("pr", "INTEGER"), ("title", "TEXT"), ("summary", "TEXT"),
+                         ("merge_sha", "TEXT"), ("labels", "TEXT NOT NULL DEFAULT '[]'"),
+                         ("shipped_at", "TEXT"), ("release_id", "INTEGER")):
+            if col not in item_rel_cols:
+                self.con.execute(f"ALTER TABLE release_items ADD COLUMN {col} {ddl}")
         # migrate legacy 'tracking' state to 'parent'
         self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
         if path != ":memory:":
@@ -322,6 +367,78 @@ class Ledger:
             "UPDATE uat SET verdict=?,verdict_at=?,bug=?,note=? "
             "WHERE project=? AND number=? AND verdict IS NULL",
             (verdict, iso(self.now()), bug, note, project, number)).rowcount)
+
+    # ---------- releases and rolling draft (DESIGN D31) ----------
+
+    def snapshot_release_item(self, project, number, pr=None, title=None,
+                              summary=None, merge_sha=None, labels=None, shipped_at=None):
+        """Snapshot a shipped issue into the unreleased draft.
+        Idempotent: retries do not duplicate or error, and an item assigned
+        to a completed release is never overwritten back to unreleased."""
+        labels_json = labels if isinstance(labels, str) else json.dumps(labels or [])
+        ts = shipped_at or iso(self.now())
+        self.con.execute(
+            "INSERT INTO release_items (project, number, pr, title, summary, merge_sha, labels, shipped_at, release_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) "
+            "ON CONFLICT(project, number) DO UPDATE SET "
+            "pr=coalesce(excluded.pr, release_items.pr), "
+            "title=coalesce(excluded.title, release_items.title), "
+            "summary=coalesce(excluded.summary, release_items.summary), "
+            "merge_sha=coalesce(excluded.merge_sha, release_items.merge_sha), "
+            "labels=case when excluded.labels != '[]' then excluded.labels else release_items.labels end "
+            "WHERE release_items.release_id IS NULL",
+            (project, number, pr, title, summary, merge_sha, labels_json, ts))
+
+    def unreleased_items(self, project):
+        """Shipped items not yet included in any release, oldest shipment first."""
+        return self.q("SELECT * FROM release_items WHERE project=? AND release_id IS NULL "
+                      "ORDER BY shipped_at ASC, number ASC", (project,))
+
+    def release_item(self, project, number):
+        """Get a single release item by project and number."""
+        return self.q1("SELECT * FROM release_items WHERE project=? AND number=?", (project, number))
+
+    def create_release(self, project, version, checkpoint_sha=None, notes="",
+                       state="published", published_at=None, remote_url=None,
+                       item_numbers=None):
+        """Create a release and assign unreleased items to it.
+        If item_numbers is None, assigns all currently unreleased items for the project.
+        Returns the new release row."""
+        created_at = iso(self.now())
+        pub_at = published_at if published_at is not None else (created_at if state == "published" else None)
+        with self._tx():
+            cur = self.con.execute(
+                "INSERT INTO releases (project, version, checkpoint_sha, state, created_at, published_at, notes, remote_url) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (project, version, checkpoint_sha, state, created_at, pub_at, notes or "", remote_url))
+            rel_id = cur.lastrowid
+            if item_numbers is not None:
+                if item_numbers:
+                    placeholders = ",".join("?" for _ in item_numbers)
+                    self.con.execute(
+                        f"UPDATE release_items SET release_id=? WHERE project=? AND release_id IS NULL AND number IN ({placeholders})",
+                        (rel_id, project, *item_numbers))
+            else:
+                self.con.execute(
+                    "UPDATE release_items SET release_id=? WHERE project=? AND release_id IS NULL",
+                    (rel_id, project))
+        return self.get_release(project, release_id=rel_id)
+
+    def get_release(self, project, version=None, release_id=None):
+        if release_id is not None:
+            return self.q1("SELECT * FROM releases WHERE id=?", (release_id,))
+        if version is not None:
+            return self.q1("SELECT * FROM releases WHERE project=? AND version=?", (project, version))
+        return None
+
+    def latest_release(self, project):
+        return self.q1("SELECT * FROM releases WHERE project=? ORDER BY id DESC LIMIT 1", (project,))
+
+    def list_releases(self, project):
+        return self.q("SELECT * FROM releases WHERE project=? ORDER BY id DESC", (project,))
+
+    def release_items_for_release(self, release_id):
+        return self.q("SELECT * FROM release_items WHERE release_id=? ORDER BY shipped_at ASC, number ASC", (release_id,))
 
     # ---------- plumbing ----------
 

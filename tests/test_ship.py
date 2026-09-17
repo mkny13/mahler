@@ -6,6 +6,7 @@ Everything runs against an in-memory Ledger with gh, git and ping mocked.
 """
 
 import copy
+import json
 import os
 import sqlite3
 import subprocess
@@ -177,6 +178,29 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(row["needs"], "- the new ping arrives")
         self.assertIsNone(row["verdict"])
         self.assertEqual(row["shipped_at"], iso(NOW))
+
+    def test_shipped_issue_lands_in_unreleased_draft(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["type:feature"]))
+        self.ship()
+        unrel = self.led.unreleased_items("x")
+        self.assertEqual(len(unrel), 1)
+        row = unrel[0]
+        self.assertEqual(row["number"], 5)
+        self.assertEqual(row["pr"], 88)
+        self.assertEqual(row["title"], "Wired the exporter")
+        self.assertEqual(row["summary"], "wired the exporter")
+        self.assertEqual(row["merge_sha"], "4c1f0abfeed5")
+        self.assertEqual(json.loads(row["labels"]), ["type:feature"])
+        self.assertEqual(row["shipped_at"], iso(NOW))
+
+    def test_shipped_issue_snapshot_is_idempotent_on_retry(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["type:bug"]))
+        self.ship()
+        self.assertEqual(len(self.led.unreleased_items("x")), 1)
+
+        view = self.gh.pr_view(88)
+        ship._shipped(self.ctx, "x", 5, 88, self.led.item("x", 5), view, merged=True)
+        self.assertEqual(len(self.led.unreleased_items("x")), 1)
 
     def test_shipped_without_a_needs_human_list_skips_the_uat_queue(self):
         self.gh.view_body = "plain ship, nothing to check."
