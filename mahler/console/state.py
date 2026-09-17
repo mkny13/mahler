@@ -315,6 +315,12 @@ def _quota(cfg, led, peak):
             row["detail"] += " · " + codex
         if worst:
             row["soft_pct"] = worst["soft"]
+        # per-window detail for the full-screen Capacity view (mahler#335):
+        # the same readings the gauges are built from, all windows shown
+        row["windows"] = [{"window": x["window"], "pct": x["pct"], "soft": x["soft"],
+                           "resets": x["resets"],
+                           "resets_txt": _when(x["resets"], now) if x["resets"] else None}
+                          for x in windows]
         # held by the peak window even when its quota is fine (D22)
         row["peak_held"] = bool(claude and peak and peak["active"])
         row["available"] = row["state"] == "ok" and not row["peak_held"]
