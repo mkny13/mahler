@@ -206,7 +206,7 @@ class TestDynamicConfigReload(_Served):
         self.assertNotIn("env", body)
         form["concurrency"]["total"] = 5
         form["projects"][0]["max_parallel"] = 2
-        status, _, body = self.post("save_settings", form)
+        status, _, body = self.post("settings", form)
         self.assertEqual((status, json.loads(body)["ok"]), (200, True))
         loaded = config.load(self.config_path)
         self.assertEqual(loaded["concurrency"]["total"], 5)
@@ -218,7 +218,7 @@ class TestDynamicConfigReload(_Served):
         form["concurrency"]["total"] = 0
         with open(self.config_path, encoding="utf-8") as fh:
             before = fh.read()
-        status, _, body = self.post("save_settings", form)
+        status, _, body = self.post("settings", form)
         self.assertEqual(status, 400)
         self.assertIn("concurrency total", json.loads(body)["error"])
         with open(self.config_path, encoding="utf-8") as fh:

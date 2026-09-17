@@ -230,6 +230,8 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlsplit(self.path).path
         name = path[len("/api/"):] if path.startswith("/api/") else None
+        if name == "settings":
+            name = "save_settings"
         if name not in actions.ACTIONS:
             self.send_error(404 if path.startswith("/api/") else 405)
             return

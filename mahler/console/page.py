@@ -21,7 +21,8 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
          ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
-         ("capacity", "Capacity"), ("stats", "Stats"), ("history", "Event stream"))
+         ("capacity", "Capacity"), ("stats", "Stats"), ("history", "Event stream"),
+         ("settings", "Settings"))
 
 
 def e(s):
@@ -318,6 +319,7 @@ def _desktop(s):
         "capacity": ("", "mut"),
         "stats": ("", "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
+        "settings": ("", "mut"),
     }
     rail = ['<nav class="rail"><div class="brand">Mahler</div>']
     for key, label in VIEWS:
@@ -335,10 +337,13 @@ def _desktop(s):
         peak_btn = (f'<button class="peak-btn" data-act="{_peak_act(peak)}">'
                     f'<span class="txt">{e(peak["short"])}</span>'
                     f'<span class="mono t-{tone}">{e(peak["action"])}</span></button>')
-    head = f'<div class="dhead"><span class="dtitle">{titles}</span>{peak_btn}</div>'
+    head = (f'<div class="dhead"><span class="dtitle">{titles}</span>'
+            f'<button class="btn settings-head-link" data-go="settings">Settings</button>'
+            f'{peak_btn}</div>')
 
     views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
-             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_history(s))
+             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_history(s)
+             + _settings_form(s["settings"], "desktop"))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -817,7 +822,8 @@ def _phone(s):
             f'{_state_label(s)}</div><div class="phead-btns">'
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
             f'<button class="btn" style="font-weight:bold" data-open-capture>+</button>'
-            f'{_pause_button(s)}</div></div><div class="tabs">'
+            f'{_pause_button(s)}<button class="btn settings-link" data-tab-go="settings">Settings</button>'
+            f'</div></div><div class="tabs">'
             f'<button class="tab" data-tab-go="now"><span>Now</span>'
             f'<span class="mono t-acc">{runs or ""}</span></button>'
             f'<button class="tab" data-tab-go="triage"><span>Triage</span>'
@@ -827,7 +833,107 @@ def _phone(s):
             f'<button class="tab" data-tab-go="browse"><span>Browse</span></button>'
             f'<button class="tab" data-tab-go="stats"><span>Stats</span></button></div></header>')
     return (f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}'
-            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}</div></div>')
+            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}'
+            f'{_settings_form(s["settings"], "phone")}</div></div>')
+
+
+_SETTING_LABELS = {
+    "settle_minutes": "Settle delay (minutes)",
+    "max_attempts": "Maximum attempts",
+    "verify_timeout_minutes": "Verify timeout (minutes)",
+    "run_timeout_minutes": "Run timeout (minutes)",
+    "progress_timeout_minutes": "Progress timeout (minutes)",
+    "startup_timeout_minutes": "Startup timeout (minutes)",
+    "auto_lease_minutes": "Automatic lease (minutes)",
+    "interactive_lease_minutes": "Interactive lease (minutes)",
+    "hot_hold_minutes": "Human activity hold (minutes)",
+    "yield_grace_seconds": "Yield grace (seconds)",
+}
+
+
+def _setting_number(label, value, field, minimum=1, maximum=10080):
+    return (f'<label class="settings-field"><span>{e(label)}</span>'
+            f'<input type="number" min="{minimum}" max="{maximum}" step="1" '
+            f'value="{e(value)}" data-setting="{e(field)}" required></label>')
+
+
+def _route_editor(route, role, platform_options):
+    items = []
+    for name in route[role]:
+        items.append(f'<li data-route-platform="{e(name)}"><span class="mono">{e(name)}</span>'
+                     '<span class="route-buttons">'
+                     '<button type="button" class="btn" data-route-move="up" aria-label="Move up">↑</button>'
+                     '<button type="button" class="btn" data-route-move="down" aria-label="Move down">↓</button>'
+                     '<button type="button" class="btn btn-bad" data-route-remove aria-label="Remove">Remove</button>'
+                     '</span></li>')
+    options = ''.join(f'<option value="{e(name)}">{e(name)}</option>' for name in platform_options)
+    return (f'<div class="route-role" data-route-role="{e(role)}"><span class="settings-subtitle">'
+            f'{e(role)}</span><ol class="route-list">{"".join(items)}</ol>'
+            f'<div class="route-add"><select aria-label="Add platform to {e(role)} route">{options}</select>'
+            '<button type="button" class="btn" data-route-add>Add</button></div></div>')
+
+
+def _settings_form(settings, layout):
+    """Render the complete editable projection; secrets never enter `settings`."""
+    prefix = "view view-settings" if layout == "desktop" else "tabv tabv-settings"
+    model_list = f"settings-models-{layout}"
+    models = ''.join(f'<option value="{e(model)}"></option>' for model in settings["model_options"])
+    providers = settings["provider_options"]
+    out = [f'<section class="{prefix}"><form class="settings-form" data-settings-form>',
+           '<p class="settings-intro">Changes are validated and saved atomically. Running work is left alone; '
+           'the scheduler uses the new values on its next tick.</p>',
+           f'<datalist id="{model_list}">{models}</datalist>',
+           '<fieldset class="settings-section"><legend>Platforms</legend>',
+           '<p class="settings-help">Provider and model overrides for every configured platform.</p>']
+    for platform in settings["platforms"]:
+        provider_options = ''.join(
+            f'<option value="{e(kind)}"{" selected" if kind == platform["provider"] else ""}>'
+            f'{e(kind)}</option>' for kind in providers)
+        checked = " checked" if platform["enabled"] else ""
+        out.append(f'<div class="platform-setting" data-setting-platform="{e(platform["name"])}">'
+                   f'<div class="platform-head"><span class="mono">{e(platform["name"])}</span>'
+                   f'<label class="check"><input type="checkbox" data-platform-field="enabled"{checked}> Enabled</label></div>'
+                   '<div class="settings-grid">'
+                   f'<label class="settings-field"><span>Provider</span><select data-platform-field="provider">'
+                   f'{provider_options}</select></label>'
+                   f'<label class="settings-field"><span>Default model</span><input type="text" maxlength="200" '
+                   f'list="{model_list}" value="{e(platform["model"])}" data-platform-field="model"></label>'
+                   f'<label class="settings-field"><span>Sort model</span><input type="text" maxlength="200" '
+                   f'list="{model_list}" value="{e(platform["sort_model"])}" data-platform-field="sort_model"></label>'
+                   f'<label class="settings-field"><span>Build model</span><input type="text" maxlength="200" '
+                   f'list="{model_list}" value="{e(platform["build_model"])}" data-platform-field="build_model"></label>'
+                   '</div></div>')
+    out.append('</fieldset><fieldset class="settings-section"><legend>Routing order</legend>'
+               '<p class="settings-help">The first eligible platform wins. Each scope is saved independently.</p>')
+    for route in settings["routing"]:
+        out.append(f'<div class="route-scope" data-route-scope="{e(route["key"])}">'
+                   f'<span class="settings-scope">{e(route["label"])}</span>')
+        out.extend(_route_editor(route, role, settings["platform_options"])
+                   for role in ("sort", "plan", "build"))
+        out.append('</div>')
+    out.append('</fieldset><fieldset class="settings-section"><legend>Concurrency</legend>'
+               '<div class="settings-grid">')
+    out.append(_setting_number("Total simultaneous runs", settings["concurrency"]["total"],
+                               "concurrency.total", 1, 64))
+    for tier in (1, 2, 3, 4):
+        value = settings["concurrency"]["by_tier"].get(str(tier), "")
+        out.append(_setting_number(f"Tier {tier}+ cap (optional)", value,
+                                   f"concurrency.tier.{tier}", 1, 64).replace(" required", ""))
+    out.append('</div></fieldset><fieldset class="settings-section"><legend>Project limits</legend>'
+               '<div class="settings-grid">')
+    for project in settings["projects"]:
+        out.append(_setting_number(project["name"], project["max_parallel"],
+                                   f'project.{project["name"]}', 1, 64))
+    out.append('</div></fieldset><fieldset class="settings-section"><legend>Scheduler thresholds</legend>'
+               '<div class="settings-grid">')
+    for key, value in settings["scheduler"].items():
+        out.append(_setting_number(_SETTING_LABELS.get(key, key.replace("_", " ").title()),
+                                   value, f"scheduler.{key}"))
+    out.append('</div></fieldset><div class="settings-actions">'
+               '<span class="settings-help">Account login environment variables are never displayed or changed here.</span>'
+               '<button type="submit" class="btn btn-pri">Save settings</button></div>'
+               '</form></section>')
+    return ''.join(out)
 
 
 def _p_stats(s):

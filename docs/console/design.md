@@ -597,6 +597,27 @@ place:
   collect holds without replacing the live snapshot.
 
 
+### Settings (#353)
+
+Settings is a first-class desktop rail view and a persistent phone-header action.
+Both destinations render the same complete, server-backed form. It exposes enabled
+state, provider and model overrides for configured platforms; ordered sort, plan and
+build routes at their existing global/account/project scopes; overall, tier and
+project concurrency; and scheduler timing thresholds.
+
+Routing uses ordered rows with touch-sized move, remove and add controls rather than
+requiring TOML or comma-separated text. Model inputs suggest models already present
+in configuration while remaining editable, because provider CLIs may add model names
+before Mahler ships a hard-coded list. Account environment variables and all other
+credentials are excluded from the settings projection.
+
+The browser does not replace a dirty settings form during its 30-second refresh.
+Save submits one complete snapshot to `POST /api/settings`; the server validates the
+whole snapshot, proves the TOML round trip, and atomically replaces `config.toml` only
+after every check passes. The page explains that running work is unaffected and the
+new configuration is loaded by the scheduler on its next tick.
+
+
 ### Answer delivery (#247)
 
 Answers stay in the ledger for at least 60 seconds, then the next tick posts the

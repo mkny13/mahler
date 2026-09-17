@@ -118,6 +118,48 @@ class SettingsConfigTests(unittest.TestCase):
                 self.assertEqual(fh.read(), original)
 
 
+class SettingsPageTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def test_desktop_and_phone_render_complete_settings_forms(self):
+        doc = page.document(state.build(self.cfg, self.led))
+
+        self.assertIn('<button class="rail-i" data-go="settings">', doc)
+        self.assertIn('class="btn settings-head-link" data-go="settings"', doc)
+        self.assertIn('data-tab-go="settings">Settings</button>', doc)
+        self.assertIn('<section class="view view-settings">', doc)
+        self.assertIn('<section class="tabv tabv-settings">', doc)
+        self.assertEqual(doc.count('<form class="settings-form" data-settings-form>'), 2)
+        self.assertIn('data-setting-platform="claude"', doc)
+        self.assertIn('data-platform-field="provider"', doc)
+        self.assertIn('data-platform-field="build_model"', doc)
+        self.assertIn('data-route-scope="default"', doc)
+        self.assertIn('data-route-move="up"', doc)
+        self.assertIn('data-setting="concurrency.total"', doc)
+        self.assertIn('data-setting="scheduler.settle_minutes"', doc)
+        self.assertIn('data-setting="project.mahler"', doc)
+
+    def test_settings_page_and_state_never_render_account_secrets(self):
+        cfg = make_cfg(accounts={"work": {
+            "env": {"ANTHROPIC_AUTH_TOKEN": "do-not-render-this"},
+            "routing": {"sort": ["claude"], "plan": [], "build": ["agy-claude"]},
+        }})
+        doc = page.document(state.build(cfg, self.led))
+
+        self.assertNotIn("do-not-render-this", doc)
+        self.assertIn("Account · work", doc)
+        self.assertIn("Account login environment variables are never displayed", doc)
+
+    def test_browser_serializes_and_preserves_unsaved_settings(self):
+        self.assertIn('post("settings", settingsPayload(form))', page.JS)
+        self.assertIn('if (settingsDirty)', page.JS)
+        self.assertIn('data-route-platform', page.JS)
+        self.assertIn(':root[data-view="settings"] .view-settings', page.CSS)
+        self.assertIn(':root[data-tab="settings"] .tabv-settings', page.CSS)
+
+
 class RunTests(unittest.TestCase):
     def setUp(self):
         self.cfg, self.led = make_cfg(), make_led()
