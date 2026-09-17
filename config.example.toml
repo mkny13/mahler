@@ -2,14 +2,14 @@
 # Nothing is managed until a project here says enabled = true.
 
 [ntfy]
-topic = "mahler-change-me"      # subscribe to this topic in the ntfy app
+topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
 
-[projects.mahler]
-enabled = true
-repo = "mkny13/mahler"
-path = "/Users/mike/Mahler"
-max_parallel = 1                # the conductor changes one thing at a time (DESIGN D17)
+[projects.example]
+enabled = false                 # opt in only after repo, path and verify are correct
+repo = "your-org/your-repo"
+path = "/absolute/path/to/your-repo"
+max_parallel = 1
 verify = "python3 -m unittest discover -s tests"
 # A project may span more than one account (DESIGN D26): by default it tries
 # each of its accounts in declared order and spends the first with headroom.
@@ -22,27 +22,27 @@ verify = "python3 -m unittest discover -s tests"
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
 # public key on the Mini and accept its host key before enabling the daemon.
-# [projects.mahler.remote_ledger]
-# host = "mike@mac-mini.example-tailnet.ts.net"
+# [projects.example.remote_ledger]
+# host = "user@canonical-host.example-tailnet.ts.net"
 # client_id = "work-laptop"        # stable and unique among Mahler machines
 # connect_timeout_seconds = 5
 # command = "~/.mahler/app/bin/mahler"
-# If non-interactive SSH does not put Python 3.11+ first on PATH:
+# If non-interactive SSH does not put Python 3.12+ first on PATH:
 # command = ["/opt/homebrew/bin/python3", "~/.mahler/app/bin/mahler"]
 
-# [projects.mahler.maintenance]
+# [projects.example.maintenance]
 # enabled = true
 # cadence_days = 30
 # merged_threshold = 20
 # cooldown_days = 14
-# passes = ["security", "health", "drift", "tests", "token-economy", "guidance"]
+# passes = ["security", "health", "drift", "tests", "token-economy", "guidance", "backlog", "bugs", "docs"]
 
 # Periodic self-audit of platform tier/capability assumptions (DESIGN D20,
 # mahler#206) — global, not per-project: it's about mahler/config.py's own
 # tier/max_size/min_size judgment calls, not a managed project's codebase.
 # [platform_audit]
 # enabled = true
-# project = "mahler"             # whose merged-PR throughput anchors the checkpoint
+# project = "example"            # whose merged-PR throughput anchors the checkpoint
 # cadence_days = 30
 # merged_threshold = 20
 # cooldown_days = 14
@@ -89,7 +89,7 @@ verify = "python3 -m unittest discover -s tests"
 # enabled = true
 # account = "work"
 # repo = "acme-corp/app"
-# path = "/Users/mike/Work/app"
+# path = "/absolute/path/to/work/app"
 # size_target = "s"                 # "" or "s" (decompose to small PRs). Default: "s" for work projects, "" for others.
 
 # [claude_peak]

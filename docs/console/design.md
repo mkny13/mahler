@@ -8,7 +8,7 @@
 ## Overview
 
 The operator console for Mahler, the autonomous conductor that runs coding agents
-(Claude Code, Antigravity `agy`, Cline, Copilot, Kilo) through each project's
+(Claude Code, Antigravity `agy`, Cline, Copilot, Codex, Kilo) through each project's
 GitHub-issue backlog. Two form factors, one state model:
 
 - **Phone** — triage from a Pixel in under a minute: what needs a decision, what
@@ -17,7 +17,7 @@ GitHub-issue backlog. Two form factors, one state model:
   column, and a right sidebar of standing status.
 
 Served over Tailscale by `mahler serve` (ROADMAP Phase 2 / Phase 3 item 1). It
-replaces today's read-only status page (`mahler/serve.py`) — that page's content
+replaced the former read-only status page (`mahler/serve.py`) — that page's content
 is preserved as the desktop Event stream + Backlog views.
 
 ## About the design files
@@ -505,33 +505,20 @@ How the design maps onto Mahler. The decision and its reasons are DESIGN.md D27.
 The code is `mahler/console/` (state, page, actions, CSS, JS), served by
 `mahler/serve.py`.
 
-### Built in the first change
+### Shipped implementation
 
 - Both layouts (`3a` desktop, `2a` phone) in one server-rendered document, both
   themes, the 1100px and 760px breakpoints, the 30-second refresh.
-- Now (runs, the 0-runs explanation, capacity), Needs you (read-only), Backlog,
-  Event stream, quota gauges, the right sidebar, banners, the unread-digest chip,
-  the run detail (metadata and progress; no log panel yet).
+- Now (runs, live status/logs, the 0-runs explanation, capacity), Needs you,
+  Backlog and the desktop dependency graph, Event stream, Ready to test, quota
+  gauges, the right sidebar, banners, the unread-digest chip, and run detail.
 - Writes that only touch the ledger: Pause all / Resume, the peak-hours override,
   Clear backoff, and marking the digest seen.
-
-### Filed as issues (label `area:console`)
-
-Each is a planned issue for Mahler to build; the `area:` label makes them land one
-at a time.
-
-- Built in #247: the tick-applied write queue and needs-you answers (buttons,
-  reply box, Undo within 60 seconds). Failed items offer Retry and Park it.
-- Built in #248: structured answer options on NEEDS-YOU (so the two answer buttons exist).
-- The scheduler recording why nothing started (structured holds), so the 0-runs
-  view is complete rather than inferred.
-- Ready to test: the UAT queue, Pass, and Fail through the bug sheet.
-- Capture to a GitHub issue in the project picked from a dropdown, then
-  attachments for capture and the bug sheet.
-- Stop & hand off from the run detail, and the live log tail.
-- Undo a merge: the revert PR through the normal pipeline.
-- The serve process restarting itself when its code updates, and ntfy
-  needs-you pings deep-linking to the item.
+- Tick-applied writes: structured needs-you answers with a 60-second Undo,
+  Capture with image attachments, Stop & hand off, UAT Pass/Fail with a p1 bug
+  on failure, and confirmed merge reverts through the normal CI-gated pipeline.
+- Scheduler-recorded structured holds, automatic console restart after a code
+  update, and ntfy needs-you deep links.
 
 ### Changed from the design (owner, 2026-09-15)
 
@@ -565,8 +552,8 @@ These override the verbatim spec above.
   `free tier`, `business plan`), or the account for a second login.
 - **Event stream** leaves out lease and stats bookkeeping, and the state changes
   that repeat a `run_started`, `pr_opened` or `pr_merged` row.
-- **Until their issues land**, Capture is not in the rail, Ready to test shows 0,
-  and needs-you answers use the console queue as well as direct GitHub replies.
+- **GitHub remains authoritative.** Needs-you answers use the console queue and
+  become normal human GitHub replies; direct replies still work.
 
 ### Copy added during implementation
 

@@ -1,6 +1,9 @@
 # Mahler — Design
 
-Status: design agreed 2026-09-12; the Phase B bootstrap kernel is built and running. Build order lives in [ROADMAP.md](ROADMAP.md).
+Status: design agreed 2026-09-12; the system is built and running. This is the
+decision record, so older sections sometimes describe a target that later decisions
+amend. Shipped status lives in [ROADMAP.md](ROADMAP.md), and setup/operation lives in
+[README.md](README.md).
 Gustav Mahler was a conductor. This tool conducts: it decides who plays which part, and when.
 
 ---
@@ -13,22 +16,21 @@ tapping "this doesn't work" inside the app you're testing. Every one of those be
 **GitHub issue** in that app's repo. Issues are the single backlog, and nothing important
 lives anywhere else.
 
-Mahler runs on the Mac mini. It watches those issues. An agent (Claude, as planner) sorts each
+Mahler runs on an always-on Mac. It watches those issues. A planning agent sorts each
 new one: it writes down what "done" means, sizes it, and splits it if it's big. Once an item
-is sorted, Mahler hands it to whichever platform has capacity: Antigravity or Cline's free
-models first, and Claude only when those are used up and Claude still has headroom left for you.
-The agent works on its own branch, in its own copy of the repo. It runs the project's tests
-and builds, opens a PR, waits for CI, merges, deploys to your devices, and writes down what you
-should check.
+is sorted, Mahler hands it to whichever configured platform has capacity. The agent works on
+its own branch and worktree, implements the change, verifies it, commits, and pushes. The
+deterministic conductor opens the PR, watches CI, confirms the merge, and records what you
+should check (D18).
 
 If a platform runs low on quota mid-task, the agent saves its work and leaves a handoff note on
 the issue, and the next platform picks up exactly where it stopped. If *you* start working on
 the same item in a chat, your session wins: the agent steps aside and hands you its work.
 
-When a build is ready, your phone buzzes (ntfy). You open the app, and a small UAT panel lists
-what's new to check. You tap pass or fail and add a note or screenshot. A failure goes straight
-back into the backlog as a bug. Everything is undoable: every change is one revertible merge,
-every deploy can be rolled back, and your data is backed up before anything risky touches it.
+When a change has something only a human can verify, it appears in the console's Ready to test
+queue. You can pass it or fail it with a note or screenshot; a failure becomes a p1 bug. The
+console can also request a CI-gated revert PR. Platform rollback, in-app UAT panels, and the
+full pre-migration backup guarantees below remain planned rather than universally enforced.
 
 The rest of this document is the reasoning behind each of those sentences, written for the
 agents that will build it.
@@ -81,31 +83,32 @@ knows which platform has quota left.
 ## Architecture
 
 ```
- You — Mac or Pixel, over Tailscale
-   chats: Claude desktop/CLI · Claude app → Remote Control · Cline · Antigravity
-   Mahler console (web) · ntfy pings · GitHub app · in-app UAT panel
+ You — Mac or phone, optionally over Tailscale
+   chats/CLIs: Claude · Antigravity · Cline · Copilot · Codex · Kilo
+   Mahler console (web) · ntfy pings · GitHub
         │                         ▲
         ▼                         │
 ┌──────────────────────────── Mac mini ─────────────────────────────┐
-│  mahlerd (one launchd daemon)                                     │
+│  launchd tick (60s) + optional console service                    │
 │   ├─ GitHub sync ◀───────────▶ GitHub: Issues · PRs · Actions ·   │
 │   │                             Releases  (item content lives here)│
 │   ├─ ledger (SQLite): leases · runs · usage · builds · events     │
 │   ├─ scheduler + router (quota-aware, deterministic)              │
 │   ├─ watchdog: heartbeats · yield · reap · snapshot               │
-│   ├─ sensors: thread scan · session presence                      │
-│   ├─ API: console (HTML) · MCP · UAT endpoints                    │
+│   ├─ sensor: session presence                                     │
+│   ├─ console (HTML/JSON) · local stdio MCP                        │
 │   └─ jobs: backups · notifications · usage probes                 │
 │            │ launches, supervises                                 │
 │            ▼                                                      │
-│   runner ─▶ claude -p │ agy -p │ cline   (one worktree per run)   │
+│   runner ─▶ configured agent CLI (one worktree per run)           │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
 Item **content** (what to do, discussion, screenshots, handoff notes) lives in GitHub.
 Execution **state** (who holds what right now, runs, quota, builds) lives in Mahler's ledger.
-Neither duplicates the other's truth. Labels mirrored to GitHub are a display, never read back
-as authority.
+Neither duplicates the other's truth. Mahler-authored state labels are a display; deliberate
+human edits to a state label are accepted as instructions, and `platform:*` labels are the
+durable store for explicit pins.
 
 ---
 
@@ -248,7 +251,8 @@ wasted tokens rather than damaged work.
     which their rules files tell them to call. Where no heartbeat arrives, the presence
     sensor (layer 2) stands in.
 - **GitHub mirror:** on grant, the `mahler:working` label plus a short comment ("Antigravity
-  started, branch `mahler/12-dark-mode`"). This is for you to see; it's never read back.
+  started, branch `mahler/12-dark-mode`"). Mahler distinguishes its own last mirror from a
+  deliberate human label edit; the latter is an instruction (D4).
 
 **Interactive `holder_id`s are per-session, not a shared `"you"` (mahler#33, 2026-09-13).**
 Two interactive Claude Code sessions sharing `~/Mahler` at once both claimed under the literal
@@ -529,9 +533,10 @@ doesn't rely on that and stops on its own thresholds regardless.
   The POC version is plain server-rendered pages. The real screens come from the Claude Design
   phase after the POC (ROADMAP Phase 2).
   The designed console and how it's built: D27.
-- **MCP server** (`mahler`), registered with Claude Code, Cline and Antigravity. Tools:
-  `list_items`, `add_item`, `claim`, `heartbeat`, `release`, `handoff`, `ask_user`,
-  `report_progress`, `next_id`, `get_context`. This is what makes a chat an input: in any
+- **MCP server** (`mahler`), registered with Claude Code, Cline and Antigravity. The shipped
+  stdio server provides `list_items`, `add_item`, `claim`, `heartbeat`, `release`, `handoff`,
+  and `next_id`; `ask_user`, `report_progress`, and `get_context` remain planned. This is what
+  makes a chat an input: in any
   chat, on any platform, including the Claude app on your phone through Remote Control, you can
   say "log this as a bug in groundwork" or "start on #12 here." It's also how every platform
   sees the same queue.
@@ -542,7 +547,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   data. The POC uses ntfy.sh with an unguessable topic; self-hosting on the Mac mini is an
   option later.
 - **GitHub comments are commands**, which is handy from the GitHub app:
-  - `/mahler go` · `/mahler park` · `/mahler platform antigravity` · `/mahler undo`
+  - `/mahler go` · `/mahler park` · `/mahler platform <name|auto>`
   - Any reply on a `needs-you` item is taken as the answer.
 
 #### The in-app UAT panel
@@ -606,8 +611,8 @@ doesn't rely on that and stops on its own thresholds regardless.
 **Code is always reversible.**
 
 - Every change is one squash-merge linked to its issue.
-- **Undo** (console, or `/mahler undo`) opens a revert PR, lets CI run, merges and redeploys.
-  It's autonomous like everything else.
+- **Undo** in the console opens a revert PR and sends it through normal CI-gated conductor
+  shipping. A GitHub comment command and platform-specific rollback/redeploy remain planned.
 - Each platform's rollback is recorded in `project.toml`:
   - Vercel: promote the previous deployment
   - Cloudflare: `wrangler rollback`
@@ -700,8 +705,8 @@ doesn't rely on that and stops on its own thresholds regardless.
 
 ### D14 — Stack and runtime
 
-- **Hub:** the Mac mini. It's already always-on and hosts Remote Control and dispatch. The
-  MacBook and the Pixel are clients only. No multi-machine scheduling.
+- **Hub:** an always-on Mac. The canonical installation is the Mac mini; D24 adds remote lease
+  coordination for an explicitly shared project without replicating the scheduler database.
 - **Language:** Python 3.12+, like thread and dispatch. Dependencies would be pinned with `uv`;
   so far none are needed (the console is standard library, D27), and the MCP SDK is the
   likely first.
@@ -709,14 +714,13 @@ doesn't rely on that and stops on its own thresholds regardless.
   - web: server-rendered HTML with minimal JavaScript, phone-friendly — standard
     library, not the FastAPI + HTMX first planned here (D27)
   - database: SQLite, WAL
-  - MCP: the official Python SDK (streamable HTTP on the tailnet, stdio shim for local clients)
+  - MCP: a minimal standard-library JSON-RPC server over stdio; an SDK/HTTP transport is future work
   - GitHub: `gh` / REST, using your existing `gh` auth
   - notifications: HTTP POST to ntfy
-- **Processes:** one launchd daemon, `local.mahler`, with `KeepAlive` and an explicit `PATH`.
-  Loops:
-  - GitHub sync 60s · scheduler 30s · watchdog 15s
-  - usage probes 5 min · thread sensor 10 min
-  - backups nightly · digest daily
+- **Processes:** a launchd job invokes one exception-safe tick every 60 seconds. Sync,
+  watchdog, finalization, shipping, maintenance, quota work, and scheduling are ordered passes
+  within that tick. The optional console runs as a separate `launchd` service. Backups,
+  cleanup, and the digest are cadence-gated from ticks.
 
   One **runner** subprocess per run: it wraps the CLI, logs `stream-json`, heartbeats, enforces
   the time limit, and delivers yields.
@@ -727,9 +731,9 @@ doesn't rely on that and stops on its own thresholds regardless.
     the repos; excluded from Backblaze)
   - config: `~/.mahler/config.toml` (platforms, thresholds, caps) and per-repo
     `.mahler/project.toml` (verify, data, release), checked in so agents can read it
-- **Recipes** (after Gas City's formulas): one versioned prompt template per role in
-  `recipes/`: `sort`, `build`, `fix-ci`, `review`, `release`, `uat-author`. Each has the same
-  checkpoint/handoff boilerplate.
+- **Recipes** (after Gas City's formulas): the shipped agent roles are `sort`, `build`, and
+  `fix`, plus the manually triggered `console_walkthrough`. Review, release, and UAT-author
+  roles remain planned.
 
 ### D16 — Environments: testing never touches your real data
 
@@ -848,11 +852,13 @@ Throughput counts merged changes, not finished runs. So:
 ### D20 — Maintenance passes are triggered by time and shipped volume
 
 Each managed project may enable periodic reviews for security, code health, architecture drift,
-test health, token/quota hygiene, agent guidance, issue backlog pruning, and a correctness bug
-scan (`mahler/tick.py`'s `MAINTENANCE_TEXT`, added 2026-09-14 — the first six were the original
-set). They default to a 30-day cadence and an early trigger after 20 merged PRs since that pass
-was last filed, with a 14-day cooldown after filing. A project can disable maintenance or select
-a subset of the eight passes.
+test health, token/quota hygiene, agent guidance, issue backlog pruning, correctness bugs, and
+documentation accuracy/onboarding (`mahler/tick.py`'s `MAINTENANCE_TEXT`; the first six were the
+original set). They default to a 30-day cadence and an early trigger after 20 merged PRs since
+that pass was last filed, with a 14-day cooldown after filing. A project can disable maintenance
+or select a subset of the nine passes. The documentation pass compares README, commands,
+examples, design/roadmap status, and operator/agent guidance with current code and CLI help,
+then updates them through the normal issue → agent → conductor pipeline.
 
 The ledger owns one checkpoint per project and pass: `last_filed_at` plus `merged_since`. Every
 conductor-confirmed shipped PR increments `merged_since` for the project's enabled passes. A pass
@@ -873,13 +879,13 @@ no `pass:*` item of that project is open); and a goal closes once all its sub-is
 (mahler#206). Time estimates already self-calibrate (`ledger.calibrate_estimates()`, mahler#59),
 but `config.py`'s per-platform `tier`/`max_size`/`min_size` are point-in-time judgment calls, and
 nothing re-checks them as a provider's model quietly changes under the same CLI/account. This
-isn't a ninth entry in the eight passes above — it's not about a managed project's codebase at
+isn't an entry in the nine passes above — it's not about a managed project's codebase at
 all, it's about Mahler's own config — so it lives in `platform_audit.py` and anchors its
 checkpoint on one configured project's (default: `mahler`, since Mahler manages itself) merged-PR
 throughput instead of every project's. It reuses the exact same checkpoint shape
 (`last_filed_at`/`merged_since`, `Ledger.maintenance_due`) and the same at-most-one-pass-in-flight
 discipline (a `pass:platform-audit` label sorts into the same `pass:*` check), so it can't crowd
-the queue independently of the other eight. Each tick it: greps `DESIGN.md` for a "verified
+the queue independently of the other nine. Each tick it: greps `DESIGN.md` for a "verified
 <date>" mention near each platform's name and flags any older than `stale_verified_days` (default
 90) or missing entirely; and cross-checks `runs`/`events` for each platform's done-rate,
 needs-you-rate, and how often the *item* it was working escalated a tier away from it
@@ -1205,7 +1211,8 @@ Decided 2026-09-16 (mahler#331). Work repos use a specific compute strategy (`si
 
 ### D15 — Deliberately not doing
 
-- Not multi-user, and no scheduling across multiple machines.
+- Not multi-user, and no replicated/distributed scheduler. D24 can relay authoritative lease
+  operations for an explicitly shared project.
 - No code-review UI. You don't review code, and the verify contract and cross-platform review
   stand in.
 - Not replacing GitHub's issue UI. The console is a simpler window onto it.
