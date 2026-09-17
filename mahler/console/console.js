@@ -165,6 +165,24 @@
     window.scrollTo(0, 0);
   }
 
+  function statsRange() {
+    return load("local", "mahler.stats.range") || root.getAttribute("data-stats-range") || "week";
+  }
+  function statsUrl() {
+    var value = statsRange();
+    if (value.indexOf("custom:") === 0) {
+      var bits = value.split(":");
+      return "/fragment?range=custom&start=" + encodeURIComponent(bits[1] || "") +
+             "&end=" + encodeURIComponent(bits[2] || "");
+    }
+    return "/fragment?range=" + encodeURIComponent(value);
+  }
+  function setRange(value) {
+    root.setAttribute("data-stats-range", value);
+    store("local", "mahler.stats.range", value);
+    refresh(true);
+  }
+
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
     var active = document.activeElement;
@@ -177,7 +195,7 @@
     if (toast) { toast.remove(); }
     var skip = suppressKeep;
     suppressKeep = null;
-    return fetch("/fragment", { cache: "no-store" }).then(function (r) {
+    return fetch(statsUrl(), { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
@@ -327,6 +345,19 @@
       return;
     }
     if (el.hasAttribute("data-tab-go")) { setTab(el.getAttribute("data-tab-go")); return; }
+    if (el.hasAttribute("data-stats-range")) {
+      setRange(el.getAttribute("data-stats-range"));
+      return;
+    }
+    if (el.hasAttribute("data-stats-custom")) {
+      var controls = el.closest(".stats-controls");
+      var start = controls && controls.querySelector("[data-stats-start]");
+      var end = controls && controls.querySelector("[data-stats-end]");
+      if (start && end && start.value && end.value && start.value <= end.value) {
+        setRange("custom:" + start.value + ":" + end.value);
+      }
+      return;
+    }
     if (el.hasAttribute("data-toggle")) {
       var name = "data-" + el.getAttribute("data-toggle");
       if (root.getAttribute(name) === "open") { root.removeAttribute(name); }
@@ -445,6 +476,7 @@
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
   applyHash();
+  if (load("local", "mahler.stats.range")) { refresh(true); }
   setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();

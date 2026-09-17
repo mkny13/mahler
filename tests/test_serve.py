@@ -97,6 +97,16 @@ class TestPages(_Served):
         self.assertEqual(s["system"]["label"], "RUNNING · 1")
         self.assertEqual([n["ref"] for n in s["needs"]], ["mahler#9"])
 
+    def test_stats_range_query_reaches_server_rendered_state(self):
+        status, _, body = self.request("/api/state?range=last7")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["stats_range"], "last7")
+
+        status, _, body = self.request(
+            "/api/state?range=custom&start=2026-09-01&end=2026-09-12")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["stats_range"], "custom:2026-09-01:2026-09-12")
+
     def test_unknown_path_404(self):
         self.assertEqual(self.request("/status")[0], 404)
 

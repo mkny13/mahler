@@ -270,6 +270,53 @@ class CapacityPageTests(unittest.TestCase):
         self.assertIn('<span class="meta t-mut">unmetered</span>', html)
 
 
+class StatsTests(unittest.TestCase):
+    """#352: closed-item productivity for selectable equal-length windows."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+
+    def done(self, project, number, ago):
+        self.led.upsert_item(project, number, state="done",
+                             state_changed_at=iso(self.led.now() - ago))
+
+    def test_counts_current_previous_and_delta_by_enabled_project(self):
+        self.done("mahler", 1, timedelta(days=1))
+        self.done("mahler", 2, timedelta(days=3))
+        self.done("mahler", 3, timedelta(days=8))
+        self.done("mahler", 4, timedelta(days=20))
+        self.done("groundwork", 1, timedelta(days=9))
+        self.done("old", 1, timedelta(days=1))
+
+        rows = state.build(self.cfg, self.led, "last7")["stats"]
+
+        self.assertEqual(rows["mahler"], {"closed": 2, "prev_closed": 1, "delta": 1})
+        self.assertEqual(rows["groundwork"], {"closed": 0, "prev_closed": 1, "delta": -1})
+        self.assertNotIn("old", rows)
+
+    def test_custom_dates_are_inclusive_and_compare_equal_length(self):
+        today = self.led.now().astimezone().date()
+        self.done("mahler", 1, timedelta(hours=1))
+        self.done("mahler", 2, timedelta(days=1, hours=1))
+
+        rows = state.stats(self.led, (today.isoformat(), today.isoformat()), ["mahler"])
+
+        self.assertEqual(rows["mahler"], {"closed": 1, "prev_closed": 1, "delta": 0})
+
+    def test_page_has_desktop_and_mobile_stats_with_range_controls(self):
+        doc = page.document(state.build(self.cfg, self.led))
+
+        self.assertIn('<button class="rail-i" data-go="stats">', doc)
+        self.assertIn('<section class="view view-stats">', doc)
+        self.assertIn('<button class="tab" data-tab-go="stats">', doc)
+        self.assertIn('class="tabv tabv-stats"', doc)
+        for key, label in state.STATS_RANGES:
+            self.assertIn(f'data-stats-range="{key}">{label}</button>', doc)
+        self.assertIn('localStorage.getItem("mahler.stats.range")', doc)
+        self.assertIn('store("local", "mahler.stats.range", value)', doc)
+        self.assertIn(':root[data-view="stats"] .view-stats', page.CSS)
+
+
 class IdleReasonTests(unittest.TestCase):
     def idle(self, cfg, led):
         return state.build(cfg, led)["idle"]
