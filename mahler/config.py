@@ -7,8 +7,12 @@ dispatch (DESIGN D2).
 """
 
 import copy
+import math
 import os
+import re
+import tempfile
 import tomllib
+from datetime import date, datetime, time
 
 HOME = os.path.expanduser("~")
 STATE = os.environ.get("MAHLER_HOME", os.path.join(HOME, ".mahler"))
@@ -20,6 +24,15 @@ ATTACHMENTS_DIR = os.path.join(STATE, "attachments")
 LOCK_PATH = os.path.join(STATE, "tick.lock")
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAHLER_BIN = os.path.join(REPO_ROOT, "bin", "mahler")
+
+SETTING_TIMERS = (
+    "settle_minutes", "max_attempts", "verify_timeout_minutes",
+    "run_timeout_minutes", "progress_timeout_minutes", "startup_timeout_minutes",
+    "auto_lease_minutes", "interactive_lease_minutes", "hot_hold_minutes",
+    "yield_grace_seconds",
+)
+SETTING_ROLES = ("sort", "plan", "build")
+PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo")
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -363,6 +376,283 @@ def load(path=None):
     cfg = _merge(DEFAULTS, user)
     validate_accounts(cfg)
     return resolve_platforms(cfg)
+
+
+def settings(cfg):
+    """Credential-free editable projection used by the operator console.
+
+    Routes can live at the global, account, or project level.  Returning each
+    scope separately avoids silently showing an inherited global route as an
+    account override, and keeps account login environment variables out of the
+    HTTP response entirely.
+    """
+    model_options = sorted({str(pc.get(key)) for pc in cfg.get("platforms", {}).values()
+                            for key in ("model", "sort_model", "build_model")
+                            if pc.get(key)})
+    platforms = []
+    for name, pc in cfg.get("platforms", {}).items():
+        platforms.append({
+            "name": name,
+            "enabled": bool(pc.get("enabled", True)),
+            "provider": str(pc.get("kind", "")),
+            "model": str(pc.get("model", "")),
+            "sort_model": str(pc.get("sort_model", "")),
+            "build_model": str(pc.get("build_model", "")),
+        })
+
+    routes = [{"key": "default", "label": "Default", **{
+        role: list((cfg.get("routing") or {}).get(role) or []) for role in SETTING_ROLES
+    }}]
+    for name, account in cfg.get("accounts", {}).items():
+        if "routing" in account:
+            routes.append({"key": f"account:{name}", "label": f"Account · {name}", **{
+                role: list((account.get("routing") or {}).get(role) or [])
+                for role in SETTING_ROLES
+            }})
+    for name, project in cfg.get("projects", {}).items():
+        if "routing" in project:
+            routes.append({"key": f"project:{name}", "label": f"Project · {name}", **{
+                role: list((project.get("routing") or {}).get(role) or [])
+                for role in SETTING_ROLES
+            }})
+
+    by_tier = cfg.get("concurrency", {}).get("by_tier") or {}
+    return {
+        "platforms": platforms,
+        "provider_options": list(PLATFORM_KINDS),
+        "model_options": model_options,
+        "platform_options": list(cfg.get("platforms", {})),
+        "routing": routes,
+        "concurrency": {
+            "total": cfg.get("concurrency", {}).get("total", 2),
+            "by_tier": {str(k): v for k, v in by_tier.items()},
+        },
+        "projects": [{"name": name, "max_parallel": project_policy(cfg, name).get("max_parallel", 1)}
+                     for name in cfg.get("projects", {})],
+        "scheduler": {key: cfg.get("defaults", {}).get(key) for key in SETTING_TIMERS},
+    }
+
+
+def _settings_int(value, label, minimum=1, maximum=10080):
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise ValueError(f"{label} must be a whole number from {minimum} to {maximum}")
+    return value
+
+
+def validate_settings(body, cfg):
+    """Validate and normalize a complete settings form before any disk write."""
+    if not isinstance(body, dict):
+        raise ValueError("settings must be a JSON object")
+    required = {"platforms", "routing", "concurrency", "projects", "scheduler"}
+    if not required.issubset(body):
+        raise ValueError("settings are incomplete; reload the page and try again")
+
+    known = set(cfg.get("platforms", {}))
+    platforms = body["platforms"]
+    if not isinstance(platforms, list) or {p.get("name") for p in platforms
+                                           if isinstance(p, dict)} != known:
+        raise ValueError("platforms must contain each configured platform exactly once")
+    if len(platforms) != len(known):
+        raise ValueError("platform names must be unique")
+    clean_platforms = []
+    for item in platforms:
+        name = item.get("name")
+        provider = item.get("provider")
+        enabled = item.get("enabled")
+        if provider not in PLATFORM_KINDS:
+            raise ValueError(f"platform {name}: unknown provider {provider!r}")
+        if not isinstance(enabled, bool):
+            raise ValueError(f"platform {name}: enabled must be true or false")
+        clean = {"name": name, "provider": provider, "enabled": enabled}
+        for key in ("model", "sort_model", "build_model"):
+            value = item.get(key, "")
+            if not isinstance(value, str) or len(value) > 200 or "\n" in value or "\r" in value:
+                raise ValueError(f"platform {name}: {key} must be a single line under 200 characters")
+            clean[key] = value.strip()
+        clean_platforms.append(clean)
+
+    expected_routes = {r["key"] for r in settings(cfg)["routing"]}
+    routes = body["routing"]
+    if (not isinstance(routes, list) or len(routes) != len(expected_routes)
+            or {r.get("key") for r in routes if isinstance(r, dict)} != expected_routes):
+        raise ValueError("routing scopes changed; reload the page and try again")
+    clean_routes = []
+    for route in routes:
+        clean = {"key": route["key"]}
+        for role in SETTING_ROLES:
+            names = route.get(role)
+            if (not isinstance(names, list) or any(not isinstance(n, str) or n not in known for n in names)
+                    or len(names) != len(set(names))):
+                raise ValueError(f"{route['key']} {role} route must contain unique configured platforms")
+            clean[role] = names
+        clean_routes.append(clean)
+
+    concurrency = body["concurrency"]
+    if not isinstance(concurrency, dict) or not isinstance(concurrency.get("by_tier"), dict):
+        raise ValueError("concurrency must include total and by_tier")
+    clean_concurrency = {"total": _settings_int(concurrency.get("total"), "concurrency total", 1, 64),
+                         "by_tier": {}}
+    for tier, value in concurrency["by_tier"].items():
+        if str(tier) not in ("1", "2", "3", "4"):
+            raise ValueError("concurrency tiers must be 1 through 4")
+        if value in (None, ""):
+            continue
+        clean_concurrency["by_tier"][str(tier)] = _settings_int(
+            value, f"tier {tier} concurrency", 1, 64)
+
+    expected_projects = set(cfg.get("projects", {}))
+    projects = body["projects"]
+    if (not isinstance(projects, list) or len(projects) != len(expected_projects)
+            or {p.get("name") for p in projects if isinstance(p, dict)} != expected_projects):
+        raise ValueError("projects changed; reload the page and try again")
+    clean_projects = [{"name": p["name"], "max_parallel": _settings_int(
+        p.get("max_parallel"), f"project {p.get('name')} max_parallel", 1, 64)} for p in projects]
+
+    scheduler = body["scheduler"]
+    if not isinstance(scheduler, dict) or not all(key in scheduler for key in SETTING_TIMERS):
+        raise ValueError("scheduler settings are incomplete")
+    clean_scheduler = {key: _settings_int(scheduler[key], key) for key in SETTING_TIMERS}
+    return {"platforms": clean_platforms, "routing": clean_routes,
+            "concurrency": clean_concurrency, "projects": clean_projects,
+            "scheduler": clean_scheduler}
+
+
+def _apply_settings(user, clean):
+    user = copy.deepcopy(user)
+    for item in clean["platforms"]:
+        dst = user.setdefault("platforms", {}).setdefault(item["name"], {})
+        dst.update(enabled=item["enabled"], kind=item["provider"])
+        for key in ("model", "sort_model", "build_model"):
+            if item[key] or key in dst:
+                dst[key] = item[key]
+    for route in clean["routing"]:
+        key = route["key"]
+        if key == "default":
+            dst = user.setdefault("routing", {})
+        else:
+            scope, name = key.split(":", 1)
+            dst = user.setdefault("accounts" if scope == "account" else "projects", {}).setdefault(
+                name, {}).setdefault("routing", {})
+        dst.update({role: list(route[role]) for role in SETTING_ROLES})
+    user["concurrency"] = {"total": clean["concurrency"]["total"]}
+    if clean["concurrency"]["by_tier"]:
+        user["concurrency"]["by_tier"] = {int(k): v for k, v in clean["concurrency"]["by_tier"].items()}
+    for project in clean["projects"]:
+        user.setdefault("projects", {}).setdefault(project["name"], {})["max_parallel"] = project["max_parallel"]
+    user.setdefault("defaults", {}).update(clean["scheduler"])
+    return user
+
+
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(value):
+    value = str(value)
+    return value if _BARE_TOML_KEY.match(value) else _toml_string(value)
+
+
+def _toml_string(value):
+    escaped = (value.replace("\\", "\\\\").replace('"', '\\"')
+               .replace("\b", "\\b").replace("\t", "\\t")
+               .replace("\n", "\\n").replace("\f", "\\f").replace("\r", "\\r"))
+    return f'"{escaped}"'
+
+
+def _toml_value(value):
+    if isinstance(value, str):
+        return _toml_string(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return repr(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, (list, tuple)) and not any(isinstance(x, dict) for x in value):
+        return "[" + ", ".join(_toml_value(x) for x in value) + "]"
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in value.items()) + " }"
+    raise ValueError(f"cannot serialize {type(value).__name__} to TOML")
+
+
+def dumps_toml(data):
+    """Small deterministic TOML writer for config's standard-library types."""
+    lines = []
+
+    def table(path, values, array=False):
+        scalar = [(k, v) for k, v in values.items()
+                  if not isinstance(v, dict) and not (isinstance(v, list) and v and isinstance(v[0], dict))]
+        children = [(k, v) for k, v in values.items() if isinstance(v, dict)]
+        arrays = [(k, v) for k, v in values.items()
+                  if isinstance(v, list) and v and isinstance(v[0], dict)]
+        if path:
+            if lines and lines[-1] != "":
+                lines.append("")
+            heading = ".".join(_toml_key(p) for p in path)
+            lines.append(f"[[{heading}]]" if array else f"[{heading}]")
+        lines.extend(f"{_toml_key(k)} = {_toml_value(v)}" for k, v in scalar)
+        for key, child in children:
+            table(path + [key], child)
+        for key, entries in arrays:
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise ValueError("TOML arrays may not mix tables and scalar values")
+                table(path + [key], entry, array=True)
+
+    root_scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
+    for key, value in root_scalars.items():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            for entry in value:
+                table([key], entry, array=True)
+        else:
+            lines.append(f"{_toml_key(key)} = {_toml_value(value)}")
+    for key, value in data.items():
+        if isinstance(value, dict):
+            table([key], value)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def save_settings(body, path=None):
+    """Validate settings and atomically persist them to config.toml."""
+    path = path or CONFIG_PATH
+    user = {}
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            user = tomllib.load(fh)
+    current = resolve_platforms(_merge(DEFAULTS, user))
+    clean = validate_settings(body, current)
+    updated = _apply_settings(user, clean)
+    candidate = _merge(DEFAULTS, updated)
+    validate_accounts(candidate)
+    resolve_platforms(candidate)
+    encoded = dumps_toml(updated)
+    # Prove our serialization before replacing the operator's config.
+    parsed = tomllib.loads(encoded)
+    resolve_platforms(_merge(DEFAULTS, parsed))
+
+    parent = os.path.dirname(os.path.abspath(path))
+    ensure_private_dir(parent)
+    fd, tmp = tempfile.mkstemp(prefix=".config.", suffix=".toml", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(encoded)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        try:
+            dfd = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return settings(load(path))
 
 
 DEFAULT_ACCOUNT = "personal"

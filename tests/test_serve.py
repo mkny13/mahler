@@ -198,6 +198,32 @@ class TestDynamicConfigReload(_Served):
         body = self.request("/")[2]
         self.assertIn('href="https://github.com/mkny13/couch-tour/issues/3"', body)
 
+    def test_settings_get_save_and_reload(self):
+        status, headers, body = self.request("/api/settings")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json")
+        form = json.loads(body)
+        self.assertNotIn("env", body)
+        form["concurrency"]["total"] = 5
+        form["projects"][0]["max_parallel"] = 2
+        status, _, body = self.post("save_settings", form)
+        self.assertEqual((status, json.loads(body)["ok"]), (200, True))
+        loaded = config.load(self.config_path)
+        self.assertEqual(loaded["concurrency"]["total"], 5)
+        self.assertEqual(config.project_policy(loaded, "mahler")["max_parallel"], 2)
+        self.assertEqual(json.loads(self.request("/api/settings")[2])["concurrency"]["total"], 5)
+
+    def test_settings_reject_malformed_before_write(self):
+        form = json.loads(self.request("/api/settings")[2])
+        form["concurrency"]["total"] = 0
+        with open(self.config_path, encoding="utf-8") as fh:
+            before = fh.read()
+        status, _, body = self.post("save_settings", form)
+        self.assertEqual(status, 400)
+        self.assertIn("concurrency total", json.loads(body)["error"])
+        with open(self.config_path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), before)
+
 
 class TestAutoRestart(unittest.TestCase):
     """mahler#256: serve restarts itself when its code updates."""

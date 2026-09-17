@@ -81,6 +81,19 @@ def digest_seen(cfg, led, body):
         led.event("console_seen", detail={"upto": upto})
 
 
+def save_settings(cfg, led, body):
+    """Validate and atomically replace the editable config projection."""
+    try:
+        saved = config.save_settings(body)
+    except (OSError, ValueError) as exc:
+        raise ActionError(str(exc)) from exc
+    led.event("settings_saved", detail={
+        "platforms": len(saved["platforms"]),
+        "routes": len(saved["routing"]),
+    })
+    return {"settings": saved}
+
+
 def brief_seen(cfg, led, body):
     """Acknowledge exactly the shipped-event cursor shown for one project."""
     project, upto = body.get("project"), body.get("upto")
@@ -390,7 +403,8 @@ def cut_release(cfg, led, body):
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail, attach, cut_release)}
+                                   capture, revert, uat_pass, uat_fail, attach, cut_release,
+                                   save_settings)}
 
 
 def run(cfg, led, name, body):

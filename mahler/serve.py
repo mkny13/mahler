@@ -174,6 +174,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, feed)
                 return
 
+        if path == "/api/settings":
+            try:
+                with self.lock:
+                    self._json(200, config.settings(self.load_cfg()))
+            except Exception:
+                self.send_error(500, "settings failed")
+                raise
+            return
+
         if path not in ("/", "/fragment", "/api/state"):
             self.send_error(404)
             return
