@@ -46,14 +46,14 @@ To stop sharing: `tailscale serve --https=443 off`.
 
 ### Running it under launchd (optional)
 
-A template plist is included at `launcher/com.mike.mahler.serve.plist`
+A template plist is included at `launcher/local.mahler.serve.plist`
 (KeepAlive, logs to `~/.mahler/logs/serve.*.log`). It is **not installed
 automatically**. To install it by hand:
 
 ```bash
-sed "s|__HOME__|$HOME|g" launcher/com.mike.mahler.serve.plist \
-  > ~/Library/LaunchAgents/com.mike.mahler.serve.plist
-launchctl load ~/Library/LaunchAgents/com.mike.mahler.serve.plist
+sed "s|__HOME__|$HOME|g" launcher/local.mahler.serve.plist \
+  > ~/Library/LaunchAgents/local.mahler.serve.plist
+launchctl load ~/Library/LaunchAgents/local.mahler.serve.plist
 ```
 
 Note: like everything under `launcher/`, this file only takes effect once

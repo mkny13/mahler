@@ -5,9 +5,9 @@
 
      To install (a machine decision, like `tailscale serve` below):
 
-       sed "s|__HOME__|$HOME|g" launcher/com.mike.mahler.serve.plist \
-         > ~/Library/LaunchAgents/com.mike.mahler.serve.plist
-       launchctl load ~/Library/LaunchAgents/com.mike.mahler.serve.plist
+       sed "s|__HOME__|$HOME|g" launcher/local.mahler.serve.plist \
+         > ~/Library/LaunchAgents/local.mahler.serve.plist
+       launchctl load ~/Library/LaunchAgents/local.mahler.serve.plist
 
      The server binds to 127.0.0.1 by default. To view it from your phone on the
      tailnet, run ONCE by hand (do not put this in a script or repo hook):
@@ -19,7 +19,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.mike.mahler.serve</string>
+  <string>local.mahler.serve</string>
   <key>ProgramArguments</key>
   <array>
     <string>__HOME__/.mahler/app/bin/mahler</string>

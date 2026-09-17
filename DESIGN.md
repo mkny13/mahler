@@ -712,7 +712,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   - MCP: the official Python SDK (streamable HTTP on the tailnet, stdio shim for local clients)
   - GitHub: `gh` / REST, using your existing `gh` auth
   - notifications: HTTP POST to ntfy
-- **Processes:** one launchd daemon, `com.mike.mahler`, with `KeepAlive` and an explicit `PATH`.
+- **Processes:** one launchd daemon, `local.mahler`, with `KeepAlive` and an explicit `PATH`.
   Loops:
   - GitHub sync 60s · scheduler 30s · watchdog 15s
   - usage probes 5 min · thread sensor 10 min

@@ -5,7 +5,7 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.mike.mahler</string>
+  <string>local.mahler</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>

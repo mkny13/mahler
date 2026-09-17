@@ -13,11 +13,11 @@ git -C "$M/app" checkout -q --detach origin/main
 
 cp "$SRC/launcher/mahler-launcher" "$M/bin/mahler-launcher"
 chmod +x "$M/bin/mahler-launcher"
-sed "s#__HOME__#$HOME#g" "$SRC/launcher/com.mike.mahler.plist" \
-  > "$HOME/Library/LaunchAgents/com.mike.mahler.plist"
+sed "s#__HOME__#$HOME#g" "$SRC/launcher/local.mahler.plist" \
+  > "$HOME/Library/LaunchAgents/local.mahler.plist"
 [ -f "$M/config.toml" ] || cp "$SRC/config.example.toml" "$M/config.toml"
 ln -sf "$M/app/bin/mahler" "$HOME/.local/bin/mahler"
 
 echo "installed. app at $(git -C "$M/app" rev-parse --short HEAD); config at $M/config.toml"
-echo "start:  launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/com.mike.mahler.plist"
-echo "stop:   launchctl bootout gui/$(id -u)/com.mike.mahler"
+echo "start:  launchctl bootstrap gui/$(id -u) $HOME/Library/LaunchAgents/local.mahler.plist"
+echo "stop:   launchctl bootout gui/$(id -u)/local.mahler"
