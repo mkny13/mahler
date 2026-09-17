@@ -65,6 +65,7 @@ def build(cfg, led, stats_range="week"):
     paused = led.paused()
     hot = _hot_holds(led, projects, now)
     project_names = [p["name"] for p in projects]
+    releases_data = _releases(cfg, led, projects, now)
     s = {
         "paused": paused,
         "system": ({"label": "PAUSED", "tone": "warn"} if paused else
@@ -84,6 +85,8 @@ def build(cfg, led, stats_range="week"):
         "capacity": _capacity_line(quota),
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
+        "releases": releases_data,
+        "releases_suggested": sum(1 for r in releases_data if r["draft"]["is_suggested"]),
         "events": events,
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
@@ -655,6 +658,111 @@ def _graph(items):
         nodes.append({**it, "rank": rank[n], "order": order_in_rank[rank[n]]})
     return {"nodes": nodes, "edges": edges}
 
+
+# ---------- releases (DESIGN D31, mahler#359) ----------
+
+def _releases(cfg, led, projects, now):
+    from .. import releases
+    out = []
+    for p in projects:
+        proj = p["name"]
+        draft = releases.get_draft(led, proj, now=now)
+
+        age_str = ""
+        if draft.oldest_shipped_at:
+            delta = now - draft.oldest_shipped_at
+            if delta.days >= 1:
+                age_str = f"{delta.days}d"
+            else:
+                hours = int(delta.total_seconds() // 3600)
+                if hours >= 1:
+                    age_str = f"{hours}h"
+                else:
+                    mins = max(1, int(delta.total_seconds() // 60))
+                    age_str = f"{mins}m"
+
+        def _item_dict(it):
+            return {
+                "number": it.number,
+                "pr": it.pr,
+                "title": it.title,
+                "summary": it.summary,
+                "ref": f"{proj}#{it.number}",
+                "url": _issue_url(cfg, proj, it.number),
+                "pr_url": _pr_url(cfg, proj, it.pr) if it.pr else None,
+                "labels": it.labels,
+                "shipped_at": it.shipped_at,
+                "merge_sha": it.merge_sha,
+                "formatted_line": it.formatted_line(),
+            }
+
+        draft_dict = {
+            "count": draft.count,
+            "age": age_str,
+            "is_suggested": draft.is_suggested,
+            "readiness_reasons": draft.readiness_reasons,
+            "proposed_version": draft.proposed_version,
+            "version_options": releases.semver_options(draft.last_version, draft.proposed_version),
+            "checkpoint_sha": draft.checkpoint_sha or "",
+            "main_summary": draft.notes.main_summary,
+            "other_section": draft.notes.other_section,
+            "summary": draft.notes.summary,
+            "maintenance_details": draft.notes.maintenance_details,
+            "expanded_notes": draft.notes.render(include_maintenance=True, collapsed_maintenance=True),
+            "features": [_item_dict(it) for it in draft.notes.features],
+            "fixes": [_item_dict(it) for it in draft.notes.fixes],
+            "other": [_item_dict(it) for it in draft.notes.other],
+            "maintenance": [_item_dict(it) for it in draft.notes.maintenance],
+            "items": [_item_dict(it) for it in draft.items],
+            "item_numbers": [it.number for it in draft.items],
+        }
+
+        pub_rows = [r for r in led.list_releases(proj) if r["state"] == "published"]
+        published = []
+        for r in pub_rows:
+            item_rows = led.release_items_for_release(r["id"])
+            rel_items = [releases._to_release_item(it) for it in item_rows]
+            rel_notes = releases.synthesize_notes(rel_items)
+            published.append({
+                "id": r["id"],
+                "version": r["version"],
+                "checkpoint_sha": r["checkpoint_sha"],
+                "published_at": r["published_at"],
+                "remote_url": r["remote_url"],
+                "notes": r["notes"],
+                "item_count": len(item_rows),
+                "features": [_item_dict(it) for it in rel_notes.features],
+                "fixes": [_item_dict(it) for it in rel_notes.fixes],
+                "other": [_item_dict(it) for it in rel_notes.other],
+                "maintenance": [_item_dict(it) for it in rel_notes.maintenance],
+                "maintenance_details": rel_notes.maintenance_details,
+            })
+
+        action_state = {}
+        act_row = led.q1(
+            "SELECT * FROM console_actions WHERE kind='cut_release' AND project=? ORDER BY id DESC LIMIT 1",
+            (proj,)
+        )
+        if act_row:
+            act_payload = _detail_json(act_row["payload"]) or {}
+            action_state = {
+                "id": act_row["id"],
+                "status": act_row["status"],
+                "version": act_payload.get("version", ""),
+                "checkpoint_sha": act_payload.get("checkpoint_sha", ""),
+                "result": act_row["result"] or "",
+                "updated_at": act_row["updated_at"],
+            }
+
+        out.append({
+            "project": proj,
+            "draft": draft_dict,
+            "published": published,
+            "action": action_state,
+        })
+    return out
+
+
 # ---------- capture (mahler#251) ----------
 
 def _capture(cfg, led, project_names, now):
@@ -710,6 +818,12 @@ def _describe(cfg, e):
                 False, False)
     if kind == "backoff_cleared" and d:
         return kind, f"cleared by hand on {', '.join(d.get('platforms') or d.get('asked') or [])}", False, False
+    if kind == "release_published" and d:
+        ver = f"v{d.get('version', '')}" if d.get('version') else "release"
+        return "release_published", f"{ref} published {ver}".strip(), False, False
+    if kind == "console_release_queued" and d:
+        ver = f"v{d.get('version', '')}" if d.get('version') else "release"
+        return "release_queued", f"{ref} queued {ver}".strip(), False, False
     text = detail if not d else ", ".join(f"{k}={v}" for k, v in d.items())
     return kind, f"{ref} {text}".strip()[:200], kind in ATTENTION_KINDS, False
 

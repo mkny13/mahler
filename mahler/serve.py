@@ -143,6 +143,37 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
 
+        if path.startswith("/api/releases/") or (path.startswith("/api/projects/") and path.endswith("/releases.json")):
+            if path.startswith("/api/releases/"):
+                proj = path[len("/api/releases/"):]
+                if proj.endswith(".json"):
+                    proj = proj[:-len(".json")]
+            else:
+                proj = path[len("/api/projects/"):-len("/releases.json")]
+            proj = proj.strip("/")
+            if not proj:
+                self.send_error(404)
+                return
+            with self.lock:
+                cfg = self.load_cfg()
+                enabled = {p["name"] for p in config.enabled_projects(cfg)}
+                if proj not in enabled:
+                    self.send_error(404)
+                    return
+                query = parse_qs(request.query)
+                limit_str = (query.get("limit") or ["20"])[0]
+                try:
+                    limit = int(limit_str)
+                    if limit <= 0:
+                        raise ValueError
+                except ValueError:
+                    self.send_error(400, "invalid limit: must be a positive integer")
+                    return
+                from . import releases
+                feed = releases.build_feed(self.led, proj, limit=limit)
+                self._json(200, feed)
+                return
+
         if path not in ("/", "/fragment", "/api/state"):
             self.send_error(404)
             return

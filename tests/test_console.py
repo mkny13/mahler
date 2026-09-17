@@ -1710,3 +1710,204 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(len(g['nodes']), 2)
         self.assertEqual({n['rank'] for n in g['nodes']}, {0})
         self.assertEqual(g['edges'], [])
+
+
+class ConsoleReleasesStateTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def test_state_build_includes_releases_for_enabled_projects(self):
+        s = state.build(self.cfg, self.led)
+        self.assertIn("releases", s)
+        self.assertIn("releases_suggested", s)
+        project_names = [p["project"] for p in s["releases"]]
+        self.assertIn("mahler", project_names)
+        self.assertIn("groundwork", project_names)
+        self.assertNotIn("old", project_names)
+
+    def test_rolling_draft_and_published_releases(self):
+        self.led.snapshot_release_item("mahler", 101, pr=11, title="Feat A", summary="Added A",
+                                       merge_sha="sha_a", labels=["type:feature"])
+        self.led.snapshot_release_item("mahler", 102, pr=12, title="Fix B", summary="Fixed B",
+                                       merge_sha="sha_b", labels=["type:bug"])
+        self.led.snapshot_release_item("mahler", 103, pr=13, title="Chore C", summary="Cleaned C",
+                                       merge_sha="sha_c", labels=["type:chore"])
+
+        self.led.snapshot_release_item("mahler", 90, pr=1, title="Past feat", summary="Past",
+                                       merge_sha="sha_past", labels=["type:feature"])
+        self.led.create_release("mahler", "0.1.0", checkpoint_sha="sha_past",
+                                published_at="2026-09-01T12:00:00Z", remote_url="https://github.com/mkny13/mahler/releases/tag/v0.1.0",
+                                item_numbers=[90])
+
+        s = state.build(self.cfg, self.led)
+        m_rel = next(r for r in s["releases"] if r["project"] == "mahler")
+        draft = m_rel["draft"]
+        self.assertGreater(draft["count"], 0)
+        self.assertEqual(draft["checkpoint_sha"], "sha_c")
+        self.assertEqual(len(draft["features"]), 1)
+        self.assertEqual(len(draft["fixes"]), 1)
+        self.assertEqual(len(draft["other"]), 0)
+        self.assertEqual(len(draft["maintenance"]), 1)
+        self.assertEqual(len(m_rel["published"]), 1)
+        self.assertEqual(m_rel["published"][0]["version"], "0.1.0")
+        self.assertEqual(draft["version_options"]["patch"], "0.1.1")
+        self.assertEqual(draft["version_options"]["minor"], "0.2.0")
+        self.assertEqual(draft["version_options"]["major"], "1.0.0")
+
+
+class CutReleaseActionTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.snapshot_release_item("mahler", 101, pr=11, title="Feat A", summary="Added A",
+                                       merge_sha="sha_a", labels=["type:feature"])
+
+    def test_unknown_or_disabled_project_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "project must be enabled"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "old", "version": "0.1.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
+            })
+
+    def test_invalid_semver_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "valid SemVer"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "mahler", "version": "invalid", "checkpoint_sha": "sha_a", "item_numbers": [101]
+            })
+
+    def test_version_not_greater_refused(self):
+        self.led.create_release("mahler", "1.0.0", checkpoint_sha="sha_old", item_numbers=[])
+        with self.assertRaisesRegex(actions.ActionError, "greater"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "mahler", "version": "1.0.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
+            })
+        with self.assertRaisesRegex(actions.ActionError, "greater"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "mahler", "version": "0.9.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
+            })
+
+    def test_stale_checkpoint_sha_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "draft has changed since preview"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "mahler", "version": "0.1.0", "checkpoint_sha": "sha_different", "item_numbers": [101]
+            })
+
+    def test_stale_item_numbers_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "draft has changed since preview"):
+            actions.run(self.cfg, self.led, "cut_release", {
+                "project": "mahler", "version": "0.1.0", "checkpoint_sha": "sha_a", "item_numbers": [101, 102]
+            })
+
+    def test_successful_queuing_and_deduplication(self):
+        res1 = actions.run(self.cfg, self.led, "cut_release", {
+            "project": "mahler", "version": "0.1.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
+        })
+        self.assertIn("id", res1)
+        self.assertFalse(res1.get("deduplicated", False))
+
+        # Double tap / repeat returns deduplicated: True
+        res2 = actions.run(self.cfg, self.led, "cut_release", {
+            "project": "mahler", "version": "0.1.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
+        })
+        self.assertTrue(res2.get("deduplicated"))
+        self.assertEqual(res1["id"], res2["id"])
+
+        pending = self.led.pending_actions("cut_release")
+        self.assertEqual(len(pending), 1)
+
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_release_queued'")
+        self.assertIsNotNone(ev)
+        payload = json.loads(ev["detail"])
+        self.assertEqual(payload["version"], "0.1.0")
+
+
+class CutReleaseOutboxTests(unittest.TestCase):
+    def setUp(self):
+        from mahler.console import outbox
+        self.outbox = outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.snapshot_release_item("mahler", 101, pr=11, title="Feat A", summary="Added A",
+                                       merge_sha="sha_a", labels=["type:feature"])
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def test_outbox_publish_release_success(self):
+        act_id = self.led.queue_action("cut_release", project="mahler", payload={
+            "version": "0.1.0",
+            "checkpoint_sha": "sha_a",
+            "item_numbers": [101],
+            "notes": "Test notes",
+        })
+
+        gh_mock = mock.Mock()
+        gh_mock.get_release.return_value = None
+        gh_mock.get_tag_sha.return_value = None
+        gh_mock.release_create.return_value = "https://github.com/mkny13/mahler/releases/tag/v0.1.0"
+
+        with mock.patch.object(self.ctx, "gh", return_value=gh_mock):
+            self.outbox.drain(self.ctx)
+
+        # Action is done
+        self.assertEqual(len(self.led.pending_actions("cut_release")), 0)
+        # Release exists in DB
+        rel = self.led.get_release("mahler", "0.1.0")
+        self.assertIsNotNone(rel)
+        self.assertEqual(rel["remote_url"], "https://github.com/mkny13/mahler/releases/tag/v0.1.0")
+        # Event logged
+        ev = self.led.q1("SELECT * FROM events WHERE kind='release_published'")
+        self.assertIsNotNone(ev)
+
+    def test_outbox_publish_release_conflict_fails_action_and_keeps_draft(self):
+        act_id = self.led.queue_action("cut_release", project="mahler", payload={
+            "version": "0.1.0",
+            "checkpoint_sha": "sha_a",
+            "item_numbers": [101],
+            "notes": "Test notes",
+        })
+
+        # Mock remote tag exists with conflicting SHA
+        gh_mock = mock.Mock()
+        gh_mock.get_release.return_value = None
+        gh_mock.get_tag_sha.return_value = "sha_conflicting"
+
+        with mock.patch.object(self.ctx, "gh", return_value=gh_mock):
+            self.outbox.drain(self.ctx)
+
+        # Action is no longer pending (it failed)
+        self.assertEqual(len(self.led.pending_actions("cut_release")), 0)
+        row = self.led.q1("SELECT * FROM console_actions WHERE id=?", (act_id,))
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("conflicting", row["result"])
+        # Release not created, item 101 remains unsealed
+        self.assertIsNone(self.led.get_release("mahler", "0.1.0"))
+        items = self.led.unreleased_items("mahler")
+        self.assertEqual(len(items), 1)
+
+
+class ConsoleReleasesPageTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.snapshot_release_item("mahler", 101, pr=11, title="Feat A", summary="Added A",
+                                       merge_sha="sha_a", labels=["type:feature"])
+        self.led.snapshot_release_item("mahler", 102, pr=12, title="Maint B", summary="Chore B",
+                                       merge_sha="sha_b", labels=["type:chore"])
+
+    def test_desktop_and_phone_render_releases(self):
+        s = state.build(self.cfg, self.led)
+        doc = page.document(s)
+        # Desktop view
+        self.assertIn('data-view="releases"', doc)
+        self.assertIn('view-releases', doc)
+        # Phone view
+        self.assertIn('tabv-releases', doc)
+        self.assertIn('data-tab="releases"', doc)
+        # Item rendering
+        self.assertIn('Feat A', doc)
+        # Maintenance expandable details
+        self.assertIn('<details class="rel-maint">', doc)
+        self.assertIn('Maint B', doc)
+        # Preview modal overlay
+        self.assertIn('class="ov releaseov"', doc)
+        self.assertIn('Cut release', doc)
+        self.assertIn('data-set-ver=', doc)

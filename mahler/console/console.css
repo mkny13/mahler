@@ -87,8 +87,8 @@ a { color: var(--acc); text-decoration: none; }
 .vt { display: none; }
 :root[data-view="now"] .vt-now, :root[data-view="needs"] .vt-needs,
 :root[data-view="test"] .vt-test, :root[data-view="capture"] .vt-capture,
-:root[data-view="backlog"] .vt-backlog, :root[data-view="capacity"] .vt-capacity,
-:root[data-view="stats"] .vt-stats,
+:root[data-view="backlog"] .vt-backlog, :root[data-view="releases"] .vt-releases,
+:root[data-view="capacity"] .vt-capacity, :root[data-view="stats"] .vt-stats,
 :root[data-view="history"] .vt-history { display: inline; }
 .peak-btn { margin-left: auto; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line);
             border-radius: 4px; padding: 0 10px; min-height: 32px; }
@@ -98,8 +98,8 @@ a { color: var(--acc); text-decoration: none; }
 .view { display: none; flex-direction: column; gap: 16px; }
 :root[data-view="now"] .view-now, :root[data-view="needs"] .view-needs,
 :root[data-view="test"] .view-test, :root[data-view="capture"] .view-capture,
-:root[data-view="backlog"] .view-backlog, :root[data-view="capacity"] .view-capacity,
-:root[data-view="stats"] .view-stats,
+:root[data-view="backlog"] .view-backlog, :root[data-view="releases"] .view-releases,
+:root[data-view="capacity"] .view-capacity, :root[data-view="stats"] .view-stats,
 :root[data-view="history"] .view-history { display: flex; }
 
 /* Capacity (mahler#335): one bordered card per quota group, all its windows. */
@@ -271,10 +271,12 @@ a { color: var(--acc); text-decoration: none; }
        align-items: center; justify-content: center; gap: 6px; font-size: 15px; color: var(--mut); }
 .tab .mono { font-size: 10px; }
 :root[data-tab="now"] .tab[data-tab-go="now"], :root[data-tab="triage"] .tab[data-tab-go="triage"],
+:root[data-tab="releases"] .tab[data-tab-go="releases"],
 :root[data-tab="browse"] .tab[data-tab-go="browse"], :root[data-tab="stats"] .tab[data-tab-go="stats"] {
   border-bottom-color: var(--ink); color: var(--ink); font-weight: 600; }
 .tabv { display: none; }
 :root[data-tab="now"] .tabv-now, :root[data-tab="triage"] .tabv-triage,
+:root[data-tab="releases"] .tabv-releases,
 :root[data-tab="browse"] .tabv-browse, :root[data-tab="stats"] .tabv-stats { display: block; }
 .pad { padding: 14px 14px 24px; display: flex; flex-direction: column; gap: 22px; }
 .tabv-now .pad { gap: 18px; }
@@ -506,3 +508,36 @@ a { color: var(--acc); text-decoration: none; }
   .captureov .box { width: 430px; border-radius: 6px; }
   .capturefoot .btn { min-height: 38px; }
 }
+
+/* Releases timeline and overlay (DESIGN D31, mahler#359) */
+.rel-grp { border: 1px solid var(--line); border-radius: 4px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.rel-proj-h { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; }
+.rel-status { font-size: 12px; }
+.rel-banner { margin: 4px 0; }
+.rel-draft-block { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.rel-draft-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rel-prop-ver strong { color: var(--ink); }
+.rel-cat { margin-top: 6px; }
+.rel-cat-title { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--mut); display: block; margin-bottom: 4px; }
+.rel-item { padding: 4px 0; font-size: 13px; line-height: 1.45; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: baseline; }
+.rel-item .ref { font-size: 11px; color: var(--mut); }
+.rel-item .title { min-width: 0; }
+.rel-item .summary { width: 100%; font-size: 12px; color: var(--mut); }
+.rel-maint { margin-top: 6px; font-size: 12.5px; }
+.rel-maint-sum { color: var(--mut); cursor: pointer; padding: 4px 0; font-size: 12px; }
+.rel-maint[open] .rel-maint-sum { color: var(--ink); margin-bottom: 6px; }
+.rel-history-block { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.rel-pub-entry { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.rel-pub-bar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rel-pub-ver a { color: var(--acc); }
+.rel-empty-draft, .rel-empty-history { font-size: 13px; color: var(--mut); }
+.rel-notes-plain { white-space: pre-wrap; font-family: inherit; font-size: 13px; }
+
+.releaseov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.releaseov .box { width: 560px; max-width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.rel-ver-pills .btn-pill { font-size: 12px; padding: 4px 8px; min-height: 30px; }
+@media (max-width: 759px) {
+  .releaseov { align-items: flex-end; }
+  .releaseov .box { width: 100%; max-height: 92vh; border-radius: 6px 6px 0 0; }
+}
+

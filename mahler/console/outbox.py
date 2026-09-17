@@ -135,8 +135,35 @@ def uat_fail(ctx, row, payload):
     return "done", f"filed #{bug}"
 
 
+def cut_release(ctx, row, payload):
+    project = row["project"]
+    if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
+        return "skipped", "the project is disabled"
+    version = payload["version"]
+    checkpoint_sha = payload["checkpoint_sha"]
+    notes = payload.get("notes")
+    item_numbers = payload.get("item_numbers")
+
+    from .. import releases
+    res = releases.publish_release(
+        led=ctx.led,
+        gh=ctx.gh(project),
+        project=project,
+        version=version,
+        checkpoint_sha=checkpoint_sha,
+        notes=notes,
+        item_numbers=item_numbers,
+    )
+    url = res.get("url", "")
+    status = res.get("status", "published")
+    ctx.led.event("release_published", project=project, detail={
+        "version": version, "url": url, "status": status, "via": "console"
+    })
+    return "done", f"{status} {url}".strip()
+
+
 HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
-            'uat_pass': uat_pass, 'uat_fail': uat_fail}
+            'uat_pass': uat_pass, 'uat_fail': uat_fail, 'cut_release': cut_release}
 
 
 def _report(ctx, message):

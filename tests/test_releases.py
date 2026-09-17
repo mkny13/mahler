@@ -20,8 +20,10 @@ from mahler.releases import (
     parse_semver,
     propose_next_version,
     publish_release,
+    semver_options,
     synthesize_notes,
     validate_semver,
+    build_feed,
 )
 
 
@@ -505,5 +507,158 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertIsNone(self.led.get_release("proj", version="0.1.0"))
 
 
+class SemverOptionsTests(unittest.TestCase):
+    def test_initial_release_options(self):
+        opts = semver_options(None, "0.1.0")
+        self.assertEqual(opts["proposed"], "0.1.0")
+        self.assertEqual(opts["patch"], "0.1.1")
+        self.assertEqual(opts["minor"], "0.2.0")
+        self.assertEqual(opts["major"], "1.0.0")
+
+    def test_subsequent_release_options(self):
+        opts = semver_options("1.2.3", "1.3.0")
+        self.assertEqual(opts["proposed"], "1.3.0")
+        self.assertEqual(opts["patch"], "1.2.4")
+        self.assertEqual(opts["minor"], "1.3.0")
+        self.assertEqual(opts["major"], "2.0.0")
+
+
+class BuildFeedTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock(datetime(2026, 9, 17, 2, 0, tzinfo=timezone.utc))
+        self.led = Ledger(":memory:", clock=self.clock)
+
+    def test_empty_feed(self):
+        feed = build_feed(self.led, "proj")
+        self.assertEqual(feed["schema_version"], 1)
+        self.assertEqual(feed["project"], "proj")
+        self.assertEqual(feed["generated_at"], "2026-09-17T02:00:00Z")
+        self.assertEqual(feed["releases"], [])
+
+    def test_limit_validation(self):
+        with self.assertRaises(ValueError):
+            build_feed(self.led, "proj", limit=0)
+        with self.assertRaises(ValueError):
+            build_feed(self.led, "proj", limit=-5)
+
+    def test_feed_reflects_only_published_releases(self):
+        # 1. Shipped item in draft (not released yet)
+        self.led.snapshot_release_item("proj", 1, pr=11, title="Draft item",
+                                      summary="not released yet", merge_sha="sha_draft",
+                                      labels=["type:feature"])
+        # 2. Release in draft / non-published state
+        self.led.create_release("proj", version="0.1.0", checkpoint_sha="sha_unpub",
+                                state="draft", item_numbers=[1])
+
+        feed = build_feed(self.led, "proj")
+        # Should be empty because release state is draft, not published
+        self.assertEqual(feed["releases"], [])
+
+    def test_feed_conforms_to_schema_v1_and_excludes_sensitive_data(self):
+        # Create release 1.0.0 with feature, fix, other, and maintenance
+        self.led.snapshot_release_item("proj", 10, pr=100, title="Add dark mode",
+                                      summary="persists theme across launches",
+                                      merge_sha="sha10", labels=["type:feature"],
+                                      shipped_at="2026-09-10T10:00:00Z")
+        self.led.snapshot_release_item("proj", 11, pr=101, title="Fix audio stutter",
+                                      summary="prevents buffer underrun",
+                                      merge_sha="sha11", labels=["type:bug"],
+                                      shipped_at="2026-09-11T10:00:00Z")
+        self.led.snapshot_release_item("proj", 12, pr=102, title="Update docs",
+                                      summary="clarifies install steps",
+                                      merge_sha="sha12", labels=["type:docs"],
+                                      shipped_at="2026-09-12T10:00:00Z")
+        self.led.snapshot_release_item("proj", 13, pr=103, title="Bump dependencies",
+                                      summary="updates build tooling",
+                                      merge_sha="sha13", labels=["type:chore"],
+                                      shipped_at="2026-09-13T10:00:00Z")
+
+        self.led.create_release(
+            "proj", version="1.0.0", checkpoint_sha="sha_rel1",
+            state="published", published_at="2026-09-14T12:00:00Z",
+            remote_url="https://github.com/mkny13/proj/releases/tag/v1.0.0",
+            item_numbers=[10, 11, 12, 13],
+        )
+
+        feed = build_feed(self.led, "proj")
+        self.assertEqual(feed["schema_version"], 1)
+        self.assertEqual(feed["project"], "proj")
+        self.assertEqual(len(feed["releases"]), 1)
+
+        rel = feed["releases"][0]
+        self.assertEqual(rel["version"], "1.0.0")
+        self.assertEqual(rel["checkpoint_sha"], "sha_rel1")
+        self.assertEqual(rel["published_at"], "2026-09-14T12:00:00Z")
+        self.assertEqual(rel["remote_url"], "https://github.com/mkny13/proj/releases/tag/v1.0.0")
+
+        # Sections check
+        self.assertEqual(len(rel["sections"]["features"]), 1)
+        feat = rel["sections"]["features"][0]
+        self.assertEqual(feat, {
+            "number": 10,
+            "pr": 100,
+            "title": "Add dark mode",
+            "summary": "persists theme across launches",
+        })
+
+        self.assertEqual(len(rel["sections"]["fixes"]), 1)
+        fix = rel["sections"]["fixes"][0]
+        self.assertEqual(fix, {
+            "number": 11,
+            "pr": 101,
+            "title": "Fix audio stutter",
+            "summary": "prevents buffer underrun",
+        })
+
+        self.assertEqual(len(rel["sections"]["other"]), 1)
+        oth = rel["sections"]["other"][0]
+        self.assertEqual(oth, {
+            "number": 12,
+            "pr": 102,
+            "title": "Update docs",
+            "summary": "clarifies install steps",
+        })
+
+        # Maintenance list separated from main sections
+        self.assertEqual(len(rel["maintenance"]), 1)
+        maint = rel["maintenance"][0]
+        self.assertEqual(maint, {
+            "number": 13,
+            "pr": 103,
+            "title": "Bump dependencies",
+            "summary": "updates build tooling",
+        })
+
+        # Strict privacy check: ensure NO internal or operational fields leaked into feed items
+        for item in [feat, fix, oth, maint]:
+            self.assertEqual(set(item.keys()), {"number", "pr", "title", "summary"})
+            self.assertNotIn("labels", item)
+            self.assertNotIn("merge_sha", item)
+            self.assertNotIn("shipped_at", item)
+            self.assertNotIn("release_id", item)
+            self.assertNotIn("project", item)
+
+    def test_feed_newest_first_and_limits(self):
+        # Create 3 published releases
+        for i in range(1, 4):
+            self.led.snapshot_release_item("proj", i, pr=i + 10, title=f"Feat {i}",
+                                          summary=f"sum {i}", labels=["type:feature"])
+            self.led.create_release(
+                "proj", version=f"0.{i}.0", checkpoint_sha=f"sha_{i}",
+                state="published", published_at=f"2026-09-0{i}T12:00:00Z",
+                item_numbers=[i]
+            )
+
+        # Default query returns newest first
+        feed = build_feed(self.led, "proj")
+        versions = [r["version"] for r in feed["releases"]]
+        self.assertEqual(versions, ["0.3.0", "0.2.0", "0.1.0"])
+
+        # Limit 2
+        limited_feed = build_feed(self.led, "proj", limit=2)
+        self.assertEqual([r["version"] for r in limited_feed["releases"]], ["0.3.0", "0.2.0"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

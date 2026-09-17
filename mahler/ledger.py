@@ -15,6 +15,7 @@ Lease rules (D6), all enforced inside one IMMEDIATE transaction:
     epoch fails lease_check and must not push or merge.
 """
 
+import itertools
 import json
 import os
 import re
@@ -1024,15 +1025,28 @@ class Ledger:
         return value
 
 
+_SP_COUNTER = itertools.count(1)
+
+
 class _Tx:
     def __init__(self, con):
         self.con = con
+        self._sp = None
 
     def __enter__(self):
-        self.con.execute("BEGIN IMMEDIATE")
+        if getattr(self.con, "in_transaction", False):
+            self._sp = f"tx_{next(_SP_COUNTER)}"
+            self.con.execute(f"SAVEPOINT {self._sp}")
+        else:
+            self.con.execute("BEGIN IMMEDIATE")
         return self
 
     def __exit__(self, exc_type, *_):
+        if self._sp:
+            if exc_type:
+                self.con.execute(f"ROLLBACK TO {self._sp}")
+            self.con.execute(f"RELEASE {self._sp}")
+            return False
         self.con.execute("ROLLBACK" if exc_type else "COMMIT")
         return False
 

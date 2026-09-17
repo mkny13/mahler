@@ -1130,3 +1130,23 @@ class ReleaseLedgerTests(unittest.TestCase):
         self.assertEqual(self.led.latest_release('p')['version'], '0.2.0')
         self.assertEqual([r['version'] for r in self.led.list_releases('p')], ['0.2.0', '0.1.0'])
 
+    def test_nested_tx_commits_both(self):
+        with self.led._tx():
+            self.led.upsert_item("p", 1, title="One")
+            with self.led._tx():
+                self.led.upsert_item("p", 2, title="Two")
+        self.assertIsNotNone(self.led.item("p", 1))
+        self.assertIsNotNone(self.led.item("p", 2))
+
+    def test_nested_tx_rollback_inner_preserves_outer(self):
+        with self.led._tx():
+            self.led.upsert_item("p", 1, title="One")
+            try:
+                with self.led._tx():
+                    self.led.upsert_item("p", 2, title="Two")
+                    raise RuntimeError("inner fail")
+            except RuntimeError:
+                pass
+        self.assertIsNotNone(self.led.item("p", 1))
+        self.assertIsNone(self.led.item("p", 2))
+

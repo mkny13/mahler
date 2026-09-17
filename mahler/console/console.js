@@ -14,6 +14,7 @@
   var openRun = null;
   var openRevert = null;
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
+  var openRelease = null;       // the project whose release preview is open (mahler#359)
   var openCapture = false;
   var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
   var errorToastTimer = null;   // timer for auto-dismissing error toast
@@ -116,6 +117,23 @@
     for (var c = 0; c < caps.length; c++) {
       caps[c].classList.toggle("show", openCapture);
     }
+    var rels = app.querySelectorAll("[data-release-detail]");
+    var relShown = false;
+    for (var rl = 0; rl < rels.length; rl++) {
+      var relOn = rels[rl].getAttribute("data-release-detail") === openRelease;
+      rels[rl].classList.toggle("show", relOn);
+      relShown = relShown || relOn;
+      if (relOn) {
+        var inp = rels[rl].querySelector(".ver-input");
+        if (inp && inp.value) {
+          var disp = rels[rl].querySelector(".sel-ver-display");
+          if (disp) { disp.textContent = "v" + inp.value.trim(); }
+          var btnTxt = rels[rl].querySelector(".sel-ver-btn-txt");
+          if (btnTxt) { btnTxt.textContent = inp.value.trim(); }
+        }
+      }
+    }
+    if (!relShown) { openRelease = null; }
     
     var wraps = app.querySelectorAll(".attach-wrap");
     for (var w = 0; w < wraps.length; w++) {
@@ -258,6 +276,8 @@
         suppressKeep = "capture";   // clear the draft on the next restore, keep the project
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
         openCapture = false;
+      } else if (action === "cut_release") {
+        openRelease = null;
       }
       return refresh(true);
     });
@@ -285,6 +305,22 @@
         number: Number(el.getAttribute("data-number")),
         note: ta ? ta.value : "",
         attachment: (attachId && attachId.value) ? attachId.value : null };
+    }
+    if (act === "cut_release") {
+      var ov = el.closest(".releaseov");
+      var proj = el.getAttribute("data-project") || (ov ? ov.getAttribute("data-release-detail") : "");
+      var verInp = ov ? ov.querySelector(".ver-input") : null;
+      var shaInp = ov ? ov.querySelector(".rel-sha") : null;
+      var itemsInp = ov ? ov.querySelector(".rel-items") : null;
+      var notesPre = ov ? ov.querySelector(".notes-pre") : null;
+      var itemNums = (itemsInp && itemsInp.value) ? itemsInp.value.split(",").map(Number).filter(Boolean) : [];
+      return {
+        project: proj,
+        version: verInp ? verInp.value.trim() : "",
+        checkpoint_sha: shaInp ? shaInp.value.trim() : "",
+        item_numbers: itemNums,
+        notes: notesPre ? notesPre.textContent : null
+      };
     }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
@@ -395,6 +431,26 @@
       return;
     }
     if (el.hasAttribute("data-close-capture")) { openCapture = false; apply(); return; }
+    if (el.hasAttribute("data-open-release")) {
+      openRelease = el.getAttribute("data-open-release"); apply();
+      var verInp = app.querySelector('.releaseov.show .ver-input');
+      if (verInp) { verInp.focus(); }
+      return;
+    }
+    if (el.hasAttribute("data-close-release")) { openRelease = null; apply(); return; }
+    if (el.hasAttribute("data-set-ver")) {
+      var v = el.getAttribute("data-set-ver");
+      var overlay = el.closest(".releaseov");
+      if (overlay && v) {
+        var inp = overlay.querySelector(".ver-input");
+        if (inp) { inp.value = v; }
+        var disp = overlay.querySelector(".sel-ver-display");
+        if (disp) { disp.textContent = "v" + v; }
+        var btnTxt = overlay.querySelector(".sel-ver-btn-txt");
+        if (btnTxt) { btnTxt.textContent = v; }
+      }
+      return;
+    }
     if (el.hasAttribute("data-attach")) {
       var wrap = el.closest(".attach-wrap");
       if (wrap) {
@@ -462,11 +518,26 @@
     }
   });
 
+  document.addEventListener("input", function (ev) {
+    var el = ev.target;
+    if (el && el.classList && el.classList.contains("ver-input")) {
+      var ov = el.closest(".releaseov");
+      if (ov) {
+        var val = el.value.trim();
+        var disp = ov.querySelector(".sel-ver-display");
+        if (disp) { disp.textContent = "v" + val; }
+        var btnTxt = ov.querySelector(".sel-ver-btn-txt");
+        if (btnTxt) { btnTxt.textContent = val; }
+      }
+    }
+  });
+
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
     if (ev.key === "Escape" && openBug) { openBug = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }
     if (ev.key === "Escape" && openCapture) { openCapture = false; apply(); }
+    if (ev.key === "Escape" && openRelease) { openRelease = null; apply(); }
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });
 

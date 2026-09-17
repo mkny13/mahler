@@ -300,9 +300,71 @@ def attach(cfg, led, body):
     return {"id": filename, "name": name}
 
 
+def cut_release(cfg, led, body):
+    project = body.get("project")
+    if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    version = body.get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise ActionError("version is required")
+    from .. import releases
+    try:
+        norm_ver = releases.normalize_semver(version)
+        parsed = releases.validate_semver(norm_ver)
+    except Exception as exc:
+        raise ActionError(f"invalid SemVer: {exc}")
+
+    checkpoint_sha = body.get("checkpoint_sha")
+    if not checkpoint_sha or not isinstance(checkpoint_sha, str):
+        raise ActionError("checkpoint SHA is required")
+
+    draft = releases.get_draft(led, project)
+    if not draft.items:
+        raise ActionError("no unreleased changes to release")
+    if draft.checkpoint_sha != checkpoint_sha:
+        raise ActionError("draft has changed since preview; please preview again")
+
+    previewed_items = body.get("item_numbers")
+    if previewed_items is not None:
+        if not isinstance(previewed_items, list):
+            raise ActionError("item_numbers must be a list of numbers")
+        current_numbers = sorted(it.number for it in draft.items)
+        if sorted(previewed_items) != current_numbers:
+            raise ActionError("draft has changed since preview; please preview again")
+
+    latest_rel = led.latest_release(project)
+    if latest_rel:
+        last_parsed = releases.parse_semver(latest_rel["version"])
+        if last_parsed and parsed <= last_parsed:
+            raise ActionError(f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}")
+
+    with led._tx():
+        existing_rel = led.get_release(project, version=norm_ver)
+        if existing_rel and existing_rel["state"] == "published":
+            raise ActionError(f"release v{norm_ver} is already published")
+        for row in led.pending_actions("cut_release"):
+            if row["project"] == project:
+                p = json.loads(row["payload"])
+                if p.get("version") == norm_ver and p.get("checkpoint_sha") == checkpoint_sha:
+                    return {"id": row["id"], "deduplicated": True}
+                raise ActionError(f"a release for {project} (v{p.get('version')}) is already queued")
+
+        payload = {
+            "version": norm_ver,
+            "checkpoint_sha": checkpoint_sha,
+            "item_numbers": [it.number for it in draft.items],
+            "notes": body.get("notes"),
+        }
+        action_id = led.queue_action("cut_release", project, None, payload, delay_seconds=0)
+        led.event("console_release_queued", project, None, {
+            "id": action_id, "version": norm_ver, "checkpoint_sha": checkpoint_sha
+        })
+        return {"id": action_id}
+
+
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail, attach)}
+                                   capture, revert, uat_pass, uat_fail, attach, cut_release)}
 
 
 def run(cfg, led, name, body):
