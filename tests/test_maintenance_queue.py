@@ -282,5 +282,15 @@ class MaintenanceQueueTests(unittest.TestCase):
         tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
+    def test_docs_pass_is_queued(self):
+        """Verify the docs pass is filed when due."""
+        self.led.set_maintenance_checkpoint("mahler", "security", last_filed_at=NOW)
+        self.led.set_maintenance_checkpoint("mahler", "docs", last_filed_at=NOW - timedelta(days=40))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+        args, kwargs = self.gh_mock.create_issue.call_args
+        self.assertIn("pass:docs", args[2])
+        self.assertEqual(args[0], "Documentation Review Pass")
+
 if __name__ == "__main__":
     unittest.main()
