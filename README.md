@@ -1,6 +1,6 @@
 # Mahler
 
-Mahler conducts coding agents (Claude Code, Antigravity's `agy`, Cline) through each project's GitHub-issue backlog. It is quota-aware, and hands work off across platforms.
+Mahler conducts coding agents (Claude Code, Antigravity's `agy`, Cline, Copilot, Codex, Kilo) through each project's GitHub-issue backlog. It is quota-aware, and hands work off across platforms.
 
 ## The console
 
@@ -38,7 +38,7 @@ Exposing the console over your tailnet is a machine setting you turn on yourself
 On the machine running Mahler, run once:
 
 ```bash
-tailscale serve --bg http://127.0.0.1:8787
+tailscale serve http://127.0.0.1:8787
 ```
 
 Then open `https://<this-machine>.<tailnet-name>.ts.net/` on the phone.
@@ -53,7 +53,7 @@ automatically**. To install it by hand:
 ```bash
 sed "s|__HOME__|$HOME|g" launcher/local.mahler.serve.plist \
   > ~/Library/LaunchAgents/local.mahler.serve.plist
-launchctl load ~/Library/LaunchAgents/local.mahler.serve.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.mahler.serve.plist
 ```
 
 Note: like everything under `launcher/`, this file only takes effect once
