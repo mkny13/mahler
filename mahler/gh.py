@@ -353,6 +353,23 @@ class GH:
                 return None
             raise
 
+    def latest_release(self):
+        """Latest published GitHub release with its tag resolved to a commit SHA."""
+        try:
+            out = self._gh("release", "view", "-R", self.repo,
+                           "--json", "tagName,targetCommitish,body,url,publishedAt")
+        except GHError as e:
+            msg = str(e).lower()
+            if "release not found" in msg or "no releases" in msg or "not found" in msg or "404" in msg:
+                return None
+            raise
+        release = json.loads(out)
+        tag = release.get("tagName")
+        if not tag:
+            return None
+        release["checkpointSha"] = self.get_tag_sha(tag)
+        return release
+
     def get_tag_sha(self, tag):
         """The commit SHA pointed to by git tag, or None if tag does not exist."""
         try:

@@ -463,23 +463,24 @@ def cmd_release(a, cfg, led):
     publish_arg = getattr(a, "publish", False)
 
     if publish_arg and not version_arg:
-        print("mahler release: error: publishing requires both an explicit valid SemVer (--version X.Y.Z) and --publish")
+        print("mahler release: error: publishing requires both an explicit valid version (--version X.Y or X.Y.Z) and --publish")
         return 1
 
     selected_version = None
     if version_arg:
         try:
-            parsed = releases.validate_semver(version_arg)
-            selected_version = f"{parsed[0]}.{parsed[1]}.{parsed[2]}"
+            selected_version = releases.normalize_semver(version_arg)
+            parsed = releases.version_key(selected_version)
             latest_rel = led.latest_release(project)
             local_rel = led.get_release(project, version=selected_version)
             if latest_rel:
                 last_parsed = releases.parse_semver(latest_rel["version"])
                 if last_parsed:
-                    if parsed < last_parsed:
+                    last_key = releases.version_key(latest_rel["version"])
+                    if parsed < last_key:
                         print(f"mahler release: error: version {selected_version} must be greater than latest recorded version {latest_rel['version']}")
                         return 1
-                    if parsed == last_parsed and not local_rel and not publish_arg:
+                    if parsed == last_key and not local_rel and not publish_arg:
                         print(f"mahler release: error: version {selected_version} must be greater than latest recorded version {latest_rel['version']}")
                         return 1
         except ValueError as e:
@@ -740,7 +741,7 @@ def main(argv=None):
 
     s = sub.add_parser("release", help="preview or publish a project release, or give an item back")
     s.add_argument("target", help="<project> or <project>#<issue>")
-    s.add_argument("--version", help="semantic version to publish (X.Y.Z)")
+    s.add_argument("--version", help="version to publish (X.Y or X.Y.Z)")
     s.add_argument("--publish", action="store_true", help="publish the release to GitHub")
     s.add_argument("--as", dest="holder", default=default_holder(), help="holder name when giving an item back")
     s.set_defaults(fn=cmd_release)

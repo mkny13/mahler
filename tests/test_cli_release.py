@@ -123,10 +123,10 @@ class TestCLIRelease(unittest.TestCase):
                 ret = cli.cmd_release(Args(), self.cfg, self.led)
 
         self.assertEqual(ret, 1)
-        self.assertIn("publishing requires both an explicit valid SemVer", out.getvalue())
+        self.assertIn("publishing requires both an explicit valid version", out.getvalue())
 
     def test_publish_rejects_invalid_semver(self):
-        for bad_ver in ["1.0", "invalid", "01.2.3", "1.2.3.4", "v"]:
+        for bad_ver in ["1", "invalid", "01.2.3", "1.2.3.4", "v"]:
             with self.subTest(bad_ver=bad_ver):
                 class Args:
                     target = "proj"
@@ -139,7 +139,7 @@ class TestCLIRelease(unittest.TestCase):
                         ret = cli.cmd_release(Args(), self.cfg, self.led)
 
                 self.assertEqual(ret, 1)
-                self.assertIn("invalid SemVer", out.getvalue())
+                self.assertIn("invalid version", out.getvalue())
 
     def test_publish_rejects_non_increasing_version(self):
         create_release(self.led, "proj", version="0.2.0", checkpoint_sha="old_sha")
