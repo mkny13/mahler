@@ -102,6 +102,27 @@ class TestGH(unittest.TestCase):
         with self.assertRaises(GHError):
             self.gh.get_release("v0.1.0")
 
+    def test_latest_release_resolves_checkpoint_sha(self):
+        rel_data = {
+            "tagName": "v0.83", "targetCommitish": "main", "body": "Release notes",
+            "url": "https://github.com/mkny13/couch-tour/releases/tag/v0.83",
+            "publishedAt": "2026-09-10T12:00:00Z",
+        }
+        self.gh._gh.return_value = json.dumps(rel_data)
+        with patch.object(self.gh, "get_tag_sha", return_value="c0ffee") as get_tag:
+            release = self.gh.latest_release()
+        self.assertEqual(release["checkpointSha"], "c0ffee")
+        self.assertEqual(release["tagName"], "v0.83")
+        get_tag.assert_called_once_with("v0.83")
+        self.gh._gh.assert_called_once_with(
+            "release", "view", "-R", "mkny13/mahler",
+            "--json", "tagName,targetCommitish,body,url,publishedAt")
+
+    def test_latest_release_missing_returns_none(self):
+        from mahler.gh import GHError
+        self.gh._gh.side_effect = GHError("gh release view: no releases found")
+        self.assertIsNone(self.gh.latest_release())
+
     def test_get_tag_sha_commit(self):
         self.gh._gh.return_value = json.dumps({
             "object": {"type": "commit", "sha": "commit_sha_123"}

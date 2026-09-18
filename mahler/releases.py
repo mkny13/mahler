@@ -1,11 +1,11 @@
 """The release ledger and deterministic rolling draft (DESIGN D31).
 
-A release is a durable, tagged checkpoint with a semantic version, checkpoint SHA,
+A release is a durable, tagged checkpoint with a project version, checkpoint SHA,
 publication state/timestamps, notes, and remote URL. Shipped items belong to at
 most one release.
 
 Between releases, conductor-shipped changes accumulate in a deterministic
-rolling draft. Notes, SemVer bumps, and advisory readiness suggestions are
+rolling draft. Notes, version bumps, and advisory readiness suggestions are
 synthesized purely in the standard library without calling an LLM during the tick.
 """
 
@@ -18,8 +18,10 @@ from typing import Any, List, Optional
 
 from .ledger import iso, parse, row_get
 
-SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
-STRICT_SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)(?:\.(\d+))?(?:[-+].*)?$")
+STRICT_VERSION_RE = re.compile(
+    r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\.(0|[1-9]\d*))?$"
+)
 
 
 class ReleaseConflictError(RuntimeError):
@@ -27,20 +29,26 @@ class ReleaseConflictError(RuntimeError):
     pass
 
 
-def validate_semver(version: str) -> tuple[int, int, int]:
-    """Validate strict SemVer (X.Y.Z, optional leading 'v') and return (major, minor, patch)."""
+def validate_semver(version: str) -> tuple[int, ...]:
+    """Validate an established X.Y or X.Y.Z version (optional leading ``v``)."""
     if not isinstance(version, str):
         raise ValueError("version must be a string")
-    m = STRICT_SEMVER_RE.fullmatch(version.strip())
+    m = STRICT_VERSION_RE.fullmatch(version.strip())
     if not m:
-        raise ValueError(f"invalid SemVer {version!r}: expected X.Y.Z")
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+        raise ValueError(f"invalid version {version!r}: expected X.Y or X.Y.Z")
+    parts = (int(m.group(1)), int(m.group(2)))
+    return parts + ((int(m.group(3)),) if m.group(3) is not None else ())
 
 
 def normalize_semver(version: str) -> str:
-    """Normalize a version string to X.Y.Z without leading 'v'."""
-    major, minor, patch = validate_semver(version)
-    return f"{major}.{minor}.{patch}"
+    """Remove a leading ``v`` without changing a project's version shape."""
+    return ".".join(str(part) for part in validate_semver(version))
+
+
+def version_key(version: str) -> tuple[int, int, int]:
+    """Comparable key; X.Y and X.Y.0 denote the same version precedence."""
+    parsed = validate_semver(version)
+    return parsed if len(parsed) == 3 else (*parsed, 0)
 
 
 @dataclass
@@ -214,13 +222,14 @@ def synthesize_notes(items: List[Any]) -> StructuredNotes:
     return notes
 
 
-def parse_semver(v: Optional[str]) -> Optional[tuple[int, int, int]]:
+def parse_semver(v: Optional[str]) -> Optional[tuple[int, ...]]:
     if not v:
         return None
-    m = SEMVER_RE.match(v.strip())
+    m = VERSION_RE.match(v.strip())
     if not m:
         return None
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    parts = (int(m.group(1)), int(m.group(2)))
+    return parts + ((int(m.group(3)),) if m.group(3) is not None else ())
 
 
 def propose_next_version(last_version: Optional[str], items_or_labels: Any) -> str:
@@ -237,6 +246,9 @@ def propose_next_version(last_version: Optional[str], items_or_labels: Any) -> s
     parsed = parse_semver(last_version)
     if not parsed:
         return "0.1.0"
+    if len(parsed) == 2:
+        major, sequence = parsed
+        return f"{major}.{sequence + 1}"
     major, minor, patch = parsed
 
     has_feature = False
@@ -437,21 +449,21 @@ def publish_release(led: Any, gh: Any, project: str, version: str,
                     item_numbers: Optional[List[int]] = None) -> dict:
     """Publish a release to GitHub and atomically record it locally.
 
-    Validates strict SemVer and requires it to be greater than the latest
+    Validates X.Y or X.Y.Z and requires it to be greater than the latest
     recorded version (unless idempotently reconciling an existing release).
     Inspects remote release/tag:
     - If matching remote release exists at same tag and SHA with matching notes,
       finishes the local record and returns status='reconciled'.
     - If tag, SHA, or notes conflict, raises ReleaseConflictError and leaves
       the draft unsealed.
-    - Otherwise publishes tag vX.Y.Z and GitHub Release against checkpoint_sha,
+    - Otherwise publishes the matching vX.Y or vX.Y.Z GitHub Release,
       and atomically seals the included draft items into the local release record.
     """
     if not checkpoint_sha:
         raise ValueError("checkpoint_sha is required to publish a release")
 
     norm_ver = normalize_semver(version)
-    parsed = validate_semver(norm_ver)
+    parsed = version_key(norm_ver)
 
     local_rel = led.get_release(project, version=norm_ver)
     latest_rel = led.latest_release(project)
@@ -459,11 +471,12 @@ def publish_release(led: Any, gh: Any, project: str, version: str,
     if latest_rel:
         last_parsed = parse_semver(latest_rel["version"])
         if last_parsed:
-            if parsed < last_parsed:
+            last_key = version_key(latest_rel["version"])
+            if parsed < last_key:
                 raise ValueError(
                     f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}"
                 )
-            if parsed == last_parsed and not local_rel:
+            if parsed == last_key and not local_rel:
                 raise ValueError(
                     f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}"
                 )
@@ -547,9 +560,10 @@ def publish_release(led: Any, gh: Any, project: str, version: str,
 
 
 def semver_options(last_version: Optional[str], proposed_version: str) -> dict[str, str]:
-    """Calculate SemVer choices (proposed, patch, minor, major) for operator selection."""
+    """Calculate version choices while preserving the established component count."""
     if not last_version:
         return {
+            "scheme": "three-part",
             "proposed": proposed_version,
             "patch": "0.1.1",
             "minor": "0.2.0",
@@ -558,13 +572,25 @@ def semver_options(last_version: Optional[str], proposed_version: str) -> dict[s
     parsed = parse_semver(last_version)
     if not parsed:
         return {
+            "scheme": "three-part",
             "proposed": proposed_version,
             "patch": "0.1.1",
             "minor": "0.2.0",
             "major": "1.0.0",
         }
+    if len(parsed) == 2:
+        maj, sequence = parsed
+        next_version = f"{maj}.{sequence + 1}"
+        return {
+            "scheme": "two-part",
+            "proposed": proposed_version,
+            "patch": next_version,
+            "minor": next_version,
+            "major": f"{maj + 1}.0",
+        }
     maj, min_, pat = parsed
     return {
+        "scheme": "three-part",
         "proposed": proposed_version,
         "patch": f"{maj}.{min_}.{pat + 1}",
         "minor": f"{maj}.{min_ + 1}.0",
@@ -624,4 +650,3 @@ def build_feed(led: Any, project: str, limit: int = 20) -> dict[str, Any]:
         "generated_at": (iso(now_dt) or "").replace("+00:00", "Z"),
         "releases": feed_releases,
     }
-

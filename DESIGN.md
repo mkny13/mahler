@@ -1223,8 +1223,8 @@ Decided 2026-09-16 (mahler#331). Work repos use a specific compute strategy (`si
 
 Decided 2026-09-17 (mahler#356; D31 reserved in the issue). Mahler knows when individual issues ship, but needs a durable release model and a deterministic rolling draft for later CLI, console, and managed-app surfaces.
 
-- **Releases vs. Project Briefs**: A release is a durable, tagged checkpoint with a semantic version, a commit SHA, a frozen set of included shipped items, notes, and a remote release URL. It must not be conflated with the separate "since you last looked" project brief (an ephemeral operator catch-up view of recent activity).
-- **Semantic versions for every project**: Every project uses SemVer (`X.Y.Z`). An initial release proposes `0.1.0`. For subsequent releases, feature work (`type:feature`) proposes a minor bump (`X.(Y+1).0`), while bug fixes and other non-breaking changes propose a patch bump (`X.Y.(Z+1)`). Major versions are never inferred or proposed automatically — a major bump remains an explicit operator selection because Mahler cannot safely deduce breaking contracts from issue metadata alone.
+- **Releases vs. Project Briefs**: A release is a durable, tagged checkpoint with a project version, a commit SHA, a frozen set of included shipped items, notes, and a remote release URL. It must not be conflated with the separate "since you last looked" project brief (an ephemeral operator catch-up view of recent activity).
+- **Continue each project's build/release sequence** (amended by mahler#377): When Mahler has no local release rows, sync imports the latest existing GitHub release as a published baseline without claiming current draft items. Mahler preserves that project's established strict `X.Y` or `X.Y.Z` format instead of starting a parallel history or adding/removing a component. A two-part sequence advances sequentially (`0.83` → `0.84`) regardless of item labels. A three-part sequence retains SemVer behavior: feature work (`type:feature`) proposes a minor bump (`X.(Y+1).0`), while bug fixes and other non-breaking changes propose a patch bump (`X.Y.(Z+1)`). Major versions are never inferred automatically. Only a project with no Mahler or GitHub release history starts at `0.1.0`.
 - **Rolling unreleased draft**: When conductor-ship completes (`ship._shipped`), the shipped issue number, PR, title, agent summary, merge SHA, labels, and shipped timestamp are snapshotted into the project's unreleased draft. Retries are idempotent, and an item belongs to at most one release across its lifetime.
 - **Deterministic synthesized notes**: Notes are synthesized purely in Python standard library without calling an LLM during the tick. Features and bug fixes form the main summary; other user-facing changes (e.g. goals, UAT items, untyped) appear in an additional section; and `type:chore` or maintenance-pass work is excluded from the main summary by default, retained in collapsible details.
 - **Readiness suggestion**: A draft is marked "release suggested" when it contains at least 5 unreleased items or its oldest unreleased item is at least 7 days old. This signal is advisory only and never publishes automatically.
@@ -1286,7 +1286,7 @@ Decided 2026-09-17 (mahler#358). Managed apps consume release notes via an HTTP 
   ```
 - **Fields & Stable Identifiers**:
   - Top level: `schema_version` (integer), `project` (string), `generated_at` (ISO 8601 string), `releases` (array of release objects).
-  - Release object: `version` (SemVer `X.Y.Z`), `checkpoint_sha` (git commit SHA), `published_at` (ISO 8601 string), `remote_url` (GitHub release link or null/empty), `sections` (object with `features`, `fixes`, and `other` lists), and `maintenance` (list).
+  - Release object: `version` (the project's established `X.Y` or SemVer `X.Y.Z` form), `checkpoint_sha` (git commit SHA), `published_at` (ISO 8601 string), `remote_url` (GitHub release link or null/empty), `sections` (object with `features`, `fixes`, and `other` lists), and `maintenance` (list).
   - Item object: `number` (issue integer, stable unique identifier), `pr` (pull request integer or null), `title` (string), `summary` (concise human-facing summary string).
 - **Ordering and limits**:
   - Releases are ordered newest first (descending by `published_at` / SemVer).
@@ -1299,7 +1299,7 @@ Decided 2026-09-17 (mahler#358). Managed apps consume release notes via an HTTP 
   - Sensitive and operational data are strictly excluded: no issue comments, agent run logs, platform prompts, credentials/tokens, or D10 UAT checklist items are ever exposed in the feed.
 - **Client acknowledgement and read state**:
   - Acknowledgement is **strictly local to each app installation** (stored in local SQLite, `localStorage`, `UserDefaults`, `SharedPreferences`, etc.).
-  - SemVer comparison: the client stores `last_acknowledged_version` (e.g. `"1.1.0"`). Any release with SemVer > `last_acknowledged_version` is treated as unread/new.
+  - Version comparison: the client stores `last_acknowledged_version` (e.g. `"1.1.0"` or `"0.83"`). Any release with greater numeric component precedence is treated as unread/new.
   - Mark-read timing: a release is marked read/acknowledged **only after the user views or dismisses** the What's New surface, never automatically during background fetch or app boot.
   - The client UI may link directly to the durable GitHub Release URL (`remote_url`) for users who want complete commit history.
 - **Maintenance visibility in clients**:

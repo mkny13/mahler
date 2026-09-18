@@ -23,6 +23,7 @@ from mahler.releases import (
     semver_options,
     synthesize_notes,
     validate_semver,
+    version_key,
     build_feed,
 )
 
@@ -43,6 +44,7 @@ class SemVerProposalTests(unittest.TestCase):
         self.assertEqual(parse_semver("0.1.0"), (0, 1, 0))
         self.assertEqual(parse_semver("v1.2.3"), (1, 2, 3))
         self.assertEqual(parse_semver("  2.10.4-rc1  "), (2, 10, 4))
+        self.assertEqual(parse_semver("v0.83"), (0, 83))
         self.assertIsNone(parse_semver(""))
         self.assertIsNone(parse_semver("invalid"))
 
@@ -89,6 +91,12 @@ class SemVerProposalTests(unittest.TestCase):
         # Bumps minor, not major
         self.assertEqual(propose_next_version("1.0.0", items), "1.1.0")
         self.assertNotEqual(propose_next_version("1.0.0", items), "2.0.0")
+
+    def test_two_part_sequence_always_advances_second_component(self):
+        feature = [ReleaseItem("p", 1, labels=["type:feature"])]
+        fix = [ReleaseItem("p", 2, labels=["type:bug"])]
+        self.assertEqual(propose_next_version("0.83", feature), "0.84")
+        self.assertEqual(propose_next_version("0.83", fix), "0.84")
 
 
 class NoteSynthesisTests(unittest.TestCase):
@@ -286,9 +294,12 @@ class SemVerValidationTests(unittest.TestCase):
         self.assertEqual(validate_semver("10.20.30"), (10, 20, 30))
         self.assertEqual(normalize_semver("v1.2.3"), "1.2.3")
         self.assertEqual(normalize_semver("0.1.0"), "0.1.0")
+        self.assertEqual(validate_semver("v0.83"), (0, 83))
+        self.assertEqual(normalize_semver("v0.83"), "0.83")
+        self.assertEqual(version_key("0.83"), (0, 83, 0))
 
     def test_invalid_strict_semver(self):
-        for invalid in ["", "   ", "1.0", "1.2.3.4", "01.2.3", "1.02.3", "abc", "v", "1.2.3-beta"]:
+        for invalid in ["", "   ", "1", "1.2.3.4", "01.2.3", "1.02.3", "abc", "v", "1.2.3-beta"]:
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     validate_semver(invalid)
@@ -390,6 +401,15 @@ class PublishReleaseTests(unittest.TestCase):
         self.assertEqual(len(self.led.unreleased_items("proj")), 0)
         sealed_items = self.led.release_items_for_release(local_rel["id"])
         self.assertEqual([i["number"] for i in sealed_items], [1, 2])
+
+    def test_publish_preserves_two_part_version_and_tag(self):
+        create_release(self.led, "proj", version="0.83", checkpoint_sha="sha_old",
+                       item_numbers=[])
+        self.led.snapshot_release_item("proj", 1, merge_sha="sha084", labels=["type:bug"])
+        result = publish_release(self.led, self.gh, "proj", version="v0.84",
+                                 checkpoint_sha="sha084")
+        self.assertEqual(result["release"]["version"], "0.84")
+        self.assertIn("v0.84", self.gh.releases)
 
     def test_publish_requires_checkpoint_sha(self):
         with self.assertRaises(ValueError):
@@ -522,6 +542,14 @@ class SemverOptionsTests(unittest.TestCase):
         self.assertEqual(opts["minor"], "1.3.0")
         self.assertEqual(opts["major"], "2.0.0")
 
+    def test_two_part_release_options_preserve_two_parts(self):
+        opts = semver_options("0.83", "0.84")
+        self.assertEqual(opts["scheme"], "two-part")
+        self.assertEqual(opts["proposed"], "0.84")
+        self.assertEqual(opts["patch"], "0.84")
+        self.assertEqual(opts["minor"], "0.84")
+        self.assertEqual(opts["major"], "1.0")
+
 
 class BuildFeedTests(unittest.TestCase):
     def setUp(self):
@@ -540,6 +568,11 @@ class BuildFeedTests(unittest.TestCase):
             build_feed(self.led, "proj", limit=0)
         with self.assertRaises(ValueError):
             build_feed(self.led, "proj", limit=-5)
+
+    def test_feed_preserves_two_part_version(self):
+        self.led.create_release("proj", version="0.83", checkpoint_sha="sha83",
+                                state="published", item_numbers=[])
+        self.assertEqual(build_feed(self.led, "proj")["releases"][0]["version"], "0.83")
 
     def test_feed_reflects_only_published_releases(self):
         # 1. Shipped item in draft (not released yet)
@@ -661,4 +694,3 @@ class BuildFeedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

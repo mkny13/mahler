@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, scheduler, sync, tick
+from mahler import config, releases, scheduler, sync, tick
 from mahler.gh import GHError, has_sections
 from mahler.ledger import Ledger, iso
 from mahler import prompt
@@ -37,6 +37,8 @@ class FakeGH:
         self.fail_pin = False
         self.fail_state_label = False
         self.fail_issue_state_for = set()
+        self.remote_release = None
+        self.fail_latest_release = False
 
     def open_issues(self):
         return [{"number": n, "title": i["title"], "body": i.get("body", ""),
@@ -49,6 +51,11 @@ class FakeGH:
 
     def issues_changed(self, etag=None):
         return (True, None)              # this fake's repo is always "modified"
+
+    def latest_release(self):
+        if self.fail_latest_release:
+            raise GHError("github down")
+        return copy.deepcopy(self.remote_release)
 
     def add_label(self, number, label):
         if label not in self.issues[number]["labels"]:
@@ -182,6 +189,62 @@ class PinTests(unittest.TestCase):
         self.gh.fail_issue_state_for = {5}
         self.sync()                          # must not raise
         self.assertEqual(self.led.item("x", 5)["state"], "inbox")   # unchanged
+
+
+class ReleaseBaselineSyncTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["x"] = {"path": tmp.name, "repo": "x/y"}
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = FakeGH({5: {"title": "An issue", "labels": ["mahler:ready"],
+                              "comments": []}})
+
+    def sync(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.sync(self.ctx, "x")
+
+    def test_existing_two_part_release_becomes_baseline_without_sealing_draft(self):
+        self.led.snapshot_release_item("x", 4, merge_sha="new_sha", labels=["type:feature"])
+        self.gh.remote_release = {
+            "tagName": "v0.83", "checkpointSha": "old_sha", "body": "Existing notes",
+            "url": "https://github.com/x/y/releases/tag/v0.83",
+            "publishedAt": "2026-09-10T12:00:00Z",
+        }
+        self.sync()
+        baseline = self.led.latest_release("x")
+        self.assertEqual(baseline["version"], "0.83")
+        self.assertEqual(baseline["checkpoint_sha"], "old_sha")
+        self.assertEqual(baseline["notes"], "Existing notes")
+        self.assertEqual([r["number"] for r in self.led.unreleased_items("x")], [4])
+        self.assertEqual(releases.get_draft(self.led, "x").proposed_version, "0.84")
+
+    def test_bootstrap_is_idempotent(self):
+        self.gh.remote_release = {
+            "tagName": "v0.83", "checkpointSha": "old_sha", "body": "",
+            "url": "https://github.com/x/y/releases/tag/v0.83",
+            "publishedAt": "2026-09-10T12:00:00Z",
+        }
+        self.sync()
+        self.sync()
+        self.assertEqual(len(self.led.list_releases("x")), 1)
+
+    def test_lookup_failure_does_not_stop_issue_sync_or_mutate_draft(self):
+        self.led.snapshot_release_item("x", 4, merge_sha="new_sha", labels=["type:bug"])
+        self.gh.fail_latest_release = True
+        self.sync()
+        self.assertIsNotNone(self.led.item("x", 5))
+        self.assertIsNone(self.led.latest_release("x"))
+        self.assertEqual([r["number"] for r in self.led.unreleased_items("x")], [4])
+
+    def test_no_remote_release_keeps_initial_fallback(self):
+        self.sync()
+        self.assertIsNone(self.led.latest_release("x"))
+        self.assertEqual(releases.get_draft(self.led, "x").proposed_version, "0.1.0")
+        self.assertEqual(self.led.get_kv("release_baseline_checked:x"), "1")
 
 
 class SyncStoresFilesTests(unittest.TestCase):

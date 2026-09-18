@@ -1973,6 +1973,16 @@ class ConsoleReleasesStateTests(unittest.TestCase):
         self.assertEqual(draft["version_options"]["minor"], "0.2.0")
         self.assertEqual(draft["version_options"]["major"], "1.0.0")
 
+    def test_two_part_baseline_proposes_next_build_version(self):
+        self.led.create_release("mahler", "0.83", checkpoint_sha="sha_old",
+                                published_at="2026-09-01T12:00:00Z", item_numbers=[])
+        self.led.snapshot_release_item("mahler", 101, merge_sha="sha_new",
+                                       labels=["type:feature"])
+        release = next(r for r in state.build(self.cfg, self.led)["releases"]
+                       if r["project"] == "mahler")
+        self.assertEqual(release["draft"]["proposed_version"], "0.84")
+        self.assertEqual(release["draft"]["version_options"]["proposed"], "0.84")
+
 
 class CutReleaseActionTests(unittest.TestCase):
     def setUp(self):
@@ -1987,8 +1997,8 @@ class CutReleaseActionTests(unittest.TestCase):
                 "project": "old", "version": "0.1.0", "checkpoint_sha": "sha_a", "item_numbers": [101]
             })
 
-    def test_invalid_semver_refused(self):
-        with self.assertRaisesRegex(actions.ActionError, "valid SemVer"):
+    def test_invalid_version_refused(self):
+        with self.assertRaisesRegex(actions.ActionError, "invalid version"):
             actions.run(self.cfg, self.led, "cut_release", {
                 "project": "mahler", "version": "invalid", "checkpoint_sha": "sha_a", "item_numbers": [101]
             })
@@ -2037,6 +2047,16 @@ class CutReleaseActionTests(unittest.TestCase):
         self.assertIsNotNone(ev)
         payload = json.loads(ev["detail"])
         self.assertEqual(payload["version"], "0.1.0")
+
+    def test_two_part_version_is_accepted_and_preserved(self):
+        self.led.create_release("mahler", "0.83", checkpoint_sha="sha_old", item_numbers=[])
+        result = actions.run(self.cfg, self.led, "cut_release", {
+            "project": "mahler", "version": "v0.84", "checkpoint_sha": "sha_a",
+            "item_numbers": [101],
+        })
+        payload = json.loads(self.led.q1(
+            "SELECT payload FROM console_actions WHERE id=?", (result["id"],))["payload"])
+        self.assertEqual(payload["version"], "0.84")
 
 
 class CutReleaseOutboxTests(unittest.TestCase):
@@ -2129,3 +2149,12 @@ class ConsoleReleasesPageTests(unittest.TestCase):
         self.assertIn('class="ov releaseov"', doc)
         self.assertIn('Cut release', doc)
         self.assertIn('data-set-ver=', doc)
+
+    def test_cut_release_modal_displays_next_two_part_build_version(self):
+        self.led.create_release("mahler", "0.83", checkpoint_sha="sha_old", item_numbers=[])
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertIn('Cut release · mahler', doc)
+        self.assertIn('value="0.84"', doc)
+        self.assertIn('Proposed v0.84', doc)
+        self.assertNotIn('Patch v0.84', doc)
+        self.assertNotIn('Minor v0.84', doc)

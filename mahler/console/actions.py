@@ -349,9 +349,9 @@ def cut_release(cfg, led, body):
     from .. import releases
     try:
         norm_ver = releases.normalize_semver(version)
-        parsed = releases.validate_semver(norm_ver)
+        parsed = releases.version_key(norm_ver)
     except Exception as exc:
-        raise ActionError(f"invalid SemVer: {exc}")
+        raise ActionError(f"invalid version: {exc}")
 
     checkpoint_sha = body.get("checkpoint_sha")
     if not checkpoint_sha or not isinstance(checkpoint_sha, str):
@@ -374,7 +374,7 @@ def cut_release(cfg, led, body):
     latest_rel = led.latest_release(project)
     if latest_rel:
         last_parsed = releases.parse_semver(latest_rel["version"])
-        if last_parsed and parsed <= last_parsed:
+        if last_parsed and parsed <= releases.version_key(latest_rel["version"]):
             raise ActionError(f"version {norm_ver} must be greater than latest recorded version {latest_rel['version']}")
 
     with led._tx():

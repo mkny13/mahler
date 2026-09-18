@@ -8,7 +8,7 @@ all done is the same kind of work, so it lives here too.
 import json
 from datetime import timedelta
 
-from . import config
+from . import config, releases
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of)
@@ -20,6 +20,7 @@ from .watchdog import request_stop
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
+    _bootstrap_release_baseline(ctx, project, gh)
     # Conditional poll (mahler#90): a 304 means the open-issue collection is
     # byte-identical to the last full sync — no new issues, no edits, no
     # comments — so both the fetch and the closed-issue checks below can be
@@ -144,6 +145,56 @@ def sync(ctx, project):
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
     led.set_kv(depends_key, "4")
+
+
+def _bootstrap_release_baseline(ctx, project, gh):
+    """Adopt an existing GitHub release before Mahler proposes a first version.
+
+    Imported history is a baseline only: passing an explicit empty item list is
+    essential, because the project's current rolling draft must remain unsealed.
+    GitHub absence and unsupported legacy tags are harmless and remembered so a
+    quiet project does not spend API quota every minute. Transient lookup
+    failures are not marked checked and are retried on a later tick.
+    """
+    led = ctx.led
+    checked_key = f"release_baseline_checked:{project}"
+    if led.latest_release(project) is not None or led.get_kv(checked_key) == "1":
+        return
+    try:
+        remote = gh.latest_release()
+    except Exception as exc:  # noqa: BLE001 — GitHub failure must never stop issue sync
+        ctx.say(f"{project}: release baseline lookup skipped — {exc}")
+        return
+    if not remote:
+        led.set_kv(checked_key, "1")
+        return
+    try:
+        version = releases.normalize_semver(remote.get("tagName", ""))
+    except ValueError as exc:
+        led.set_kv(checked_key, "1")
+        ctx.say(f"{project}: release baseline lookup skipped — {exc}")
+        return
+    try:
+        checkpoint_sha = remote.get("checkpointSha")
+        if not checkpoint_sha:
+            led.set_kv(checked_key, "1")
+            return
+        if led.latest_release(project) is not None:
+            return
+        led.create_release(
+            project,
+            version=version,
+            checkpoint_sha=checkpoint_sha,
+            notes=remote.get("body") or "",
+            state="published",
+            published_at=remote.get("publishedAt"),
+            remote_url=remote.get("url"),
+            item_numbers=[],
+        )
+        led.set_kv(checked_key, "1")
+        ctx.say(f"{project}: adopted existing GitHub release v{version} as version baseline")
+    except Exception as exc:  # noqa: BLE001 — release discovery must never stop issue sync
+        ctx.say(f"{project}: release baseline lookup skipped — {exc}")
 
 
 def _satisfiable_depends(ctx, project, number, parent, deps, parents):

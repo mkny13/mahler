@@ -1138,6 +1138,18 @@ def _release_preview_overlays(s):
         count = draft["count"]
         checkpoint = draft["checkpoint_sha"] or "unknown"
         item_nums = ",".join(str(n) for n in draft["item_numbers"])
+        if vopts.get("scheme") == "two-part":
+            version_buttons = (
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["proposed"])}">Proposed v{e(vopts["proposed"])}</button>'
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["major"])}">Major v{e(vopts["major"])}</button>'
+            )
+        else:
+            version_buttons = (
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["proposed"])}">Proposed v{e(vopts["proposed"])}</button>'
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["patch"])}">Patch v{e(vopts["patch"])}</button>'
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["minor"])}">Minor v{e(vopts["minor"])}</button>'
+                f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["major"])}">Major v{e(vopts["major"])}</button>'
+            )
 
         out.append(f'<div class="ov releaseov" data-release-detail="{e(proj)}">'
                    f'<div class="box" role="dialog" aria-modal="true">'
@@ -1146,17 +1158,12 @@ def _release_preview_overlays(s):
                    f'<div class="inner" style="display:flex;flex-direction:column;gap:12px">'
                    f'<h2>Cut release · {e(proj)}</h2>'
                    f'<div class="rel-ver-picker">'
-                   f'<span class="lbl" style="margin-bottom:6px;display:block">Select SemVer:</span>'
-                   f'<div class="rel-ver-pills" style="display:flex;gap:6px;flex-wrap:wrap">'
-                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["proposed"])}">Proposed v{e(vopts["proposed"])}</button>'
-                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["patch"])}">Patch v{e(vopts["patch"])}</button>'
-                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["minor"])}">Minor v{e(vopts["minor"])}</button>'
-                   f'<button type="button" class="btn btn-pill" data-set-ver="{e(vopts["major"])}">Major v{e(vopts["major"])}</button>'
-                   f'</div>'
+                   f'<span class="lbl" style="margin-bottom:6px;display:block">Select version:</span>'
+                   f'<div class="rel-ver-pills" style="display:flex;gap:6px;flex-wrap:wrap">{version_buttons}</div>'
                    f'<div style="display:flex;align-items:center;gap:8px;margin-top:8px">'
-                   f'<span class="mono" style="font-size:12px;color:var(--mut)">SemVer:</span>'
+                   f'<span class="mono" style="font-size:12px;color:var(--mut)">Version:</span>'
                    f'<input type="text" class="ver-input mono" data-keep="release_ver:{e(proj)}" '
-                   f'value="{e(draft["proposed_version"])}" placeholder="X.Y.Z" style="width:120px;height:32px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink)" />'
+                   f'value="{e(draft["proposed_version"])}" placeholder="X.Y or X.Y.Z" style="width:120px;height:32px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink)" />'
                    f'</div></div>'
                    f'<div class="rel-confirm-meta" style="font-size:13px;line-height:1.6;padding:10px;border:1px solid var(--line);border-radius:4px;background:var(--surf)">'
                    f'<div><strong>Version to cut:</strong> <span class="mono sel-ver-display">v{e(draft["proposed_version"])}</span></div>'
