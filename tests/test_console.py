@@ -8,6 +8,7 @@ import tempfile
 import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from local_timezone import local_timezone
@@ -1854,6 +1855,19 @@ class CapturePageTests(unittest.TestCase):
     def test_no_note_without_a_recent_capture(self):
         doc = page.document(state.build(self.cfg, self.led))
         self.assertNotIn('Saved to', doc)
+
+    def test_successful_capture_clears_text_and_attachment_on_refresh(self):
+        doc = page.document(state.build(self.cfg, self.led))
+        self.assertIn('data-keep="capture_att_id"', doc)
+        self.assertIn('data-keep="capture_att_name"', doc)
+        self.assertIn('class="attach-btn" data-attach>Attach photo or screenshot</button>', doc)
+
+        script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
+        self.assertIn(
+            'suppressKeep = ["capture", "capture_att_id", "capture_att_name"]',
+            script,
+        )
+        self.assertIn('skip.indexOf(k) === -1', script)
 
 
 if __name__ == "__main__":
