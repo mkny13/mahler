@@ -297,7 +297,12 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
 - [ ] Onboard in this order:
   1. **mental-jukebox** — original candidate
   2. **puppy-growth-chart** — original candidate
-  3. **movebreak** — original candidate
+  3. [x] **movebreak** — already enabled and proven before the formal onboarding audit:
+     - live policy uses `./scripts/build_app.sh`, isolated Mahler worktrees,
+       `max_parallel = 1`, and the declared personal/work compute accounts
+     - the complete Mahler label set exists and agent-built PRs have repeatedly passed CI
+       and merged; the original ROADMAP work and issue backlog are complete
+     - repository-side policy reconciliation is tracked in movebreak#70
   4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
      - single release channel / staging sync backend status not confirmed from this review
      - `gated` status not confirmed
