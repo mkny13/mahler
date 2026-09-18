@@ -24,6 +24,18 @@ verify = "python3 -m unittest discover -s tests"
 # account_mode = "priority"
 # routing = { build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
 
+# A local macOS app with no shared test backend can use the same command for
+# fast and full verification.  This is the checked, non-secret shape used by
+# MoveBreak; replace the path with the primary checkout on this machine.
+# [projects.movebreak]
+# enabled = true
+# repo = "mkny13/movebreak"
+# path = "/absolute/path/to/movebreak"
+# worktree_root = "/absolute/path/to/.mahler-worktrees"
+# max_parallel = 1
+# verify = "./scripts/build_app.sh"
+# accounts = ["personal", "work"]
+
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
 # public key on the Mini and accept its host key before enabling the daemon.
