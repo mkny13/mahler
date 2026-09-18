@@ -89,12 +89,33 @@ class ConfigTests(unittest.TestCase):
                              "accounts": ["personal", "work"], "account_mode": "equal"})
         self.assertEqual(config.account_mode_of(config.project_policy(cfg, "both")), "equal")
 
+    def test_account_mode_priority_is_read_through(self):
+        cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                             "accounts": ["personal", "work"], "account_mode": "priority",
+                             "routing": {"build": ["agy-claude", "codex-work", "claude"]}})
+        config.validate_accounts(cfg)
+        self.assertEqual(config.account_mode_of(config.project_policy(cfg, "both")),
+                         "priority")
+
     def test_bad_account_mode_fails_closed(self):
         with self.assertRaises(ValueError):
             config.account_mode_of({"account_mode": "first"})
         cfg = config._merge(config.DEFAULTS, {"projects": {"x": {
             "enabled": True, "account_mode": "first"}}})
         with self.assertRaises(ValueError):
+            config.validate_accounts(cfg)
+
+    def test_priority_mode_requires_a_project_route(self):
+        cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                             "accounts": ["personal", "work"], "account_mode": "priority"})
+        with self.assertRaisesRegex(ValueError, "requires a project routing table"):
+            config.validate_accounts(cfg)
+
+    def test_priority_route_rejects_an_undeclared_account(self):
+        cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",
+                             "accounts": ["personal"], "account_mode": "priority",
+                             "routing": {"build": ["codex-work"]}})
+        with self.assertRaisesRegex(ValueError, "spends undeclared account 'work'"):
             config.validate_accounts(cfg)
 
     def test_work_env_drops_inherited_logins_and_sets_its_own(self):
@@ -403,6 +424,59 @@ class MultiAccountTests(unittest.TestCase):
         seed(self.led, **{"codex-work": (10, 10)})
         self.item("acme", 1)
         self.assertIn("acme#1: would build on codex-work", self.plan())
+
+    def test_priority_mode_follows_exact_cross_account_order(self):
+        self.cfg["projects"]["both"].update({
+            "account_mode": "priority",
+            "routing": {"build": ["agy-claude", "agy-gemini", "codex-work", "claude"]},
+        })
+        for platform in ("agy-claude", "agy-gemini"):
+            self.led.create_run(project="zz", number=1, role="build",
+                                platform=platform, epoch=1)
+        seed(self.led, **{"claude": (30, 30), "codex-work": (10, 10)})
+        self.item("both", 1)
+        self.assertIn("both#1: would build on codex-work", self.plan(total=10))
+
+    def test_priority_mode_can_place_a_second_codex_login_just_before_claude(self):
+        self.cfg["accounts"]["ncsu"] = {
+            "env": {"CODEX_HOME": "~/.codex-ncsu"},
+            "routing": {"build": ["codex-ncsu"]},
+        }
+        self.cfg["platforms"]["codex-ncsu"] = {
+            "from": "codex", "account": "ncsu",
+        }
+        self.cfg = config.resolve_platforms(self.cfg)
+        self.cfg["projects"]["both"].update({
+            "accounts": ["personal", "work", "ncsu"],
+            "account_mode": "priority",
+            "routing": {"build": ["agy-claude", "agy-gemini", "codex-work",
+                                  "codex-ncsu", "claude"]},
+        })
+        self.assertEqual(
+            router.candidates_for_priority(
+                self.cfg, "build", ["personal", "work", "ncsu"],
+                self.cfg["projects"]["both"]["routing"]),
+            ["agy-claude", "agy-gemini", "codex-work", "codex-ncsu", "claude"],
+        )
+        self.assertEqual(self.cfg["platforms"]["codex-work"]["quota_group"], "codex@work")
+        self.assertEqual(self.cfg["platforms"]["codex-ncsu"]["quota_group"], "codex@ncsu")
+
+    def test_priority_mode_uses_later_platform_when_preferred_account_is_spent(self):
+        self.cfg["projects"]["both"].update({
+            "account_mode": "priority",
+            "routing": {"build": ["codex-work", "claude"]},
+        })
+        seed(self.led, **{"codex-work": (95, 95), "claude": (30, 30)})
+        self.item("both", 1)
+        self.assertIn("both#1: would build on claude", self.plan(total=10))
+
+    def test_priority_mode_applies_to_fix_runs(self):
+        pol = {**config.project_policy(self.cfg, "both"),
+               "account_mode": "priority",
+               "routing": {"build": ["codex-work", "claude"]}}
+        seed(self.led, **{"codex-work": (10, 10), "claude": (30, 30)})
+        name, _ = router.pick_for_project(self.cfg, self.led, pol, "fix")
+        self.assertEqual(name, "codex-work")
 
     def test_multi_account_pin_on_either_declared_account_works(self):
         seed(self.led, **{"agy-claude": (10, 10), "claude-work": (5, 5)})

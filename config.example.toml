@@ -18,6 +18,11 @@ verify = "python3 -m unittest discover -s tests"
 # For a project that's genuinely dual-use (both accounts equally preferred,
 # not one a fallback for the other), opt into round-robin merging instead:
 # account_mode = "equal"
+# To set one exact platform order across several accounts, use priority mode
+# plus a project route. Account isolation still applies: every named platform
+# must spend one of the project's declared accounts.
+# account_mode = "priority"
+# routing = { build = ["agy-claude", "codex-work", "codex-ncsu", "claude"] }
 
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
@@ -77,6 +82,9 @@ verify = "python3 -m unittest discover -s tests"
 # [platforms.codex-work]
 # from = "codex"
 # account = "work"
+# [platforms.codex-high-work]
+# from = "codex-high"
+# account = "work"
 # [platforms.copilot-work]
 # from = "copilot"
 # account = "work"
@@ -84,6 +92,21 @@ verify = "python3 -m unittest discover -s tests"
 # With metering enabled, an empty personal AI-credits report automatically shows
 # no quota signal and is retried after stale_minutes (Copilot default 360). It cannot
 # identify a seat type: an unused personal plan can also return an empty report.
+#
+# A second ChatGPT-only login is another account with its own CODEX_HOME and
+# inherited Codex platforms. Authenticate it once with CODEX_HOME set; never
+# copy auth.json between accounts.
+# [accounts.ncsu]
+# env = { CODEX_HOME = "~/.codex-ncsu" }
+# routing = { sort = ["codex-ncsu"], plan = ["codex-high-ncsu"], build = ["codex-ncsu", "codex-high-ncsu"] }
+# [platforms.codex-ncsu]
+# from = "codex"
+# account = "ncsu"
+# [platforms.codex-high-ncsu]
+# from = "codex-high"
+# account = "ncsu"
+# A multi-account project's priority route can then place codex-work before
+# codex-ncsu and both before claude while retaining separate quota probes.
 #
 # [projects.acme]
 # enabled = true
