@@ -438,28 +438,34 @@ class MultiAccountTests(unittest.TestCase):
         self.assertIn("both#1: would build on codex-work", self.plan(total=10))
 
     def test_priority_mode_can_place_a_second_codex_login_just_before_claude(self):
-        self.cfg["accounts"]["ncsu"] = {
-            "env": {"CODEX_HOME": "~/.codex-ncsu"},
-            "routing": {"build": ["codex-ncsu"]},
+        self.cfg["platforms"]["codex-work-gpt1"] = {
+            "from": "codex", "account": "work",
         }
-        self.cfg["platforms"]["codex-ncsu"] = {
-            "from": "codex", "account": "ncsu",
+        self.cfg["accounts"]["work-makastel"] = {
+            "env": {"CODEX_HOME": "~/.codex-ncsu"},
+            "routing": {"build": ["codex-work-makastel"]},
+        }
+        self.cfg["platforms"]["codex-work-makastel"] = {
+            "from": "codex", "account": "work-makastel",
         }
         self.cfg = config.resolve_platforms(self.cfg)
         self.cfg["projects"]["both"].update({
-            "accounts": ["personal", "work", "ncsu"],
+            "accounts": ["personal", "work", "work-makastel"],
             "account_mode": "priority",
-            "routing": {"build": ["agy-claude", "agy-gemini", "codex-work",
-                                  "codex-ncsu", "claude"]},
+            "routing": {"build": ["agy-claude", "agy-gemini", "codex-work-gpt1",
+                                  "codex-work-makastel", "claude"]},
         })
         self.assertEqual(
             router.candidates_for_priority(
-                self.cfg, "build", ["personal", "work", "ncsu"],
+                self.cfg, "build", ["personal", "work", "work-makastel"],
                 self.cfg["projects"]["both"]["routing"]),
-            ["agy-claude", "agy-gemini", "codex-work", "codex-ncsu", "claude"],
+            ["agy-claude", "agy-gemini", "codex-work-gpt1",
+             "codex-work-makastel", "claude"],
         )
-        self.assertEqual(self.cfg["platforms"]["codex-work"]["quota_group"], "codex@work")
-        self.assertEqual(self.cfg["platforms"]["codex-ncsu"]["quota_group"], "codex@ncsu")
+        self.assertEqual(self.cfg["platforms"]["codex-work-gpt1"]["quota_group"],
+                         "codex@work")
+        self.assertEqual(self.cfg["platforms"]["codex-work-makastel"]["quota_group"],
+                         "codex@work-makastel")
 
     def test_priority_mode_uses_later_platform_when_preferred_account_is_spent(self):
         self.cfg["projects"]["both"].update({
