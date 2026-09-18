@@ -14,15 +14,16 @@ verify = "python3 -m unittest discover -s tests"
 # A project may span more than one account (DESIGN D26): by default it tries
 # each of its accounts in declared order and spends the first with headroom.
 # Set one of account/accounts, never both:
-# accounts = ["personal", "work"]
+# accounts = ["personal", "work", "work-makastel"]
 # For a project that's genuinely dual-use (both accounts equally preferred,
 # not one a fallback for the other), opt into round-robin merging instead:
 # account_mode = "equal"
 # To set one exact platform order across several accounts, use priority mode
 # plus a project route. Account isolation still applies: every named platform
-# must spend one of the project's declared accounts.
+# must spend one of the project's declared accounts. Each role the project
+# uses needs its own exact route; an omitted role has no candidates.
 # account_mode = "priority"
-# routing = { build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
+# routing = { sort = ["claude"], plan = ["claude-opus"], build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
 
 # A local macOS app with no shared test backend can use the same command for
 # fast and full verification.  This is the checked, non-secret shape used by
@@ -110,7 +111,7 @@ verify = "python3 -m unittest discover -s tests"
 # copy auth.json between accounts.
 # [accounts.work-makastel]
 # env = { CODEX_HOME = "~/.codex-ncsu" }
-# routing = { sort = ["codex-work-makastel"], plan = ["codex-high-work-makastel"], build = ["codex-work-makastel", "codex-high-work-makastel"] }
+# routing = { build = ["codex-work-makastel", "codex-high-work-makastel"] }
 # [platforms.codex-work-makastel]
 # from = "codex"
 # account = "work-makastel"
@@ -121,6 +122,10 @@ verify = "python3 -m unittest discover -s tests"
 # example codex-low-work-gpt1 and codex-low-work-makastel.
 # A multi-account project's priority route can then place codex-work-gpt1
 # before codex-work-makastel and both before claude, with separate quota probes.
+# Repository changes never rewrite the daemon's operator-owned
+# ~/.mahler/config.toml. Activate a new login by adding its account, platforms,
+# and project route there, then run `mahler usage --probe`. Capacity shows one
+# row per quota group, so high/low siblings appear under their base login row.
 #
 # [projects.acme]
 # enabled = true
