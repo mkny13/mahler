@@ -24,6 +24,18 @@ verify = "python3 -m unittest discover -s tests"
 # account_mode = "priority"
 # routing = { build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
 
+# A Vite app deployed by GitHub Pages can use its production build for both
+# verification levels. This is the checked, non-secret shape audited for
+# puppy-growth-chart; replace both paths with this machine's checkout roots.
+# [projects.puppy-growth-chart]
+# enabled = true
+# repo = "mkny13/puppy-growth-chart"
+# path = "/absolute/path/to/puppy-growth-chart"
+# worktree_root = "/absolute/path/to/.mahler-worktrees"
+# max_parallel = 1
+# verify = "npm ci && npm run build"
+# account = "personal"
+
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
 # public key on the Mini and accept its host key before enabling the daemon.

@@ -296,7 +296,15 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
   - confirm no external agent dispatcher targets the project
 - [ ] Onboard in this order:
   1. **mental-jukebox** — original candidate
-  2. **puppy-growth-chart** — original candidate
+  2. **puppy-growth-chart** — onboarding audit complete; repository-side policy is tracked
+     in [puppy-growth-chart#4](https://github.com/mkny13/puppy-growth-chart/issues/4):
+     - existing Pages CI already runs the audited `npm ci && npm run build` verify command
+     - `data/weights.json` is the only persistent app store and is versioned in Git; the
+       Cloudflare Worker writes it through GitHub's Contents API
+     - there is no open TASKS/ROADMAP/UAT backlog to migrate; the existing TASKS entry is a
+       closed legacy-dispatch audit
+     - live enablement waits for the repository contract and the public-Pages/privacy policy
+       reconciliation; the retired ThreadBar process was still running at this audit
   3. **movebreak** — original candidate
   4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
      - single release channel / staging sync backend status not confirmed from this review
