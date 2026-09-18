@@ -295,7 +295,18 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
   - data inventory + first restore drill
   - confirm no external agent dispatcher targets the project
 - [ ] Onboard in this order:
-  1. **mental-jukebox** — original candidate
+  1. **mental-jukebox** — onboarding audit complete; repository-side policy is tracked
+     in [mental-jukebox#3](https://github.com/mkny13/mental-jukebox/issues/3):
+     - the private repo has the complete Mahler label taxonomy, but its default branch
+       must be normalized to `main` before Mahler creates worktrees
+     - production state is local `cache.sqlite`, `config.ini`, and
+       `spotify_token.json`; agent verification must be credential-free and must not
+       touch those files, the installed app, or the live Spotify playlist
+     - all PLAN milestones are complete and TASKS contains only a legacy-dispatch log,
+       so there is no open TASKS/PLAN/UAT backlog to migrate
+     - live enablement waits for the repository contract and verifier; the retired
+       ThreadBar process is still running and ROADMAP records mental-jukebox as an
+       explicit entry in the legacy dispatcher configuration
   2. **puppy-growth-chart** — original candidate
   3. **movebreak** — original candidate
   4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:

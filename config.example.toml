@@ -24,6 +24,19 @@ verify = "python3 -m unittest discover -s tests"
 # account_mode = "priority"
 # routing = { build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
 
+# A local Python app with an XcodeGen menu-bar wrapper needs a credential-free
+# verifier: agent worktrees must never inherit the primary checkout's Spotify /
+# Last.fm credentials, OAuth token, or SQLite state.  This is the staged shape
+# for mental-jukebox after mkny13/mental-jukebox#3 adds scripts/verify.sh.
+# [projects.mental-jukebox]
+# enabled = true
+# repo = "mkny13/mental-jukebox"
+# path = "/absolute/path/to/mental-jukebox"
+# worktree_root = "/absolute/path/to/.mahler-worktrees"
+# max_parallel = 1
+# verify = "./scripts/verify.sh"
+# account = "personal"
+
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
 # public key on the Mini and accept its host key before enabling the daemon.
