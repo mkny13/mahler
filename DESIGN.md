@@ -1092,7 +1092,8 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   pool D23's burst favors), and spends the first with headroom — a fallback chain, not a merged
   pool. Updated 2026-09-14 (mahler#209): that default under-serves a project that's genuinely
   dual-use rather than personal-with-a-work-fallback — mahler's own personal build list has
-  ten platforms, so `work` was essentially never tried even with `codex-work`/`copilot-work`
+  ten platforms, so `work` was essentially never tried even with
+  `codex-work-gpt1`/`copilot-work`
   idle and fully quota'd. `account_mode = "equal"` opts a project into round-robin merging
   each account's candidate list instead (first candidate from the first account, then the
   second account, then the first account's second candidate, and so on) and picking once
@@ -1104,11 +1105,18 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   declared accounts. This covers intentionally asymmetric pools—for example, exhaust one
   ChatGPT login, then try a second login after the commodity builders but before Claude—that
   neither account fallback nor round-robin can express. Every route entry must spend a declared
-  account, so the D25 credential boundary remains unchanged.
+  account, so the D25 credential boundary remains unchanged. Each role is independent: a role
+  omitted from a priority project's routing table has no candidates.
   Account-specific Codex platform names put the model variant first and the login identity last:
   `codex-work-gpt1` / `codex-work-makastel`, `codex-high-work-gpt1` /
   `codex-high-work-makastel`, and likewise for any `codex-low-*` siblings. The suffix therefore
   identifies the quota pool consistently without hiding the variant used for routing.
+- **Activation remains operator state.** Merging account support or updating
+  `config.example.toml` never rewrites the daemon's live `~/.mahler/config.toml`. The operator
+  adds the account, inherited platforms, and project routes there, then runs
+  `mahler usage --probe` to verify both credential isolation and a fresh reading. The console's
+  Capacity view renders one row per quota group, so `codex-high-*` and `codex-low-*` siblings
+  intentionally consolidate under their base login row rather than appearing as extra accounts.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the
