@@ -723,7 +723,7 @@ def gh_account_of(conf):
     return conf.get("gh_account") or accounts_of(conf)[0]
 
 
-ACCOUNT_MODES = ("order", "equal")
+ACCOUNT_MODES = ("order", "equal", "priority")
 
 
 def account_mode_of(conf):
@@ -731,10 +731,10 @@ def account_mode_of(conf):
 
     "order" (default) tries them in declared order, spending the first with
     headroom — a fallback chain. "equal" merges every account's candidate
-    list round-robin instead, so a genuinely dual-use project (e.g. mahler
-    itself) doesn't exhaust one account's whole list before an idle other
-    account is ever tried; it expresses whose quota gets spent, not which
-    account gets tried first.
+    list round-robin instead, so a genuinely dual-use project doesn't exhaust
+    one account's whole list before an idle other account is ever tried.
+    "priority" follows the project's own routing table as one exact order
+    across all declared accounts; account membership is still enforced.
     """
     mode = conf.get("account_mode", "order")
     if mode not in ACCOUNT_MODES:
@@ -758,6 +758,25 @@ def validate_accounts(cfg):
         if "account_mode" in proj and proj["account_mode"] not in ACCOUNT_MODES:
             raise ValueError(f"project {name!r}: account_mode must be one of "
                              f"{ACCOUNT_MODES} (DESIGN D26)")
+        if proj.get("account_mode") == "priority":
+            routing = proj.get("routing")
+            if not isinstance(routing, dict) or not routing:
+                raise ValueError(f"project {name!r}: account_mode = 'priority' "
+                                 "requires a project routing table (DESIGN D26)")
+            declared = set(accounts_of(proj))
+            for role, route in routing.items():
+                if role not in SETTING_ROLES or not isinstance(route, list) or not route:
+                    raise ValueError(f"project {name!r}: priority routing {role!r} "
+                                     "must be a non-empty platform list")
+                for platform in route:
+                    pconf = cfg.get("platforms", {}).get(platform)
+                    if not isinstance(platform, str) or pconf is None:
+                        raise ValueError(f"project {name!r}: priority routing names "
+                                         f"unknown platform {platform!r}")
+                    if account_of(pconf) not in declared:
+                        raise ValueError(f"project {name!r}: priority routing platform "
+                                         f"{platform!r} spends undeclared account "
+                                         f"{account_of(pconf)!r}")
 
 
 def run_env(cfg, account, base=None):

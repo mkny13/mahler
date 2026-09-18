@@ -413,6 +413,27 @@ def candidates_for_accounts(cfg, role, accounts, pin=None, burst_lines=None):
     return merged
 
 
+def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=None):
+    """An exact project route spanning its declared accounts (D26 priority mode).
+
+    Unlike equal mode this does not merge account routes.  The project route is
+    already the operator's complete preference order.  Filtering by account
+    membership here preserves D25's credential boundary even if this helper is
+    called with unvalidated in-memory config.
+    """
+    if pin:
+        order = [pin]
+    else:
+        order = routing.get(role) or routing.get("build") or []
+    if not pin and burst_lines and role == "build":
+        bursting = [n for n in order
+                    if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]
+        order = bursting + [n for n in order if n not in bursting]
+    allowed = set(accounts)
+    return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")
+            and account_of(cfg["platforms"][n]) in allowed]
+
+
 def tier_of(pconf):
     return pconf.get("tier", 1)
 
@@ -437,7 +458,7 @@ def risk_min_tier(text):
 
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
-         account=DEFAULT_ACCOUNT, min_tier=0, accounts=None):
+         account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -449,8 +470,8 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     Claude runs are unaffected — this only gates new starts.
 
     `accounts`, when given, routes across several accounts at once (DESIGN
-    D26 "equal" mode): candidates are the round-robin merge of each account's
-    own list, rather than the single `account`'s list.
+    D26). Equal mode supplies their round-robin merge; priority mode supplies
+    `candidate_order`, the project's exact cross-account route.
     """
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
@@ -459,8 +480,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         reasons.append(f"{pin}: pinned, but it spends the "
                        f"{account_of(cfg['platforms'][pin])} account, not {target}")
     peak_active, peak_until = peak_state(cfg, led)
-    cand = (candidates_for_accounts(cfg, role, accts, pin, burst_lines) if accounts is not None
-            else candidates(cfg, role, pin, burst_lines, account))
+    cand = (candidate_order if candidate_order is not None else
+            candidates_for_accounts(cfg, role, accts, pin, burst_lines)
+            if accounts is not None else candidates(cfg, role, pin, burst_lines, account))
     for name in cand:
         if name in busy:
             reasons.append(f"{name}: busy")
@@ -503,13 +525,19 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
 
     Default ("order"): tries each account in turn, spending the first with
     headroom — reasons pool across the misses. "equal": merges every
-    account's candidates round-robin and picks once, so a dual-use project
-    doesn't exhaust one account before an idle other one is ever tried.
+    account's candidates round-robin. "priority": follows the project's own
+    routing table as one exact cross-account order.
     """
     accts = accounts_of(pol)
-    if account_mode_of(pol) == "equal":
+    mode = account_mode_of(pol)
+    if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
                     min_tier=min_tier, accounts=accts)
+    if mode == "priority":
+        order = candidates_for_priority(
+            cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
+        return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
+                    min_tier=min_tier, accounts=accts, candidate_order=order)
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,

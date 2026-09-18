@@ -452,8 +452,8 @@ def schedule(ctx, projects):
             if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
                 effective_size = "m"
 
-            # D26: route within the project's declared accounts, in order by
-            # default or merged round-robin for account_mode = "equal".
+            # D26: route within the project's declared accounts: fallback
+            # order, equal round-robin, or an explicit cross-account priority.
             platform, reasons = router.pick_for_project(
                 cfg, led, p, routing_role, pin, busy, size=effective_size,
                 burst_lines=burst_lines, min_tier=effective_min_tier)

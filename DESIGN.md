@@ -1099,6 +1099,16 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   across the merge — each account's own preference order is preserved, but neither account is
   favored over the other. This is scoped to an explicit opt-in per project: it changes nothing
   for a project that doesn't set it, and nothing for a project with a single `account`.
+  Updated 2026-09-18 (mahler#383): `account_mode = "priority"` is the third, explicit mode.
+  It treats the project's own `routing` table as one exact platform order across all its
+  declared accounts. This covers intentionally asymmetric pools—for example, exhaust one
+  ChatGPT login, then try a second login after the commodity builders but before Claude—that
+  neither account fallback nor round-robin can express. Every route entry must spend a declared
+  account, so the D25 credential boundary remains unchanged.
+  Account-specific Codex platform names put the model variant first and the login identity last:
+  `codex-work-gpt1` / `codex-work-makastel`, `codex-high-work-gpt1` /
+  `codex-high-work-makastel`, and likewise for any `codex-low-*` siblings. The suffix therefore
+  identifies the quota pool consistently without hiding the variant used for routing.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the
@@ -1110,8 +1120,9 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   (default personal) says which login the conductor uses for that project's sync, PRs, merges
   and comments. Mahler's own repo is already reachable from Mike's personal GitHub, so it needs
   no override even though it spends two compute accounts.
-- Only `mahler` sets `accounts = ["personal", "work"]`. Nothing else changes: a project that
-  still names a single `account` keeps D25's exact behaviour, unchanged.
+- Mahler is the deliberate multi-account project; it may list every compute login it is allowed
+  to spend. Nothing else changes: a project that still names a single `account` keeps D25's
+  exact behaviour, unchanged.
 
 ### D27 — The operator console: server-rendered, standard library, writes through the tick
 
