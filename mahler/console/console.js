@@ -16,7 +16,7 @@
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
   var openRelease = null;       // the project whose release preview is open (mahler#359)
   var openCapture = false;
-  var suppressKeep = null;      // a data-keep key to drop on the next restore (mahler#251)
+  var suppressKeep = [];        // data-keep keys to drop on the next restore (mahler#251)
   var errorToastTimer = null;   // timer for auto-dismissing error toast
   var settingsDirty = false;    // never poll-refresh an unsaved settings form
 
@@ -232,7 +232,7 @@
     var toast = document.getElementById("error-toast");
     if (toast) { toast.remove(); }
     var skip = suppressKeep;
-    suppressKeep = null;
+    suppressKeep = [];
     return fetch(statsUrl(), { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
@@ -241,11 +241,12 @@
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) {
         var k = inputs[i].getAttribute("data-keep");
-        if (inputs[i].value && k !== skip) { keep[k] = inputs[i].value; }
+        if (inputs[i].value && skip.indexOf(k) === -1) { keep[k] = inputs[i].value; }
       }
       // Both layouts carry the same key; the active draft wins over its hidden twin.
       var focused = document.activeElement;
-      if (focused && focused.hasAttribute("data-keep") && focused.getAttribute("data-keep") !== skip) {
+      if (focused && focused.hasAttribute("data-keep") &&
+          skip.indexOf(focused.getAttribute("data-keep")) === -1) {
         keep[focused.getAttribute("data-keep")] = focused.value;
       }
       app.innerHTML = html;
@@ -314,7 +315,8 @@
         showErrorToast(res.error || "The action was refused or failed.");
         if (action === "settings") { return; }
       } else if (action === "capture") {
-        suppressKeep = "capture";   // clear the draft on the next restore, keep the project
+        // Clear every part of the composer on the next restore, but keep the project.
+        suppressKeep = ["capture", "capture_att_id", "capture_att_name"];
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
         openCapture = false;
       } else if (action === "cut_release") {
