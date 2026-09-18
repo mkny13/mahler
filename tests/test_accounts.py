@@ -441,12 +441,24 @@ class MultiAccountTests(unittest.TestCase):
         self.cfg["platforms"]["codex-work-gpt1"] = {
             "from": "codex", "account": "work",
         }
+        self.cfg["platforms"]["codex-high-work-gpt1"] = {
+            "from": "codex-high", "account": "work",
+        }
+        self.cfg["platforms"]["codex-low-work-gpt1"] = {
+            "from": "codex", "account": "work", "model": "low",
+        }
         self.cfg["accounts"]["work-makastel"] = {
             "env": {"CODEX_HOME": "~/.codex-ncsu"},
             "routing": {"build": ["codex-work-makastel"]},
         }
         self.cfg["platforms"]["codex-work-makastel"] = {
             "from": "codex", "account": "work-makastel",
+        }
+        self.cfg["platforms"]["codex-high-work-makastel"] = {
+            "from": "codex-high", "account": "work-makastel",
+        }
+        self.cfg["platforms"]["codex-low-work-makastel"] = {
+            "from": "codex", "account": "work-makastel", "model": "low",
         }
         self.cfg = config.resolve_platforms(self.cfg)
         self.cfg["projects"]["both"].update({
@@ -466,6 +478,12 @@ class MultiAccountTests(unittest.TestCase):
                          "codex@work")
         self.assertEqual(self.cfg["platforms"]["codex-work-makastel"]["quota_group"],
                          "codex@work-makastel")
+        for suffix, quota_group in (("work-gpt1", "codex@work"),
+                                    ("work-makastel", "codex@work-makastel")):
+            self.assertEqual(self.cfg["platforms"][f"codex-high-{suffix}"]["quota_group"],
+                             quota_group)
+            self.assertEqual(self.cfg["platforms"][f"codex-low-{suffix}"]["quota_group"],
+                             quota_group)
 
     def test_priority_mode_uses_later_platform_when_preferred_account_is_spent(self):
         self.cfg["projects"]["both"].update({

@@ -105,6 +105,8 @@ verify = "python3 -m unittest discover -s tests"
 # [platforms.codex-high-work-makastel]
 # from = "codex-high"
 # account = "work-makastel"
+# Any additional variants keep the same suffix after the variant name, for
+# example codex-low-work-gpt1 and codex-low-work-makastel.
 # A multi-account project's priority route can then place codex-work-gpt1
 # before codex-work-makastel and both before claude, with separate quota probes.
 #

@@ -1105,6 +1105,10 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   ChatGPT login, then try a second login after the commodity builders but before Claude—that
   neither account fallback nor round-robin can express. Every route entry must spend a declared
   account, so the D25 credential boundary remains unchanged.
+  Account-specific Codex platform names put the model variant first and the login identity last:
+  `codex-work-gpt1` / `codex-work-makastel`, `codex-high-work-gpt1` /
+  `codex-high-work-makastel`, and likewise for any `codex-low-*` siblings. The suffix therefore
+  identifies the quota pool consistently without hiding the variant used for routing.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the
