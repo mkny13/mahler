@@ -301,31 +301,32 @@ config.
   - CLAUDE.md/AGENTS.md section
   - data inventory + first restore drill
   - confirm no external agent dispatcher targets the project
-- [ ] Onboard in this order:
-  1. **mental-jukebox** — original candidate
-  2. **puppy-growth-chart** — original candidate
-  3. [x] **movebreak** — already enabled and proven before the formal onboarding audit:
-     - live policy uses `./scripts/build_app.sh`, isolated Mahler worktrees,
-       `max_parallel = 1`, and the declared personal/work compute accounts
-     - the complete Mahler label set exists and agent-built PRs have repeatedly passed CI
-       and merged; the original ROADMAP work and issue backlog are complete
-     - repository-side policy reconciliation is tracked in movebreak#70
-  4. [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
-     - single release channel / staging sync backend status not confirmed from this review
-     - `gated` status not confirmed
-     - local Xcode/Gradle verify with canary checks: `canary` referenced in DESIGN D-table
-       and ROADMAP's own onboarding checklist above, not independently verified here
-  5. [x] **Hockey Draft Copilot** — added outside the original sequence as project `hockey`:
-     - live repo is `mkny13/hockey-draft-copilot`; the separate `mkny13/olympic_hockey`
-       checkout is not managed by Mahler
-     - live verification is `npm test`, with `max_parallel = 1`
-     - both agent-instruction files exist; the full `project.toml`, data, release, and restore
-       checklist has not been reconciled in this review
-  6. [x] **Sit Stand Walk** — added outside the original sequence as `sit-stand-walk`:
-     - live repo is `makastel_ncstate/sit-stand-walk`, using `./test.sh` for verification
-     - both agent-instruction files exist; the full `project.toml`, data, release, and restore
-       checklist has not been reconciled in this review
-  7. Non-git projects, as you choose to activate them
+- [ ] Decide whether to onboard the remaining original candidates:
+  - [ ] **mental-jukebox**
+  - [ ] **puppy-growth-chart**
+  - [ ] Other non-git projects, as you choose to activate them
+- **Enabled rollout record (not a remaining order):**
+  - [x] **movebreak** — already enabled and proven before the formal onboarding audit:
+    - live policy uses `./scripts/build_app.sh`, isolated Mahler worktrees,
+      `max_parallel = 1`, and the declared personal/work compute accounts
+    - the complete Mahler label set exists and agent-built PRs have repeatedly passed CI
+      and merged; the original ROADMAP work and issue backlog are complete
+    - repository-side policy reconciliation is tracked in movebreak#70
+  - [x] **phish-in-app / Couch Tour** — onboarded and running, out of the planned order:
+    - single release channel / staging sync backend status not confirmed from this review
+    - `gated` status not confirmed
+    - local Xcode/Gradle verify with canary checks: `canary` referenced in DESIGN D-table
+      and ROADMAP's own onboarding checklist above, not independently verified here
+  - [x] **Hockey Draft Copilot** — added outside the original sequence as project `hockey`:
+    - live repo is `mkny13/hockey-draft-copilot`; the separate `mkny13/olympic_hockey`
+      checkout is not managed by Mahler
+    - live verification is `npm test`, with `max_parallel = 1`
+    - both agent-instruction files exist; the full `project.toml`, data, release, and restore
+      checklist has not been reconciled in this review
+  - [x] **Sit Stand Walk** — added outside the original sequence as `sit-stand-walk`:
+    - live repo is `makastel_ncstate/sit-stand-walk`, using `./test.sh` for verification
+    - both agent-instruction files exist; the full `project.toml`, data, release, and restore
+      checklist has not been reconciled in this review
 - [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
 - [x] **Retire the legacy agent dispatchers.** The owner unloaded
       `com.mike.dispatch` on 2026-09-16; `dispatch.py`, the legacy `thread.py` runtime,
