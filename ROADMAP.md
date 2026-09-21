@@ -22,16 +22,20 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 ---
 
-## Current state (2026-09-16)
+## Current state (2026-09-21)
 
 Phases 0, B and 1 are done and the project has been running past the original phase
 sequence for a while — the day-to-day reality no longer matches "one phase at a time,"
 so this section says where things actually stand; the phase list below stays as the
 detailed record.
 
-- **Multiple projects are self-managed** by the same 60-second launchd tick, including
-  Mahler itself. The full isolated unit suite and randomized-order runner are the release
-  contract; avoid embedding a test count here because it changes almost daily.
+- **Six projects are enabled on the primary Mac mini** under the same 60-second launchd tick:
+  `groundwork` (`mkny13/groundwork`), `hockey` (`mkny13/hockey-draft-copilot`), `mahler`,
+  `movebreak`, `phish-in` (`mkny13/couch-tour`), and `sit-stand-walk`
+  (`makastel_ncstate/sit-stand-walk`). This is a dated inventory snapshot; the operator's
+  `~/.mahler/config.toml` remains authoritative. The full isolated unit suite and
+  randomized-order runner are Mahler's release contract; avoid embedding a test count here
+  because it changes almost daily.
 - **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
   as any managed project, with CI-gated self-update and rollback.
 - **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
@@ -49,10 +53,11 @@ detailed record.
     a deduplicated high-priority ntfy alert when Codex quota is exhausted during probe
     refreshes (cleared upon recovery; prompts to reset in ChatGPT if reset credits exist)
   - the rest of the MCP tool set and app-embedded UAT surfaces remain queued, not dropped
-- **Onboarding order diverged from the Phase 5 plan.** Couch Tour went live before the
-  projects originally listed ahead of it. The operator's `~/.mahler/config.toml`, not this
-  repository, is authoritative for which projects are enabled now; Phase 5 preserves the
-  intended/historical order rather than pretending to be live inventory.
+- **Onboarding order diverged from the Phase 5 plan.** Couch Tour and Movebreak went live,
+  and Hockey Draft Copilot and Sit Stand Walk joined even though they were not in the original
+  sequence. `mental-jukebox` and `puppy-growth-chart` remain candidates rather than enabled
+  projects. Phase 5 preserves the intended/historical order and records the out-of-plan
+  additions; it is not the live authority.
 - **Maintenance is steady-state work.** Manual-audit deduplication (mahler#204), periodic
   platform capability review (mahler#206), and platform × role × size estimates
   (mahler#207) have shipped. Periodic documentation accuracy/onboarding review was added in
@@ -279,15 +284,17 @@ store.
 
 ## Phase 5 — Cutover and rollout
 
-**Status: reordered by reality.** Couch Tour (phish-in-app) went live ahead of the
-original sequence. Current enablement is machine state in `~/.mahler/config.toml`; the
-unchecked entries below are remaining roadmap candidates, not a claim about live config.
+**Status: reordered by reality.** The primary Mac mini currently enables `mahler`,
+`groundwork`, `movebreak`, `phish-in`, `hockey`, and `sit-stand-walk`. Current enablement is
+machine state in `~/.mahler/config.toml`; this dated list only makes the rollout history
+legible. Unchecked project entries below are remaining candidates, not a claim about live
+config.
 
 - [ ] **Mahler-native anomaly sensor:** useful legacy `thread` flags become `type:anomaly`
       issues. The retired `~/ai-tools/thread.py` is not run or imported; the native sensor
       must ignore `origin/mahler/*` and Mahler worktree roots (DESIGN D2).
 - [ ] Per-project onboarding checklist, run by an agent:
-  - private GitHub repo
+  - GitHub repo, with its public/private visibility chosen deliberately
   - labels
   - `project.toml` (verify, data, release, environments, canary)
   - backlog migration
@@ -308,7 +315,17 @@ unchecked entries below are remaining roadmap candidates, not a claim about live
      - `gated` status not confirmed
      - local Xcode/Gradle verify with canary checks: `canary` referenced in DESIGN D-table
        and ROADMAP's own onboarding checklist above, not independently verified here
-  5. Non-git projects, as you choose to activate them
+  5. [x] **Hockey Draft Copilot** — added outside the original sequence as project `hockey`:
+     - live repo is `mkny13/hockey-draft-copilot`; the separate `mkny13/olympic_hockey`
+       checkout is not managed by Mahler
+     - live verification is `npm test`, with `max_parallel = 1`
+     - both agent-instruction files exist; the full `project.toml`, data, release, and restore
+       checklist has not been reconciled in this review
+  6. [x] **Sit Stand Walk** — added outside the original sequence as `sit-stand-walk`:
+     - live repo is `makastel_ncstate/sit-stand-walk`, using `./test.sh` for verification
+     - both agent-instruction files exist; the full `project.toml`, data, release, and restore
+       checklist has not been reconciled in this review
+  7. Non-git projects, as you choose to activate them
 - [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
 - [x] **Retire the legacy agent dispatchers.** The owner unloaded
       `com.mike.dispatch` on 2026-09-16; `dispatch.py`, the legacy `thread.py` runtime,

@@ -201,11 +201,14 @@ All of it is glue between adopted parts.
   items) · Context · Out of scope.*
 - **Project goals and vision** stay in-repo (`ROADMAP.md` top section, or `PROJECT.md`) so every
   run reads them. The "suggested build order" is migrated into issue priority.
-- **Scope**: a project joins Mahler only when it has a private GitHub repo (this also fixes its
-  backup story). Non-git folders (`Fantasy Sports`, `MTG`, …) get `git init` plus a private repo
-  when onboarded, not before. `olympic_hockey` is deliberately unpushed, so it stays out of
-  scope. The sensor still watches it. `mcp-phish` (read-only upstream) is permanently excluded,
-  as in dispatch.
+- **Scope**: a project joins Mahler only when it has a GitHub repo and an enabled entry in the
+  operator's `~/.mahler/config.toml`; repository visibility is the operator's choice. GitHub
+  provides the issue backlog and an off-machine copy of the code, but private visibility is not
+  an onboarding invariant — several enabled personal projects are public. Non-git folders
+  (`Fantasy Sports`, `MTG`, …) get `git init` plus a repo when onboarded, not before.
+  `olympic_hockey` now has a public GitHub repo but remains out of scope because it is not in the
+  live config; the separately enabled `hockey` project is `mkny13/hockey-draft-copilot`.
+  `mcp-phish` (read-only upstream) is permanently excluded, as in dispatch.
 - **Migration**: onboarding converts open TASKS.md Now/Next items, ROADMAP build-order
   entries, open UAT `[!]` items and Cline Kanban cards into issues. Then it writes a
   "Backlog moved to GitHub Issues" note into TASKS.md and CLAUDE.md.
