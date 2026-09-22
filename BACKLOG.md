@@ -15,9 +15,16 @@ Open questions, resolved so far (2026-09-21):
   (ROADMAP Phase 7).
 - ~~Output shape~~ — resolved: findings feed back as a fix round (ROADMAP
   Phase 7).
-- **Still open: how this composes with existing single-agent review flows**
-  (avoid double work / conflicting verdicts). Possibly being worked out in
-  another session as of 2026-09-21 — check for updates before re-deriving.
+- ~~How this composes with existing single-agent review flows~~ — resolved:
+  it's the same D11 "review by a different platform" step, not a second
+  parallel flow. "Adversarial" describes the *framing* of that one review
+  (instructed to disprove/red-team, per the best-practice notes below) —
+  there is still exactly one reviewer per item, so there's no double review
+  pass and no verdicts to reconcile between reviewers. This also follows
+  from the debate-amplifies-bias note below: two agents arguing would be the
+  failure mode, not the design. A finding the builder disagrees with is
+  handled the already-resolved way — it feeds back as a fix round to the
+  same build agent, per "output shape" above, not a debate with the reviewer.
 
 Best-practice notes from research (2026-09-21), to apply when this is designed:
 - **Structural separation, not just prompting.** A same-model reviewer (even in
