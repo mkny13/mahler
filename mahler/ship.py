@@ -22,6 +22,46 @@ def ship(ctx, projects):
             _ship_project(ctx, p["name"])
         except Exception as e:                  # noqa: BLE001 — a tick must not break
             ctx.say(f"{p['name']}: ship pass failed — {e}")
+        try:
+            _unowned_prs(ctx, p["name"])
+        except Exception as e:                  # noqa: BLE001 — a tick must not break
+            ctx.say(f"{p['name']}: unowned-PR check failed — {e}")
+
+
+UNOWNED_SCAN_MINUTES = 15
+_BOT_BRANCHES = ("dependabot/", "renovate/")
+
+
+def _unowned_prs(ctx, project):
+    """Ping once for each open PR no item tracks (mahler#407). Sessions that
+    open a PR and neither merge it nor `mahler ship` it leave it open, and
+    nothing here would otherwise notice: the ship pass only watches items a
+    build (or `mahler ship`) put in `verifying`. Checked every 15 min, and
+    only for PRs older than `unowned_pr_hours` (default 2)."""
+    if ctx.dry_run:
+        return
+    led = ctx.led
+    key = f"unowned-scan:{project}"
+    last = led.get_kv(key)
+    if last and led.now() - parse(last) < timedelta(minutes=UNOWNED_SCAN_MINUTES):
+        return
+    led.set_kv(key, iso(led.now()))
+    hours = ctx.policy(project).get("unowned_pr_hours", 2)
+    tracked = {it["pr"] for it in led.items(project) if it["pr"]}
+    for pr in ctx.gh(project).open_prs():
+        n = pr["number"]
+        if (n in tracked or pr.get("isDraft")
+                or (pr.get("headRefName") or "").startswith(_BOT_BRANCHES)
+                or led.now() - parse(pr["createdAt"]) < timedelta(hours=hours)
+                or led.get_kv(f"unowned:{project}#{n}")):
+            continue
+        led.set_kv(f"unowned:{project}#{n}", iso(led.now()))
+        led.event("unowned_pr", project, None, {"pr": n, "branch": pr.get("headRefName")})
+        ctx.ping(f"PR nobody is shipping — {project} PR #{n}",
+                 f"“{pr.get('title', '')}” has been open {hours}h+ and no item tracks it. "
+                 f"Merge it, close it, or `mahler ship {project}#<issue> --pr {n}`.",
+                 tags="hourglass")
+        ctx.say(f"{project}: PR #{n} is open with no item tracking it — pinged")
 
 
 def _ship_project(ctx, project):

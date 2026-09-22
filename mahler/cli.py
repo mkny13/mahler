@@ -1,14 +1,16 @@
 """`mahler` — the command line for the daemon, for you, and for agents.
 
 Interactive sessions (any platform) take part in the lease protocol through
-`mahler claim / heartbeat / release`; runs fence their pushes and merges with
-`mahler lease-check` (DESIGN D6).
+`mahler claim / heartbeat / release`, and hand finished work to the conductor
+with `mahler ship`; runs fence their pushes and merges with
+`mahler lease-check` (DESIGN D6, D18).
 """
 
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import timedelta
 
@@ -216,6 +218,8 @@ def main():
                   'project right now. Work in your own worktree, not by switching branches '
                   'in the shared checkout (see CLAUDE.md).')
         print('If you work on a backlog item, claim it with `mahler claim {project}#N`.')
+        print('When it is pushed, finish with `mahler ship {project}#N [--pr X]` (the conductor '
+              'merges on green) or merge it yourself. Nothing picks up a PR you leave open.')
     except Exception:
         pass
 
@@ -422,6 +426,85 @@ def cmd_heartbeat(a, cfg, led):
                                      pol["interactive_lease_minutes"])
     print("renewed" if ok else "you don't hold this item (any more)")
     return 0 if ok else 1
+
+
+def _current_branch():
+    try:
+        r = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                           capture_output=True, text=True, timeout=30)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    b = r.stdout.strip()
+    return b if r.returncode == 0 and b and b != "HEAD" else None
+
+
+def _links_issue(body, n):
+    """Does the PR body close issue #n on merge?"""
+    return re.search(rf"(?im)\b(fix(es|ed)?|close[sd]?|resolve[sd]?)\s+#{n}\b",
+                     body or "") is not None
+
+
+def cmd_ship(a, cfg, led):
+    """Hand a session's pushed work to the conductor (mahler#407, D18 for
+    sessions). The item goes to `verifying` with its PR (or branch) recorded
+    and the session's lease released. From the next tick the ship pass
+    watches CI and merges, exactly as it does after a build run. Before this,
+    a session's PR sat open until someone merged it by hand."""
+    project, n = a.item
+    pol = config.project_policy(cfg, project)
+    if not pol.get("repo"):
+        print(f"unknown project {project!r}")
+        return 1
+    holder = f"interactive:{a.holder}"
+    cur = led.lease(project, n)
+    if cur and cur["holder"] != holder and not cur["holder"].endswith(f"/{holder}"):
+        print(f"{project}#{n} is held by {cur['holder']}, not you — "
+              f"`mahler claim {project}#{n}` first")
+        return 1
+    item = led.item(project, n)
+    if item and item["state"] == "done":
+        print(f"{project}#{n} is already done")
+        return 1
+    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    pr, branch, title = a.pr, a.branch, (item["title"] if item else None)
+    try:
+        if pr is None:
+            branch = branch or _current_branch()
+            if not branch:
+                print("no --pr or --branch, and not on a branch here")
+                return 1
+            pr = gh.pr_for_head(branch)
+        if pr is not None:
+            view = gh.pr_view(pr)
+            if view["state"] != "OPEN":
+                print(f"PR #{pr} is {view['state'].lower()} — nothing to ship")
+                return 1
+            if not _links_issue(view.get("body"), n):
+                # The conductor's own PRs say `Fixes #N`; without it the merge
+                # would leave the issue open behind a done item.
+                gh.pr_edit_body(pr, f"Fixes #{n}\n\n{view.get('body') or ''}")
+            branch = view.get("headRefName") or branch
+            title = title or view.get("title")
+        else:
+            r = subprocess.run(["git", "-C", pol["path"], "ls-remote", "--exit-code",
+                                "origin", f"refs/heads/{branch}"],
+                               capture_output=True, text=True, timeout=90)
+            if r.returncode != 0:
+                print(f"branch {branch!r} isn't on origin — push it first")
+                return 1
+    except (GHError, ValueError, subprocess.SubprocessError, OSError) as e:
+        print(f"mahler ship: {e}")
+        return 1
+    fields = {"branch": branch, "pr": pr, "title": title or f"{project} #{n}"}
+    if a.summary:
+        fields["summary"] = a.summary
+    led.upsert_item(project, n, **fields)
+    led.set_state(project, n, "verifying", f"handed to the conductor by {a.holder}")
+    if cur:
+        led.release(project, n, holder=holder, to_state=None)
+    what = f"PR #{pr}" if pr else f"branch {branch} (the conductor opens the PR)"
+    print(f"{project}#{n}: {what} handed to the conductor — it watches CI and merges on green.")
+    return 0
 
 
 def cmd_release(a, cfg, led):
@@ -738,6 +821,14 @@ def main(argv=None):
         if name == "claim":
             s.add_argument("--steal", action="store_true")
         s.set_defaults(fn=fn)
+
+    s = sub.add_parser("ship", help="hand your pushed branch or open PR to the conductor")
+    s.add_argument("item", type=ref, help="<project>#<issue>")
+    s.add_argument("--pr", type=int, help="the open PR (default: the one for --branch)")
+    s.add_argument("--branch", help="the pushed branch (default: the current one)")
+    s.add_argument("--summary", help="one line for the shipped comment")
+    s.add_argument("--as", dest="holder", default=default_holder())
+    s.set_defaults(fn=cmd_ship)
 
     s = sub.add_parser("release", help="preview or publish a project release, or give an item back")
     s.add_argument("target", help="<project> or <project>#<issue>")

@@ -813,6 +813,15 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   (D8) applies as before.
 - Shorter recipes also mean fewer tokens on every run, and a smaller surface for the model to
   lose track of.
+- **Sessions hand over too** (mahler#407, 2026-09-22). mahler#395 and groundwork#153 came
+  from interactive sessions (Claude Code and Codex) and sat open all day. Neither was
+  tracked by an item, so the ship pass never saw them. The docs made it worse: "push, the
+  conductor opens the PR" was meant for runs, but sessions read it too. Now
+  `mahler ship <project>#N [--pr X]` puts the item in `verifying` with its PR or branch
+  recorded, adds `Fixes #N` if it's missing, and releases the session's lease, so the
+  normal ship pass takes over. As a backstop, the ship pass pings once, every 15 min at
+  most, for any open PR at least `unowned_pr_hours` old (default 2) that no item tracks.
+  Drafts and bot branches are skipped.
 
 ### D19 — A change is in flight until it merges
 
