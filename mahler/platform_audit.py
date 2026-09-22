@@ -31,6 +31,7 @@ VERIFIED_RE = re.compile(r"verified[^.\n]{0,120}?(\d{4}-\d{2}-\d{2})", re.IGNORE
 # 1:1, so an alias list is needed to associate a "verified" mention with the
 # platform it's about.
 PLATFORM_ALIASES = {
+    "claude-low": ["claude code", "claude-low", "haiku"],
     "claude": ["claude code"],
     "claude-opus": ["claude code", "claude-opus"],
     "agy-claude": ["antigravity: claude", "agy-claude"],
@@ -39,6 +40,7 @@ PLATFORM_ALIASES = {
     "kilo": ["kilo"],
     "copilot": ["copilot cli", "copilot"],
     "copilot-high": ["copilot-high"],
+    "codex-low": ["codex cli", "codex-low", "gpt-5.6-luna"],
     "codex": ["codex cli", "codex"],
     "codex-high": ["codex-high"],
 }
