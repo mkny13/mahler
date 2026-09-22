@@ -218,6 +218,8 @@ def main():
                   'project right now. Work in your own worktree, not by switching branches '
                   'in the shared checkout (see CLAUDE.md).')
         print('If you work on a backlog item, claim it with `mahler claim {project}#N`.')
+        print('When it is pushed, finish with `mahler ship {project}#N [--pr X]` (the conductor '
+              'merges on green) or merge it yourself. Nothing picks up a PR you leave open.')
     except Exception:
         pass
 
