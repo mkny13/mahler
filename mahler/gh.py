@@ -276,7 +276,16 @@ class GH:
     def pr_view(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
-                                   "headRefOid,baseRefName,mergeCommit"))
+                                   "headRefOid,baseRefName,mergeCommit,title"))
+
+    def pr_edit_body(self, number, body):
+        self._gh("pr", "edit", str(number), "-R", self.repo, "--body-file", "-", input=body)
+
+    def open_prs(self, limit=50):
+        """Open PRs, for the unowned-PR check (mahler#407)."""
+        return json.loads(self._gh("pr", "list", "-R", self.repo, "--state", "open",
+                                   "--limit", str(limit), "--json",
+                                   "number,title,headRefName,createdAt,isDraft"))
 
     def pr_merge_info(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",

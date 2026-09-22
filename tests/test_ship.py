@@ -77,6 +77,11 @@ class FakeGH:
             body = gh_module.AGENT_NOTE + "\n" + body
         self.comments.append(body)
 
+    prs = ()
+
+    def open_prs(self):
+        return list(self.prs)
+
 
 class ShipTests(unittest.TestCase):
     def setUp(self):
@@ -736,6 +741,43 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")     # 5: retried next tick
         self.assertEqual(self.item(6)["state"], "done")         # 6: still shipped
         self.assertIn("PR lookup failed", " ".join(self.ctx.lines))
+
+    # ---------- open PRs no item tracks (mahler#407) ----------
+
+    def _open(self, n, hours_old, branch="review-gate", draft=False):
+        return {"number": n, "title": f"PR {n}", "headRefName": branch,
+                "createdAt": iso(NOW - timedelta(hours=hours_old)), "isDraft": draft}
+
+    def unowned_pings(self, ping):
+        return [c for c in ping.call_args_list if c[0][0].startswith("PR nobody is shipping")]
+
+    def test_old_untracked_pr_pings_once(self):
+        self.led.upsert_item("x", 5, state="done", pr=88)
+        self.gh.prs = [self._open(88, 5), self._open(395, 3)]
+        ping = self.ship()
+        pings = self.unowned_pings(ping)
+        self.assertEqual(len(pings), 1)
+        self.assertIn("PR #395", pings[0][0][0])
+        self.assertIn("mahler ship x#<issue> --pr 395", pings[0][0][1])
+        self.led.set_kv("unowned-scan:x", iso(NOW - timedelta(hours=1)))  # scan again
+        self.assertEqual(self.unowned_pings(self.ship()), [])            # ...no repeat
+
+    def test_young_draft_and_bot_prs_are_left_alone(self):
+        self.gh.prs = [self._open(1, 1), self._open(2, 5, draft=True),
+                       self._open(3, 5, branch="dependabot/pip/x")]
+        self.assertEqual(self.unowned_pings(self.ship()), [])
+
+    def test_scan_is_throttled(self):
+        self.gh.prs = [self._open(395, 3)]
+        self.led.set_kv("unowned-scan:x", iso(NOW - timedelta(minutes=5)))
+        self.assertEqual(self.unowned_pings(self.ship()), [])
+
+    def test_unowned_check_failure_does_not_break_the_ship_pass(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "open_prs", side_effect=gh_module.GHError("down")):
+            self.ship()
+        self.assertEqual(self.item()["state"], "done")
+        self.assertIn("unowned-PR check failed", " ".join(self.ctx.lines))
 
 
 class HelpersTests(unittest.TestCase):

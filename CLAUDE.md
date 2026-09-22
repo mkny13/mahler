@@ -6,10 +6,16 @@ across platforms. **Read [DESIGN.md](DESIGN.md) before changing behaviour** — 
 decision there has its reasoning; D18 — *agents build, the conductor ships* — decides how
 you end a task. [ROADMAP.md](ROADMAP.md) says what's next.
 
-The owner (Mike) is not a developer and doesn't review code. Work autonomously:
-implement, verify, commit and push to your branch, then end with a STATUS line — the
-conductor opens the PR, watches CI and merges (DESIGN D18). Stop only for decisions that
-are genuinely his (DESIGN D13).
+The owner (Mike) is not a developer and doesn't review code. Work autonomously, and stop
+only for decisions that are genuinely his (DESIGN D13). How you finish depends on what
+you are:
+
+- **A Mahler run** (your prompt came from a recipe, and `MAHLER_ISSUE` is set): implement,
+  verify, commit and push to your branch, then end with a STATUS line. The conductor opens
+  the PR, watches CI and merges (DESIGN D18).
+- **A chat session** (Claude Code, Codex or any other interactive agent): nothing picks up
+  your PR unless you hand it over. Finish with `mahler ship` or merge it yourself. See
+  "Working on an issue by hand" below. A PR you open and walk away from stays open.
 
 ## This repo manages itself
 
@@ -43,13 +49,27 @@ with `python3 tests/run_random.py <seed>` (omit the seed for a random one).
 
 ## Working on an issue by hand (interactive sessions)
 
-If you're a chat session, not a Mahler run, take part in the lease protocol (DESIGN D6):
+If you're a chat session, not a Mahler run, take part in the lease protocol (DESIGN D6).
+**Every change starts from an issue.** If there isn't one, file it (`mahler add mahler
+"title"`) before you write code. A PR with no issue is invisible to the conductor.
 
 ```bash
 mahler claim mahler#12        # before you start. If an agent held it, you win and it hands over
 mahler heartbeat mahler#12    # if you've been quiet a while (leases lapse after 30 min idle)
+mahler ship mahler#12         # when it's pushed: the conductor opens/watches the PR and merges it
 mahler release mahler#12      # when you stop without finishing
 ```
+
+**Finish every task one of two ways**, never by leaving a PR open:
+
+1. **`mahler ship <project>#N`** (the default). Run it after you push. It hands your
+   branch, or its open PR (`--pr X`), to the conductor, which watches CI, starts a fix run
+   if CI goes red, and squash-merges on green (D18). It adds `Fixes #N` to the PR if it's
+   missing, and releases your claim.
+2. **Merge it yourself**, following the protocol under "Before merging by hand" below.
+
+Use branch `mahler/<N>-short-slug` and put `Fixes #N` in the PR body. An open PR that no
+item tracks gets you a "PR nobody is shipping" ping after 2 hours.
 
 **Work in your own worktree, never by switching branches in `~/Mahler`.** Several sessions
 often share that checkout. A `git checkout` or `reset` there carries off or wipes whatever
