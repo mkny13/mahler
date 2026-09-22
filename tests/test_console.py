@@ -345,6 +345,59 @@ class QuotaTests(unittest.TestCase):
         self.assertTrue(line.startswith("2 of 3 platforms available — claude, agy-claude."), line)
         self.assertIn("kilo is backing off until", line)
 
+    def test_composite_estimate_mixed_windows_and_shared_pool(self):
+        cfg = {"platforms": {
+            "session": {"windows": ["5h"], "max_size": "m"},
+            "weekly": {"windows": ["weekly"], "max_size": "m"},
+            "weekly-high": {"windows": ["weekly"], "max_size": "m",
+                            "quota_group": "weekly", "soft": {"weekly": 40}},
+        }, "routing": {"build": ["session", "weekly", "weekly-high"]}}
+        led = make_led()
+        fresh(led, "session", "5h", 20)
+        for name in ("weekly", "weekly-high"):
+            fresh(led, name, "weekly", 50, resets_in=timedelta(days=6))
+        quota = state._quota(cfg, led, None)
+        self.assertEqual(len(quota), 2)
+        section, = state._capability_sections(quota)
+        self.assertEqual(section["size"], "medium")
+        self.assertEqual((section["available_count"], section["total_count"]), (2, 3))
+        self.assertEqual(section["composite_estimate"],
+                         "≈ 2 of 3 slots available (approx.)")
+        # Shared aliases remain routing choices, with their own soft lines.
+        for name in ("weekly", "weekly-high"):
+            fresh(led, name, "weekly", 10, resets_in=timedelta(days=6))
+        section, = state._capability_sections(state._quota(cfg, led, None))
+        self.assertEqual(section["available_count"], 3)
+
+    def test_composite_estimate_excludes_unavailable_routes(self):
+        platforms = {
+            "ready": {"metered": False},
+            "stale": {"windows": ["5h"]},
+            "soft": {"windows": ["5h"], "soft": {"5h": 60}},
+            "hard": {"windows": ["5h"]},
+            "peak": {"kind": "claude", "metered": False},
+            "backoff": {"metered": False},
+            "hold": {"metered": False},
+        }
+        cfg = {"platforms": platforms, "routing": {"build": list(platforms)}}
+        led = make_led()
+        fresh(led, "soft", "5h", 65)
+        fresh(led, "hard", "5h", 100)
+        fresh(led, "backoff", "5h", 100)
+        fresh(led, "hold", router.HOLD, 100)
+        section, = state._capability_sections(state._quota(cfg, led, {"active": True}))
+        self.assertEqual((section["available_count"], section["total_count"]), (1, 7))
+        self.assertEqual(section["composite_estimate"],
+                         "≈ 1 of 7 slots available (approx.)")
+        platforms["ready"]["enabled"] = False
+        section, = state._capability_sections(state._quota(cfg, led, {"active": True}))
+        self.assertEqual(section["composite_estimate"],
+                         "≈ 0 of 6 slots available (approx.)")
+
+    def test_composite_estimate_empty_sections_are_omitted(self):
+        self.assertEqual(state._capability_sections([]), [])
+        self.assertEqual(state._capability_sections([{"capabilities": []}]), [])
+
     def test_windows_carry_soft_line_and_reset(self):
         """mahler#335: the Capacity view needs every window, not just the worst."""
         cfg, led = make_cfg(), make_led()
@@ -411,6 +464,10 @@ class CapacityPageTests(unittest.TestCase):
         self.assertIn('Large routes', capability_html)
         self.assertIn('Medium routes', capability_html)
         self.assertIn('Small routes', capability_html)
+        self.assertNotIn('class="estimate"', quota_html)
+        for section in self.s["capability_sections"]:
+            self.assertIn(f'<h2>{section["label"]} routes <span class="estimate">'
+                          f'{section["composite_estimate"]}</span></h2>', capability_html)
 
     def test_unmetered_groups_say_so(self):
         html = self.html()

@@ -796,7 +796,8 @@ def _d_capacity(s):
     out.append('</div><div class="capability-sections cap-capability">')
     for section in s["capability_sections"]:
         out.append(f'<section class="cap-section" data-capability-size="{e(section["size"])}">'
-                   f'<h2>{e(section["label"])} routes</h2>')
+                   f'<h2>{e(section["label"])} routes '
+                   f'<span class="estimate">{e(section["composite_estimate"])}</span></h2>')
         out.extend(_cap_card(c, "slot") for c in section["capabilities"])
         out.append('</section>')
     out.append('</div><div class="foot-note">By quota shows one shared account pool. By capability '

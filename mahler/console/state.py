@@ -482,8 +482,21 @@ def _capability_sections(quota):
     for pool in quota:
         for capability in pool["capabilities"]:
             buckets.get(capability["route_size"], buckets["large"]).append(capability)
-    return [{"size": size, "label": size.title(), "capabilities": buckets[size]}
-            for size in CAPABILITY_SIZES if buckets[size]]
+    sections = []
+    for size, capabilities in buckets.items():
+        if not capabilities:
+            continue
+        # Count routing choices, not independent quota pools or concurrent runs.
+        # Availability already checks every window and hold; percentages across
+        # providers (or aliases sharing a login) cannot be pooled meaningfully.
+        available = sum(c["available"] for c in capabilities)
+        total = len(capabilities)
+        sections.append({"size": size, "label": size.title(),
+                         "capabilities": capabilities,
+                         "available_count": available, "total_count": total,
+                         "composite_estimate":
+                             f"≈ {available} of {total} slots available (approx.)"})
+    return sections
 
 
 def _capacity_line(quota):
