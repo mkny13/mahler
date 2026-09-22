@@ -873,20 +873,21 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         self.assertEqual(p, "kilo")
 
 
-class HighTierSiblingsTests(unittest.TestCase):
-    """mahler#192: codex-high and copilot-high mirror claude/claude-opus —
-    an escalation-only stronger sibling sharing the base platform's account
-    and quota (quota_group), gated to size:l via min_size."""
+class CapabilitySlotTests(unittest.TestCase):
+    """Low/medium/high slots share an account's quota and run slot."""
 
     cfg = config.DEFAULTS
 
     def test_quota_groups_are_shared_with_the_base_platform(self):
+        self.assertEqual(self.cfg["platforms"]["claude-low"]["quota_group"], "claude")
         self.assertEqual(self.cfg["platforms"]["codex"]["quota_group"], "codex")
+        self.assertEqual(self.cfg["platforms"]["codex-low"]["quota_group"], "codex")
         self.assertEqual(self.cfg["platforms"]["codex-high"]["quota_group"], "codex")
         self.assertEqual(self.cfg["platforms"]["copilot"]["quota_group"], "copilot")
         self.assertEqual(self.cfg["platforms"]["copilot-high"]["quota_group"], "copilot")
         # same login -> quota readings and run slots are shared (D21)
-        self.assertEqual(usage.quota_peers(self.cfg, "codex"), ["codex", "codex-high"])
+        self.assertEqual(usage.quota_peers(self.cfg, "codex"),
+                         ["codex-low", "codex", "codex-high"])
         self.assertEqual(usage.quota_peers(self.cfg, "copilot"),
                          ["copilot", "copilot-high"])
 
@@ -936,6 +937,15 @@ class HighTierSiblingsTests(unittest.TestCase):
                                              "hi", "wt", "build"))
         self.assertIn("gpt-5.6-sol",
                       platforms.codex_argv(self.cfg["platforms"]["codex-high"],
+                                           "hi", "wt", "build"))
+
+    def test_low_slots_are_small_and_select_the_low_models(self):
+        self.assertEqual(self.cfg["platforms"]["claude-low"]["max_size"], "s")
+        self.assertEqual(self.cfg["platforms"]["codex-low"]["max_size"], "s")
+        self.assertEqual(self.cfg["platforms"]["codex"]["max_size"], "m")
+        self.assertEqual(self.cfg["platforms"]["claude-low"]["build_model"], "haiku")
+        self.assertIn("gpt-5.6-luna",
+                      platforms.codex_argv(self.cfg["platforms"]["codex-low"],
                                            "hi", "wt", "build"))
 
     def test_copilot_uses_auto_with_the_configured_tier_but_high_stays_pinned(self):
@@ -1066,4 +1076,3 @@ class PeakOverrideCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

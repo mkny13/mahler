@@ -438,51 +438,51 @@ class MultiAccountTests(unittest.TestCase):
         self.assertIn("both#1: would build on codex-work", self.plan(total=10))
 
     def test_priority_mode_can_place_a_second_codex_login_just_before_claude(self):
-        self.cfg["platforms"]["codex-work-gpt1"] = {
+        self.cfg["platforms"]["work-codex-gpt1-medium"] = {
             "from": "codex", "account": "work",
         }
-        self.cfg["platforms"]["codex-high-work-gpt1"] = {
+        self.cfg["platforms"]["work-codex-gpt1-high"] = {
             "from": "codex-high", "account": "work",
         }
-        self.cfg["platforms"]["codex-low-work-gpt1"] = {
-            "from": "codex", "account": "work", "model": "low",
+        self.cfg["platforms"]["work-codex-gpt1-low"] = {
+            "from": "codex-low", "account": "work",
         }
         self.cfg["accounts"]["work-makastel"] = {
             "env": {"CODEX_HOME": "~/.codex-ncsu"},
-            "routing": {"build": ["codex-work-makastel"]},
+            "routing": {"build": ["work-codex-makastel-medium"]},
         }
-        self.cfg["platforms"]["codex-work-makastel"] = {
+        self.cfg["platforms"]["work-codex-makastel-medium"] = {
             "from": "codex", "account": "work-makastel",
         }
-        self.cfg["platforms"]["codex-high-work-makastel"] = {
+        self.cfg["platforms"]["work-codex-makastel-high"] = {
             "from": "codex-high", "account": "work-makastel",
         }
-        self.cfg["platforms"]["codex-low-work-makastel"] = {
-            "from": "codex", "account": "work-makastel", "model": "low",
+        self.cfg["platforms"]["work-codex-makastel-low"] = {
+            "from": "codex-low", "account": "work-makastel",
         }
         self.cfg = config.resolve_platforms(self.cfg)
         self.cfg["projects"]["both"].update({
             "accounts": ["personal", "work", "work-makastel"],
             "account_mode": "priority",
-            "routing": {"build": ["agy-claude", "agy-gemini", "codex-work-gpt1",
-                                  "codex-work-makastel", "claude"]},
+            "routing": {"build": ["agy-claude", "agy-gemini", "work-codex-gpt1-medium",
+                                  "work-codex-makastel-medium", "claude"]},
         })
         self.assertEqual(
             router.candidates_for_priority(
                 self.cfg, "build", ["personal", "work", "work-makastel"],
                 self.cfg["projects"]["both"]["routing"]),
-            ["agy-claude", "agy-gemini", "codex-work-gpt1",
-             "codex-work-makastel", "claude"],
+            ["agy-claude", "agy-gemini", "work-codex-gpt1-medium",
+             "work-codex-makastel-medium", "claude"],
         )
-        self.assertEqual(self.cfg["platforms"]["codex-work-gpt1"]["quota_group"],
+        self.assertEqual(self.cfg["platforms"]["work-codex-gpt1-medium"]["quota_group"],
                          "codex@work")
-        self.assertEqual(self.cfg["platforms"]["codex-work-makastel"]["quota_group"],
+        self.assertEqual(self.cfg["platforms"]["work-codex-makastel-medium"]["quota_group"],
                          "codex@work-makastel")
-        for suffix, quota_group in (("work-gpt1", "codex@work"),
-                                    ("work-makastel", "codex@work-makastel")):
-            self.assertEqual(self.cfg["platforms"][f"codex-high-{suffix}"]["quota_group"],
+        for account, quota_group in (("gpt1", "codex@work"),
+                                     ("makastel", "codex@work-makastel")):
+            self.assertEqual(self.cfg["platforms"][f"work-codex-{account}-high"]["quota_group"],
                              quota_group)
-            self.assertEqual(self.cfg["platforms"][f"codex-low-{suffix}"]["quota_group"],
+            self.assertEqual(self.cfg["platforms"][f"work-codex-{account}-low"]["quota_group"],
                              quota_group)
 
     def test_priority_mode_uses_later_platform_when_preferred_account_is_spent(self):

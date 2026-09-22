@@ -23,7 +23,7 @@ verify = "python3 -m unittest discover -s tests"
 # must spend one of the project's declared accounts. Each role the project
 # uses needs its own exact route; an omitted role has no candidates.
 # account_mode = "priority"
-# routing = { sort = ["claude"], plan = ["claude-opus"], build = ["agy-claude", "codex-work-gpt1", "codex-work-makastel", "claude"] }
+# routing = { sort = ["claude"], plan = ["claude-opus"], build = ["agy-claude", "work-codex-gpt1-medium", "work-codex-makastel-medium", "claude"] }
 
 # A local macOS app with no shared test backend can use the same command for
 # fast and full verification.  This is the checked, non-secret shape used by
@@ -84,23 +84,29 @@ verify = "python3 -m unittest discover -s tests"
 # # different GitHub login; set that checkout's git credential helper to match.
 # # Zero-token Claude readings for this login (else a lean probe on the work login):
 # # claude_keychain_service = "Claude Code-credentials-xxxxxxxx"
-# routing = { sort = ["claude-work"], plan = ["claude-opus-work", "codex-high-work-gpt1", "codex-astra-work-gpt1"], build = ["copilot-work", "codex-work-gpt1", "codex-high-work-gpt1", "codex-astra-work-gpt1", "claude-opus-work", "claude-work"] }
+# routing = { sort = ["work-claude-medium"], plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"], build = ["copilot-work", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"] }
 #
-# [platforms.claude-work]
+# [platforms.work-claude-low]
+# from = "claude-low"
+# account = "work"
+# [platforms.work-claude-medium]
 # from = "claude"
 # account = "work"
-# [platforms.claude-opus-work]
+# [platforms.work-claude-high]
 # from = "claude-opus"
 # account = "work"
-# [platforms.codex-work-gpt1]
+# [platforms.work-codex-gpt1-low]
+# from = "codex-low"
+# account = "work"
+# [platforms.work-codex-gpt1-medium]
 # from = "codex"
 # account = "work"
-# [platforms.codex-high-work-gpt1]
+# [platforms.work-codex-gpt1-high]
 # from = "codex-high"
 # account = "work"
 # model = "gpt-5.6-sol"
 # tier = 4
-# [platforms.codex-astra-work-gpt1]
+# [platforms.work-codex-gpt1-astra]
 # from = "codex-high"
 # account = "work"
 # model = "gpt-6-astra"
@@ -118,21 +124,27 @@ verify = "python3 -m unittest discover -s tests"
 # copy auth.json between accounts.
 # [accounts.work-makastel]
 # env = { CODEX_HOME = "~/.codex-ncsu" }
-# routing = { build = ["codex-work-makastel", "codex-high-work-makastel"] }
-# [platforms.codex-work-makastel]
+# routing = { build = ["work-codex-makastel-low", "work-codex-makastel-medium", "work-codex-makastel-high"] }
+# [platforms.work-codex-makastel-low]
+# from = "codex-low"
+# account = "work-makastel"
+# [platforms.work-codex-makastel-medium]
 # from = "codex"
 # account = "work-makastel"
-# [platforms.codex-high-work-makastel]
+# [platforms.work-codex-makastel-high]
 # from = "codex-high"
 # account = "work-makastel"
-# Any additional variants keep the same suffix after the variant name, for
-# example codex-low-work-gpt1 and codex-low-work-makastel.
-# A multi-account project's priority route can then place codex-work-gpt1
-# before codex-work-makastel and both before claude, with separate quota probes.
+# Model and capability are always ordered from general to specific:
+# work-codex-gpt1-high, never codex-high-work-gpt1. The account is part of
+# every slot, so quota probes remain distinct. GPT1 additionally exposes
+# Astra; do not add it to another login until it is verified.
+# A priority route can place work-codex-gpt1-medium before
+# work-codex-makastel-medium and both before Claude, with separate probes.
 # Repository changes never rewrite the daemon's operator-owned
 # ~/.mahler/config.toml. Activate a new login by adding its account, platforms,
 # and project route there, then run `mahler usage --probe`. Capacity shows one
-# row per quota group, so high/low siblings appear under their base login row.
+# row per quota group, so low/medium/high/Astra siblings appear under their
+# base login row.
 #
 # [projects.acme]
 # enabled = true

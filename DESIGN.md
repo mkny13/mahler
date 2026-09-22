@@ -395,7 +395,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Antigravity: Gemini pool** (free) | same, `--model gemini-3.8-flash-high` (`agy-gemini`) or `gemini-3.1-pro-high` (`agy-gemini-pro`) | same probe, separate pool | Fast triage and builder (`agy-gemini`, tier 2); escalation sibling (`agy-gemini-pro`, tier 3). Verified 2026-09-12 (Antigravity test results, below). |
 | **Cline** (free models) | `cline --cwd <worktree> --json --auto-approve true -t <secs> <prompt>` | None: its JSON reports `totalCost: 0` and no quota, so it's routed as **unmetered** and backed off after any rate-limit error. The model is GLM-5.3-flash (`z-ai/glm-5.3-flash` in every run log). It has a **daily free cap**: a 429 `INFERENCE_CAP_ERROR` that says when to "try again", and Mahler waits until then (2026-09-13; before that it retried hourly) | Builder of any size, second in build order after Antigravity's Claude pool (you judge its free GLM-5.3-flash on par with Sonnet 4.x; the quota is generous but unstated). Verified 2026-09-12 (S3). Daemon-launched runs need macOS Documents access (see below) |
 | **Copilot CLI** (`@github/copilot`, GitHub Education license) | `copilot -p <prompt> -C <worktree> --allow-all-tools --output-format json` | Unlike Cline/Kilo, has a real cap: GitHub bills Copilot in **AI Credits** (mahler#38), Pro/Education include 1500/month. No cheap CLI-level probe, but `gh api /users/<login>/settings/billing/ai_credit/usage` (needs the `user` OAuth scope) reports the month's consumption, so it's routed as a normal **metered** platform with a single `monthly` window instead of 5h/weekly | Builder, size `s` only, ahead of Kilo — it runs real frontier models (verified: `claude-sonnet-5`), despite the smaller monthly allowance. CLI flags verified end-to-end 2026-09-13 (mahler#25); the AI-credits billing probe verified 2026-09-12 (mahler#38). Escalation sibling **`copilot-high`** (mahler#192): same CLI, same account and monthly AI-credits cap (`quota_group: copilot`, one run slot), model `gpt-5.3-codex` (live-verified 2026-09-14 with the `--model` fast-fail check), tier 3 and gated `min_size: "l"`, so it only enters via D8 rule-4 escalation on size:l items; in the default build route right after `copilot` |
-| **Codex CLI** (ChatGPT account) | `codex exec --ephemeral --dangerously-bypass-approvals-and-sandbox --color never --json -C <worktree> <prompt>` | Metered through the zero-token app-server `account/rateLimits/read` API (mahler#276), once per account/quota group every 15 minutes. Default soft/hard lines are 70/90%. Exact 300/10080-minute windows map to 5h/weekly; unfamiliar windows remain visible with their actual duration and cannot establish headroom. An explicit account block is hard even with low percentages. Reset credit count and expiries are informational only; Mahler never consumes them, though quota refresh sends a deduplicated high-priority ntfy alert if Codex hits 100% quota or is blocked (prompting to reset in ChatGPT if reset credits exist), cleared on recovery (mahler#349). | Opt-in for plan, sort, or build roles; absent from default routes so Mahler never spends the ChatGPT account implicitly. The unattended flag removes Codex's sandbox, so Mahler relies on the same isolated worktree, lease environment, and fenced git hooks used for every runner. Verified end-to-end 2026-09-13 (mahler#157). Escalation sibling **`codex-high`** (mahler#192): same CLI, same ChatGPT account/quota (`quota_group: codex`, one run slot), model `gpt-5.6-sol` (verified 2026-09-14 from the installed codex-cli 0.154.0's embedded catalog), tier 3 and gated `min_size: "l"`. The GPT1 work login adds `codex-high-work-gpt1` (`gpt-5.6-sol`, tier 4) and `codex-astra-work-gpt1` (`gpt-6-astra`, tier 5), sharing that login's quota group; like `codex` they remain absent from default routes and are opted into per project. |
+| **Codex CLI** (ChatGPT account) | `codex exec --ephemeral --dangerously-bypass-approvals-and-sandbox --color never --json -C <worktree> <prompt>` | Metered through the zero-token app-server `account/rateLimits/read` API (mahler#276), once per account/quota group every 15 minutes. Default soft/hard lines are 70/90%. Exact 300/10080-minute windows map to 5h/weekly; unfamiliar windows remain visible with their actual duration and cannot establish headroom. An explicit account block is hard even with low percentages. Reset credit count and expiries are informational only; Mahler never consumes them, though quota refresh sends a deduplicated high-priority ntfy alert if Codex hits 100% quota or is blocked (prompting to reset in ChatGPT if reset credits exist), cleared on recovery (mahler#349). | Opt-in for plan, sort, or build roles; absent from default routes so Mahler never spends the ChatGPT account implicitly. The personal built-ins are `codex-low` (Luna, tier 1), `codex` (Terra, tier 2), and `codex-high` (Sol, tier 3); all share one quota group and run slot. The unattended flag removes Codex's sandbox, so Mahler relies on the same isolated worktree, lease environment, and fenced git hooks used for every runner. Verified end-to-end 2026-09-13 (mahler#157). Account-specific names are general-to-specific: the GPT1 work login has `work-codex-gpt1-low`, `work-codex-gpt1-medium`, `work-codex-gpt1-high` (Sol, tier 4), and verified `work-codex-gpt1-astra` (GPT-6 Astra, tier 5); the Makastel login has the corresponding low/medium/high slots. Each account's slots share only that login's quota group, and all remain opt-in per project. |
 | **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do), **and** `"small_model": "kilo/kilo-auto/free"` set in `~/.config/kilo/kilo.jsonc` — Kilo's background tasks (session titling, context-window summarization) read `small_model`, not the `-m` flag, so without it they fall through to a paid default model and fail on a $0 balance. The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | OpenCode | — | — | Later backend (Phase 8) |
 
@@ -478,11 +478,11 @@ unavailable until the reset time, parsed or with a backoff default. All of these
 one flat global ceiling: an expensive Claude Opus run and three cheap Cline/Kilo runs compete
 for the exact same pool of slots. `concurrency.by_tier` (optional) layers a second, finer cap
 underneath it, reusing the `tier` field every platform already carries for D8 rule-4 escalation
-(`router.tier_of`): tier 1 = cline-free, kilo; tier 2 = agy-claude, agy-gemini, codex, copilot; tier 3 =
-agy-gemini-pro, claude, codex-high, copilot-high; tier 4 = claude-opus, codex-high-work-gpt1; tier 5 = codex-astra-work-gpt1. `tier` is the closest
+(`router.tier_of`): tier 1 = cline-free, kilo, claude-low, codex-low; tier 2 = agy-claude, agy-gemini, codex, copilot; tier 3 =
+agy-gemini-pro, claude, codex-high, copilot-high; tier 4 = claude-opus, work-codex-gpt1-high; tier 5 = work-codex-gpt1-astra. `tier` is the closest
 existing signal to "how scarce/strong is this platform" — not a perfect proxy for cost
 (`agy-claude`/`agy-gemini` are tier 2 but free; `agy-gemini-pro` is tier 3 but free; `copilot-high` is tier 3 but spends real AI
-credits; `codex-high-work-gpt1`/`codex-astra-work-gpt1` are tier 4/5 on the GPT1 Work Business plan) — refining that further is its own project, not worth blocking this on. An entry
+credits; `work-codex-gpt1-high`/`work-codex-gpt1-astra` are tier 4/5 on the GPT1 Work Business plan) — refining that further is its own project, not worth blocking this on. An entry
 `by_tier = { 1 = 3, 2 = 2 }` caps tier 1 (and above) at 3 concurrent runs, and tier 2 (and above)
 at 2; tiers 3 and 4 stay unrestricted, still bounded by `total`. **Budgets are "at or above,"
 not "exactly":** a tier-4 run also counts against a tier-"2 and up" budget, so a scarce platform
@@ -940,9 +940,10 @@ never run.
 - **Opus builds only by escalation** (D8 rule 4, now built): two failed attempts on a tier move
   the item up a tier. Each platform has a `tier`: Cline and Kilo 1, agy-claude and Copilot 2,
   agy-gemini and Claude 3, Claude Opus 4. Fix runs never route to Opus by size alone.
-- **Haiku is not a builder.** It draws on the same Claude windows as Opus and Sonnet. The free
-  tiers are Mahler's small models.
-- **One Claude account, one run slot.** `claude` and `claude-opus` share the same 5-hour and
+- **Claude has low/medium/high slots.** `claude-low` selects Haiku for `size:s`, `claude`
+  selects Sonnet through `size:m`, and `claude-opus` selects Opus for `size:l`; they are
+  opt-in routing choices, not extra quota.
+- **One Claude account, one run slot.** `claude-low`, `claude`, and `claude-opus` share the same 5-hour and
   weekly windows (there is no separate Opus window on Pro, and `--model opus` runs
   `claude-opus-5` inside the plan, not on overage; checked 2026-09-13). So they count together
   against `max_runs`, and an Opus run starts only below 5h 45%, leaving room to finish under the
@@ -952,7 +953,7 @@ never run.
 ### D22 — Claude's peak window
 
 Decided 2026-09-13 (your call). On weekdays from 5 to 11am Pacific (8am–2pm Eastern), Mahler
-starts no Claude runs (`claude`, `claude-opus`). Running work continues, and the hard lines still
+starts no Claude runs (`claude-low`, `claude`, `claude-opus`). Running work continues, and the hard lines still
 apply. To override: `mahler peak --off [--for 2h]`, or pin an item to a Claude platform. The window
 lives in `[claude_peak]` in the config, and can be switched off.
 
@@ -1042,7 +1043,7 @@ a personal project must never spend a work login.
   implicit `personal` account, which needs no entry.
 - **Platforms and projects each name their account** (`account = "work"`, default `personal`).
   `from = "<base>"` lets a work platform inherit a base platform's lines and limits, so
-  `claude-work` is `claude` on another login. A platform on another account gets its own
+  `work-claude-medium` is `claude` on another login. A platform on another account gets its own
   `quota_group` (`claude@work`). Its run slot (D21) and its quota readings are therefore its own.
 - **Routing is per account, and it fails closed.** A non-personal account routes only by its
   own `[accounts.<name>.routing]`, and it gets nothing if that is missing. The router offers a
@@ -1096,7 +1097,7 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   pool. Updated 2026-09-14 (mahler#209): that default under-serves a project that's genuinely
   dual-use rather than personal-with-a-work-fallback — mahler's own personal build list has
   ten platforms, so `work` was essentially never tried even with
-  `codex-work-gpt1`/`copilot-work`
+  `work-codex-gpt1-medium`/`copilot-work`
   idle and fully quota'd. `account_mode = "equal"` opts a project into round-robin merging
   each account's candidate list instead (first candidate from the first account, then the
   second account, then the first account's second candidate, and so on) and picking once
@@ -1110,15 +1111,15 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   neither account fallback nor round-robin can express. Every route entry must spend a declared
   account, so the D25 credential boundary remains unchanged. Each role is independent: a role
   omitted from a priority project's routing table has no candidates.
-  Account-specific Codex platform names put the model variant first and the login identity last:
-  `codex-work-gpt1` / `codex-work-makastel`, `codex-high-work-gpt1` /
-  `codex-high-work-makastel`, and likewise for any `codex-low-*` siblings. The suffix therefore
-  identifies the quota pool consistently without hiding the variant used for routing.
+  Account-specific platform names go from general to specific: `work-codex-gpt1-low`,
+  `work-codex-gpt1-medium`, `work-codex-gpt1-high`, and (where verified)
+  `work-codex-gpt1-astra`; Claude follows `work-claude-low` / `-medium` / `-high`.
+  The account segment identifies the quota pool without hiding the capability used for routing.
 - **Activation remains operator state.** Merging account support or updating
   `config.example.toml` never rewrites the daemon's live `~/.mahler/config.toml`. The operator
   adds the account, inherited platforms, and project routes there, then runs
   `mahler usage --probe` to verify both credential isolation and a fresh reading. The console's
-  Capacity view renders one row per quota group, so `codex-high-*` and `codex-low-*` siblings
+  Capacity view renders one row per quota group, so `work-codex-*-high` and `work-codex-*-low` siblings
   intentionally consolidate under their base login row rather than appearing as extra accounts.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
