@@ -458,7 +458,8 @@ def risk_min_tier(text):
 
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
-         account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None):
+         account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
+         exclude=()):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -472,6 +473,11 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     `accounts`, when given, routes across several accounts at once (DESIGN
     D26). Equal mode supplies their round-robin merge; priority mode supplies
     `candidate_order`, the project's exact cross-account route.
+
+    `exclude` skips named platforms outright, same as `busy` — for DESIGN
+    D11's "review by a different platform than the builder": this applies
+    even to a pinned platform, since a pinned reviewer identical to the
+    builder would defeat the point.
     """
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
@@ -484,8 +490,8 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             candidates_for_accounts(cfg, role, accts, pin, burst_lines)
             if accounts is not None else candidates(cfg, role, pin, burst_lines, account))
     for name in cand:
-        if name in busy:
-            reasons.append(f"{name}: busy")
+        if name in busy or name in exclude:
+            reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]
         # Escalation tier (DESIGN D8 rule 4): build and fix skip platforms below min_tier
@@ -520,7 +526,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
 
 
 def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
-                      burst_lines=None, min_tier=0):
+                      burst_lines=None, min_tier=0, exclude=()):
     """Route within a project's declared accounts (DESIGN D26).
 
     Default ("order"): tries each account in turn, spending the first with
@@ -532,16 +538,16 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     mode = account_mode_of(pol)
     if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts)
+                    min_tier=min_tier, accounts=accts, exclude=exclude)
     if mode == "priority":
         order = candidates_for_priority(
             cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, candidate_order=order)
+                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude)
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                             account=account, min_tier=min_tier)
+                             account=account, min_tier=min_tier, exclude=exclude)
         reasons += why
         if platform:
             return platform, reasons

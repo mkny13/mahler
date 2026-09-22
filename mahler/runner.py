@@ -145,8 +145,9 @@ def prepare(ctx, project, item, role, platform, run_id):
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
         # a fix run works on the PR's head branch itself (D18): its pushes
-        # re-trigger CI. A build gets the item's canonical branch name.
-        branch = (item["branch"] if role == "fix" and item["branch"]
+        # re-trigger CI. A review checks out that same head, read-only
+        # (D11). A build gets the item's canonical branch name.
+        branch = (item["branch"] if role in ("fix", "review") and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
         start = start_ref(repo, base, item["branch"], branch)
         try:

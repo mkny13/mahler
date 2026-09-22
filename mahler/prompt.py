@@ -65,11 +65,16 @@ def handoff_text(base, replayed, kept):
             f"latest `mahler:agent handoff` comment, then redo what still fits")
 
 
-def build(ctx, project, item, role, platform, prep):
-    """The full prompt for a prepared run (runner.prepare's return value)."""
+def build(ctx, project, item, role, platform, prep, context=None):
+    """The full prompt for a prepared run (runner.prepare's return value).
+
+    `context` overrides the default handoff text when the caller already
+    knows why this run started — e.g. ship.py starting a fix round from a
+    failed review's findings, rather than red CI (D11)."""
     pol = ctx.policy(project)
     base = pol.get("base", "main")
-    handoff = (ci_handoff(ctx, project, item, prep["branch"]) if role == "fix"
+    handoff = (context if context is not None else
+               ci_handoff(ctx, project, item, prep["branch"]) if role == "fix"
                else handoff_text(base, prep["replayed"], prep["kept"]))
 
     sizing = ""
@@ -85,7 +90,7 @@ def build(ctx, project, item, role, platform, prep):
 
     return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
-                  platform=platform,
+                  platform=platform, pr=item.get("pr") or "",
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
                   mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"

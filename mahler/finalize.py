@@ -100,6 +100,74 @@ def _sorted_split(e):
 SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you}
 
 
+# ---------- review outcomes (DESIGN D11) ----------
+#
+# A review run never touches the worktree (recipes/review.md is read-only),
+# so it skips _save_work/_dispatch entirely, the same way sort does — there
+# is nothing to snapshot and no handoff comment to post. Its own comment goes
+# straight to the PR (D18: the conductor posts it, in code, so a run that
+# times out mid-review still leaves its verdict where the human can see it).
+# The item's ledger state stays "verifying" throughout: ship.py's merge gate
+# reads the kv verdict below to decide whether to merge or start a fix round.
+
+def _review_kv_key(project, number):
+    return f"review:{project}#{number}"
+
+
+def _update_review_kv(e, **fields):
+    key = _review_kv_key(e.project, e.number)
+    cur = json.loads(e.led.get_kv(key) or "{}")
+    cur.update(fields)
+    e.led.set_kv(key, json.dumps(cur))
+
+
+def _post_review_comment(e, passed, findings=""):
+    pr = e.item["pr"]
+    if not pr:
+        return
+    if passed:
+        body = f"**Review** — {e.run['platform']} found no blocking issues."
+        if findings:
+            body += f" {findings}"
+    else:
+        lines = [f"**Review** — {e.run['platform']} found blocking issues; "
+                 "a fix round starts on this PR:", ""]
+        lines += [f"- {f.strip()}" for f in (findings or "").split("|") if f.strip()]
+        body = "\n".join(lines)
+    try:
+        e.ctx.gh(e.project).comment(pr, body)
+    except GHError as err:
+        e.ctx.say(f"{e.project}#{e.number}: couldn't post the review comment — {err}")
+
+
+def _review_passed(e):
+    _post_review_comment(e, passed=True, findings=e.rest)
+    _update_review_kv(e, verdict="pass")
+    e.set_state("verifying", "review passed — the conductor ships it")
+    return True
+
+
+def _review_failed(e):
+    _post_review_comment(e, passed=False, findings=e.rest)
+    _update_review_kv(e, verdict="fail", findings=e.rest or "")
+    e.set_state("verifying", "review found blocking issues — the conductor starts a fix")
+    return True
+
+
+def _review_inconclusive(e):
+    """No usable verdict (crash, timeout, quota, an unmatched STATUS verb):
+    clear any stale kv record so ship.py's gate starts a fresh review run
+    next tick, instead of either merging on a verdict never reached or
+    waiting forever on one that will never arrive."""
+    e.led.set_kv(_review_kv_key(e.project, e.number), None)
+    e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
+    return True
+
+
+REVIEW_OUTCOMES = {"REVIEW-PASS": _review_passed, "REVIEW-FAIL": _review_failed,
+                   "NEEDS-YOU": _needs_you}
+
+
 def _ended_done(e):
     """D18: the run's own job is finished. The conductor (code, not another
     agent) ships it from here: push, PR, CI, merge. A DONE build is a success,
@@ -304,6 +372,8 @@ def finalize(ctx, run):
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     if run["role"] == "sort":
         SORT_OUTCOMES.get(verb, _retry)(ending)
+    elif run["role"] == "review":
+        REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
     else:
         _save_work(ending)
         if not ending.closed and not _dispatch(ending):

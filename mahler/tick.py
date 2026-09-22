@@ -485,7 +485,7 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform, handoff_from=None, size=None):
+def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     ests = led.estimates()
     est = led.run_estimate(ests, platform, role, size)
@@ -507,7 +507,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None):
         return False
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
-        text = prompt.build(ctx, project, item, role, platform, prep)
+        text = prompt.build(ctx, project, item, role, platform, prep, context=context)
         meta = runner.launch(ctx, project, item, role, platform, run_id, lease["epoch"],
                              text, prep)
     except Exception as e:                       # noqa: BLE001 — any launch failure
