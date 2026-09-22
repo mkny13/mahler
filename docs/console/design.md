@@ -441,6 +441,7 @@ Platforms, models and thresholds are current as of the last rescan of
 | Platform | Model | Windows | Soft / hard |
 | --- | --- | --- | --- |
 | `claude` | `sonnet` | 5h, weekly | 60/70 · 70/80 |
+| `claude-low` | `haiku`, size s only | 5h, weekly | 60/70 · 70/80 |
 | `agy-claude` | `claude-opus-4-6-thinking` | 5h, weekly | 85/85 · 90/90 |
 | `agy-gemini` | `gemini-3.8-flash-high` | 5h, weekly | 85/85 · 90/90 |
 | `agy-gemini-pro` | `gemini-3.1-pro-high` | 5h, weekly | 85/85 · 90/90 |
@@ -448,8 +449,9 @@ Platforms, models and thresholds are current as of the last rescan of
 | `copilot` | `claude-sonnet-5` | monthly (1500 AI credits) | 80 · 95 |
 | `kilo` | `kilo-auto/free`, size s only | unmetered | backoff 60m |
 | `codex` | `gpt-5.6-terra` | 5h, weekly | 70/90 · 70/90 |
+| `codex-low` | `gpt-5.6-luna`, size s only | 5h, weekly | 70/90 · 70/90 |
 | `codex-high` | `gpt-5.6-sol` | 5h, weekly | 70/90 · 70/90 |
-| `codex-astra-work-gpt1` | `gpt-6-astra` | 5h, weekly | 100/100 · 100/100 |
+| `work-codex-gpt1-astra` | `gpt-6-astra` | 5h, weekly | 100/100 · 100/100 |
 
 Mock runs: `mahler#41` on agy-claude (18m of ~26m), `groundwork#83` on
 cline-free (34m, 12m over). Mock needs-you: `couch-tour#9` (API key, p1),
@@ -566,7 +568,7 @@ Sentences the design had no text for. Same voice, and reviewable here in one
 place:
 
 - Idle reasons: *"You paused everything, so nothing new starts."* (Resume all) ·
-  *"claude and claude-work have no fresh quota reading, and Mahler counts unknown
+  *"claude and work-claude-medium have no fresh quota reading, and Mahler counts unknown
   as over the line."* · *"kilo is on hold after a run never started."* (Clear
   backoff) · *"groundwork has max_parallel set to 0, so its 3 waiting item(s)
   stay put."* · *"You have been working in mahler, so new builds there wait until

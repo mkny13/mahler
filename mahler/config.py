@@ -158,6 +158,17 @@ DEFAULTS = {
                   "copilot-high", "kilo", "claude-opus", "claude"],
     },
     "platforms": {
+        # Low/medium/high are explicit capability slots on this (personal)
+        # Claude login. They share its one quota group and run slot.
+        "claude-low": {
+            "enabled": True, "kind": "claude",
+            "sort_model": "haiku", "build_model": "haiku",
+            "max_size": "s", "tier": 1,
+            "soft": {"5h": 60, "weekly": 70},
+            "hard": {"5h": 70, "weekly": 80},
+            "stale_minutes": 15,
+            "quota_group": "claude",
+        },
         "claude": {
             "enabled": True, "kind": "claude",
             "sort_model": "sonnet", "build_model": "",
@@ -231,9 +242,19 @@ DEFAULTS = {
 # Account quota comes from the zero-token app-server probe (mahler#276).
 # Codex is deliberately absent from the default routes;
 # installations opt in according to which account they want Mahler to spend.
+DEFAULTS["platforms"]["codex-low"] = {
+    "enabled": True, "kind": "codex", "model": "gpt-5.6-luna", "plan": "free tier",
+    "metered": True, "backoff_minutes": 60, "max_size": "s", "tier": 1,
+    "soft": {"5h": 70, "weekly": 70}, "hard": {"5h": 90, "weekly": 90},
+    "stale_minutes": 15,
+    "quota_group": "codex",
+}
+
+# Terra is the medium capability slot. `codex` remains the compact built-in
+# personal alias for backwards-compatible project routing.
 DEFAULTS["platforms"]["codex"] = {
     "enabled": True, "kind": "codex", "model": "", "plan": "free tier",
-    "metered": True, "backoff_minutes": 60, "tier": 2,
+    "metered": True, "backoff_minutes": 60, "max_size": "m", "tier": 2,
     "soft": {"5h": 70, "weekly": 70}, "hard": {"5h": 90, "weekly": 90},
     "stale_minutes": 15,
     "quota_group": "codex",
