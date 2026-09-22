@@ -27,14 +27,14 @@ def work_cfg(**projects):
             "env": {"CLAUDE_CONFIG_DIR": "~/.claude-work", "COPILOT_HOME": "~/.copilot-work",
                     "CODEX_HOME": "~/.codex-work"},
             "routing": {"sort": ["claude-work"], "plan": ["claude-opus-work"],
-                        "build": ["copilot-work", "codex-work", "claude-opus-work",
+                        "build": ["work-copilot", "codex-work", "claude-opus-work",
                                   "claude-work"]},
         }},
         "platforms": {
             "claude-work": {"from": "claude", "account": "work"},
             "claude-opus-work": {"from": "claude-opus", "account": "work"},
             "codex-work": {"from": "codex", "account": "work"},
-            "copilot-work": {"from": "copilot", "account": "work", "metered": False},
+            "work-copilot": {"from": "copilot", "account": "work", "metered": False},
         },
         "projects": projects or {
             "acme": {"enabled": True, "repo": "acme/app", "path": "/tmp/acme",
@@ -141,7 +141,8 @@ class RouterTests(unittest.TestCase):
         for role in ("sort", "plan", "build", "fix"):
             names = router.candidates(self.cfg, role, account="work")
             self.assertTrue(names)
-            self.assertTrue(all(n.endswith("-work") for n in names), (role, names))
+            self.assertTrue(all(self.cfg["platforms"][n]["account"] == "work" for n in names),
+                            (role, names))
         self.assertEqual(router.pick(self.cfg, self.led, "sort", account="work")[0],
                          "claude-work")
         self.assertEqual(router.pick(self.cfg, self.led, "plan", account="work")[0],
@@ -166,10 +167,10 @@ class RouterTests(unittest.TestCase):
     def test_candidates_for_accounts_round_robin_interleaves(self):
         # personal build: agy-claude, agy-gemini, cline-free, copilot,
         # copilot-high, kilo, claude-opus, claude
-        # work build: copilot-work, codex-work, claude-opus-work, claude-work
+        # work build: work-copilot, codex-work, claude-opus-work, claude-work
         merged = router.candidates_for_accounts(self.cfg, "build", ["personal", "work"])
         self.assertEqual(merged, [
-            "agy-claude", "copilot-work", "agy-gemini", "codex-work",
+            "agy-claude", "work-copilot", "agy-gemini", "codex-work",
             "cline-free", "claude-opus-work", "copilot", "claude-work",
             "copilot-high", "kilo", "claude-opus", "claude"])
 
@@ -179,7 +180,7 @@ class RouterTests(unittest.TestCase):
 
     def test_pick_with_accounts_merges_instead_of_falling_back_by_order(self):
         # agy-claude and agy-gemini (personal's first two picks) are busy;
-        # copilot-work is size-blocked at the default size:m, so the next
+        # work-copilot is size-blocked at the default size:m, so the next
         # merged candidate is codex-work — equal-mode reaches it without
         # ever exhausting the rest of personal's own list first
         name, _ = router.pick(self.cfg, self.led, "build",
@@ -372,7 +373,7 @@ class MultiAccountTests(unittest.TestCase):
         self.assertIn("both#1: would build on agy-claude", self.plan())
 
     def test_multi_account_falls_through_to_its_next_account(self):
-        # every personal build platform is busy; work has copilot-work free
+        # every personal build platform is busy; work has work-copilot free
         for platform in ("agy-claude", "agy-gemini", "cline-free", "copilot",
                          "kilo", "claude"):     # claude also busy-blocks claude-opus
             self.led.create_run(project="zz", number=1, role="build",
