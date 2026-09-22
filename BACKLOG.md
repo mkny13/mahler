@@ -9,14 +9,46 @@ Add an option where one product's agent reviews another product's agent's work
 adversarially (e.g. agent A critiques/red-teams the output or diff produced by
 agent B), rather than only self-review or a single reviewer persona.
 
-Open questions to resolve when this gets picked up:
-- How "product" is scoped — different agent configs/personas, different
-  underlying tools/repos, or literally different products in a portfolio?
-- Trigger: opt-in flag per dispatch/thread, or a default for certain task types?
-- Output shape: findings feed back into the same thread, or spawn a new
-  review thread/task?
-- How this composes with existing single-agent review flows (avoid double
-  work / conflicting verdicts).
+Open questions, resolved so far (2026-09-21):
+- ~~How "product" is scoped~~ — resolved: "product" = platform (ROADMAP Phase 7).
+- ~~Trigger~~ — resolved: default for `m`/`l` items and anything touching data
+  (ROADMAP Phase 7).
+- ~~Output shape~~ — resolved: findings feed back as a fix round (ROADMAP
+  Phase 7).
+- **Still open: how this composes with existing single-agent review flows**
+  (avoid double work / conflicting verdicts). Possibly being worked out in
+  another session as of 2026-09-21 — check for updates before re-deriving.
+
+Best-practice notes from research (2026-09-21), to apply when this is designed:
+- **Structural separation, not just prompting.** A same-model reviewer (even in
+  a fresh session/persona) tends to rephrase the builder's own assumptions
+  rather than surface a genuine second opinion. The independence has to come
+  from a different model *family/provider* from the builder, not just a
+  different context window — confirms D11's "review by a different platform"
+  framing over a same-model self-review persona.
+- **Debate-style multi-model setups can amplify bias rather than cancel it.**
+  Research on LLM-as-judge recommends a meta-judge / stage-gated pass over
+  open debate between models for this reason — relevant to how findings get
+  reconciled if builder and reviewer disagree (the "output shape" question
+  above).
+- **Reference-guided, not open-ended.** Give the reviewer the issue/acceptance
+  criteria as the grading reference, rather than asking it to freely judge
+  "is this good code" — reduces inconsistency and matches Mahler's own
+  verify-contract style (D11) of checking against a declared spec.
+- **Adversarial framing beats a vibes verdict.** Explicitly instruct the
+  reviewer to try to disprove/red-team the diff and require concrete
+  evidence (a failing case, a spec mismatch) for any finding, rather than a
+  holistic approve/reject — mirrors the "Refute-or-Promote" stage-gated
+  pattern (cross-model critic + adversarial disprove step + mandatory
+  empirical validation before a finding counts).
+- **LLM judges are weak at "does this code actually work" without running
+  it.** The model review is a complement to CI/tests, not a substitute —
+  keep D18's "trust but verify" (real CI/build/smoke signals) as the hard
+  gate, with cross-model review as an additional filter on top, mainly
+  useful for logic/spec-mismatch issues tests didn't cover.
+- **Cost tiering.** Matches Phase 7's existing note (free tiers preferred,
+  Claude reserved for data/migration items) — frontier/paid models are worth
+  reserving for calibration or high-risk items, not every routine review.
 
 Status: not started — logged 2026-09-12. Slotted as ROADMAP Phase 7; its hook point is
 the different-platform review step in DESIGN.md D11.
