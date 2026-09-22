@@ -96,7 +96,7 @@ def _watch_pr(ctx, project, item, pr):
         # failing log in its prompt. The conductor's lease goes to the run.
         _red_ci(ctx, project, item, pr, view)
         return
-    _merge_queued(ctx, project, item, pr, view)
+    _review_gate(ctx, project, item, pr, view)
 
 
 def _ship_item(ctx, project, item):
@@ -209,6 +209,177 @@ def _merge_queued(ctx, project, item, pr, view):
              "(the merge queue?); the PR stays open, unmerged",
              project, n, priority="high", tags="question", console=True)
     led.release(project, n, holder=CONDUCTOR)
+
+
+def _review_required(item):
+    """DESIGN D11 / BACKLOG's resolved trigger for the adversarial review:
+    the default for size:m and size:l items, and anything the same risk
+    keywords used for escalation (router.risk_min_tier) flag as touching
+    data, migrations, or another high-risk surface — a chore-sized diff with
+    none of those signals ships on CI green alone, same as today."""
+    labels = json.loads(row_get(item, "labels", "[]"))
+    size = next((l.split(":", 1)[1] for l in labels if l.startswith("size:")), None)
+    if size in ("m", "l"):
+        return True
+    return router.risk_min_tier(row_get(item, "title", "")) > 0
+
+
+def _review_gate(ctx, project, item, pr, view):
+    """Between CI-green and merge, DESIGN D11's independent review: CI-green
+    proves the tests that exist pass, not that the diff is sound, so a
+    review run on a platform other than the builder's gates the merge
+    alongside it. Low-risk items (`_review_required` false) skip straight to
+    `_merge_queued`, same as before this existed."""
+    led, n = ctx.led, item["number"]
+    if not _review_required(item):
+        _merge_queued(ctx, project, item, pr, view)
+        return
+    sha = view.get("headRefOid") or ""
+    key = f"review:{project}#{n}"
+    seen = led.get_kv(key)
+    info = json.loads(seen) if seen else {}
+    if info.get("sha") == sha:
+        verdict = info.get("verdict")
+        if verdict == "pass":
+            _merge_queued(ctx, project, item, pr, view)
+            return
+        if verdict == "fail":
+            _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
+            return
+        # verdict still "pending" for this sha: a review run is (or was) in
+        # flight; fall through to the active-run check below rather than
+        # trusting a run that may itself have died without finalizing.
+    # a new sha (no record, or the record is for an older sha) falls through
+    # the same way — _start_review_run below writes the fresh "pending" kv
+    # only once a run actually starts.
+    if any(r["project"] == project and r["number"] == n and r["role"] == "review"
+           for r in led.active_runs()):
+        ctx.say(f"{project}#{n}: PR #{pr} — independent review in progress")
+        return
+    _start_review_run(ctx, project, item, pr, view, sha)
+
+
+def _start_review_run(ctx, project, item, pr, view, sha):
+    """Start DESIGN D11's review run: a different platform from whichever
+    one produced this PR's last build/fix run, so the review is a genuine
+    second opinion rather than the builder grading its own work."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    head = view.get("headRefName") or item["branch"]
+    active = led.active_runs()
+    if len(active) >= cfg["concurrency"]["total"]:
+        ctx.say(f"{project}#{n}: PR #{pr} — CI green, but every run slot is busy; "
+                "the review waits for the next tick")
+        return
+    busy = busy_platforms(cfg, active)
+    last = led.last_run(project, n)
+    builder_platform = last["platform"] if last else None
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    # Claude reviews when the item touches a high-risk surface (D11); the free
+    # tiers otherwise lead, same order as build routing. Never pin Claude as
+    # its own reviewer — if it also built this, fall back to ordinary routing
+    # order (still excluding the builder below) rather than deadlocking on a
+    # pin that `exclude` would immediately rule back out.
+    pin = ("claude" if router.risk_min_tier(row_get(item, "title", "")) > 0
+           and builder_platform != "claude" else None)
+    platform, reasons = router.pick_for_project(
+        cfg, led, pol, "review", pin, busy, size=size,
+        burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+    if not platform:
+        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — "
+                f"{'; '.join(reasons)}")
+        return
+    conductor = led.lease(project, n)
+    handoff_from = ((CONDUCTOR, conductor["epoch"])
+                    if conductor and (conductor["holder"] == CONDUCTOR
+                                      or conductor["holder"].endswith("/conductor")) else None)
+    if start(ctx, project, {**item, "branch": head}, "review", platform,
+             handoff_from=handoff_from, size=size):
+        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
+
+
+def _review_triggered_fix(ctx, project, item, pr, view, findings):
+    """A failed review feeds back as a fix round (BACKLOG's resolved "output
+    shape"): the same routing and attempts/escalation bookkeeping as a red-CI
+    fix (`_red_ci`), except the fix prompt carries the review's findings
+    instead of a failing-log tail, and the dedup key is its own so a review
+    failure and a CI failure on the same sha are never double-counted as one
+    event. Left as its own function rather than sharing `_red_ci`'s body
+    (mahler#232's per-cycle dedup fix lives there) so this new path can never
+    perturb that already-hardened one."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    head = view.get("headRefName") or item["branch"]
+    attempts = item["attempts"] + 1
+    cur_tier = row_get(item, "esc_tier", 0)
+    key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    if not led.get_kv(key):
+        led.set_kv(key, iso(led.now()))
+
+        cur_fails = row_get(item, "esc_fails", 0)
+        new_fails = cur_fails + 1
+        new_tier = cur_tier
+        last = led.last_run(project, n)
+        last_platform = last["platform"] if last else None
+        run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
+        if new_fails >= 2:
+            new_tier = max(cur_tier, run_tier) + 1
+            new_fails = 0
+            ctx.say(f"{project}#{n}: escalated to tier {new_tier} after a failed review on tier <= {max(cur_tier, run_tier)}")
+            led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
+                      "platform": last_platform, "reason": "failed review"})
+
+        if attempts >= pol["max_attempts"]:
+            led.set_state(project, n, "failed",
+                          f"review still failing on PR #{pr} after {attempts} attempts",
+                          attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+            ctx.ping(f"Stuck — {project} #{n}",
+                     f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
+                     project, n, priority="high", tags="warning")
+            led.release(project, n, holder=CONDUCTOR)
+            return
+
+        led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
+        cur_tier = new_tier
+        ctx.ping(f"Review failed — {project} #{n}",
+                 f"PR #{pr}: the independent review found blocking issues; "
+                 "the conductor starts a fix run on it",
+                 project, n, priority="high", tags="warning")
+
+    active = led.active_runs()
+    if len(active) >= cfg["concurrency"]["total"]:
+        ctx.say(f"{project}#{n}: PR #{pr} — review failed, but every run slot is busy; "
+                "the fix waits for the next tick")
+        return
+    busy = busy_platforms(cfg, active)
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    if size == "l":
+        size = "m"
+    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if effective_min_tier >= 2 and size == "s":
+        size = "m"
+    platform, reasons = router.pick_for_project(
+        cfg, led, pol, "fix", item["pin"], busy, size=size,
+        burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+    if not platform:
+        ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
+                f"{'; '.join(reasons)}")
+        return
+    led.upsert_item(project, n, branch=head)
+    conductor = led.lease(project, n)
+    handoff_from = ((CONDUCTOR, conductor["epoch"])
+                    if conductor and (conductor["holder"] == CONDUCTOR
+                                      or conductor["holder"].endswith("/conductor")) else None)
+    context = ("- an independent review of this PR found blocking issues (posted as a PR "
+               f"comment already); address every one of them, verify, push, and end with "
+               f"STATUS: DONE:\n\n{findings}" if findings else
+               "- an independent review of this PR found blocking issues (see the PR "
+               "comments); address them, verify, push, and end with STATUS: DONE")
+    if start(ctx, project, {**item, "branch": head}, "fix", platform,
+             handoff_from=handoff_from, size=size, context=context):
+        led.upsert_item(project, n, attempts=attempts)
 
 
 def _red_ci(ctx, project, item, pr, view):

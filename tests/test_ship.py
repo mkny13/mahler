@@ -341,6 +341,200 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertIn("Stuck", ping.call_args[0][0])
 
+    # ---------- independent review before merge (DESIGN D11) ----------
+
+    def patch_review_start(self, role_seen):
+        """A start() stand-in for review/review-triggered-fix runs: records
+        every call's (role, platform, context) and claims the run lease like
+        the real one would, but launches nothing."""
+        led = self.led
+
+        def fake_start(ctx, project, it, role, platform, handoff_from=None,
+                       size=None, context=None):
+            role_seen.append((role, platform, context))
+            led.claim(project, it["number"], "run:14", "auto", 30,
+                      platform=platform, run_id=14, handoff_from=handoff_from)
+            return True
+
+        patcher = mock.patch.object(ship, "start", side_effect=fake_start)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_low_risk_item_merges_without_a_review(self):
+        """No size:m/l label and nothing risk-flagged in the title: unchanged
+        from before D11 existed."""
+        self.led.upsert_item("x", 5, pr=88, labels="[]")
+        self.ship()
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_size_m_item_on_green_ci_starts_a_review_instead_of_merging(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.gh.head_sha = "greensha1"
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(self.gh.merged, [])            # not merged yet
+        self.assertEqual(len(calls), 1)
+        role, platform, context = calls[0]
+        self.assertEqual(role, "review")
+        info = json.loads(self.led.get_kv("review:x#5"))
+        self.assertEqual(info, {"sha": "greensha1", "verdict": "pending"})
+
+    def test_review_excludes_the_builder_platform(self):
+        """DESIGN D11: the reviewer must be a different platform than
+        whichever one produced the PR — even when that platform would
+        otherwise be first in the review routing order."""
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        rid = self.led.create_run(project="x", number=5, role="build",
+                                  platform="agy-claude", epoch=1, status="running")
+        self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        _, platform, _ = calls[0]
+        self.assertNotEqual(platform, "agy-claude")
+
+    def test_data_touching_item_pins_claude_for_review(self):
+        self.led.upsert_item("x", 5, pr=88, title="database migration for users",
+                             labels="[]")
+        rid = self.led.create_run(project="x", number=5, role="build",
+                                  platform="agy-claude", epoch=1, status="running")
+        self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        _, platform, _ = calls[0]
+        self.assertEqual(platform, "claude")
+
+    def test_claude_never_pinned_as_its_own_reviewer(self):
+        """Would otherwise deadlock: pin=claude plus exclude={claude} leaves
+        no candidate at all."""
+        self.led.upsert_item("x", 5, pr=88, title="database migration for users",
+                             labels="[]")
+        rid = self.led.create_run(project="x", number=5, role="build",
+                                  platform="claude", epoch=1, status="running")
+        self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        _, platform, _ = calls[0]
+        self.assertNotEqual(platform, "claude")
+
+    def test_review_in_flight_just_waits(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.create_run(project="x", number=5, role="review",
+                            platform="agy-gemini", epoch=1, status="running")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(calls, [])
+        self.assertEqual(self.gh.merged, [])
+
+    def test_review_pass_verdict_merges(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
+        self.ship()
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_review_fail_verdict_starts_a_fix_round_with_findings(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail",
+            "findings": "auth.py: missing null check on session token"}))
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(len(calls), 1)
+        role, platform, context = calls[0]
+        self.assertEqual(role, "fix")
+        self.assertIn("auth.py: missing null check on session token", context)
+        self.assertEqual(self.item()["attempts"], 1)
+
+    def test_stale_review_verdict_on_a_new_sha_re_reviews(self):
+        """A fix round (or any new push) changes the head sha: a verdict
+        recorded for the old sha must not merge or re-fix on the new one."""
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "oldsha", "verdict": "pass"}))
+        self.gh.head_sha = "newsha"
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "review")
+
+    # ---------- a review run's lifecycle in finalize (DESIGN D11) ----------
+
+    def review_run(self):
+        self.led.upsert_item("x", 5, state="verifying", pr=88, branch="mahler/5-wired")
+        rid = self.led.create_run(project="x", number=5, role="review", platform="agy-gemini",
+                                  epoch=1, status="running")
+        self.led.claim("x", 5, f"run:{rid}", "auto", 30, platform="agy-gemini", run_id=rid)
+        self.log = os.path.join(self.tmp, "review-agent.log")
+        return {"id": rid, "project": "x", "number": 5, "role": "review", "platform": "agy-gemini",
+                "epoch": 1, "pid": None, "worktree": os.path.join(self.tmp, "wt"),
+                "branch": "mahler/5-wired", "log_path": self.log,
+                "status_path": os.path.join(self.tmp, "exit"),
+                "started_at": iso(NOW), "stop_reason": None}
+
+    def test_review_pass_posts_a_comment_and_records_the_verdict(self):
+        run = self.review_run()
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: REVIEW-PASS no findings\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, run)
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        info = json.loads(self.led.get_kv("review:x#5"))
+        self.assertEqual(info["verdict"], "pass")
+        self.assertIn("no blocking issues", self.gh.comments[-1])
+
+    def test_review_fail_posts_findings_and_records_the_verdict(self):
+        run = self.review_run()
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: REVIEW-FAIL auth.py: missing null check | db.py: unindexed query\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, run)
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        info = json.loads(self.led.get_kv("review:x#5"))
+        self.assertEqual(info["verdict"], "fail")
+        self.assertIn("missing null check", info["findings"])
+        body = self.gh.comments[-1]
+        self.assertIn("auth.py: missing null check", body)
+        self.assertIn("db.py: unindexed query", body)
+
+    def test_review_run_never_snapshots_the_worktree(self):
+        """A review run is read-only (recipes/review.md): finalize must not
+        try to save/commit anything from its worktree, unlike build/fix."""
+        run = self.review_run()
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: REVIEW-PASS no findings\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "snapshot") as snap:
+            finalize.finalize(self.ctx, run)
+        snap.assert_not_called()
+
+    def test_review_run_with_no_status_line_clears_the_pending_verdict(self):
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "pending"}))
+        run = self.review_run()
+        with open(self.log, "w") as fh:
+            fh.write("the agent crashed before printing a status line\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, run)
+        self.assertIsNone(self.led.get_kv("review:x#5"))
+
     # ---------- a fix run's lifecycle in finalize (mahler#18) ----------
 
     def fix_run(self, role="fix"):
