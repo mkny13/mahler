@@ -1121,8 +1121,10 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   `mahler usage --probe` to verify both credential isolation and a fresh reading. The console's
   Capacity defaults to one row per quota group, so `work-codex-*-high` and
   `work-codex-*-low` siblings intentionally consolidate under their base login
-  row rather than appearing as extra accounts. Its capability view exposes the
-  individual routable slots with the same shared reading and their own lines.
+  row rather than appearing as extra accounts; every shared pool appears just
+  once in that view. Its capability view exposes the individual routable slots
+  with the same shared reading and their own lines, grouped by Large, Medium,
+  and Small route capacity.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the

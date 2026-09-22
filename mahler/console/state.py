@@ -84,6 +84,7 @@ def build(cfg, led, stats_range="week"):
         "backlog_total": sum(len(g["items"]) for g in backlog),
         "dep_graph": dep_graph,
         "quota": quota,
+        "capability_sections": _capability_sections(quota),
         "capacity": _capacity_line(quota),
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
@@ -336,6 +337,8 @@ def _model_line(pconf):
 
 
 CAPABILITY_SUFFIXES = ("low", "medium", "high", "astra")
+CAPABILITY_SIZES = ("large", "medium", "small")
+ROUTE_SIZE_NAMES = {"s": "small", "m": "medium", "l": "large"}
 
 
 def _quota_display_name(members):
@@ -394,6 +397,10 @@ def _quota_row(cfg, led, peak, name, members, builders):
     row = {"name": name, "members": members, "model": _quota_model(pconf, members),
            "state": state, "metered": metered, "claude": claude,
            "builds": any(m in builders for m in members),
+           # This is the largest issue size the route is intended to take.
+           # An unrestricted or large-only route belongs in the large section;
+           # max_size is otherwise the routing contract's exact ceiling.
+           "route_size": ROUTE_SIZE_NAMES.get(pconf.get("max_size"), "large"),
            "until": None, "over": [], "soft_pct": 100}
     if state == "soft" and hold_until and hold_until > now:
         row.update(state="hold", until=hold_until, label="hold", tone="warn",
@@ -461,6 +468,22 @@ def _quota(cfg, led, peak):
                                for member in members]
         out.append(row)
     return out
+
+
+def _capability_sections(quota):
+    """Individual routing slots arranged by the work size they can take.
+
+    The quota representation intentionally knows nothing about individual
+    aliases once it has consolidated a shared pool. The capability view is the
+    complementary representation: every routed alias appears once, under the
+    largest route size it is eligible to serve.
+    """
+    buckets = {size: [] for size in CAPABILITY_SIZES}
+    for pool in quota:
+        for capability in pool["capabilities"]:
+            buckets.get(capability["route_size"], buckets["large"]).append(capability)
+    return [{"size": size, "label": size.title(), "capabilities": buckets[size]}
+            for size in CAPABILITY_SIZES if buckets[size]]
 
 
 def _capacity_line(quota):

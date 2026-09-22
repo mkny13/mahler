@@ -156,6 +156,10 @@ a { color: var(--acc); text-decoration: none; }
 .cap-capability { display: none; }
 :root[data-capacity-mode="capability"] .cap-group { display: none; }
 :root[data-capacity-mode="capability"] .cap-capability { display: flex; }
+.capability-sections { flex-direction: column; gap: 18px; }
+.cap-section { display: flex; flex-direction: column; gap: 12px; }
+.cap-section h2 { margin: 0; color: var(--mut); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+                  letter-spacing: .1em; text-transform: uppercase; }
 .capcard { border: 1px solid var(--line); border-radius: 4px; padding: 12px 14px;
            display: flex; flex-direction: column; gap: 7px; }
 .capcard-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }

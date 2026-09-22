@@ -790,11 +790,17 @@ def _d_capacity(s):
            '<button class="seg" data-capacity-mode="capability">By capability</button></div>']
     if not s["quota"]:
         out.append('<span class="empty">No platforms are routed yet.</span>')
+    out.append('<div class="cap-quota-pools">')
     for q in s["quota"]:
         out.append(_cap_card(q, "group"))
-        out.extend(_cap_card(c, "capability") for c in q.get("capabilities", ()))
-    out.append('<div class="foot-note">By quota shows one shared account pool. By capability '
-               'shows the routing slots that draw from it. Tick marks the soft line; hard line '
+    out.append('</div><div class="capability-sections cap-capability">')
+    for section in s["capability_sections"]:
+        out.append(f'<section class="cap-section" data-capability-size="{e(section["size"])}">'
+                   f'<h2>{e(section["label"])} routes</h2>')
+        out.extend(_cap_card(c, "slot") for c in section["capabilities"])
+        out.append('</section>')
+    out.append('</div><div class="foot-note">By quota shows one shared account pool. By capability '
+               'groups the routing slots by the largest route they can take. Tick marks the soft line; hard line '
                'yields work in flight.</div>')
     out.append("</section>")
     return "".join(out)

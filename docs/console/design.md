@@ -328,10 +328,12 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 - **Capacity** (mahler#335) — defaults to one bordered card per quota group:
   account/provider name, worst label, slot count, the gauge bar with its soft
   tick, and a row per quota window (`5h · bar · 63% · soft 60% · resets 13:40`).
-  **By capability** switches to the individual routable model slots, each with
-  its shared account reading and its own soft line; the selection persists in
-  local storage. Reachable from any view via the rail, the Now view's capacity
-  line, or the sidebar's `CAPACITY` header.
+  A shared pool appears exactly once here—never again as one of its capability
+  aliases. **By capability** switches to the individual routable model slots,
+  grouped into Large, Medium, and Small routes by the largest issue size each
+  slot can take. Each slot carries its shared account reading and its own soft
+  line; the selection persists in local storage. Reachable from any view via
+  the rail, the Now view's capacity line, or the sidebar's `CAPACITY` header.
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
@@ -555,8 +557,9 @@ These override the verbatim spec above.
 - **Run detail on desktop** opens as a centred dialog, like the other desktop
   overlays but 560px wide.
 - **Gauges** default to one quota group (claude and claude-opus share one), with
-  capability suffixes deliberately omitted. The Capacity toggle exposes the
-  routed models when needed. The model line carries the plan (`plan` in the
+  capability suffixes deliberately omitted; a shared quota never also gets an
+  alias-level card in that view. The Capacity toggle exposes routed models by
+  Large, Medium, and Small route capacity when needed. The model line carries the plan (`plan` in the
   platform config, e.g. `free tier`, `business plan`), or the account for a
   second login.
 - **Event stream** leaves out lease and stats bookkeeping, and the state changes
