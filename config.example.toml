@@ -69,7 +69,7 @@ verify = "python3 -m unittest discover -s tests"
 # [routing]
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
 # sort = ["claude", "agy-gemini", "agy-claude"]
-# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "copilot-high", "kilo", "claude-opus", "claude"]
+# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "copilot-high", "kilo", "agy-gemini-pro", "claude-opus", "claude"]
 # A machine logged into ChatGPT through Codex CLI can opt in explicitly:
 # plan = ["codex", "claude-opus"]
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
@@ -84,7 +84,7 @@ verify = "python3 -m unittest discover -s tests"
 # # different GitHub login; set that checkout's git credential helper to match.
 # # Zero-token Claude readings for this login (else a lean probe on the work login):
 # # claude_keychain_service = "Claude Code-credentials-xxxxxxxx"
-# routing = { sort = ["claude-work"], plan = ["claude-opus-work"], build = ["copilot-work", "codex-work-gpt1", "claude-opus-work", "claude-work"] }
+# routing = { sort = ["claude-work"], plan = ["claude-opus-work", "codex-high-work-gpt1", "codex-astra-work-gpt1"], build = ["copilot-work", "codex-work-gpt1", "codex-high-work-gpt1", "codex-astra-work-gpt1", "claude-opus-work", "claude-work"] }
 #
 # [platforms.claude-work]
 # from = "claude"
@@ -98,6 +98,13 @@ verify = "python3 -m unittest discover -s tests"
 # [platforms.codex-high-work-gpt1]
 # from = "codex-high"
 # account = "work"
+# model = "gpt-5.6-sol"
+# tier = 4
+# [platforms.codex-astra-work-gpt1]
+# from = "codex-high"
+# account = "work"
+# model = "gpt-6-astra"
+# tier = 5
 # [platforms.copilot-work]
 # from = "copilot"
 # account = "work"
