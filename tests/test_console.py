@@ -327,6 +327,14 @@ class QuotaTests(unittest.TestCase):
                          ["work-codex-gpt1-low", "work-codex-gpt1-medium",
                           "work-codex-gpt1-high"])
 
+    def test_capabilities_are_sectioned_by_largest_route_size(self):
+        cfg = make_cfg(routing={"build": ["cline-free", "claude", "claude-opus"]})
+        sections = state.build(cfg, make_led())["capability_sections"]
+        self.assertEqual([s["size"] for s in sections], ["large", "medium", "small"])
+        self.assertIn("claude-opus", [c["name"] for c in sections[0]["capabilities"]])
+        self.assertIn("claude", [c["name"] for c in sections[1]["capabilities"]])
+        self.assertIn("cline-free", [c["name"] for c in sections[2]["capabilities"]])
+
     def test_capacity_line(self):
         cfg, led = make_cfg(routing={"sort": ["claude"], "plan": ["claude-opus"],
                                      "build": ["agy-claude", "kilo"]}), make_led()
@@ -391,6 +399,18 @@ class CapacityPageTests(unittest.TestCase):
         self.assertEqual(html.count('<div class="capwin">'),
                          sum(len(q["windows"]) * (1 + len(q["capabilities"]))
                              for q in self.s["quota"]))
+
+    def test_modes_keep_quota_pools_and_capabilities_separate(self):
+        html = self.html()
+        quota_html, capability_html = html.split('<div class="capability-sections cap-capability">')
+        self.assertIn('<div class="cap-quota-pools">', quota_html)
+        self.assertNotIn('cap-slot', quota_html)
+        self.assertIn('data-capability-size="large"', capability_html)
+        self.assertIn('data-capability-size="medium"', capability_html)
+        self.assertIn('data-capability-size="small"', capability_html)
+        self.assertIn('Large routes', capability_html)
+        self.assertIn('Medium routes', capability_html)
+        self.assertIn('Small routes', capability_html)
 
     def test_unmetered_groups_say_so(self):
         html = self.html()
