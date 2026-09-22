@@ -430,7 +430,8 @@ four reasons; it needs to expose them).
 Write: pause/resume; peak-hours override; answer a needs-you item (comment +
 state transition); UAT pass (close) / fail (file p1 bug, link, route); create an
 issue from capture with labels `type:*`, `p2`, `mahler:inbox`; stop-and-hand-off
-a run; open a revert PR; clear a platform backoff; mark digest seen.
+a run; open a revert PR; clear a platform backoff; mark digest seen; in-app settings
+(mahler#353).
 
 ## Data shown (all mock)
 
@@ -441,10 +442,14 @@ Platforms, models and thresholds are current as of the last rescan of
 | --- | --- | --- | --- |
 | `claude` | `sonnet` | 5h, weekly | 60/70 · 70/80 |
 | `agy-claude` | `claude-opus-4-6-thinking` | 5h, weekly | 85/85 · 90/90 |
-| `agy-gemini` | `gemini-3.1-pro-high` | 5h, weekly | 85/85 · 90/90 |
+| `agy-gemini` | `gemini-3.8-flash-high` | 5h, weekly | 85/85 · 90/90 |
+| `agy-gemini-pro` | `gemini-3.1-pro-high` | 5h, weekly | 85/85 · 90/90 |
 | `cline-free` | free tier, size s only | unmetered | backoff 60m |
 | `copilot` | `claude-sonnet-5` | monthly (1500 AI credits) | 80 · 95 |
 | `kilo` | `kilo-auto/free`, size s only | unmetered | backoff 60m |
+| `codex` | `gpt-5.6-terra` | 5h, weekly | 70/90 · 70/90 |
+| `codex-high` | `gpt-5.6-sol` | 5h, weekly | 70/90 · 70/90 |
+| `codex-astra-work-gpt1` | `gpt-6-astra` | 5h, weekly | 100/100 · 100/100 |
 
 Mock runs: `mahler#41` on agy-claude (18m of ~26m), `groundwork#83` on
 cline-free (34m, 12m over). Mock needs-you: `couch-tour#9` (API key, p1),
