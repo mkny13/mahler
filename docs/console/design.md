@@ -228,7 +228,7 @@ The health view. Sections top to bottom:
    Verbosity is variable by design: list every reason that is actually binding,
    with a countdown when one exists and an override only when the user can
    genuinely act.
-5. **Capacity** — `CAPACITY` label plus one sentence, e.g. *"3 of 6 platforms
+5. **Capacity** — `CAPACITY` label plus one sentence, e.g. *"3 of 6 quota pools
    available — agy-claude, agy-gemini, copilot. claude is held by peak hours
    until 11:00; kilo is backing off until 11:12."* Then `All quota gauges →`
    linking to Browse.
@@ -261,7 +261,7 @@ The health view. Sections top to bottom:
 
 Order: **quota → backlog → history**.
 
-1. **`QUOTA · WORST WINDOW`** — per platform: name (12.5px mono) + model
+1. **`QUOTA · WORST WINDOW`** — per quota pool: name (12.5px mono) + model
    (10.5px mono `--mut`, ellipsised) on the left, state label right; a 12px bar
    with the soft-line tick; then a detail line (*"5h 63% · weekly 44% · soft line
    60%"*). Footnote: *"Tick marks the soft line — Mahler stops starting runs
@@ -325,12 +325,13 @@ Header row: current view title, and right-aligned a bordered peak-hours button
   reason block, laid out horizontally: sentence, countdown, override button.
   Capacity sentence below a rule; the `Capacity` label is a link to the
   full-screen Capacity view.
-- **Capacity** (mahler#335) — one bordered card per quota group: name, worst
-  label, model line, the gauge bar with its soft tick, and a row per quota
-  window (`5h · bar · 63% · soft 60% · resets 13:40`), then a meta line of
-  members, metered/unmetered, build role and availability. Reachable from any
-  view via the rail, the Now view's capacity line, or the sidebar's `CAPACITY`
-  header.
+- **Capacity** (mahler#335) — defaults to one bordered card per quota group:
+  account/provider name, worst label, slot count, the gauge bar with its soft
+  tick, and a row per quota window (`5h · bar · 63% · soft 60% · resets 13:40`).
+  **By capability** switches to the individual routable model slots, each with
+  its shared account reading and its own soft line; the selection persists in
+  local storage. Reachable from any view via the rail, the Now view's capacity
+  line, or the sidebar's `CAPACITY` header.
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
@@ -553,10 +554,11 @@ These override the verbatim spec above.
   no Mark all seen link).
 - **Run detail on desktop** opens as a centred dialog, like the other desktop
   overlays but 560px wide.
-- **Gauges** are one per quota group (claude and claude-opus share one). The name
-  column is 88px, not 76px: real names like `copilot-work` are longer than the
-  mock's. The model line carries the plan (`plan` in the platform config, e.g.
-  `free tier`, `business plan`), or the account for a second login.
+- **Gauges** default to one quota group (claude and claude-opus share one), with
+  capability suffixes deliberately omitted. The Capacity toggle exposes the
+  routed models when needed. The model line carries the plan (`plan` in the
+  platform config, e.g. `free tier`, `business plan`), or the account for a
+  second login.
 - **Event stream** leaves out lease and stats bookkeeping, and the state changes
   that repeat a `run_started`, `pr_opened` or `pr_merged` row.
 - **GitHub remains authoritative.** Needs-you answers use the console queue and

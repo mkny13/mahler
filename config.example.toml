@@ -84,7 +84,7 @@ verify = "python3 -m unittest discover -s tests"
 # # different GitHub login; set that checkout's git credential helper to match.
 # # Zero-token Claude readings for this login (else a lean probe on the work login):
 # # claude_keychain_service = "Claude Code-credentials-xxxxxxxx"
-# routing = { sort = ["work-claude-medium"], plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"], build = ["copilot-work", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"] }
+# routing = { sort = ["work-claude-medium"], plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"], build = ["work-copilot", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"] }
 #
 # [platforms.work-claude-low]
 # from = "claude-low"
@@ -111,7 +111,7 @@ verify = "python3 -m unittest discover -s tests"
 # account = "work"
 # model = "gpt-6-astra"
 # tier = 5
-# [platforms.copilot-work]
+# [platforms.work-copilot]
 # from = "copilot"
 # account = "work"
 # metered = false                   # manual override for an org seat or no work gh login

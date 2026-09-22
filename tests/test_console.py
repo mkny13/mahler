@@ -272,6 +272,9 @@ class QuotaTests(unittest.TestCase):
         self.assertIn("claude", rows)
         self.assertNotIn("claude-opus", rows)          # shares claude's quota
         self.assertEqual(rows["claude"]["members"], ["claude", "claude-opus"])
+        self.assertEqual(rows["claude"]["model"], "2 capability slots")
+        self.assertEqual([c["name"] for c in rows["claude"]["capabilities"]],
+                         ["claude", "claude-opus"])
         self.assertNotIn("codex", rows)                # in no route by default
 
     def test_labels_and_tones(self):
@@ -306,6 +309,23 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(rows["codex-work"]["model"], "work account")
         cfg["platforms"]["codex-work"]["plan"] = "business plan"
         self.assertEqual(self.rows(cfg, make_led())["codex-work"]["model"], "business plan")
+
+    def test_capability_slots_keep_one_clean_quota_name(self):
+        cfg = make_cfg(
+            accounts={"work": {"routing": {"build": ["work-codex-gpt1-low",
+                                                         "work-codex-gpt1-medium",
+                                                         "work-codex-gpt1-high"]}}},
+            platforms={
+                "work-codex-gpt1-low": {"from": "codex-low", "account": "work"},
+                "work-codex-gpt1-medium": {"from": "codex", "account": "work"},
+                "work-codex-gpt1-high": {"from": "codex-high", "account": "work"},
+            })
+        rows = self.rows(cfg, make_led())
+        self.assertIn("work-codex-gpt1", rows)
+        self.assertNotIn("work-codex-gpt1-low", rows)
+        self.assertEqual([c["name"] for c in rows["work-codex-gpt1"]["capabilities"]],
+                         ["work-codex-gpt1-low", "work-codex-gpt1-medium",
+                          "work-codex-gpt1-high"])
 
     def test_capacity_line(self):
         cfg, led = make_cfg(routing={"sort": ["claude"], "plan": ["claude-opus"],
@@ -360,11 +380,17 @@ class CapacityPageTests(unittest.TestCase):
         for q in self.s["quota"]:
             self.assertIn(f'data-quota="{q["name"]}"', html)
         claude = next(q for q in self.s["quota"] if q["name"] == "claude")
-        self.assertIn("claude, claude-opus", html)          # members share one gauge
+        self.assertIn("2 routing capabilities", html)       # one shared quota pool
+        self.assertIn('data-capacity-mode="quota"', html)
+        self.assertIn('data-capacity-mode="capability"', html)
+        self.assertIn('mahler.capacity.mode', page.JS)
+        self.assertIn('.cap-capability', page.CSS)
+        self.assertIn('data-quota="claude-opus"', html)      # routable slot view
         self.assertIn("soft 60%", html)                     # per-window soft line
         self.assertIn("resets", html)                       # per-window reset time
         self.assertEqual(html.count('<div class="capwin">'),
-                         sum(len(q["windows"]) for q in self.s["quota"]))
+                         sum(len(q["windows"]) * (1 + len(q["capabilities"]))
+                             for q in self.s["quota"]))
 
     def test_unmetered_groups_say_so(self):
         html = self.html()
@@ -1276,7 +1302,7 @@ class RecordedIdleTests(unittest.TestCase):
             self.led.upsert_item("mahler", n, state="ready")
 
         holds = [self.hold("no_platform", 1, role="build", size="m",
-                           blockers={"peak": ["claude-work"], "size": ["copilot-work"]})]
+                           blockers={"peak": ["claude-work"], "size": ["work-copilot"]})]
         
         self.assertEqual(self.idle(holds)["reasons"], [
             {"text": "1 build item(s) (size:m) wait for off-peak hours: claude-work resumes at "
@@ -1284,7 +1310,7 @@ class RecordedIdleTests(unittest.TestCase):
              "items": [self.item(1)]}])
 
         size_holds = [self.hold("no_platform", 2, role="build", size="m",
-                                blockers={"size": ["copilot-work"]})]
+                                blockers={"size": ["work-copilot"]})]
         self.assertEqual(self.idle(size_holds)["reasons"], [
             {"text": "1 item(s) need a builder that takes size:m, and none in the route does.",
              "items": [self.item(2)]}])
@@ -1295,7 +1321,7 @@ class RecordedIdleTests(unittest.TestCase):
             self.led.upsert_item("mahler", n, state="ready")
         self.assertEqual(self.idle(holds)["reasons"], [
             {"text": "1 build item(s) have no platform with headroom — peak hours: claude-work; "
-                     "too small: copilot-work.",
+                     "too small: work-copilot.",
              "items": [self.item(1)]}])
 
     def test_many_dependencies_are_grouped(self):

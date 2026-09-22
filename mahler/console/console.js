@@ -100,6 +100,7 @@
     }
     syncWhy();
     syncNeedDetails();
+    setCapacityMode(capacityMode());
     var ovs = app.querySelectorAll("[data-run-detail]");
     var shown = false;
     for (var k = 0; k < ovs.length; k++) {
@@ -204,6 +205,16 @@
 
   function statsRange() {
     return load("local", "mahler.stats.range") || root.getAttribute("data-stats-range") || "week";
+  }
+
+  function capacityMode() {
+    var value = load("local", "mahler.capacity.mode");
+    return value === "capability" ? value : "quota";
+  }
+  function setCapacityMode(value) {
+    value = value === "capability" ? value : "quota";
+    root.setAttribute("data-capacity-mode", value);
+    store("local", "mahler.capacity.mode", value);
   }
   function statsUrl() {
     var value = statsRange();
@@ -503,6 +514,10 @@
       return;
     }
     if (el.hasAttribute("data-tab-go")) { setTab(el.getAttribute("data-tab-go")); return; }
+    if (el.hasAttribute("data-capacity-mode")) {
+      setCapacityMode(el.getAttribute("data-capacity-mode"));
+      return;
+    }
     if (el.hasAttribute("data-route-move")) {
       var item = el.closest("[data-route-platform]");
       if (item && el.getAttribute("data-route-move") === "up" && item.previousElementSibling) {

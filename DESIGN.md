@@ -1097,7 +1097,7 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   pool. Updated 2026-09-14 (mahler#209): that default under-serves a project that's genuinely
   dual-use rather than personal-with-a-work-fallback — mahler's own personal build list has
   ten platforms, so `work` was essentially never tried even with
-  `work-codex-gpt1-medium`/`copilot-work`
+  `work-codex-gpt1-medium`/`work-copilot`
   idle and fully quota'd. `account_mode = "equal"` opts a project into round-robin merging
   each account's candidate list instead (first candidate from the first account, then the
   second account, then the first account's second candidate, and so on) and picking once
@@ -1119,8 +1119,10 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   `config.example.toml` never rewrites the daemon's live `~/.mahler/config.toml`. The operator
   adds the account, inherited platforms, and project routes there, then runs
   `mahler usage --probe` to verify both credential isolation and a fresh reading. The console's
-  Capacity view renders one row per quota group, so `work-codex-*-high` and `work-codex-*-low` siblings
-  intentionally consolidate under their base login row rather than appearing as extra accounts.
+  Capacity defaults to one row per quota group, so `work-codex-*-high` and
+  `work-codex-*-low` siblings intentionally consolidate under their base login
+  row rather than appearing as extra accounts. Its capability view exposes the
+  individual routable slots with the same shared reading and their own lines.
 - Pins keep working the same way, generalized from equality to membership: a pin is valid if the
   pinned platform's account is one of the project's declared accounts, refused otherwise.
 - Runner's fail-closed check (D25) generalizes the same way: a run must spend an account the

@@ -753,36 +753,49 @@ def _cap_windows(q):
     return f'<div class="capwins">{"".join(rows)}</div>'
 
 
+def _cap_card(q, kind):
+    """A quota-group or individual capability card for the Capacity view."""
+    tick = ""
+    if q["metered"] and q["state"] not in ("backoff", "hold"):
+        tick = f'<span class="tick" style="left:{min(q["soft_pct"], 100):.0f}%"></span>'
+    if kind == "group":
+        meta = [f'{len(q["members"])} routing ' +
+                ("capability" if len(q["members"]) == 1 else "capabilities"),
+                "metered" if q["metered"] else "unmetered"]
+    else:
+        meta = ["shared account quota", "metered" if q["metered"] else "unmetered"]
+    if q["builds"]:
+        meta.append("build role")
+    meta.append("available" if q["available"] else "not available")
+    return (
+        f'<div class="capcard cap-{kind}" data-quota="{e(q["name"])}">'
+        f'<div class="capcard-h"><span class="name mono">{e(q["name"])}</span> '
+        f'<span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
+        f'<span class="model mono">{e(q["model"])}</span>'
+        f'<span class="bar capbar"><span class="f-{q["tone"]}" '
+        f'style="width:{q["width"]:.0f}%"></span>{tick}</span>'
+        f'<span class="detail">{e(q["detail"])}</span>'
+        f'{_cap_windows(q)}'
+        f'<div class="capmeta">'
+        + "".join(f'<span class="meta t-{ "good" if q["available"] and m == meta[-1] else "mut"}">'
+                   f'{e(m)}</span> ' for m in meta)
+        + '</div></div>')
+
+
 def _d_capacity(s):
-    """Full-screen quota detail (mahler#335): every routed platform's gauge,
-    all of its windows, soft lines and reset times, on one page."""
-    out = ['<section class="view view-capacity">']
+    """Capacity can show account quota pools or individual routing slots."""
+    out = ['<section class="view view-capacity">',
+           '<div class="cap-toggle" role="group" aria-label="Capacity view">'
+           '<button class="seg" data-capacity-mode="quota">By quota</button>'
+           '<button class="seg" data-capacity-mode="capability">By capability</button></div>']
     if not s["quota"]:
         out.append('<span class="empty">No platforms are routed yet.</span>')
     for q in s["quota"]:
-        tick = ""
-        if q["metered"] and q["state"] not in ("backoff", "hold"):
-            tick = f'<span class="tick" style="left:{min(q["soft_pct"], 100):.0f}%"></span>'
-        meta = [", ".join(q["members"]), "metered" if q["metered"] else "unmetered"]
-        if q["builds"]:
-            meta.append("build role")
-        meta.append("available" if q["available"] else "not available")
-        out.append(
-            f'<div class="capcard" data-quota="{e(q["name"])}">'
-            f'<div class="capcard-h"><span class="name mono">{e(q["name"])}</span> '
-            f'<span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
-            f'<span class="model mono">{e(q["model"])}</span>'
-            f'<span class="bar capbar"><span class="f-{q["tone"]}" '
-            f'style="width:{q["width"]:.0f}%"></span>{tick}</span>'
-            f'<span class="detail">{e(q["detail"])}</span>'
-            f'{_cap_windows(q)}'
-            f'<div class="capmeta">'
-            + "".join(f'<span class="meta t-{"good" if q["available"] and m == meta[-1] else "mut"}">'
-                      f'{e(m)}</span> ' for m in meta)
-            + '</div></div>')
-    out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs '
-               'there. Hard line yields work in flight. Platforms sharing a login share one '
-               'gauge and one run slot.</div>')
+        out.append(_cap_card(q, "group"))
+        out.extend(_cap_card(c, "capability") for c in q.get("capabilities", ()))
+    out.append('<div class="foot-note">By quota shows one shared account pool. By capability '
+               'shows the routing slots that draw from it. Tick marks the soft line; hard line '
+               'yields work in flight.</div>')
     out.append("</section>")
     return "".join(out)
 

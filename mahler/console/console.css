@@ -148,6 +148,14 @@ a { color: var(--acc); text-decoration: none; }
 
 /* Capacity (mahler#335): one bordered card per quota group, all its windows. */
 .view-capacity { gap: 12px; }
+.cap-toggle { display: flex; gap: 0; align-self: flex-start; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.cap-toggle .seg { border: 0; border-radius: 0; background: transparent; color: var(--mut); padding: 6px 9px; font-size: 11px; }
+.cap-toggle .seg + .seg { border-left: 1px solid var(--line); }
+:root[data-capacity-mode="quota"] .cap-toggle [data-capacity-mode="quota"],
+:root[data-capacity-mode="capability"] .cap-toggle [data-capacity-mode="capability"] { background: var(--ink); color: var(--paper); }
+.cap-capability { display: none; }
+:root[data-capacity-mode="capability"] .cap-group { display: none; }
+:root[data-capacity-mode="capability"] .cap-capability { display: flex; }
 .capcard { border: 1px solid var(--line); border-radius: 4px; padding: 12px 14px;
            display: flex; flex-direction: column; gap: 7px; }
 .capcard-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }

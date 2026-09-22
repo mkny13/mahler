@@ -53,17 +53,17 @@ class CopilotFallbackTests(unittest.TestCase):
         pc["stale_minutes"] = 15
         self.cfg = config.resolve_platforms(config._merge(config.DEFAULTS, {
             "platforms": {
-                "copilot-work": dict(pc, account="work", quota_group="copilot@work"),
+                "work-copilot": dict(pc, account="work", quota_group="copilot@work"),
                 "copilot-high-work": dict(pc, account="work", quota_group="copilot@work")},
             "accounts": {"work": {"env": {"GH_CONFIG_DIR": "/isolated/work-gh"},
-                                    "routing": {"build": ["copilot-work", "copilot-high-work"]}}},
+                                    "routing": {"build": ["work-copilot", "copilot-high-work"]}}},
             "projects": {"acme": {"enabled": True, "account": "work",
                                     "repo": "x/acme", "path": "/tmp/acme"}},
         }))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
         self.led.upsert_item("acme", 1, state="ready", priority=2)
         self.projects = [config.project_policy(self.cfg, "acme")]
-        self.peers = ("copilot-work", "copilot-high-work")
+        self.peers = ("work-copilot", "copilot-high-work")
 
     def refresh(self, samples):
         with mock.patch.object(platforms, "probe_copilot", return_value=samples) as probe:
@@ -80,12 +80,12 @@ class CopilotFallbackTests(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("copilot:no-quota:copilot"))
         self.refresh(platforms.CopilotNoQuota()).assert_not_called()
         rows = state._quota(self.cfg, self.led, None)
-        row = next(r for r in rows if "copilot-work" in r["members"])
+        row = next(r for r in rows if "work-copilot" in r["members"])
         self.assertEqual(row["label"], "unmetered")
         self.assertFalse(row["metered"])
 
     def test_old_zero_is_hidden_and_quota_error_still_backs_off(self):
-        name = "copilot-work"
+        name = "work-copilot"
         pc = self.cfg["platforms"][name]
         self.led.record_usage(name, "monthly", 0, iso(self.now + timedelta(days=5)))
         self.now += timedelta(minutes=20)

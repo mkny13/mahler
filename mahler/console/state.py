@@ -335,11 +335,112 @@ def _model_line(pconf):
     return " · ".join(parts)
 
 
+CAPABILITY_SUFFIXES = ("low", "medium", "high", "astra")
+
+
+def _quota_display_name(members):
+    """The account/provider name shared by capability-slot aliases.
+
+    `work-codex-gpt1-low` through `-astra` become `work-codex-gpt1`; the
+    capacity view should describe the quota pool, not imply a separate quota
+    for every model.  Older compact aliases (claude/claude-opus) converge on
+    their common dash-delimited prefix too.
+    """
+    parts = []
+    for member in members:
+        bits = member.split("-")
+        if bits[-1] in CAPABILITY_SUFFIXES:
+            bits.pop()
+        parts.append(bits)
+    common = []
+    for col in zip(*parts):
+        if len(set(col)) != 1:
+            break
+        common.append(col[0])
+    return "-".join(common) or members[0]
+
+
+def _quota_model(pconf, members):
+    """A group view names its slot count; a single platform shows its model."""
+    if len(members) == 1:
+        return _model_line(pconf)
+    plan = pconf.get("plan")
+    account = config.account_of(pconf)
+    plan = plan or (f"{account} account" if account != config.DEFAULT_ACCOUNT else "")
+    return f"{len(members)} capability slots" + (f" · {plan}" if plan else "")
+
+
+def _quota_row(cfg, led, peak, name, members, builders):
+    """One quota/capability card, using ``name`` for its effective lines."""
+    now = led.now()
+    burst = router.all_bursts(cfg, led)
+    pconf = cfg["platforms"][name]
+    claude = pconf.get("kind") == "claude"
+    state, _ = router.usage_state(led, name, pconf,
+                                  burst_lines=burst if claude else None)
+    usage = led.usage(name)
+    hold = usage.pop(router.HOLD, None)
+    hold_until = router._ts(hold.get("resets_at")) if hold else None
+    metered = router.is_metered(led, name, pconf)
+    windows = []
+    for w in pconf.get("windows", router.WINDOWS):
+        u = usage.get(w)
+        if u is None:
+            continue
+        soft, _ = router.effective_lines(led, name, pconf, w, burst)
+        windows.append({"window": w, "pct": max(min(u["used_pct"], 100), 0),
+                        "soft": soft, "resets": router._ts(u.get("resets_at"))})
+    worst = max(windows, key=lambda x: x["pct"], default=None)
+    row = {"name": name, "members": members, "model": _quota_model(pconf, members),
+           "state": state, "metered": metered, "claude": claude,
+           "builds": any(m in builders for m in members),
+           "until": None, "over": [], "soft_pct": 100}
+    if state == "soft" and hold_until and hold_until > now:
+        row.update(state="hold", until=hold_until, label="hold", tone="warn",
+                   width=100, detail=f"on hold until {_hhmm(hold_until)} — a run never started")
+    elif state == "hard" and not metered:
+        until = max((x["resets"] for x in windows if x["resets"]), default=None)
+        row.update(state="backoff", until=until, label="off", tone="bad", width=100,
+                   detail=(f"quota error — backing off until {_hhmm(until)}"
+                           if until else "quota error — backing off"))
+    elif state == "stale":
+        row.update(label="stale", tone="mut", width=worst["pct"] if worst else 0,
+                   detail="no fresh reading — counted as over the line")
+    elif not metered:
+        row.update(label="unmetered", tone="acc", width=0,
+                   detail="unmetered — no quota signal until an error")
+    else:
+        parts = [f"{x['window']} {x['pct']:.0f}%" for x in windows]
+        if pconf.get("quota_group") == "copilot" or pconf.get("monthly_cap_credits"):
+            cap = pconf.get("monthly_cap_credits")
+            parts = [f"{x['window']} {x['pct']:.0f}%" + (f" of {cap} AI credits" if cap else "")
+                     for x in windows]
+        over = [x for x in windows if x["pct"] >= x["soft"]]
+        if over:
+            parts.append(f"soft line {over[0]['soft']:.0f}%")
+        elif worst and worst["resets"] and worst["resets"] > now:
+            parts.append(f"resets {_when(worst['resets'], now)}")
+        row.update(label=f"{worst['pct']:.0f}%" if worst else "—",
+                   tone="bad" if state == "hard" else "warn" if state == "soft" else "acc",
+                   width=100 if state == "hard" else (worst["pct"] if worst else 0),
+                   detail=" · ".join(parts), over=over)
+    codex = router.codex_detail(led, name, pconf)
+    if codex:
+        row["detail"] += " · " + codex
+    if worst:
+        row["soft_pct"] = worst["soft"]
+    row["windows"] = [{"window": x["window"], "pct": x["pct"], "soft": x["soft"],
+                       "resets": x["resets"],
+                       "resets_txt": _when(x["resets"], now) if x["resets"] else None}
+                      for x in windows]
+    row["peak_held"] = bool(claude and peak and peak["active"])
+    row["available"] = row["state"] == "ok" and not row["peak_held"]
+    return row
+
+
 def _quota(cfg, led, peak):
     """One gauge per quota group (platforms sharing a login and quota share a
     gauge, D21): the worst window fills the bar, the soft line is the tick."""
-    now = led.now()
-    burst = router.all_bursts(cfg, led)
     builders = set(_routed(cfg, ("build",)))
     groups, rows = {}, []
     for name in _routed(cfg):
@@ -354,70 +455,10 @@ def _quota(cfg, led, peak):
     for group, first in rows:
         members = groups[group]["members"]
         name = group if group in members else first
-        pconf = cfg["platforms"][name]
-        claude = pconf.get("kind") == "claude"
-        state, _ = router.usage_state(led, name, pconf,
-                                      burst_lines=burst if claude else None)
-        usage = led.usage(name)
-        hold = usage.pop(router.HOLD, None)
-        hold_until = router._ts(hold.get("resets_at")) if hold else None
-        metered = router.is_metered(led, name, pconf)
-        windows = []
-        for w in pconf.get("windows", router.WINDOWS):
-            u = usage.get(w)
-            if u is None:
-                continue
-            soft, _ = router.effective_lines(led, name, pconf, w, burst)
-            windows.append({"window": w, "pct": max(min(u["used_pct"], 100), 0),
-                            "soft": soft, "resets": router._ts(u.get("resets_at"))})
-        worst = max(windows, key=lambda x: x["pct"], default=None)
-        row = {"name": name, "members": members, "model": _model_line(pconf),
-               "state": state, "metered": metered, "claude": claude,
-               "builds": any(m in builders for m in members),
-               "until": None, "over": [], "soft_pct": 100}
-        if state == "soft" and hold_until and hold_until > now:
-            row.update(state="hold", until=hold_until, label="hold", tone="warn",
-                       width=100, detail=f"on hold until {_hhmm(hold_until)} — a run never started")
-        elif state == "hard" and not metered:
-            until = max((x["resets"] for x in windows if x["resets"]), default=None)
-            row.update(state="backoff", until=until, label="off", tone="bad", width=100,
-                       detail=(f"quota error — backing off until {_hhmm(until)}"
-                               if until else "quota error — backing off"))
-        elif state == "stale":
-            row.update(label="stale", tone="mut", width=worst["pct"] if worst else 0,
-                       detail="no fresh reading — counted as over the line")
-        elif not metered:
-            row.update(label="unmetered", tone="acc", width=0,
-                       detail="unmetered — no quota signal until an error")
-        else:
-            parts = [f"{x['window']} {x['pct']:.0f}%" for x in windows]
-            if group == "copilot" or pconf.get("monthly_cap_credits"):
-                cap = pconf.get("monthly_cap_credits")
-                parts = [f"{x['window']} {x['pct']:.0f}%" + (f" of {cap} AI credits" if cap else "")
-                         for x in windows]
-            over = [x for x in windows if x["pct"] >= x["soft"]]
-            if over:
-                parts.append(f"soft line {over[0]['soft']:.0f}%")
-            elif worst and worst["resets"] and worst["resets"] > now:
-                parts.append(f"resets {_when(worst['resets'], now)}")
-            row.update(label=f"{worst['pct']:.0f}%" if worst else "—",
-                       tone="bad" if state == "hard" else "warn" if state == "soft" else "acc",
-                       width=100 if state == "hard" else (worst["pct"] if worst else 0),
-                       detail=" · ".join(parts), over=over)
-        codex = router.codex_detail(led, name, pconf)
-        if codex:
-            row["detail"] += " · " + codex
-        if worst:
-            row["soft_pct"] = worst["soft"]
-        # per-window detail for the full-screen Capacity view (mahler#335):
-        # the same readings the gauges are built from, all windows shown
-        row["windows"] = [{"window": x["window"], "pct": x["pct"], "soft": x["soft"],
-                           "resets": x["resets"],
-                           "resets_txt": _when(x["resets"], now) if x["resets"] else None}
-                          for x in windows]
-        # held by the peak window even when its quota is fine (D22)
-        row["peak_held"] = bool(claude and peak and peak["active"])
-        row["available"] = row["state"] == "ok" and not row["peak_held"]
+        row = _quota_row(cfg, led, peak, name, members, builders)
+        row["name"] = _quota_display_name(members)
+        row["capabilities"] = [_quota_row(cfg, led, peak, member, [member], builders)
+                               for member in members]
         out.append(row)
     return out
 
