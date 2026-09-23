@@ -450,6 +450,8 @@ Claude may build, but keep headroom for me*):
 4. **Escalation:** two failed verify rounds on a weaker platform → the item is retried a tier
    up, starting from the same branch and handoff note.
 
+Amended by D33: the build order becomes measured per project once `routing_mode = "measured"`.
+
 **Thresholds.** Each platform has a *soft* line (stop starting runs) and a *hard* line (running
 work yields):
 
@@ -962,6 +964,8 @@ never run.
   and `size:l` items are sorted only by `routing.plan` (default: `claude-opus`). With no headroom
   (the weekly reserve, or the peak window, D22) they wait; they never fall back to a free tier.
   `max_size`/`min_size` are builder limits and don't apply to sorting.
+  Amended by D33: planning candidates are measured too; Opus stays the incumbent until another
+  planner proves good enough at lower cost.
 - **The plan is the product.** A planning run writes into each sub-issue a `## Plan` (the files,
   the ordered steps, the test that proves it), a `## Done when`, and a size of `s` or `m`.
 - **Planned sub-issues are born ready.** A new issue with `Part of #P`, where P is a `parent`,
@@ -1366,6 +1370,25 @@ Decided 2026-09-17 (mahler#358). Managed apps consume release notes via an HTTP 
 - **Read-only transport**:
   - The feed transport is strictly read-only (`GET`).
   - Managed apps **never** publish releases, modify draft state, or report acknowledgement state back to Mahler. All release publication remains on the Mahler host via operator command (`mahler release` / console).
+
+
+### D33 — The cheapest variant that does the job, measured on our own work
+
+Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning waits for Opus", and the Claude slots' use of model aliases.
+
+- **The rule.** Every role (plan, sort, build, fix, review) goes to the cheapest variant that reliably gets that job done at that size. It applies to planning as much as to building.
+- **A variant is a model at a reasoning effort, on one platform slot.** GPT-6 Luna at low, medium and high are three variants. So are Opus 5 and Opus 5.5. Effort moves cost and quality as much as the model does, and every CLI Mahler drives exposes it (`claude --effort`, `codex -c model_reasoning_effort=`, `copilot --reasoning-effort`, `agy --effort`, `cline --thinking`, `kilo run --variant`).
+- **Newer isn't assumed better or cheaper.** A new model or version enters as a candidate beside the incumbent, and replaces it only when the numbers say so. Some releases use fewer tokens than their predecessor and some use more (Opus 5 vs 4.8). So slots pin exact model IDs. Aliases like `opus`, which silently follow the latest release, aren't used for routing.
+- **Cost is tokens × list price, per run.** Every CLI already logs tokens. Mahler prices them from `[prices]` in the config ("API-equivalent dollars"), multiplied by an optional per-quota-group `cost_weight` (default 1). It's the one currency that compares a free pool, a subscription and a pay-per-token model, and it captures a verbose model's extra tokens. Mahler still never spends real money: D8's quota lines and "never extra usage" are unchanged.
+- **"Gets the job done" is measured.** A build or fix succeeds on the first attempt when its item merges with no fix round, no failed review, no revert and no bug filed against it within 14 days. A plan or sort succeeds when its sub-issues do: they build on the first attempt, aren't split again, don't escalate, and don't go to needs-you.
+- **Cost per success** = average cost per attempt ÷ first-attempt success rate. A cheap variant that fails half the time can cost more than a mid-priced one that rarely fails.
+- **Good enough** means at least 8 attempts at that role and size, and the lower end of an 80% Wilson interval on first-attempt success at or above the bar: build/fix 70%, sort 80%, plan 75%. Among good-enough variants, the router takes the lowest cost per success that has headroom. Unproven and below-bar variants stay eligible as fallbacks, in that order.
+- **Exploration.** A share of eligible items (`explore_share`: 15% for build, fix and sort; 5% for plan) goes to the cheapest unproven candidate for that role and size, until it has 8 attempts. Items that match the risk keywords (`router.risk_min_tier`) never explore. A failed exploration attempt doesn't count against the item's attempt or escalation budget.
+- **Headroom and escalation still rule.** D8's quota lines, D22's peak window, D23's burst and D8 rule 4's tier escalation are unchanged. Measurement only orders the candidates that pass them.
+- **Measured routing is opt-in per project** (`routing_mode = "measured"`) until the scorecard has data. The default stays today's list order.
+- **The scorecard** shows every variant by role and size: attempts, first-attempt success, tokens, cost per attempt, cost per success, minutes, and whether it's dominated (costlier and less successful than another proven variant). It lives in the console and the weekly digest.
+- **The platform audit (mahler#206) proposes; it never switches.** When a CLI offers a model that no slot has, the audit files an issue proposing it as a candidate. Pins change only through a merged change.
+- **The control plane stays deterministic (D15):** the ranking is arithmetic over the ledger.
 
 
 ### D15 — Deliberately not doing
