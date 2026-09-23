@@ -1,14 +1,62 @@
 """Persistent launch circuit breakers; canaries use the normal routing/lease gates."""
 
 import json
+import os
 import re
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 
 from . import config, version
 from .ledger import iso, parse
 from .redact import redact
 
 CANARY_INTERVAL = timedelta(minutes=30)
+
+
+def _head():
+    ok, sha = version._git(["rev-parse", "HEAD"], config.REPO_ROOT)
+    if not ok or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ValueError("could not read the running app's full HEAD SHA")
+    return sha
+
+
+def _record_launch_ok(ctx):
+    """Persist launch evidence without turning a successful launch into a failure."""
+    try:
+        sha = _head()
+        path = Path(config.STATE) / "launch_ok"
+        try:
+            if path.read_text().strip() == sha:
+                return
+        except FileNotFoundError:
+            pass
+        with tempfile.NamedTemporaryFile(mode="w", dir=config.STATE,
+                                         prefix=".launch_ok.", delete=False) as fh:
+            tmp = fh.name
+            try:
+                fh.write(sha + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+    except Exception as e:
+        ctx.say(f"Could not record launch_ok: {redact(str(e))}")
+
+
+def tick_exit_code(led):
+    """Ask the stable launcher to restore a different, launch-proven commit."""
+    if not _read(led, _key(), None):
+        return 0
+    try:
+        good = (Path(config.STATE) / "launch_ok").read_text().strip()
+        if re.fullmatch(r"[0-9a-f]{40}", good) and good != _head():
+            return 3
+    except (OSError, ValueError):
+        pass
+    return 0
 
 
 def signature(error):
@@ -82,6 +130,7 @@ def failed(ctx, project, number, run_id, error):
 
 
 def succeeded(ctx, project, run_id):
+    _record_launch_ok(ctx)
     led = ctx.led
     successes = _read(led, "launch_successes", {})
     successes.update({"global": run_id, f"project:{project}": run_id})

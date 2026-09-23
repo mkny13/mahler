@@ -1,8 +1,10 @@
 """Launch failures must stop retrying even though the tick itself survives."""
 
 import json
+import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import timedelta
@@ -31,6 +33,7 @@ class LaunchHealthTests(unittest.TestCase):
             'worktree': self.tmp.name, 'branch': 'test', 'replayed': False, 'kept': None}).start()
         self.launch = patch('mahler.tick.runner.launch', return_value={'branch': 'test'}).start()
         self.addCleanup(patch.stopall)
+        patch('mahler.config.STATE', self.tmp.name).start()
         patch('mahler.launch_health.version._short_head', return_value='abc1234').start()
         patch('mahler.tick.router.pick_for_project', return_value=('claude', [])).start()
         for project, number in [('a', 1), ('a', 2), ('a', 3), ('b', 1)]:
@@ -182,3 +185,90 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertIn('All projects: launches paused', reasons[0]['text'])
         launch_health.succeeded(self.ctx, 'a', 100)
         self.assertFalse(any('launches paused' in r['text'] for r in self.idle_reasons()))
+
+
+class LaunchRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name)
+        state = patch.object(config, 'STATE', self.tmp.name)
+        state.start()
+        self.addCleanup(state.stop)
+        self.led = Ledger(':memory:')
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(mk_cfg({}), self.led)
+        self.ctx.say = Mock()
+        self.ctx.ping = Mock()
+        self.sha = 'a' * 40
+        head = patch.object(launch_health.version, '_git', return_value=(True, self.sha))
+        self.git = head.start()
+        self.addCleanup(head.stop)
+
+    def test_success_records_full_app_head_atomically_only_when_changed(self):
+        marker = self.home / 'launch_ok'
+        launch_health.succeeded(self.ctx, 'a', 1)
+        self.assertEqual(marker.read_text(), self.sha + '\n')
+        self.git.assert_called_with(['rev-parse', 'HEAD'], config.REPO_ROOT)
+        with patch.object(launch_health.os, 'replace', wraps=launch_health.os.replace) as replace:
+            launch_health.succeeded(self.ctx, 'a', 2)
+            replace.assert_not_called()
+            self.git.return_value = (True, 'b' * 40)
+            launch_health.succeeded(self.ctx, 'a', 3)
+            replace.assert_called_once()
+        self.assertEqual(marker.read_text(), 'b' * 40 + '\n')
+        self.assertEqual(list(self.home.iterdir()), [marker])
+
+    def test_failed_write_preserves_marker_and_successful_launch_recovery(self):
+        marker = self.home / 'launch_ok'
+        marker.write_text('b' * 40 + '\n')
+        self.led.set_kv('launch_broken', json.dumps({'signature': 'broken'}))
+        with patch.object(launch_health.os, 'replace', side_effect=OSError('disk failure')):
+            launch_health.succeeded(self.ctx, 'a', 1)
+        self.assertEqual(marker.read_text(), 'b' * 40 + '\n')
+        self.assertEqual(list(self.home.iterdir()), [marker])
+        self.assertEqual(json.loads(self.led.get_kv('launch_successes'))['global'], 1)
+        self.assertIsNone(json.loads(self.led.get_kv('launch_broken')))
+        self.ctx.say.assert_called_once()
+
+    def test_git_failure_does_not_write_or_raise(self):
+        self.git.return_value = (False, '')
+        launch_health.succeeded(self.ctx, 'a', 1)
+        self.assertFalse((self.home / 'launch_ok').exists())
+        self.ctx.say.assert_called_once()
+
+    def test_exit_code_requires_global_breaker_and_different_valid_launch_head(self):
+        marker = self.home / 'launch_ok'
+        for scope in (None, 'launch_broken:a', 'launch_broken'):
+            for good in (None, '', 'invalid', self.sha, 'b' * 40):
+                with self.subTest(scope=scope, good=good):
+                    for key in ('launch_broken', 'launch_broken:a'):
+                        self.led.set_kv(key, json.dumps({'signature': 'broken'} if scope == key else None))
+                    marker.unlink(missing_ok=True)
+                    if good is not None:
+                        marker.write_text(good + '\n')
+                    expected = 3 if scope == 'launch_broken' and good == 'b' * 40 else 0
+                    self.assertEqual(launch_health.tick_exit_code(self.led), expected)
+        self.git.return_value = (False, '')
+        self.assertEqual(launch_health.tick_exit_code(self.led), 0)
+
+    def test_cli_propagates_breaker_created_during_tick_before_ledger_closes(self):
+        from argparse import Namespace
+        from mahler import cli
+        (self.home / 'launch_ok').write_text('b' * 40 + '\n')
+
+        def trip(ctx):
+            ctx.led.set_kv('launch_broken', json.dumps({'signature': 'broken'}))
+
+        with patch.object(scheduler, 'take_lock', return_value=object()), \
+                patch.object(scheduler, 'tick', side_effect=trip):
+            self.assertEqual(cli.cmd_tick(Namespace(dry_run=False, no_hot_hold=False),
+                                          mk_cfg({}), self.led), 3)
+
+    def test_state_default_honors_mahler_home_in_fresh_process(self):
+        result = subprocess.run(
+            [sys.executable, '-c',
+             'from mahler import config; print(config.STATE)'],
+            cwd=config.REPO_ROOT, env={**os.environ, 'MAHLER_HOME': self.tmp.name},
+            capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), self.tmp.name)

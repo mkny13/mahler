@@ -152,9 +152,13 @@ def main_tick(cfg, led, dry_run=False, hot_hold=True):
     ctx = Ctx(cfg, led, dry_run=dry_run, hot_hold=hot_hold)
     try:
         tick(ctx)
+        # Inspect the breaker before closing the ledger. CLI returns this code
+        # to the stable launcher even when all tick passes survived.
+        from .launch_health import tick_exit_code
+        rc = tick_exit_code(led)
     finally:
         led.close()
     for line in ctx.lines:
         print(line)
     sys.stdout.flush()
-    return 0
+    return rc
