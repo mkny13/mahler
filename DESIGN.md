@@ -798,8 +798,17 @@ The global threshold takes precedence when both apply. Breakers permit one
 normally routed, leased canary attempt every 30 minutes. A successful launch
 clears the global breaker and its own project's breaker, with recovery pings.
 Other projects' breakers remain held. State and the last 50 failures live in
-ledger KV, so restarting the tick does not reset the hold. This does not change
-the launcher's tick-exit or known-good rollback protocol.
+ledger KV, so restarting the tick does not reset the hold.
+
+Successful launches also atomically record the running app's full SHA in
+`$MAHLER_HOME/launch_ok` (default `~/.mahler/launch_ok`), independently of clean
+ticks advancing `known_good` (mahler#425). A global breaker makes the tick exit 3
+only when that launch-proven SHA exists and differs from HEAD; project breakers
+do not change the exit code. Exit 3 immediately rolls back to `launch_ok` without
+advancing `known_good`. Every runtime rollback records the rejected SHA in
+`bad_sha`; self-update skips that exact commit even with green CI and tests.
+A newer `origin/main` remains eligible for the normal update checks. The launcher
+is still hand-installed: re-run `launcher/install.sh` to activate these changes.
 
 ### D18 — Agents build; the conductor ships
 
