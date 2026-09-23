@@ -9,6 +9,7 @@ import os
 import string
 
 from . import config, gh as gh_module
+from .ledger import row_get
 
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
 
@@ -90,7 +91,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
 
     return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
-                  platform=platform, pr=item.get("pr") or "",
+                  platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
                   mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"

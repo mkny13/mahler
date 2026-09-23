@@ -1,5 +1,6 @@
 """Keep the sorter's planning safeguards in the rendered prompt (mahler#238)."""
 
+import sqlite3
 import unittest
 
 from mahler import prompt, config
@@ -82,6 +83,22 @@ class SizeTargetTests(unittest.TestCase):
         self.assertNotIn("Sizing for this project", work_build)
         self.assertNotIn("Sizing for this project", pers_build)
 
+
+    def test_build_accepts_a_sqlite_row(self):
+        # The scheduler hands prompt.build a sqlite3.Row, which has no .get
+        # (mahler#409: every launch failed for ~18h while this test used dicts).
+        class DummyCtx:
+            def policy(self, proj):
+                return {"repo": "a/b", "rules": ""}
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
+        for pr in (None, 7):
+            item = con.execute("SELECT 1 AS number, 'T' AS title, ? AS pr", (pr,)).fetchone()
+            for role in ("sort", "build"):
+                with self.subTest(pr=pr, role=role):
+                    self.assertIn("a/b", prompt.build(DummyCtx(), "p", item, role, "claude", prep))
+        con.close()
 
 class BuildRecipeTests(unittest.TestCase):
     def setUp(self):
