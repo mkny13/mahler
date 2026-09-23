@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from mahler import config, launch_health, scheduler, tick
-from mahler.console.state import _hold_reasons
+from mahler.console.state import _idle
 from mahler.ledger import Ledger
 from test_schedule import NOW, item, mk_cfg, proj
 
@@ -135,11 +135,50 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertNotEqual(launch_health.signature(ValueError('oops')),
                             launch_health.signature(TypeError('oops')))
 
-    def test_console_explains_hold(self):
+    def idle_reasons(self):
+        return _idle(self.cfg, self.led,
+                     {"paused": False, "peak": None, "quota": []}, [], self.now)["reasons"]
+
+    def test_console_global_breaker_without_pending_candidates(self):
+        # Shipping attempts review/fix launches after schedule_holds is saved.
+        for project in ('a', 'b'):
+            for row in self.led.items(project):
+                self.led.set_state(project, row['number'], 'verifying')
+        scheduler.record_holds(self.ctx)
         with patch('mahler.tick.prompt.build', side_effect=AttributeError('broken')):
             self.start()
             self.start('a', 2)
-        reasons = _hold_reasons(self.cfg, self.ctx.holds,
-                               {'a': self.led.items('a')}, [], self.now)
-        self.assertIn('All projects: launches paused', reasons[0]['text'])
+        for age in (0, 5, 31):
+            with self.subTest(minutes=age):
+                self.now = NOW + timedelta(minutes=age)
+                reasons = self.idle_reasons()
+                self.assertEqual(len(reasons), 1)
+                self.assertIn('All projects: launches paused', reasons[0]['text'])
+                self.assertIn('AttributeError: broken', reasons[0]['text'])
+                self.assertEqual(reasons[0]['countdown'],
+                                 f"next attempt in {max(0, 30 - age)}m")
+        launch_health.succeeded(self.ctx, 'a', 100)
+        self.assertIn('waiting on CI', self.idle_reasons()[0]['text'])
+
+    def test_console_project_breaker_empty_backlog_and_recovery(self):
+        for project in ('a', 'b'):
+            for row in self.led.items(project):
+                self.led.set_state(project, row['number'], 'done')
+        for run in range(1, 4):
+            launch_health.failed(self.ctx, 'a', 1, run, RuntimeError('git failed'))
+        reasons = self.idle_reasons()
+        self.assertEqual(len(reasons), 1)
+        self.assertIn('a: launches paused — RuntimeError: git failed', reasons[0]['text'])
         self.assertIn('30m', reasons[0]['countdown'])
+        launch_health.succeeded(self.ctx, 'a', 4)
+        self.assertIn('backlog is empty', self.idle_reasons()[0]['text'])
+
+    def test_console_breaker_not_duplicated_or_retained_by_snapshot(self):
+        with patch('mahler.tick.prompt.build', side_effect=AttributeError('broken')):
+            self.schedule()
+        scheduler.record_holds(self.ctx)
+        reasons = self.idle_reasons()
+        self.assertEqual(len(reasons), 1)
+        self.assertIn('All projects: launches paused', reasons[0]['text'])
+        launch_health.succeeded(self.ctx, 'a', 100)
+        self.assertFalse(any('launches paused' in r['text'] for r in self.idle_reasons()))

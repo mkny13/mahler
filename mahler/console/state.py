@@ -1211,12 +1211,7 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
             out.append({"text": f"{ref} waits — {overlap} already in progress."})
         elif (kind, project) not in seen:
             seen.add((kind, project))
-            if kind == "launch_broken":
-                scope = "All projects" if h.get("scope") == "global" else project
-                out.append({"text": f"{scope}: launches paused — {h['signature']}. "
-                                    "One canary is tried every 30 minutes.",
-                            "countdown": f"next attempt in {_dur(max(timedelta(0), router._ts(h['until']) - now))}"})
-            elif kind == "capacity":
+            if kind == "capacity":
                 out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s).",
                             "items": _reason_items(cfg, pending, [(project, i["number"])
                                             for i in pending[project] if i["state"] == "ready"])})
@@ -1272,20 +1267,38 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
     return out
 
 
+def _launch_breaker_reasons(led, projects, now):
+    """Breakers persist independently of candidates and the pre-ship snapshot."""
+    reasons = []
+    scopes = [("launch_broken", "All projects")]
+    scopes.extend((f"launch_broken:{p['name']}", p["name"]) for p in projects)
+    for key, scope in scopes:
+        broken = json.loads(led.get_kv(key) or "null")
+        if broken:
+            left = max(timedelta(0), parse(broken["retry_at"]) - now)
+            reasons.append({
+                "text": f"{scope}: launches paused — {broken['signature']}. "
+                        "One canary is tried every 30 minutes.",
+                "countdown": f"next attempt in {_dur(left)}"})
+    return reasons
+
+
 def _idle(cfg, led, s, hot, now):
     """Why nothing is running: every reason that is actually binding, each a
     sentence with a countdown when one exists and an escape when you have one."""
-    projects = config.enabled_projects(cfg)
+    projects = list(config.enabled_projects(cfg))
+    reasons = _launch_breaker_reasons(led, projects, now)
     pending = _pending(cfg, led, projects)
     n_pending = sum(len(v) for v in pending.values())
     if not n_pending:
+        if reasons:
+            return {"headline": "Nothing is running.", "reasons": reasons}
         # with nothing queued, quota and peak hours aren't what holds anything
         waiting = any(led.items(p["name"], ["verifying"]) for p in projects)
         return {"headline": "Nothing is running.", "reasons": [{"text": (
             "Nothing is waiting to start — finished changes are waiting on CI." if waiting
             else "The backlog is empty — nothing to work on.")}]}
     schedule_holds = _schedule_holds(led, now)
-    reasons = []
     if s["paused"]:
         reasons.append({"text": "You paused everything, so nothing new starts.",
                         "action": "Resume all", "act": "resume"})
