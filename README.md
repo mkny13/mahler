@@ -220,3 +220,20 @@ Python 3.12+ and the standard library are the supported runtime. Tests must not
 touch live `~/.mahler` state. Contributor and agent rules live in
 [AGENTS.md](AGENTS.md); design decisions in [DESIGN.md](DESIGN.md); current and
 planned work in [ROADMAP.md](ROADMAP.md).
+
+### Historical run accounting
+
+After upgrading, run `mahler backfill-usage --dry-run` to preview recovery from
+ended runs' saved logs, then `mahler backfill-usage` once to store it. Repeating
+the command is safe: processed runs are skipped, including credit-only logs.
+Launch failures, active runs, missing logs, and removed platforms are skipped.
+Old logs without a model use the platform's current configured model; new runs
+snapshot the configured model at launch and prefer a model reported in the log.
+
+Run rows store uncached input, cached input, output and reasoning tokens,
+CLI-reported credits and available Claude quota-window deltas. Missing usage
+stays NULL. Costs use a CLI-reported dollar amount when available, otherwise
+`[prices."<exact model id>"]` rates (`in`, `cached_in`, `out`, USD per million).
+Cached input defaults to the input rate; reasoning uses the output rate. Unknown
+models remain unpriced. These are raw API-equivalent costs, before any scorecard
+quota-group weighting, and do not represent subscription charges.

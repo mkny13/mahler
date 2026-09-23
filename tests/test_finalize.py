@@ -55,6 +55,25 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def test_finalization_persists_raw_accounting(self):
+        self.cfg["platforms"]["cline-free"]["build_model"] = "gpt-6-sol"
+        self.cfg["platforms"]["cline-free"]["cost_weight"] = 99
+        with open(self.log, "w") as fh:
+            json.dump({"type": "run_result", "finishReason": "completed",
+                       "text": "STATUS: DONE implemented",
+                       "aggregateUsage": {"inputTokens": 100, "outputTokens": 20,
+                                          "cacheReadTokens": 50}}, fh)
+        self.finalize()
+        row = self.led.run(self.run_id)
+        self.assertEqual(row["status"], "ended")
+        self.assertEqual(row["model"], "gpt-6-sol")
+        self.assertEqual(row["tokens_in"], 100)
+        self.assertEqual(row["tokens_cached"], 50)
+        self.assertEqual(row["tokens_out"], 20)
+        self.assertEqual(row["tokens_reasoning"], 0)
+        self.assertAlmostEqual(row["cost_usd"], .0005)
+        self.assertEqual(row["cost_source"], "priced")
+
     def finalize(self):
         saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \

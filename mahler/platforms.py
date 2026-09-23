@@ -623,7 +623,9 @@ def read_log(path, kind, model=None):
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
              'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
-             'last_text': str, 'model': str|None}
+             'last_text': str, 'model': str|None, 'tokens': {in, cached, out, reasoning},
+             'cost_usd': float|None, 'credits': float|None, 'quota_used': dict}
+    Missing token usage is represented by None counts, never invented zeros.
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
            "retry_after": None, "last_text": "", "model": model,
