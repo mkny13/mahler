@@ -327,11 +327,8 @@ def _close_the_books(e, code):
                    "ended_at": iso(led.now())}
     if not run["stop_reason"] and e.reason:     # mahler#124: record why it stopped
         update_cols["stop_reason"] = e.reason
-    if e.log.get("model") and e.log["model"] != run["model"]:
-        # kilo-auto/free is stateless per invocation — the model actually used
-        # is the signal for whether a quota hit reflects one underlying free
-        # model being rate-limited rather than the whole pool (mahler#141).
-        update_cols["model"] = e.log["model"]
+    from .run_usage import columns
+    update_cols.update(columns(e.log, run, ctx.cfg))
     led.update_run(run["id"], **update_cols)
     _check_estimate_calibration(ctx)
     if not e.keep_worktree:

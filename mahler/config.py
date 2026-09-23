@@ -87,6 +87,12 @@ DEFAULT_PLATFORM_AUDIT = {
 }
 
 DEFAULTS = {
+    # Issue #416: announced list prices, 2026-09-23, USD per million tokens.
+    "prices": {
+        "gpt-6-luna": {"in": 0.10, "out": 0.50},
+        "gpt-6-sol": {"in": 2.00, "out": 10.00},
+        "claude-opus-5-5": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
+    },
     "defaults": {
         "enabled": False,
         "base": "main",

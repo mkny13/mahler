@@ -1187,3 +1187,28 @@ class ReleaseLedgerTests(unittest.TestCase):
                 pass
         self.assertIsNotNone(self.led.item("p", 1))
         self.assertIsNone(self.led.item("p", 2))
+
+
+class RunAccountingMigrationTests(unittest.TestCase):
+    def test_old_run_schema_migrates_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "old.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA)
+            con.execute("INSERT INTO runs (project,number,role,platform,epoch,status,started_at) "
+                        "VALUES ('p',1,'build','codex',0,'ended','2026-09-23T00:00:00Z')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.assertIsNone(led.run(1)["tokens_out"])
+            values = dict(tokens_in=100, tokens_cached=50, tokens_out=20,
+                          tokens_reasoning=10, cost_usd=.001, cost_source="priced",
+                          credits=1.5, quota_used='{"5h": 1.2}')
+            led.update_run(1, **values)
+            led.close()
+            led = Ledger(path)
+            try:
+                for key, value in values.items():
+                    self.assertEqual(led.run(1)[key], value)
+            finally:
+                led.close()

@@ -257,6 +257,12 @@ class Ledger:
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
+        for col, ddl in (("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
+                         ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
+                         ("cost_usd", "REAL"), ("cost_source", "TEXT"),
+                         ("credits", "REAL"), ("quota_used", "TEXT")):
+            if col not in run_cols:
+                self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
         if "nudged" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
         if "model" not in run_cols:

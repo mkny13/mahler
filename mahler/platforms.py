@@ -618,7 +618,7 @@ def _note_quota_hit(res, ev):
         res["retry_after"] = ra
 
 
-def read_log(path, kind):
+def read_log(path, kind, model=None):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
@@ -626,7 +626,11 @@ def read_log(path, kind):
              'last_text': str, 'model': str|None}
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
-           "retry_after": None, "last_text": "", "model": None}
+           "retry_after": None, "last_text": "", "model": model,
+           "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
+           "cost_usd": None, "credits": None, "quota_used": {}}
+    from .run_usage import collect
+    first_quota = {}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -640,10 +644,16 @@ def read_log(path, kind):
                 if line.strip():
                     texts.append(line.strip())
                 continue
+            if not isinstance(ev, dict):
+                continue
+            collect(res, ev, kind)
             if kind == "claude":
                 t = ev.get("type")
                 if t == "rate_limit_event":
                     res["usage"] = claude_samples_from_event(ev)
+                    for window, pct, resets in res["usage"]:
+                        first_quota.setdefault(window, pct)
+                        res["quota_used"][window] = round(pct - first_quota[window], 1)
                     info = ev.get("rate_limit_info") or {}
                     if info.get("status") == "rejected":
                         _note_quota_hit(res, ev)
