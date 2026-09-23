@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import config, platforms, presence, prompt, router, runner
+from . import config, launch_health, platforms, presence, prompt, router, runner
 from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
@@ -390,6 +390,9 @@ def schedule(ctx, projects):
         for cand in list(work):
             p, role, it = cand
             name, n = p["name"], it["number"]
+            if not launch_health.allowed(ctx, name, n):
+                work.remove(cand)
+                continue
             if name in started:
                 continue                    # its next item waits for the next pass
             work.remove(cand)
@@ -487,6 +490,8 @@ def schedule(ctx, projects):
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
+    if not launch_health.allowed(ctx, project, n):
+        return False
     ests = led.estimates()
     est = led.run_estimate(ests, platform, role, size)
     run_id = led.create_run(project=project, number=n, role=role, platform=platform, size=size,
@@ -505,6 +510,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         else:
             ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
         return False
+    launch_health.allowed(ctx, project, n, consume=True)
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
         text = prompt.build(ctx, project, item, role, platform, prep, context=context)
@@ -525,9 +531,11 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
                        ended_at=iso(led.now()))
         led.event("launch_failed", project, n, str(e)[:500])
         ctx.say(f"{project}#{n}: launch failed — {e}")
+        launch_health.failed(ctx, project, n, run_id, e)
         return False
     led.update_run(run_id, epoch=lease["epoch"], **meta)
     led.event("run_start", project, n, {"run": run_id, "role": role, "platform": platform})
+    launch_health.succeeded(ctx, project, run_id)
     ctx.say(f"{project}#{n}: started {role} on {platform} (run {run_id})")
     if role == "build":
         led.set_state(project, n, "working", f"{platform} run {run_id}")
