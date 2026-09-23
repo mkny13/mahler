@@ -449,5 +449,72 @@ class ShellSanitizationTests(unittest.TestCase):
                              ["/bin/agent", evil])
 
 
+class RunEnvTests(unittest.TestCase):
+    """runner.run_env constructs the shared environment for launches and resumes (mahler#426)."""
+
+    def test_run_env_contains_fence_and_epoch(self):
+        with tempfile.TemporaryDirectory() as d:
+            policy = {
+                "path": os.path.join(d, "repo"), "repo": "x/y", "base": "main",
+                "link": [], "rules": "", "run_timeout_minutes": 60,
+            }
+            ctx = SimpleNamespace(
+                cfg={"platforms": {"codex": {"kind": "codex"}}, "accounts": {}},
+                policy=lambda project: policy,
+            )
+            with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"):
+                env = runner.run_env(ctx, "myproj", 99, "codex", 42, 7)
+
+            self.assertEqual(env["MAHLER_EPOCH"], "7")
+            self.assertEqual(env["MAHLER_RUN_ID"], "42")
+            self.assertEqual(env["MAHLER_PROJECT"], "myproj")
+            self.assertEqual(env["MAHLER_ISSUE"], "99")
+            self.assertEqual(env["MAHLER_HOME"], config.STATE)
+            self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+            self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")
+            self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/runs/42/hooks")
+
+    def test_run_env_applies_gh_overlay(self):
+        with tempfile.TemporaryDirectory() as d:
+            policy = {
+                "path": os.path.join(d, "repo"), "repo": "acme/y", "base": "main",
+                "account": "work", "link": [],
+            }
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"claude-work": {"kind": "claude", "account": "work"}},
+                    "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.gh-work", "CLAUDE_CONFIG_DIR": "~/.claude-work"}}},
+                },
+                policy=lambda project: policy,
+            )
+            with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/1/hooks"):
+                env = runner.run_env(ctx, "acme", 10, "claude-work", 1, 2)
+            self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
+            self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.gh-work"))
+
+
+class SpawnStdinTests(unittest.TestCase):
+    """runner.spawn supports stdin_path redirection (mahler#426)."""
+
+    def test_spawn_with_stdin_path_quotes_and_redirects(self):
+        evil_path = "/tmp/resume; rm -rf /; 'quote'.md"
+        with mock.patch("subprocess.Popen", return_value=SimpleNamespace(pid=123)) as popen:
+            pid = runner.spawn(["/bin/cmd", "arg1"], "/cwd", "/log", "/exit",
+                               stdin_path=evil_path)
+        self.assertEqual(pid, 123)
+        shell = popen.call_args.args[0][2]
+        self.assertIn(f"< {shlex.quote(evil_path)}", shell)
+        self.assertIn("> /log 2>&1; echo $? > /exit", shell)
+
+    def test_spawn_without_stdin_path_omits_redirection(self):
+        with mock.patch("subprocess.Popen", return_value=SimpleNamespace(pid=123)) as popen:
+            pid = runner.spawn(["/bin/cmd", "arg1"], "/cwd", "/log", "/exit")
+        self.assertEqual(pid, 123)
+        shell = popen.call_args.args[0][2]
+        self.assertNotIn("<", shell)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ the item moves to whatever state its outcome implies.
 """
 
 import json
+import os
 import subprocess
 from datetime import timedelta
 
@@ -452,48 +453,99 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
     return False
 
 
+RESUME_CAP = 2
+
+
 def _try_cline_nudge(ctx, run, kind, log, pol):
-    """Resume a Cline session once when it ended with finishReason 'completed'
-    but no STATUS line and the verify fallback didn't apply (mahler#17).
-    Returns True if the nudge was started (the run stays alive)."""
-    if kind != "cline":
+    """Resume a free builder (Cline or Kilo) when it stopped prematurely or hit
+    a transient network drop (mahler#17, mahler#426).
+
+    Verified resume commands (mahler#426):
+    - Cline 3.0.64:
+      `cline --id <sid>` in `--json` mode always errors with
+      "JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"
+      because `--id` sets `interactive = true` in the CLI parser before stdin is checked.
+      Stdin redirection does not bypass this check because `r.interactive` is checked
+      before stdin is read.
+      Therefore, Cline resume falls back to a fresh `cline` run in the same worktree with
+      the resume prompt as positional argument and stdin redirection:
+      `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
+    - Kilo 7.6.2:
+      `kilo run [prompt] --session <id> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
+      resumes the session. When the error is "session not found" (or no sessionID
+      was recorded in the log), it falls back to a fresh run without `--session`.
+
+    Resumes under two conditions:
+    1. Clean exit (exit 0) with no STATUS line (e.g. premature stop before commit/push).
+       For Cline: finishReason == 'completed' (log["ok"] is True).
+       For Kilo: exit code 0.
+    2. Transient network error: the log's last error matches known drop patterns
+       ("Network connection lost", "The socket connection was closed unexpectedly",
+       "The operation timed out", "session not found").
+
+    Quota hits and daily-cap errors never resume (they go to quota hold).
+    Resumes are capped at RESUME_CAP (2) per run.
+
+    Returns True if a resume was started (the run stays alive).
+    """
+    if kind not in ("cline", "kilo"):
         return False
-    if dict(run).get("nudged"):
+    if log.get("quota_hit"):
         return False
+    nudged = int(dict(run).get("nudged") or 0)
+    if nudged >= RESUME_CAP:
+        return False
+
     code = runner.exit_code(run)
-    if code != 0:
+    last_err = (log.get("last_error") or "") + " " + (log.get("last_text") or "")
+    net_err = platforms.is_network_error(log.get("last_error")) or platforms.is_network_error(log.get("last_text"))
+
+    if net_err:
+        pass
+    elif code == 0:
+        if kind == "cline" and not log.get("ok"):
+            return False
+    else:
         return False
-    # The Cline log must show finishReason == "completed"
-    if not log.get("ok"):
-        return False
-    ctx.say(f"{run['project']}#{run['number']}: Cline ended without STATUS — "
-            f"nudging once to resume")
+
+    ctx.say(f"{run['project']}#{run['number']}: {kind} ended without STATUS "
+            f"({'network error' if net_err else 'clean exit'}) — resuming ({nudged + 1}/{RESUME_CAP})")
     if ctx.dry_run:
         return True
+
     led = ctx.led
-    led.update_run(run["id"], nudged=1, status="running")
-    # Find the session ID from cline history
-    session_id = _cline_session_id(run["worktree"])
-    wt = run["worktree"]
-    timeout_secs = int(pol.get("run_timeout_minutes", 60) * 60)
+    next_nudged = nudged + 1
+    run_dir = os.path.join(config.RUNS_DIR, str(run["id"]))
+    config.ensure_private_dir(run_dir)
+    resume_file = os.path.join(run_dir, f"resume-{next_nudged}.md")
     nudge_prompt = ("You stopped before finishing. Carry on with the next step of "
-                    "your instructions, and end with the STATUS line.")
-    if session_id:
-        argv = [platforms.cline_exe(), "--id", session_id, "--cwd", wt,
-                "--json", "--auto-approve", "true", "-t", str(timeout_secs),
-                nudge_prompt]
-    else:
-        # No session ID found — start a fresh prompt in the same worktree
-        argv = [platforms.cline_exe(), "--cwd", wt, "--json", "--auto-approve", "true",
-                "-t", str(timeout_secs), nudge_prompt]
-    # mahler#70: process lifecycle is runner's job, so the resume goes out
-    # through the same detached, shlex-quoted spawn a launch uses — appending
-    # to the run's own log, so read_log still sees one conversation.
-    pid = runner.spawn(argv, wt, run["log_path"], run["status_path"], append=True)
-    led.update_run(run["id"], pid=pid)
+                    "your instructions, and end with the STATUS line. "
+                    "If your work is done, commit and push it first.")
+    with open(resume_file, "w") as fh:
+        fh.write(nudge_prompt)
+
+    wt = run["worktree"]
+    pconf = ctx.cfg["platforms"][run["platform"]]
+    timeout_mins = pol.get("run_timeout_minutes", 60)
+
+    session_id = None
+    if kind == "kilo":
+        if "session not found" not in last_err.lower():
+            session_id = log.get("session_id")
+    # For cline, session_id stays None (verified that --id rejects --json mode in 3.0.64)
+
+    argv = platforms.resume_argv_for(pconf, nudge_prompt, wt, run["role"], timeout_mins, session_id=session_id)
+    env = runner.run_env(ctx, run["project"], run["number"], run["platform"], run["id"], run["epoch"])
+
+    pid = runner.spawn(argv, wt, run["log_path"], run["status_path"], env=env,
+                       append=True, stdin_path=resume_file)
+    led.update_run(run["id"], nudged=next_nudged, status="running", pid=pid)
     led.heartbeat(run["project"], run["number"], f"run:{run['id']}", run["epoch"],
                   pol["auto_lease_minutes"])
     return True
+
+
+_try_nudge = _try_cline_nudge
 
 
 def _cline_session_id(worktree):

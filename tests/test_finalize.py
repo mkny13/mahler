@@ -349,5 +349,213 @@ class RunTests(unittest.TestCase):
         self.assertEqual(run["stop_reason"], "quota")
 
 
+class ResumeNudgeTests(unittest.TestCase):
+    """Free builder resume tests (mahler#426): shared env, stdin redirection,
+    2-resume cap, network error resumption, and kilo session-not-found fallback."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["accounts"]["work"] = {"env": {"GH_CONFIG_DIR": "~/.gh-work"}}
+        self.cfg["projects"]["x"] = {
+            "path": self.tmp, "repo": "x/y", "base": "main",
+            "account": "work", "link": [], "run_timeout_minutes": 60,
+        }
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("x", 5, state="working", priority=2, sorted_at=iso(NOW))
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh = FakeGH()
+        self.runs_dir = os.path.join(self.tmp, "runs")
+        self.patch_runs = mock.patch.object(config, "RUNS_DIR", self.runs_dir)
+        self.patch_runs.start()
+        self.addCleanup(self.patch_runs.stop)
+
+    def _make_run(self, platform="cline-free", nudged=0):
+        run_id = self.led.create_run(project="x", number=5, role="build",
+                                     platform=platform, epoch=3, status="running")
+        self.led.update_run(run_id, nudged=nudged)
+        self.led.claim("x", 5, f"run:{run_id}", "auto",
+                       self.cfg["defaults"]["auto_lease_minutes"],
+                       platform=platform, run_id=run_id)
+        run_dir = os.path.join(self.runs_dir, str(run_id))
+        os.makedirs(run_dir, exist_ok=True)
+        log_path = os.path.join(run_dir, "agent.log")
+        status_path = os.path.join(run_dir, "exit")
+        run = {"id": run_id, "project": "x", "number": 5, "role": "build",
+               "platform": platform, "epoch": 3, "pid": None,
+               "worktree": os.path.join(self.tmp, "wt"), "branch": "mahler/5-x",
+               "log_path": log_path, "status_path": status_path,
+               "started_at": iso(NOW), "stop_reason": None, "nudged": nudged}
+        return run, run_id, log_path, status_path
+
+    def test_resume_env_includes_fence_epoch_and_gh_overlay(self):
+        run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "text": "partial work",
+                                 "finishReason": "completed"}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("0\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "commits_ahead", return_value=0), \
+                mock.patch.object(runner, "fence_hooks", return_value="/runs/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=777) as spawn:
+            finalize.finalize(self.ctx, run)
+
+        spawn.assert_called_once()
+        env = spawn.call_args.kwargs["env"]
+        self.assertEqual(env["MAHLER_EPOCH"], "3")
+        self.assertEqual(env["MAHLER_RUN_ID"], str(run_id))
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/runs/hooks")
+        self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.gh-work"))
+        self.assertEqual(self.led.run(run_id)["nudged"], 1)
+
+    def test_two_resume_cap(self):
+        # 1st resume: nudged 0 -> 1
+        run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "text": "partial", "finishReason": "completed"}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("0\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=101):
+            finalize.finalize(self.ctx, run)
+        self.assertEqual(self.led.run(run_id)["status"], "running")
+        self.assertEqual(self.led.run(run_id)["nudged"], 1)
+
+        # 2nd resume: nudged 1 -> 2
+        run["nudged"] = 1
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=102):
+            finalize.finalize(self.ctx, run)
+        self.assertEqual(self.led.run(run_id)["status"], "running")
+        self.assertEqual(self.led.run(run_id)["nudged"], 2)
+
+        # 3rd attempt: nudged 2 -> capped, does not resume
+        run["nudged"] = 2
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "spawn") as spawn:
+            finalize.finalize(self.ctx, run)
+        spawn.assert_not_called()
+        self.assertEqual(self.led.run(run_id)["status"], "ended")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+
+    def test_network_error_resumes_cline_on_exit_1(self):
+        run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "error", "message": "Network connection lost"}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("1\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=201) as spawn:
+            finalize.finalize(self.ctx, run)
+        spawn.assert_called_once()
+        self.assertEqual(self.led.run(run_id)["status"], "running")
+        self.assertEqual(self.led.run(run_id)["nudged"], 1)
+
+    def test_network_error_resumes_kilo_on_exit_1(self):
+        run, run_id, log_path, status_path = self._make_run("kilo", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "step_start", "sessionID": "ses_kilo999",
+                                 "part": {"type": "step-start"}}) + "\n")
+            fh.write(json.dumps({"type": "error", "sessionID": "ses_kilo999",
+                                 "error": {"message": "The socket connection was closed unexpectedly"}}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("1\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=202) as spawn:
+            finalize.finalize(self.ctx, run)
+        spawn.assert_called_once()
+        argv = spawn.call_args.args[0]
+        self.assertIn("--session", argv)
+        self.assertEqual(argv[argv.index("--session") + 1], "ses_kilo999")
+        self.assertEqual(self.led.run(run_id)["status"], "running")
+
+    def test_kilo_session_not_found_uses_fresh_run_fallback(self):
+        run, run_id, log_path, status_path = self._make_run("kilo", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "step_start", "sessionID": "ses_stale",
+                                 "part": {"type": "step-start"}}) + "\n")
+            fh.write(json.dumps({"type": "error", "error": {"message": "Error: Session not found"}}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("1\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=203) as spawn:
+            finalize.finalize(self.ctx, run)
+        spawn.assert_called_once()
+        argv = spawn.call_args.args[0]
+        self.assertNotIn("--session", argv)
+        self.assertIn("--dir", argv)
+        self.assertEqual(self.led.run(run_id)["status"], "running")
+
+    def test_quota_error_does_not_resume(self):
+        run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "finishReason": "error",
+                                 "text": "rate limit exceeded: 429"}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("1\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "spawn") as spawn:
+            finalize.finalize(self.ctx, run)
+        spawn.assert_not_called()
+        self.assertEqual(self.led.run(run_id)["status"], "ended")
+        self.assertEqual(self.led.run(run_id)["stop_reason"], "quota")
+
+    def test_resume_writes_prompt_file_with_stdin_redirection(self):
+        run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
+        with open(log_path, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "text": "stop", "finishReason": "completed"}) + "\n")
+        with open(status_path, "w") as fh:
+            fh.write("0\n")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "fence_hooks", return_value="/hooks"), \
+                mock.patch.object(runner, "spawn", return_value=204) as spawn:
+            finalize.finalize(self.ctx, run)
+
+        spawn.assert_called_once()
+        stdin_path = spawn.call_args.kwargs["stdin_path"]
+        expected_path = os.path.join(self.runs_dir, str(run_id), "resume-1.md")
+        self.assertEqual(stdin_path, expected_path)
+        self.assertTrue(os.path.isfile(expected_path))
+        with open(expected_path) as fh:
+            prompt_content = fh.read()
+        self.assertIn("You stopped before finishing. Carry on with the next step of your instructions, and end with the STATUS line.", prompt_content)
+        self.assertIn("If your work is done, commit and push it first.", prompt_content)
+
+
 if __name__ == "__main__":
     unittest.main()
