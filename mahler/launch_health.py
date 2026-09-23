@@ -13,7 +13,7 @@ CANARY_INTERVAL = timedelta(minutes=30)
 
 def signature(error):
     line = redact(str(error)).splitlines()[0] if str(error) else ""
-    line = re.sub(r"(?:[A-Za-z]:\\|[~/]|\./)[^\s'\"<>]+", "<path>", line)
+    line = re.sub(r"(?:[A-Za-z]:[\\/]|[~/]|\.{1,2}/|(?:[\w.-]+/)+)[^\s'\"<>]+", "<path>", line)
     line = re.sub(r"\b[0-9a-fA-F]{7,40}\b", "<sha>", line)
     line = re.sub(r"\d+", "#", line)
     return f"{type(error).__name__}: {line}"[:500]

@@ -130,6 +130,8 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertEqual(len(self.state('launch_failures')), 50)
         self.assertEqual(len({f['signature'] for f in self.state('launch_failures')}), 1)
         self.assertEqual(self.ctx.ping.call_count, 1)
+        self.assertEqual(launch_health.signature(RuntimeError('at src/alpha.py 123 abcdefab')),
+                         launch_health.signature(RuntimeError('at lib/beta.py 456 deadbeef')))
         self.assertNotEqual(launch_health.signature(ValueError('oops')),
                             launch_health.signature(TypeError('oops')))
 
