@@ -14,7 +14,7 @@ import subprocess
 import sys
 from datetime import timedelta
 
-from . import config, notify, router, scheduler, usage as usage_mod
+from . import config, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import GH, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -54,6 +54,9 @@ def cmd_tick(a, cfg, led):
 
 def cmd_status(a, cfg, led):
     now = led.now()
+    if not a.json:
+        for warning in platforms.effort_warnings(cfg):
+            print(warning)
     if a.json:
         ests = led.estimates()
         runs = [dict(r) for r in led.active_runs()]

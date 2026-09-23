@@ -417,6 +417,7 @@ def settings(cfg):
             "enabled": bool(pc.get("enabled", True)),
             "provider": str(pc.get("kind", "")),
             "model": str(pc.get("model", "")),
+            "effort": str(pc.get("effort", "")),
             "sort_model": str(pc.get("sort_model", "")),
             "build_model": str(pc.get("build_model", "")),
         })
@@ -485,7 +486,7 @@ def validate_settings(body, cfg):
         if not isinstance(enabled, bool):
             raise ValueError(f"platform {name}: enabled must be true or false")
         clean = {"name": name, "provider": provider, "enabled": enabled}
-        for key in ("model", "sort_model", "build_model"):
+        for key in ("model", "effort", "sort_model", "build_model"):
             value = item.get(key, "")
             if not isinstance(value, str) or len(value) > 200 or "\n" in value or "\r" in value:
                 raise ValueError(f"platform {name}: {key} must be a single line under 200 characters")
@@ -543,7 +544,7 @@ def _apply_settings(user, clean):
     for item in clean["platforms"]:
         dst = user.setdefault("platforms", {}).setdefault(item["name"], {})
         dst.update(enabled=item["enabled"], kind=item["provider"])
-        for key in ("model", "sort_model", "build_model"):
+        for key in ("model", "effort", "sort_model", "build_model"):
             if item[key] or key in dst:
                 dst[key] = item[key]
     for route in clean["routing"]:

@@ -245,6 +245,40 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-C") + 1], "/tmp/wt")
         self.assertEqual(argv[-1], "do it")
 
+    def test_effort_args_cover_every_cli_and_keep_defaults_unchanged(self):
+        cases = {
+            "claude": ("high", ["--effort", "high"]),
+            "codex": ("xhigh", ["-c", 'model_reasoning_effort="xhigh"']),
+            "copilot": ("minimal", ["--reasoning-effort", "minimal"]),
+            "agy": ("medium", ["--effort", "medium"]),
+            "cline": ("xhigh", ["--thinking", "xhigh"]),
+            "kilo": ("provider/variant", ["--variant", "provider/variant"]),
+        }
+        for kind, (effort, expected) in cases.items():
+            with self.subTest(kind=kind):
+                base = {"kind": kind, "model": ""}
+                without = platforms.argv_for(base, "prompt", "wt", "build", 60)
+                with_effort = dict(base, effort=effort)
+                with_args = platforms.argv_for(with_effort, "prompt", "wt", "build", 60)
+                self.assertEqual(with_args[with_args.index(expected[0]):][:len(expected)], expected)
+                self.assertEqual(platforms.effort_args(base, "build"), [])
+                self.assertNotEqual(with_args, without)
+
+    def test_invalid_effort_is_dropped_and_named_by_warning(self):
+        for kind in ("claude", "codex", "copilot", "agy", "cline"):
+            with self.subTest(kind=kind):
+                pconf = {"kind": kind, "effort": "not-a-real-effort"}
+                self.assertEqual(platforms.effort_args(pconf, "build"), [])
+                self.assertEqual(platforms.effort_warnings({"platforms": {"chosen": pconf}}),
+                                 ["warning: platform chosen has invalid effort 'not-a-real-effort'; using CLI default"])
+
+    def test_effort_defaults_to_default_on_a_run(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        run_id = led.create_run(project="p", number=1, role="build", platform="codex",
+                                effort="default", epoch=0)
+        self.assertEqual(led.run(run_id)["effort"], "default")
+
     def test_kilo_defaults_to_a_free_model_route(self):
         # mahler#29: without an explicit :free route, every kilo run 402s on credits.
         self.assertTrue(self.cfg["platforms"]["kilo"]["model"].endswith("/free"))

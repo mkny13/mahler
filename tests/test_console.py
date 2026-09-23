@@ -90,6 +90,7 @@ class SettingsConfigTests(unittest.TestCase):
                          '[[projects.mahler.backups]]\nname = "db"\nkind = "postgres"\n')
             form = config.settings(config.load(path))
             form["platforms"][0]["model"] = 'model-"one"'
+            form["platforms"][0]["effort"] = "low"
             form["routing"][0]["build"] = list(reversed(form["routing"][0]["build"]))
             form["concurrency"] = {"total": 4, "by_tier": {"1": 3, "2": 2}}
             form["projects"][0]["max_parallel"] = 2
@@ -103,6 +104,7 @@ class SettingsConfigTests(unittest.TestCase):
         self.assertEqual(loaded["concurrency"], {"total": 4, "by_tier": {"1": 3, "2": 2}})
         self.assertEqual(loaded["defaults"]["settle_minutes"], 12)
         self.assertEqual(saved["platforms"][0]["model"], 'model-"one"')
+        self.assertEqual(saved["platforms"][0]["effort"], "low")
 
     def test_invalid_settings_do_not_touch_file(self):
         cfg = make_cfg()
@@ -136,6 +138,7 @@ class SettingsPageTests(unittest.TestCase):
         self.assertIn('data-setting-platform="claude"', doc)
         self.assertIn('data-platform-field="provider"', doc)
         self.assertIn('data-platform-field="build_model"', doc)
+        self.assertIn('data-platform-field="effort"', doc)
         self.assertIn('data-route-scope="default"', doc)
         self.assertIn('data-route-move="up"', doc)
         self.assertIn('data-setting="concurrency.total"', doc)

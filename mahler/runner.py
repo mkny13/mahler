@@ -198,6 +198,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
     argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
     if not argv[0]:
         raise RuntimeError(f"{platform} CLI not found")
+    # Keep the run record aligned with the exact validated setting passed to
+    # the adapter, including the explicit default for unconfigured runs.
+    if hasattr(ctx, "led"):
+        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default")
 
     hooks = fence_hooks(pol["path"], run_dir)
     

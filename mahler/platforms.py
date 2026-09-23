@@ -145,12 +145,60 @@ def _epoch_iso(secs):
 
 # ---------- argv builders ----------
 
+EFFORTS = {
+    "claude": {"low", "medium", "high", "xhigh", "max"},
+    "codex": {"minimal", "low", "medium", "high", "xhigh"},
+    "copilot": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+    "agy": {"low", "medium", "high"},
+    "cline": {"none", "low", "medium", "high", "xhigh"},
+    "kilo": None,                 # provider-specific free-form variants
+}
+
+
+def effort_value(pconf, role):
+    """Return the configured, valid effort/variant for this role, or None."""
+    kind = pconf.get("kind")
+    value = (pconf.get(f"{role}_effort") if kind == "claude" else None) or pconf.get("effort")
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or (EFFORTS.get(kind) is not None and value not in EFFORTS[kind]):
+        return None
+    return value
+
+
+def effort_args(pconf, role):
+    """CLI arguments for configured effort, preserving an empty default."""
+    value = effort_value(pconf, role)
+    if value is None:
+        return []
+    flag = {"claude": "--effort", "codex": "-c", "copilot": "--reasoning-effort",
+            "agy": "--effort", "cline": "--thinking", "kilo": "--variant"}[pconf["kind"]]
+    if pconf["kind"] == "codex":
+        return [flag, f'model_reasoning_effort="{value}"']
+    return [flag, value]
+
+
+def effort_warnings(cfg):
+    """One warning per platform with an invalid configured effort."""
+    out = []
+    for name, pconf in cfg.get("platforms", {}).items():
+        for key in ("effort", "sort_effort", "build_effort"):
+            if key not in pconf or not pconf[key]:
+                continue
+            role = key[:-7] if key.endswith("_effort") else "build"
+            if effort_value({**pconf, key: pconf[key]}, role) != str(pconf[key]).strip():
+                out.append(f"warning: platform {name} has invalid {key} {pconf[key]!r}; using CLI default")
+                break
+    return out
+
 def claude_argv(pconf, prompt, worktree, role):
     model = pconf.get("sort_model") if role == "sort" else pconf.get("build_model")
     argv = [claude_exe(), "-p", prompt, "--output-format", "stream-json", "--verbose",
             "--permission-mode", "bypassPermissions", "--disallowedTools", *CLAUDE_DENY]
     if model:
         argv += ["--model", model]
+    argv += effort_args(pconf, role)
     return argv
 
 
@@ -165,6 +213,7 @@ def agy_argv(pconf, prompt, worktree, role, timeout_minutes=60):
             "--print-timeout", f"{int(timeout_minutes)}m"]
     if pconf.get("model"):
         argv += ["--model", pconf["model"]]
+    argv += effort_args(pconf, role)
     return argv
 
 
@@ -178,7 +227,7 @@ def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
             "-t", str(int(timeout_minutes) * 60)]
     if pconf.get("model"):
         argv += ["-m", pconf["model"]]
-    return argv + [prompt]
+    return argv + effort_args(pconf, role) + [prompt]
 
 
 def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
@@ -193,6 +242,7 @@ def copilot_argv(pconf, prompt, worktree, role, timeout_minutes=60):
         argv += ["--model", pconf["model"]]
     if pconf.get("auto_tier"):
         argv += ["--auto-tier", pconf["auto_tier"]]
+    argv += effort_args(pconf, role)
     return argv
 
 
@@ -207,6 +257,7 @@ def codex_argv(pconf, prompt, worktree, role, timeout_minutes=60):
             "--color", "never", "--json", "-C", worktree]
     if pconf.get("model"):
         argv += ["--model", pconf["model"]]
+    argv += effort_args(pconf, role)
     return argv + [prompt]
 
 
@@ -214,7 +265,7 @@ def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     # Known guardrail gap (mahler#77, accepted): `kilo run` exposes no
     # deny-list flag; `--auto` approves every tool. Accepted for the free-tier
     # runner (build order last, size s only).
-    argv = [kilo_exe(), "run", prompt, "--dir", worktree, "--auto", "--format", "json"]
+    argv = [kilo_exe(), "run"] + effort_args(pconf, role) + [prompt, "--dir", worktree, "--auto", "--format", "json"]
     if pconf.get("model"):
         argv += ["-m", pconf["model"]]
     return argv
