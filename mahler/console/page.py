@@ -926,6 +926,8 @@ def _settings_form(settings, layout):
                    f'{provider_options}</select></label>'
                    f'<label class="settings-field"><span>Default model</span><input type="text" maxlength="200" '
                    f'list="{model_list}" value="{e(platform["model"])}" data-platform-field="model"></label>'
+                   f'<label class="settings-field"><span>Reasoning effort</span><input type="text" maxlength="200" '
+                   f'value="{e(platform["effort"])}" data-platform-field="effort"></label>'
                    f'<label class="settings-field"><span>Sort model</span><input type="text" maxlength="200" '
                    f'list="{model_list}" value="{e(platform["sort_model"])}" data-platform-field="sort_model"></label>'
                    f'<label class="settings-field"><span>Build model</span><input type="text" maxlength="200" '

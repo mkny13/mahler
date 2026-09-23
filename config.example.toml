@@ -75,6 +75,13 @@ verify = "python3 -m unittest discover -s tests"
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
 # build = ["codex", "copilot", "agy-claude", "agy-gemini", "cline-free", "kilo"]
 
+# Optional per-platform reasoning effort. Supported values depend on the CLI;
+# invalid values are ignored and reported by `mahler status`.
+# [platforms.work-codex-gpt1-low]
+# effort = "low"
+# Claude also accepts role-specific overrides: sort_effort = "low" and
+# build_effort = "high" (these take precedence over effort).
+
 # Work logins on this same machine (DESIGN D25). Log each CLI in once with its
 # env var set (e.g. `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login).
 # A work project spends only work platforms; nothing ever falls back to yours.

@@ -261,6 +261,8 @@ class Ledger:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
         if "model" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+        if "effort" not in run_cols:
+            self.con.execute("ALTER TABLE runs ADD COLUMN effort TEXT")
         if "est_mins" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN est_mins REAL")
         if "actual_mins" not in run_cols:
