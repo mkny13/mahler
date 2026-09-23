@@ -1211,7 +1211,12 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
             out.append({"text": f"{ref} waits — {overlap} already in progress."})
         elif (kind, project) not in seen:
             seen.add((kind, project))
-            if kind == "capacity":
+            if kind == "launch_broken":
+                scope = "All projects" if h.get("scope") == "global" else project
+                out.append({"text": f"{scope}: launches paused — {h['signature']}. "
+                                    "One canary is tried every 30 minutes.",
+                            "countdown": f"next attempt in {_dur(max(timedelta(0), router._ts(h['until']) - now))}"})
+            elif kind == "capacity":
                 out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s).",
                             "items": _reason_items(cfg, pending, [(project, i["number"])
                                             for i in pending[project] if i["state"] == "ready"])})

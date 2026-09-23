@@ -788,6 +788,19 @@ itself needs a stable place to stand:
 - The bootstrap is **Python standard library only**, like thread and dispatch. The MCP
   server may bring the first `uv`-managed dependency; the console doesn't need one (D27).
 
+Launch failures have a separate persistent circuit breaker (mahler#411), because a
+caught exception does not crash the tick. The same normalized exception on two
+distinct items without an intervening successful launch pauses all new launches
+and sends one high-priority notification. Three matching failures in one project
+since its last successful launch pause that project and send a normal-priority
+notification; successes elsewhere do not erase that project's failure history.
+The global threshold takes precedence when both apply. Breakers permit one
+normally routed, leased canary attempt every 30 minutes. A successful launch
+clears the global breaker and its own project's breaker, with recovery pings.
+Other projects' breakers remain held. State and the last 50 failures live in
+ledger KV, so restarting the tick does not reset the hold. This does not change
+the launcher's tick-exit or known-good rollback protocol.
+
 ### D18 — Agents build; the conductor ships
 
 Decided 2026-09-12, after weak free models kept finishing the code and then dropping the tail
