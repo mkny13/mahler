@@ -462,18 +462,24 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
 
     Verified resume commands (mahler#426):
     - Cline 3.0.64:
-      `cline --id <sid>` in `--json` mode always errors with
-      "JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"
+      Exact commands tested:
+        1. `cline --id <sid> --cwd <wt> --json --auto-approve true -t <secs> < <resume_file>`
+        2. `cline --id <sid> --json "prompt"`
+      Both exit 1 immediately with:
+        {"type":"error","message":"JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"}
       because `--id` sets `interactive = true` in the CLI parser before stdin is checked.
       Stdin redirection does not bypass this check because `r.interactive` is checked
       before stdin is read.
       Therefore, Cline resume falls back to a fresh `cline` run in the same worktree with
       the resume prompt as positional argument and stdin redirection:
-      `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
+        `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
+      The worktree preserves all accumulated work across resumes.
     - Kilo 7.6.2:
-      `kilo run [prompt] --session <id> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
-      resumes the session. When the error is "session not found" (or no sessionID
-      was recorded in the log), it falls back to a fresh run without `--session`.
+      Exact command tested:
+        `kilo run <prompt> --session <id> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
+      Resumes the session with the same model and directory. When the error is
+      "session not found" (or no sessionID was recorded in the log), it falls back to:
+        `kilo run <prompt> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
 
     Resumes under two conditions:
     1. Clean exit (exit 0) with no STATUS line (e.g. premature stop before commit/push).

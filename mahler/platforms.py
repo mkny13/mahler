@@ -305,13 +305,17 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
 
 def cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
     # Verified with Cline 3.0.64 (mahler#426):
-    # Passing `--id <session>` in `--json` mode always errors with
-    # "JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"
+    # Exact commands tested:
+    #   1. `cline --id <session-id> --cwd <worktree> --json --auto-approve true -t <secs> < <resume_file>`
+    #   2. `cline --id <session-id> --json "prompt"`
+    # Both fail with:
+    #   {"ts":"...","type":"error","message":"JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"}
     # because `--id` sets `interactive = true` in the CLI parser before stdin is checked.
     # Stdin redirection does not bypass this check because `r.interactive` is checked
     # before stdin is read.
     # Therefore, Cline resume always falls back to a fresh cline run in the same worktree
-    # with the prompt as the positional argument.
+    # with the prompt as positional argument (and stdin redirection via runner.spawn):
+    #   `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
     argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
             "-t", str(int(timeout_minutes) * 60)]
     if pconf.get("model"):
@@ -321,9 +325,12 @@ def cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session
 
 def kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
     # Verified with Kilo 7.6.2 (mahler#426):
-    # `kilo run [message..] --dir <dir> --auto --format json` supports `-s/--session <id>`
-    # to continue an existing session. When session_id is None (or "session not found"
-    # occurred), it falls back to a fresh run without --session in the same worktree.
+    # Exact command tested:
+    #   `kilo run <prompt> --session <id> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
+    # Kilo CLI accepts `-s/--session <id>` to continue an existing session.
+    # When session_id is None (or "session not found" occurred), it falls back to a fresh run
+    # without `--session` in the same worktree:
+    #   `kilo run <prompt> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
     argv = [kilo_exe(), "run"] + effort_args(pconf, role) + [prompt]
     if session_id:
         argv += ["--session", session_id]
