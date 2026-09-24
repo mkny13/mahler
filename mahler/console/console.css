@@ -426,9 +426,6 @@ a { color: var(--acc); text-decoration: none; }
 .pq-win .win { white-space: nowrap; }
 .pq-win .bar { height: 9px; }
 .pq-win .resets { white-space: nowrap; text-align: right; }
-:root[data-quota_claude="open"] [data-quota="claude"] .pq-details { display: flex; }
-:root[data-quota_claude="open"] [data-quota="claude"] .pq-toggle .c { display: none; }
-:root[data-quota_claude="open"] [data-quota="claude"] .pq-toggle .o { display: inline; }
 .foot-note { font-size: 11.5px; color: var(--mut); border-top: 1px solid var(--line); padding-top: 9px; }
 .ph .stats-controls { align-items: stretch; }
 .ph .stats-range { min-height: 40px; flex: 1 1 30%; justify-content: center; }

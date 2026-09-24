@@ -1063,7 +1063,8 @@ def _p_browse(s):
         if q["metered"] and q["state"] not in ("backoff", "hold"):
             tick = f'<span class="tick" style="left:{min(q["soft_pct"], 100):.0f}%"></span>'
 
-        if q.get("windows"):
+        # Holds and stale readings can retain windows; show their explanation.
+        if q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale"):
             win_rows = []
             for w in q["windows"]:
                 resets = f'resets {w["resets_txt"]}' if w.get("resets_txt") else "no reset time"
