@@ -142,6 +142,30 @@ class WorktreeTests(Base):
         self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
         self.assertTrue(os.path.isdir(wt))
 
+    def test_launch_failed_run_without_ledger_worktree_is_removed_with_only_own_branch(self):
+        run_id = self.make_run(18, with_wt=False)
+        wt = os.path.join(self.wtroot, "t", f"18-run{run_id}")
+        os.makedirs(wt)
+        own = f"mahler/18-slug-r{run_id}"
+        self.led.update_run(run_id, branch=own, outcome="launch failed: boom")
+        sh(self.repo, "git", "branch", own, "main")
+
+        self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertFalse(os.path.exists(wt))
+        self.assertEqual(sh(self.repo, "git", "branch", "--list", own), "")
+
+    def test_launch_failed_run_never_deletes_canonical_branch(self):
+        run_id = self.make_run(19, with_wt=False)
+        wt = os.path.join(self.wtroot, "t", f"19-run{run_id}")
+        os.makedirs(wt)
+        canonical = "mahler/19-slug"
+        self.led.update_run(run_id, branch=canonical, outcome="launch failed: boom")
+        sh(self.repo, "git", "branch", canonical, "main")
+
+        self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertFalse(os.path.exists(wt))
+        self.assertEqual(sh(self.repo, "git", "branch", "--list", canonical), canonical)
+
 class BranchTests(Base):
     def test_old_snapshot_branch_of_closed_item_deleted(self):
         self.push_branch("mahler/snapshot/12-run5")

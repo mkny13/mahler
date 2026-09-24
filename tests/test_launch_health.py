@@ -11,7 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from mahler import config, launch_health, scheduler, tick
+from mahler import config, launch_health, runner, scheduler, tick
 from mahler.console.state import _idle
 from mahler.ledger import Ledger
 from test_schedule import NOW, item, mk_cfg, proj
@@ -108,6 +108,23 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertTrue(self.start())
         self.assertIsNone(self.state('launch_broken:a'))
         self.assertEqual(self.ctx.ping.call_count, 2)
+
+    def test_launch_failure_cleans_prepared_worktree_and_run_branch(self):
+        run_id = self.led.q1('SELECT MAX(id) AS id FROM runs')['id'] or 0
+        prepared = {
+            'worktree': os.path.join(self.tmp.name, 'worktree'),
+            'branch': f'mahler/1-title-r{run_id + 1}',
+            'replayed': False, 'kept': None,
+        }
+        with patch('mahler.tick.runner.prepare', return_value=prepared), \
+             patch('mahler.tick.prompt.build', side_effect=RuntimeError('prompt failed')), \
+             patch('mahler.tick.runner.remove_worktree') as remove:
+            self.assertFalse(self.start())
+        actual_run_id = self.led.q1('SELECT MAX(id) AS id FROM runs')['id']
+        remove.assert_called_once_with(self.cfg['projects']['a']['path'],
+                                       prepared['worktree'],
+                                       f'mahler/1-title-r{actual_run_id}',
+                                       runner.worktree_root(self.cfg['projects']['a']))
 
     def test_success_breaks_global_failure_streak(self):
         with patch('mahler.tick.prompt.build', side_effect=AttributeError('broken')):

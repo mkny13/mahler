@@ -98,7 +98,8 @@ def _stale_worktrees(ctx, pol):
     worktree root only. -> [(path, branch or None)]."""
     led, now = ctx.led, ctx.led.now()
     grace = timedelta(hours=_cfg(pol, "worktree_grace_hours", WORKTREE_GRACE_HOURS))
-    pdir = os.path.join(runner.worktree_root(pol), pol["name"])
+    root = os.path.abspath(runner.worktree_root(pol))
+    pdir = os.path.join(root, pol["name"])
     if not os.path.isdir(pdir):
         return []
     busy = {os.path.normpath(r["worktree"]) for r in led.active_runs(pol["name"])
@@ -109,15 +110,27 @@ def _stale_worktrees(ctx, pol):
         if not m:
             continue
         wt = os.path.normpath(os.path.join(pdir, entry))
+        if os.path.commonpath((root, os.path.abspath(wt))) != root:
+            continue                             # never cross the configured root
         run = led.run(int(m.group(2)))
         if (run is None or run["status"] != "ended" or run["project"] != pol["name"]
-                or not run["worktree"] or os.path.normpath(run["worktree"]) != wt
                 or wt in busy):
             continue                             # not ours, not over, or still live
+        launch_failed_without_path = (
+            not run["worktree"] and (run["outcome"] or "").startswith("launch failed")
+        )
+        if not launch_failed_without_path and (
+                not run["worktree"] or os.path.normpath(run["worktree"]) != wt):
+            continue                             # not ours, or not a launch leak
         ended = parse(run["ended_at"])
         if not ended or now - ended < grace:
             continue
-        out.append((wt, run["branch"]))
+        if launch_failed_without_path:
+            branch = run["branch"]
+            branch = branch if branch and branch.endswith(f"-r{run['id']}") else None
+        else:
+            branch = run["branch"]
+        out.append((wt, branch))
     return out
 
 

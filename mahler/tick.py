@@ -514,12 +514,21 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
             ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
         return False
     launch_health.allowed(ctx, project, n, consume=True)
+    prep = None
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
         text = prompt.build(ctx, project, item, role, platform, prep, context=context)
         meta = runner.launch(ctx, project, item, role, platform, run_id, lease["epoch"],
                              text, prep)
     except Exception as e:                       # noqa: BLE001 — any launch failure
+        if prep is not None:
+            branch = prep.get("branch")
+            own_branch = (branch if branch and branch.endswith(f"-r{run_id}") else None)
+            try:
+                runner.remove_worktree(pol["path"], prep.get("worktree"), own_branch,
+                                       runner.worktree_root(pol))
+            except Exception as cleanup_error:    # noqa: BLE001 — preserve launch error
+                ctx.say(f"{project}#{n}: launch cleanup failed — {cleanup_error}")
         if handoff_from:
             restored, _ = led.claim(
                 project, n, handoff_from[0], "auto", pol["auto_lease_minutes"],
