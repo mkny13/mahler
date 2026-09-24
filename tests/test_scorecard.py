@@ -221,11 +221,30 @@ class AttemptTests(unittest.TestCase):
                              (iso(self.now),))
         self.result(rid, 'failure', 'revert')
 
-    def test_excluded_fix_does_not_blame_builder(self):
-        rid = self.run_attempt()
-        self.advance()
-        self.run_attempt(role='fix', outcome='launch failed: missing')
-        self.result(rid, 'success')
+    def test_excluded_fix_remains_defect_evidence(self):
+        for number, (outcome, reason, why) in enumerate((
+            ('launch failed: missing', None, 'launch failed'),
+            ('setup failed', 'setup-failed', 'setup failed'),
+            ('not claimed', None, 'not claimed'),
+            ('BLOCKED missing credentials', None, 'BLOCKED'),
+            ('NEEDS-YOU', None, 'NEEDS-YOU'),
+            *[('YIELDED', reason, reason)
+              for reason in ('quota', 'preempted', 'closed', 'parked')],
+        ), start=1):
+            with self.subTest(why=why):
+                for role in ('build', 'fix'):
+                    with self.subTest(role=role):
+                        rid = self.run_attempt(number=number, role=role)
+                        self.result(rid, 'success')
+                        self.advance()
+                        fix = self.run_attempt(number=number, role='fix',
+                                               status='running', ended_at=None)
+                        self.result(rid, 'failure', 'later fix run')
+                        self.led.update_run(fix, status='ended', ended_at=iso(self.now),
+                                            outcome=outcome, stop_reason=reason, exit_code=1)
+                        self.result(fix, 'excluded', why)
+                        self.result(rid, 'failure', 'later fix run')
+                        self.advance()
 
     def test_uat_shipping_timestamp_supports_bug_evidence(self):
         rid = self.run_attempt()

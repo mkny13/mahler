@@ -81,7 +81,9 @@ def attempts(led, since, until=None):
         end = _time(run['ended_at'] or run['started_at'])
         history = [e for e in events[key] if _time(e['at']) >= end]
         if not review:
-            if any(r['role'] == 'fix' and later(run, r) and not _exclusion(r)
+            # Needing a fix is adverse evidence even if that fix's own attempt
+            # is excluded (for example, it later stops for quota).
+            if any(r['role'] == 'fix' and later(run, r)
                    for r in by_item[key]):
                 return 'later fix run'
             if (any(e['kind'] == 'review_verdict' and e['detail'].get('verdict') == 'fail'
