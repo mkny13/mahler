@@ -748,7 +748,7 @@ def read_log(path, kind, model=None):
                     texts.append(line_str)
                     if is_network_error(line_str) or line_str.lower().startswith("error:"):
                         res["last_error"] = line_str
-                    if is_model_unavailable(line_str):
+                    if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
                         res["model_unavailable"] = True
                 continue
             if not isinstance(ev, dict):

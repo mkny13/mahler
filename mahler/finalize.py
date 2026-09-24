@@ -355,7 +355,7 @@ def finalize(ctx, run):
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
     reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
-             ("model_unavailable" if _model_unavailable_fast(run, log, led) else None) or \
+             ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
              ("setup-failed" if setup_failed else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
@@ -407,21 +407,25 @@ MODEL_UNAVAILABLE_GRACE_SECONDS = 120
 MODEL_UNAVAILABLE_HOLD_HOURS = 24
 
 
-def _model_unavailable_fast(run, log, led):
+def _model_unavailable_fast(run, log, code, verb):
     """A model-rejection error (issue #420) counts only when the run failed
     fast — within MODEL_UNAVAILABLE_GRACE_SECONDS of starting. A model that
     was accepted and later hit trouble mid-run is a different problem, and
     must not spend the variant's 24h hold on a coincidental late error."""
-    if not log.get("model_unavailable"):
+    if (not log.get("model_unavailable") or code == 0
+            or log.get("ok") is True or verb == "DONE"):
         return False
     started_at = row_get(run, "started_at")
     if not started_at:
         return False
     try:
-        elapsed = (led.now() - parse(started_at)).total_seconds()
-    except (TypeError, ValueError):
+        # The wrapper writes this file when the process exits. Watchdog
+        # polling and finalization may happen much later.
+        exited_at = os.stat(run["status_path"]).st_mtime
+        elapsed = exited_at - parse(started_at).timestamp()
+    except (OSError, KeyError, TypeError, ValueError):
         return False
-    return elapsed < MODEL_UNAVAILABLE_GRACE_SECONDS
+    return 0 <= elapsed < MODEL_UNAVAILABLE_GRACE_SECONDS
 
 
 def _hold_platform(ctx, run):
