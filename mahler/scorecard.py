@@ -61,6 +61,13 @@ def attempts(led, since, until=None):
         event = dict(row)
         event['detail'] = _json(event['detail'], {})
         events[event['project'], event['number']].append(event)
+    # Older console reverts predate revert_requested; completed outbox rows
+    # retain their item and completion time. Merely queued/cancelled actions do
+    # not establish a defect.
+    for row in led.q("SELECT * FROM console_actions WHERE kind='revert' AND status='done'"):
+        events[row['project'], row['number']].append({
+            'kind': 'revert_requested', 'at': row['done_at'] or row['created_at'],
+            'detail': {}})
     uat = {(r['project'], r['number']): dict(r) for r in led.q('SELECT * FROM uat')}
     releases = {(r['project'], r['number']): dict(r)
                 for r in led.q('SELECT * FROM release_items')}
@@ -157,7 +164,9 @@ def attempts(led, since, until=None):
                 if not results or 'pending' in results:
                     return 'pending', 'awaiting child builds'
                 ok = results.count('success') * 4 >= len(results) * 3
-                return ('success' if ok else 'failure'), 'child first-build success at least 75%' if ok else 'child first-build success below 75%'
+                if ok:
+                    return 'success', 'child first-build success at least 75%'
+                return 'failure', 'child first-build success below 75%'
         return 'failure', outcome or 'no status line'
 
     result = []
