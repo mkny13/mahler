@@ -441,6 +441,10 @@ def expand_variants(cfg):
             variant["quota_group"] = quota_group
             if effort is not None:
                 variant["effort"] = effort
+                # Explicit variants must use this effort for every role.
+                for key in list(variant):
+                    if key.endswith("_effort"):
+                        variant.pop(key)
             if pconf.get("kind") == "claude":
                 variant["sort_model"] = model
                 variant["build_model"] = model

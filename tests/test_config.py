@@ -8,7 +8,7 @@ from contextlib import closing, redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mahler import cli, config, router
+from mahler import cli, config, platforms, router
 from mahler.console import actions, page, state
 from mahler.ledger import Ledger
 
@@ -151,6 +151,22 @@ class PlatformVariantTests(unittest.TestCase):
         self.assertEqual(variant['build_model'], 'opus-5-5')
         self.assertEqual(variant['effort'], 'high')
         self.assertNotIn('model', variant)
+
+    def test_explicit_claude_effort_overrides_all_inherited_role_efforts(self):
+        cfg = self.cfg()
+        slot = {"kind": "claude", "effort": "medium",
+                "variants": ["opus-5-5@low", "opus-5-5"]}
+        roles = ("sort", "plan", "build", "fix", "review")
+        slot.update({f"{role}_effort": "high" for role in roles})
+        cfg["platforms"] = {"claude": slot}
+        cfg = config.resolve_platforms(cfg)
+        for role in roles:
+            with self.subTest(role=role):
+                explicit = cfg["platforms"]["claude/opus-5-5/low"]
+                self.assertEqual(platforms.effort_args(explicit, role), ["--effort", "low"])
+                self.assertEqual(platforms.effort_value(cfg["platforms"]["claude"], role), "high")
+                default = cfg["platforms"]["claude/opus-5-5/default"]
+                self.assertEqual(platforms.effort_value(default, role), "high")
 
     def test_quota_group_defaults_to_the_slots_name_when_unset(self):
         cfg = self.cfg()
