@@ -146,6 +146,16 @@ class ModelUnavailableDetectionTests(unittest.TestCase):
             res = platforms.read_log(path, "agy")
             self.assertTrue(res["model_unavailable"])
 
+    def test_plain_text_requires_an_error_prefix(self):
+        for text, expected in (
+            ("STATUS: DONE Fixed invalid model handling", False),
+            ("Tests cover model not found errors", False),
+            ("Error: invalid model bogus", True),
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as d:
+                res = platforms.read_log(self._log(d, text), "cline")
+                self.assertEqual(res["model_unavailable"], expected)
+
     def test_quota_error_is_not_flagged_as_model_unavailable(self):
         with tempfile.TemporaryDirectory() as d:
             path = self._log(d, {"type": "error", "error": {"message": "429 rate limit exceeded"}})
