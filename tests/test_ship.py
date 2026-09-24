@@ -488,6 +488,7 @@ class ShipTests(unittest.TestCase):
 
     def test_review_pass_posts_a_comment_and_records_the_verdict(self):
         run = self.review_run()
+        self.led.set_kv("review:x#5", json.dumps({"sha": "reviewed-head"}))
         with open(self.log, "w") as fh:
             fh.write("STATUS: REVIEW-PASS no findings\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
@@ -498,6 +499,9 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
         info = json.loads(self.led.get_kv("review:x#5"))
         self.assertEqual(info["verdict"], "pass")
+        event = self.led.q1("SELECT detail FROM events WHERE kind='review_verdict'")
+        self.assertEqual(json.loads(event['detail']), {
+            'verdict': 'pass', 'review_run': run['id'], 'reviewed_sha': 'reviewed-head'})
         self.assertIn("no blocking issues", self.gh.comments[-1])
 
     def test_review_fail_posts_findings_and_records_the_verdict(self):
@@ -511,6 +515,9 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         info = json.loads(self.led.get_kv("review:x#5"))
         self.assertEqual(info["verdict"], "fail")
+        event = self.led.q1("SELECT detail FROM events WHERE kind='review_verdict'")
+        self.assertEqual(json.loads(event['detail']), {
+            'verdict': 'fail', 'review_run': run['id'], 'reviewed_sha': None})
         self.assertIn("missing null check", info["findings"])
         body = self.gh.comments[-1]
         self.assertIn("auth.py: missing null check", body)
