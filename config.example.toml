@@ -23,7 +23,7 @@ verify = "python3 -m unittest discover -s tests"
 # must spend one of the project's declared accounts. Each role the project
 # uses needs its own exact route; an omitted role has no candidates.
 # account_mode = "priority"
-# routing = { sort = ["claude"], plan = ["claude-opus"], build = ["agy-claude", "work-codex-gpt1-medium", "work-codex-makastel-medium", "claude"] }
+# routing = { sort = ["claude"], plan = ["claude-opus"], build = ["@shared-build"] }
 
 # A local macOS app with no shared test backend can use the same command for
 # fast and full verification.  This is the checked, non-secret shape used by
@@ -66,14 +66,27 @@ verify = "python3 -m unittest discover -s tests"
 # cooldown_days = 14
 # stale_verified_days = 90       # DESIGN.md "verified" date older than this is flagged
 
+# Define routes once; @references work globally, in accounts, and in projects.
+# Nested groups expand in order; the first occurrence of each platform wins.
+# Unknown/cyclic references are skipped with a `mahler status` warning.
+# Priority projects reject broken references and undeclared accounts.
+# The console preserves @tokens when saving settings.
+# [groups]
+# free = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo"]
+# personal-build = ["@free", "copilot-high", "agy-gemini-pro", "claude-opus", "claude"]
+# work-plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"]
+# work-build = ["work-copilot", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"]
+# makastel = ["work-codex-makastel-low", "work-codex-makastel-medium", "work-codex-makastel-high"]
+# shared-build = ["@free", "@work-build", "@makastel", "claude"]
+
 # [routing]
 # plan = ["claude-opus"]         # goals, audits, size:l → Opus only (DESIGN D21)
 # sort = ["claude", "agy-gemini", "agy-claude"]
-# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "copilot-high", "kilo", "agy-gemini-pro", "claude-opus", "claude"]
+# build = ["@personal-build"]
 # A machine logged into ChatGPT through Codex CLI can opt in explicitly:
 # plan = ["codex", "claude-opus"]
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
-# build = ["codex", "copilot", "agy-claude", "agy-gemini", "cline-free", "kilo"]
+# build = ["codex", "@free"]
 
 # Optional per-platform reasoning effort. Supported values depend on the CLI;
 # invalid values are ignored and reported by `mahler status`.
@@ -91,7 +104,7 @@ verify = "python3 -m unittest discover -s tests"
 # # different GitHub login; set that checkout's git credential helper to match.
 # # Zero-token Claude readings for this login (else a lean probe on the work login):
 # # claude_keychain_service = "Claude Code-credentials-xxxxxxxx"
-# routing = { sort = ["work-claude-medium"], plan = ["work-claude-high", "work-codex-gpt1-high", "work-codex-gpt1-astra"], build = ["work-copilot", "work-codex-gpt1-low", "work-codex-gpt1-medium", "work-codex-gpt1-high", "work-codex-gpt1-astra", "work-claude-high", "work-claude-medium", "work-claude-low"] }
+# routing = { sort = ["work-claude-medium"], plan = ["@work-plan"], build = ["@work-build"] }
 #
 # [platforms.work-claude-low]
 # from = "claude-low"
@@ -131,7 +144,7 @@ verify = "python3 -m unittest discover -s tests"
 # copy auth.json between accounts.
 # [accounts.work-makastel]
 # env = { CODEX_HOME = "~/.codex-ncsu" }
-# routing = { build = ["work-codex-makastel-low", "work-codex-makastel-medium", "work-codex-makastel-high"] }
+# routing = { build = ["@makastel"] }
 # [platforms.work-codex-makastel-low]
 # from = "codex-low"
 # account = "work-makastel"

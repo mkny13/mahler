@@ -394,6 +394,55 @@ def resolve_platforms(cfg):
     return cfg
 
 
+def expand_route(cfg, route, warnings=None):
+    """Resolve @groups without mutating the operator's route tokens.
+
+    Walk iteratively so even deeply nested or cyclic groups cannot exhaust
+    Python's stack. Only the offending reference is dropped; siblings survive.
+    """
+    groups = cfg.get("groups") or {}
+    result, seen = [], set()
+    stack = [(entry, ()) for entry in reversed(route)]
+    while stack:
+        entry, ancestors = stack.pop()
+        if isinstance(entry, str) and entry.startswith("@"):
+            name = entry[1:]
+            problem = None
+            if name in ancestors:
+                problem = f"routing group cycle at @{name}"
+            elif name not in groups:
+                problem = f"unknown routing group @{name}"
+            elif not isinstance(groups[name], list):
+                problem = f"routing group @{name} must be a list"
+            if problem:
+                warning = f"Warning: {problem}; reference ignored"
+                if warnings is not None and warning not in warnings:
+                    warnings.append(warning)
+                continue
+            stack.extend((child, ancestors + (name,))
+                         for child in reversed(groups[name]))
+        elif not isinstance(entry, str):
+            warning = "Warning: routing entry must be a platform name or @group; entry ignored"
+            if warnings is not None and warning not in warnings:
+                warnings.append(warning)
+        elif entry not in seen:
+            seen.add(entry)
+            result.append(entry)
+    return result
+
+
+def routing_warnings(cfg):
+    """One status warning per broken group reference, across all route scopes."""
+    warnings = []
+    tables = [cfg.get("routing") or {}]
+    tables += [a.get("routing") or {} for a in cfg.get("accounts", {}).values()]
+    tables += [p.get("routing") or {} for p in cfg.get("projects", {}).values()]
+    for table in tables:
+        for route in table.values():
+            expand_route(cfg, route, warnings)
+    return warnings
+
+
 def load(path=None):
     path = path or CONFIG_PATH
     user = {}
@@ -449,6 +498,7 @@ def settings(cfg):
         "platforms": platforms,
         "provider_options": list(PLATFORM_KINDS),
         "model_options": model_options,
+        "group_options": ["@" + name for name in cfg.get("groups", {})],
         "platform_options": list(cfg.get("platforms", {})),
         "routing": routes,
         "concurrency": {
@@ -504,14 +554,16 @@ def validate_settings(body, cfg):
     if (not isinstance(routes, list) or len(routes) != len(expected_routes)
             or {r.get("key") for r in routes if isinstance(r, dict)} != expected_routes):
         raise ValueError("routing scopes changed; reload the page and try again")
+    route_options = known | {"@" + name for name in cfg.get("groups", {})}
     clean_routes = []
     for route in routes:
         clean = {"key": route["key"]}
         for role in SETTING_ROLES:
             names = route.get(role)
-            if (not isinstance(names, list) or any(not isinstance(n, str) or n not in known for n in names)
+            if (not isinstance(names, list) or any(not isinstance(n, str) or n not in route_options
+                                                 for n in names)
                     or len(names) != len(set(names))):
-                raise ValueError(f"{route['key']} {role} route must contain unique configured platforms")
+                raise ValueError(f"{route['key']} {role} route must contain unique configured platforms or @groups")
             clean[role] = names
         clean_routes.append(clean)
 
@@ -796,7 +848,14 @@ def validate_accounts(cfg):
                 if role not in SETTING_ROLES or not isinstance(route, list) or not route:
                     raise ValueError(f"project {name!r}: priority routing {role!r} "
                                      "must be a non-empty platform list")
-                for platform in route:
+                if any(not isinstance(entry, str) for entry in route):
+                    raise ValueError(f"project {name!r}: priority routing names "
+                                     "unknown platform (expected a string)")
+                warnings = []
+                expanded = expand_route(cfg, route, warnings)
+                if warnings:
+                    raise ValueError(f"project {name!r}: priority routing: {warnings[0]}")
+                for platform in expanded:
                     pconf = cfg.get("platforms", {}).get(platform)
                     if not isinstance(platform, str) or pconf is None:
                         raise ValueError(f"project {name!r}: priority routing names "

@@ -13,7 +13,7 @@ from itertools import zip_longest
 from math import ceil
 from zoneinfo import ZoneInfo
 
-from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of
+from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of, expand_route
 from .ledger import parse
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
@@ -363,7 +363,7 @@ def burst_build_order(cfg):
     During a burst, Claude quota is the one expiring, so Claude platforms go
     first; the free tiers remain as fallback behind them.
     """
-    order = cfg["routing"]["build"]
+    order = expand_route(cfg, cfg["routing"]["build"])
     claude = [n for n in order if cfg["platforms"].get(n, {}).get("kind") == "claude"]
     rest = [n for n in order if cfg["platforms"].get(n, {}).get("kind") != "claude"]
     return claude + rest
@@ -373,8 +373,10 @@ def routing_for(cfg, account):
     """The per-role routing table for `account` (DESIGN D25): this machine's own
     account uses the top-level [routing]; another account uses only its own."""
     if account == DEFAULT_ACCOUNT:
-        return cfg["routing"]
-    return (cfg.get("accounts", {}).get(account) or {}).get("routing") or {}
+        table = cfg["routing"]
+    else:
+        table = (cfg.get("accounts", {}).get(account) or {}).get("routing") or {}
+    return {role: expand_route(cfg, route) for role, route in table.items()}
 
 
 def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
@@ -383,7 +385,7 @@ def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
     if pin:
         order = [pin]
     else:
-        order = routing.get(role) or routing.get("build") or []
+        order = expand_route(cfg, routing.get(role) or routing.get("build") or [])
     if not pin and burst_lines and role == "build":
         bursting = [n for n in order if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]
         order = bursting + [n for n in order if n not in bursting]
@@ -424,7 +426,7 @@ def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=
     if pin:
         order = [pin]
     else:
-        order = routing.get(role) or routing.get("build") or []
+        order = expand_route(cfg, routing.get(role) or routing.get("build") or [])
     if not pin and burst_lines and role == "build":
         bursting = [n for n in order
                     if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]
