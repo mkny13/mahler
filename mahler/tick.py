@@ -231,10 +231,11 @@ def _candidates(ctx, projects):
     return work
 
 
-def _headroom(ctx, role, per_platform, busy, burst_lines=None, account=config.DEFAULT_ACCOUNT):
+def _headroom(ctx, role, per_group, busy, burst_lines=None, account=config.DEFAULT_ACCOUNT):
     """Routing platforms for `role` that could take a new run right now:
-    enabled, under per-platform max_runs, reachable and under its soft lines.
-    Burst lines (D23) raise Claude's soft lines when a window is about to reset.
+    enabled, under its quota_group's max_runs (shared across every variant of
+    a platform slot, D21/#420), reachable and under its soft lines. Burst
+    lines (D23) raise Claude's soft lines when a window is about to reset.
     The peak window (D22) removes Claude platforms from headroom entirely while
     it's active, so the `sorts_wait` logic stays right: a sort that would pick
     Claude must not be counted as having a free builder available.
@@ -244,7 +245,8 @@ def _headroom(ctx, role, per_platform, busy, burst_lines=None, account=config.DE
     free = []
     for name in router.candidates(cfg, role, burst_lines=burst_lines, account=account):
         pc = cfg["platforms"][name]
-        if name in busy or per_platform.get(name, 0) >= pc.get("max_runs", 1):
+        group = pc.get("quota_group", name)
+        if name in busy or per_group.get(group, 0) >= pc.get("max_runs", 1):
             continue
         if peak_active and pc.get("kind") == "claude":
             continue
@@ -310,10 +312,11 @@ def schedule(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     active = led.active_runs()
     total = len(active)
-    in_project, per_platform = {}, {}
+    in_project, per_group = {}, {}
     for r in active:
         in_project[r["project"]] = in_project.get(r["project"], 0) + 1
-        per_platform[r["platform"]] = per_platform.get(r["platform"], 0) + 1
+        group = cfg["platforms"].get(r["platform"], {}).get("quota_group", r["platform"])
+        per_group[group] = per_group.get(group, 0) + 1
     busy = busy_platforms(cfg, active)
     # concurrency.by_tier (mahler#200): a finer-grained cap layered under
     # `total` — tracked as a running list of tiers so it can be recomputed
@@ -369,7 +372,7 @@ def schedule(ctx, projects):
     # builder" is judged per account (D25); a multi-account project competes
     # in every bucket it can draw from (D26)
     buckets = {acct for p in projects for acct in config.accounts_of(p)}
-    sorts_wait = {acct: len(_headroom(ctx, "sort", per_platform, busy, burst_lines, acct)) <= 1
+    sorts_wait = {acct: len(_headroom(ctx, "sort", per_group, busy, burst_lines, acct)) <= 1
                   for acct in buckets}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
@@ -476,12 +479,12 @@ def schedule(ctx, projects):
                 continue
             total += 1
             in_project[name] = in_project.get(name, 0) + 1
-            per_platform[platform] = per_platform.get(platform, 0) + 1
             if area:
                 busy_areas[name].add(area)
             busy_files[name].update(item_files)
             group = cfg["platforms"][platform].get("quota_group", platform)
-            if per_platform[platform] >= cfg["platforms"][platform].get("max_runs", 1):
+            per_group[group] = per_group.get(group, 0) + 1
+            if per_group[group] >= cfg["platforms"][platform].get("max_runs", 1):
                 for p in cfg["platforms"]:
                     if cfg["platforms"][p].get("quota_group", p) == group:
                         busy.add(p)

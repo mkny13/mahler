@@ -321,9 +321,27 @@ def _routed(cfg, roles=("sort", "plan", "build")):
     return names
 
 
+def _variant_label(pconf):
+    """'slot · model · effort' for a synthetic platform variant (issue #420,
+    D33), or None for an ordinary platform entry."""
+    slot = pconf.get("slot")
+    if not slot:
+        return None
+    model = pconf.get("model") or pconf.get("build_model") or pconf.get("sort_model") or ""
+    effort = pconf.get("effort") or "default"
+    return " · ".join(p for p in (slot, model, effort) if p)
+
+
 def _model_line(pconf):
     """'claude-opus-4-6-thinking', 'free tier · size s only': the model, the
-    plan it runs on (`plan` in the platform's config), and any size limit."""
+    plan it runs on (`plan` in the platform's config), and any size limit.
+    A synthetic variant instead shows 'slot · model · effort' (issue #420)."""
+    variant = _variant_label(pconf)
+    if variant:
+        parts = [variant]
+        if pconf.get("max_size") == "s":
+            parts.append("size s only")
+        return " · ".join(parts)
     model = pconf.get("model") or pconf.get("build_model") or pconf.get("sort_model") or ""
     kind = pconf.get("kind", "")
     if kind and model.startswith(kind + "/"):
@@ -404,7 +422,7 @@ def _quota_row(cfg, led, peak, name, members, builders):
            "until": None, "over": [], "soft_pct": 100}
     if state == "soft" and hold_until and hold_until > now:
         row.update(state="hold", until=hold_until, label="hold", tone="warn",
-                   width=100, detail=f"on hold until {_hhmm(hold_until)} — a run never started")
+                   width=100, detail=f"on hold until {_hhmm(hold_until)} — {router.hold_label(led, name)}")
     elif state == "hard" and not metered:
         until = max((x["resets"] for x in windows if x["resets"]), default=None)
         row.update(state="backoff", until=until, label="off", tone="bad", width=100,
@@ -1189,6 +1207,12 @@ def _schedule_holds(led, now):
         return None
 
 
+def _platform_label(cfg, name):
+    """A variant's 'slot · model · effort' in idle-reason text (issue #420),
+    else the platform name as-is."""
+    return _variant_label(cfg["platforms"].get(name, {})) or name
+
+
 def _hold_reasons(cfg, holds, pending, hot, now, led=None):
     out, routes, settling, deps = [], {}, {}, []
     seen = set()
@@ -1236,13 +1260,13 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
             text = (f"{len(items)} item(s) need a builder that takes size:{size}, "
                     "and none in the route does.")
         elif active and "peak" in groups and set(groups) <= {"size", "over", "busy", "stale", "peak"}:
-            platforms = ", ".join(sorted(groups["peak"]))
+            platforms = ", ".join(sorted(_platform_label(cfg, n) for n in groups["peak"]))
             text = (f"{len(items)} {role} item(s) (size:{size}) wait for off-peak hours: "
                     f"{platforms} resumes at {until.astimezone():%H:%M} "
                     f"{router.local_time_label(until)} "
                     f"(in {router.fmt_countdown(until - now)})")
         else:
-            summary = "; ".join(f"{label}: {', '.join(sorted(groups[k]))}"
+            summary = "; ".join(f"{label}: {', '.join(sorted(_platform_label(cfg, n) for n in groups[k]))}"
                                 for k, label in BLOCKER_LABELS.items() if k in groups)
             text = (f"{len(items)} {role} item(s) have no platform with headroom — "
                     f"{summary or 'no platforms in the route'}.")
