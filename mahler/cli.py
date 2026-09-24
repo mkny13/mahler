@@ -55,7 +55,7 @@ def cmd_tick(a, cfg, led):
 def cmd_status(a, cfg, led):
     now = led.now()
     if not a.json:
-        for warning in platforms.effort_warnings(cfg):
+        for warning in platforms.effort_warnings(cfg) + config.routing_warnings(cfg):
             print(warning)
     if a.json:
         ests = led.estimates()

@@ -938,7 +938,7 @@ def _settings_form(settings, layout):
     for route in settings["routing"]:
         out.append(f'<div class="route-scope" data-route-scope="{e(route["key"])}">'
                    f'<span class="settings-scope">{e(route["label"])}</span>')
-        out.extend(_route_editor(route, role, settings["platform_options"])
+        out.extend(_route_editor(route, role, settings["platform_options"] + settings.get("group_options", []))
                    for role in ("sort", "plan", "build"))
         out.append('</div>')
     out.append('</fieldset><fieldset class="settings-section"><legend>Concurrency</legend>'

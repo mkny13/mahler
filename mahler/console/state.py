@@ -314,7 +314,7 @@ def _routed(cfg, roles=("sort", "plan", "build")):
     names = []
     for table in tables:
         for role in roles:
-            for n in table.get(role) or []:
+            for n in config.expand_route(cfg, table.get(role) or []):
                 pc = cfg["platforms"].get(n)
                 if pc and pc.get("enabled", True) and n not in names:
                     names.append(n)
