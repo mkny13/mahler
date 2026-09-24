@@ -527,6 +527,37 @@ class BrowseQuotaPageTests(unittest.TestCase):
         self.assertIn('unmetered — no quota signal', cline_block)
         self.assertNotIn('class="pq-win"', cline_block)
 
+    def test_exception_states_with_windows_keep_their_detail_message(self):
+        for expected_state in ("hold", "stale", "backoff"):
+            with self.subTest(state=expected_state):
+                led = make_led()
+                self.addCleanup(led.close)
+                name = "cline-free" if expected_state == "backoff" else "claude"
+                fresh(led, name, "5h", 100 if expected_state == "backoff" else 20)
+                fresh(led, name, "weekly", 20)
+                if expected_state == "hold":
+                    fresh(led, name, router.HOLD, 100)
+                elif expected_state == "stale":
+                    led.clock.t += timedelta(days=1)
+                s = state.build(self.cfg, led)
+                q = next(q for q in s["quota"] if q["name"] == name)
+                self.assertEqual(q["state"], expected_state)
+                self.assertTrue(q["windows"])
+                s["quota"] = [q]
+                html = page._p_browse(s)
+                self.assertIn(f'<span class="detail">{page.e(q["detail"])}</span>', html)
+                self.assertNotIn('class="pq-win"', html)
+
+    def test_toggle_styles_are_generated_once_for_each_pool(self):
+        html = self.html()
+        for q in self.s["quota"]:
+            selector = f':root[data-quota_{q["name"]}="open"] [data-quota="{q["name"]}"]'
+            for rule in ('.pq-details { display: flex; }',
+                         '.pq-toggle .c { display: none; }',
+                         '.pq-toggle .o { display: inline; }'):
+                self.assertNotIn(f'{selector} {rule}', page.CSS)
+                self.assertEqual(html.count(f'{selector} {rule}'), 1)
+
 
 class StatsTests(unittest.TestCase):
     """#352: closed-item productivity for selectable equal-length windows."""
