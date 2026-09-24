@@ -196,8 +196,8 @@ RUN_WT_RE = re.compile(r"(\d+)-run(\d+)$")
 
 def _free_branch(ctx, project, repo, branch, pol):
     """`branch` is checked out in another worktree. When that worktree is a
-    leftover of an ended run of this project, remove it so the branch is
-    free again (mahler#433). -> True when freed."""
+    leftover of an ended run of this project, detach it so the branch is
+    free again without discarding retained work (mahler#433). -> True when freed."""
     git(repo, "worktree", "prune", check=False)
     holder, cur = None, None
     for line in git(repo, "worktree", "list", "--porcelain", check=False).splitlines():
@@ -212,10 +212,18 @@ def _free_branch(ctx, project, repo, branch, pol):
     if not run or run["status"] != "ended" or run["project"] != project:
         return False
     # git reports the resolved path (/private/var/… on macOS); resolve the
-    # root the same way, or remove_worktree's containment check refuses it
+    # root the same way before checking containment.
     root = os.path.realpath(worktree_root(pol))
-    remove_worktree(repo, os.path.realpath(holder), None, root)
-    return not os.path.isdir(holder)
+    holder = os.path.realpath(holder)
+    if os.path.commonpath((root, holder)) != root or holder == root:
+        return False
+    # An ended run may have failed to snapshot. Keep its index, dirty files,
+    # and local commits; detaching at HEAD frees only the branch name.
+    try:
+        git(holder, "checkout", "--quiet", "--detach", "HEAD")
+    except GitError:
+        return False
+    return True
 
 
 def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", stdin_path=None):

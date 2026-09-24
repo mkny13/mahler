@@ -505,6 +505,47 @@ class ShipTests(unittest.TestCase):
         self.assertIn("git push origin HEAD:mahler/5-x", calls[1][2])
         self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (2, 0))
 
+    def check_delayed_no_push_replacement(self, delay):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        fix = self.led.last_run("x", 5)
+        self.led.update_run(fix["id"], status="ended")
+        self.led.release("x", 5)
+        self.led.set_state("x", 5, "verifying", "test")
+        key = f"reviewfix:x#5:88:{self.gh.head_sha}"
+        with delay:
+            for _ in range(3):
+                self.ship()
+                rec = json.loads(self.led.get_kv(key))
+                self.assertEqual(rec["run"], fix["id"])
+                self.assertTrue(rec["accounted"])
+                self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]),
+                                 (1, 0))
+        self.assertEqual(len(calls), 1)
+        self.ship()
+        self.assertEqual(len(calls), 2)
+        self.assertIn(f"previous fix run (run {fix['id']}) pushed nothing", calls[1][2])
+        self.assertIn("git push origin HEAD:mahler/5-x", calls[1][2])
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (2, 0))
+        replacement = json.loads(self.led.get_kv(key))
+        self.assertNotEqual(replacement["run"], fix["id"])
+        self.assertFalse(replacement.get("accounted", False))
+
+    def test_no_push_context_survives_capacity_delay(self):
+        self.check_delayed_no_push_replacement(
+            mock.patch.dict(self.cfg["concurrency"], {"total": 0}))
+
+    def test_no_push_context_survives_routing_delay(self):
+        self.check_delayed_no_push_replacement(
+            mock.patch.object(ship.router, "pick_for_project", return_value=(None, [])))
+
+    def test_no_push_context_survives_launch_failure(self):
+        # This patch is entered after the helper installs its successful launcher.
+        self.check_delayed_no_push_replacement(
+            mock.patch.object(ship, "start", return_value=False))
+
     def test_review_excludes_every_author_of_the_pr(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         for role, platform in (("build", "agy-claude"), ("fix", "agy-gemini"),

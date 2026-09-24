@@ -421,8 +421,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if prev and prev["status"] != "ended":
         ctx.say(f"{project}#{n}: PR #{pr} — review fix run {prev['id']} still going")
         return
-    if rec is None or prev:
-        led.set_kv(key, json.dumps({"at": iso(led.now()), "run": None}))
+    if rec is None or (prev and not rec.get("accounted")):
+        # Keep the previous run for the replacement prompt across capacity,
+        # routing, and launch retries. Account for its failure only once.
+        led.set_kv(key, json.dumps({"at": iso(led.now()),
+                                   "run": prev["id"] if prev else None,
+                                   "accounted": True}))
 
         cur_fails = row_get(item, "esc_fails", 0)
         new_fails = cur_fails + 1

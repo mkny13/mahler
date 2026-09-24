@@ -574,11 +574,54 @@ class PrepareHeldBranchTests(unittest.TestCase):
         fix = self.prepare("fix", 9)                     # so the fix gets the branch itself
         self.assertEqual((fix["run_branch"], fix["push_branch"]), ("mahler/5-x", "mahler/5-x"))
 
-    def test_an_ended_runs_leftover_is_removed_and_the_branch_reused(self):
+    def test_an_ended_runs_leftover_is_preserved_and_the_branch_reused(self):
         old = self.hold("ended")
         prep = self.prepare("fix", 9)
         self.assertEqual(prep["run_branch"], "mahler/5-x")
-        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.isdir(old))
+        self.assertEqual(sh(old, "git", "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+
+    def test_ended_holder_keeps_unsnapshotted_work(self):
+        old = self.hold("ended")
+        tracked = os.path.join(old, "tracked.txt")
+        with open(tracked, "w") as f:
+            f.write("local commit")
+        sh(old, "git", "add", "tracked.txt")
+        sh(old, "git", "commit", "-qm", "unpushed work")
+        tip = sh(old, "git", "rev-parse", "HEAD")
+        with open(tracked, "w") as f:
+            f.write("staged work")
+        sh(old, "git", "add", "tracked.txt")
+        with open(tracked, "w") as f:
+            f.write("unstaged work")
+        with open(os.path.join(old, "untracked.txt"), "w") as f:
+            f.write("untracked work")
+        before = sh(old, "git", "status", "--porcelain")
+        prep = self.prepare("fix", 9)
+        self.assertEqual(prep["run_branch"], "mahler/5-x")
+        self.assertEqual(sh(old, "git", "rev-parse", "HEAD"), tip)
+        self.assertEqual(sh(old, "git", "status", "--porcelain"), before)
+        self.assertEqual(sh(old, "git", "show", ":tracked.txt"), "staged work")
+        with open(tracked) as f:
+            self.assertEqual(f.read(), "unstaged work")
+        with open(os.path.join(old, "untracked.txt")) as f:
+            self.assertEqual(f.read(), "untracked work")
+
+    def test_failed_detach_preserves_holder_and_uses_private_branch(self):
+        old = self.hold("ended")
+        real_git = runner.git
+
+        def fail_detach(repo, *args, **kwargs):
+            if args[:1] == ("checkout",):
+                raise runner.GitError("cannot detach")
+            return real_git(repo, *args, **kwargs)
+
+        with mock.patch.object(runner, "git", side_effect=fail_detach):
+            prep = self.prepare("fix", 9)
+        self.assertTrue(os.path.isdir(old))
+        self.assertEqual(sh(old, "git", "rev-parse", "--abbrev-ref", "HEAD"), "mahler/5-x")
+        self.assertEqual((prep["run_branch"], prep["push_branch"]),
+                         ("mahler/5-x-r9", "mahler/5-x"))
 
     def test_a_live_holder_keeps_a_private_branch_but_pushes_to_the_head(self):
         live = self.hold("running")
