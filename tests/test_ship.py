@@ -544,7 +544,7 @@ class ShipTests(unittest.TestCase):
 
     def test_escalation_to_an_approval_platform_asks_first(self):
         self.cfg["platforms"]["fable"] = dict(self.cfg["platforms"]["claude"],
-                                              model="claude-fable-5-1", tier=4)
+                                              model="claude-fable-5-1", tier=5)
         self.cfg["routing"]["build"] = ["agy-claude", "agy-gemini", "claude", "fable"]
         later = iso(NOW + timedelta(hours=2))
         self.led.record_usage("fable", "5h", 10, later)
@@ -568,7 +568,7 @@ class ShipTests(unittest.TestCase):
 
     def test_approval_platforms_are_never_picked_unasked(self):
         self.cfg["platforms"]["fable"] = dict(self.cfg["platforms"]["claude"],
-                                              model="claude-fable-5-1", tier=4)
+                                              model="claude-fable-5-1", tier=5)
         self.cfg["routing"]["review"] = ["fable", "agy-gemini"]
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         calls = []

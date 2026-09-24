@@ -979,8 +979,9 @@ never run.
   (mahler#433, your decision 2026-09-23). An escalation past the strongest platform in the
   project's routing is clamped to it. The item keeps trying there until its attempts run out,
   then goes to `failed` with a ping. It no longer waits silently for a tier that doesn't exist
-  (phish-in#184 sat 6 hours that way). Platforms on Fable or Astra models, or any with
-  `approval = true`, are never picked on their own. When only they are stronger, the item goes
+  (phish-in#184 sat 6 hours that way). Fable and Astra are the tier-5 models (Astra is
+  configured on the work account; Fable has no route and none is planned). Platforms on
+  either model, or any with `approval = true`, are never picked on their own. When only they are stronger, the item goes
   to needs-you and asks. `/mahler approve` on the issue allows them for that item; a pin
   (`/mahler platform <name>`) counts as approval too.
 - **Claude has low/medium/high slots.** `claude-low` selects Haiku for `size:s`, `claude`

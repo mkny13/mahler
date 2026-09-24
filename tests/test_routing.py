@@ -1119,7 +1119,7 @@ class ApprovalTests(unittest.TestCase):
     def cfg(self, build):
         cfg = copy.deepcopy(config.DEFAULTS)
         cfg["platforms"]["fable"] = dict(cfg["platforms"]["claude"],
-                                         model="claude-fable-5-1", tier=4)
+                                         model="claude-fable-5-1", tier=5)
         cfg["platforms"]["astra"] = dict(cfg["platforms"]["codex-high"],
                                          model="gpt-6-astra", tier=5)
         cfg["routing"]["build"] = build
