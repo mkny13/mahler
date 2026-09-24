@@ -478,6 +478,56 @@ class CapacityPageTests(unittest.TestCase):
         self.assertIn('<span class="meta t-mut">unmetered</span>', html)
 
 
+class BrowseQuotaPageTests(unittest.TestCase):
+    """mahler#436: Browse quota rows hide detail behind a chevron toggle."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        all_fresh(self.led)
+        fresh(self.led, "claude", "5h", 63)
+        fresh(self.led, "claude", "weekly", 44)
+        self.s = state.build(self.cfg, self.led)
+
+    def html(self):
+        return page.app(self.s)
+
+    def test_every_browse_quota_row_has_a_chevron_toggle_button(self):
+        html = self.html()
+        for q in self.s["quota"]:
+            self.assertIn(f'data-toggle="quota_{q["name"]}"', html)
+            self.assertIn(f'<div class="pq" data-quota="{q["name"]}">', html)
+        self.assertIn('<span class="c">▾</span><span class="o">▴</span>', html)
+
+    def test_collapsed_by_default_details_are_hidden(self):
+        html = self.html()
+        self.assertIn('.pq-details { display: none;', page.CSS)
+        self.assertIn('.pq-toggle .o { display: none; }', page.CSS)
+        self.assertIn('claude', html)
+        self.assertIn('63%', html)
+
+    def test_expanding_claude_shows_two_stacked_labeled_window_rows(self):
+        html = self.html()
+        claude_idx = html.index('class="pq" data-quota="claude"')
+        next_pq = html.find('class="pq"', claude_idx + 1)
+        claude_block = html[claude_idx:next_pq if next_pq != -1 else len(html)]
+
+        self.assertEqual(claude_block.count('class="pq-win"'), 2)
+        self.assertIn('5h · 63%', claude_block)
+        self.assertIn('weekly · 44%', claude_block)
+        self.assertIn('style="width:63%"', claude_block)
+        self.assertIn('style="width:44%"', claude_block)
+        self.assertIn('<span class="tick"', claude_block)
+        self.assertIn('resets', claude_block)
+
+    def test_metered_pool_with_no_windows_or_unmetered_falls_back_to_detail_text(self):
+        html = self.html()
+        cline_idx = html.index('class="pq" data-quota="cline-free"')
+        next_pq = html.find('class="pq"', cline_idx + 1)
+        cline_block = html[cline_idx:next_pq if next_pq != -1 else len(html)]
+        self.assertIn('unmetered — no quota signal', cline_block)
+        self.assertNotIn('class="pq-win"', cline_block)
+
+
 class StatsTests(unittest.TestCase):
     """#352: closed-item productivity for selectable equal-length windows."""
 
@@ -1285,6 +1335,8 @@ class UatPageTests(unittest.TestCase):
             # (covered by name/mono above)
             # run timing: <span class="mono t-tone">...</span><span class="mono t-mut">...
             ('mono t-', 'mono t-'),
+            # quota chevron toggle: <span class="c">▾</span><span class="o">▴</span>
+            ('c', 'o'),
         }
 
         def is_allowed(first_class, second_class):
