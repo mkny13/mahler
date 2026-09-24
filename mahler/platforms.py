@@ -77,6 +77,22 @@ HOME = os.path.expanduser("~")
 QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage limit",
                "usage_limit_exceeded")
 
+# Transient network drops and session errors that free builders can resume from (mahler#426).
+NETWORK_ERRORS = (
+    "network connection lost",
+    "the socket connection was closed unexpectedly",
+    "the operation timed out",
+    "session not found",
+)
+
+
+def is_network_error(text):
+    """Whether error text matches known transient network drops (mahler#426)."""
+    if not text:
+        return False
+    lower = str(text).lower()
+    return any(p in lower for p in NETWORK_ERRORS)
+
 # Guardrails (DESIGN D12): destructive command stems agents must never run.
 # Kept platform-neutral; each argv builder renders its own CLI's deny syntax.
 # These are prefix rules — a safety net against accidents, not a fence against
@@ -285,6 +301,51 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "kilo":
         return kilo_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
+
+
+def cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
+    # Verified with Cline 3.0.64 (mahler#426):
+    # Exact commands tested:
+    #   1. `cline --id <session-id> --cwd <worktree> --json --auto-approve true -t <secs> < <resume_file>`
+    #   2. `cline --id <session-id> --json "prompt"`
+    # Both fail with:
+    #   {"ts":"...","type":"error","message":"JSON output mode requires a prompt argument or piped stdin (interactive mode is unsupported)"}
+    # because `--id` sets `interactive = true` in the CLI parser before stdin is checked.
+    # Stdin redirection does not bypass this check because `r.interactive` is checked
+    # before stdin is read.
+    # Therefore, Cline resume always falls back to a fresh cline run in the same worktree
+    # with the prompt as positional argument (and stdin redirection via runner.spawn):
+    #   `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
+    argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
+            "-t", str(int(timeout_minutes) * 60)]
+    if pconf.get("model"):
+        argv += ["-m", pconf["model"]]
+    return argv + effort_args(pconf, role) + [prompt]
+
+
+def kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
+    # Verified with Kilo 7.6.2 (mahler#426):
+    # Exact command tested:
+    #   `kilo run <prompt> --session <id> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
+    # Kilo CLI accepts `-s/--session <id>` to continue an existing session.
+    # When session_id is None (or "session not found" occurred), it falls back to a fresh run
+    # without `--session` in the same worktree:
+    #   `kilo run <prompt> --dir <wt> --auto --format json [-m <model>] < <resume_file>`
+    argv = [kilo_exe(), "run"] + effort_args(pconf, role) + [prompt]
+    if session_id:
+        argv += ["--session", session_id]
+    argv += ["--dir", worktree, "--auto", "--format", "json"]
+    if pconf.get("model"):
+        argv += ["-m", pconf["model"]]
+    return argv
+
+
+def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=None):
+    if pconf["kind"] == "cline":
+        return cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
+    if pconf["kind"] == "kilo":
+        return kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
+    raise ValueError(f"resume not supported for platform kind {pconf['kind']!r}")
 
 
 def available(pconf):
@@ -618,15 +679,33 @@ def _note_quota_hit(res, ev):
         res["retry_after"] = ra
 
 
+def _extract_error_message(ev):
+    """Extract a human-readable error message from an agent JSON event."""
+    err = ev.get("error")
+    if isinstance(err, dict):
+        msg = err.get("message") or (err.get("data") or {}).get("message")
+        if msg:
+            return msg
+    elif err is not None:
+        return str(err)
+    if ev.get("message"):
+        return ev["message"]
+    if ev.get("text"):
+        return ev["text"]
+    return json.dumps(ev)
+
+
 def read_log(path, kind):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
              'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
-             'last_text': str, 'model': str|None}
+             'last_text': str, 'model': str|None, 'session_id': str|None,
+             'last_error': str|None}
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
-           "retry_after": None, "last_text": "", "model": None}
+           "retry_after": None, "last_text": "", "model": None, "session_id": None,
+           "last_error": None}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -637,8 +716,11 @@ def read_log(path, kind):
             try:
                 ev = json.loads(line)
             except ValueError:
-                if line.strip():
-                    texts.append(line.strip())
+                line_str = line.strip()
+                if line_str:
+                    texts.append(line_str)
+                    if is_network_error(line_str) or line_str.lower().startswith("error:"):
+                        res["last_error"] = line_str
                 continue
             if kind == "claude":
                 t = ev.get("type")
@@ -661,12 +743,16 @@ def read_log(path, kind):
                 if ev.get("type") == "run_result":
                     res["final"] = ev.get("text")
                     res["ok"] = ev.get("finishReason") == "completed"
-                    if not res["ok"] and any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
-                        _note_quota_hit(res, ev)
+                    if not res["ok"]:
+                        if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                            _note_quota_hit(res, ev)
+                        if ev.get("text"):
+                            res["last_error"] = ev.get("text")
                 elif ev.get("type") == "error" or ev.get("error"):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    res["last_error"] = _extract_error_message(ev)
             elif kind == "copilot":
                 t = ev.get("type")
                 if t == "assistant.message":
@@ -693,9 +779,12 @@ def read_log(path, kind):
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
             elif kind == "kilo":
+                if ev.get("sessionID"):
+                    res["session_id"] = ev.get("sessionID")
                 if ev.get("type") == "error":
                     if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    res["last_error"] = _extract_error_message(ev)
                 elif ev.get("type") == "step_finish":
                     # kilo-auto/free is stateless per invocation: each `kilo run`
                     # is a fresh routing decision across the free pool, so the

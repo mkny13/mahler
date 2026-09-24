@@ -228,12 +228,13 @@ class ClineNudgeTests(unittest.TestCase):
         self._write_cline_log_completed_no_status()
         fake_proc = mock.MagicMock()
         fake_proc.pid = 99999
+        fake_proc.communicate.return_value = ("", "")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
-                mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
-                mock.patch.object(finalize, "_cline_session_id", return_value="sess-42"):
+                mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                mock.patch("subprocess.Popen", return_value=fake_proc) as popen:
             finalize.finalize(self.ctx, self.run)
         # The run should be back to "running" (resumed), not ended
         db_run = self.led.run(self.run_id)
@@ -246,40 +247,44 @@ class ClineNudgeTests(unittest.TestCase):
         # Popen was called to resume cline
         popen.assert_called_once()
         argv_str = popen.call_args[0][0][2]  # shell command
-        self.assertIn("--id", argv_str)
-        self.assertIn("sess-42", argv_str)
+        self.assertNotIn("--id", argv_str)
         self.assertIn("Carry on", argv_str)
+        self.assertIn("< ", argv_str)
+        self.assertIn("resume-1.md", argv_str)
 
-    def test_cline_nudge_shell_string_quotes_session_id(self):
-        """mahler#74: the session id comes from `cline history --json` output —
+    def test_kilo_nudge_shell_string_quotes_session_id(self):
+        """mahler#74: the session id comes from kilo events —
         treat it as untrusted. It must be shlex-quoted inside the /bin/sh -c
         string, never able to break out and run as shell."""
-        self._write_cline_log_completed_no_status()
+        self.run["platform"] = "kilo"
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "step_finish", "sessionID": "x'; touch /tmp/mahler-pwned; '",
+                                 "part": {"type": "step-finish"}}) + "\n")
+        with open(self.exit_path, "w") as fh:
+            fh.write("0\n")
         fake_proc = mock.MagicMock()
         fake_proc.pid = 99997
+        fake_proc.communicate.return_value = ("", "")
         evil_session = "x'; touch /tmp/mahler-pwned; '"
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
+                mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
                 mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
-                mock.patch.object(platforms, "cline_exe", return_value="/usr/local/bin/cline"), \
-                mock.patch.object(finalize, "_cline_session_id",
-                                  return_value=evil_session):
+                mock.patch.object(platforms, "kilo_exe", return_value="/usr/local/bin/kilo"):
             finalize.finalize(self.ctx, self.run)
         popen.assert_called_once()
         shell = popen.call_args[0][0][2]
         self.assertIn(shlex.quote(evil_session), shell)
-        # the command part re-parses to exactly the intended argv — the session
-        # id is data, never shell
-        self.assertEqual(shlex.split(shell.split(" >> ", 1)[0])[0:4],
-                         ["/usr/local/bin/cline", "--id", evil_session, "--cwd"])
+        self.assertIn("--session", shell)
 
     def test_cline_nudge_handles_sqlite_row(self):
         """Regression test for mahler#165: _try_cline_nudge must accept sqlite3.Row."""
         self._write_cline_log_completed_no_status()
         fake_proc = mock.MagicMock()
         fake_proc.pid = 99998
+        fake_proc.communicate.return_value = ("", "")
         # Ensure the DB run has matching paths
         self.led.update_run(self.run_id, log_path=self.log, status_path=self.exit_path,
                             worktree=self.run["worktree"])
@@ -288,19 +293,19 @@ class ClineNudgeTests(unittest.TestCase):
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"), \
                 mock.patch.object(runner, "commits_ahead", return_value=0), \
-                mock.patch("subprocess.Popen", return_value=fake_proc) as popen, \
-                mock.patch.object(finalize, "_cline_session_id", return_value="sess-42"):
+                mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                mock.patch("subprocess.Popen", return_value=fake_proc) as popen:
             finalize.finalize(self.ctx, row)
         db_run = self.led.run(self.run_id)
         self.assertEqual(db_run["status"], "running")
         self.assertEqual(db_run["nudged"], 1)
         popen.assert_called_once()
 
-    def test_cline_nudge_does_not_fire_twice(self):
-        """A nudged cline run that ends again without STATUS is a failed attempt."""
+    def test_cline_nudge_capped_at_two(self):
+        """A run that was nudged twice (nudged=2) is not nudged a third time."""
         self._write_cline_log_completed_no_status()
-        self.run["nudged"] = 1   # already nudged once
-        self.led.update_run(self.run_id, nudged=1)
+        self.run["nudged"] = 2   # already nudged twice
+        self.led.update_run(self.run_id, nudged=2)
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(runner, "snapshot", return_value=None), \
                 mock.patch.object(runner, "remove_worktree"):
@@ -308,6 +313,26 @@ class ClineNudgeTests(unittest.TestCase):
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "ready")
         self.assertEqual(item["attempts"], 1)
+
+    def test_cline_nudge_fires_second_time_when_nudged_once(self):
+        """A run that was nudged once (nudged=1) resumes a second time."""
+        self._write_cline_log_completed_no_status()
+        self.run["nudged"] = 1   # already nudged once
+        self.led.update_run(self.run_id, nudged=1)
+        fake_proc = mock.MagicMock()
+        fake_proc.pid = 99995
+        fake_proc.communicate.return_value = ("", "")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(runner, "commits_ahead", return_value=0), \
+                mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                mock.patch("subprocess.Popen", return_value=fake_proc) as popen:
+            finalize.finalize(self.ctx, self.run)
+        db_run = self.led.run(self.run_id)
+        self.assertEqual(db_run["status"], "running")
+        self.assertEqual(db_run["nudged"], 2)
+        popen.assert_called_once()
 
     def test_cline_nudge_skipped_on_non_zero_exit(self):
         """Cline exit=1 → no nudge, straight to failed attempt. finishReason

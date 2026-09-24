@@ -174,12 +174,14 @@ def prepare(ctx, project, item, role, platform, run_id):
             "base_ref": start, "replayed": replayed, "kept": kept}
 
 
-def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix=""):
+def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", stdin_path=None):
     """Start `argv` detached, with its output in the run's log and its exit
     code in `status_path`. Every element is shlex-quoted, so untrusted content
     inside the argv (issue titles, agent output) is data, never shell
-    (mahler#74). -> the pid of the /bin/sh that owns the process group."""
-    shell = (f"{shlex.join(argv)} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
+    (mahler#74). When `stdin_path` is given, stdin is redirected from that
+    file (< <quoted path>). -> the pid of the /bin/sh that owns the process group."""
+    stdin_redir = f" < {shlex.quote(stdin_path)}" if stdin_path else ""
+    shell = (f"{shlex.join(argv)}{stdin_redir} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
     proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
                             start_new_session=True, stdin=subprocess.DEVNULL,
@@ -187,27 +189,18 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix=""):
     return proc.pid
 
 
-def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
-    """Start the platform's CLI, detached, on the worktree `prepare` made.
-    `prompt` is already rendered (mahler/prompt.py) — the runner never writes
-    the words a run is given."""
+def run_env(ctx, project, number, platform, run_id, epoch):
+    """Shared environment for a run: platform account env, GH identity
+    overlay (D25/D26), MAHLER_* vars, and the pre-push fence hooks (DESIGN D6)."""
     pol = ctx.policy(project)
     pconf = ctx.cfg["platforms"][platform]
     account = config.account_of(pconf)
-    wt, run_dir = prep["worktree"], prep["run_dir"]
-    argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
-    if not argv[0]:
-        raise RuntimeError(f"{platform} CLI not found")
-    # Keep the run record aligned with the exact validated setting passed to
-    # the adapter, including the explicit default for unconfigured runs.
-    if hasattr(ctx, "led"):
-        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default")
-
+    run_dir = os.path.join(config.RUNS_DIR, str(run_id))
     hooks = fence_hooks(pol["path"], run_dir)
-    
+
     base_env = config.run_env(ctx.cfg, account) or os.environ
     env = dict(base_env)
-    
+
     if account != config.gh_account_of(pol):
         overlay = config.gh_identity_env(ctx.cfg, pol)
         if overlay is None:
@@ -218,12 +211,31 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
             for var in drop_vars:
                 env.pop(var, None)
             env.update(set_vars)
-        
+
     env.update(MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
-               MAHLER_ISSUE=str(item["number"]), MAHLER_EPOCH=str(epoch),
+               MAHLER_ISSUE=str(number), MAHLER_EPOCH=str(epoch),
                MAHLER_HOME=config.STATE,
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",
                GIT_CONFIG_VALUE_0=hooks)
+    return env
+
+
+def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
+    """Start the platform's CLI, detached, on the worktree `prepare` made.
+    `prompt` is already rendered (mahler/prompt.py) — the runner never writes
+    the words a run is given."""
+    pol = ctx.policy(project)
+    pconf = ctx.cfg["platforms"][platform]
+    wt, run_dir = prep["worktree"], prep["run_dir"]
+    argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
+    if not argv[0]:
+        raise RuntimeError(f"{platform} CLI not found")
+    # Keep the run record aligned with the exact validated setting passed to
+    # the adapter, including the explicit default for unconfigured runs.
+    if hasattr(ctx, "led"):
+        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default")
+
+    env = run_env(ctx, project, item["number"], platform, run_id, epoch)
     log_path = os.path.join(run_dir, "agent.log")
     status_path = os.path.join(run_dir, "exit")
     with open(os.path.join(run_dir, "prompt.md"), "w") as fh:
