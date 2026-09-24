@@ -22,22 +22,47 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 ---
 
-## Current state (2026-09-21)
+## Current state (2026-09-23)
 
 Phases 0, B and 1 are done and the project has been running past the original phase
 sequence for a while — the day-to-day reality no longer matches "one phase at a time,"
 so this section says where things actually stand; the phase list below stays as the
 detailed record.
 
-- **Six projects are enabled on the primary Mac mini** under the same 60-second launchd tick:
-  `groundwork` (`mkny13/groundwork`), `hockey` (`mkny13/hockey-draft-copilot`), `mahler`,
-  `movebreak`, `phish-in` (`mkny13/couch-tour`), and `sit-stand-walk`
-  (`makastel_ncstate/sit-stand-walk`). This is a dated inventory snapshot; the operator's
+- **Seven projects are enabled on the primary Mac mini** under the same 60-second launchd tick:
+  `google-chat-nav` (`makastel_ncstate/google-chat-nav`), `groundwork` (`mkny13/groundwork`), `hockey`
+  (`mkny13/hockey-draft-copilot`), `mahler`, `movebreak`, `phish-in` (`mkny13/couch-tour`),
+  and `sit-stand-walk` (`makastel_ncstate/sit-stand-walk`). This is a dated inventory snapshot; the operator's
   `~/.mahler/config.toml` remains authoritative. The full isolated unit suite and
   randomized-order runner are Mahler's release contract; avoid embedding a test count here
   because it changes almost daily.
 - **Self-hosting (D17) works:** mahler builds itself through the same lease/ship pipeline
   as any managed project, with CI-gated self-update and rollback.
+- **The 2026-09-22/23 launch outage and what it changed.** A bug in #395 made every launch
+  fail for about 18 hours (7,277 failed launches, zero runs), silently: launch errors were
+  caught per item, so ticks looked healthy and D17's rollback never fired (mahler#409, fixed
+  by #410). Since then:
+  - a launch circuit breaker pages and pauses launches, with a canary every 30 minutes
+    (mahler#411)
+  - the launcher rolls back to the last commit that actually launched a run
+    (`launch_ok`), and never self-updates back into a rolled-back commit (`bad_sha`)
+    (mahler#425; the launcher was reinstalled on 2026-09-23)
+  - the outage also leaked about 7,300 worktrees from failed launches, which were removed
+    by hand; mahler#434 stops launch failures leaking them
+- **The independent review gate (D11, #395) is live**, and its first failures exposed bugs
+  in its fix loop: the attempt budget counts pre-PR failures, fixes can push to a stray
+  `-r<id>` branch, and a reviewer can review its own fix (mahler#433).
+- **Free builders:** most Cline and Kilo "failures" were the harness, not the model: early
+  stops, a resume nudge that had never worked, and network drops. mahler#426 fixed the
+  resume and added it for Kilo. Whether to decompose further for the free streams waits on
+  per-size data from the D33 scorecard.
+- **D33 (cheapest variant that does the job) is in progress** under goal mahler#413. A
+  variant is a model at a reasoning effort, and new versions enter as candidates, not
+  replacements. Effort per platform (#415) and per-run tokens and cost (#416) have shipped;
+  the scorecard, variants, exploration and measured routing are queued. Config steps that
+  only a chat session may make (backfill, prices, routing groups, work-account variants,
+  switching on measured routing) are handled by the daily scheduled task
+  `mahler-d33-followup`.
 - **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
   console is built; the full MCP and in-app UAT designs remain incomplete:
   - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
