@@ -1,6 +1,5 @@
 """Synthetic history tests: no production state or external services."""
 from datetime import datetime, timedelta, timezone
-import json
 import unittest
 
 from mahler.ledger import Ledger, iso
@@ -208,3 +207,48 @@ class AttemptTests(unittest.TestCase):
         self.led.event('revert_requested', 'other', 1)
         self.run_attempt(project='other', role='fix')
         self.result(rid, 'success')
+
+    def test_historical_revert_outbox_and_unexecuted_actions(self):
+        rid = self.run_attempt()
+        self.advance()
+        self.led.con.execute(
+            "INSERT INTO console_actions(kind,project,number,created_at,due_at) "
+            "VALUES ('revert','p',1,?,?)", (iso(self.now), iso(self.now)))
+        self.result(rid, 'success')
+        self.led.con.execute("UPDATE console_actions SET status='cancelled'")
+        self.result(rid, 'success')
+        self.led.con.execute("UPDATE console_actions SET status='done',done_at=?",
+                             (iso(self.now),))
+        self.result(rid, 'failure', 'revert')
+
+    def test_excluded_fix_does_not_blame_builder(self):
+        rid = self.run_attempt()
+        self.advance()
+        self.run_attempt(role='fix', outcome='launch failed: missing')
+        self.result(rid, 'success')
+
+    def test_uat_shipping_timestamp_supports_bug_evidence(self):
+        rid = self.run_attempt()
+        self.advance()
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check')
+        self.bug(body='Regression in #50')
+        self.result(rid, 'failure', 'bug within 14 days')
+
+    def test_release_shipping_timestamp_supports_bug_evidence(self):
+        rid = self.run_attempt()
+        self.advance()
+        self.led.con.execute(
+            "INSERT INTO release_items(project,number,pr,shipped_at) VALUES ('p',1,50,?)",
+            (iso(self.now),))
+        self.bug(body='Regression in #50')
+        self.result(rid, 'failure', 'bug within 14 days')
+
+    def test_read_only_repeatable_and_late_evidence_reclassifies(self):
+        rid = self.run_attempt()
+        before = self.led.con.total_changes
+        self.assertEqual(attempts(self.led, None), attempts(self.led, None))
+        self.assertEqual(self.led.con.total_changes, before)
+        self.result(rid, 'success')
+        self.ship()
+        self.bug()
+        self.result(rid, 'failure')
