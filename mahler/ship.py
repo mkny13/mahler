@@ -347,7 +347,7 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
 
 
-def _fix_tier(ctx, project, item, pr, cur_tier):
+def _fix_tier(ctx, project, item, pr, cur_tier, size=None):
     """The escalation tier a fix run routes with, clamped to what the project
     can reach (mahler#433). -> the tier, or None when the next step needs a
     platform the owner approves by hand: then the item goes to needs-you
@@ -357,7 +357,7 @@ def _fix_tier(ctx, project, item, pr, cur_tier):
     if item["pin"]:
         return tier
     tier, gated = router.tier_ceiling(ctx.cfg, ctx.policy(project), "fix", tier,
-                                      is_approved(ctx.led, project, n))
+                                      is_approved(ctx.led, project, n), size=size)
     if gated:
         ask_approval(ctx, project, n, gated, tier)
         ctx.led.release(project, n, holder=CONDUCTOR)
@@ -469,11 +469,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                  if l.startswith("size:")), None)
     if size == "l":
         size = "m"
-    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier)
+    base_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if base_tier >= 2 and size == "s":
+        size = "m"
+    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier, size=size)
     if effective_min_tier is None:
         return
-    if effective_min_tier >= 2 and size == "s":
-        size = "m"
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "fix", item["pin"], busy, size=size,
         burst_lines=ctx.burst_lines, min_tier=effective_min_tier,
@@ -568,11 +569,12 @@ def _red_ci(ctx, project, item, pr, view):
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
-    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier)
+    base_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if base_tier >= 2 and size == "s":
+        size = "m"
+    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier, size=size)
     if effective_min_tier is None:
         return
-    if effective_min_tier >= 2 and size == "s":
-        size = "m"
     # D26: route within the project's declared accounts: fallback order,
     # equal round-robin, or an explicit cross-account priority.
     platform, reasons = router.pick_for_project(

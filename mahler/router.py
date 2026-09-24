@@ -463,7 +463,20 @@ def project_candidates(cfg, pol, role):
     return [name for account in accts for name in candidates(cfg, role, account=account)]
 
 
-def tier_ceiling(cfg, pol, role, min_tier, approved=False):
+def _size_eligible(role, size, pconf):
+    """Size limits don't apply to sort or plan roles."""
+    if role in ("sort", "plan"):
+        return True
+    limit = pconf.get("max_size")
+    if limit and SIZES.get(size or "m", 2) > SIZES[limit]:
+        return False
+    min_limit = pconf.get("min_size")
+    if min_limit and SIZES.get(size or "m", 2) < SIZES[min_limit]:
+        return False
+    return True
+
+
+def tier_ceiling(cfg, pol, role, min_tier, approved=False, size=None):
     """Clamp an escalation tier to what the project can reach (mahler#433).
     -> (tier to route with, [platforms that need the owner's approval]).
 
@@ -475,6 +488,7 @@ def tier_ceiling(cfg, pol, role, min_tier, approved=False):
     if not min_tier:
         return min_tier, []
     names = project_candidates(cfg, pol, role)
+    names = [n for n in names if _size_eligible(role, size, cfg["platforms"][n])]
     usable = [tier_of(cfg["platforms"][n]) for n in names
               if approved or not needs_approval(cfg["platforms"][n])]
     top = max(usable, default=0)

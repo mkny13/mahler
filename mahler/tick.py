@@ -452,18 +452,21 @@ def schedule(ctx, projects):
 
             effective_min_tier = max(row_get(it, "esc_tier", 0), router.risk_min_tier(row_get(it, "title", ""))) if role in ("build", "fix") else 0
             approved = is_approved(led, name, n)
+            effective_size = size
+            if role == "fix" and effective_size == "l":
+                effective_size = "m"
+            if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
+                effective_size = "m"
+
             if role in ("build", "fix") and not pin:
                 effective_min_tier, gated = router.tier_ceiling(
-                    cfg, p, role, effective_min_tier, approved)
+                    cfg, p, role, effective_min_tier, approved, size=effective_size)
                 if gated:
                     if ctx.dry_run:
                         ctx.say(f"{name}#{n}: would ask approval for {', '.join(gated)}")
                     else:
                         ask_approval(ctx, name, n, gated, effective_min_tier)
                     continue
-            effective_size = size
-            if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
-                effective_size = "m"
 
             # D26: route within the project's declared accounts: fallback
             # order, equal round-robin, or an explicit cross-account priority.

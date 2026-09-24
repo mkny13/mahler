@@ -1120,6 +1120,7 @@ class ApprovalTests(unittest.TestCase):
         cfg = copy.deepcopy(config.DEFAULTS)
         cfg["platforms"]["fable"] = dict(cfg["platforms"]["claude"],
                                          model="claude-fable-5-1", tier=5)
+        cfg["platforms"]["fable"].pop("max_size", None)
         cfg["platforms"]["astra"] = dict(cfg["platforms"]["codex-high"],
                                          model="gpt-6-astra", tier=5)
         cfg["routing"]["build"] = build
@@ -1149,6 +1150,6 @@ class ApprovalTests(unittest.TestCase):
 
     def test_ceiling_asks_for_the_approval_platforms_above_it(self):
         cfg = self.cfg(["claude", "fable", "astra"])
-        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4), (4, ["fable", "astra"]))
-        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4, approved=True), (4, []))
-        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 9, approved=True), (5, []))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4, size="l"), (4, ["fable", "astra"]))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4, approved=True, size="l"), (4, []))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 9, approved=True, size="l"), (5, []))
