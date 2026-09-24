@@ -95,6 +95,18 @@ verify = "python3 -m unittest discover -s tests"
 # Claude also accepts role-specific overrides: sort_effort = "low" and
 # build_effort = "high" (these take precedence over effort).
 
+# Several model x effort options on one login, sharing its one run slot
+# (D33, issue #420). Each entry is "model" or "model@effort"; at load, each
+# expands into a synthetic platform named "<slot>/<model>/<effort or
+# default>" — e.g. work-codex-gpt1/gpt-6-luna/low — that shares this slot's
+# quota_group, so max_runs is still counted across every variant together.
+# The slot's own name (work-codex-gpt1-low here) is untouched and stays the
+# default variant, so existing routing, pins, labels and history stay valid.
+# Add a variant name to a routing list or a `platform:` pin to use it.
+# [platforms.work-codex-gpt1-low]
+# variants = ["gpt-6-luna@low", "gpt-6-luna@medium", "gpt-5.6-luna"]
+# variant_tiers = { "gpt-6-luna@medium" = 2 }   # default: this slot's own tier
+
 # Work logins on this same machine (DESIGN D25). Log each CLI in once with its
 # env var set (e.g. `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login).
 # A work project spends only work platforms; nothing ever falls back to yours.

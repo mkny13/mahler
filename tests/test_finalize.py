@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, finalize, runner, scheduler, tick
+from mahler import config, finalize, router, runner, scheduler, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
 
@@ -366,6 +366,40 @@ class RunTests(unittest.TestCase):
         self.assertLess(abs((resets_at - expected).total_seconds()), 60)
         run = self.led.q("SELECT stop_reason FROM runs WHERE id=?", (self.run_id,))[0]
         self.assertEqual(run["stop_reason"], "quota")
+
+    def test_model_rejection_within_two_minutes_holds_without_spending_an_attempt(self):
+        """Issue #420: a fast model-rejection error is excluded, not a failed
+        attempt — the item's attempts/esc_fails are untouched, and the variant
+        goes on a 24h hold with its own ping instead."""
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error",
+                                 "error": {"message": "model not found: bogus-model"}}) + "\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 0)
+        self.assertEqual(item["esc_fails"], 0)
+        ping.assert_called_once()
+        self.assertIn("rejected its configured model", ping.call_args.args[1])
+        hold = self.led.usage("cline-free").get(router.HOLD)
+        self.assertIsNotNone(hold)
+        until = datetime.fromisoformat(hold["resets_at"].replace("Z", "+00:00"))
+        self.assertLess(abs((until - (NOW + timedelta(hours=24))).total_seconds()), 60)
+        self.assertEqual(self.led.get_kv("hold_reason:cline-free"), "model_unavailable")
+
+    def test_model_rejection_past_the_grace_period_is_a_normal_attempt(self):
+        """A model that ran a while before erroring is a different problem —
+        it must not spend the 24h hold on what might be a mid-run fluke."""
+        self.run["started_at"] = iso(NOW - timedelta(minutes=5))
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error",
+                                 "error": {"message": "model not found: bogus-model"}}) + "\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 1)
+        self.assertNotIn(router.HOLD, self.led.usage("cline-free"))
 
 
 class ResumeNudgeTests(unittest.TestCase):

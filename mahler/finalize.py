@@ -16,7 +16,8 @@ from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
 
-NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent", "handoff")
+NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
+              "model_unavailable")
 
 MAX_OPTIONS = 3
 MAX_OPTION_LEN = 40
@@ -354,6 +355,7 @@ def finalize(ctx, run):
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
     reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
+             ("model_unavailable" if _model_unavailable_fast(run, log, led) else None) or \
              ("setup-failed" if setup_failed else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
@@ -365,6 +367,8 @@ def finalize(ctx, run):
         return
     if reason == "silent":
         _hold_platform(ctx, run)
+    elif reason == "model_unavailable":
+        _hold_model_unavailable(ctx, run)
     if setup_failed:
         _setup_failure(ctx, run, item)
         return
@@ -399,6 +403,27 @@ def _check_estimate_calibration(ctx):
         ctx.led.set_kv("runs_since_calibration", str(cur))
 
 
+MODEL_UNAVAILABLE_GRACE_SECONDS = 120
+MODEL_UNAVAILABLE_HOLD_HOURS = 24
+
+
+def _model_unavailable_fast(run, log, led):
+    """A model-rejection error (issue #420) counts only when the run failed
+    fast — within MODEL_UNAVAILABLE_GRACE_SECONDS of starting. A model that
+    was accepted and later hit trouble mid-run is a different problem, and
+    must not spend the variant's 24h hold on a coincidental late error."""
+    if not log.get("model_unavailable"):
+        return False
+    started_at = row_get(run, "started_at")
+    if not started_at:
+        return False
+    try:
+        elapsed = (led.now() - parse(started_at)).total_seconds()
+    except (TypeError, ValueError):
+        return False
+    return elapsed < MODEL_UNAVAILABLE_GRACE_SECONDS
+
+
 def _hold_platform(ctx, run):
     """A run that never printed anything says more about the machine than the
     task: the next run on that platform would most likely block the same way.
@@ -406,12 +431,29 @@ def _hold_platform(ctx, run):
     pconf = ctx.cfg["platforms"][run["platform"]]
     until = ctx.led.now() + timedelta(minutes=pconf.get("backoff_minutes", 60))
     ctx.led.record_usage(run["platform"], router.HOLD, 100.0, iso(until))
+    ctx.led.set_kv(f"hold_reason:{run['platform']}", "silent")
     ctx.ping(f"Mahler: {run['platform']} runs are stuck at startup",
              f"Run {run['id']} printed nothing for {ctx.policy(run['project'])['startup_timeout_minutes']} "
              "min. Usually a macOS permission dialog is waiting on the Mac mini (e.g. Documents "
              "access for python3 after a Homebrew upgrade): click Allow. "
              f"{run['platform']} is on hold until {until.astimezone():%H:%M}.",
              run["project"], run["number"], priority="high", tags="warning")
+
+
+def _hold_model_unavailable(ctx, run):
+    """The CLI rejected this variant's model outright — that won't change on
+    retry, so hold it for a day rather than burn the item's attempt budget on
+    it (issue #420, D33). Distinct hold reason from `_hold_platform`'s, so the
+    router and console describe it accurately instead of "a run never
+    started"."""
+    until = ctx.led.now() + timedelta(hours=MODEL_UNAVAILABLE_HOLD_HOURS)
+    ctx.led.record_usage(run["platform"], router.HOLD, 100.0, iso(until))
+    ctx.led.set_kv(f"hold_reason:{run['platform']}", "model_unavailable")
+    ctx.ping(f"Mahler: {run['platform']}'s model is unavailable",
+             f"Run {run['id']} failed fast — the CLI rejected its configured model. "
+             f"{run['platform']} is on hold until {until.astimezone():%H:%M} "
+             f"{until.strftime('%b %d')}.",
+             run["project"], run["number"], tags="warning")
 
 
 def _try_verify_fallback(ctx, run, pol, saved, item):
@@ -669,6 +711,7 @@ REASON_TEXT = {
     "silent": "never started — printed nothing",
     "closed": "the issue was closed", "parked": "parked", "lost-lease": "lost its lease",
     "setup-failed": "the project's setup step failed (exit 97)",
+    "model_unavailable": "the CLI rejected its model",
 }
 
 

@@ -295,6 +295,19 @@ def codex_detail(led, name, pconf):
     return " · ".join(parts)
 
 
+# Why a HOLD window is active, keyed off finalize.py's `hold_reason:<name>` kv
+# — distinct wording per cause, so the router and console describe it
+# accurately instead of a generic catch-all (issue #420).
+HOLD_REASON_TEXT = {
+    "silent": "a run never started",
+    "model_unavailable": "the CLI rejected its model",
+}
+
+
+def hold_label(led, name):
+    return HOLD_REASON_TEXT.get(led.get_kv(f"hold_reason:{name}"), "a run never started")
+
+
 def usage_state(led, name, pconf, burst_lines=None):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins.
 
@@ -308,10 +321,11 @@ def usage_state(led, name, pconf, burst_lines=None):
     hold_until = _ts(hold.get("resets_at")) if hold else None
     if hold_until and hold_until > now:
         # not a quota reading: the platform can't start runs right now (a run
-        # sat silent at startup). Soft, so a run already making progress keeps going.
+        # sat silent at startup, or its model was rejected). Soft, so a run
+        # already making progress keeps going.
         until = hold_until
         return "soft", (f"on hold until {until.astimezone():%H:%M} "
-                        f"(in {fmt_countdown(until - now)}) (a run never started)")
+                        f"(in {fmt_countdown(until - now)}) ({hold_label(led, name)})")
     if not is_metered(led, name, pconf):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():

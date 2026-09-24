@@ -62,6 +62,7 @@ def clear_backoff(cfg, led, body):
             if not router.is_metered(led, peer, pc):
                 windows += [w for w, u in led.usage(peer).items() if u["used_pct"] >= 100]
             if led.clear_usage(peer, windows):
+                led.set_kv(f"hold_reason:{peer}", None)
                 cleared.append(peer)
     led.event("backoff_cleared", detail={"platforms": sorted(set(cleared)),
                                          "asked": names, "by": "console"})
