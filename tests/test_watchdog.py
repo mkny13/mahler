@@ -220,6 +220,36 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "cline-free",
                                             self.cfg["platforms"]["cline-free"])[0], "ok")
 
+    def test_model_unavailable_hold_is_a_day_and_reads_distinctly(self):
+        """Issue #420: a model-rejection hold is worded differently from the
+        generic silent-start hold, and lasts 24h rather than backoff_minutes."""
+        ctx = ctx_for()
+        run = {"id": 7, "platform": "cline-free", "project": "x", "number": 1}
+        with mock.patch.object(ctx, "ping") as ping:
+            finalize._hold_model_unavailable(ctx, run)
+        ping.assert_called_once()
+        state, detail = router.usage_state(ctx.led, "cline-free", self.cfg["platforms"]["cline-free"])
+        self.assertEqual(state, "soft")
+        self.assertIn("rejected its model", detail)
+        self.assertNotIn("never started", detail)
+        hold = ctx.led.usage("cline-free")[router.HOLD]
+        until = iso(NOW + timedelta(hours=finalize.MODEL_UNAVAILABLE_HOLD_HOURS))
+        self.assertEqual(hold["resets_at"], until)
+        name, _ = router.pick(self.cfg, ctx.led, "build", size="s")
+        self.assertNotEqual(name, "cline-free")
+
+    def test_silent_and_model_unavailable_holds_do_not_bleed_labels(self):
+        """A fresh silent hold after a stale model-unavailable one must not
+        keep quoting the old reason (both holds share one kv key)."""
+        ctx = ctx_for()
+        run = {"id": 7, "platform": "cline-free", "project": "x", "number": 1}
+        with mock.patch.object(ctx, "ping"):
+            finalize._hold_model_unavailable(ctx, run)
+            finalize._hold_platform(ctx, run)
+        _, detail = router.usage_state(ctx.led, "cline-free", self.cfg["platforms"]["cline-free"])
+        self.assertIn("never started", detail)
+        self.assertNotIn("rejected its model", detail)
+
 
 class HumanClaudeTests(unittest.TestCase):
     cfg = config.DEFAULTS

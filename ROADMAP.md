@@ -58,11 +58,12 @@ detailed record.
   per-size data from the D33 scorecard.
 - **D33 (cheapest variant that does the job) is in progress** under goal mahler#413. A
   variant is a model at a reasoning effort, and new versions enter as candidates, not
-  replacements. Effort per platform (#415) and per-run tokens and cost (#416) have shipped;
-  the scorecard, variants, exploration and measured routing are queued. Config steps that
-  only a chat session may make (backfill, prices, routing groups, work-account variants,
-  switching on measured routing) are handled by the daily scheduled task
-  `mahler-d33-followup`.
+  replacements. Effort per platform (#415), per-run tokens and cost (#416), named routing
+  groups (#419) and platform variants — several model x effort options per login, sharing
+  its run slot (#420) — have shipped; the scorecard, exploration and measured routing are
+  queued. Config steps that only a chat session may make (backfill, prices, declaring real
+  variants and work-account slots, switching on measured routing) are handled by the daily
+  scheduled task `mahler-d33-followup`.
 - **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
   console is built; the full MCP and in-app UAT designs remain incomplete:
   - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
