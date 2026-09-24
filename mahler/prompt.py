@@ -91,6 +91,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
 
     return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
+                  push_branch=prep.get("push_branch") or prep["branch"] or "",
                   platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
                   mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,

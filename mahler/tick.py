@@ -451,6 +451,16 @@ def schedule(ctx, projects):
             pin = it["pin"] if role in ("build", "fix", "sort") else None
 
             effective_min_tier = max(row_get(it, "esc_tier", 0), router.risk_min_tier(row_get(it, "title", ""))) if role in ("build", "fix") else 0
+            approved = is_approved(led, name, n)
+            if role in ("build", "fix") and not pin:
+                effective_min_tier, gated = router.tier_ceiling(
+                    cfg, p, role, effective_min_tier, approved)
+                if gated:
+                    if ctx.dry_run:
+                        ctx.say(f"{name}#{n}: would ask approval for {', '.join(gated)}")
+                    else:
+                        ask_approval(ctx, name, n, gated, effective_min_tier)
+                    continue
             effective_size = size
             if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
                 effective_size = "m"
@@ -459,7 +469,7 @@ def schedule(ctx, projects):
             # order, equal round-robin, or an explicit cross-account priority.
             platform, reasons = router.pick_for_project(
                 cfg, led, p, routing_role, pin, busy, size=effective_size,
-                burst_lines=burst_lines, min_tier=effective_min_tier)
+                burst_lines=burst_lines, min_tier=effective_min_tier, approved=approved)
             if not platform:
                 ctx.hold("no_platform", project=name, number=n, role=routing_role,
                          size=effective_size or "m", blockers=router.reason_groups(reasons))
@@ -488,7 +498,32 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None):
+def approval_key(project, n):
+    return f"approve:{project}#{n}"
+
+
+def is_approved(led, project, n):
+    """Has the owner approved runs on approval-gated platforms (Fable, Astra)
+    for this item? Set by `/mahler approve` (mahler#433)."""
+    return bool(led.get_kv(approval_key(project, n)))
+
+
+def ask_approval(ctx, project, n, gated, tier):
+    """Escalation needs a platform the owner approves by hand: stop and ask,
+    rather than wait silently for it (mahler#433). The caller releases any
+    lease it holds."""
+    names = ", ".join(gated)
+    question = (f"Escalated to tier {tier}: only {names} can run it, and those need your "
+                "approval. Comment `/mahler approve` to allow it, or `/mahler go` to retry "
+                "from the start.")
+    ctx.led.set_state(project, n, "needs_you", question, question=question, options="[]")
+    ctx.ping(f"Approve a run? — {project} #{n}", question, project, n,
+             priority="high", tags="question", console=True)
+    ctx.say(f"{project}#{n}: needs approval for {names} (tier {tier})")
+
+
+def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
+          review_fix=False):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     if not launch_health.allowed(ctx, project, n):
         return False
@@ -557,11 +592,17 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         except GHError:
             pass
     elif role == "fix":
-        led.set_state(project, n, "working",
-                      f"{platform} fix run {run_id} — CI red on PR #{item['pr']}")
+        if review_fix:
+            reason = (f"{platform} review fix run {run_id} — review found blocking issues "
+                      f"on PR #{item['pr']}")
+            why = "the review found blocking issues"
+        else:
+            reason = f"{platform} fix run {run_id} — CI red on PR #{item['pr']}"
+            why = "CI was red"
+        led.set_state(project, n, "working", reason)
         try:
             ctx.gh(project).comment(n, f"🔁 **{platform}** started a fix run (run {run_id}) on "
-                                       f"branch `{meta['branch']}` — CI was red.")
+                                       f"branch `{meta['branch']}` — {why}.")
         except GHError:
             pass
     return True
