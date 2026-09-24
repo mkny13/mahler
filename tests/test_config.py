@@ -61,8 +61,10 @@ class RoutingGroupsTests(unittest.TestCase):
         self.assertEqual(router.candidates_for_priority(
             cfg, 'build', ['work'], cfg['projects']['app']['routing']), ['work-builder'])
         for entry, message in [('@missing', 'unknown routing group'),
-                               ('@free', 'undeclared account'), ('@cycle', 'cycle')]:
+                               ('@free', 'undeclared account'), ('@cycle', 'cycle'),
+                               ('@malformed', 'routing entry must be'), (42, 'unknown platform')]:
             cfg['groups']['cycle'] = ['@cycle']
+            cfg['groups']['malformed'] = [42]
             cfg['projects']['app']['routing']['build'] = [entry]
             with self.subTest(entry=entry), self.assertRaisesRegex(ValueError, message):
                 config.validate_accounts(cfg)

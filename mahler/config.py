@@ -421,7 +421,11 @@ def expand_route(cfg, route, warnings=None):
                 continue
             stack.extend((child, ancestors + (name,))
                          for child in reversed(groups[name]))
-        elif isinstance(entry, str) and entry not in seen:
+        elif not isinstance(entry, str):
+            warning = "Warning: routing entry must be a platform name or @group; entry ignored"
+            if warnings is not None and warning not in warnings:
+                warnings.append(warning)
+        elif entry not in seen:
             seen.add(entry)
             result.append(entry)
     return result
@@ -550,12 +554,14 @@ def validate_settings(body, cfg):
     if (not isinstance(routes, list) or len(routes) != len(expected_routes)
             or {r.get("key") for r in routes if isinstance(r, dict)} != expected_routes):
         raise ValueError("routing scopes changed; reload the page and try again")
+    route_options = known | {"@" + name for name in cfg.get("groups", {})}
     clean_routes = []
     for route in routes:
         clean = {"key": route["key"]}
         for role in SETTING_ROLES:
             names = route.get(role)
-            if (not isinstance(names, list) or any(not isinstance(n, str) or (n not in known and n not in {"@" + g for g in cfg.get("groups", {})}) for n in names)
+            if (not isinstance(names, list) or any(not isinstance(n, str) or n not in route_options
+                                                 for n in names)
                     or len(names) != len(set(names))):
                 raise ValueError(f"{route['key']} {role} route must contain unique configured platforms or @groups")
             clean[role] = names
@@ -842,6 +848,9 @@ def validate_accounts(cfg):
                 if role not in SETTING_ROLES or not isinstance(route, list) or not route:
                     raise ValueError(f"project {name!r}: priority routing {role!r} "
                                      "must be a non-empty platform list")
+                if any(not isinstance(entry, str) for entry in route):
+                    raise ValueError(f"project {name!r}: priority routing names "
+                                     "unknown platform (expected a string)")
                 warnings = []
                 expanded = expand_route(cfg, route, warnings)
                 if warnings:
