@@ -695,17 +695,23 @@ def _extract_error_message(ev):
     return json.dumps(ev)
 
 
-def read_log(path, kind):
+def read_log(path, kind, model=None):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
              'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
              'last_text': str, 'model': str|None, 'session_id': str|None,
-             'last_error': str|None}
+             'last_error': str|None, 'tokens': {in, cached, out, reasoning},
+             'cost_usd': float|None, 'credits': float|None, 'quota_used': dict}
+    Missing token usage is represented by None counts, never invented zeros.
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
-           "retry_after": None, "last_text": "", "model": None, "session_id": None,
-           "last_error": None}
+           "retry_after": None, "last_text": "", "model": model, "session_id": None,
+           "last_error": None,
+           "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
+           "cost_usd": None, "credits": None, "quota_used": {}}
+    from .run_usage import collect
+    first_quota = {}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
@@ -722,10 +728,16 @@ def read_log(path, kind):
                     if is_network_error(line_str) or line_str.lower().startswith("error:"):
                         res["last_error"] = line_str
                 continue
+            if not isinstance(ev, dict):
+                continue
+            collect(res, ev, kind)
             if kind == "claude":
                 t = ev.get("type")
                 if t == "rate_limit_event":
                     res["usage"] = claude_samples_from_event(ev)
+                    for window, pct, resets in res["usage"]:
+                        first_quota.setdefault(window, pct)
+                        res["quota_used"][window] = round(pct - first_quota[window], 1)
                     info = ev.get("rate_limit_info") or {}
                     if info.get("status") == "rejected":
                         _note_quota_hit(res, ev)

@@ -786,6 +786,35 @@ def cmd_console_walkthrough(a, cfg, led):
     from . import console_walkthrough
     return console_walkthrough.run(cfg, a.platform)
 
+def cmd_backfill_usage(a, cfg, led):
+    """Recover historical accounting without touching active runs or leases."""
+    from .run_usage import columns
+    updated = skipped = 0
+    rows = led.con.execute(
+        "SELECT * FROM runs WHERE status='ended' AND tokens_out IS NULL "
+        "AND cost_source IS NULL ORDER BY id").fetchall()
+    for row in rows:
+        run = dict(row)
+        if (run["outcome"] or "").startswith("launch failed"):
+            skipped += 1
+            continue
+        pc = cfg.get("platforms", {}).get(run["platform"])
+        try:
+            if not pc or not run["log_path"]:
+                raise OSError("no platform or log")
+            with open(run["log_path"], encoding="utf-8"):
+                pass
+        except OSError:
+            skipped += 1
+            continue
+        model = run.get("model") or pc.get("sort_model" if run["role"] == "sort" else "build_model") or pc.get("model")
+        log = platforms.read_log(run["log_path"], pc["kind"], model=model)
+        if not a.dry_run:
+            led.update_run(run["id"], **columns(log, run, cfg))
+        updated += 1
+    print(f"{'Would update' if a.dry_run else 'Updated'} {updated} run(s); skipped {skipped}.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -875,6 +904,10 @@ def main(argv=None):
     s = sub.add_parser("backup", help="back up project databases now")
     s.add_argument("project", nargs="?")
     s.set_defaults(fn=cmd_backup)
+
+    s = sub.add_parser("backfill-usage", help="recover accounting from ended run logs")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_backfill_usage)
 
     s = sub.add_parser("log", help="summarise a run's output")
     s.add_argument("run_id", type=int)

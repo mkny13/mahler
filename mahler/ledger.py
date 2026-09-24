@@ -91,6 +91,15 @@ CREATE TABLE IF NOT EXISTS runs (
     yield_at    TEXT,
     nudged      INTEGER NOT NULL DEFAULT 0,
     model       TEXT,                    -- the modelID a stateless route actually used (mahler#141)
+    effort      TEXT,
+    tokens_in   INTEGER,
+    tokens_cached INTEGER,
+    tokens_out  INTEGER,
+    tokens_reasoning INTEGER,
+    cost_usd    REAL,
+    cost_source TEXT,
+    credits     REAL,
+    quota_used  TEXT,
     est_mins    REAL,                    -- predicted duration at launch (mahler#59)
     actual_mins REAL,                    -- actual duration on completion (mahler#59)
     started_at  TEXT NOT NULL,
@@ -257,6 +266,12 @@ class Ledger:
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
+        for col, ddl in (("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
+                         ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
+                         ("cost_usd", "REAL"), ("cost_source", "TEXT"),
+                         ("credits", "REAL"), ("quota_used", "TEXT")):
+            if col not in run_cols:
+                self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
         if "nudged" not in run_cols:
             self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
         if "model" not in run_cols:

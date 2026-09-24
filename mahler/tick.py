@@ -494,9 +494,11 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         return False
     ests = led.estimates()
     est = led.run_estimate(ests, platform, role, size)
-    effort = platforms.effort_value(ctx.cfg["platforms"][platform], role) or "default"
+    pconf = ctx.cfg["platforms"][platform]
+    effort = platforms.effort_value(pconf, role) or "default"
+    model = pconf.get("sort_model" if role == "sort" else "build_model") or pconf.get("model")
     run_id = led.create_run(project=project, number=n, role=role, platform=platform, size=size,
-                            effort=effort, epoch=0, status="running", est_mins=round(est, 2))
+                            model=model, effort=effort, epoch=0, status="running", est_mins=round(est, 2))
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],
                             platform=platform, run_id=run_id, capacity=role != "sort",
                             handoff_from=handoff_from)
