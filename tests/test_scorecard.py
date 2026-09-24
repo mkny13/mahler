@@ -262,6 +262,17 @@ class AttemptTests(unittest.TestCase):
         self.bug(body='Regression in #50')
         self.result(rid, 'failure', 'bug within 14 days')
 
+    def test_delayed_merge_discovery(self):
+        rid = self.run_attempt()
+        self.advance()  # Monday
+        merge_time = self.now
+        self.advance()  # Tuesday
+        self.bug(body='Regression in #50', days=0)
+        self.advance()  # Wednesday
+        # Sync discovers merge on Wednesday but records actual merge time (Monday)
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check', shipped_at=iso(merge_time))
+        self.result(rid, 'failure', 'bug within 14 days')
+
     def test_read_only_repeatable_and_late_evidence_reclassifies(self):
         rid = self.run_attempt()
         before = self.led.con.total_changes
