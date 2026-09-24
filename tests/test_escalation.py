@@ -195,3 +195,67 @@ class TierEscalationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalScheduleTests(unittest.TestCase):
+    """mahler#433 in the scheduler: a ready item escalated past every usable
+    platform is clamped, or asks the owner when only approval platforms remain."""
+
+    def setUp(self):
+        from test_schedule import item, mk_ctx, proj, seed
+        self.ctx, self.led = mk_ctx({"p": proj()})
+        self.ctx.dry_run = False
+        self.cfg = self.ctx.cfg
+        self.cfg["routing"]["build"] = ["agy-claude", "claude"]
+        seed(self.led, **{"agy-claude": (10, 10), "claude": (10, 10), "fable": (10, 10)})
+        item(self.led, "p", 7)
+        self.led.upsert_item("p", 7, title="t", esc_tier=5, labels=json.dumps(["size:m"]))
+        self.started = []
+        patcher = mock.patch.object(
+            tick, "start", side_effect=lambda ctx, p, it, role, platform, **kw:
+            self.started.append(platform) or True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.ctx.ping = mock.Mock()
+
+    def schedule(self):
+        with mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(self.ctx, list(config.enabled_projects(self.cfg)))
+
+    def test_clamped_to_the_strongest_usable_platform(self):
+        self.schedule()
+        self.assertEqual(self.started, ["claude"])
+
+    def test_asks_when_only_an_approval_platform_is_stronger(self):
+        self.cfg["platforms"]["fable"] = dict(self.cfg["platforms"]["claude"],
+                                              model="claude-fable-5-1", tier=5)
+        self.cfg["routing"]["build"].append("fable")
+        self.schedule()
+        self.assertEqual(self.started, [])
+        self.assertEqual(self.led.item("p", 7)["state"], "needs_you")
+        self.ctx.ping.assert_called_once()
+        sync._apply_instruction(self.ctx, "p", self.led.item("p", 7), "approve", None)
+        self.assertEqual(self.led.item("p", 7)["state"], "ready")
+        self.schedule()
+        self.assertEqual(self.started, ["fable"])
+
+
+class ReviewFixReasonTests(unittest.TestCase):
+    def test_a_review_fix_says_so(self):
+        from test_schedule import item, mk_ctx, proj
+        ctx, led = mk_ctx({"p": proj()})
+        ctx.dry_run = False
+        ctx.gh = mock.Mock()
+        led.upsert_item("p", 3, state="verifying", title="t", pr=12)
+        with mock.patch.object(tick.runner, "prepare",
+                               return_value={"worktree": "/tmp", "branch": "b",
+                                             "replayed": False, "kept": None}), \
+                mock.patch.object(tick.prompt, "build", return_value="p"), \
+                mock.patch.object(tick.runner, "launch", return_value={"branch": "b"}), \
+                mock.patch.object(tick.launch_health, "allowed", return_value=True), \
+                mock.patch.object(tick.launch_health, "succeeded"):
+            self.assertTrue(tick.start(ctx, "p", led.item("p", 3), "fix", "claude",
+                                       review_fix=True))
+        reason = led.q1("SELECT detail FROM events WHERE kind='state' ORDER BY id DESC")["detail"]
+        self.assertRegex(reason, r"claude review fix run \d+ — review found blocking issues on PR #12")
+        self.assertIn("the review found blocking issues", ctx.gh().comment.call_args[0][1])

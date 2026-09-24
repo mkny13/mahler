@@ -14,6 +14,7 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  label_names, parse_command, part_of, pin_of, priority_of)
 from .ledger import iso, parse
 from .ship import record_release_item_if_needed, record_uat_if_needed
+from .tick import approval_key
 from .watchdog import request_stop
 
 
@@ -300,6 +301,17 @@ def _apply_instruction(ctx, project, item, verb, arg):
         led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
                       esc_tier=0, esc_fails=0,
                       sorted_at=iso(led.now() - timedelta(days=1)))
+    elif verb == "approve":
+        # mahler#433: the owner allows approval-gated platforms (Fable, Astra)
+        # for this item. An item with an open PR goes back to the conductor,
+        # which starts the fix it was waiting for; anything else is rescheduled.
+        led.set_kv(approval_key(project, n), iso(led.now()))
+        if item["state"] == "needs_you":
+            if item["pr"]:
+                led.set_state(project, n, "verifying", "you approved — the conductor retries")
+            else:
+                led.set_state(project, n, "ready", "you approved",
+                              sorted_at=item["sorted_at"] or iso(led.now()))
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
         for run in led.active_runs(project):

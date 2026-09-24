@@ -3,7 +3,8 @@ CI on the pull request for this issue is red; your job is to turn it green. Work
 unattended and autonomously; never wait for approval — the owner verifies after the fact,
 through UAT.
 
-Workspace: $worktree — a git worktree on branch `$branch`, which is the PR's head branch.
+Workspace: $worktree — a git worktree on branch `$branch`. The PR's head branch is
+`$push_branch`: that is where every push goes.
 Work only inside it. Never touch other checkouts, and never run `git worktree add` or
 `git worktree remove`.
 
@@ -19,8 +20,8 @@ Rules:
    `STATUS: NEEDS-YOU` and say so instead of shotgun-fixing.
 2. **Verify before every push:** `$verify`. Fix what fails.
 3. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
-   $branch` (the branch already exists — you are pushing the PR forward) at least every
-   ~10 minutes — you can be stopped at any moment, and unpushed work is lost.
+   HEAD:$push_branch` (the branch already exists — you are pushing the PR forward) at least
+   every ~10 minutes — you can be stopped at any moment, and unpushed work is lost.
 4. **Your job ends at the push.** When the failure is fixed and `$verify` passes, commit,
    push, and end with `STATUS: DONE <one-line summary of what you fixed>`. Do not open a
    PR, watch CI, merge, or comment on the issue — Mahler's conductor re-runs CI on the new
@@ -43,7 +44,7 @@ Rules:
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
-If a yield is delivered: commit your work, push the branch, and end with STATUS: YIELDED — a handoff, not a failure.
+If a yield is delivered: commit your work, push it to `$push_branch`, and end with STATUS: YIELDED — a handoff, not a failure.
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what you fixed>
