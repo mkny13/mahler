@@ -373,11 +373,11 @@ class Ledger:
 
     # ---------- the UAT queue (D10, D27) ----------
 
-    def add_uat(self, project, number, pr, sha, title, needs):
+    def add_uat(self, project, number, pr, sha, title, needs, shipped_at=None):
         self.con.execute(
             "INSERT OR IGNORE INTO uat(project,number,pr,sha,title,needs,shipped_at) "
             "VALUES(?,?,?,?,?,?,?)",
-            (project, number, pr, sha, title, needs, iso(self.now())))
+            (project, number, pr, sha, title, needs, shipped_at or iso(self.now())))
 
     def uat(self, project, number):
         return self.q1("SELECT * FROM uat WHERE project=? AND number=?", (project, number))

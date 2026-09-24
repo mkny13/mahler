@@ -541,7 +541,8 @@ def record_uat_if_needed(ctx, project, n, pr, item, view):
         return needs
     sha = (view.get("mergeCommit") or {}).get("oid") or ""
     try:
-        ctx.led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs)
+        ctx.led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs,
+                        shipped_at=view.get("mergedAt"))
     except Exception as e:                  # noqa: BLE001 — a ship must not break
         ctx.say(f"{project}#{n}: couldn't record the UAT item — {e}")
     return needs
@@ -557,7 +558,7 @@ def record_release_item_if_needed(ctx, project, n, pr, item, view):
     try:
         ctx.led.snapshot_release_item(
             project, n, pr=pr, title=title, summary=summary,
-            merge_sha=sha, labels=labels, shipped_at=iso(ctx.led.now()))
+            merge_sha=sha, labels=labels, shipped_at=view.get("mergedAt") or iso(ctx.led.now()))
     except Exception as e:                  # noqa: BLE001 — a ship must not break
         ctx.say(f"{project}#{n}: couldn't snapshot release item — {e}")
 
