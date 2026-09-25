@@ -2598,6 +2598,48 @@ class ConsoleRevisionTests(unittest.TestCase):
         script += functions_between("  function updateCaptureSave", "  function setView")
         script += functions_between("  function payloadFor", "  // a needs-you")
         script += functions_between("  function post(action", "  function numberValue")
+        
+        doc = page.document(state.build(make_cfg(), make_led()))
+        import html.parser
+        class FieldParser(html.parser.HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.fields = []
+                self.in_select = False
+                self.current_select = None
+            def handle_starttag(self, tag, attrs):
+                attr_dict = dict(attrs)
+                if tag in ("input", "textarea"):
+                    value = attr_dict.get("value", "")
+                    if tag == "input" and attr_dict.get("type") in ("checkbox", "radio") and "value" not in attr_dict:
+                        value = "on"
+                    field = {"tagName": tag.upper(), "type": attr_dict.get("type", "text"),
+                             "value": value,
+                             "defaultValue": attr_dict.get("value", ""),
+                             "checked": "checked" in attr_dict,
+                             "defaultChecked": "checked" in attr_dict}
+                    if tag == "textarea":
+                        field["value"] = ""
+                        field["defaultValue"] = ""
+                    self.fields.append(field)
+                elif tag == "select":
+                    self.in_select = True
+                    self.current_select = {"tagName": "SELECT", "options": [], "selectedIndex": 0}
+                    self.fields.append(self.current_select)
+                elif tag == "option" and self.in_select:
+                    selected = "selected" in attr_dict
+                    self.current_select["options"].append({"value": attr_dict.get("value", ""), "defaultSelected": selected})
+                    if selected:
+                        self.current_select["selectedIndex"] = len(self.current_select["options"]) - 1
+            def handle_endtag(self, tag):
+                if tag == "select":
+                    self.in_select = False
+        parser = FieldParser()
+        parser.feed(doc)
+        import json
+        settings_fields_json = json.dumps(parser.fields)
+
+        script += f"const REAL_SETTINGS_FIELDS = {settings_fields_json};\n"
         script += r'''
 const assert = require("assert");
 let settingsDirty = false, reloading = false, loadedRevision = "old";
@@ -2619,6 +2661,14 @@ settingsDirty = false;
 fields = [{tagName:"TEXTAREA", value:"unsaved draft", defaultValue:""}];
 assert.equal(acceptRevision("new"), false);
 assert.equal(reloads, 0);
+fields = [{tagName:"INPUT", type:"checkbox", checked:true, defaultChecked:true, value:"on", defaultValue:""}];
+assert.equal(reloadHasDraft(), false);
+fields = [{tagName:"INPUT", type:"checkbox", checked:false, defaultChecked:true, value:"on", defaultValue:""}];
+assert.equal(reloadHasDraft(), true);
+fields = REAL_SETTINGS_FIELDS;
+assert.equal(reloadHasDraft(), false);
+fields[0].value = "changed";
+assert.equal(reloadHasDraft(), true);
 // Both visible and hidden composers restore the saved project, although
 // the server renders the placeholder as their HTML default.
 captures = [false, true].map(hidden => ({
