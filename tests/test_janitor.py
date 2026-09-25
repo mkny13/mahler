@@ -209,6 +209,132 @@ class BranchTests(Base):
             self.assertIn(ref, heads)
 
 
+class FixBranchTests(Base):
+    def fix_branch(self, *, status="ended", tip="main", number=12):
+        run_id = self.make_run(number, status=status, with_wt=False)
+        name = f"mahler/{number}-slug-r{run_id}"
+        sh(self.repo, "git", "push", "-q", "origin", f"{tip}:refs/heads/{name}")
+        return name, run_id
+
+    def test_ended_contained_in_main_deleted(self):
+        name, _ = self.fix_branch()
+        self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertNotIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_ended_contained_in_item_branch_deleted(self):
+        tip = self.push_branch("mahler/12-current")
+        self.led.upsert_item("t", 12, state="verifying", branch="mahler/12-current")
+        name, _ = self.fix_branch(tip=tip)
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertNotIn(f"refs/heads/{name}", self.remote_heads())
+        self.assertIn("refs/heads/mahler/12-current", self.remote_heads())
+
+    def test_pr_head_contains_ancestor_and_equal_tips(self):
+        tip = self.push_branch("mahler/12-current")
+        head = sh(self.repo, "git", "commit-tree", "main^{tree}", "-p", tip,
+                  "-m", "PR head")
+        sh(self.repo, "git", "push", "-q", "origin", f"{head}:refs/pull/325/head")
+        self.led.upsert_item("t", 12, state="verifying", pr=325,
+                             branch="mahler/12-current")
+        names = [self.fix_branch(tip=sha)[0] for sha in (tip, head)]
+        with mock.patch.object(runner, "git", wraps=runner.git) as git:
+            janitor.sweep(self.ctx, self.ctx.policy("t"))
+        for name in names:
+            self.assertNotIn(f"refs/heads/{name}", self.remote_heads())
+        self.assertEqual(sum("refs/pull/325/head" in c.args
+                             for c in git.call_args_list), 1)
+
+    def test_unique_commits_kept_and_reported(self):
+        tip = self.push_branch("keep")
+        name, _ = self.fix_branch(tip=tip)
+        self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+        self.assertTrue(any(name in line and "unique commits" in line
+                            for line in self.ctx.lines))
+
+    def test_unended_unknown_and_mismatched_runs_kept(self):
+        names = []
+        for status in ("running", "starting"):
+            names.append(self.fix_branch(status=status)[0])
+        name, run_id = self.fix_branch()
+        self.led.update_run(run_id, project="other")
+        names.append(name)
+        name, run_id = self.fix_branch()
+        self.led.update_run(run_id, number=99)
+        names.append(name)
+        unknown = "mahler/12-slug-r99999"
+        sh(self.repo, "git", "push", "-q", "origin", f"main:refs/heads/{unknown}")
+        names.append(unknown)
+        self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        for name in names:
+            self.assertIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_current_item_branch_kept(self):
+        name, _ = self.fix_branch()
+        self.led.upsert_item("t", 12, branch=name, pr=325)
+        self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_deletion_cap_and_subsequent_sweep(self):
+        # Seed the temporary bare remote directly to keep 101 fixtures cheap.
+        tip = sh(self.repo, "git", "rev-parse", "main")
+        for _ in range(101):
+            run_id = self.make_run(12, with_wt=False)
+            sh(self.remote, "git", "update-ref", f"refs/heads/mahler/12-slug-r{run_id}", tip)
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(len(self.remote_heads()), 2)  # main + one deferred fix
+        self.assertTrue(any("cap reached (100)" in line for line in self.ctx.lines))
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(self.remote_heads(), ["refs/heads/main"])
+
+    def test_dry_run_keeps_fix_branch(self):
+        name, _ = self.fix_branch()
+        self.ctx.dry_run = True
+        self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+        self.assertTrue(any(f"would delete remote branch {name}" in line
+                            for line in self.ctx.lines))
+
+    def test_failed_fetch_does_not_use_stale_refs(self):
+        name, _ = self.fix_branch()
+        real_git = runner.git
+
+        def fail_fetch(repo, *args, **kwargs):
+            if args[0] == "fetch":
+                raise runner.GitError("offline")
+            return real_git(repo, *args, **kwargs)
+
+        with mock.patch.object(runner, "git", side_effect=fail_fetch):
+            self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_failed_pr_fetch_does_not_fall_back_to_old_branch(self):
+        tip = self.push_branch("mahler/12-old-head")
+        name, _ = self.fix_branch(tip=tip)
+        self.led.upsert_item("t", 12, branch="mahler/12-old-head", pr=325)
+        self.assertFalse(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_remote_tip_race_is_rejected(self):
+        name, _ = self.fix_branch()
+        tip = sh(self.repo, "git", "rev-parse", "main")
+        new = sh(self.repo, "git", "commit-tree", "main^{tree}", "-p", tip,
+                 "-m", "new work")
+        sh(self.repo, "git", "push", "-q", "origin", f"{new}:refs/heads/{name}")
+        with self.assertRaises(runner.GitError):
+            janitor._delete_remote_branch(self.repo, name, tip=tip, target="main")
+        self.assertIn(f"refs/heads/{name}", self.remote_heads())
+
+    def test_delete_guard_rejects_unproven_and_unrelated_refs(self):
+        name, _ = self.fix_branch()
+        for branch in (name, "mahler/revert-12-r1", "feature/12-slug-r1"):
+            with self.subTest(branch=branch), self.assertRaises(RuntimeError):
+                janitor._delete_remote_branch(self.repo, branch)
+        tip = self.push_branch("unique")
+        with self.assertRaises(RuntimeError):
+            janitor._delete_remote_branch(self.repo, name, tip=tip, target="main")
+
+
 class AccountEnvTests(Base):
     """A work project's own repo is fetched/pruned with its own git-hosting
     identity (D25/D26), not this machine's default — the sweep's counterpart
@@ -223,6 +349,11 @@ class AccountEnvTests(Base):
     def test_sweep_fetches_and_deletes_with_the_project_s_account_env(self):
         self.push_branch("mahler/snapshot/12-run5")
         self.led.upsert_item("t", 12, state="done")
+        run_id = self.make_run(13, with_wt=False)
+        name = f"mahler/13-slug-r{run_id}"
+        sh(self.repo, "git", "push", "-q", "origin", f"main:refs/heads/{name}")
+        sh(self.repo, "git", "push", "-q", "origin", "main:refs/pull/325/head")
+        self.led.upsert_item("t", 13, pr=325, branch="mahler/13-current")
         with mock.patch.object(runner, "git", wraps=runner.git) as git:
             self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
         network_calls = [c for c in git.call_args_list if c.args[1] in ("fetch", "push")]
