@@ -810,10 +810,13 @@ class Ledger:
             args = (project,)
         return self.q(sql, args)
 
-    def last_run(self, project, number):
-        return self.q1(
-            "SELECT * FROM runs WHERE project=? AND number=? ORDER BY id DESC LIMIT 1",
-            (project, number))
+    def last_run(self, project, number, roles=None):
+        sql = "SELECT * FROM runs WHERE project=? AND number=?"
+        args = [project, number]
+        if roles is not None:
+            sql += " AND role IN (" + ",".join("?" for _ in roles) + ")"
+            args.extend(roles)
+        return self.q1(sql + " ORDER BY id DESC LIMIT 1", args)
 
     def platform_outcomes(self, since=None):
         """Per-platform build/fix run outcomes (mahler#206): {platform:

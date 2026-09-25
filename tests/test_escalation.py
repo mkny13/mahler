@@ -1,5 +1,6 @@
 """Tests for tier escalation on retries, overrun heuristics, and sizing calibration."""
 
+import copy
 import json
 import os
 import tempfile
@@ -59,7 +60,7 @@ class TierEscalationTests(unittest.TestCase):
         self.led = Ledger(":memory:")
         self.addCleanup(self.led.close)
 
-        cfg = copy = dict(config.DEFAULTS)
+        cfg = copy.deepcopy(config.DEFAULTS)
         self.ctx = StubCtx(cfg, self.led)
 
     def tearDown(self):
@@ -74,6 +75,99 @@ class TierEscalationTests(unittest.TestCase):
             worktree=self.tmp.name)
         self.led.con.execute("UPDATE runs SET started_at=? WHERE id=?", (started, run_id))
         finalize.finalize(self.ctx, self.led.run(run_id))
+
+    def test_review_and_ci_escalate_from_builder_not_reviewer(self):
+        for failure in ("review", "ci"):
+            with self.subTest(failure=failure):
+                self.led.upsert_item("p", 90, state="verifying", title="fix me",
+                                     labels='["size:s"]', branch="b", pr=10,
+                                     esc_fails=1, esc_tier=0)
+                for role, platform in (("build", "kilo"), ("review", "claude")):
+                    self.led.create_run(project="p", number=90, role=role,
+                                        platform=platform, epoch=1, status="ended")
+                with mock.patch("mahler.ship.start", return_value=True), \
+                     mock.patch("mahler.router.pick_for_project", return_value=("agy-claude", [])):
+                    args = (self.ctx, "p", self.led.item("p", 90), 10,
+                            {"headRefName": "b", "headRefOid": failure})
+                    if failure == "review":
+                        ship._review_triggered_fix(*args, "blocking findings")
+                    else:
+                        ship._red_ci(*args)
+                self.assertEqual(self.led.item("p", 90)["esc_tier"], 2)
+
+    def test_all_failure_paths_stay_at_route_cap(self):
+        for failure in ("review", "ci", "retry", "overrun"):
+            with self.subTest(failure=failure):
+                self.led.upsert_item("p", 91, state="verifying", title="fix me",
+                                     labels='["size:s"]', branch="b", pr=10,
+                                     attempts=0, esc_fails=1, esc_tier=3)
+                self.led.create_run(project="p", number=91, role="build",
+                                    platform="claude", epoch=1, status="ended")
+                with mock.patch("mahler.ship.start", return_value=True), \
+                     mock.patch("mahler.router.pick_for_project", return_value=("claude", [])):
+                    item = self.led.item("p", 91)
+                    args = (self.ctx, "p", item, 10,
+                            {"headRefName": "b", "headRefOid": failure})
+                    if failure == "review":
+                        ship._review_triggered_fix(*args, "blocking findings")
+                    elif failure == "ci":
+                        ship._red_ci(*args)
+                    else:
+                        finalize.retry_or_fail(self.ctx, "p", 91, item, None, "failed",
+                                               platform="kilo" if failure == "overrun" else "claude",
+                                               duration_mins=12)
+                self.assertEqual(self.led.item("p", 91)["esc_tier"], 3)
+
+    def test_cap_respects_routes_accounts_sizes_and_enabled(self):
+        cfg = self.ctx.cfg
+        cfg["platforms"] = {
+            "small": {"enabled": True, "tier": 1, "max_size": "s"},
+            "medium": {"enabled": True, "tier": 3},
+            "large": {"enabled": True, "tier": 4, "min_size": "l"},
+            "disabled": {"enabled": False, "tier": 5},
+            "work": {"enabled": True, "tier": 6, "account": "work"},
+            "unrouted": {"enabled": True, "tier": 7},
+        }
+        cfg["routing"]["build"] = ["small", "medium", "large", "disabled", "work"]
+        self.assertEqual(router.cap_escalation(cfg, {}, 8, "s"), 3)
+        self.assertEqual(router.cap_escalation(cfg, {}, 8, "l"), 3)
+        self.assertEqual(router.cap_escalation(cfg, {}, 8, "l", role="build"), 4)
+        pol = {"accounts": ["personal", "work"], "account_mode": "priority",
+               "routing": {"build": ["small", "work"]}}
+        self.assertEqual(router.cap_escalation(cfg, pol, 8, "s"), 6)
+        pol["routing"]["build"] = ["small"]
+        self.assertEqual(router.cap_escalation(cfg, pol, 8, "s"), 1)
+        self.assertEqual(router.cap_escalation(cfg, pol, 8, "m"), 0)
+
+    def test_waiting_fix_releases_lease_then_times_out_without_recounting(self):
+        for failure in ("review", "ci"):
+            with self.subTest(failure=failure):
+                now = self.led.now()
+                self.led.upsert_item("p", 92, state="verifying", title="fix me",
+                                     labels='["size:m"]', branch="b", pr=10,
+                                     attempts=0, esc_fails=0, esc_tier=4)
+                view = {"headRefName": "b", "headRefOid": failure}
+                def step():
+                    self.led.claim("p", 92, "conductor", "auto", 10)
+                    args = (self.ctx, "p", self.led.item("p", 92), 10, view)
+                    if failure == "review":
+                        ship._review_triggered_fix(*args, "findings")
+                    else:
+                        ship._red_ci(*args)
+                with mock.patch("mahler.router.pick_for_project", return_value=(None, ["no quota"])):
+                    step()
+                    self.assertIsNone(self.led.lease("p", 92))
+                    self.assertEqual(self.led.item("p", 92)["state"], "verifying")
+                    self.assertEqual(self.led.item("p", 92)["esc_tier"], 3)
+                    with mock.patch.object(self.led, "now", return_value=now + timedelta(minutes=121)):
+                        step()
+                item = self.led.item("p", 92)
+                self.assertEqual(item["state"], "needs_you")
+                self.assertEqual(item["esc_fails"], 1)
+                self.assertEqual(item["attempts"], 0)
+                self.assertIn("no quota", item["question"])
+                self.assertIsNone(self.led.lease("p", 92))
+                self.assertTrue(self.ctx.pings[-1][0].startswith("Fix waiting"))
 
     def test_two_failures_on_tier_1_escalates_to_tier_2(self):
         # item starts at esc_tier=0, esc_fails=0

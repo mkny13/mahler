@@ -31,6 +31,14 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_last_run_can_select_latest_builder_without_review(self):
+        for role in ("build", "fix", "review"):
+            self.led.create_run(project="p", number=1, role=role,
+                                platform="kilo", epoch=1, status="ended")
+        self.assertEqual(self.led.last_run("p", 1)["role"], "review")
+        self.assertEqual(self.led.last_run("p", 1, roles=("build", "fix"))["role"], "fix")
+        self.assertIsNone(self.led.last_run("p", 2, roles=("build", "fix")))
+
     def test_auto_vs_auto_never_double_assigns(self):
         a, _ = self.led.claim("p", 1, "run:1", "auto", 10)
         b, info = self.led.claim("p", 1, "run:2", "auto", 10)

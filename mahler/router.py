@@ -440,6 +440,31 @@ def tier_of(pconf):
     return pconf.get("tier", 1)
 
 
+def cap_escalation(cfg, pol, tier, size=None, *, role="fix", pin=None):
+    """Bound escalation by permanent route eligibility, not transient quota.
+
+    Match the scheduler's size promotion and fix sizing. Pins retain their
+    normal size override, but never cross the project's account boundary.
+    An empty route has no escalation tier; routing still refuses to start.
+    """
+    accts = accounts_of(pol)
+    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
+             if account_mode_of(pol) == "priority" else
+             candidates_for_accounts(cfg, role, accts, pin))
+    tiers = []
+    for name in names:
+        pconf = cfg["platforms"][name]
+        candidate_tier = min(tier, tier_of(pconf))
+        effective_size = "m" if (role == "fix" and size == "l"
+                                  or candidate_tier >= 2 and size == "s") else size
+        rank = SIZES.get(effective_size or "m", 2)
+        if not pin and (rank < SIZES.get(pconf.get("min_size"), 1)
+                        or rank > SIZES.get(pconf.get("max_size"), 3)):
+            continue
+        tiers.append(tier_of(pconf))
+    return min(tier, max(tiers, default=0))
+
+
 RISK_KEYWORDS = (
     "recipes/", "agents.md", "claude.md", "prompt context",
     "meta-programming", "credentials", "credential boundary",
