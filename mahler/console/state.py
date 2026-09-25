@@ -1107,14 +1107,24 @@ def _hot_holds(led, projects, now):
     for p in projects:
         if not p.get("hot_hold") or not p.get("path"):
             continue
-        last = presence.last_claude_activity(p["path"])
+        activity = presence.last_claude_edit(p["path"])
+        last = activity.at if activity else None
         if presence.hot_hold_overridden(led, p["name"], last):
             continue
         if last and now - last < timedelta(minutes=p["hot_hold_minutes"]):
             out.append({"project": p["name"], "ago": _mins(now - last),
+                        "directory": activity.directory, "fallback": activity.fallback,
                         "hold_minutes": p["hot_hold_minutes"],
                         "until": last + timedelta(minutes=p["hot_hold_minutes"])})
     return out
+
+
+def _hot_hold_text(hold):
+    directory = str(hold.get("directory") or hold["project"]).rstrip("/").rsplit("/", 1)[-1]
+    signal = "last activity; transcript unreadable" if hold.get("fallback") else "last edit"
+    return (f"Claude session in {directory} ({signal} {hold['ago']}m ago). "
+            f"New builds in {hold['project']} wait until {hold['hold_minutes']} minutes "
+            "after that activity.")
 
 
 def _silent_runs(led, quota):
@@ -1143,14 +1153,8 @@ def _banners(cfg, led, paused, quota, hot, now):
                     "text": "Every builder is at or past its soft line, so the scheduler is "
                             "holding. It starts again on its own as windows roll over."})
     for h in hot:
-        ago = (f"{h['ago']} minute{'s' if h['ago'] != 1 else ''} ago" if h["ago"]
-               else "under a minute ago")
         out.append({"kind": f"HOT HOLD · {h['project'].upper()}", "tone": "warn",
-                    # what presence sees is a Claude Code session, and a hot
-                    # hold only holds builds (D6 layer 2)
-                    "text": f"You were working in {h['project']} with Claude Code {ago}. No "
-                            f"new builds start there until {h['hold_minutes']} minutes after "
-                            f"you stop. Work in flight continues.",
+                    "text": _hot_hold_text(h) + " Work in flight continues.",
                     "act": "end_session", "action": "End session", "project": h["project"]})
     for name, r in _silent_runs(led, quota):
         mins = config.project_policy(cfg, r["project"]).get("startup_timeout_minutes", 10)
@@ -1428,8 +1432,7 @@ def _idle(cfg, led, s, hot, now):
     for h in hot:
         if any(i["state"] == "ready" for i in pending.get(h["project"], [])):
             reasons.append({
-                "text": f"You have been working in {h['project']}, so new builds there wait "
-                        f"until {h['hold_minutes']} minutes after you stop.",
+                "text": _hot_hold_text(h),
                 "countdown": f"{_dur(h['until'] - now)} left",
                 "act": "end_session", "action": "End session", "project": h["project"]})
     if schedule_holds is not None:

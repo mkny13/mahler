@@ -752,15 +752,16 @@ class BannerTests(unittest.TestCase):
             led.record_usage("cline-free", w, 100.0, iso(led.now() + timedelta(minutes=40)))
         led.create_run(project="mahler", number=3, role="build", platform="kilo", epoch=1,
                        status="ended", stop_reason="silent")
-        with mock.patch.object(state.presence, "last_claude_activity",
-                               return_value=led.now() - timedelta(minutes=4)):
+        with mock.patch.object(state.presence, "last_claude_edit",
+                               return_value=state.presence.Activity(
+                                   led.now() - timedelta(minutes=4), "/repo/ops-session")):
             banners = state.build(cfg, led)["banners"]
         self.assertEqual([b["kind"] for b in banners],
                          ["PAUSED BY YOU", "ALL PLATFORMS OVER SOFT LINE", "HOT HOLD · MAHLER",
                           "RUN SAT SILENT · KILO"])
-        self.assertEqual(banners[2]["text"], "You were working in mahler with Claude Code 4 "
-                                             "minutes ago. No new builds start there until 20 "
-                                             "minutes after you stop. Work in flight continues.")
+        self.assertEqual(banners[2]["text"], "Claude session in ops-session (last edit 4m ago). "
+                                             "New builds in mahler wait until 20 minutes "
+                                             "after that activity. Work in flight continues.")
         self.assertEqual(banners[0]["act"], "resume")
         self.assertIn("printed nothing for 10 minutes", banners[3]["text"])
 

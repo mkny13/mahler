@@ -9,6 +9,8 @@ on which agent CLIs are installed on the machine.
 import copy
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -796,6 +798,28 @@ class HotHoldTests(unittest.TestCase):
         with mock.patch.object(presence, "last_claude_activity", return_value=last):
             lines = plan(ctx, led)
         return lines, ctx.lines
+
+    def test_transcript_edits_gate_builds_but_ops_chat_does_not(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / presence.encode("/tmp/x")
+            folder.mkdir()
+            transcript = folder / "session.jsonl"
+            for tool, minutes, held in [("Read", 1, False), ("Edit", 1, True),
+                                        ("Edit", 25, False)]:
+                with self.subTest(tool=tool, minutes=minutes):
+                    transcript.write_text(json.dumps({
+                        "type": "assistant", "cwd": "/tmp/x",
+                        "timestamp": (NOW - timedelta(minutes=minutes)).isoformat(),
+                        "message": {"content": [{"type": "tool_use", "name": tool,
+                                                   "input": {}}]},
+                    }))
+                    ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+                    self.addCleanup(led.close)
+                    seed(led, **{"agy-claude": (10, 10)})
+                    item(led, "a", 1)
+                    with mock.patch.object(presence, "CLAUDE_PROJECTS", root):
+                        lines = plan(ctx, led)
+                    self.assertEqual(lines, [] if held else ["a#1: would build on agy-claude"])
 
     def test_end_session_lifts_hold_until_new_activity(self):
         for offset, expected in ((-1, ["a#1: would build on agy-claude"]),
