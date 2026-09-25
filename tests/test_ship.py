@@ -1383,3 +1383,80 @@ class PushBranchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewConvergence(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+
+    def rounds(self, findings):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        history = [{"sha": f"head-{i}", "findings": f, "at": iso(NOW), "run_id": i}
+                   for i, f in enumerate(findings, 1)]
+        self.gh.head_sha = history[-1]["sha"]
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+        return history
+
+    def test_two_divergent_transitions_escalate_before_attempt_limit(self):
+        findings = ["auth.py: null check", "db.py: query", "api.py: unsafe input"]
+        self.rounds(findings)
+        self.led.upsert_item("x", 5, attempts=self.ctx.policy("x")["max_attempts"] - 1)
+        with mock.patch.object(ship, "start") as start:
+            ping = self.ship()
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(json.loads(self.item()["options"]),
+                         ["cut scope", "split the item", "merge with follow-ups", "keep fixing"])
+        for i, finding in enumerate(findings, 1):
+            self.assertIn(f"Round {i}", self.item()["question"])
+            self.assertIn(finding, self.item()["question"])
+        ping.assert_called_once()
+        self.assertFalse(self.gh.merged)
+
+    def test_one_divergence_convergence_and_repetition_start_fixes(self):
+        sequences = [
+            ["a.py: bug", "b.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: remaining bug"],
+            ["a.py: bug"] * 5,
+            ["a.py: bug", "b.py: bug | c.py: bug", "c.py: bug"],
+            ["a.py: bug", "src/b.py:20 bug", "`b.py:40`: bug"],
+            ["a.py: bug", "unknown location", "c.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: bug", "c.py: bug"],
+        ]
+        for findings in sequences:
+            with self.subTest(findings=findings):
+                self.rounds(findings)
+                self.led.upsert_item("x", 5, state="verifying", attempts=0)
+                with mock.patch.object(ship, "start", return_value=True) as start:
+                    self.ship()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_retry_does_not_reescalate_the_same_history(self):
+        history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
+        self.ship()
+        self.led.upsert_item("x", 5, state="verifying")
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        start.assert_called_once()
+        self.assertEqual(json.loads(self.led.get_kv("reviewfindings:x#5")), history)
+
+    def test_pass_breaks_the_streak_and_failed_finalization_is_idempotent(self):
+        from types import SimpleNamespace
+        history = self.rounds(["a.py: bug", "b.py: bug"])
+        e = SimpleNamespace(led=self.led, project="x", number=5, item=self.item(),
+                            run={"id": 20, "platform": "agy-gemini"}, rest="c.py: bug",
+                            ctx=self.ctx, set_state=mock.Mock())
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            finalize._review_failed(e)
+            finalize._review_failed(e)
+            recorded = json.loads(self.led.get_kv("reviewfindings:x#5"))
+            self.assertEqual(recorded, history + [{"sha": "head-2", "findings": e.rest,
+                                                  "at": iso(NOW), "run_id": 20}])
+            finalize._review_passed(e)
+        self.assertEqual(self.led.get_kv("reviewconvergence:x#5"), "3")

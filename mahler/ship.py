@@ -6,6 +6,7 @@ green — but never merge once the item's lease has gone to a session (D6).
 """
 
 import json
+import re
 from datetime import timedelta
 
 from . import config, router, runner
@@ -417,6 +418,47 @@ def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):
              project, n, priority="high", tags="warning")
 
 
+def _finding_files(findings):
+    """Compare file references, not prose or shifting line numbers.
+
+    The review recipe requires file names. Unknown locations are inconclusive,
+    never evidence of divergence. Basenames also match abbreviated references
+    to a previously fully qualified path (conservatively avoiding false alarms).
+    """
+    return {path.rsplit("/", 1)[-1] for path in re.findall(
+        r"(?<![\w.])(?:[\w@+.-]+/)*[\w@+-]+\.[A-Za-z][A-Za-z0-9]*", findings)}
+
+
+def _review_not_converging(ctx, project, item, pr, view):
+    led, n = ctx.led, item["number"]
+    history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+    key = f"reviewconvergence:{project}#{n}"
+    offset = int(led.get_kv(key) or 0)
+    rounds = history[offset:]
+    if len(rounds) < 3 or rounds[-1]["sha"] != view.get("headRefOid"):
+        return False
+    # Two disjoint transitions require three failed reviews. Any overlap or
+    # unknown location breaks the streak, including a repeat of an old finding.
+    files = [_finding_files(r["findings"]) for r in rounds[-3:]]
+    if not all(files) or any(a & b for a, b in zip(files, files[1:])):
+        return False
+    options = ["cut scope", "split the item", "merge with follow-ups", "keep fixing"]
+    evidence = "\n".join(
+        f"Round {i} ({r['sha'] or 'unknown head'}, run {r['run_id']}): {r['findings']}"
+        for i, r in enumerate(history, 1))
+    question = (f"Review findings are not converging on PR #{pr}: two consecutive rounds "
+                "moved to different files. Should we cut scope, split the item, merge "
+                "with follow-ups, or keep fixing?\n\n" + evidence)
+    led.set_state(project, n, "needs_you", question, question=question,
+                  options=json.dumps(options))
+    # Retain the evidence, but let an explicit owner retry start a fresh streak.
+    led.set_kv(key, str(len(history)))
+    led.release(project, n, holder=CONDUCTOR)
+    ctx.ping(f"Review not converging — {project} #{n}", question,
+             project, n, priority="high", tags="warning")
+    return True
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -427,6 +469,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     (mahler#232's per-cycle dedup fix lives there) so this new path can never
     perturb that already-hardened one."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    if _review_not_converging(ctx, project, item, pr, view):
+        return
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1
