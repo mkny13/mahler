@@ -157,8 +157,8 @@ class SettingsPageTests(unittest.TestCase):
         self.assertIn("Account login environment variables are never displayed", doc)
 
     def test_browser_serializes_and_preserves_unsaved_settings(self):
-        self.assertIn('post("settings", settingsPayload(form))', page.JS)
-        self.assertIn('if (settingsDirty)', page.JS)
+        self.assertIn('post("settings", settingsPayload(form), form)', page.JS)
+        self.assertIn('if (settingsDirty || pendingUploads)', page.JS)
         self.assertIn('data-route-platform', page.JS)
         self.assertIn(':root[data-view="settings"] .view-settings', page.CSS)
         self.assertIn(':root[data-tab="settings"] .tabv-settings', page.CSS)
@@ -2251,11 +2251,8 @@ class CapturePageTests(unittest.TestCase):
         self.assertIn('class="attach-btn" data-attach>Attach photo or screenshot</button>', doc)
 
         script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
-        self.assertIn(
-            'suppressKeep = ["capture", "capture_att_id", "capture_att_name"]',
-            script,
-        )
-        self.assertIn('skip.indexOf(k) === -1', script)
+        self.assertIn('field.value = ""', script)
+        self.assertNotIn('suppressKeep', script)
 
 
 if __name__ == "__main__":
@@ -2585,6 +2582,95 @@ class ConsoleRevisionTests(unittest.TestCase):
             self.assertNotEqual(revision, page.asset_revision())
             self.assertNotIn(marker, page.app(s))
 
+    def test_saved_drafts_allow_revision_reload(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        def extract(start, end):
+            return page.JS[page.JS.index(start):page.JS.index(end)]
+        script = extract("  function reloadHasDraft", "  function showErrorToast")
+        script += extract("  function fieldState", "  function numberValue")
+        script += r'''
+const assert = require("assert");
+let settingsDirty = false, settingsEdits = 0, pendingUploads = 0;
+let loadedRevision = "old", reloading = false, reloads = 0;
+let errorToastTimer = null, openCapture = true, fields = [], response;
+let app = {querySelectorAll: () => fields};
+let root = {getAttribute: () => "now"};
+let document = {hidden:false, activeElement:null, getElementById: () => null,
+  createElement: () => ({set innerHTML(html) { this.content = {
+    querySelector: () => ({getAttribute: () => html})}; }})};
+let window = {location:{reload: () => reloads++}};
+function store() {}
+function statsUrl() { return "/fragment"; }
+function showSavedToast() {}
+function showErrorToast() {}
+function fetch(url) {
+  if (url === "/fragment") return Promise.resolve({ok:true, text: () => Promise.resolve("new")});
+  return new Promise(resolve => { response = ok => resolve({json: () => Promise.resolve({ok})}); });
+}
+function field(value, extra = {}) {
+  return Object.assign({tagName:"INPUT", type:"text", value, defaultValue:"",
+    hasAttribute: () => false, getAttribute: () => "capture"}, extra);
+}
+function reset(items) { fields = items; reloading = false; reloads = 0; settingsDirty = false; }
+function source(items) { return {querySelectorAll: () => items}; }
+(async () => {
+  // Successfully submitted text and hidden attachment values clear before refresh.
+  let text = field("saved", {tagName:"TEXTAREA"});
+  let attachment = field("id", {type:"hidden", defaultValue:"id",
+    classList:{contains: name => name === "attach-id"}});
+  // Hidden inputs reflect value to defaultValue in the real DOM.
+  Object.defineProperty(attachment, "defaultValue", {get() { return this.value; }});
+  let twin = field("saved");
+  reset([text, attachment, twin]);
+  assert.equal(reloadHasDraft(), true);
+  let save = post("capture", {text:"saved", project:"mahler", attachment:"id"}, source([text, attachment]));
+  response(true); await save;
+  assert.equal(twin.value, "");
+  assert.equal(text.value, ""); assert.equal(attachment.value, "");
+  assert.equal(reloads, 1);
+  // Attachment-only drafts and in-flight uploads both defer reload.
+  reset([field("id", {type:"hidden", defaultValue:"id", classList:attachment.classList})]);
+  await refresh(true); assert.equal(reloads, 0);
+  reset([]); pendingUploads = 1;
+  await refresh(true); assert.equal(reloads, 0); pendingUploads = 0;
+  // Saving one composer preserves another composer and edits during the request.
+  text = field("submitted"); let other = field("other draft"); reset([text, other]);
+  save = post("capture", {text:"submitted"}, source([text]));
+  text.value = "new draft"; response(true); await save;
+  assert.equal(text.value, "new draft"); assert.equal(other.value, "other draft");
+  assert.equal(reloads, 0);
+  // Failed saves must retain their drafts.
+  reset([text]); save = post("capture", {}, source([text]));
+  response(false); await save; assert.equal(text.value, "new draft"); assert.equal(reloads, 0);
+  // Saved settings establish baselines for all three control types.
+  let input = field("edited");
+  let checkbox = field("on", {type:"checkbox", checked:true, defaultChecked:false});
+  let select = field("b", {tagName:"SELECT", selectedIndex:1,
+    options:[{defaultSelected:true}, {defaultSelected:false}]});
+  reset([input, checkbox, select]); settingsDirty = true;
+  save = post("settings", {}, source(fields)); response(true); await save;
+  assert.equal(settingsDirty, false); assert.equal(reloadHasDraft(), false); assert.equal(reloads, 1);
+  // A later edit, including routing changes tracked outside inputs, stays dirty.
+  reset([input]); settingsDirty = true;
+  save = post("settings", {}, source(fields)); input.value = "newer"; settingsEdits++;
+  response(true); await save;
+  assert.equal(settingsDirty, true); assert.equal(reloads, 0);
+  settingsDirty = false; assert.equal(reloadHasDraft(), true);
+  // Saving settings does not consume an unrelated capture draft.
+  reset([input, other]); settingsDirty = true;
+  save = post("settings", {}, source([input])); response(true); await save;
+  assert.equal(settingsDirty, false); assert.equal(other.value, "other draft"); assert.equal(reloads, 0);
+  reset([input]); settingsDirty = true;
+  save = post("settings", {}, source([input])); response(false); await save;
+  assert.equal(settingsDirty, true); assert.equal(reloads, 0);
+})().catch(err => {console.error(err); process.exitCode = 1;});
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_browser_revision_payload_and_acknowledgement(self):
         import shutil
         import subprocess
@@ -2597,7 +2683,7 @@ class ConsoleRevisionTests(unittest.TestCase):
         script = functions_between("  function reloadHasDraft", "  function refresh")
         script += functions_between("  function updateCaptureSave", "  function setView")
         script += functions_between("  function payloadFor", "  // a needs-you")
-        script += functions_between("  function post(action", "  function numberValue")
+        script += functions_between("  function fieldState", "  function numberValue")
         
         doc = page.document(state.build(make_cfg(), make_led()))
         import html.parser
@@ -2642,7 +2728,7 @@ class ConsoleRevisionTests(unittest.TestCase):
         script += f"const REAL_SETTINGS_FIELDS = {settings_fields_json};\n"
         script += r'''
 const assert = require("assert");
-let settingsDirty = false, reloading = false, loadedRevision = "old";
+let settingsDirty = false, pendingUploads = 0, settingsEdits = 0, reloading = false, loadedRevision = "old";
 let fields = [], reloads = 0, stores = {}, saved = [], refreshes = [];
 let captures = [];
 let app = {querySelectorAll: selector => selector === "[data-capture-select]" ? captures : fields};
@@ -2722,4 +2808,4 @@ post("end_session", payloadFor(button, "end_session")).then(() => {
         self.assertEqual(result.returncode, 0, result.stderr)
         refresh = functions_between("  function refresh(force)", "  function showErrorToast")
         self.assertLess(refresh.index("!acceptRevision(html)"), refresh.index("app.innerHTML = html"))
-        self.assertIn("if (settingsDirty)", refresh)
+        self.assertIn("if (settingsDirty || pendingUploads)", refresh)
