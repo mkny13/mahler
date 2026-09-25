@@ -142,10 +142,14 @@ class TestWrites(_Served):
 
     def test_end_session_records_override(self):
         self.cfg["projects"]["mahler"]["hot_hold"] = True
+        for run in self.led.active_runs():
+            self.led.update_run(run["id"], status="done")
+        self.led.upsert_item("mahler", 10, title="Waiting", state="ready")
         with mock.patch("mahler.presence.last_claude_activity",
                         return_value=self.led.now() - timedelta(minutes=4)) as activity:
             before = json.loads(self.request("/api/state")[2])
             self.assertIn('"end_session"', json.dumps(before["banners"]))
+            self.assertIn('"end_session"', json.dumps(before["idle"]))
             status, _, body = self.post("end_session", {"project": "mahler"})
             self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
             self.assertIsNotNone(self.led.get_kv("hot_hold_end:mahler"))
