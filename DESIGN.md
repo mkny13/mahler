@@ -302,6 +302,20 @@ Two rules use this:
   - The first `Edit`/`Write` in an unclaimed session injects a one-line reminder to claim if the
     work relates to an item.
 
+**Presence-lite write signal (mahler#453).** Claude transcript mtime alone no longer
+holds a project: ops/triage chats can read files, query the ledger and file issues
+without blocking builds. The sensor streams each matching JSONL transcript and
+uses the latest timestamp of an `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, or
+Bash `git commit`/`git push` invocation. Streaming the full file avoids losing a
+recent edit behind a long read-only tail. This is a conservative tool-intent
+signal, not proof that a write succeeded; arbitrary shell scripts and external
+tools that mutate files are not classified as edits. Empty, malformed, unreadable
+or unknown transcript formats (including edits without usable timestamps) fall
+back to file mtime. The same signal drives build holds, presence-based lease
+renewal and burst suppression. The console names the recorded session cwd and
+last edit age, or labels the fallback as activity from an unreadable transcript.
+The configured hold window still applies; read-only messages never extend it.
+
 #### Layer 3 — Isolation and optimistic merge (collisions are cheap)
 
 - Autonomous runs **never** touch the primary checkout. Each run gets its own worktree on
@@ -1023,7 +1037,8 @@ weekly window stood at 81%, over the 70% soft line, so Claude sat idle until the
   `routing.build`, because their quota is the one expiring. Items waiting for Opus planning
   (D21) are served too, since the burst lines apply to `claude-opus` as well.
 - **Never while you're using Claude.** No burst starts runs while you're active: an
-  interactive Claude Code transcript outside Mahler's worktrees written in the last 20 minutes,
+  interactive Claude Code edit outside Mahler's worktrees in the last 20 minutes
+  (mtime fallback for unknown transcripts; D6),
   or 5-hour usage that rose while no Mahler Claude run was live (that catches the Claude app on
   your phone or the web). The peak window (D22) still wins.
 - **Never into paid usage.** Burst lines stop below 100%. As a backstop, any run whose
