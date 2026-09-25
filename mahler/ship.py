@@ -107,6 +107,30 @@ def _rebuild_on_base(ctx, project, item, pr, base, *, stale=False):
              project, n, priority="low")
 
 
+def _closed_pr(ctx, project, item, pr, view):
+    """Recover an unmerged closure without recording any shipped evidence."""
+    led, n = ctx.led, item["number"]
+    head = view.get("headRefName") or item["branch"]
+    replacement = ctx.gh(project).pr_for_head(head) if head else None
+    reason = f"PR #{pr} was closed without merging"
+    if replacement and replacement != pr:
+        if not ctx.dry_run:
+            if not _ship_lease(ctx, project, item):
+                return
+            led.upsert_item(project, n, pr=replacement)
+        action = f"verifying replacement PR #{replacement}"
+    else:
+        action = "failed" if item["attempts"] + 1 >= ctx.policy(project)["max_attempts"] else "ready"
+        if not ctx.dry_run:
+            if not _ship_lease(ctx, project, item):
+                return
+            led.upsert_item(project, n, pr=None)
+            retry_or_fail(ctx, project, n, item, None, reason)
+    ctx.say(f"{project}#{n}: {reason} — {'would go to ' if ctx.dry_run else ''}{action}")
+    if not ctx.dry_run:
+        led.release(project, n, holder=CONDUCTOR)
+
+
 def _watch_pr(ctx, project, item, pr):
     """One step of the open PR's state machine, one step per tick: gone,
     conflicting, CI still running, CI red, or green and (queued to be)
@@ -120,8 +144,11 @@ def _watch_pr(ctx, project, item, pr):
         return
     if not _ship_lease(ctx, project, item):
         return
-    if view["state"] != "OPEN":                 # merged or closed, by us or outside Mahler
+    if view["state"] == "MERGED":
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
+        return
+    if view["state"] != "OPEN":
+        _closed_pr(ctx, project, item, pr, view)
         return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
@@ -142,12 +169,31 @@ def _watch_pr(ctx, project, item, pr):
 def _ship_item(ctx, project, item):
     led, n = ctx.led, item["number"]
     if ctx.dry_run:
+        if item["pr"]:
+            view = ctx.gh(project).pr_view(item["pr"])
+            if view["state"] not in ("OPEN", "MERGED"):
+                _closed_pr(ctx, project, item, item["pr"], view)
+                return
         ctx.say(f"{project}#{n}: would ship "
                 f"{'PR #' + str(item['pr']) if item['pr'] else '(opening the PR)'}")
         return
     if not _ship_lease(ctx, project, item):
         return
     if item["pr"]:
+        # A rebuild may retain the old PR number while replacing its branch.
+        # Resolve the current open PR before watching that stale number. Saved
+        # snapshots are pushed to the canonical PR branch by _open_pr.
+        branch = item["branch"]
+        if branch and branch.startswith("mahler/snapshot/"):
+            branch = f"mahler/{n}-{runner.slug(item['title'])}"
+        replacement = ctx.gh(project).pr_for_head(branch) if branch else None
+        if replacement and replacement != item["pr"]:
+            if not _ship_lease(ctx, project, item):
+                return
+            led.upsert_item(project, n, pr=replacement)
+            led.release(project, n, holder=CONDUCTOR)
+            ctx.say(f"{project}#{n}: adopted PR #{replacement} — verifying next tick")
+            return
         _watch_pr(ctx, project, item, item["pr"])
         return
     # no PR yet: open it — its CI is watched from the next tick
@@ -231,9 +277,10 @@ def _merge_queued(ctx, project, item, pr, view):
         gh.pr_merge(pr, sha)
         led.set_kv(key, json.dumps({"sha": sha, "since": iso(led.now())}))
         after = gh.pr_view(pr)
-        if after["state"] != "OPEN":
-            _shipped(ctx, project, n, pr, led.item(project, n), after,
-                     merged=after["state"] == "MERGED")
+        if after["state"] == "MERGED":
+            _shipped(ctx, project, n, pr, led.item(project, n), after)
+        elif after["state"] != "OPEN":
+            _closed_pr(ctx, project, item, pr, after)
         else:
             ctx.say(f"{project}#{n}: PR #{pr} — checks acceptable, merge requested; waiting for GitHub")
         return
@@ -600,6 +647,8 @@ def record_release_item_if_needed(ctx, project, n, pr, item, view):
 def _shipped(ctx, project, n, pr, item, view, merged=True):
     """Close the loop: comment the summary plus the issue's 'Needs a human to
     check' list, ping, and mark the item done."""
+    if view.get("state") != "MERGED":
+        raise ValueError(f"PR #{pr} has not been confirmed merged")
     led = ctx.led
     how = "squash-merged" if merged else view["state"].lower()
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
