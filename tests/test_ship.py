@@ -198,6 +198,18 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(json.loads(row["labels"]), ["type:feature"])
         self.assertEqual(row["shipped_at"], iso(NOW))
 
+    def test_closed_unmerged_pr_is_not_release_or_uat_evidence(self):
+        """A PR closed without merging is not OPEN, but nothing shipped: no
+        release-note item, no UAT entry, and a shipped event marked unmerged
+        so the scorecard doesn't start a bug window from it (mahler#417)."""
+        self.gh.view_state = "CLOSED"
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        self.assertEqual(self.led.unreleased_items("x"), [])
+        self.assertEqual(self.led.q("SELECT * FROM uat"), [])
+        detail = json.loads(self.led.q("SELECT detail FROM events WHERE kind='shipped'")[0]["detail"])
+        self.assertEqual(detail, {"pr": 88, "merged": False})
+
     def test_shipped_issue_snapshot_is_idempotent_on_retry(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["type:bug"]))
         self.ship()

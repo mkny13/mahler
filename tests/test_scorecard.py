@@ -262,6 +262,14 @@ class AttemptTests(unittest.TestCase):
         self.bug(body='Regression in #50')
         self.result(rid, 'failure', 'bug within 14 days')
 
+    def test_unmerged_close_does_not_open_the_bug_window(self):
+        rid = self.run_attempt()
+        self.advance()
+        self.led.upsert_item('p', 1, pr=50)
+        self.led.event('shipped', 'p', 1, {'pr': 50, 'merged': False})
+        self.bug(body='Regression in #50')
+        self.result(rid, 'success')
+
     def test_delayed_merge_discovery(self):
         rid = self.run_attempt()
         self.advance()  # Monday

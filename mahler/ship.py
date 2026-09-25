@@ -529,6 +529,13 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")
 
 
+def pr_merged(view):
+    """True only with proof the PR merged: a closed-unmerged PR also leaves
+    'not OPEN' behind, and must not become UAT, release-note or scorecard
+    evidence of a shipped change."""
+    return view.get("state") == "MERGED" or bool(view.get("mergedAt"))
+
+
 def record_uat_if_needed(ctx, project, n, pr, item, view):
     """UAT queue (D10): a merged PR whose body carries a 'Needs a human to
     check' list lands in Ready to test until you pass or fail it. Used both
@@ -537,7 +544,7 @@ def record_uat_if_needed(ctx, project, n, pr, item, view):
     protocol, or a merge sync notices before ship.py's own watch does
     (mahler#285). Bookkeeping — a failure here never stops the ship."""
     needs = needs_human_of(view.get("body"))
-    if not needs:
+    if not needs or not pr_merged(view):
         return needs
     sha = (view.get("mergeCommit") or {}).get("oid") or ""
     try:
@@ -551,6 +558,8 @@ def record_uat_if_needed(ctx, project, n, pr, item, view):
 def record_release_item_if_needed(ctx, project, n, pr, item, view):
     """Snapshot shipped issue into the project's unreleased draft (DESIGN D31).
     Bookkeeping — a failure here never stops the ship."""
+    if not pr_merged(view):
+        return
     sha = (view.get("mergeCommit") or {}).get("oid") or view.get("headRefOid") or ""
     summary = row_get(item, "summary", "") or pr_summary_of(view.get("body")) or ""
     labels = row_get(item, "labels", "[]")
@@ -582,7 +591,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     led.set_state(project, n, "done", f"shipped via PR #{pr}")
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
-    led.event("shipped", project, n, {"pr": pr}, passes=passes)
+    led.event("shipped", project, n, {"pr": pr, "merged": pr_merged(view)}, passes=passes)
     # Platform-audit pass (mahler#206) is not one of the eight D20 passes and
     # isn't per-project opt-in, so it isn't in `passes` above — it anchors on
     # its own configured project's throughput instead.
