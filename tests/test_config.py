@@ -177,10 +177,23 @@ class PlatformVariantTests(unittest.TestCase):
     def test_no_variants_declared_is_unchanged(self):
         before = set(config.DEFAULTS['platforms'])
         after = set(config.resolve_platforms(copy.deepcopy(config.DEFAULTS))['platforms'])
-        # Issue #421 (D33): the built-in claude-opus slot declares
-        # `variants = ["claude-opus-5"]`, so the resolved set carries that one
-        # synthetic variant in addition to every slot name — and nothing else.
-        self.assertEqual(after - before, {"claude-opus/claude-opus-5/default"})
+        # Issue #422 (D33): built-in slots declare incumbent-first candidates;
+        # every declared entry is expanded into one synthetic platform.
+        self.assertEqual(after - before, {
+            "claude/claude-sonnet-5/default", "claude/claude-sonnet-5/low",
+            "claude/claude-sonnet-5/high", "claude/claude-opus-5-5/low",
+            "claude-opus/claude-opus-5-5/default",
+            "claude-opus/claude-opus-5-5/medium",
+            "claude-opus/claude-opus-5-5/high",
+            "claude-opus/claude-opus-5/default",
+            "agy-gemini/gemini-3.1-pro-high/default",
+            "agy-gemini/gemini-3.8-flash/low",
+            "agy-gemini/gemini-3.8-flash/medium",
+            "codex-low/gpt-5.6-luna/default", "codex-low/gpt-6-luna/low",
+            "codex-low/gpt-6-luna/medium", "codex-low/gpt-6-luna/high",
+            "codex/gpt-5.6-terra/default", "codex/gpt-6-luna/high",
+            "codex/gpt-6-sol/low",
+        })
         self.assertEqual(before - after, set())
 
     def test_variant_tier_drives_escalation_routing(self):
@@ -230,7 +243,9 @@ class PinnedModelVersionsTests(unittest.TestCase):
         opus = config.DEFAULTS["platforms"]["claude-opus"]
         self.assertEqual(opus["sort_model"], "claude-opus-5-5")
         self.assertEqual(opus["build_model"], "claude-opus-5-5")
-        self.assertEqual(opus["variants"], ["claude-opus-5"])
+        self.assertEqual(opus["variants"], [
+            "claude-opus-5-5", "claude-opus-5-5@medium",
+            "claude-opus-5-5@high", "claude-opus-5"])
         resolved = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
         self.assertIn("claude-opus/claude-opus-5/default", resolved["platforms"])
         variant = resolved["platforms"]["claude-opus/claude-opus-5/default"]
@@ -252,3 +267,33 @@ class PinnedModelVersionsTests(unittest.TestCase):
             for key in ("sort_model", "build_model"):
                 self.assertNotIn(config.DEFAULTS["platforms"][slot][key],
                                  ("haiku", "sonnet", "opus"), slot)
+
+
+class BuiltInVariantCandidatesTests(unittest.TestCase):
+    """Issue #422: incumbents remain first while new candidates are opt-in."""
+
+    def test_personal_slots_declare_incumbent_first_variants(self):
+        platforms = config.DEFAULTS["platforms"]
+        self.assertEqual(platforms["codex-low"]["variants"], [
+            "gpt-5.6-luna", "gpt-6-luna@low", "gpt-6-luna@medium",
+            "gpt-6-luna@high"])
+        self.assertEqual(platforms["codex"]["variants"], [
+            "gpt-5.6-terra", "gpt-6-luna@high", "gpt-6-sol@low"])
+        self.assertEqual(platforms["claude"]["variants"], [
+            "claude-sonnet-5", "claude-sonnet-5@low",
+            "claude-sonnet-5@high", "claude-opus-5-5@low"])
+        self.assertEqual(platforms["claude-opus"]["variants"], [
+            "claude-opus-5-5", "claude-opus-5-5@medium",
+            "claude-opus-5-5@high", "claude-opus-5"])
+        self.assertEqual(platforms["agy-gemini"]["variants"], [
+            "gemini-3.1-pro-high", "gemini-3.8-flash@low",
+            "gemini-3.8-flash@medium"])
+
+    def test_default_route_order_is_unchanged_by_variants(self):
+        cfg = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
+        self.assertEqual(router.candidates(cfg, "build"), [
+            "agy-claude", "agy-gemini", "cline-free", "copilot",
+            "copilot-high", "kilo", "claude-opus", "claude"])
+        self.assertEqual(router.candidates(cfg, "sort"),
+                         ["claude", "agy-gemini", "agy-claude"])
+        self.assertEqual(router.candidates(cfg, "plan"), ["claude-opus"])

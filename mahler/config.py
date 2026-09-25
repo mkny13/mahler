@@ -203,6 +203,8 @@ DEFAULTS = {
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
             "quota_group": "claude",
+            "variants": ["claude-sonnet-5", "claude-sonnet-5@low",
+                         "claude-sonnet-5@high", "claude-opus-5-5@low"],
         },
         # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
         # for hard tasks (size:l by default via min_size: "l", or via explicit
@@ -218,7 +220,8 @@ DEFAULTS = {
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
             "quota_group": "claude",
-            "variants": ["claude-opus-5"],
+            "variants": ["claude-opus-5-5", "claude-opus-5-5@medium",
+                         "claude-opus-5-5@high", "claude-opus-5"],
         },
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
@@ -235,6 +238,8 @@ DEFAULTS = {
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
             "stale_minutes": 5,
+            "variants": ["gemini-3.1-pro-high", "gemini-3.8-flash@low",
+                         "gemini-3.8-flash@medium"],
         },
     },
     "projects": {},
@@ -277,6 +282,8 @@ DEFAULTS["platforms"]["codex-low"] = {
     "soft": {"5h": 70, "weekly": 70}, "hard": {"5h": 90, "weekly": 90},
     "stale_minutes": 15,
     "quota_group": "codex",
+    "variants": ["gpt-5.6-luna", "gpt-6-luna@low", "gpt-6-luna@medium",
+                 "gpt-6-luna@high"],
 }
 
 # Terra is the medium capability slot. `codex` remains the compact built-in
@@ -287,6 +294,7 @@ DEFAULTS["platforms"]["codex"] = {
     "soft": {"5h": 70, "weekly": 70}, "hard": {"5h": 90, "weekly": 90},
     "stale_minutes": 15,
     "quota_group": "codex",
+    "variants": ["gpt-5.6-terra", "gpt-6-luna@high", "gpt-6-sol@low"],
 }
 
 # Same CLI, same ChatGPT account/quota as "codex" (kind: codex, shared
