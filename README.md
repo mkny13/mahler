@@ -131,8 +131,11 @@ On a managed GitHub issue, these comments take effect on the next tick:
 
 - `/mahler go` — retry or make the item ready
 - `/mahler park` — park it and stop active work
+- `/mahler approve` — allow approval-gated platforms (Fable, Astra) for this item
 - `/mahler platform <name>` — pin the next run
 - `/mahler platform auto` — clear a pin
+
+`/mahler approve` and `/mahler platform` are honoured only from the repo owner.
 
 A normal human comment on a `needs-you` item supplies the answer and sends the
 item back through sorting. The reference for GitHub issue comment commands is in

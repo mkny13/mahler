@@ -12,13 +12,13 @@ Drop these commands as a comment on an issue to instruct the conductor. They tak
   Moves a parked or failed issue to `ready`. The conductor will pick it up and assign it to an agent based on quota availability.
 
 - `/mahler approve`
-  Allows this issue's runs on the platforms you approve by hand (Fable and Astra models, or any platform with `approval = true`). Mahler asks for this, with a ping, when an issue escalates past every platform that runs without approval. An issue with an open PR goes back to the conductor, which starts the fix it was waiting for. Comment on the issue, not the PR.
+  Allows this issue's runs on the platforms you approve by hand (Fable and Astra models, or any platform with `approval = true`). Mahler asks for this, with a ping, when an issue escalates past every platform that runs without approval. An issue with an open PR goes back to the conductor, which starts the fix it was waiting for. Comment on the issue, not the PR. Only the repo owner's comment counts.
 
 - `/mahler park`
   Pauses work on an issue. Moves it to `parked`. Agents working on it will be interrupted. Useful when you want Mahler to ignore an issue for now.
 
 - `/mahler platform <name>`
-  Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for the next run. This adds a `platform:<name>` label. This overrides the automatic quota-based routing.
+  Forces Mahler to use a specific agent platform (e.g., `agy-gemini`, `claude`, `codex`, `copilot`) for the next run. This adds a `platform:<name>` label. This overrides the automatic quota-based routing. A pin also counts as approval for platforms that need it, so only the repo owner's `/mahler platform` is honoured; anyone else's is ignored.
 
 - `/mahler platform auto` (or `/mahler platform none`)
   Clears an existing platform pin and restores normal quota-based routing.

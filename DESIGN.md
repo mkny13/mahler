@@ -983,7 +983,10 @@ never run.
   configured on the work account; Fable has no route and none is planned). Platforms on
   either model, or any with `approval = true`, are never picked on their own. When only they are stronger, the item goes
   to needs-you and asks. `/mahler approve` on the issue allows them for that item; a pin
-  (`/mahler platform <name>`) counts as approval too.
+  (`/mahler platform <name>`) counts as approval too. Both commands work only from the repo owner:
+  a pin skips the approval gate, so a stranger's comment on a public issue must not be able to
+  spend Fable or Astra (a review found that hole). Anyone else's `/mahler approve` or
+  `/mahler platform` is ignored and logged.
 - **Claude has low/medium/high slots.** `claude-low` selects Haiku for `size:s`, `claude`
   selects Sonnet through `size:m`, and `claude-opus` selects Opus for `size:l`; they are
   opt-in routing choices, not extra quota.
