@@ -958,6 +958,16 @@ bug (fixed by #410), moving apparent platform done-rates by 10–40× and blindi
 inversion check. Launch failures remain visible here and through the launch-health
 circuit breaker, without being mistaken for capability evidence.
 
+**Decision record (2026-09-25, mahler#469):** Keep every checked-in `tier`, `min_size`,
+and `max_size` default unchanged. All `DESIGN.md` verification mentions were fresh at
+11–13 days against the 90-day threshold, and no same-size comparison had at least 10
+started runs on both sides with a done-rate gap of 15 points or more. Retired-name
+outcomes support the current ladder where attribution is clear: `codex-work` (79.5% of
+88 started runs) is consistent with its medium successor at tier 2, and `claude-work`
+(86.4% of 22) with its medium successor at tier 3. The audit keeps those historical
+names separate; ambiguous rename attribution must not become automatic aliasing. These
+ledger outcomes do not advance any `verified <date>` annotation.
+
 ### D21 — Opus plans; the free tiers build what it planned
 
 Decided 2026-09-13. The research agrees on the split and on its limits:
