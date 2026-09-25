@@ -501,7 +501,8 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None):
+def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
+          fix_reason="ci"):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     if not launch_health.allowed(ctx, project, n):
         return False
@@ -570,11 +571,18 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         except GHError:
             pass
     elif role == "fix":
+        reason = "CI was red"
+        state_reason = f"{reason} on PR #{item['pr']}"
+        if fix_reason == "review":
+            pr_url = f"https://github.com/{pol['repo']}/pull/{item['pr']}"
+            reason = ("review found blocking issues "
+                      f"(see the review comment on [PR #{item['pr']}]({pr_url}))")
+            state_reason = reason
         led.set_state(project, n, "working",
-                      f"{platform} fix run {run_id} — CI red on PR #{item['pr']}")
+                      f"{platform} fix run {run_id} — {state_reason}")
         try:
             ctx.gh(project).comment(n, f"🔁 **{platform}** started a fix run (run {run_id}) on "
-                                       f"branch `{meta['branch']}` — CI was red.")
+                                       f"branch `{meta['branch']}` — {reason}.")
         except GHError:
             pass
     return True

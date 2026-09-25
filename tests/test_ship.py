@@ -420,7 +420,8 @@ class ShipTests(unittest.TestCase):
         but launches nothing."""
         led = self.led
 
-        def fake_start(ctx, project, it, role, platform, handoff_from=None, size=None):
+        def fake_start(ctx, project, it, role, platform, handoff_from=None, size=None,
+                       fix_reason="ci"):
             led.claim(project, it["number"], "run:14", "auto", 30,
                       platform=platform, run_id=14, handoff_from=handoff_from)
             led.set_state(project, it["number"], "working")
@@ -441,6 +442,7 @@ class ShipTests(unittest.TestCase):
         start = self.patch_start()
         ping = self.ship()
         start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["fix_reason"], "ci")
         (it, role) = start.call_args[0][2:4]
         self.assertEqual((it["branch"], role), ("mahler/5-x", "fix"))
         self.assertEqual(self.item()["state"], "working")        # the fix run's lease
@@ -531,7 +533,7 @@ class ShipTests(unittest.TestCase):
         led = self.led
 
         def fake_start(ctx, project, it, role, platform, handoff_from=None,
-                       size=None, context=None):
+                       size=None, context=None, fix_reason="ci"):
             role_seen.append((role, platform, context))
             led.claim(project, it["number"], "run:14", "auto", 30,
                       platform=platform, run_id=14, handoff_from=handoff_from)
@@ -634,6 +636,36 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(role, "fix")
         self.assertIn("auth.py: missing null check on session token", context)
         self.assertEqual(self.item()["attempts"], 1)
+
+    def test_fix_announcements_identify_the_trigger(self):
+        """Exercise real start() announcements through both shipping paths."""
+        for trigger in ("ci", "review"):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item("x", 5, state="verifying", pr=88,
+                                     labels='["size:m"]', attempts=0)
+                self.gh.rollup = [{"state": "FAILURE" if trigger == "ci" else "SUCCESS"}]
+                self.led.set_kv("review:x#5", json.dumps({
+                    "sha": self.gh.head_sha, "verdict": "fail",
+                    "findings": "missing null check"}))
+                with mock.patch("mahler.tick.runner.prepare", return_value={}), \
+                        mock.patch("mahler.tick.prompt.build", return_value="fix prompt"), \
+                        mock.patch("mahler.tick.runner.launch", return_value={"branch": "mahler/5-x"}), \
+                        mock.patch("mahler.tick.launch_health.succeeded"):
+                    self.ship()
+                self.assertEqual(self.item()["state"], "working")
+                event = self.led.q1("SELECT detail FROM events WHERE kind='state' ORDER BY id DESC")
+                for text in (self.gh.comments[-1], event["detail"]):
+                    if trigger == "review":
+                        self.assertIn("review found blocking issues", text)
+                        self.assertIn("review comment", text)
+                        self.assertIn("https://github.com/x/y/pull/88", text)
+                        self.assertNotIn("CI was red", text)
+                    else:
+                        self.assertIn("CI was red", text)
+                        self.assertNotIn("review found blocking issues", text)
+                for run in self.led.active_runs():
+                    self.led.update_run(run["id"], status="ended")
+                self.led.release("x", 5)
 
     def test_stale_review_verdict_on_a_new_sha_re_reviews(self):
         """A fix round (or any new push) changes the head sha: a verdict
