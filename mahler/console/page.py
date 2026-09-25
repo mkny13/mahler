@@ -1052,12 +1052,14 @@ def _p_browse(s):
            '<div class="psect"><span class="lbl">Quota · worst window</span>']
     styles = []
     for q in s["quota"]:
-        pname = e(q["name"])
-        styles.append(
-            f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-details {{ display: flex; }} '
-            f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-toggle .c {{ display: none; }} '
-            f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-toggle .o {{ display: inline; }}'
-        )
+        has_windows = q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")
+        if has_windows:
+            pname = e(q["name"])
+            styles.append(
+                f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-details {{ display: flex; }} '
+                f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-toggle .c {{ display: none; }} '
+                f':root[data-quota_{pname}="open"] [data-quota="{pname}"] .pq-toggle .o {{ display: inline; }}'
+            )
     if styles:
         out.append(f'<style>{" ".join(styles)}</style>')
 
@@ -1067,7 +1069,8 @@ def _p_browse(s):
             tick = f'<span class="tick" style="left:{min(q["soft_pct"], 100):.0f}%"></span>'
 
         # Holds and stale readings can retain windows; show their explanation.
-        if q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale"):
+        has_windows = q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")
+        if has_windows:
             win_rows = []
             for w in q["windows"]:
                 resets = f'resets {w["resets_txt"]}' if w.get("resets_txt") else "no reset time"
@@ -1080,14 +1083,16 @@ def _p_browse(s):
                     f'</div>'
                 )
             details = f'<div class="pq-details">{"".join(win_rows)}</div>'
+            toggle = (f'<button class="pq-toggle" data-toggle="quota_{e(q["name"])}" aria-label="Toggle {e(q["name"])} quota details">'
+                      f'<span class="c">▾</span><span class="o">▴</span></button>')
         else:
-            details = f'<div class="pq-details"><span class="detail">{e(q["detail"])}</span></div>'
+            details = f'<span class="detail">{e(q["detail"])}</span>'
+            toggle = ''
 
         out.append(f'<div class="pq" data-quota="{e(q["name"])}"><div class="row"><span><span class="name mono">{e(q["name"])}</span>'
                    f'<span class="model mono">{e(q["model"])}</span></span>'
                    f'<div class="pq-right"><span class="val mono t-{q["tone"]}">{e(q["label"])}</span>'
-                   f'<button class="pq-toggle" data-toggle="quota_{e(q["name"])}" aria-label="Toggle {e(q["name"])} quota details">'
-                   f'<span class="c">▾</span><span class="o">▴</span></button></div></div>'
+                   f'{toggle}</div></div>'
                    f'<span class="bar"><span class="f-{q["tone"]}" style="width:{q["width"]:.0f}%">'
                    f'</span>{tick}</span>{details}</div>')
     out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs there. '
