@@ -1454,8 +1454,9 @@ def models(led, cfg):
     from .. import scorecard
     rows = scorecard.table(led, cfg)
     groups = []
-    for role, size in sorted({(r["role"], r["size"] or "") for r in rows}):
-        entries = scorecard.ranked(rows, role, size or None)
+    for role, size in sorted({(r["role"], r["size"]) for r in rows},
+                             key=lambda pair: (pair[0], pair[1] or "", pair[1] is not None)):
+        entries = scorecard.ranked(rows, role, size)
         groups.append({"title": f"{role.title()} · {size or 'unknown size'}",
                        "rows": [{"text": scorecard.summary(r),
                                  "tone": {"good": "acc", "below": "bad", "unproven": "mut"}[r["status"]],

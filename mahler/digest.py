@@ -165,9 +165,10 @@ def weekly_models(led, cfg):
     if not isinstance(previous, dict):
         previous = {}
     lines, snapshot = [], {}
-    for role, size in sorted({(r["role"], r["size"] or "") for r in rows
-                              if r["role"] in {"build", "plan"}}):
-        best = scorecard.ranked(rows, role, size or None)[0]
+    for role, size in sorted({(r["role"], r["size"]) for r in rows
+                              if r["role"] in {"build", "plan"}},
+                             key=lambda pair: (pair[0], pair[1] or "", pair[1] is not None)):
+        best = scorecard.ranked(rows, role, size)[0]
         lines.append(f'- Top {role}/{size or "unknown size"}: {scorecard.summary(best)}')
     for row in rows:
         key = json.dumps(scorecard.identity(row))

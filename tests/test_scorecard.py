@@ -290,3 +290,138 @@ class AttemptTests(unittest.TestCase):
         self.ship()
         self.bug()
         self.result(rid, 'failure')
+
+
+class TableTests(unittest.TestCase):
+    def setUp(self):
+        from mahler import scorecard
+        self.scorecard = scorecard
+        self.now = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.cfg = {"platforms": {"slot": {"quota_group": "pool"}},
+                    "quota_groups": {"pool": {"cost_weight": 2}}}
+        self.number = 0
+
+    def seed(self, model='model', successes=9, n=10, **cols):
+        for i in range(n):
+            self.number += 1
+            self.led.upsert_item('p', self.number)
+            args = dict(project='p', number=self.number, role='build',
+                        size='s', platform='slot', model=model, effort='low',
+                        epoch=1, status='ended', ended_at=iso(self.now),
+                        outcome='DONE' if i < successes else 'no status line',
+                        exit_code=0, cost_usd=.04, tokens_in=100,
+                        tokens_cached=20, tokens_out=30, tokens_reasoning=10,
+                        actual_mins=6)
+            args.update(cols)
+            self.led.create_run(**args)
+
+    def rows(self):
+        return self.scorecard.table(self.led, self.cfg)
+
+    def test_wilson_hand_computed(self):
+        # z² = 1.64249856; for n=10 the denominator is 1.164249856.
+        for successes, n, expected in (
+            (0, 0, 0), (0, 10, 0), (5, 10, .312198349),
+            (9, 10, .717547124), (10, 10, .858922159),
+        ):
+            with self.subTest(successes=successes, n=n):
+                self.assertAlmostEqual(self.scorecard.wilson(successes, n),
+                                       expected, places=7)
+
+    def test_weighted_cost_success_tokens_and_minutes(self):
+        self.seed()
+        row, = self.rows()
+        self.assertEqual((row['n'], row['successes'], row['rate']), (10, 9, .9))
+        self.assertAlmostEqual(row['avg_cost'], .08)
+        self.assertAlmostEqual(row['cost_per_success'], .0888888889)
+        self.assertEqual(row['avg_tokens'], 160)
+        self.assertEqual(row['avg_mins'], 6)
+        self.assertEqual(row['status'], 'good')
+        self.assertTrue(row['priced'])
+
+    def test_status_minimum_and_role_bars(self):
+        self.seed('small', successes=7, n=7)
+        self.seed('below', successes=8)
+        self.seed('good')
+        self.seed('review', role='review', outcome='REVIEW-PASS')
+        rows = {r['model']: r for r in self.rows()}
+        self.assertEqual({m: r['status'] for m, r in rows.items()},
+                         dict(small='unproven', below='below', good='good', review='good'))
+        self.cfg['measure'] = {'bars': {'build': .75}, 'min_attempts': 7}
+        rows = {r['model']: r for r in self.rows()}
+        self.assertEqual(rows['good']['status'], 'below')
+        self.assertEqual(rows['small']['status'], 'good')
+
+    def test_unpriced_sample_and_zero_success(self):
+        self.seed(n=1, successes=0)
+        row, = self.rows()
+        self.assertEqual(row['cost_per_success'], float('inf'))
+        self.seed(n=1, cost_usd=None)
+        row, = self.rows()
+        self.assertFalse(row['priced'])
+        self.assertAlmostEqual(row['avg_cost'], .08)
+        self.assertAlmostEqual(row['cost_per_success'], .16)
+        self.seed('unknown', n=1, cost_usd=None)
+        unknown = next(r for r in self.rows() if r['model'] == 'unknown')
+        self.assertIsNone(unknown['avg_cost'])
+        self.assertIsNone(unknown['cost_per_success'])
+
+    def test_pending_excluded_pricing_and_no_resolved_statistics(self):
+        for role, outcome in [('plan', 'READY'), ('build', 'BLOCKED')]:
+            for cost in (.04, None):
+                self.seed(str((role, cost)), n=1, role=role, outcome=outcome,
+                          cost_usd=cost)
+        for row in self.rows():
+            self.assertEqual(row['n'], 0)
+            self.assertEqual(row['status'], 'unproven')
+            self.assertIsNone(row['avg_cost'])
+            self.assertIsNone(row['avg_tokens'])
+            self.assertIsNone(row['avg_mins'])
+            self.assertEqual(row['priced'], row['attempts'][0]['cost_usd'] is not None)
+        self.seed('mixed', n=1)
+        self.seed('mixed', n=1, outcome='BLOCKED', cost_usd=None)
+        mixed = next(r for r in self.rows() if r['model'] == 'mixed')
+        self.assertFalse(mixed['priced'])
+        self.assertEqual(mixed['n'], 1)
+        self.assertEqual(len(mixed['attempts']), 2)
+
+    def test_dominance_requires_both_strict_comparisons_and_same_role_size(self):
+        self.seed('winner', successes=10, cost_usd=.02)
+        self.seed('dominated')
+        self.seed('equal-rate', successes=10, cost_usd=.04)
+        self.seed('equal-cost', successes=5, cost_usd=.01)
+        self.seed('other-size', size='m')
+        self.seed('other-role', role='fix')
+        self.seed('unproven-cheap', n=1, cost_usd=.001, size='l')
+        self.seed('no-good-peer', size='l')
+        rows = {r['model']: r for r in self.rows()}
+        self.assertAlmostEqual(rows['winner']['cost_per_success'], .04)
+        self.assertAlmostEqual(rows['equal-cost']['cost_per_success'], .04)
+        self.assertEqual([m for m, r in rows.items() if r['dominated']], ['dominated'])
+
+    def test_ranked_status_cost_ties_filters_and_input_unchanged(self):
+        def row(model, status, cost, **kw):
+            return dict(role='build', size='s', platform='slot', model=model,
+                        effort='low', status=status, cost_per_success=cost, **kw)
+        rows = [row('below', 'below', .01), row('unknown', 'good', None),
+                row('b', 'good', .1), row('unproven', 'unproven', .001),
+                row('a', 'good', .1), row('cheap', 'good', .05)]
+        rows += [dict(rows[0], role='plan'), dict(rows[0], size='m')]
+        before = list(rows)
+        ranked = self.scorecard.ranked(rows, 'build', 's')
+        self.assertEqual([r['model'] for r in ranked],
+                         ['cheap', 'a', 'b', 'unknown', 'unproven', 'below'])
+        self.assertEqual(rows, before)
+        self.assertEqual(self.scorecard.ranked(rows, 'build', None), [])
+
+    def test_project_and_window_filters(self):
+        self.seed('recent', n=1)
+        self.seed('old', n=1, ended_at=iso(self.now - timedelta(days=61)))
+        self.seed('other', n=1, project='other')
+        self.assertEqual([r['model'] for r in self.scorecard.table(
+            self.led, self.cfg, project='p')], ['recent'])
+        self.assertEqual([r['model'] for r in self.scorecard.table(
+            self.led, self.cfg, project='p', since=self.now - timedelta(days=90))],
+                         ['old', 'recent'])

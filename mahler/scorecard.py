@@ -211,7 +211,8 @@ def table(led, cfg, project=None, since=None):
 
     Means exclude pending/excluded runs. Token and cost means use the priced
     sample; missing prices remain unknown, never zero. Duration uses known
-    durations in the resolved sample. Review uses the build bar by default.
+    durations in the resolved sample. Pricing completeness covers all raw runs,
+    including pending/excluded ones. Review uses the build bar by default.
     """
     measure = policy(cfg)
     since = since if since is not None else led.now() - timedelta(days=measure["window_days"])
@@ -245,7 +246,7 @@ def table(led, cfg, project=None, since=None):
                    avg_mins=sum(mins)/len(mins) if mins else None,
                    status="unproven" if n < measure["min_attempts"] else
                           "good" if lower >= bar else "below",
-                   priced=bool(sample) and len(priced) == len(sample),
+                   priced=all(a["cost_usd"] is not None for a in raw),
                    attempts=raw, dominated=False)
         rows.append(row)
     for row in rows:
