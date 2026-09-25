@@ -19,6 +19,10 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
   Never edit anything under `~/.mahler/` from a task — changes reach the daemon only
   through a merge to `main` with green CI (the launcher self-updates, and rolls back after
   two failed ticks).
+- **Repository config is not live operator state.** Changes to `config.example.toml` do not
+  activate a project or account. That is a separate operator step in the Mac mini's
+  `~/.mahler/config.toml`; after account changes, verify isolation and fresh quota readings
+  with `mahler usage --probe`.
 - **`launcher/` is hand-installed.** Changing `mahler-launcher`, the plist or `install.sh`
   has no effect until someone re-runs `launcher/install.sh`. Say so in your final DONE
   summary (the conductor puts it on the PR), and ping via `mahler notify`.
@@ -40,6 +44,10 @@ Tests must be fully isolated (mahler#93): no test may leak env vars, module glob
 files, or SQLite state that another test depends on, and no test may touch the real
 `~/.mahler` state — use `Ledger(':memory:')` or temp dirs. Check order-independence
 with `python3 tests/run_random.py <seed>` (omit the seed for a random one).
+
+For console changes, `mahler console-walkthrough [platform]` runs the manual agent-driven
+UAT checklist against a fixture-seeded local console. It is deliberately manual, not a
+scheduled maintenance pass, and supplements rather than replaces the isolated unit suite.
 
 ## Working on an issue by hand (interactive sessions)
 
