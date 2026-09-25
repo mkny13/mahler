@@ -9,12 +9,13 @@ things behind. Once a day the tick sweeps, per project:
     protects kept worktrees (needs-you handoffs) a human may still be in;
   * `git worktree prune`, so stale admin entries go too;
   * remote `mahler/snapshot/*` and `mahler/abandoned/*` branches older than
-    `retention_days` (D12) whose item is `done` in the ledger.
+    `retention_days` (D12) whose item is `done` in the ledger;
+  * up to 100 remote fix branches ending in `-r<run_id>` whose run ended
+    and whose commits are contained in main or the item's current PR head.
 
-Nothing that is not a Mahler worktree or a `mahler/snapshot|abandoned`
-branch is ever touched, and a branch survives unless the ledger can prove
-its item is closed. Like the digest (mahler#6) the sweep is gated by a kv
-key (`last_janitor_date`) so it runs once a day; `mahler tick --dry-run`
+Only these Mahler worktrees and branch patterns are touched. Fix branches
+with unique work survive and are reported. Like the digest (mahler#6) the sweep
+is gated by a kv key (`last_janitor_date`) so it runs once a day; `mahler tick --dry-run`
 reports what it would do without deleting anything.
 """
 
@@ -29,6 +30,8 @@ KV_KEY = "last_janitor_date"
 WT_RE = re.compile(r"(\d+)-run(\d+)$")
 SNAP = "mahler/snapshot/"
 ABAN = "mahler/abandoned/"
+FIX_RE = re.compile(r"mahler/(\d+)-[^/]+-r(\d+)$")
+MAX_FIX_BRANCH_DELETIONS = 100
 # Console mahler/revert-* refs are deliberately outside the deletion prefixes.
 # They retain the prepared revert for at least 14 days, including after shipping.
 RETENTION_DAYS = 14
@@ -75,8 +78,15 @@ def sweep(ctx, pol):
     env = config.run_env(ctx.cfg, config.gh_account_of(pol))
     for wt, branch in _stale_worktrees(ctx, pol):
         acts.append(("worktree", wt, branch))
-    for name in _stale_branches(ctx, pol, repo, env):
-        acts.append(("branch", name))
+    try:
+        runner.git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
+    except runner.GitError as e:
+        _say(ctx, f"skipping branch sweep, fetch failed — {e}")
+    else:
+        for name in _stale_branches(ctx, pol, repo, env):
+            acts.append(("branch", name))
+        for name, tip, target in _stale_fix_branches(ctx, pol, repo, env):
+            acts.append(("fix_branch", name, tip, target))
     for act in acts:
         if act[0] == "worktree":
             _say(ctx, f"would remove worktree {act[1]}"
@@ -87,6 +97,11 @@ def sweep(ctx, pol):
         for act in acts:
             if act[0] == "worktree":
                 runner.remove_worktree(repo, act[1], act[2], runner.worktree_root(pol))
+            elif act[0] == "fix_branch":
+                try:
+                    _delete_remote_branch(repo, act[1], env, tip=act[2], target=act[3])
+                except runner.GitError as e:
+                    _say(ctx, f"kept remote branch {act[1]} — deletion failed: {e}")
             else:
                 _delete_remote_branch(repo, act[1], env)
     runner.git(repo, "worktree", "prune", check=False)   # stale entries go either way
@@ -136,14 +151,9 @@ def _stale_worktrees(ctx, pol):
 
 def _stale_branches(ctx, pol, repo, env=None):
     """Remote snapshot/abandoned branches past the D12 retention whose item is
-    closed. -> [branch names]."""
+    closed, after a successful fetch. -> [branch names]."""
     led = ctx.led
     cutoff = led.now() - timedelta(days=_cfg(pol, "retention_days", RETENTION_DAYS))
-    try:
-        runner.git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
-    except runner.GitError as e:
-        _say(ctx, f"skipping branch sweep, fetch failed — {e}")
-        return []
     raw = runner.git(repo, "for-each-ref", f"refs/remotes/origin/{SNAP}",
                      f"refs/remotes/origin/{ABAN}",
                      "--format=%(refname) %(committerdate:iso-strict)", check=False)
@@ -170,8 +180,71 @@ def _stale_branches(ctx, pol, repo, env=None):
     return out
 
 
-def _delete_remote_branch(repo, branch, env=None):
-    """Last line of defence: only these two prefixes are ever deletable."""
+def _stale_fix_branches(ctx, pol, repo, env=None):
+    """After a successful fetch, find ended-run tips preserved by another ref.
+
+    Unknown runs and mismatched projects/items fail closed. Cache each item's
+    PR lookup so an outage's hundreds of leftover branches need only one fetch.
+    """
+    raw = runner.git(repo, "for-each-ref", "refs/remotes/origin/mahler/",
+                     "--format=%(refname) %(objectname)")
+    targets, out = {}, []
+    for line in raw.splitlines():
+        ref, tip = line.split()
+        branch = ref.removeprefix("refs/remotes/origin/")
+        match = FIX_RE.fullmatch(branch)
+        if not match:
+            continue
+        number, run_id = map(int, match.groups())
+        run = ctx.led.run(run_id)
+        if (run is None or run["status"] != "ended"
+                or run["project"] != pol["name"] or run["number"] != number):
+            continue
+        item = ctx.led.item(pol["name"], number)
+        if item and item["branch"] == branch:
+            continue                    # never delete the item's current branch
+        if number not in targets:
+            heads = ["refs/remotes/origin/main"]
+            if item and item["pr"]:
+                try:
+                    runner.git(repo, "fetch", "--quiet", "origin",
+                               f"refs/pull/{int(item['pr'])}/head", env=env)
+                    heads.append(runner.git(repo, "rev-parse", "FETCH_HEAD^{commit}"))
+                except runner.GitError as e:
+                    _say(ctx, f"could not fetch PR head for #{number} — {e}")
+            elif item and item["branch"]:
+                heads.append(f"refs/remotes/origin/{item['branch']}")
+            targets[number] = heads
+        target = next((head for head in targets[number]
+                       if _contained(repo, tip, head)), None)
+        if target is None:
+            _say(ctx, f"kept remote branch {branch} — unique commits or ancestry unproven")
+            continue
+        out.append((branch, tip, target))
+        if len(out) >= MAX_FIX_BRANCH_DELETIONS:
+            _say(ctx, f"fix branch deletion cap reached ({MAX_FIX_BRANCH_DELETIONS}); "
+                      "remaining branches deferred to a later sweep")
+            break
+    return out
+
+
+def _contained(repo, tip, target):
+    try:
+        runner.git(repo, "merge-base", "--is-ancestor", tip, target)
+        return True
+    except runner.GitError:
+        return False
+
+
+def _delete_remote_branch(repo, branch, env=None, *, tip=None, target=None):
+    """Only known patterns; fix refs require ancestry proof and a tip lease."""
+    if FIX_RE.fullmatch(branch):
+        if not tip or not target or not _contained(repo, tip, target):
+            raise RuntimeError(f"janitor refused unproven fix branch {branch!r}")
+        # Reject deletion if anyone pushed new work since enumeration.
+        runner.git(repo, "push", "--quiet", f"--force-with-lease=refs/heads/{branch}:{tip}",
+                   "origin", "--delete", f"refs/heads/{branch}", env=env)
+        return
     if not (branch.startswith(SNAP) or branch.startswith(ABAN)):
         raise RuntimeError(f"janitor refused to delete {branch!r}")
     runner.git(repo, "push", "--quiet", "origin", "--delete", f"refs/heads/{branch}", env=env)
