@@ -422,11 +422,11 @@ def _finding_files(findings):
     """Compare file references, not prose or shifting line numbers.
 
     The review recipe requires file names. Unknown locations are inconclusive,
-    never evidence of divergence. Basenames also match abbreviated references
-    to a previously fully qualified path (conservatively avoiding false alarms).
+    never evidence of divergence. Preserve directory paths so distinct files
+    with the same basename do not falsely count as overlapping findings.
     """
-    return {path.rsplit("/", 1)[-1] for path in re.findall(
-        r"(?<![\w.])(?:[\w@+.-]+/)*[\w@+-]+\.[A-Za-z][A-Za-z0-9]*", findings)}
+    return set(re.findall(
+        r"(?<![\w.])(?:[\w@+.-]+/)*[\w@+-]+\.[A-Za-z][A-Za-z0-9]*", findings))
 
 
 def _review_not_converging(ctx, project, item, pr, view):

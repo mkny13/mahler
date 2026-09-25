@@ -626,7 +626,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   reviews) pause the item in `needs_you` with every round's evidence and the choices
   cut scope / split the item / merge with follow-ups / keep fixing. File overlap,
   including repeated findings or a subset, breaks the streak. References ignore line
-  numbers and compare basenames conservatively; missing locations are inconclusive.
+  numbers and preserve directory paths; missing locations are inconclusive.
   This deterministic heuristic does not infer different defects within the same file.
   A passing review or an escalation starts a fresh comparison window, preserving the
   evidence while allowing an owner's retry. Existing attempt limits still apply.

@@ -1424,7 +1424,9 @@ class TestReviewConvergence(unittest.TestCase):
             ["a.py: bug", "b.py: bug", "b.py: remaining bug"],
             ["a.py: bug"] * 5,
             ["a.py: bug", "b.py: bug | c.py: bug", "c.py: bug"],
-            ["a.py: bug", "src/b.py:20 bug", "`b.py:40`: bug"],
+            ["a.py: bug", "src/b.py:20 bug", "`src/b.py:40`: bug"],
+            ["src/auth/index.ts:10 bug", "src/db/index.ts:20 bug",
+             "`src/db/index.ts:40`: remaining bug"],
             ["a.py: bug", "unknown location", "c.py: bug"],
             ["a.py: bug", "b.py: bug", "b.py: bug", "c.py: bug"],
         ]
@@ -1436,6 +1438,19 @@ class TestReviewConvergence(unittest.TestCase):
                     self.ship()
                 self.assertEqual(self.item()["state"], "verifying")
                 self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_distinct_paths_with_same_basename_escalate(self):
+        findings = ["src/auth/index.ts:10 null check",
+                    "src/db/index.ts:20 query",
+                    "src/api/index.ts:30 unsafe input"]
+        self.rounds(findings)
+        with mock.patch.object(ship, "start") as start:
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        for finding in findings:
+            self.assertIn(finding, self.item()["question"])
 
     def test_retry_does_not_reescalate_the_same_history(self):
         history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
