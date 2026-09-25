@@ -1699,6 +1699,36 @@ class AnswerTests(unittest.TestCase):
         self.outbox.drain(self.ctx)
         self.gh.comment.assert_called_once()
 
+    def test_free_text_answer_resumes_failed_item(self):
+        self.led.set_state('mahler', 9, 'failed', attempts=3, esc_tier=2, esc_fails=1,
+                           setup_fails=2)
+        id = self.answer('The PR is ready to retry')
+        self.led.clock.t += timedelta(seconds=60)
+        self.outbox.drain(self.ctx)
+        item = self.led.item('mahler', 9)
+        self.assertEqual(item['state'], 'ready')
+        self.assertEqual((item['attempts'], item['esc_tier'], item['esc_fails'],
+                          item['setup_fails']), (0, 0, 0, 0))
+        self.assertEqual(self.row(id)['result'], 'answer posted — resuming')
+        self.assertEqual(self.led.q("SELECT detail FROM events WHERE kind='state'")[-1]['detail'],
+                         'failed -> ready (you said go)')
+
+    def test_owner_answer_on_failed_item_resumes_without_command(self):
+        from mahler.sync import _process_comments
+        self.led.set_state('mahler', 9, 'failed', attempts=3, esc_tier=2, esc_fails=1,
+                           setup_fails=2)
+        _process_comments(self.ctx, 'mahler', self.led.item('mahler', 9),
+                          [{'createdAt': iso(self.led.now()),
+                            'body': 'The PR is ready to retry'}])
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'ready')
+        self.assertEqual(self.led.item('mahler', 9)['attempts'], 0)
+
+    def test_answer_on_needs_you_still_re_sorts(self):
+        from mahler.sync import _process_comments
+        _process_comments(self.ctx, 'mahler', self.led.item('mahler', 9),
+                          [{'createdAt': iso(self.led.now()), 'body': 'Here is my answer'}])
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'inbox')
+
     def test_moved_on_and_failures_do_not_stop_next_action(self):
         moved = self.answer()
         self.led.set_state('mahler', 9, 'ready')
