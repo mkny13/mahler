@@ -146,5 +146,79 @@ class MaybeSendTests(unittest.TestCase):
         self.assertTrue(any("digest failed" in l for l in self.ctx.lines))
 
 
+
+
+class WeeklyModelsTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.ctx = Ctx({}, self.led)
+        self.number = 0
+
+    def seed(self, size="s", role="build", outcome="DONE", cost=.04, model="Luna"):
+        self.number += 1
+        self.led.upsert_item("p", self.number)
+        self.led.create_run(
+            project="p", number=self.number, role=role, size=size, platform="slot",
+            model=model, effort="low", epoch=1, status="ended",
+            ended_at=iso(self.now), outcome=outcome, exit_code=0, cost_usd=cost)
+
+    def test_all_unknown_size_representations_deliver(self):
+        for size in ("", None, "s"):
+            for role in ("build", "plan"):
+                self.seed(size=size, role=role, outcome="READY" if role == "plan" else "DONE")
+        with patch.object(digest, "_local_now", return_value=self.now), patch(
+                "mahler.digest.notify.send", return_value=True) as send:
+            digest.maybe_send(self.ctx)
+        send.assert_called_once()
+        body = send.call_args.args[2]
+        self.assertEqual(body.count("- Top "), 6)
+        self.assertIn("Top build/unknown size", body)
+        self.assertIn("Top plan/unknown size", body)
+        self.assertNotIn("Unpriced models", body)
+        self.assertEqual(self.led.get_kv(digest.KV_KEY), "2026-09-21")
+
+    def test_only_local_monday_includes_weekly_section(self):
+        self.seed()
+        for day in range(7):
+            local = self.now + timedelta(days=day)
+            # Deliberately hold the UTC ledger clock at Monday to test local gating.
+            with self.subTest(day=day), patch.object(
+                    digest, "_local_now", return_value=local), patch(
+                    "mahler.digest.notify.send", return_value=True) as send:
+                digest.maybe_send(self.ctx)
+                send.assert_called_once()
+                self.assertEqual("Weekly model scorecard:" in send.call_args.args[2], day == 0)
+
+    def test_pending_excluded_only_warn_when_cost_missing(self):
+        self.seed(role="plan", outcome="READY", model="priced-pending")
+        self.seed(outcome="BLOCKED", model="priced-excluded")
+        self.seed(role="plan", outcome="READY", cost=None, model="missing-pending")
+        self.seed(outcome="BLOCKED", cost=None, model="missing-excluded")
+        lines = digest.weekly_models(self.led, {})["lines"]
+        self.assertEqual([line for line in lines if "Unpriced models:" in line],
+                         ["- Unpriced models: missing-excluded, missing-pending"])
+
+    def test_changes_snapshot_advances_only_after_successful_delivery(self):
+        for _ in range(10):
+            self.seed(model="winner", cost=.02)
+            self.seed(model="loser", cost=.04)
+        self.seed(model="loser", outcome="no status line", cost=.04)
+        with patch.object(digest, "_local_now", return_value=self.now), patch(
+                "mahler.digest.notify.send", return_value=False) as send:
+            digest.maybe_send(self.ctx)
+            self.assertIn("Newly good:", send.call_args.args[2])
+            self.assertIn("Newly dominated:", send.call_args.args[2])
+            self.assertIsNone(self.led.get_kv("weekly_model_scorecard"))
+            self.assertIsNone(self.led.get_kv(digest.KV_KEY))
+            send.return_value = True
+            digest.maybe_send(self.ctx)
+            self.assertIn("Newly good:", send.call_args.args[2])
+            self.assertIsNotNone(self.led.get_kv("weekly_model_scorecard"))
+        lines = digest.weekly_models(self.led, {})["lines"]
+        self.assertFalse(any("Newly" in line for line in lines))
+
+
 if __name__ == "__main__":
     unittest.main()

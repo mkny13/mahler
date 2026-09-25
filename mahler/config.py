@@ -86,7 +86,17 @@ DEFAULT_PLATFORM_AUDIT = {
     "inversion_margin_pct": 15.0,
 }
 
+DEFAULT_MEASURE = {
+    "min_attempts": 8,
+    "bars": {"build": 0.70, "fix": 0.70, "sort": 0.80, "plan": 0.75},
+    "window_days": 60,
+    "explore_share": {"build": 0.15, "fix": 0.15, "sort": 0.15, "plan": 0.05},
+}
+
 DEFAULTS = {
+    "measure": DEFAULT_MEASURE,
+    "quota_groups": {},  # optional cost_weight per shared quota pool
+
     # Issue #416: announced list prices, 2026-09-23, USD per million tokens.
     "prices": {
         "gpt-6-luna": {"in": 0.10, "out": 0.50},

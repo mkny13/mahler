@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import math
 import json
 import re
 
@@ -179,6 +180,105 @@ def attempts(led, since, until=None):
             continue
         outcome, why = classify(run)
         result.append(dict(run=run['id'], **{k: run[k] for k in (
-            'project', 'number', 'role', 'size', 'platform', 'model', 'effort')},
+            'project', 'number', 'role', 'size', 'platform', 'model', 'effort', 'cost_usd', 'tokens_in',
+            'tokens_cached', 'tokens_out', 'tokens_reasoning', 'actual_mins')},
             result=outcome, why=why))
     return result
+
+
+KEYS = ("role", "size", "platform", "model", "effort")
+
+
+def identity(row):
+    return tuple(row[k] for k in KEYS)
+
+
+def policy(cfg):
+    from .config import DEFAULT_MEASURE, _merge
+    return _merge(DEFAULT_MEASURE, cfg.get("measure", {}))
+
+
+def wilson(successes, n):
+    """Lower endpoint of the two-sided 80% Wilson interval."""
+    if not n:
+        return 0.0
+    p, z = successes / n, 1.2816
+    return (p + z*z/(2*n) - z*math.sqrt(p*(1-p)/n + z*z/(4*n*n))) / (1 + z*z/n)
+
+
+def table(led, cfg, project=None, since=None):
+    """Aggregate resolved attempts; retain pending/excluded runs for drill-down.
+
+    Means exclude pending/excluded runs. Token and cost means use the priced
+    sample; missing prices remain unknown, never zero. Duration uses known
+    durations in the resolved sample. Pricing completeness covers all raw runs,
+    including pending/excluded ones. Review uses the build bar by default.
+    """
+    measure = policy(cfg)
+    since = since if since is not None else led.now() - timedelta(days=measure["window_days"])
+    groups = defaultdict(list)
+    for attempt in attempts(led, since):
+        if project is None or attempt["project"] == project:
+            groups[identity(attempt)].append(attempt)
+    rows = []
+    for key, raw in sorted(groups.items(), key=lambda pair: tuple(v or "" for v in pair[0])):
+        row = dict(zip(KEYS, key))
+        sample = [a for a in raw if a["result"] in {"success", "failure"}]
+        n = len(sample)
+        successes = sum(a["result"] == "success" for a in sample)
+        rate = successes / n if n else 0.0
+        lower = wilson(successes, n)
+        priced = [a for a in sample if a["cost_usd"] is not None]
+        slot = cfg.get("platforms", {}).get(row["platform"], {})
+        group = slot.get("quota_group") or row["platform"]
+        weight = cfg.get("quota_groups", {}).get(group, {}).get("cost_weight", 1.0)
+        avg_cost = sum(a["cost_usd"] * weight for a in priced) / len(priced) if priced else None
+        totals = [sum(a[f"tokens_{k}"] or 0 for k in ("in", "cached", "out", "reasoning"))
+                  for a in priced if any(a[f"tokens_{k}"] is not None
+                                        for k in ("in", "cached", "out", "reasoning"))]
+        mins = [a["actual_mins"] for a in sample if a["actual_mins"] is not None]
+        bar = measure["bars"].get(row["role"], measure["bars"]["build"])
+        row.update(n=n, successes=successes, rate=rate, lower=lower,
+                   avg_tokens=sum(totals)/len(totals) if totals else None,
+                   avg_cost=avg_cost,
+                   cost_per_success=(avg_cost/rate if rate else math.inf)
+                   if avg_cost is not None else None,
+                   avg_mins=sum(mins)/len(mins) if mins else None,
+                   status="unproven" if n < measure["min_attempts"] else
+                          "good" if lower >= bar else "below",
+                   priced=all(a["cost_usd"] is not None for a in raw),
+                   attempts=raw, dominated=False)
+        rows.append(row)
+    for row in rows:
+        row["dominated"] = any(
+            other["status"] == "good" and other["role"] == row["role"]
+            and other["size"] == row["size"]
+            and other["cost_per_success"] is not None
+            and row["cost_per_success"] is not None
+            and other["cost_per_success"] < row["cost_per_success"]
+            and other["rate"] > row["rate"] for other in rows)
+    return rows
+
+
+def ranked(rows, role, size):
+    """Deterministic preference order, with unknown costs last in each status."""
+    return sorted((r for r in rows if r["role"] == role and r["size"] == size),
+                  key=lambda r: ({"good": 0, "unproven": 1, "below": 2}[r["status"]],
+                                 r["cost_per_success"] if r["cost_per_success"] is not None else math.inf,
+                                 tuple(v or "" for v in identity(r))))
+
+
+def summary(row):
+    """Shared readable measurement text for CLI, console state and digest."""
+    cost = "cost unknown" if row["avg_cost"] is None else f'~${row["avg_cost"]:.2f} each'
+    cps = row["cost_per_success"]
+    success = ("cost per success unknown" if cps is None else
+               "no successes yet" if math.isinf(cps) else f'${cps:.2f} per success')
+    mins = "time unknown" if row["avg_mins"] is None else f'{row["avg_mins"]:.0f} min'
+    tokens = "tokens unknown" if row["avg_tokens"] is None else f'{row["avg_tokens"]:,.0f} tokens'
+    flags = row["status"] + (" · dominated" if row["dominated"] else "")
+    if not row["priced"]:
+        flags += " · unpriced"
+    return (f'{row["model"] or "Unknown model"} · {row["effort"] or "default effort"} '
+            f'({row["platform"]}) — {row["successes"]} of {row["n"]} done first try · '
+            f'{cost} · {success} · {mins} · {tokens} · {flags}')
