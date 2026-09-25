@@ -86,6 +86,7 @@ def build(cfg, led, stats_range="week"):
         "quota": quota,
         "capability_sections": _capability_sections(quota),
         "capacity": _capacity_line(quota),
+        "models": models(led, cfg),
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
         "releases": releases_data,
@@ -1444,3 +1445,25 @@ def _idle(cfg, led, s, hot, now):
     return {"headline": f"Nothing is running. {word} thing{'s are' if n != 1 else ' is'} "
                         f"holding it:",
             "reasons": reasons}
+
+
+MODELS_LABEL = "Models"
+
+
+def models(led, cfg):
+    from .. import scorecard
+    rows = scorecard.table(led, cfg)
+    groups = []
+    for role, size in sorted({(r["role"], r["size"] or "") for r in rows}):
+        entries = scorecard.ranked(rows, role, size or None)
+        groups.append({"title": f"{role.title()} · {size or 'unknown size'}",
+                       "rows": [{"text": scorecard.summary(r),
+                                 "tone": {"good": "acc", "below": "bad", "unproven": "mut"}[r["status"]],
+                                 "details_label": "Run outcomes",
+                                 "details": [f'Run {a["run"]} · {a["project"]}#{a["number"]} · '
+                                             f'{a["result"]}: {a["why"]}' for a in r["attempts"]]}
+                                for r in entries]})
+    return {"groups": groups, "empty": "No attempts in this window.",
+            "note": f'Last {scorecard.policy(cfg)["window_days"]} days · API-equivalent dollars '
+                    '(weighted). Pending and excluded runs do not count. '
+                    'Unpriced rows have incomplete cost data. Outcomes can change with later evidence.'}
