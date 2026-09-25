@@ -327,6 +327,11 @@ def _apply_instruction(ctx, project, item, verb, arg, is_owner=True):
     elif verb == "inbox":
         led.set_state(project, n, "inbox", "back to inbox", sorted_at=None)
     elif verb == "platform" and arg:
+        # A pin exempts its platform from the approval gate (router), so it is
+        # as much the owner's call as /mahler approve (mahler#433).
+        if not is_owner:
+            ctx.say(f"{project}#{n}: ignored /mahler platform from non-owner")
+            return
         if arg in ("none", "auto"):
             _set_pin(ctx, project, n, None)
         elif arg in ctx.cfg["platforms"]:
