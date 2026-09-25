@@ -634,6 +634,53 @@ class BannerTests(unittest.TestCase):
         self.assertIn("printed nothing for 10 minutes", banners[3]["text"])
 
 
+class EndSessionTests(unittest.TestCase):
+    def test_hold_surfaces_clear_and_return_on_new_activity(self):
+        cfg = make_cfg(projects={"mahler": {"hot_hold": True},
+                                 "groundwork": {"hot_hold": True}})
+        led = make_led()
+        self.addCleanup(led.close)
+        all_fresh(led)
+        led.upsert_item("mahler", 1, title="waiting", state="ready")
+        with mock.patch.object(state.presence, "last_claude_activity",
+                               return_value=led.now() - timedelta(minutes=4)) as activity:
+            before = state.build(cfg, led)
+            button = 'data-act="end_session" data-project="mahler">End session</button>'
+            self.assertIn(button, page._banners(before))
+            for phone in (False, True):
+                self.assertIn(button, page._idle(before, phone))
+            actions.run(cfg, led, "end_session", {"project": "mahler"})
+            self.assertEqual(led.get_kv("hot_hold_end:mahler"), iso(led.now()))
+            event = led.q1("SELECT * FROM events WHERE kind='hot_hold_end'")
+            self.assertEqual(event["project"], "mahler")
+            after = state.build(cfg, led)
+            self.assertNotIn(button, page._banners(after))
+            self.assertNotIn(button, page._idle(after, False))
+            self.assertIn('data-project="groundwork">End session', page._banners(after))
+            activity.return_value = led.now() + timedelta(microseconds=1)
+            self.assertIn(button, page._banners(state.build(cfg, led)))
+
+    def test_rejects_unknown_disabled_and_malformed_projects(self):
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        for project in (None, "", "unknown", "old", [], {}, 1):
+            with self.subTest(project=project), self.assertRaises(actions.ActionError):
+                actions.run(cfg, led, "end_session", {"project": project})
+        self.assertIsNone(led.q1("SELECT * FROM events WHERE kind='hot_hold_end'"))
+
+    def test_override_boundaries_and_invalid_timestamp(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        overridden = state.presence.hot_hold_overridden
+        self.assertFalse(overridden(led, "mahler", None))
+        led.set_kv("hot_hold_end:mahler", "not a timestamp")
+        self.assertFalse(overridden(led, "mahler", led.now()))
+        led.set_kv("hot_hold_end:mahler", iso(led.now()))
+        self.assertTrue(overridden(led, "mahler", None))
+        self.assertTrue(overridden(led, "mahler", led.now()))
+        self.assertFalse(overridden(led, "mahler", led.now() + timedelta(microseconds=1)))
+
+
 class EventTests(unittest.TestCase):
     def test_stream_skips_bookkeeping_and_duplicates(self):
         cfg, led = make_cfg(), make_led()

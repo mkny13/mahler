@@ -139,6 +139,13 @@ class TestWrites(_Served):
         brief = json.loads(body)["briefs"][0]
         self.assertEqual((brief["count"], brief["seen"]), (0, cursor))
 
+    def test_end_session_records_override(self):
+        status, _, body = self.post("end_session", {"project": "mahler"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"ok": True})
+        self.assertIsNotNone(self.led.get_kv("hot_hold_end:mahler"))
+        self.assertEqual(self.post("end_session", {"project": "unknown"})[0], 400)
+
     def test_same_origin_is_allowed(self):
         status, _, _ = self.post("pause", headers={"Origin": f"http://127.0.0.1:{self.port}"})
         self.assertEqual(status, 200)
