@@ -355,7 +355,9 @@ def schedule(ctx, projects):
         hot[p["name"]] = False
         if p.get("hot_hold") and ctx.hot_hold:
             last = presence.last_claude_activity(p["path"])
-            hot[p["name"]] = bool(last and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
+            hot[p["name"]] = bool(
+                last and not presence.hot_hold_overridden(led, p["name"], last)
+                and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
 
     # Burst before a Claude window resets (D23): in the last lead-time before a
     # window rolls over, Claude's reserve expires unused, so burst lines let

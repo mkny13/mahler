@@ -418,6 +418,7 @@
   }
 
   function payloadFor(el, act) {
+    if (act === "end_session") { return { project: el.getAttribute("data-project") }; }
     if (act === "clear_backoff") {
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
     }

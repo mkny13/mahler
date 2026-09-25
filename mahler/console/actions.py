@@ -9,7 +9,8 @@ tick instead, so all GitHub traffic keeps the project's own login (D25).
 
 import json
 
-from .. import config, router
+from .. import config, presence, router
+from ..ledger import iso
 from ..gh import AGENT_MARK
 from .state import SEEN_KEY, brief_seen_key
 
@@ -26,6 +27,15 @@ def pause(cfg, led, body):
 def resume(cfg, led, body):
     led.set_kv("paused", "0")
     led.event("resume", detail="resumed from the console")
+
+
+def end_session(cfg, led, body):
+    """Lift this project's advisory hold until transcript activity resumes."""
+    project = body.get("project")
+    if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    led.set_kv(presence.HOT_HOLD_END_PREFIX + project, iso(led.now()))
+    led.event("hot_hold_end", project, detail="session ended from the console")
 
 
 def peak_override(cfg, led, body):
@@ -401,7 +411,7 @@ def cut_release(cfg, led, body):
         return {"id": action_id}
 
 
-ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
+ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_pass, uat_fail, attach, cut_release,
                                    save_settings)}

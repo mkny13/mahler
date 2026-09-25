@@ -1108,6 +1108,8 @@ def _hot_holds(led, projects, now):
         if not p.get("hot_hold") or not p.get("path"):
             continue
         last = presence.last_claude_activity(p["path"])
+        if presence.hot_hold_overridden(led, p["name"], last):
+            continue
         if last and now - last < timedelta(minutes=p["hot_hold_minutes"]):
             out.append({"project": p["name"], "ago": _mins(now - last),
                         "hold_minutes": p["hot_hold_minutes"],
@@ -1148,7 +1150,8 @@ def _banners(cfg, led, paused, quota, hot, now):
                     # hold only holds builds (D6 layer 2)
                     "text": f"You were working in {h['project']} with Claude Code {ago}. No "
                             f"new builds start there until {h['hold_minutes']} minutes after "
-                            f"you stop. Work in flight continues."})
+                            f"you stop. Work in flight continues.",
+                    "act": "end_session", "action": "End session", "project": h["project"]})
     for name, r in _silent_runs(led, quota):
         mins = config.project_policy(cfg, r["project"]).get("startup_timeout_minutes", 10)
         out.append({"kind": f"RUN SAT SILENT · {name.upper()}", "tone": "bad",
@@ -1376,7 +1379,8 @@ def _idle(cfg, led, s, hot, now):
             reasons.append({
                 "text": f"You have been working in {h['project']}, so new builds there wait "
                         f"until {h['hold_minutes']} minutes after you stop.",
-                "countdown": f"{_dur(h['until'] - now)} left"})
+                "countdown": f"{_dur(h['until'] - now)} left",
+                "act": "end_session", "action": "End session", "project": h["project"]})
     if schedule_holds is not None:
         reasons.extend(_hold_reasons(cfg, schedule_holds, pending, hot, now, led=led))
     if not reasons and schedule_holds is None:
