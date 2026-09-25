@@ -111,13 +111,21 @@ def _closed_pr(ctx, project, item, pr, view):
     """Recover an unmerged closure without recording any shipped evidence."""
     led, n = ctx.led, item["number"]
     head = view.get("headRefName") or item["branch"]
-    replacement = ctx.gh(project).pr_for_head(head) if head else None
+    replacement = None
+    if head:
+        try:
+            replacement = ctx.gh(project).pr_for_head(head)
+        except (GHError, ValueError) as e:
+            ctx.say(f"{project}#{n}: PR #{pr} closed, but replacement lookup failed — {e}")
+            if not ctx.dry_run:
+                led.release(project, n, holder=CONDUCTOR)
+            return
     reason = f"PR #{pr} was closed without merging"
     if replacement and replacement != pr:
         if not ctx.dry_run:
             if not _ship_lease(ctx, project, item):
                 return
-            led.upsert_item(project, n, pr=replacement)
+            led.upsert_item(project, n, pr=replacement, branch=head)
         action = f"verifying replacement PR #{replacement}"
     else:
         action = "failed" if item["attempts"] + 1 >= ctx.policy(project)["max_attempts"] else "ready"
@@ -168,35 +176,23 @@ def _watch_pr(ctx, project, item, pr):
 
 def _ship_item(ctx, project, item):
     led, n = ctx.led, item["number"]
+    branch = item["branch"]
+    has_snapshot = bool(branch and branch.startswith("mahler/snapshot/"))
     if ctx.dry_run:
-        if item["pr"]:
+        if item["pr"] and not has_snapshot:
             view = ctx.gh(project).pr_view(item["pr"])
             if view["state"] not in ("OPEN", "MERGED"):
                 _closed_pr(ctx, project, item, item["pr"], view)
                 return
         ctx.say(f"{project}#{n}: would ship "
-                f"{'PR #' + str(item['pr']) if item['pr'] else '(opening the PR)'}")
+                f"{'PR #' + str(item['pr']) if (item['pr'] and not has_snapshot) else '(opening the PR)'}")
         return
     if not _ship_lease(ctx, project, item):
         return
-    if item["pr"]:
-        # A rebuild may retain the old PR number while replacing its branch.
-        # Resolve the current open PR before watching that stale number. Saved
-        # snapshots are pushed to the canonical PR branch by _open_pr.
-        branch = item["branch"]
-        if branch and branch.startswith("mahler/snapshot/"):
-            branch = f"mahler/{n}-{runner.slug(item['title'])}"
-        replacement = ctx.gh(project).pr_for_head(branch) if branch else None
-        if replacement and replacement != item["pr"]:
-            if not _ship_lease(ctx, project, item):
-                return
-            led.upsert_item(project, n, pr=replacement)
-            led.release(project, n, holder=CONDUCTOR)
-            ctx.say(f"{project}#{n}: adopted PR #{replacement} — verifying next tick")
-            return
+    if item["pr"] and not has_snapshot:
         _watch_pr(ctx, project, item, item["pr"])
         return
-    # no PR yet: open it — its CI is watched from the next tick
+    # no PR yet, or a rebuild finished with a snapshot: open it — its CI is watched from the next tick
     unconfirmed = bool(led.get_kv(f"unconfirmed:{project}#{n}"))
     _open_pr(ctx, project, item, ctx.gh(project), ctx.policy(project),
              unconfirmed=unconfirmed)
@@ -590,15 +586,24 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         return
     base = pol.get("base", "main")
     branch = f"mahler/{n}-{runner.slug(item['title'])}"
-    sha = gh.push_branch(pol["path"], branch, ref)   # the branch, pushed if needed
-    pr = gh.pr_for_head(branch)
-    if pr is None:
-        needs = needs_human_of(gh.issue_body(n))
-        pr = gh.pr_create(branch, base, item["title"],
-                          pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
-    led.upsert_item(project, n, pr=pr)
+    try:
+        sha = gh.push_branch(pol["path"], branch, ref)   # the branch, pushed if needed
+        pr = gh.pr_for_head(branch)
+        created = False
+        if pr is None:
+            needs = needs_human_of(gh.issue_body(n))
+            pr = gh.pr_create(branch, base, item["title"],
+                              pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
+            created = True
+    except (GHError, ValueError) as e:
+        ctx.say(f"{project}#{n}: opening PR failed — {e}")
+        led.release(project, n, holder=CONDUCTOR)
+        return
+    led.upsert_item(project, n, pr=pr, branch=branch)
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
-    ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")
+    action = f"opened PR #{pr}" if created else f"adopted PR #{pr}"
+    ctx.say(f"{project}#{n}: {action} from `{branch}` (base {base}) — verifying")
+    led.release(project, n, holder=CONDUCTOR)
 
 
 def pr_merged(view):

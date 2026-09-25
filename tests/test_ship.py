@@ -98,7 +98,7 @@ class ShipTests(unittest.TestCase):
             self.led.record_usage(name, "weekly", 10, later)
         self.led.upsert_item("x", 5, state="verifying", priority=2,
                              title="Wired the exporter",
-                             branch="mahler/snapshot/5-run7",
+                             branch="mahler/5-wired-the-exporter",
                              summary="wired the exporter", sorted_at=iso(NOW))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = FakeGH()
@@ -118,6 +118,7 @@ class ShipTests(unittest.TestCase):
     # ---------- opening the PR ----------
 
     def test_pushes_the_branch_and_opens_the_pr(self):
+        self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")
         ping = self.ship()
         self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter",
                                            "mahler/snapshot/5-run7")])
@@ -131,15 +132,18 @@ class ShipTests(unittest.TestCase):
         self.assertIn("- the new ping arrives", body)
         item = self.item()
         self.assertEqual((item["pr"], item["state"]), (88, "verifying"))
+        self.assertEqual(item["branch"], "mahler/5-wired-the-exporter")
         self.assertEqual(self.gh.merged, [])           # CI is watched from the next tick
         ping.assert_not_called()
 
     def test_pr_opening_is_idempotent(self):
         """A tick that died after `gh pr create` must not open a second PR."""
+        self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")
         self.gh.existing_pr = 88
         self.ship()
         self.assertEqual(self.gh.created, [])
         self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
 
     def test_nothing_to_ship_is_a_failed_attempt(self):
         self.led.upsert_item("x", 5, branch=None)
@@ -236,7 +240,7 @@ class ShipTests(unittest.TestCase):
     def test_closed_pr_adopts_replacement_on_actual_pr_head(self):
         self.gh.view_state = "CLOSED"
         self.led.upsert_item("x", 5, pr=88)
-        with mock.patch.object(self.gh, "pr_for_head", side_effect=[None, 99]) as lookup:
+        with mock.patch.object(self.gh, "pr_for_head", return_value=99) as lookup:
             ping = self.ship()
         self.assertEqual(lookup.call_args_list[-1], mock.call("mahler/5-x"))
         self.assertEqual((self.item()["pr"], self.item()["state"]), (99, "verifying"))
@@ -250,7 +254,7 @@ class ShipTests(unittest.TestCase):
         view.assert_called_once_with(99)
 
     def test_rebuild_adopts_fresh_pr_before_watching_stale_pr(self):
-        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
         self.gh.existing_pr = 99
         with mock.patch.object(self.gh, "pr_view") as view, mock.patch.object(
                 self.gh, "pr_for_head", wraps=self.gh.pr_for_head) as lookup:
@@ -258,6 +262,22 @@ class ShipTests(unittest.TestCase):
         view.assert_not_called()
         lookup.assert_called_once_with("mahler/5-wired-the-exporter")
         self.assertEqual((self.item()["pr"], self.item()["state"]), (99, "verifying"))
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
+        self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter", "mahler/snapshot/5-run7")])
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assert_nothing_shipped(ping)
+
+    def test_rebuild_with_snapshot_and_closed_pr_opens_replacement_pr(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.existing_pr = None
+        self.gh.view_state = "CLOSED"
+        ping = self.ship()
+        self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter", "mahler/snapshot/5-run7")])
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertEqual(self.gh.created[0][0], "mahler/5-wired-the-exporter")
+        self.assertEqual((self.item()["pr"], self.item()["state"]), (88, "verifying"))
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
+        self.assertEqual(self.item()["attempts"], 0)
         self.assertIsNone(self.led.lease("x", 5))
         self.assert_nothing_shipped(ping)
 
@@ -779,7 +799,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         item = self.item()
         self.assertEqual((item["state"], item["pr"], item["attempts"]), ("ready", None, 0))
-        self.assertEqual(item["branch"], "mahler/snapshot/5-run7")   # the rebuild resumes it
+        self.assertEqual(item["branch"], "mahler/5-wired-the-exporter")   # the rebuild resumes it
         self.assertIsNone(self.led.lease("x", 5))
         self.assertEqual(ping.call_args[0][0], "Rebuilding — x #5")
 
@@ -803,7 +823,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         self.assertEqual((self.item()["state"], self.item()["pr"], self.item()["attempts"]),
                          ("ready", None, 2))
-        self.assertEqual(self.item()["branch"], "mahler/snapshot/5-run7")
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("does not contain current main", self.last_event())
 
@@ -1047,7 +1067,7 @@ class ShipTests(unittest.TestCase):
     def test_one_failing_item_does_not_break_the_pass(self):
         self.led.upsert_item("x", 5, pr=88)
         self.led.upsert_item("x", 6, state="verifying", title="Other thing",
-                             branch="mahler/snapshot/6-run9", summary="other",
+                             branch="mahler/6-other-thing", summary="other",
                              pr=89, sorted_at=iso(NOW))
         self.gh.fail_view = {88}
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
