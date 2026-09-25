@@ -106,6 +106,12 @@ verify = "python3 -m unittest discover -s tests"
 # [platforms.work-codex-gpt1-low]
 # variants = ["gpt-6-luna@low", "gpt-6-luna@medium", "gpt-5.6-luna"]
 # variant_tiers = { "gpt-6-luna@medium" = 2 }   # default: this slot's own tier
+# Built-in personal slots already provide incumbent-first candidates:
+# codex-low: gpt-5.6-luna, then GPT-6 Luna low/medium/high
+# codex: gpt-5.6-terra, then GPT-6 Luna high and GPT-6 Sol low
+# claude: claude-sonnet-5, then Sonnet low/high and Opus 5.5 low
+# claude-opus: Opus 5.5 default/medium/high, then Opus 5
+# agy-gemini: current Pro, then Gemini Flash low/medium
 
 # Work logins on this same machine (DESIGN D25). Log each CLI in once with its
 # env var set (e.g. `CLAUDE_CONFIG_DIR=~/.claude-work claude`, then /login).
