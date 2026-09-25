@@ -448,7 +448,10 @@ Claude may build, but keep headroom for me*):
 3. **Nothing autonomous ever runs into paid extra usage.** At or above 100%, Claude is marked
    exhausted until `resets_at`.
 4. **Escalation:** two failed verify rounds on a weaker platform → the item is retried a tier
-   up, starting from the same branch and handoff note.
+   up, starting from the same branch and handoff note. The tier comes from the last build/fix,
+   never its reviewer (mahler#449). Escalation stops at the highest enabled, size-eligible
+   platform on the project's route and declared accounts; failures at that cap retry there.
+   Quota, peak hours and busy slots do not lower this structural cap.
 
 Amended by D33: the build order becomes measured per project once `routing_mode = "measured"`.
 
@@ -860,7 +863,11 @@ Throughput counts merged changes, not finished runs. So:
 - **The slot is held until merge.** A `verifying` item counts against its project's
   `max_parallel` for builds. Sorts don't write code, so they don't wait. A red PR keeps holding
   the slot until it's fixed (D18 fix runs) or closed, and pings once, because that project's
-  builds stop behind it.
+  builds stop behind it. Exception (mahler#449): a failed review or red CI waiting for a fix
+  platform or global run slot releases the conductor's capacity lease so other green PRs
+  can ship. It remains `verifying` and retries without recounting the failed head. After
+  `verify_timeout_minutes` without a fix starting, it moves to `needs_you` and pings with
+  the routing reason. Ordinary new builds still observe the in-flight-item gate.
 - **Every build starts on current base.** Resumed work is rebased onto `origin/<base>` at
   launch, and the run's branch is force-pushed to match. If the rebase doesn't apply cleanly,
   the old tip is kept on `mahler/snapshot/<n>-stale-run<id>`, the branch starts fresh from base,

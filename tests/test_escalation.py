@@ -33,7 +33,8 @@ class StubCtx:
     def policy(self, project):
         return {"path": "/nonexistent", "base": "main", "run_timeout_minutes": 30,
                 "progress_timeout_minutes": 15, "auto_lease_minutes": 30,
-                "yield_grace_seconds": 30, "max_attempts": 5}
+                "yield_grace_seconds": 30, "max_attempts": 5,
+                "verify_timeout_minutes": 30}
 
     def gh(self, project):
         return self._gh
@@ -159,7 +160,7 @@ class TierEscalationTests(unittest.TestCase):
                     self.assertIsNone(self.led.lease("p", 92))
                     self.assertEqual(self.led.item("p", 92)["state"], "verifying")
                     self.assertEqual(self.led.item("p", 92)["esc_tier"], 3)
-                    with mock.patch.object(self.led, "now", return_value=now + timedelta(minutes=121)):
+                    with mock.patch.object(self.led, "now", return_value=now + timedelta(minutes=31)):
                         step()
                 item = self.led.item("p", 92)
                 self.assertEqual(item["state"], "needs_you")
@@ -168,6 +169,22 @@ class TierEscalationTests(unittest.TestCase):
                 self.assertIn("no quota", item["question"])
                 self.assertIsNone(self.led.lease("p", 92))
                 self.assertTrue(self.ctx.pings[-1][0].startswith("Fix waiting"))
+
+    def test_waiting_review_fix_resumes_when_capacity_returns(self):
+        self.led.upsert_item("p", 93, state="verifying", title="fix me",
+                             labels='["size:m"]', branch="b", pr=10)
+        view = {"headRefName": "b", "headRefOid": "sha"}
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, ["busy"])):
+            ship._review_triggered_fix(self.ctx, "p", self.led.item("p", 93),
+                                       10, view, "findings")
+        with mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
+             mock.patch("mahler.ship.start", return_value=True) as start:
+            ship._review_triggered_fix(self.ctx, "p", self.led.item("p", 93),
+                                       10, view, "findings")
+        start.assert_called_once()
+        self.assertIn("findings", start.call_args.kwargs["context"])
+        self.assertEqual(self.led.item("p", 93)["attempts"], 1)
+        self.assertEqual(self.led.item("p", 93)["esc_fails"], 1)
 
     def test_two_failures_on_tier_1_escalates_to_tier_2(self):
         # item starts at esc_tier=0, esc_fails=0

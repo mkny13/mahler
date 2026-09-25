@@ -413,8 +413,6 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         _fix_wait(ctx, project, item, key, "every run slot is busy")
         return
     busy = busy_platforms(cfg, active)
-    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
-                 if l.startswith("size:")), None)
     if size == "l":
         size = "m"
     effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
@@ -510,8 +508,6 @@ def _red_ci(ctx, project, item, pr, view):
         _fix_wait(ctx, project, item, key, "every run slot is busy")
         return
     busy = busy_platforms(cfg, active)
-    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
-                 if l.startswith("size:")), None)
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
