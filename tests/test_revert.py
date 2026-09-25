@@ -1,6 +1,7 @@
 """Real squash reverts in isolated repositories, without GitHub or network."""
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -66,6 +67,10 @@ class RevertTests(unittest.TestCase):
     def test_revert_prepared_and_shipped_by_existing_pipeline(self):
         self.queue()
         outbox.drain(self.ctx)
+        event = self.led.q1("SELECT * FROM events WHERE kind='revert_requested'")
+        self.assertEqual((event['project'], event['number']), ('mahler', 1))
+        self.assertEqual(json.loads(event['detail']), {
+            'pr': 2, 'revert_issue': 99, 'sha': self.sha})
         item = self.led.item('mahler', 99)
         self.assertEqual(item['state'], 'verifying')
         self.assertEqual(item['branch'], 'mahler/revert-2')

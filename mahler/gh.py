@@ -276,7 +276,7 @@ class GH:
     def pr_view(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
-                                   "headRefOid,baseRefName,mergeCommit,title"))
+                                   "headRefOid,baseRefName,mergeCommit,title,mergedAt"))
 
     def pr_edit_body(self, number, body):
         self._gh("pr", "edit", str(number), "-R", self.repo, "--body-file", "-", input=body)
@@ -289,7 +289,7 @@ class GH:
 
     def pr_merge_info(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
-                                   "state,mergeCommit,title,baseRefName"))
+                                   "state,mergeCommit,title,baseRefName,mergedAt"))
 
     def base_in_head(self, path, base, head):
         """Fetch exact objects without changing working files; prove ancestry.

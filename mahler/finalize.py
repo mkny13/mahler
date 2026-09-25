@@ -120,6 +120,10 @@ def _update_review_kv(e, **fields):
     cur = json.loads(e.led.get_kv(key) or "{}")
     cur.update(fields)
     e.led.set_kv(key, json.dumps(cur))
+    if fields.get("verdict") in {"pass", "fail"}:
+        e.led.event("review_verdict", e.project, e.number, {
+            "verdict": fields["verdict"], "review_run": e.run["id"],
+            "reviewed_sha": cur.get("sha")})
 
 
 def _post_review_comment(e, passed, findings=""):

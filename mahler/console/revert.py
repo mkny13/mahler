@@ -31,6 +31,8 @@ def revert(ctx, project, number, pr):
     new = int(url.rstrip("/").rsplit("/", 1)[-1])
     # Remember the issue even if git or a later comment fails. Never file it twice.
     led.set_kv(key, str(new))
+    led.event("revert_requested", project, number,
+              {"pr": pr, "revert_issue": new, "sha": sha})
     led.upsert_item(project, new, title=title, priority=1, labels=json.dumps(labels))
     repo, branch = pol["path"], f"mahler/revert-{pr}"
     root = os.path.join(runner.worktree_root(pol), project)
