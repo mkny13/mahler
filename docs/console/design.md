@@ -334,6 +334,11 @@ Header row: current view title, and right-aligned a bordered peak-hours button
   slot can take. Each slot carries its shared account reading and its own soft
   line; the selection persists in local storage. Reachable from any view via
   the rail, the Now view's capacity line, or the sidebar's `CAPACITY` header.
+  In both modes, a card with running or stopping tasks has a 1px blue accent
+  border, an **in use** header badge, accent model text, and active issue refs
+  in its metadata. Shared pools aggregate their member slots. The highlight
+  clears on refresh once all those runs finish; quota availability stays
+  independent. No filled background, shadow, animation, or transition.
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.

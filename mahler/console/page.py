@@ -771,11 +771,16 @@ def _cap_card(q, kind):
     if q["builds"]:
         meta.append("build role")
     meta.append("available" if q["available"] else "not available")
+    active_class = " in-use" if q.get("in_use") else ""
+    badge = '<span class="pchip mono t-acc in-use-chip">in use</span>' if active_class else ""
+    active_meta = (f'<span class="meta t-acc">in use · {e(", ".join(q["active_refs"]))}</span>'
+                   if active_class else "")
+    model_class = " t-acc" if active_class else ""
     return (
-        f'<div class="capcard cap-{kind}" data-quota="{e(q["name"])}">'
+        f'<div class="capcard cap-{kind}{active_class}" data-quota="{e(q["name"])}">'
         f'<div class="capcard-h"><span class="name mono">{e(q["name"])}</span> '
-        f'<span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
-        f'<span class="model mono">{e(q["model"])}</span>'
+        f'{badge}<span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
+        f'<span class="model mono{model_class}">{e(q["model"])}</span>'
         f'<span class="bar capbar"><span class="f-{q["tone"]}" '
         f'style="width:{q["width"]:.0f}%"></span>{tick}</span>'
         f'<span class="detail">{e(q["detail"])}</span>'
@@ -783,7 +788,7 @@ def _cap_card(q, kind):
         f'<div class="capmeta">'
         + "".join(f'<span class="meta t-{ "good" if q["available"] and m == meta[-1] else "mut"}">'
                    f'{e(m)}</span> ' for m in meta)
-        + '</div></div>')
+        + active_meta + '</div></div>')
 
 
 def _d_capacity(s):

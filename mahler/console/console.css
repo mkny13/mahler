@@ -164,7 +164,9 @@ a { color: var(--acc); text-decoration: none; }
                          letter-spacing: normal; text-transform: none; }
 .capcard { border: 1px solid var(--line); border-radius: 4px; padding: 12px 14px;
            display: flex; flex-direction: column; gap: 7px; }
-.capcard-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.capcard.in-use { border-color: var(--acc); }
+.capcard.in-use .in-use-chip { border-color: var(--acc); color: var(--acc); white-space: nowrap; }
+.capcard-h { flex-wrap: wrap; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .capcard .name { font-size: 13px; }
 .capcard .val { font-size: 13px; white-space: nowrap; }
 .capcard .bar { height: 9px; }
