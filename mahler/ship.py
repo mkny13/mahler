@@ -99,6 +99,10 @@ def _rebuild_on_base(ctx, project, item, pr, base, *, stale=False):
     (D19). No attempt is counted — the work was fine, the ground moved."""
     led, n = ctx.led, item["number"]
     reason = f"does not contain current {base}" if stale else f"conflicts with {base}"
+    # The PR stays open while the item briefly has no PR link.  Remember that
+    # this is a conductor-owned transition so the unowned-PR backstop does not
+    # mistake the rebuild window for an abandoned interactive session.
+    led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
     led.upsert_item(project, n, pr=None)
     led.set_state(project, n, "ready", f"PR #{pr} {reason} — rebuilding on it")
     led.release(project, n, holder=CONDUCTOR)
