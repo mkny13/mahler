@@ -9,6 +9,8 @@
   "use strict";
   var root = document.documentElement;
   var app = document.getElementById("app");
+  var loadedRevision = root.getAttribute("data-console-revision");
+  var reloading = false;
   var REFRESH_MS = 30000;
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
@@ -231,6 +233,43 @@
     refresh(true);
   }
 
+  // A full reload cannot use the fragment swap's draft restoration. Defer it
+  // while any form has edits, including drafts whose input has lost focus.
+  function reloadHasDraft() {
+    if (settingsDirty) { return true; }
+    var fields = app.querySelectorAll("input, textarea, select");
+    for (var i = 0; i < fields.length; i++) {
+      var field = fields[i];
+      if (field.tagName === "SELECT") {
+        var defaultIndex = 0;
+        for (var j = 0; j < field.options.length; j++) {
+          if (field.options[j].defaultSelected) { defaultIndex = j; }
+        }
+        if (field.selectedIndex !== defaultIndex) { return true; }
+      } else if (field.value !== field.defaultValue || field.checked !== field.defaultChecked) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function acceptRevision(html) {
+    var fragment = document.createElement("template");
+    fragment.innerHTML = html;
+    var marker = fragment.content.querySelector("[data-console-revision]");
+    var revision = marker && marker.getAttribute("data-console-revision");
+    if (revision === loadedRevision) { return !reloading; }
+    // Missing markers can mean an older server during rollback. Never install
+    // incompatible controls, and never repeatedly reload an unversioned response.
+    if (!revision || reloading || reloadHasDraft()) { return false; }
+    store("session", "mahler.view", root.getAttribute("data-view"));
+    store("session", "mahler.tab", root.getAttribute("data-tab"));
+    store("local", "mahler.theme", root.getAttribute("data-theme"));
+    reloading = true;
+    window.location.reload();
+    return false;
+  }
+
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
     if (settingsDirty) { return Promise.resolve(); }
@@ -248,6 +287,7 @@
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
+      if (settingsDirty || !acceptRevision(html)) { return; }
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) {
@@ -325,6 +365,8 @@
         if (window.console) { console.warn(action, res.error || "failed"); }
         showErrorToast(res.error || "The action was refused or failed.");
         if (action === "settings") { return; }
+      } else if (action === "end_session") {
+        showSavedToast("Session ended — hold lifted.");
       } else if (action === "capture") {
         // Clear every part of the composer on the next restore, but keep the project.
         suppressKeep = ["capture", "capture_att_id", "capture_att_name"];
@@ -473,7 +515,14 @@
       var attachId = cap && cap.querySelector(".attach-id");
       return { text: ta ? ta.value : "", project: sel ? sel.value : "", attachment: (attachId && attachId.value) ? attachId.value : null };
     }
-    return {};
+    var payload = {};
+    for (var i = 0; i < el.attributes.length; i++) {
+      var attr = el.attributes[i];
+      if (attr.name.indexOf("data-") === 0 && attr.name !== "data-act") {
+        payload[attr.name.slice(5)] = attr.value;
+      }
+    }
+    return payload;
   }
 
   // a needs-you ping deep-links here: #needs/<project>/<n> lands the console on
