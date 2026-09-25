@@ -11,7 +11,7 @@ import json
 
 from .. import config, presence, router
 from ..ledger import iso
-from ..gh import AGENT_MARK
+from ..gh import AGENT_MARK, parse_command
 from .state import SEEN_KEY, brief_seen_key
 
 
@@ -179,12 +179,13 @@ def answer(cfg, led, body):
         item = led.item(project, number)
         if item is None or item["state"] not in ("needs_you", "failed"):
             raise ActionError("the item moved on")
+        resuming = item["state"] == "failed" and parse_command(text) is None
         for row in led.pending_actions("answer"):
             if (row["project"], row["number"]) == (project, number):
                 led.cancel_action(row["id"])
         id = led.queue_action("answer", project, number, {"text": text}, delay_seconds=60)
         led.event("console_answer_queued", project, number, {"id": id})
-    return {"id": id}
+    return {"id": id, "resuming": resuming}
 
 
 def answer_undo(cfg, led, body):

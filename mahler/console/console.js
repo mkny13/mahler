@@ -335,6 +335,8 @@
       } else if (action === "settings") {
         settingsDirty = false;
         showSavedToast("Settings will apply on the next scheduler tick.");
+      } else if (action === "answer" && res.resuming) {
+        showSavedToast("Answer posted — resuming.");
       }
       return refresh(true);
     });

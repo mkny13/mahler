@@ -286,20 +286,30 @@ def _process_comments(ctx, project, item, comments):
         cmd = parse_command(body)
         if cmd:
             _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd)
-        elif led.item(project, item["number"])["state"] == "needs_you":
-            led.set_state(project, item["number"], "inbox", "you answered — re-sorting",
-                          sorted_at=None)
-            ctx.say(f"{project}#{item['number']}: answer received, re-sorting")
+        else:
+            current = led.item(project, item["number"])
+            if current["state"] == "failed":
+                resume_item(led, project, item["number"])
+                ctx.say(f"{project}#{item['number']}: answer received, resuming")
+            elif current["state"] == "needs_you":
+                led.set_state(project, item["number"], "inbox", "you answered — re-sorting",
+                              sorted_at=None)
+                ctx.say(f"{project}#{item['number']}: answer received, re-sorting")
     if newest and newest != seen:
         led.upsert_item(project, item["number"], last_comment_at=iso(newest))
+
+
+def resume_item(led, project, number):
+    """Apply the same reset as ``/mahler go`` to a failed item."""
+    led.set_state(project, number, "ready", "you said go", attempts=0, setup_fails=0,
+                  esc_tier=0, esc_fails=0,
+                  sorted_at=iso(led.now() - timedelta(days=1)))
 
 
 def _apply_instruction(ctx, project, item, verb, arg):
     led, n = ctx.led, item["number"]
     if verb == "go":
-        led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
-                      esc_tier=0, esc_fails=0,
-                      sorted_at=iso(led.now() - timedelta(days=1)))
+        resume_item(led, project, n)
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
         for run in led.active_runs(project):

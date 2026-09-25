@@ -3,6 +3,7 @@
 import json
 
 from .. import config, redact, watchdog
+from ..gh import parse_command
 
 
 def capture_title(text, limit=80):
@@ -59,8 +60,16 @@ def answer(ctx, row, payload):
     if item is None or item['state'] not in ('needs_you', 'failed'):
         return 'skipped', 'the item moved on'
     ctx.gh(project).comment(number, payload['text'], agent=False)
-    ctx.led.event('answered', project, number, {'via': 'console'})
-    return 'done', 'answer posted'
+    resumes = item['state'] == 'failed' and parse_command(payload['text']) is None
+    if resumes:
+        from ..sync import resume_item
+        resume_item(ctx.led, project, number)
+        result = 'answer posted — resuming'
+    else:
+        result = 'answer posted'
+    ctx.led.event('answered', project, number, {'via': 'console',
+                                                'resuming': resumes})
+    return 'done', result
 
 
 def stop_run(ctx, row, payload):
