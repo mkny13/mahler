@@ -251,7 +251,9 @@
           defaultIndex = field.captureInitialIndex;
         }
         if (field.selectedIndex !== defaultIndex) { return true; }
-      } else if (field.value !== field.defaultValue || field.checked !== field.defaultChecked) {
+      } else if (field.type === "checkbox" || field.type === "radio") {
+        if (field.checked !== field.defaultChecked) { return true; }
+      } else if (field.value !== field.defaultValue) {
         return true;
       }
     }
