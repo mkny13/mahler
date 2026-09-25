@@ -102,7 +102,8 @@ def _banners(s):
     for x in b:
         act = ""
         if x.get("act"):
-            act = f'<button class="btn" data-act="{e(x["act"])}">{e(x["action"])}</button>'
+            data = f' data-project="{e(x["project"])}"' if "project" in x else ""
+            act = f'<button class="btn" data-act="{e(x["act"])}"{data}>{e(x["action"])}</button>'
         elif x.get("href"):
             act = (f'<a class="btn" href="{e(x["href"])}" target="_blank" rel="noopener">'
                    f'{e(x["action"])}</a>')
@@ -129,6 +130,8 @@ def _idle(s, phone):
         btn = ""
         if r.get("act"):
             data = f' data-platforms="{e(",".join(r["platforms"]))}"' if r.get("platforms") else ""
+            if "project" in r:
+                data += f' data-project="{e(r["project"])}"'
             btn = f'<button class="btn btn-acc" data-act="{e(r["act"])}"{data}>{e(r["action"])}</button>'
         elif r.get("href"):
             btn = (f'<a class="btn btn-acc" href="{e(r["href"])}" target="_blank" rel="noopener">'

@@ -797,6 +797,20 @@ class HotHoldTests(unittest.TestCase):
             lines = plan(ctx, led)
         return lines, ctx.lines
 
+    def test_end_session_lifts_hold_until_new_activity(self):
+        for offset, expected in ((-1, ["a#1: would build on agy-claude"]),
+                                 (0, ["a#1: would build on agy-claude"]), (1, [])):
+            with self.subTest(activity_offset=offset):
+                ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+                self.addCleanup(led.close)
+                seed(led, **{"agy-claude": (10, 10)})
+                item(led, "a", 1)
+                ended = NOW - timedelta(minutes=2)
+                led.set_kv("hot_hold_end:a", iso(ended))
+                with mock.patch.object(presence, "last_claude_activity",
+                                       return_value=ended + timedelta(seconds=offset)):
+                    self.assertEqual(plan(ctx, led), expected)
+
     def test_recent_activity_holds_new_builds(self):
         lines, said = self.hold(minutes_ago=5)
         self.assertEqual(lines, [])

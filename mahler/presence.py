@@ -13,7 +13,20 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 
+from .ledger import parse
+
+HOT_HOLD_END_PREFIX = "hot_hold_end:"
+
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+
+
+def hot_hold_overridden(led, project, last_activity):
+    """A human ended this session, and no newer transcript activity followed."""
+    try:
+        ended = parse(led.get_kv(HOT_HOLD_END_PREFIX + project))
+    except (TypeError, ValueError):
+        return False
+    return bool(ended and (last_activity is None or last_activity <= ended))
 
 
 def encode(path):
