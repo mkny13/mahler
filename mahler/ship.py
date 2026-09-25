@@ -136,7 +136,8 @@ def _closed_pr(ctx, project, item, pr, view):
         if not ctx.dry_run:
             if not _ship_lease(ctx, project, item):
                 return
-            led.upsert_item(project, n, pr=None)
+            snapshot = led.get_kv(f"ship_snapshot:{project}#{n}")
+            led.upsert_item(project, n, pr=None, branch=snapshot or item["branch"])
             retry_or_fail(ctx, project, n, item, None, reason)
     ctx.say(f"{project}#{n}: {reason} — {'would go to ' if ctx.dry_run else ''}{action}")
     if not ctx.dry_run:
@@ -612,6 +613,9 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     if item["pr"]:
         try:
             view = gh.pr_view(item["pr"])
+            if view["state"] == "MERGED":
+                _shipped(ctx, project, n, item["pr"], item, view, merged=False)
+                return
             if view.get("headRefName"):
                 branch = view["headRefName"]
         except (GHError, ValueError) as e:
@@ -635,6 +639,11 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         ctx.say(f"{project}#{n}: opening PR failed — {e}")
         led.release(project, n, holder=CONDUCTOR)
         return
+    # Keep the durable rebuild fallback separately from the branch watched for
+    # CI: a closed PR's head may be deleted before runner.prepare fetches/prunes.
+    # Save it first so a crash cannot leave only the disposable PR head recorded.
+    if ref.startswith("mahler/snapshot/"):
+        led.set_kv(f"ship_snapshot:{project}#{n}", ref)
     led.upsert_item(project, n, pr=pr, branch=branch)
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
     action = f"opened PR #{pr}" if created else f"adopted PR #{pr}"

@@ -224,6 +224,52 @@ class ShipTests(unittest.TestCase):
         self.ship()  # Not counted again once it leaves verifying.
         self.assertEqual(self.item()["attempts"], 1)
 
+    def test_closed_deleted_pr_branch_rebuilds_from_latest_snapshot(self):
+        def git(*args):
+            return subprocess.run(["git", "-C", self.tmp, *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        origin = os.path.join(self.tmp, "origin.git")
+        git("init", "--bare", "-b", "main", origin)
+        git("init", "-b", "main")
+        git("remote", "add", "origin", origin)
+        author = ["-c", "user.name=test", "-c", "user.email=test@example.com"]
+        git(*author, "commit", "--allow-empty", "-m", "base")
+        git("push", "origin", "main")
+        for run in (7, 8):
+            git(*author, "commit", "--allow-empty", "-m", f"completed work {run}")
+            snapshot = f"mahler/snapshot/5-run{run}"
+            git("push", "origin", f"HEAD:refs/heads/{snapshot}")
+            self.led.upsert_item("x", 5, branch=snapshot)
+            with mock.patch.object(self.gh, "push_branch",
+                                   side_effect=gh_module.GH("x/y").push_branch):
+                self.ship()
+            self.gh.existing_pr = 88
+        completed = git("rev-parse", "HEAD")
+        head = self.item()["branch"]
+        git("push", "origin", "--delete", head)
+        self.gh.existing_pr = None
+        self.gh.view_state = "CLOSED"
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "ready")
+        self.assertEqual(self.item()["branch"], snapshot)
+        self.assertIsNone(self.item()["pr"])
+        git("fetch", "origin", "--prune")
+        self.assertFalse(runner.remote_has(self.tmp, head))
+        start = runner.start_ref(self.tmp, "main", self.item()["branch"], head)
+        self.assertEqual(git("rev-parse", start), completed)
+        self.assert_nothing_shipped(ping)
+
+    def test_merged_pr_with_saved_snapshot_records_shipping(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.view_state = "MERGED"
+        self.ship()
+        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.gh.pushed, [])
+        self.assertEqual(self.gh.created, [])
+        self.assertIsNotNone(self.led.uat("x", 5))
+        self.assertEqual(len(self.led.unreleased_items("x")), 1)
+
     def test_closed_unmerged_pr_fails_at_attempt_limit(self):
         self.gh.view_state = "CLOSED"
         limit = self.ctx.policy("x")["max_attempts"]
