@@ -142,17 +142,18 @@ def _sizes_text(sizes):
 
 def outcome_report(cfg, outcomes, escalations):
     """One row per enabled platform, ordered by declared tier (`router.tier_of`):
-    (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes, by_size)."""
+    (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes, by_size, not_started)."""
     rows = []
     for name, pconf in cfg["platforms"].items():
         if not pconf.get("enabled", True):
             continue
-        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0, "by_size": {}})
+        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0,
+                                    "by_size": {}, "not_started": 0})
         rows.append((name, router.tier_of(pconf), stats["runs"],
                      _pct(stats["done"], stats["runs"]),
                      _pct(stats["needs_you"], stats["runs"]),
                      escalations.get(name, 0), size_gate(pconf),
-                     stats.get("by_size", {})))
+                     stats.get("by_size", {}), stats.get("not_started", 0)))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
@@ -213,13 +214,14 @@ def build_body(cfg, led, pol):
 
     lines += [
         "",
-        "## Observed ledger outcomes (build/fix runs, last 180 days)",
+        "## Observed ledger outcomes (build/fix runs, last 180 days; done-rate over runs "
+        "that actually started; launch failures and unclaimed runs counted separately)",
         "",
-        "| Platform | Tier | Runs | Done % | Needs-you % | Escalated away from (count) | Sizes |",
-        "|---|---|---|---|---|---|---|",
+        "| Platform | Tier | Runs started | Didn't start | Done % | Needs-you % | Escalated away from (count) | Sizes |",
+        "|---|---|---|---|---|---|---|---|",
     ]
-    for name, tier, runs, done_pct, needs_you_pct, esc, sizes, by_size in out_rows:
-        lines.append(f"| {name} | {tier} | {runs} | "
+    for name, tier, runs, done_pct, needs_you_pct, esc, sizes, by_size, not_started in out_rows:
+        lines.append(f"| {name} | {tier} | {runs} | {not_started} | "
                      f"{done_pct if done_pct is not None else '—'} | "
                      f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} | {_sizes_text(sizes)} |")
 
