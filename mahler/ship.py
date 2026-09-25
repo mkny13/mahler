@@ -128,9 +128,20 @@ def _watch_pr(ctx, project, item, pr):
         _rebuild_on_base(ctx, project, item, pr, base)
         return
     state = checks_state(view.get("statusCheckRollup"))
+    # Keep the console's explanation in step with the state this watcher saw.
+    # The timestamp for a pending head is initialized by _ci_pending; recording
+    # the terminal state here prevents an old pending timestamp from being
+    # mistaken for the current wait after CI finishes.
     if state == "pending" or view.get("mergeable") == "UNKNOWN":
         _ci_pending(ctx, project, item, pr, view)
         return
+    ci_key = f"ci:{project}#{item['number']}:{pr}"
+    ci_seen = led.get_kv(ci_key)
+    ci_info = json.loads(ci_seen) if ci_seen else {}
+    ci_info["state"] = state
+    if view.get("headRefOid"):
+        ci_info["sha"] = view["headRefOid"]
+    led.set_kv(ci_key, json.dumps(ci_info))
     if state == "red":
         # D18 (mahler#18): red CI starts a fix run from the PR branch, with the
         # failing log in its prompt. The conductor's lease goes to the run.
@@ -169,9 +180,10 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
     sha = view.get("headRefOid") or ""
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else None
-    if not info or (sha and info.get("sha") != sha):
+    if not info or not info.get("since") or (sha and info.get("sha") != sha):
         info = {"sha": sha, "since": iso(led.now())}
-        led.set_kv(key, json.dumps(info))
+    info["state"] = "pending"
+    led.set_kv(key, json.dumps(info))
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
         ctx.say(f"{project}#{n}: PR #{pr} — {reason}")
         return
@@ -339,10 +351,15 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
 
 
-def _fix_wait(ctx, project, item, key, reason):
+def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):
     """A fix waiting for capacity must not lock out other shippable PRs."""
     led, n = ctx.led, item["number"]
     led.release(project, n, holder=CONDUCTOR)
+    led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({
+        "reason": reason,
+        "tier": required_tier if required_tier is not None else row_get(item, "esc_tier", 0),
+        "at": iso(led.now()),
+    }))
     minutes = ctx.policy(project).get("verify_timeout_minutes", 120)
     if led.now() - parse(led.get_kv(key)) <= timedelta(minutes=minutes):
         return
@@ -424,7 +441,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
-        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route")
+        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route",
+                  required_tier=effective_min_tier)
         return
     led.upsert_item(project, n, branch=head)
     conductor = led.lease(project, n)
@@ -438,6 +456,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                "comments); address them, verify, push, and end with STATUS: DONE")
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, context=context):
+        led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
 
 

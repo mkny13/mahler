@@ -1286,6 +1286,59 @@ def _launch_breaker_reasons(led, projects, now):
     return reasons
 
 
+def _verification_wait(led, project, item, now):
+    """Describe the conductor's current wait for a verifying item.
+
+    The ship pass records the head/check state and its first-seen time in KV;
+    review and merge-queue state use the same ledger signals that _watch_pr
+    consumes.  Keep the legacy state_changed_at fallback for items created by
+    older daemons whose first CI observation predates this marker.
+    """
+    number, pr = item["number"], row_get(item, "pr")
+    if not pr:
+        return ".", 0
+
+    def read(key):
+        try:
+            return json.loads(led.get_kv(key) or "null") or {}
+        except (TypeError, ValueError):
+            return {}
+
+    ci = read(f"ci:{project}#{number}:{pr}")
+    ci_state = ci.get("state")
+    since = parse(ci.get("since")) or parse(row_get(item, "state_changed_at"))
+    elapsed = _mins(now - since) if since else 0
+    if ci_state in (None, "pending"):
+        return (f" — CI has been pending {elapsed} minute{'s' if elapsed != 1 else ''}.",
+                elapsed)
+    if ci_state == "red":
+        return " — CI failed; waiting for a fix run.", elapsed
+
+    review = read(f"review:{project}#{number}")
+    active = led.active_runs()
+    roles = {r["role"] for r in active
+             if r["project"] == project and r["number"] == number}
+    needs_review = review.get("verdict") in ("pending", "fail")
+    if not needs_review:
+        labels = json.loads(row_get(item, "labels", "[]"))
+        size = next((x.split(":", 1)[1] for x in labels if x.startswith("size:")), None)
+        needs_review = size in ("m", "l") or router.risk_min_tier(row_get(item, "title", "")) > 0
+    if needs_review and review.get("verdict") in (None, "pending"):
+        return " — waiting for the independent review.", elapsed
+    if review.get("verdict") == "fail":
+        if "fix" in roles:
+            return " — review failed; waiting for a fix run.", elapsed
+        fix_wait = read(f"reviewfix-status:{project}#{number}")
+        if fix_wait.get("reason") and "no eligible route" in fix_wait["reason"]:
+            tier = fix_wait.get("tier") or 1
+            return (f" — review failed; waiting for a fix run (no platform available "
+                    f"at tier {tier}).", elapsed)
+        return " — review failed; waiting for a fix run.", elapsed
+    if led.get_kv(f"queue:{project}#{number}:{pr}"):
+        return " — green, waiting for its turn to merge.", elapsed
+    return " — green, waiting for its turn to merge.", elapsed
+
+
 def _idle(cfg, led, s, hot, now):
     """Why nothing is running: every reason that is actually binding, each a
     sentence with a countdown when one exists and an escape when you have one."""
@@ -1362,11 +1415,9 @@ def _idle(cfg, led, s, hot, now):
             v = verifying[0]
             slot = ("the project's only parallel slot" if p.get("max_parallel", 1) == 1
                     else "one of the project's parallel slots")
-            since = parse(v["state_changed_at"])
-            pending_m = _mins(now - since) if since else 0
             text = f"{_ref(name, v['number'])} holds {slot} until its PR merges"
-            text += (f" — CI has been pending {pending_m} minute{'s' if pending_m != 1 else ''}."
-                     if v["pr"] else ".")
+            wait_text, pending_m = _verification_wait(led, name, v, now)
+            text += wait_text if v["pr"] else "."
             timeout = p.get("verify_timeout_minutes", 60) - pending_m
             reason = {"text": text,
                       "countdown": f"verify timeout in {_dur(timedelta(minutes=timeout))}"
