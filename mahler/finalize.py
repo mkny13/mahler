@@ -643,13 +643,17 @@ def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duratio
     overrun = (run_tier == 1 and size == "s" and duration_mins is not None and duration_mins >= 10.0)
 
     if overrun:
-        new_tier = max(cur_tier, run_tier) + 1
+        new_tier = router.cap_escalation(ctx.cfg, ctx.policy(project),
+                                          max(cur_tier, run_tier) + 1, size,
+                                          role="build", pin=row_get(item, "pin"))
         new_fails = 0
         ctx.say(f"{project}#{n}: escalated to tier {new_tier} — size:s overrun on tier {run_tier} ({int(duration_mins)}m >= 10m)")
         led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
                   "platform": platform, "reason": f"duration overrun {int(duration_mins)}m"})
     elif new_fails >= 2:
-        new_tier = max(cur_tier, run_tier) + 1
+        new_tier = router.cap_escalation(ctx.cfg, ctx.policy(project),
+                                          max(cur_tier, run_tier) + 1, size,
+                                          role="build", pin=row_get(item, "pin"))
         new_fails = 0
         ctx.say(f"{project}#{n}: escalated to tier {new_tier} after 2 failures on tier <= {max(cur_tier, run_tier)}")
         led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,

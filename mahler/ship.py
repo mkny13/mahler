@@ -339,6 +339,19 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
 
 
+def _fix_wait(ctx, project, item, key, reason):
+    """A fix waiting for capacity must not lock out other shippable PRs."""
+    led, n = ctx.led, item["number"]
+    led.release(project, n, holder=CONDUCTOR)
+    minutes = ctx.policy(project).get("verify_timeout_minutes", 120)
+    if led.now() - parse(led.get_kv(key)) <= timedelta(minutes=minutes):
+        return
+    question = f"No fix run could start for PR #{item['pr']} after {minutes} minutes: {reason}"
+    led.set_state(project, n, "needs_you", question, question=question, options="[]")
+    ctx.ping(f"Fix waiting — {project} #{n}", question,
+             project, n, priority="high", tags="warning")
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -352,7 +365,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1
-    cur_tier = row_get(item, "esc_tier", 0)
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    cur_tier = router.cap_escalation(cfg, pol, row_get(item, "esc_tier", 0),
+                                     size, pin=item["pin"])
+    if cur_tier != row_get(item, "esc_tier", 0):
+        led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
@@ -360,11 +378,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         cur_fails = row_get(item, "esc_fails", 0)
         new_fails = cur_fails + 1
         new_tier = cur_tier
-        last = led.last_run(project, n)
+        last = led.last_run(project, n, roles=("build", "fix"))
         last_platform = last["platform"] if last else None
         run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
         if new_fails >= 2:
-            new_tier = max(cur_tier, run_tier) + 1
+            new_tier = router.cap_escalation(cfg, pol, max(cur_tier, run_tier) + 1,
+                                              size, pin=item["pin"])
             new_fails = 0
             ctx.say(f"{project}#{n}: escalated to tier {new_tier} after a failed review on tier <= {max(cur_tier, run_tier)}")
             led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
@@ -391,10 +410,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if len(active) >= cfg["concurrency"]["total"]:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, but every run slot is busy; "
                 "the fix waits for the next tick")
+        _fix_wait(ctx, project, item, key, "every run slot is busy")
         return
     busy = busy_platforms(cfg, active)
-    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
-                 if l.startswith("size:")), None)
     if size == "l":
         size = "m"
     effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
@@ -406,6 +424,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
+        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route")
         return
     led.upsert_item(project, n, branch=head)
     conductor = led.lease(project, n)
@@ -442,7 +461,12 @@ def _red_ci(ctx, project, item, pr, view):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1
-    cur_tier = row_get(item, "esc_tier", 0)
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    cur_tier = router.cap_escalation(cfg, pol, row_get(item, "esc_tier", 0),
+                                     size, pin=item["pin"])
+    if cur_tier != row_get(item, "esc_tier", 0):
+        led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
@@ -450,11 +474,12 @@ def _red_ci(ctx, project, item, pr, view):
         cur_fails = row_get(item, "esc_fails", 0)
         new_fails = cur_fails + 1
         new_tier = cur_tier
-        last = led.last_run(project, n)
+        last = led.last_run(project, n, roles=("build", "fix"))
         last_platform = last["platform"] if last else None
         run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
         if new_fails >= 2:
-            new_tier = max(cur_tier, run_tier) + 1
+            new_tier = router.cap_escalation(cfg, pol, max(cur_tier, run_tier) + 1,
+                                              size, pin=item["pin"])
             new_fails = 0
             ctx.say(f"{project}#{n}: escalated to tier {new_tier} after red CI on tier <= {max(cur_tier, run_tier)}")
             led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
@@ -480,10 +505,9 @@ def _red_ci(ctx, project, item, pr, view):
     if len(active) >= cfg["concurrency"]["total"]:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, but every run slot is busy; "
                 "the fix waits for the next tick")
+        _fix_wait(ctx, project, item, key, "every run slot is busy")
         return
     busy = busy_platforms(cfg, active)
-    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
-                 if l.startswith("size:")), None)
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
@@ -498,6 +522,7 @@ def _red_ci(ctx, project, item, pr, view):
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
+        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route")
         return
     led.upsert_item(project, n, branch=head)
     conductor = led.lease(project, n)

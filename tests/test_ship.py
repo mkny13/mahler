@@ -321,7 +321,23 @@ class ShipTests(unittest.TestCase):
         with mock.patch.object(platforms, "available", return_value=False):
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
-        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        self.assertIsNone(self.led.lease("x", 5))
+
+    def test_failed_review_releases_capacity_for_another_green_pr(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
+        self.led.upsert_item("x", 6, pr=89, state="verifying", title="small fix",
+                             labels='["size:s"]', branch="mahler/6-fix")
+        # Enforce canonical max_parallel=1 with the real ledger claim path.
+        claim = self.led.claim
+        def bounded_claim(*args, **kwargs):
+            return claim(*args, **kwargs, max_parallel=1)
+        with mock.patch.object(self.led, "claim", side_effect=bounded_claim), \
+             mock.patch("mahler.router.pick_for_project", return_value=(None, ["no quota"])):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(self.gh.merged, [89])
 
     def test_red_ci_does_not_reescalate_every_tick_on_the_same_sha(self):
         """mahler#232 — a tick that can't start a fix run (no free slot, no
