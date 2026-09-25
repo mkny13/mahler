@@ -522,9 +522,9 @@ def load(path=None):
     if os.path.exists(path):
         with open(path, "rb") as fh:
             user = tomllib.load(fh)
-    cfg = _merge(DEFAULTS, user)
+    cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
-    return resolve_platforms(cfg)
+    return cfg
 
 
 def settings(cfg):
@@ -540,6 +540,8 @@ def settings(cfg):
                             if pc.get(key)})
     platforms = []
     for name, pc in cfg.get("platforms", {}).items():
+        if "slot" in pc:
+            continue
         platforms.append({
             "name": name,
             "enabled": bool(pc.get("enabled", True)),
@@ -598,12 +600,13 @@ def validate_settings(body, cfg):
     if not required.issubset(body):
         raise ValueError("settings are incomplete; reload the page and try again")
 
-    known = set(cfg.get("platforms", {}))
+    base_platforms = {name for name, pc in cfg.get("platforms", {}).items() if "slot" not in pc}
+    all_platforms = set(cfg.get("platforms", {}))
     platforms = body["platforms"]
     if not isinstance(platforms, list) or {p.get("name") for p in platforms
-                                           if isinstance(p, dict)} != known:
+                                           if isinstance(p, dict)} != base_platforms:
         raise ValueError("platforms must contain each configured platform exactly once")
-    if len(platforms) != len(known):
+    if len(platforms) != len(base_platforms):
         raise ValueError("platform names must be unique")
     clean_platforms = []
     for item in platforms:
@@ -627,7 +630,7 @@ def validate_settings(body, cfg):
     if (not isinstance(routes, list) or len(routes) != len(expected_routes)
             or {r.get("key") for r in routes if isinstance(r, dict)} != expected_routes):
         raise ValueError("routing scopes changed; reload the page and try again")
-    route_options = known | {"@" + name for name in cfg.get("groups", {})}
+    route_options = all_platforms | {"@" + name for name in cfg.get("groups", {})}
     clean_routes = []
     for route in routes:
         clean = {"key": route["key"]}
@@ -777,8 +780,8 @@ def save_settings(body, path=None):
     clean = validate_settings(body, current)
     updated = _apply_settings(user, clean)
     candidate = _merge(DEFAULTS, updated)
-    validate_accounts(candidate)
-    resolve_platforms(candidate)
+    resolved_candidate = resolve_platforms(candidate)
+    validate_accounts(resolved_candidate)
     encoded = dumps_toml(updated)
     # Prove our serialization before replacing the operator's config.
     parsed = tomllib.loads(encoded)
