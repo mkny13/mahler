@@ -54,9 +54,12 @@ else: print(json.dumps({"id": 2, "result": ''' + repr(body or response()) + '''}
 time.sleep(5)
 ''')
             exe.chmod(0o755)
+            # Only the stalling modes need a short deadline; a loaded machine can
+            # take over 0.5 s just to start a fresh fake, which reads as a timeout.
+            timeout = 0.5 if mode in ("timeout", "partial") else 10
             with mock.patch.object(platforms, "codex_exe", return_value=str(exe)):
                 return platforms.probe_codex(env={**os.environ, "CODEX_HOME": "isolated"},
-                                             timeout=0.5)
+                                             timeout=timeout)
 
     def test_windows_null_reset_and_sanitized_credits(self):
         result = self.probe()
