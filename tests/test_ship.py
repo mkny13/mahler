@@ -256,15 +256,15 @@ class ShipTests(unittest.TestCase):
     def test_rebuild_adopts_fresh_pr_before_watching_stale_pr(self):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
         self.gh.existing_pr = 99
-        with mock.patch.object(self.gh, "pr_view") as view, mock.patch.object(
+        with mock.patch.object(self.gh, "pr_view", wraps=self.gh.pr_view) as view, mock.patch.object(
                 self.gh, "pr_for_head", wraps=self.gh.pr_for_head) as lookup:
             ping = self.ship()
-        view.assert_not_called()
-        lookup.assert_called_once_with("mahler/5-wired-the-exporter")
+        view.assert_called_once_with(88)
+        lookup.assert_called_once_with("mahler/5-x")
         self.assertEqual((self.item()["pr"], self.item()["state"]), (99, "verifying"))
-        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
-        self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter", "mahler/snapshot/5-run7")])
-        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(self.item()["branch"], "mahler/5-x")
+        self.assertEqual(self.gh.pushed, [("mahler/5-x", "mahler/snapshot/5-run7")])
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
         self.assert_nothing_shipped(ping)
 
     def test_rebuild_with_snapshot_and_closed_pr_opens_replacement_pr(self):
@@ -272,13 +272,13 @@ class ShipTests(unittest.TestCase):
         self.gh.existing_pr = None
         self.gh.view_state = "CLOSED"
         ping = self.ship()
-        self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter", "mahler/snapshot/5-run7")])
+        self.assertEqual(self.gh.pushed, [("mahler/5-x", "mahler/snapshot/5-run7")])
         self.assertEqual(len(self.gh.created), 1)
-        self.assertEqual(self.gh.created[0][0], "mahler/5-wired-the-exporter")
+        self.assertEqual(self.gh.created[0][0], "mahler/5-x")
         self.assertEqual((self.item()["pr"], self.item()["state"]), (88, "verifying"))
-        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
+        self.assertEqual(self.item()["branch"], "mahler/5-x")
         self.assertEqual(self.item()["attempts"], 0)
-        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
         self.assert_nothing_shipped(ping)
 
     def test_closed_immediately_after_merge_request_is_not_shipped(self):

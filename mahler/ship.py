@@ -608,7 +608,20 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         led.release(project, n, holder=CONDUCTOR)
         return
     base = pol.get("base", "main")
-    branch = f"mahler/{n}-{runner.slug(item['title'])}"
+    branch = None
+    if item["pr"]:
+        try:
+            view = gh.pr_view(item["pr"])
+            if view.get("headRefName"):
+                branch = view["headRefName"]
+        except (GHError, ValueError) as e:
+            ctx.say(f"{project}#{n}: existing PR #{item['pr']} lookup failed — {e}")
+            led.release(project, n, holder=CONDUCTOR)
+            return
+
+    if not branch:
+        branch = f"mahler/{n}-{runner.slug(item['title'])}"
+
     try:
         sha = gh.push_branch(pol["path"], branch, ref)   # the branch, pushed if needed
         pr = gh.pr_for_head(branch)
@@ -626,7 +639,6 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
     action = f"opened PR #{pr}" if created else f"adopted PR #{pr}"
     ctx.say(f"{project}#{n}: {action} from `{branch}` (base {base}) — verifying")
-    led.release(project, n, holder=CONDUCTOR)
 
 
 def pr_merged(view):
