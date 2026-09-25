@@ -416,8 +416,16 @@ a { color: var(--acc); text-decoration: none; }
 .pq .name { font-size: 12.5px; white-space: nowrap; }
 .pq .model { font-size: 10.5px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pq .val { font-size: 11px; white-space: nowrap; flex: none; }
+.pq-right { display: flex; align-items: baseline; gap: 6px; flex: none; }
+.pq-toggle { font-size: 11px; color: var(--mut); padding: 0 2px; }
+.pq-toggle .o { display: none; }
 .pq .bar { height: 12px; }
 .pq .detail { font-size: 11.5px; color: var(--mut); }
+.pq-details { display: none; flex-direction: column; gap: 6px; padding-top: 2px; }
+.pq-win { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 11.5px; }
+.pq-win .win { white-space: nowrap; }
+.pq-win .bar { height: 9px; }
+.pq-win .resets { white-space: nowrap; text-align: right; }
 .foot-note { font-size: 11.5px; color: var(--mut); border-top: 1px solid var(--line); padding-top: 9px; }
 .ph .stats-controls { align-items: stretch; }
 .ph .stats-range { min-height: 40px; flex: 1 1 30%; justify-content: center; }

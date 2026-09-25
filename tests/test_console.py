@@ -478,6 +478,94 @@ class CapacityPageTests(unittest.TestCase):
         self.assertIn('<span class="meta t-mut">unmetered</span>', html)
 
 
+class BrowseQuotaPageTests(unittest.TestCase):
+    """mahler#436: Browse quota rows hide detail behind a chevron toggle."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        all_fresh(self.led)
+        fresh(self.led, "claude", "5h", 63)
+        fresh(self.led, "claude", "weekly", 44)
+        self.s = state.build(self.cfg, self.led)
+
+    def html(self):
+        return page.app(self.s)
+
+    def test_browse_quota_rows_with_windows_have_a_chevron_toggle_button(self):
+        html = self.html()
+        for q in self.s["quota"]:
+            self.assertIn(f'<div class="pq" data-quota="{q["name"]}">', html)
+            has_windows = q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")
+            if has_windows:
+                self.assertIn(f'data-toggle="quota_{q["name"]}"', html)
+            else:
+                self.assertNotIn(f'data-toggle="quota_{q["name"]}"', html)
+        self.assertIn('<span class="c">▾</span><span class="o">▴</span>', html)
+
+    def test_collapsed_by_default_details_are_hidden(self):
+        html = self.html()
+        self.assertIn('.pq-details { display: none;', page.CSS)
+        self.assertIn('.pq-toggle .o { display: none; }', page.CSS)
+        self.assertIn('claude', html)
+        self.assertIn('63%', html)
+
+    def test_expanding_claude_shows_two_stacked_labeled_window_rows(self):
+        html = self.html()
+        claude_idx = html.index('class="pq" data-quota="claude"')
+        next_pq = html.find('class="pq"', claude_idx + 1)
+        claude_block = html[claude_idx:next_pq if next_pq != -1 else len(html)]
+
+        self.assertEqual(claude_block.count('class="pq-win"'), 2)
+        self.assertIn('5h · 63%', claude_block)
+        self.assertIn('weekly · 44%', claude_block)
+        self.assertIn('style="width:63%"', claude_block)
+        self.assertIn('style="width:44%"', claude_block)
+        self.assertIn('<span class="tick"', claude_block)
+        self.assertIn('resets', claude_block)
+
+    def test_metered_pool_with_no_windows_or_unmetered_falls_back_to_detail_text(self):
+        html = self.html()
+        cline_idx = html.index('class="pq" data-quota="cline-free"')
+        next_pq = html.find('class="pq"', cline_idx + 1)
+        cline_block = html[cline_idx:next_pq if next_pq != -1 else len(html)]
+        self.assertIn('unmetered — no quota signal', cline_block)
+        self.assertNotIn('class="pq-win"', cline_block)
+
+    def test_exception_states_with_windows_keep_their_detail_message(self):
+        for expected_state in ("hold", "stale", "backoff"):
+            with self.subTest(state=expected_state):
+                led = make_led()
+                self.addCleanup(led.close)
+                name = "cline-free" if expected_state == "backoff" else "claude"
+                fresh(led, name, "5h", 100 if expected_state == "backoff" else 20)
+                fresh(led, name, "weekly", 20)
+                if expected_state == "hold":
+                    fresh(led, name, router.HOLD, 100)
+                elif expected_state == "stale":
+                    led.clock.t += timedelta(days=1)
+                s = state.build(self.cfg, led)
+                q = next(q for q in s["quota"] if q["name"] == name)
+                self.assertEqual(q["state"], expected_state)
+                self.assertTrue(q["windows"])
+                s["quota"] = [q]
+                html = page._p_browse(s)
+                self.assertIn(f'<span class="detail">{page.e(q["detail"])}</span>', html)
+                self.assertNotIn('class="pq-win"', html)
+                self.assertNotIn('pq-toggle', html)
+
+    def test_toggle_styles_are_generated_once_for_each_pool_with_windows(self):
+        html = self.html()
+        pools_with_windows = [q for q in self.s["quota"] if q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")]
+        self.assertTrue(pools_with_windows)
+        for q in pools_with_windows:
+            selector = f':root[data-quota_{q["name"]}="open"] [data-quota="{q["name"]}"]'
+            for rule in ('.pq-details { display: flex; }',
+                         '.pq-toggle .c { display: none; }',
+                         '.pq-toggle .o { display: inline; }'):
+                self.assertNotIn(f'{selector} {rule}', page.CSS)
+                self.assertEqual(html.count(f'{selector} {rule}'), 1)
+
+
 class StatsTests(unittest.TestCase):
     """#352: closed-item productivity for selectable equal-length windows."""
 
@@ -1285,6 +1373,8 @@ class UatPageTests(unittest.TestCase):
             # (covered by name/mono above)
             # run timing: <span class="mono t-tone">...</span><span class="mono t-mut">...
             ('mono t-', 'mono t-'),
+            # quota chevron toggle: <span class="c">▾</span><span class="o">▴</span>
+            ('c', 'o'),
         }
 
         def is_allowed(first_class, second_class):
