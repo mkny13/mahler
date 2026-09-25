@@ -84,6 +84,11 @@ DEFAULT_PLATFORM_AUDIT = {
     # Gate tier comparisons by samples on each side and done-rate gap in points.
     "inversion_min_runs": 10,
     "inversion_margin_pct": 15.0,
+    # Issue #421 (D33): model candidates. `model_list_cli` opts the audit into
+    # asking a CLI for its model list (point 3 of the plan) — off by default,
+    # because a CLI call costs quota or time the audit otherwise never spends.
+    "model_list_cli": False,
+    "candidate_window_days": 180,  # runs newer than this back the candidates
 }
 
 DEFAULT_MEASURE = {
@@ -98,10 +103,15 @@ DEFAULTS = {
     "quota_groups": {},  # optional cost_weight per shared quota pool
 
     # Issue #416: announced list prices, 2026-09-23, USD per million tokens.
+    # Issue #421 (D33): the built-in Claude slots now pin exact model IDs, so
+    # their prices are listed here too. `cached_in` defaults to `in`;
+    # reasoning tokens use `out`.
     "prices": {
         "gpt-6-luna": {"in": 0.10, "out": 0.50},
         "gpt-6-sol": {"in": 2.00, "out": 10.00},
         "claude-opus-5-5": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
+        "claude-haiku-4-5-20251001": {"in": 0.80, "out": 4.00},
+        "claude-sonnet-5": {"in": 3.00, "cached_in": 0.30, "out": 15.00},
     },
     "defaults": {
         "enabled": False,
@@ -178,7 +188,7 @@ DEFAULTS = {
         # Claude login. They share its one quota group and run slot.
         "claude-low": {
             "enabled": True, "kind": "claude",
-            "sort_model": "haiku", "build_model": "haiku",
+            "sort_model": "claude-haiku-4-5-20251001", "build_model": "claude-haiku-4-5-20251001",
             "max_size": "s", "tier": 1,
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
@@ -187,7 +197,7 @@ DEFAULTS = {
         },
         "claude": {
             "enabled": True, "kind": "claude",
-            "sort_model": "sonnet", "build_model": "",
+            "sort_model": "claude-sonnet-5", "build_model": "claude-sonnet-5",
             "max_size": "m", "tier": 3,
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
@@ -197,15 +207,18 @@ DEFAULTS = {
         # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
         # for hard tasks (size:l by default via min_size: "l", or via explicit
         # `platform:claude-opus` pin) without spending Antigravity's separate,
-        # scarcer Claude/Opus pool.
+        # # scarcer Claude/Opus pool. Issue #421 (D33): pinned to `claude-opus-5-5`
+        # with `claude-opus-5` kept as a variant candidate, so the previous
+        # version isn't dropped when a newer Opus ships.
         "claude-opus": {
             "enabled": True, "kind": "claude",
-            "sort_model": "opus", "build_model": "opus",
+            "sort_model": "claude-opus-5-5", "build_model": "claude-opus-5-5",
             "min_size": "l", "tier": 4,
             "soft": {"5h": 45, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
             "quota_group": "claude",
+            "variants": ["claude-opus-5"],
         },
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",

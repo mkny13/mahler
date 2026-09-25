@@ -205,8 +205,10 @@ class RouterTests(unittest.TestCase):
                           "claude-opus")
 
     def test_claude_opus_model_flag(self):
+        # Issue #421 (D33): claude-opus pins `claude-opus-5-5` exactly, with
+        # `claude-opus-5` kept as a variant candidate. The flag names the pin.
         argv = platforms.claude_argv(self.cfg["platforms"]["claude-opus"], "hi", "wt", "build")
-        self.assertIn("opus", argv)
+        self.assertIn("claude-opus-5-5", argv)
 
     def test_kilo_is_unmetered_last_resort_builder(self):
         led = led_with(**{"agy-claude": (95, 95), "agy-gemini": (95, 95), "claude": (5, 5)})
@@ -977,7 +979,8 @@ class CapabilitySlotTests(unittest.TestCase):
         self.assertEqual(self.cfg["platforms"]["claude-low"]["max_size"], "s")
         self.assertEqual(self.cfg["platforms"]["codex-low"]["max_size"], "s")
         self.assertEqual(self.cfg["platforms"]["codex"]["max_size"], "m")
-        self.assertEqual(self.cfg["platforms"]["claude-low"]["build_model"], "haiku")
+        self.assertEqual(self.cfg["platforms"]["claude-low"]["build_model"],
+                         "claude-haiku-4-5-20251001")
         self.assertIn("gpt-5.6-luna",
                       platforms.codex_argv(self.cfg["platforms"]["codex-low"],
                                            "hi", "wt", "build"))

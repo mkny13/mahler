@@ -880,6 +880,37 @@ class Ledger:
                 counts[platform] = counts.get(platform, 0) + 1
         return counts
 
+    def platform_models(self, since=None):
+        """Distinct models seen in `runs.model`, grouped by platform (mahler#421).
+
+        The audit's "Model candidates" section reads this to find models no
+        slot or variant pins. `since` (a datetime) restricts to runs started
+        at/after it; None is all-time. Empty/NULL models are ignored — a run
+        that never reported one simply contributes nothing."""
+        sql = "SELECT platform, model FROM runs WHERE model IS NOT NULL AND model != ''"
+        args = []
+        if since is not None:
+            sql += " AND started_at >= ?"
+            args.append(iso(since))
+        sql += " GROUP BY platform, model ORDER BY platform, model"
+        out = {}
+        for row in self.q(sql, args):
+            out.setdefault(row["platform"], set()).add(row["model"])
+        return {k: sorted(v) for k, v in out.items()}
+
+    def models_with_cli_cost(self, since=None):
+        """Models whose runs reported a CLI cost (mahler#421).
+
+        A pinned model with no `[prices]` row is only "unpriced" when its runs
+        carry no CLI-reported cost; if the CLI already prices it, the audit
+        has nothing to add. `since` matches `platform_models`."""
+        sql = "SELECT DISTINCT model FROM runs WHERE model IS NOT NULL AND model != '' AND cost_source='cli'"
+        args = []
+        if since is not None:
+            sql += " AND started_at >= ?"
+            args.append(iso(since))
+        return {row["model"] for row in self.q(sql, args)}
+
     # ---------- usage ----------
 
     def record_usage(self, platform, window, used_pct, resets_at=None, sampled_at=None):

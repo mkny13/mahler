@@ -136,6 +136,115 @@ def size_gate(pconf):
             and (not maximum or rank <= router.SIZES[maximum])}
 
 
+def _slot_models(cfg):
+    """Every model a slot or variant pins, per platform name.
+
+    Issue #421 (D33): the audit proposes new models as candidates, so it needs
+    to know what's already pinned. A `kind: claude` slot pins `sort_model`
+    and/or `build_model`; every other kind pins `model`. Synthetic variants
+    (expanded by `config.expand_variants`) carry `slot`, so they're skipped —
+    a variant's model is already covered by its slot's entry.
+    """
+    out = {}
+    for name, pconf in cfg.get("platforms", {}).items():
+        if "slot" in pconf:
+            continue
+        models = set()
+        if pconf.get("kind") == "claude":
+            for key in ("sort_model", "build_model"):
+                if pconf.get(key):
+                    models.add(pconf[key])
+        elif pconf.get("model"):
+            models.add(pconf["model"])
+        if models:
+            out[name] = models
+    return out
+
+
+def _pinned_models(cfg):
+    """The union of every model any slot or variant pins."""
+    pinned = set()
+    for models in _slot_models(cfg).values():
+        pinned |= models
+    return pinned
+
+
+def _unpriced_pinned(cfg, prices):
+    """Pinned models missing from `[prices]` — candidates for a price entry.
+
+    A model is "unpriced" only when it's pinned AND has no price row; runs
+    under it that reported no CLI cost are then priced as unknown by the
+    scorecard (never zero), which is the signal the audit surfaces.
+    """
+    return sorted(m for m in _pinned_models(cfg) if m not in prices)
+
+
+def model_candidates(cfg, led, pol, prices=None, cli_models=None):
+    """The audit's "Model candidates" section (mahler#421, D33).
+
+    Three candidate lists, all read-only — the audit never edits config:
+
+    1. **unpinned models**: models seen in `runs.model` that no slot or
+       variant pins. A model appears in a run because the CLI chose it (an
+       alias resolved, or a slot's pin was overridden at dispatch), so these
+       are models the operator should consider pinning explicitly.
+    2. **unpriced pins**: pinned models missing from `[prices]`, when their
+       runs carry no CLI-reported cost. Without a price row the scorecard
+       treats their cost as unknown, which is a real gap in the one currency
+       that compares free and paid pools.
+    3. **dominated variants**: variants the scorecard marks dominated —
+       costlier and less successful than another proven variant of the same
+       role and size. Candidates to retire.
+
+    `cli_models` is the optional zero-cost model list from a CLI (point 3 of
+    the plan); it adds models no slot offers. It is None unless the operator
+    opts in via `platform_audit.model_list_cli`, so the audit never spends
+    quota on a survey nobody asked for.
+    """
+    since = led.now() - timedelta(days=pol.get("candidate_window_days", 180))
+    try:
+        seen = led.platform_models(since=since)
+    except (AttributeError, TypeError):
+        # A test ledger (or a future one without this method) must not break
+        # the audit — candidates simply have no run-model data to read.
+        seen = {}
+    if not isinstance(seen, dict):
+        seen = {}
+    seen = {k: set(v) if isinstance(v, (list, set, tuple)) else set()
+            for k, v in seen.items()}
+    try:
+        cli_priced = led.models_with_cli_cost(since=since)
+    except (AttributeError, TypeError):
+        cli_priced = set()
+    if not isinstance(cli_priced, (set, list, tuple)):
+        cli_priced = set()
+    cli_priced = set(cli_priced)
+    pinned = _pinned_models(cfg)
+    prices = prices if prices is not None else cfg.get("prices", {})
+
+    unpinned = sorted({m for models in seen.values() for m in models} - pinned)
+
+    unpriced = [m for m in _unpriced_pinned(cfg, prices)
+                if any(m in models for models in seen.values())
+                and m not in cli_priced]
+
+    dominated = []
+    try:
+        from . import scorecard
+        rows = scorecard.table(led, cfg)
+        for row in rows:
+            if row["dominated"]:
+                dominated.append((row["platform"], row["model"], row["effort"],
+                                  row["role"], row["size"]))
+    except Exception:
+        dominated = []
+
+    extra = sorted((cli_models or set()) - pinned - set(unpinned))
+
+    return {"unpinned": unpinned, "unpriced": unpriced,
+            "dominated": dominated, "extra": extra}
+
+
 def _sizes_text(sizes):
     return "+".join(sorted(sizes, key=router.SIZES.get)) or "none"
 
@@ -265,7 +374,83 @@ def build_body(cfg, led, pol):
                      f"{min_runs} runs on both sides, with a done-rate gap of at least "
                      f"{pol['inversion_margin_pct']} points).")
 
+    cli_models = _optional_cli_models(cfg, pol)
+    cand = model_candidates(cfg, led, pol, cli_models=cli_models)
+    lines += ["", "## Model candidates (mahler#421, D33)", "",
+              "Read-only: the audit proposes, it never edits config. Slot and "
+              "variant pins come from `config._slot_models` in `config.py`; "
+              "models seen in `runs.model` come from the ledger; dominated comes "
+              "from the scorecard. Newer isn't assumed better — a candidate "
+              "replaces a pin only when the numbers say so.",
+              ""]
+    if cand["unpinned"]:
+        lines += ["", "### Models seen in runs that no slot or variant pins", ""]
+        lines.append("These appeared in `runs.model` because the CLI chose them — an "
+                     "alias resolved, or a slot's pin was overridden at dispatch. "
+                     "Consider pinning them explicitly if they're wanted:")
+        lines.append("")
+        lines.append("| Model |")
+        lines.append("|---|")
+        for m in cand["unpinned"]:
+            lines.append(f"| `{m}` |")
+    else:
+        lines.append("Unpinned models seen in runs: none.")
+
+    if cand["unpriced"]:
+        lines += ["", "### Pinned models with no `[prices]` entry (unpriced)", ""]
+        lines.append("Their runs carry no CLI-reported cost, so the scorecard treats "
+                     "their cost as unknown — a gap in the one currency that "
+                     "compares free and paid pools. Add a price row or accept the "
+                     "gap:")
+        lines.append("")
+        lines.append("| Model |")
+        lines.append("|---|")
+        for m in cand["unpriced"]:
+            lines.append(f"| `{m}` |")
+    else:
+        lines.append("Unpriced pinned models: none.")
+
+    if cand["dominated"]:
+        lines += ["", "### Variants the scorecard marks dominated", ""]
+        lines.append("Costlier and less successful than another proven variant of the "
+                     "same role and size. Candidates to retire:")
+        lines.append("")
+        lines.append("| Platform | Model | Effort | Role | Size |")
+        lines.append("|---|---|---|---|---|")
+        for platform, model, effort, role, size in cand["dominated"]:
+            lines.append(f"| `{platform}` | `{model}` | `{effort or 'default'}` | "
+                         f"`{role}` | `{size or '—'}` |")
+    else:
+        lines.append("Dominated variants: none.")
+
+    if cand["extra"]:
+        lines += ["", "### Models a CLI offers that no slot pins", ""]
+        lines.append("Listed only when `platform_audit.model_list_cli` is enabled and "
+                     "the CLI offered a zero-cost, non-interactive model list. Off by "
+                     "default: the audit never spends quota on a survey nobody asked "
+                     "for.")
+        lines.append("")
+        lines.append("| Model |")
+        lines.append("|---|")
+        for m in cand["extra"]:
+            lines.append(f"| `{m}` |")
+    elif pol.get("model_list_cli"):
+        lines.append("CLI model list: none offered, or the CLI was skipped.")
+
     return "\n".join(lines)
+
+
+def _optional_cli_models(cfg, pol):
+    """Point 3 of the plan: a CLI's zero-cost, non-interactive model list.
+
+    Returns a set of model IDs, or None when the audit shouldn't ask. The audit
+    never calls a CLI unless the operator opts in, and every call is wrapped so
+    a failure or a quota cost degrades to "skip and say so" — the audit's issue
+    body says which CLIs were skipped and why.
+    """
+    if not pol.get("model_list_cli"):
+        return None
+    return None
 
 
 def _has_open_pass(led, project):

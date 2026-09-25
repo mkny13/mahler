@@ -503,3 +503,136 @@ class BuildBodyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelCandidatesTests(unittest.TestCase):
+    """Issue #421 (D33): the audit's "Model candidates" section is rendered
+    from a synthetic ledger and config, and the audit makes no config writes."""
+
+    def _cfg(self, **platforms):
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"].update(platforms)
+        return cfg
+
+    def test_unpinned_models_seen_in_runs(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="p", number=1, role="build", platform="claude",
+                       epoch=1, status="ended", outcome="DONE", size="s",
+                       model="claude-sonnet-4")
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        cand = platform_audit.model_candidates(cfg, led, config.platform_audit_policy(cfg))
+        self.assertEqual(cand["unpinned"], ["claude-sonnet-4"])
+        self.assertEqual(cand["unpriced"], [])
+        self.assertEqual(cand["dominated"], [])
+        self.assertEqual(cand["extra"], [])
+
+    def test_unpriced_pinned_models_with_no_cli_cost(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        # No cost_usd: the run is unpriced, and claude-sonnet-5 has no [prices]
+        # row in this synthetic cfg.
+        led.create_run(project="p", number=1, role="build", platform="claude",
+                       epoch=1, status="ended", outcome="DONE", size="s",
+                       model="claude-sonnet-5")
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        cfg["prices"] = {}      # no price row for the pinned model
+        cand = platform_audit.model_candidates(cfg, led, config.platform_audit_policy(cfg))
+        self.assertEqual(cand["unpriced"], ["claude-sonnet-5"])
+
+    def test_pinned_and_priced_is_not_unpriced(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="p", number=1, role="build", platform="claude",
+                       epoch=1, status="ended", outcome="DONE", size="s",
+                       model="claude-sonnet-5", cost_usd=0.01, cost_source="cli")
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        cfg["prices"] = {}
+        cand = platform_audit.model_candidates(cfg, led, config.platform_audit_policy(cfg))
+        self.assertEqual(cand["unpriced"], [])
+
+    def test_dominated_variants_are_candidates(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        # Two build/s variants: claude-sonnet-5 proven and cheap, claude-opus-5-5
+        # expensive and less successful -> dominated.
+        for i in range(10):
+            led.create_run(project="p", number=i + 1, role="build",
+                           platform="claude", epoch=1, status="ended",
+                           outcome="DONE", size="s", model="claude-sonnet-5",
+                           cost_usd=0.01)
+        for i in range(10):
+            led.create_run(project="p", number=i + 11, role="build",
+                           platform="claude-opus", epoch=1, status="ended",
+                           outcome="exit 1", size="s", model="claude-opus-5-5",
+                           cost_usd=0.5)
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"},
+                        claude_opus={"kind": "claude", "sort_model": "claude-opus-5-5",
+                                     "build_model": "claude-opus-5-5", "tier": 4,
+                                     "quota_group": "claude"})
+        pol = config.platform_audit_policy(cfg)
+        pol["inversion_min_runs"] = 4
+        pol["inversion_margin_pct"] = 30.0
+        cand = platform_audit.model_candidates(cfg, led, pol)
+        self.assertTrue(any(d[1] == "claude-opus-5-5" for d in cand["dominated"]))
+
+    def test_extra_cli_models_no_slot_offers(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        cand = platform_audit.model_candidates(
+            cfg, led, config.platform_audit_policy(cfg),
+            cli_models={"claude-sonnet-6", "claude-sonnet-5"})
+        self.assertEqual(cand["extra"], ["claude-sonnet-6"])
+
+    def test_audit_never_writes_config(self):
+        # The candidates section is read-only: build_body must not mutate cfg.
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="p", number=1, role="build", platform="claude",
+                       epoch=1, status="ended", outcome="DONE", size="s",
+                       model="claude-sonnet-4")
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        before = copy.deepcopy(cfg)
+        platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        self.assertEqual(cfg, before)
+
+    def test_section_rendered_from_synthetic_ledger_and_config(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="p", number=1, role="build", platform="claude",
+                       epoch=1, status="ended", outcome="DONE", size="s",
+                       model="claude-sonnet-4")
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        self.assertIn("## Model candidates (mahler#421, D33)", body)
+        self.assertIn("`claude-sonnet-4`", body)
+        self.assertIn("Models seen in runs that no slot or variant pins", body)
+
+    def test_cli_models_off_by_default(self):
+        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
+                                "build_model": "claude-sonnet-5", "tier": 3,
+                                "quota_group": "claude"})
+        self.assertIsNone(platform_audit._optional_cli_models(
+            cfg, config.platform_audit_policy(cfg)))
+        cfg["platform_audit"] = {"model_list_cli": True}
+        self.assertIsNone(platform_audit._optional_cli_models(
+            cfg, config.platform_audit_policy(cfg)))
+
+
+if __name__ == "__main__":
+    unittest.main()
