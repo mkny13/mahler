@@ -6,7 +6,7 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from mahler import config, router, scorecard, tick, scheduler
+from mahler import config, router, scorecard, ship, tick, scheduler
 from mahler.console import state
 from mahler.ledger import Ledger, iso
 
@@ -77,6 +77,38 @@ class ExplorationTests(unittest.TestCase):
         self.assertEqual(self.pick(), 'normal')
         self.cfg['platforms']['normal']['metered'] = True
         self.assertEqual(self.pick(), 'unknown')  # stale meter is ineligible
+
+    def test_peak_min_size_and_priority_route_are_enforced(self):
+        self.cfg['platforms']['cheap']['kind'] = 'claude'
+        with mock.patch.object(router, 'peak_state', return_value=(True, self.led.now() + timedelta(hours=1))):
+            self.assertEqual(self.pick(), 'normal')
+        self.cfg['platforms']['cheap']['min_size'] = 'm'
+        self.assertEqual(self.pick(), 'normal')
+        self.pol.update(account_mode='priority', routing={'build': ['unknown']})
+        self.assertEqual(self.pick(), 'unknown')
+
+    def test_cost_ties_keep_route_order_and_efforts_have_separate_evidence(self):
+        self.cfg['prices'] = {}
+        self.assertEqual(self.pick(), 'normal')
+        self.seed('normal')
+        self.assertEqual(self.pick(), 'unknown')
+        self.cfg['platforms']['normal'].update(kind='codex', effort='high')
+        self.assertEqual(self.pick(), 'normal')
+
+    def test_ci_and_review_fix_paths_can_explore(self):
+        for review in (False, True):
+            with self.subTest(review=review):
+                self.led.upsert_item('p', 1, pr=12, state='verifying')
+                ctx = scheduler.Ctx(self.cfg, self.led)
+                view = {'headRefName': 'test', 'headRefOid': str(review)}
+                with mock.patch('mahler.ship.start', return_value=True) as start, \
+                        mock.patch.object(ctx, 'ping'):
+                    if review:
+                        ship._review_triggered_fix(ctx, 'p', self.led.item('p', 1), 12, view, 'fix button')
+                    else:
+                        ship._red_ci(ctx, 'p', self.led.item('p', 1), 12, view)
+                self.assertTrue(start.call_args.kwargs['explore'])
+                self.assertEqual(start.call_args.args[3], 'fix')
 
     def test_free_stream_one_size_up_never_two(self):
         self.assertEqual(self.pick(size='m'), 'cheap')

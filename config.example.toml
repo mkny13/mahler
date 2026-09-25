@@ -242,6 +242,10 @@ out = 20.00
 min_attempts = 8
 window_days = 60
 bars = { build = 0.70, fix = 0.70, sort = 0.80, plan = 0.75 }
+# Explores the cheapest unproven candidate using median tokens at this role/size.
+# Before token history exists, compares an equal input/output token estimate.
+# Unpriced models rank last; cost ties keep configured route order.
+# Failed exploration preserves the attempt/escalation budget; the next run is normal.
 explore_share = { build = 0.15, fix = 0.15, sort = 0.15, plan = 0.05 }
 
 # Optional weighting of API-equivalent costs for a shared quota_group.

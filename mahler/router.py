@@ -635,14 +635,15 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
             or row_get(item, "pin") or risk_min_tier(row_get(item, "title"))):
         return None
     share = scorecard.policy(cfg)["explore_share"].get(role, 0)
-    key = f"{pol['name']}#{item['number']}:{role}:{item['attempts']}"
+    project = item["project"]
+    key = f"{project}#{item['number']}:{role}:{item['attempts']}"
     if int(hashlib.sha1(key.encode()).hexdigest(), 16) % 1000 >= share * 1000:
         return None
     # Exploration spends no attempt budget. Do not repeat the same hash on
     # the retry: a normal run must intervene before another exploration.
     run_role = "sort" if role == "plan" else role
     last = led.q1("SELECT explore FROM runs WHERE project=? AND number=? AND role=? "
-                  "ORDER BY id DESC LIMIT 1", (pol["name"], item["number"], run_role))
+                  "ORDER BY id DESC LIMIT 1", (project, item["number"], run_role))
     if last and last["explore"]:
         return None
     accts = accounts_of(pol)

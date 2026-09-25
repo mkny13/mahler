@@ -115,6 +115,16 @@ class RunTests(unittest.TestCase):
         cands = tick._candidates(self.ctx, [config.project_policy(self.cfg, "x")])
         self.assertEqual([(p["name"], r, it["number"]) for p, r, it in cands], [])
 
+    def test_successful_exploration_ships_as_usual(self):
+        self.run["explore"] = 1
+        self.led.update_run(self.run_id, explore=1)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE implemented\n")
+        with mock.patch.object(self.ctx, "ping"):
+            self.finalize()
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.run(self.run_id)["outcome"], "DONE")
+
     def test_failed_exploration_preserves_attempt_and_escalation_budget(self):
         self.run["explore"] = 1
         self.led.update_run(self.run_id, explore=1)
