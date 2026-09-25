@@ -491,11 +491,15 @@ class BrowseQuotaPageTests(unittest.TestCase):
     def html(self):
         return page.app(self.s)
 
-    def test_every_browse_quota_row_has_a_chevron_toggle_button(self):
+    def test_browse_quota_rows_with_windows_have_a_chevron_toggle_button(self):
         html = self.html()
         for q in self.s["quota"]:
-            self.assertIn(f'data-toggle="quota_{q["name"]}"', html)
             self.assertIn(f'<div class="pq" data-quota="{q["name"]}">', html)
+            has_windows = q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")
+            if has_windows:
+                self.assertIn(f'data-toggle="quota_{q["name"]}"', html)
+            else:
+                self.assertNotIn(f'data-toggle="quota_{q["name"]}"', html)
         self.assertIn('<span class="c">▾</span><span class="o">▴</span>', html)
 
     def test_collapsed_by_default_details_are_hidden(self):
@@ -547,10 +551,13 @@ class BrowseQuotaPageTests(unittest.TestCase):
                 html = page._p_browse(s)
                 self.assertIn(f'<span class="detail">{page.e(q["detail"])}</span>', html)
                 self.assertNotIn('class="pq-win"', html)
+                self.assertNotIn('pq-toggle', html)
 
-    def test_toggle_styles_are_generated_once_for_each_pool(self):
+    def test_toggle_styles_are_generated_once_for_each_pool_with_windows(self):
         html = self.html()
-        for q in self.s["quota"]:
+        pools_with_windows = [q for q in self.s["quota"] if q.get("windows") and q["metered"] and q["state"] not in ("backoff", "hold", "stale")]
+        self.assertTrue(pools_with_windows)
+        for q in pools_with_windows:
             selector = f':root[data-quota_{q["name"]}="open"] [data-quota="{q["name"]}"]'
             for rule in ('.pq-details { display: flex; }',
                          '.pq-toggle .c { display: none; }',
