@@ -595,6 +595,49 @@ class IdleReasonTests(unittest.TestCase):
         self.assertEqual(r["action"], "Open PR #112")
         self.assertEqual(r["href"], "https://github.com/mkny13/mahler/pull/112")
 
+    def test_verifying_item_explains_review_and_merge_waits(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        led.upsert_item("mahler", 39, title="feature", state="verifying", pr=112,
+                        labels=json.dumps(["size:m"]),
+                        state_changed_at=iso(led.now() - timedelta(minutes=6)))
+        led.upsert_item("mahler", 40, title="next", state="ready")
+        led.set_kv("ci:mahler#39:112", json.dumps({"state": "green"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "pending"}))
+        reason = self.idle(cfg, led)["reasons"][0]
+        self.assertIn("waiting for the independent review", reason["text"])
+
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "pass"}))
+        led.set_kv("queue:mahler#39:112", json.dumps({"since": iso(led.now())}))
+        reason = self.idle(cfg, led)["reasons"][0]
+        self.assertIn("green, waiting for its turn to merge", reason["text"])
+
+    def test_verifying_item_explains_failed_review_and_missing_fix_platform(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        led.upsert_item("mahler", 39, title="feature", state="verifying", pr=112,
+                        labels=json.dumps(["size:m"]))
+        led.upsert_item("mahler", 40, title="next", state="ready")
+        led.set_kv("ci:mahler#39:112", json.dumps({"state": "green"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+        led.set_kv("reviewfix-status:mahler#39", json.dumps({
+            "reason": "no eligible route", "tier": 2}))
+        reason = self.idle(cfg, led)["reasons"][0]
+        self.assertIn("review failed; waiting for a fix run", reason["text"])
+        self.assertIn("no platform available at tier 2", reason["text"])
+
+    def test_verifying_item_uses_head_ci_start_time(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        led.upsert_item("mahler", 39, title="feature", state="verifying", pr=112,
+                        state_changed_at=iso(led.now() - timedelta(minutes=60)))
+        led.upsert_item("mahler", 40, title="next", state="ready")
+        led.set_kv("ci:mahler#39:112", json.dumps({
+            "state": "pending", "since": iso(led.now() - timedelta(minutes=7))}))
+        reason = self.idle(cfg, led)["reasons"][0]
+        self.assertIn("CI has been pending 7 minutes", reason["text"])
+        self.assertEqual(reason["countdown"], "verify timeout in 53m")
+
     def test_number_words_in_the_headline(self):
         cfg, led = make_cfg(), make_led(MON_PEAK)
         led.set_kv("paused", "1")
