@@ -106,10 +106,14 @@ MODEL_UNAVAILABLE_WORDS = (
 )
 
 # Match one model ID, optionally quoted, rather than arbitrary intervening
-# prose (which could describe an unrelated failure).
+# prose (which could describe an unrelated failure). "available" covers
+# Copilot's rejection wording (mahler#420, config.py:355): `copilot --model
+# <slug> -p "hi"` errors "Error: Model '<slug>' is not available." for a
+# rejected model, distinct from a generic service-availability error since
+# it always names the model between "model" and "is not".
 MODEL_UNAVAILABLE_PATTERN = re.compile(
     r"""\bmodel\s+['"`]?[-\w./:]+['"`]?\s+(?:is\s+)?not\s+"""
-    r"(?:found|supported|allowed|enabled)\b"
+    r"(?:found|supported|allowed|enabled|available)\b"
 )
 
 

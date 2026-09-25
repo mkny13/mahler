@@ -93,13 +93,15 @@ class ModelUnavailableDetectionTests(unittest.TestCase):
                      "the API does not support model gpt-1",
                      "Model 'foo' not found", "Model 'foo' is not supported",
                      'Model "org/foo-1" is not allowed',
-                     "Model foo is not enabled"):
+                     "Model foo is not enabled",
+                     "Error: Model 'claude-opus-4.8' is not available."):
             with self.subTest(text=text):
                 self.assertTrue(platforms.is_model_unavailable(text))
         for text in ("429 rate limit exceeded", "Add credits to continue",
                      "Daily free limit reached. Try again in 2h",
                      "Model foo loaded but file not found",
-                     "Model foo is supported", "", None):
+                     "Model foo is supported",
+                     "Service temporarily not available", "", None):
             with self.subTest(text=text):
                 self.assertFalse(platforms.is_model_unavailable(text))
 

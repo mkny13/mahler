@@ -557,6 +557,25 @@ class VariantQuotaGroupTests(unittest.TestCase):
             busy = tick.busy_platforms(cfg, led.active_runs())
         self.assertNotIn(names[1], busy)
 
+    def test_two_variants_sharing_one_slot_still_defer_sorts_to_builds(self):
+        """Two healthy variants share one quota_group slot (max_runs=1): that
+        is one builder, not two. An older inbox sort must not be preferred
+        over a younger ready build just because two variant names show up as
+        'free' (the live bug: _headroom counted variant names, not distinct
+        available quota groups, so sorts_wait came out False)."""
+        cfg, names = self.variant_cfg(["model-a", "model-b"], max_runs=1)
+        cfg["concurrency"]["total"] = 1
+        cfg["routing"]["sort"] = names
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        item(led, "a", 1, state="inbox", age_minutes=60)
+        item(led, "a", 2, age_minutes=10)          # younger than the sort
+        with mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+        started = [line for line in ctx.lines if ": would " in line]
+        self.assertEqual(started, ["a#2: would build on " + names[0]], started)
+
 
 class AreaLabelTests(unittest.TestCase):
     """mahler#197: items sharing an `area:` label aren't run concurrently

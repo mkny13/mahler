@@ -372,8 +372,16 @@ def schedule(ctx, projects):
     # builder" is judged per account (D25); a multi-account project competes
     # in every bucket it can draw from (D26)
     buckets = {acct for p in projects for acct in config.accounts_of(p)}
-    sorts_wait = {acct: len(_headroom(ctx, "sort", per_group, busy, burst_lines, acct)) <= 1
-                  for acct in buckets}
+
+    def _headroom_groups(account):
+        # _headroom lists available platform *variants*; several variants of
+        # the same platform can share one quota_group slot (D21/#420), so
+        # counting variants overstates capacity — dedupe to distinct groups
+        # before judging whether a sort would take the last builder.
+        free = _headroom(ctx, "sort", per_group, busy, burst_lines, account)
+        return {cfg["platforms"][name].get("quota_group", name) for name in free}
+
+    sorts_wait = {acct: len(_headroom_groups(acct)) <= 1 for acct in buckets}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
 
     def key(c):
