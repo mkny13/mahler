@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, finalize, runner, scheduler, tick
+from mahler import config, finalize, router, runner, scheduler, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
 
@@ -366,6 +366,85 @@ class RunTests(unittest.TestCase):
         self.assertLess(abs((resets_at - expected).total_seconds()), 60)
         run = self.led.q("SELECT stop_reason FROM runs WHERE id=?", (self.run_id,))[0]
         self.assertEqual(run["stop_reason"], "quota")
+
+    def write_exit(self, code, when=NOW):
+        with open(self.run["status_path"], "w") as fh:
+            fh.write(str(code))
+        os.utime(self.run["status_path"], (when.timestamp(), when.timestamp()))
+
+    def test_successful_model_error_fix_ships_without_a_hold(self):
+        self.write_exit(0)
+        with open(self.log, "w") as fh:
+            fh.write("Error: invalid model during an earlier retry\n")
+            fh.write("STATUS: DONE Fixed invalid model handling\n")
+        self.finalize()
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertNotIn(router.HOLD, self.led.usage("cline-free"))
+
+    def test_model_rejection_requires_failure_and_known_exit_time(self):
+        log = {"model_unavailable": True}
+        self.assertFalse(finalize._model_unavailable_fast(self.run, log, 1, None))
+        self.write_exit(1)
+        for code, ok, verb in ((0, None, None), (1, True, None), (1, None, "DONE")):
+            with self.subTest(code=code, ok=ok, verb=verb):
+                self.assertFalse(finalize._model_unavailable_fast(
+                    self.run, {**log, "ok": ok}, code, verb))
+        for seconds, expected in ((-1, False), (119, True), (120, False), (121, False)):
+            self.write_exit(1, NOW + timedelta(seconds=seconds))
+            self.assertEqual(finalize._model_unavailable_fast(self.run, log, 1, None), expected)
+
+    def test_model_rejection_within_two_minutes_holds_without_spending_an_attempt(self):
+        """Issue #420: a fast model-rejection error is excluded, not a failed
+        attempt — the item's attempts/esc_fails are untouched, and the variant
+        goes on a 24h hold with its own ping instead."""
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error",
+                                 "error": {"message": "model not found: bogus-model"}}) + "\n")
+        # Exit at 90s, only observed at 130s.
+        self.run["started_at"] = iso(NOW - timedelta(seconds=130))
+        self.write_exit(1, NOW - timedelta(seconds=40))
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 0)
+        self.assertEqual(item["esc_fails"], 0)
+        ping.assert_called_once()
+        self.assertIn("rejected its configured model", ping.call_args.args[1])
+        hold = self.led.usage("cline-free").get(router.HOLD)
+        self.assertIsNotNone(hold)
+        until = datetime.fromisoformat(hold["resets_at"].replace("Z", "+00:00"))
+        self.assertLess(abs((until - (NOW + timedelta(hours=24))).total_seconds()), 60)
+        self.assertEqual(self.led.get_kv("hold_reason:cline-free"), "model_unavailable")
+
+    def test_codex_named_model_rejection_does_not_spend_attempts(self):
+        self.run["platform"] = "codex"
+        self.write_exit(1)
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "turn.failed",
+                                 "error": {"message": "Model 'foo' is not supported"}}) + "\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["attempts"], item["esc_fails"]), (0, 0))
+        self.assertEqual(self.led.get_kv("hold_reason:codex"), "model_unavailable")
+        hold = self.led.usage("codex")[router.HOLD]
+        self.assertEqual(datetime.fromisoformat(hold["resets_at"]), NOW + timedelta(hours=24))
+        ping.assert_called_once()
+
+    def test_model_rejection_past_the_grace_period_is_a_normal_attempt(self):
+        """A model that ran a while before erroring is a different problem —
+        it must not spend the 24h hold on what might be a mid-run fluke."""
+        self.run["started_at"] = iso(NOW - timedelta(minutes=5))
+        self.write_exit(1)
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error",
+                                 "error": {"message": "model not found: bogus-model"}}) + "\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 1)
+        self.assertNotIn(router.HOLD, self.led.usage("cline-free"))
 
 
 class ResumeNudgeTests(unittest.TestCase):

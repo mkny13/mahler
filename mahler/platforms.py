@@ -93,6 +93,42 @@ def is_network_error(text):
     lower = str(text).lower()
     return any(p in lower for p in NETWORK_ERRORS)
 
+
+# A CLI rejecting the configured model is a permanent problem for that
+# variant, not a rate limit — distinct from QUOTA_WORDS so a bad model pin
+# never gets treated as a quota hit (issue #420, D33). Phrasing collected
+# from real errors, e.g. the Codex 400 that disabled codex-high on the
+# personal account.
+MODEL_UNAVAILABLE_WORDS = (
+    "model not found", "unknown model", "invalid model", "not a valid model",
+    "unsupported model", "model is not supported", "does not support model",
+    "model not allowed", "model not enabled", "model_not_found",
+)
+
+# Match one model ID, optionally quoted, rather than arbitrary intervening
+# prose (which could describe an unrelated failure). "available" covers
+# Copilot's rejection wording (mahler#420, config.py:355): `copilot --model
+# <slug> -p "hi"` errors "Error: Model '<slug>' is not available." for a
+# rejected model, distinct from a generic service-availability error since
+# it always names the model between "model" and "is not".
+MODEL_UNAVAILABLE_PATTERN = re.compile(
+    r"""\bmodel\s+['"`]?[-\w./:]+['"`]?\s+(?:is\s+)?not\s+"""
+    r"(?:found|supported|allowed|enabled|available)\b"
+)
+
+
+def is_model_unavailable(text):
+    """Whether error text says a model isn't supported, found or allowed."""
+    if not text:
+        return False
+    if isinstance(text, dict):
+        return any(is_model_unavailable(value) for value in text.values())
+    if isinstance(text, list):
+        return any(is_model_unavailable(value) for value in text)
+    lower = str(text).lower()
+    return (any(p in lower for p in MODEL_UNAVAILABLE_WORDS)
+            or bool(MODEL_UNAVAILABLE_PATTERN.search(lower)))
+
 # Guardrails (DESIGN D12): destructive command stems agents must never run.
 # Kept platform-neutral; each argv builder renders its own CLI's deny syntax.
 # These are prefix rules — a safety net against accidents, not a fence against
@@ -701,13 +737,14 @@ def read_log(path, kind, model=None):
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
              'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
              'last_text': str, 'model': str|None, 'session_id': str|None,
-             'last_error': str|None, 'tokens': {in, cached, out, reasoning},
+             'last_error': str|None, 'model_unavailable': bool,
+             'tokens': {in, cached, out, reasoning},
              'cost_usd': float|None, 'credits': float|None, 'quota_used': dict}
     Missing token usage is represented by None counts, never invented zeros.
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
            "retry_after": None, "last_text": "", "model": model, "session_id": None,
-           "last_error": None,
+           "last_error": None, "model_unavailable": False,
            "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
            "cost_usd": None, "credits": None, "quota_used": {}}
     from .run_usage import collect
@@ -727,6 +764,8 @@ def read_log(path, kind, model=None):
                     texts.append(line_str)
                     if is_network_error(line_str) or line_str.lower().startswith("error:"):
                         res["last_error"] = line_str
+                    if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
+                        res["model_unavailable"] = True
                 continue
             if not isinstance(ev, dict):
                 continue
@@ -751,19 +790,26 @@ def read_log(path, kind, model=None):
                 elif t == "result":
                     res["final"] = ev.get("result")
                     res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
+                    if ev.get("is_error") and is_model_unavailable(ev):
+                        res["model_unavailable"] = True
             elif kind == "cline":
                 if ev.get("type") == "run_result":
                     res["final"] = ev.get("text")
                     res["ok"] = ev.get("finishReason") == "completed"
                     if not res["ok"]:
-                        if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                        blob = json.dumps(ev).lower()
+                        if any(w in blob for w in QUOTA_WORDS):
                             _note_quota_hit(res, ev)
+                        if is_model_unavailable(ev):
+                            res["model_unavailable"] = True
                         if ev.get("text"):
                             res["last_error"] = ev.get("text")
                 elif ev.get("type") == "error" or ev.get("error"):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    if is_model_unavailable(ev):
+                        res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
             elif kind == "copilot":
                 t = ev.get("type")
@@ -775,8 +821,11 @@ def read_log(path, kind, model=None):
                 elif t == "result":
                     res["ok"] = ev.get("exitCode") == 0
                 elif t == "error" or "error" in (t or ""):
-                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                    blob = json.dumps(ev).lower()
+                    if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    if is_model_unavailable(ev):
+                        res["model_unavailable"] = True
             elif kind == "codex":
                 t = ev.get("type")
                 if t == "item.completed":
@@ -788,14 +837,20 @@ def read_log(path, kind, model=None):
                     res["ok"] = True
                 elif t in {"turn.failed", "error"} or "error" in (t or ""):
                     res["ok"] = False
-                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                    blob = json.dumps(ev).lower()
+                    if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    if is_model_unavailable(ev):
+                        res["model_unavailable"] = True
             elif kind == "kilo":
                 if ev.get("sessionID"):
                     res["session_id"] = ev.get("sessionID")
                 if ev.get("type") == "error":
-                    if any(w in json.dumps(ev).lower() for w in QUOTA_WORDS):
+                    blob = json.dumps(ev).lower()
+                    if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
+                    if is_model_unavailable(ev):
+                        res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
                 elif ev.get("type") == "step_finish":
                     # kilo-auto/free is stateless per invocation: each `kilo run`
@@ -813,8 +868,12 @@ def read_log(path, kind, model=None):
                     r = ev.get("result") or {}
                     res["final"] = r.get("response")
                     res["ok"] = r.get("status") == "SUCCESS"
-                    if not res["ok"] and "quota" in json.dumps(r).lower():
-                        _note_quota_hit(res, r)
+                    if not res["ok"]:
+                        blob = json.dumps(r).lower()
+                        if "quota" in blob:
+                            _note_quota_hit(res, r)
+                        if is_model_unavailable(r):
+                            res["model_unavailable"] = True
                 elif ev.get("event") == "step_update":
                     su = ev.get("step_update") or {}
                     if su.get("text_delta"):

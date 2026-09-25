@@ -313,6 +313,16 @@ class QuotaTests(unittest.TestCase):
         cfg["platforms"]["codex-work"]["plan"] = "business plan"
         self.assertEqual(self.rows(cfg, make_led())["codex-work"]["model"], "business plan")
 
+    def test_variant_model_line_is_slot_model_effort(self):
+        """Issue #420: the capacity view shows a synthetic variant as
+        'slot · model · effort', not its raw synthetic name."""
+        cfg = make_cfg(
+            platforms={"codex": {"variants": ["gpt-6-luna@low"]}},
+            routing={"build": ["codex/gpt-6-luna/low"]})
+        rows = self.rows(cfg, make_led())
+        variant = rows["codex/gpt-6-luna/low"]["capabilities"][0]
+        self.assertEqual(variant["model"], "codex · gpt-6-luna · low")
+
     def test_capability_slots_keep_one_clean_quota_name(self):
         cfg = make_cfg(
             accounts={"work": {"routing": {"build": ["work-codex-gpt1-low",
@@ -1559,6 +1569,21 @@ class RecordedIdleTests(unittest.TestCase):
             {"text": "1 plan item(s) have no platform with headroom — busy: kilo; past the line: "
                      "agy-claude, agy-gemini; peak hours: claude; too small: cline-free.",
              "items": [self.item(3)]}])
+
+    def test_blocker_names_show_variant_label(self):
+        """Issue #420: a synthetic variant named in a no_platform blocker
+        renders as 'slot · model · effort' in the idle-reason text, not its
+        raw synthetic platform name."""
+        cfg = make_cfg(platforms={"codex": {"variants": ["gpt-6-luna@low"]}})
+        holds = [self.hold("no_platform", 1, role="build", size="m",
+                           blockers={"busy": ["codex/gpt-6-luna/low"]})]
+        self.led.set_kv("schedule_holds", json.dumps({
+            "at": iso(self.led.now()), "holds": holds}))
+        idle = state._idle(cfg, self.led, {"paused": False, "peak": None, "quota": []},
+                           [], self.led.now())
+        self.assertEqual(idle["reasons"][0]["text"],
+                         "1 build item(s) have no platform with headroom — "
+                         "busy: codex · gpt-6-luna · low.")
 
     def test_route_items_carry_the_title(self):
         self.led.upsert_item("mahler", 1, title="Fix the thing", state="ready")

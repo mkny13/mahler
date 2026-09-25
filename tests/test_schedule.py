@@ -503,6 +503,80 @@ class QuotaGroupTests(unittest.TestCase):
                             for line in ctx.lines))
 
 
+class VariantQuotaGroupTests(unittest.TestCase):
+    """Issue #420 (D33): several model x effort variants on one platform
+    slot share its quota_group and its one run slot — max_runs must be
+    counted across every variant together, not per variant name."""
+
+    def variant_cfg(self, variants, max_runs):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["concurrency"]["total"] = 10
+        cfg["platforms"] = {"kilo": cfg["platforms"]["kilo"]}
+        cfg["platforms"]["kilo"]["variants"] = variants
+        cfg["platforms"]["kilo"]["max_runs"] = max_runs
+        cfg["platforms"]["kilo"].pop("max_size", None)
+        cfg = config.resolve_platforms(cfg)
+        names = [n for n in cfg["platforms"] if n != "kilo"]
+        cfg["routing"]["build"] = names
+        cfg["projects"]["a"] = proj(max_parallel=10)
+        return cfg, names
+
+    def test_group_max_runs_caps_total_starts_across_variants_in_one_tick(self):
+        """Three variants, max_runs=2 on their shared slot, each item pinned
+        to a different variant: a naive count per variant name (each
+        individually under 2) would let all three start; the group total
+        across variants must stop at 2."""
+        cfg, names = self.variant_cfg(["model-a", "model-b", "model-c"], max_runs=2)
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        for i, name in zip(range(1, 4), names):
+            item(led, "a", i, age_minutes=5 - i)
+            led.upsert_item("a", i, pin=name)
+        with mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+        started = [line for line in ctx.lines if ": would " in line]
+        self.assertEqual(len(started), 2, started)
+
+    def test_a_running_variant_blocks_a_sibling_variant_at_max_runs_one(self):
+        cfg, names = self.variant_cfg(["model-a", "model-b"], max_runs=1)
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="a", number=99, role="build", platform=names[0], epoch=1)
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy = tick.busy_platforms(cfg, led.active_runs())
+        self.assertIn(names[0], busy)
+        self.assertIn(names[1], busy)          # the sibling shares the group
+
+    def test_group_under_max_runs_leaves_the_sibling_free(self):
+        cfg, names = self.variant_cfg(["model-a", "model-b"], max_runs=2)
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.create_run(project="a", number=99, role="build", platform=names[0], epoch=1)
+        with mock.patch.object(platforms, "available", return_value=True):
+            busy = tick.busy_platforms(cfg, led.active_runs())
+        self.assertNotIn(names[1], busy)
+
+    def test_two_variants_sharing_one_slot_still_defer_sorts_to_builds(self):
+        """Two healthy variants share one quota_group slot (max_runs=1): that
+        is one builder, not two. An older inbox sort must not be preferred
+        over a younger ready build just because two variant names show up as
+        'free' (the live bug: _headroom counted variant names, not distinct
+        available quota groups, so sorts_wait came out False)."""
+        cfg, names = self.variant_cfg(["model-a", "model-b"], max_runs=1)
+        cfg["concurrency"]["total"] = 1
+        cfg["routing"]["sort"] = names
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        item(led, "a", 1, state="inbox", age_minutes=60)
+        item(led, "a", 2, age_minutes=10)          # younger than the sort
+        with mock.patch.object(platforms, "available", return_value=True):
+            tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+        started = [line for line in ctx.lines if ": would " in line]
+        self.assertEqual(started, ["a#2: would build on " + names[0]], started)
+
+
 class AreaLabelTests(unittest.TestCase):
     """mahler#197: items sharing an `area:` label aren't run concurrently
     (DESIGN Layer 3, D6) — soft mutual exclusion, distinct from `depends`."""

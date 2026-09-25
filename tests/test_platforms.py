@@ -82,6 +82,99 @@ class ReadLogResumeInfoTests(unittest.TestCase):
             self.assertTrue(platforms.is_network_error(res["last_error"]))
 
 
+class ModelUnavailableDetectionTests(unittest.TestCase):
+    """Issue #420: a CLI rejecting the configured model is a permanent
+    problem, distinct from a quota hit, matched across every kind's real
+    error shape."""
+
+    def test_matches_and_does_not_confuse_with_quota(self):
+        for text in ("Model not found: bogus-model", "unsupported model",
+                     "Error: invalid model 'foo'", "MODEL_NOT_FOUND",
+                     "the API does not support model gpt-1",
+                     "Model 'foo' not found", "Model 'foo' is not supported",
+                     'Model "org/foo-1" is not allowed',
+                     "Model foo is not enabled",
+                     "Error: Model 'claude-opus-4.8' is not available."):
+            with self.subTest(text=text):
+                self.assertTrue(platforms.is_model_unavailable(text))
+        for text in ("429 rate limit exceeded", "Add credits to continue",
+                     "Daily free limit reached. Try again in 2h",
+                     "Model foo loaded but file not found",
+                     "Model foo is supported",
+                     "Service temporarily not available", "", None):
+            with self.subTest(text=text):
+                self.assertFalse(platforms.is_model_unavailable(text))
+
+    def _log(self, d, *lines):
+        path = os.path.join(d, "agent.log")
+        with open(path, "w") as fh:
+            for line in lines:
+                fh.write((json.dumps(line) if isinstance(line, dict) else line) + "\n")
+        return path
+
+    def test_claude_result_is_error_with_model_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"type": "result", "subtype": "error",
+                                 "is_error": True, "result": "model not found: bogus"})
+            res = platforms.read_log(path, "claude")
+            self.assertTrue(res["model_unavailable"])
+            self.assertFalse(res["quota_hit"])
+
+    def test_codex_turn_failed(self):
+        for message in ("unsupported model gpt-1", "Model 'foo' not found",
+                        "Model 'foo' is not supported",
+                        'Model "org/foo-1" is not allowed'):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as d:
+                path = self._log(d, {"type": "turn.failed",
+                                     "error": {"message": message}})
+                res = platforms.read_log(path, "codex")
+                self.assertTrue(res["model_unavailable"])
+                self.assertFalse(res["quota_hit"])
+
+    def test_copilot_error_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"type": "error", "message": "invalid model"})
+            res = platforms.read_log(path, "copilot")
+            self.assertTrue(res["model_unavailable"])
+
+    def test_cline_run_result_not_ok(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"type": "run_result", "finishReason": "error",
+                                 "text": "model not found"})
+            res = platforms.read_log(path, "cline")
+            self.assertTrue(res["model_unavailable"])
+
+    def test_kilo_error_event(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"type": "error", "error": {"message": "model not allowed"}})
+            res = platforms.read_log(path, "kilo")
+            self.assertTrue(res["model_unavailable"])
+
+    def test_agy_result_not_success(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"event": "result",
+                                 "result": {"status": "FAILED", "response": "unknown model"}})
+            res = platforms.read_log(path, "agy")
+            self.assertTrue(res["model_unavailable"])
+
+    def test_plain_text_requires_an_error_prefix(self):
+        for text, expected in (
+            ("STATUS: DONE Fixed invalid model handling", False),
+            ("Tests cover model not found errors", False),
+            ("Error: invalid model bogus", True),
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as d:
+                res = platforms.read_log(self._log(d, text), "cline")
+                self.assertEqual(res["model_unavailable"], expected)
+
+    def test_quota_error_is_not_flagged_as_model_unavailable(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._log(d, {"type": "error", "error": {"message": "429 rate limit exceeded"}})
+            res = platforms.read_log(path, "cline")
+            self.assertFalse(res["model_unavailable"])
+            self.assertTrue(res["quota_hit"])
+
+
 class ResumeArgvTests(unittest.TestCase):
     def test_cline_resume_argv_omits_id_and_uses_fresh_run(self):
         # Verified with Cline 3.0.64 (mahler#426):

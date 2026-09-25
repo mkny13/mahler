@@ -401,6 +401,69 @@ def resolve_platforms(cfg):
         return merged
 
     cfg["platforms"] = {n: resolve(n, {n}) for n in plats}
+    return expand_variants(cfg)
+
+
+def _variant_spec(spec):
+    """'model' or 'model@effort' -> (model, effort|None)."""
+    model, sep, effort = spec.partition("@")
+    return model, (effort or None) if sep else None
+
+
+def variant_name(slot, model, effort):
+    return f"{slot}/{model}/{effort or 'default'}"
+
+
+def expand_variants(cfg):
+    """Expand each platform's declared `variants` into synthetic platform
+    entries that share its quota_group and its one run slot (D33, issue #420).
+
+    `variants = ["gpt-6-luna@low", "gpt-6-luna@medium", "gpt-5.6-luna"]`: each
+    entry is `model` or `model@effort`. A synthetic entry, named
+    `<slot>/<model>/<effort or "default">`, is a copy of the slot with
+    `model` (or, for `kind = "claude"`, `sort_model`/`build_model`) and
+    `effort` overridden, `slot = <slot name>` set, and the slot's own
+    `quota_group` (default: the slot's name) so the group's `max_runs` still
+    counts every variant together (D21's one run slot per login). An entry in
+    the optional `variant_tiers` table, keyed by the same spec string,
+    overrides `tier` for that variant; otherwise it keeps the slot's own
+    tier. The slot's own name is untouched, so it stays the default variant
+    and every existing route, pin, label and history stays valid.
+    """
+    plats = cfg["platforms"]
+    additions = {}
+    for slot, pconf in plats.items():
+        specs = pconf.get("variants")
+        if not isinstance(specs, list) or not specs:
+            continue
+        tiers = pconf.get("variant_tiers") or {}
+        quota_group = pconf.get("quota_group", slot)
+        for spec in specs:
+            if not isinstance(spec, str) or not spec:
+                continue
+            model, effort = _variant_spec(spec)
+            if not model:
+                continue
+            variant = copy.deepcopy(pconf)
+            variant.pop("variants", None)
+            variant.pop("variant_tiers", None)
+            variant["slot"] = slot
+            variant["quota_group"] = quota_group
+            if effort is not None:
+                variant["effort"] = effort
+                # Explicit variants must use this effort for every role.
+                for key in list(variant):
+                    if key.endswith("_effort"):
+                        variant.pop(key)
+            if pconf.get("kind") == "claude":
+                variant["sort_model"] = model
+                variant["build_model"] = model
+            else:
+                variant["model"] = model
+            if spec in tiers:
+                variant["tier"] = tiers[spec]
+            additions[variant_name(slot, model, effort)] = variant
+    plats.update(additions)
     return cfg
 
 
@@ -459,9 +522,9 @@ def load(path=None):
     if os.path.exists(path):
         with open(path, "rb") as fh:
             user = tomllib.load(fh)
-    cfg = _merge(DEFAULTS, user)
+    cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
-    return resolve_platforms(cfg)
+    return cfg
 
 
 def settings(cfg):
@@ -477,6 +540,8 @@ def settings(cfg):
                             if pc.get(key)})
     platforms = []
     for name, pc in cfg.get("platforms", {}).items():
+        if "slot" in pc:
+            continue
         platforms.append({
             "name": name,
             "enabled": bool(pc.get("enabled", True)),
@@ -535,12 +600,13 @@ def validate_settings(body, cfg):
     if not required.issubset(body):
         raise ValueError("settings are incomplete; reload the page and try again")
 
-    known = set(cfg.get("platforms", {}))
+    base_platforms = {name for name, pc in cfg.get("platforms", {}).items() if "slot" not in pc}
+    all_platforms = set(cfg.get("platforms", {}))
     platforms = body["platforms"]
     if not isinstance(platforms, list) or {p.get("name") for p in platforms
-                                           if isinstance(p, dict)} != known:
+                                           if isinstance(p, dict)} != base_platforms:
         raise ValueError("platforms must contain each configured platform exactly once")
-    if len(platforms) != len(known):
+    if len(platforms) != len(base_platforms):
         raise ValueError("platform names must be unique")
     clean_platforms = []
     for item in platforms:
@@ -564,7 +630,7 @@ def validate_settings(body, cfg):
     if (not isinstance(routes, list) or len(routes) != len(expected_routes)
             or {r.get("key") for r in routes if isinstance(r, dict)} != expected_routes):
         raise ValueError("routing scopes changed; reload the page and try again")
-    route_options = known | {"@" + name for name in cfg.get("groups", {})}
+    route_options = all_platforms | {"@" + name for name in cfg.get("groups", {})}
     clean_routes = []
     for route in routes:
         clean = {"key": route["key"]}
@@ -714,8 +780,8 @@ def save_settings(body, path=None):
     clean = validate_settings(body, current)
     updated = _apply_settings(user, clean)
     candidate = _merge(DEFAULTS, updated)
-    validate_accounts(candidate)
-    resolve_platforms(candidate)
+    resolved_candidate = resolve_platforms(candidate)
+    validate_accounts(resolved_candidate)
     encoded = dumps_toml(updated)
     # Prove our serialization before replacing the operator's config.
     parsed = tomllib.loads(encoded)
