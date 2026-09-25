@@ -2595,13 +2595,16 @@ class ConsoleRevisionTests(unittest.TestCase):
         def functions_between(start, end):
             return page.JS[page.JS.index(start):page.JS.index(end)]
         script = functions_between("  function reloadHasDraft", "  function refresh")
+        script += functions_between("  function updateCaptureSave", "  function setView")
         script += functions_between("  function payloadFor", "  // a needs-you")
         script += functions_between("  function post(action", "  function numberValue")
         script += r'''
 const assert = require("assert");
 let settingsDirty = false, reloading = false, loadedRevision = "old";
 let fields = [], reloads = 0, stores = {}, saved = [], refreshes = [];
-let app = {querySelectorAll: () => fields};
+let captures = [];
+let app = {querySelectorAll: selector => selector === "[data-capture-select]" ? captures : fields};
+function load(kind, key) { return key === "mahler.capture.project" ? "mahler" : null; }
 let root = {getAttribute: key => ({"data-view":"backlog", "data-tab":"browse", "data-theme":"dark"})[key]};
 let document = {createElement: () => ({set innerHTML(value) {this.content = {
   querySelector: () => value ? {getAttribute: () => value} : null
@@ -2616,7 +2619,27 @@ settingsDirty = false;
 fields = [{tagName:"TEXTAREA", value:"unsaved draft", defaultValue:""}];
 assert.equal(acceptRevision("new"), false);
 assert.equal(reloads, 0);
-fields = [];
+// Both visible and hidden composers restore the saved project, although
+// the server renders the placeholder as their HTML default.
+captures = [false, true].map(hidden => ({
+  tagName:"SELECT", hidden, selectedIndex:0,
+  options:[{value:"", defaultSelected:false}, {value:"mahler", defaultSelected:false}],
+  get value() { return this.options[this.selectedIndex].value; },
+  set value(value) { this.selectedIndex = this.options.findIndex(o => o.value === value); },
+  closest: () => null
+}));
+fields = captures;
+applyCaptureProject();
+assert.ok(captures.every(field => field.selectedIndex === 1));
+// A new selection and a text draft still defer the full reload.
+captures[0].selectedIndex = 0;
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 0);
+captures[0].selectedIndex = 1;
+fields = captures.concat({tagName:"TEXTAREA", value:"unsaved", defaultValue:""});
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 0);
+fields = captures;
 assert.equal(acceptRevision(""), false);
 assert.equal(reloads, 0);
 assert.equal(acceptRevision("new"), false);

@@ -190,6 +190,8 @@
           if (sels[i].options[j].value === saved) { sels[i].value = saved; break; }
         }
       }
+      // The restored preference survives a full reload; it is not a draft.
+      sels[i].captureInitialIndex = sels[i].selectedIndex;
       updateCaptureSave(sels[i]);
     }
   }
@@ -244,6 +246,9 @@
         var defaultIndex = 0;
         for (var j = 0; j < field.options.length; j++) {
           if (field.options[j].defaultSelected) { defaultIndex = j; }
+        }
+        if (field.captureInitialIndex !== undefined) {
+          defaultIndex = field.captureInitialIndex;
         }
         if (field.selectedIndex !== defaultIndex) { return true; }
       } else if (field.value !== field.defaultValue || field.checked !== field.defaultChecked) {
