@@ -56,7 +56,9 @@ time.sleep(5)
             exe.chmod(0o755)
             with mock.patch.object(platforms, "codex_exe", return_value=str(exe)):
                 return platforms.probe_codex(env={**os.environ, "CODEX_HOME": "isolated"},
-                                             timeout=0.5)
+                                             # Successful probes need startup headroom on a
+                                             # busy host; timeout cases stay deliberately short.
+                                             timeout=5 if mode == "ok" else 0.5)
 
     def test_windows_null_reset_and_sanitized_credits(self):
         result = self.probe()
