@@ -427,6 +427,53 @@ class CapacityPageTests(unittest.TestCase):
     def html(self):
         return page.app(self.s)
 
+    def test_active_slots_and_shared_pool_clear_when_runs_finish(self):
+        self.addCleanup(self.led.close)
+        runs = []
+        for number, platform in ((451, "claude-opus"), (452, "claude"),
+                                 (453, "claude-opus")):
+            runs.append(self.led.create_run(project="mahler", number=number,
+                        role="build", platform=platform, epoch=1))
+        self.led.update_run(runs[1], status="stopping")
+        snapshot = state.build(self.cfg, self.led)
+        pool = next(q for q in snapshot["quota"] if q["name"] == "claude")
+        self.assertTrue(pool["in_use"])
+        self.assertEqual(pool["active_count"], 3)
+        self.assertCountEqual(pool["active_refs"], ["mahler#451", "mahler#452", "mahler#453"])
+        self.assertEqual(state._quota(self.cfg, self.led, snapshot["peak"]), snapshot["quota"])
+        slots = {c["name"]: c for q in snapshot["quota"] for c in q["capabilities"]}
+        self.assertEqual(slots["claude-opus"]["active_count"], 2)
+        self.assertEqual(slots["claude"]["active_count"], 1)
+        self.assertFalse(slots["agy-claude"]["in_use"])
+        self.assertEqual(slots["agy-claude"]["active_refs"], [])
+        html = page._d_capacity(snapshot)
+        self.assertIn('class="capcard cap-group in-use" data-quota="claude"', html)
+        self.assertIn('class="capcard cap-slot in-use" data-quota="claude-opus"', html)
+        self.assertIn('class="capcard cap-slot" data-quota="agy-claude"', html)
+        self.assertIn('in-use-chip">in use</span>', html)
+        self.assertIn('in use · mahler#451', html)
+        self.assertIn('class="model mono t-acc"', html)
+        for rid in runs:
+            self.led.update_run(rid, status="done")
+        finished = state.build(self.cfg, self.led)
+        for q in finished["quota"]:
+            for row in [q, *q["capabilities"]]:
+                self.assertFalse(row["in_use"])
+                self.assertEqual(row["active_count"], 0)
+                self.assertEqual(row["active_refs"], [])
+        self.assertNotIn('in-use', page._d_capacity(finished))
+        self.assertEqual([q["available"] for q in finished["quota"]],
+                         [q["available"] for q in snapshot["quota"]])
+
+    def test_explicit_active_mapping_and_fallback_ref(self):
+        rows = state._quota(self.cfg, self.led, None,
+                            {"claude-opus": [{"id": 99, "ref": "<task>"}, {"id": 100}]})
+        pool = next(q for q in rows if q["name"] == "claude")
+        self.assertEqual(pool["active_refs"], ["<task>", "run 100"])
+        html = page._cap_card(pool, "group")
+        self.assertIn("&lt;task&gt;, run 100", html)
+        self.assertNotIn("<task>", html)
+
     def test_capacity_is_a_rail_item_and_a_view(self):
         html = self.html()
         self.assertIn('<button class="rail-i" data-go="capacity">', html)

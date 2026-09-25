@@ -55,8 +55,11 @@ def build(cfg, led, stats_range="week"):
     now = led.now()
     projects = config.enabled_projects(cfg)
     peak = _peak(cfg, led)
-    quota = _quota(cfg, led, peak)
     runs = _runs(cfg, led, now)
+    active_by_platform = {}
+    for run in runs:
+        active_by_platform.setdefault(run["platform"], []).append(run)
+    quota = _quota(cfg, led, peak, active_by_platform)
     needs = _needs(cfg, led, projects, now)
     uat = _uat(cfg, led, projects)
     backlog = _backlog(cfg, led, projects)
@@ -373,7 +376,7 @@ def _quota_model(pconf, members):
     return f"{len(members)} capability slots" + (f" · {plan}" if plan else "")
 
 
-def _quota_row(cfg, led, peak, name, members, builders):
+def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
     """One quota/capability card, using ``name`` for its effective lines."""
     now = led.now()
     burst = router.all_bursts(cfg, led)
@@ -394,7 +397,10 @@ def _quota_row(cfg, led, peak, name, members, builders):
         windows.append({"window": w, "pct": max(min(u["used_pct"], 100), 0),
                         "soft": soft, "resets": router._ts(u.get("resets_at"))})
     worst = max(windows, key=lambda x: x["pct"], default=None)
+    active = [run for member in members for run in active_by_platform.get(member, [])]
     row = {"name": name, "members": members, "model": _quota_model(pconf, members),
+           "in_use": bool(active), "active_count": len(active),
+           "active_refs": [r.get("ref") or f"run {r['id']}" for r in active],
            "state": state, "metered": metered, "claude": claude,
            "builds": any(m in builders for m in members),
            # This is the largest issue size the route is intended to take.
@@ -445,9 +451,15 @@ def _quota_row(cfg, led, peak, name, members, builders):
     return row
 
 
-def _quota(cfg, led, peak):
+def _quota(cfg, led, peak, active_by_platform=None):
     """One gauge per quota group (platforms sharing a login and quota share a
     gauge, D21): the worst window fills the bar, the soft line is the tick."""
+    if active_by_platform is None:
+        active_by_platform = {}
+        for r in led.active_runs():
+            run = dict(r)
+            run["ref"] = _ref(r["project"], r["number"])
+            active_by_platform.setdefault(r["platform"], []).append(run)
     builders = set(_routed(cfg, ("build",)))
     groups, rows = {}, []
     for name in _routed(cfg):
@@ -462,9 +474,9 @@ def _quota(cfg, led, peak):
     for group, first in rows:
         members = groups[group]["members"]
         name = group if group in members else first
-        row = _quota_row(cfg, led, peak, name, members, builders)
+        row = _quota_row(cfg, led, peak, name, members, builders, active_by_platform)
         row["name"] = _quota_display_name(members)
-        row["capabilities"] = [_quota_row(cfg, led, peak, member, [member], builders)
+        row["capabilities"] = [_quota_row(cfg, led, peak, member, [member], builders, active_by_platform)
                                for member in members]
         out.append(row)
     return out
