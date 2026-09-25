@@ -642,8 +642,10 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
     # Exploration spends no attempt budget. Do not repeat the same hash on
     # the retry: a normal run must intervene before another exploration.
     run_role = "sort" if role == "plan" else role
-    last = led.q1("SELECT explore FROM runs WHERE project=? AND number=? AND role=? "
-                  "ORDER BY id DESC LIMIT 1", (project, item["number"], run_role))
+    # Failed fixes re-enter the ready queue as builds, so both execution
+    # roles share this guard. Planning and sorting share their own guard.
+    retry_roles = ("build", "fix") if run_role in ("build", "fix") else (run_role,)
+    last = led.last_run(project, item["number"], roles=retry_roles)
     if last and last["explore"]:
         return None
     accts = accounts_of(pol)

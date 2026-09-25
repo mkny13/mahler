@@ -144,6 +144,12 @@ class ExplorationTests(unittest.TestCase):
         self.seed('normal', 1)
         self.assertEqual(self.pick(), 'cheap')
 
+    def test_failed_fix_cannot_explore_again_as_build(self):
+        self.led.create_run(project='p', number=1, role='fix', platform='cheap',
+                            epoch=1, status='ended', outcome='no status', explore=1)
+        self.assertIsNone(self.pick(role='build'))
+        self.assertIsNone(self.pick(role='fix'))
+
     def test_schedule_marks_exploration_and_records_choice(self):
         ctx = scheduler.Ctx(self.cfg, self.led)
         with mock.patch('mahler.platforms.available', return_value=True), \
