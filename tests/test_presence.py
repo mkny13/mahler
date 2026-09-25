@@ -66,6 +66,35 @@ class PresenceTests(unittest.TestCase):
                 self.assertEqual(holds[0]['directory'], self.cwd)
                 self.assertIn('ops-session (last edit 3m ago)', state._hot_hold_text(holds[0]))
 
+    def test_git_arguments_do_not_count_as_write_subcommands(self):
+        for command in ['git log --grep=commit', 'git show HEAD:docs/push.md',
+                        'git -C "/projects/commit repo" log --grep=push',
+                        'git -c alias.example=commit status',
+                        'git --git-dir push status',
+                        'git diff -- commit push', 'echo "git commit"',
+                        'git status # git push', 'git --help push']:
+            with self.subTest(command=command):
+                self.write([self.message('Bash', command=command)])
+                self.assertIsNone(presence.last_claude_activity(self.project))
+                self.assertFalse(self.active())
+
+    def test_git_writes_with_options_and_shell_sequences_hold(self):
+        for command in ['git -C "/projects/my repo" -c user.name=Test commit -m fix',
+                        'git --git-dir=/projects/repo/.git push',
+                        'git -C/projects/repo push',
+                        'git status && git push origin HEAD',
+                        'git log --grep=commit; git commit -m fix',
+                        'git status\ngit push', '/usr/bin/git push']:
+            with self.subTest(command=command):
+                self.write([self.message('Bash', command=command)])
+                self.assertTrue(self.active())
+                self.assertFalse(presence.last_claude_edit(self.project).fallback)
+
+    def test_unparseable_shell_command_retains_fallback(self):
+        self.write([self.message('Bash', command="git commit -m 'unfinished")])
+        self.assertTrue(self.active())
+        self.assertTrue(presence.last_claude_edit(self.project).fallback)
+
     def test_old_edit_with_recent_chat_does_not_hold(self):
         self.write([self.message('Edit', minutes=30), self.message(minutes=0)])
         self.assertFalse(self.active())

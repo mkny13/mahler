@@ -12,6 +12,7 @@ import glob
 import json
 import os
 import re
+import shlex
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,37 @@ class Activity:
     at: datetime
     directory: str
     fallback: bool = False
+
+
+def _git_write(command):
+    """Recognize commit/push subcommands, never words in their arguments.
+
+    This is a tool-intent heuristic for simple shell commands, not a shell
+    interpreter. Invalid quoting raises ValueError for the transcript fallback.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    words = list(lexer)
+    start = 0
+    for end in range(len(words) + 1):
+        if end < len(words) and not all(c in ";&|()\n" for c in words[end]):
+            continue
+        args = words[start:end]
+        start = end + 1
+        if not args or os.path.basename(args[0]) != "git":
+            continue
+        i = 1
+        while i < len(args) and args[i].startswith("-"):
+            option = args[i]
+            if option in {"--help", "--version"}:
+                break
+            # These global options consume the next word; attached values
+            # (-Cpath, --git-dir=path) already occupy a single word.
+            i += 2 if option in {"-C", "-c", "--git-dir", "--work-tree",
+                                  "--namespace", "--config-env", "--super-prefix"} else 1
+        if i < len(args) and args[i] in {"commit", "push"}:
+            return True
+    return False
 
 
 def _transcript_activity(path, mtime, directory):
@@ -80,7 +112,7 @@ def _transcript_activity(path, mtime, directory):
                         command = block.get("input", {}).get("command")
                         if not isinstance(command, str):
                             return fallback
-                        writes = bool(re.search(r"\bgit\b[^\n;&|]*\b(?:commit|push)\b", command))
+                        writes = _git_write(command)
                     if not writes:
                         continue
                     at = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
