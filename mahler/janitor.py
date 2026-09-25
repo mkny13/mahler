@@ -76,6 +76,7 @@ def sweep(ctx, pol):
     # this machine's default — a work project's private repo otherwise gets
     # fetched/pruned with the wrong account's git credential helper (mahler#296).
     env = config.run_env(ctx.cfg, config.gh_account_of(pol))
+    primary_changed = False
     for wt, branch in _stale_worktrees(ctx, pol):
         acts.append(("worktree", wt, branch))
     try:
@@ -83,6 +84,7 @@ def sweep(ctx, pol):
     except runner.GitError as e:
         _say(ctx, f"skipping branch sweep, fetch failed — {e}")
     else:
+        primary_changed = _fast_forward_primary(ctx, pol, repo, env)
         for name in _stale_branches(ctx, pol, repo, env):
             acts.append(("branch", name))
         for name, tip, target in _stale_fix_branches(ctx, pol, repo, env):
@@ -105,7 +107,52 @@ def sweep(ctx, pol):
             else:
                 _delete_remote_branch(repo, act[1], env)
     runner.git(repo, "worktree", "prune", check=False)   # stale entries go either way
-    return bool(acts)
+    return bool(acts) or primary_changed
+
+
+def _fast_forward_primary(ctx, pol, repo, env=None):
+    """Advance a safe, shared primary checkout to its fetched base tip.
+
+    A primary checkout is human-owned, so every check fails closed. In
+    particular, a failed ancestry check is treated as a diverged checkout and
+    left alone: a local commit must never be rewritten by maintenance.
+    """
+    base = pol.get("base", "main")
+    try:
+        if runner.git(repo, "symbolic-ref", "--short", "HEAD") != base:
+            return False
+        if runner.git(repo, "status", "--porcelain", "--untracked-files=no"):
+            return False
+        for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"):
+            marker_path = runner.git(repo, "rev-parse", "--git-path", marker)
+            if not os.path.isabs(marker_path):
+                marker_path = os.path.join(repo, marker_path)
+            if os.path.exists(marker_path):
+                return False
+        old = runner.git(repo, "rev-parse", "HEAD")
+        target = runner.git(repo, "rev-parse", f"origin/{base}")
+    except runner.GitError as e:
+        _say(ctx, f"primary fast-forward check failed — {e}")
+        return False
+
+    if old == target:
+        return False
+    try:
+        runner.git(repo, "merge-base", "--is-ancestor", "HEAD", f"origin/{base}")
+    except runner.GitError:
+        return False
+    if ctx.dry_run:
+        _say(ctx, f"would fast-forward primary {old} -> {target}")
+        return True
+    try:
+        runner.git(repo, "merge", "--ff-only", f"origin/{base}", env=env)
+    except runner.GitError as e:
+        _say(ctx, f"primary fast-forward failed — {e}")
+        return False
+    ctx.led.event("primary_ff", project=pol["name"],
+                  detail={"from": old, "to": target})
+    _say(ctx, f"fast-forwarded primary {old} -> {target}")
+    return True
 
 
 def _stale_worktrees(ctx, pol):

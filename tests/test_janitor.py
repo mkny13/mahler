@@ -101,6 +101,80 @@ class Base(unittest.TestCase):
         out = sh(self.repo, "git", "worktree", "list", "--porcelain")
         return [l.split()[1] for l in out.splitlines() if l.startswith("worktree ")]
 
+    def advance_remote(self):
+        """Create a descendant of the current remote tip without another clone."""
+        tip = sh(self.repo, "git", "rev-parse", "refs/remotes/origin/main")
+        sha = sh(self.repo, "git", "commit-tree", f"{tip}^{{tree}}", "-p", tip,
+                 "-m", "remote update")
+        sh(self.repo, "git", "push", "-q", "origin", f"{sha}:refs/heads/main")
+        return tip, sha
+
+
+class PrimaryCheckoutTests(Base):
+    def test_clean_and_behind_fast_forwards_and_records_event(self):
+        old, new = self.advance_remote()
+        self.assertTrue(janitor.sweep(self.ctx, self.ctx.policy("t")))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), new)
+        events = self.led.q("SELECT * FROM events WHERE kind='primary_ff'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "t")
+        self.assertEqual(events[0]["detail"],
+                         '{"from": "' + old + '", "to": "' + new + '"}')
+
+    def test_tracked_change_is_untouched(self):
+        old, new = self.advance_remote()
+        write(os.path.join(self.repo, "a.txt"), "local\n")
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), old)
+        self.assertNotEqual(old, new)
+
+    def test_untracked_file_is_kept_while_checkout_fast_forwards(self):
+        _, new = self.advance_remote()
+        extra = os.path.join(self.repo, "notes.txt")
+        write(extra, "keep me\n")
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), new)
+        self.assertTrue(os.path.exists(extra))
+
+    def test_other_branch_is_untouched(self):
+        old, _ = self.advance_remote()
+        sh(self.repo, "git", "switch", "-q", "-c", "human-work")
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), old)
+        self.assertEqual(sh(self.repo, "git", "symbolic-ref", "--short", "HEAD"),
+                         "human-work")
+
+    def test_diverged_checkout_is_untouched(self):
+        initial, remote_tip = self.advance_remote()
+        # Put the local branch one commit ahead of the old remote tip, then
+        # move the remote to a different child of that same tip.
+        sh(self.repo, "git", "reset", "-q", "--hard", initial)
+        write(os.path.join(self.repo, "local.txt"), "local\n")
+        sh(self.repo, "git", "add", "local.txt")
+        sh(self.repo, "git", "commit", "-qm", "local work")
+        local = sh(self.repo, "git", "rev-parse", "HEAD")
+        remote_other = sh(self.repo, "git", "commit-tree", f"{remote_tip}^{{tree}}",
+                          "-p", remote_tip, "-m", "other remote work")
+        sh(self.repo, "git", "push", "-q", "--force", "origin",
+           f"{remote_other}:refs/heads/main")
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), local)
+
+    def test_merge_in_progress_is_untouched(self):
+        old, new = self.advance_remote()
+        merge_head = sh(self.repo, "git", "rev-parse", "--git-path", "MERGE_HEAD")
+        if not os.path.isabs(merge_head):
+            merge_head = os.path.join(self.repo, merge_head)
+        write(merge_head, new + "\n")
+        janitor.sweep(self.ctx, self.ctx.policy("t"))
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), old)
+
+    def test_git_failure_does_not_raise(self):
+        with mock.patch.object(runner, "git", side_effect=runner.GitError("offline")):
+            janitor._fast_forward_primary(self.ctx, self.ctx.policy("t"), self.repo)
+        self.assertTrue(any("primary fast-forward check failed" in line
+                            for line in self.ctx.lines))
+
 
 class WorktreeTests(Base):
     def test_ended_run_worktree_removed_with_its_branch(self):

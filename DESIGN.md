@@ -721,6 +721,9 @@ doesn't rely on that and stops on its own thresholds regardless.
   fast-forwards the primary checkout, but only when it's clean and has no lease. Otherwise it
   pings you.
 
+  The janitor performs this only for a clean checkout on its configured base branch, with no
+  rebase/merge/cherry-pick in progress and only when the fetched base is a strict descendant.
+
 ### D14 — Stack and runtime
 
 - **Hub:** an always-on Mac. The canonical installation is the Mac mini; D24 adds remote lease
