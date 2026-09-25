@@ -341,6 +341,60 @@ class TierInversionTests(unittest.TestCase):
 
 
 class BuildBodyTests(unittest.TestCase):
+    def test_historical_names_keep_counts_without_changing_tier_comparisons(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"lo": {"tier": 1}, "hi": {"tier": 3},
+                             "disabled": {"tier": 1, "enabled": False}}}
+        pol = config.platform_audit_policy(cfg)
+
+        def add_runs(name, outcomes, role="build"):
+            for outcome in outcomes:
+                led.create_run(project="p", number=1, role=role, platform=name,
+                               epoch=1, status="ended", outcome=outcome, size="s")
+
+        add_runs("lo", ["DONE"] * 9 + ["NEEDS-YOU"])
+        add_runs("hi", ["DONE"] * 7 + ["exit 1"] * 3)
+        before_rows = platform_audit.outcome_report(cfg, led.platform_outcomes(), {})
+        before_body = platform_audit.build_body(cfg, led, pol)
+        add_runs("codex-work", ["DONE"] * 7 + ["NEEDS-YOU"] * 2 + ["exit 1"]
+                 + ["launch failed: bug"] * 3, role="fix")
+        add_runs("disabled", ["DONE"] * 10)
+        add_runs("never-started", ["not claimed"] * 2)
+        add_runs("sort-only", ["DONE"], role="sort")
+
+        body = platform_audit.build_body(cfg, led, pol)
+        historical = body.split("## Outcomes under names no longer configured\n", 1)[1]
+        historical, comparisons = historical.split("## Possible tier inconsistencies", 1)
+        self.assertIn("| codex-work | 10 | 3 | 70.0 | 20.0 |", historical)
+        self.assertIn("| disabled | 10 | 0 | 100.0 | 0.0 |", historical)
+        self.assertIn("| never-started | 0 | 2 | — | — |", historical)
+        for name in ("lo", "hi", "sort-only"):
+            self.assertNotIn(f"| {name} |", historical)
+        self.assertIn("evidence belongs to its successor", historical)
+        self.assertIn("attribution is a human judgment call", historical)
+        self.assertIn("does not fold this history", historical)
+        after_rows = platform_audit.outcome_report(cfg, led.platform_outcomes(), {})
+        self.assertEqual(after_rows, before_rows)
+        self.assertEqual(platform_audit.tier_inversions(after_rows),
+                         platform_audit.tier_inversions(before_rows))
+        self.assertIn("outperforms", comparisons)
+        self.assertEqual(comparisons,
+                         before_body.split("## Possible tier inconsistencies", 1)[1])
+
+    def test_no_historical_names_collapses_to_one_line(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"current": {"tier": 2}}}
+        for populated in (False, True):
+            with self.subTest(populated=populated):
+                if populated:
+                    led.create_run(project="p", number=1, role="build", platform="current",
+                                   epoch=1, status="ended", outcome="DONE", size="s")
+                body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+                self.assertIn("\nOutcomes under names no longer configured: None found.\n", body)
+                self.assertNotIn("## Outcomes under names no longer configured", body)
+
     def test_body_includes_all_sections_and_no_traceback(self):
         led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(led.close)

@@ -140,6 +140,13 @@ def _sizes_text(sizes):
     return "+".join(sorted(sizes, key=router.SIZES.get)) or "none"
 
 
+def _outcome_counts(stats):
+    """Shared started-run denominator for configured and historical names."""
+    runs = stats.get("runs", 0)
+    return (runs, _pct(stats.get("done", 0), runs),
+            _pct(stats.get("needs_you", 0), runs), stats.get("not_started", 0))
+
+
 def outcome_report(cfg, outcomes, escalations):
     """One row per enabled platform, ordered by declared tier (`router.tier_of`):
     (name, tier, runs, done_pct, needs_you_pct, escalated_from, sizes, by_size, not_started)."""
@@ -147,13 +154,11 @@ def outcome_report(cfg, outcomes, escalations):
     for name, pconf in cfg["platforms"].items():
         if not pconf.get("enabled", True):
             continue
-        stats = outcomes.get(name, {"runs": 0, "done": 0, "needs_you": 0,
-                                    "by_size": {}, "not_started": 0})
-        rows.append((name, router.tier_of(pconf), stats["runs"],
-                     _pct(stats["done"], stats["runs"]),
-                     _pct(stats["needs_you"], stats["runs"]),
+        stats = outcomes.get(name, {})
+        runs, done_pct, needs_you_pct, not_started = _outcome_counts(stats)
+        rows.append((name, router.tier_of(pconf), runs, done_pct, needs_you_pct,
                      escalations.get(name, 0), size_gate(pconf),
-                     stats.get("by_size", {}), stats.get("not_started", 0)))
+                     stats.get("by_size", {}), not_started))
     return sorted(rows, key=lambda r: (r[1], r[0]))
 
 
@@ -224,6 +229,26 @@ def build_body(cfg, led, pol):
         lines.append(f"| {name} | {tier} | {runs} | {not_started} | "
                      f"{done_pct if done_pct is not None else '—'} | "
                      f"{needs_you_pct if needs_you_pct is not None else '—'} | {esc} | {_sizes_text(sizes)} |")
+
+    orphaned = sorted(outcomes.keys() - by_name.keys())
+    if orphaned:
+        lines += [
+            "", "## Outcomes under names no longer configured", "",
+            "These runs belong to renamed, removed, or disabled slots. If a slot was "
+            "renamed, its evidence belongs to its successor; attribution is a human "
+            "judgment call. The audit does not fold this history into configured "
+            "slots or tier comparisons.",
+            "",
+            "| Platform | Runs started | Didn't start | Done % | Needs-you % |",
+            "|---|---|---|---|---|",
+        ]
+        for name in orphaned:
+            runs, done_pct, needs_you_pct, not_started = _outcome_counts(outcomes[name])
+            lines.append(f"| {name} | {runs} | {not_started} | "
+                         f"{done_pct if done_pct is not None else '—'} | "
+                         f"{needs_you_pct if needs_you_pct is not None else '—'} |")
+    else:
+        lines += ["", "Outcomes under names no longer configured: None found."]
 
     lines += ["", "## Possible tier inconsistencies"]
     if inversions:
