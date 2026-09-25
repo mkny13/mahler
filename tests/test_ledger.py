@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler import config
-from mahler.ledger import Ledger, RoutedLedger, SCHEMA, iso, remote_lease_operation
+from mahler.ledger import Ledger, RoutedLedger, SCHEMA, iso, outcome_not_started, remote_lease_operation
 
 
 class Clock:
@@ -912,11 +912,11 @@ class PlatformOutcomeTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
-    def _run(self, platform, outcome, role="build", started_ago_days=0):
+    def _run(self, platform, outcome, role="build", started_ago_days=0, size=None):
         started = self.clock() - timedelta(days=started_ago_days)
         run_id = self.led.create_run(project="p", number=1, role=role, platform=platform,
                                      epoch=1, status="ended", outcome=outcome,
-                                     started_at=iso(started))
+                                     started_at=iso(started), size=size)
         return run_id
 
     def test_platform_outcomes_counts_done_and_needs_you(self):
@@ -925,7 +925,43 @@ class PlatformOutcomeTests(unittest.TestCase):
         self._run("kilo", "NEEDS-YOU")
         self._run("kilo", "exit 1")
         stats = self.led.platform_outcomes()
-        self.assertEqual(stats["kilo"], {"runs": 4, "done": 2, "needs_you": 1, "by_size": {None: {"runs": 4, "done": 2}}})
+        self.assertEqual(stats["kilo"], {"runs": 4, "done": 2, "needs_you": 1, "not_started": 0, "by_size": {None: {"runs": 4, "done": 2}}})
+
+    def test_outcome_not_started_recognizes_only_pre_agent_outcomes(self):
+        for outcome in ["launch failed: AttributeError: missing get", "launch failed:",
+                        "not claimed"]:
+            with self.subTest(outcome=outcome):
+                self.assertTrue(outcome_not_started(outcome))
+        for outcome in [None, "", "DONE", "NEEDS-YOU", "BLOCKED", "exit 1",
+                        "no status line", "not claimed later", "launch failed"]:
+            with self.subTest(outcome=outcome):
+                self.assertFalse(outcome_not_started(outcome))
+
+    def test_platform_outcomes_separates_runs_that_never_started(self):
+        for outcome in ["DONE", "NEEDS-YOU", "BLOCKED", "exit 1", "no status line", None]:
+            self._run("kilo", outcome, size="s")
+        for outcome in ["launch failed: missing get", "launch failed: missing get",
+                        "launch failed: unavailable CLI", "not claimed"]:
+            self._run("kilo", outcome, role="fix", size="m")
+        self.assertEqual(self.led.platform_outcomes()["kilo"], {
+            "runs": 6, "done": 1, "needs_you": 1, "not_started": 4,
+            "by_size": {"s": {"runs": 6, "done": 1}}})
+
+    def test_platform_outcomes_all_launches_failed(self):
+        self._run("kilo", "launch failed: unavailable CLI", size="s")
+        self._run("kilo", "launch failed: unavailable CLI", size="m")
+        self.assertEqual(self.led.platform_outcomes()["kilo"], {
+            "runs": 0, "done": 0, "needs_you": 0, "not_started": 2, "by_size": {}})
+
+    def test_not_started_counts_respect_role_status_and_since(self):
+        self._run("kilo", "not claimed", started_ago_days=200)
+        self._run("kilo", "not claimed", role="sort")
+        running = self._run("kilo", "launch failed: pending")
+        self.led.update_run(running, status="running")
+        self._run("kilo", "not claimed", role="fix", started_ago_days=1)
+        stats = self.led.platform_outcomes(since=self.clock() - timedelta(days=30))
+        self.assertEqual(stats["kilo"]["not_started"], 1)
+        self.assertEqual(stats["kilo"]["runs"], 0)
 
     def test_platform_outcomes_ignores_sort_role(self):
         self._run("claude", "READY", role="sort")

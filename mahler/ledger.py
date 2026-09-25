@@ -223,6 +223,11 @@ def row_get(row, key, default=None):
         return default
 
 
+def outcome_not_started(outcome):
+    """Whether the outcome records a launch failure or an unclaimed run."""
+    return outcome == "not claimed" or (outcome or "").startswith("launch failed:")
+
+
 def utcnow():
     return datetime.now(timezone.utc)
 
@@ -820,9 +825,12 @@ class Ledger:
 
     def platform_outcomes(self, since=None):
         """Per-platform build/fix run outcomes (mahler#206): {platform:
-        {"runs": n, "done": n, "needs_you": n, "by_size": {size: {"runs": n, "done": n}}}}
+        {"runs": n, "done": n, "needs_you": n, "not_started": n,
+         "by_size": {size: {"runs": n, "done": n}}}}
         — the observed half of the periodic platform-tier/capability audit, alongside
-        `platform_escalations` below. `since` (a datetime) restricts to runs
+        `platform_escalations` below. `runs` counts ended runs that actually
+        started; launch-failed and unclaimed runs count only in `not_started`.
+        `since` (a datetime) restricts to runs
         started at/after it; None is all-time."""
         sql = ("SELECT platform, size, outcome, COUNT(*) c FROM runs "
                "WHERE role IN ('build','fix') AND status='ended'")
@@ -833,7 +841,11 @@ class Ledger:
         sql += " GROUP BY platform, size, outcome"
         stats = {}
         for row in self.q(sql, args):
-            s = stats.setdefault(row["platform"], {"runs": 0, "done": 0, "needs_you": 0, "by_size": {}})
+            s = stats.setdefault(row["platform"], {"runs": 0, "done": 0, "needs_you": 0,
+                                                   "not_started": 0, "by_size": {}})
+            if outcome_not_started(row["outcome"]):
+                s["not_started"] += row["c"]
+                continue
             sz = row["size"]
             sz_dict = s["by_size"].setdefault(sz, {"runs": 0, "done": 0})
             

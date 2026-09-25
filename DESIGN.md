@@ -948,6 +948,12 @@ itself, since re-ranking tiers is a judgment call, not a mechanical recalibratio
 estimates. Done-rate comparisons require overlapping size gates and at least
 `inversion_min_runs` observed runs on each side (default 10). This avoids comparing
 escalation-only siblings against platforms that never receive the same item sizes.
+Done-rate, needs-you-rate, and tier comparisons count only runs that actually started;
+`launch failed: …` and `not claimed` outcomes are reported separately as `Didn't start`
+(mahler#430). The 2026-09-23 launch outage produced 7,306 failures from one conductor
+bug (fixed by #410), moving apparent platform done-rates by 10–40× and blinding the
+inversion check. Launch failures remain visible here and through the launch-health
+circuit breaker, without being mistaken for capability evidence.
 
 ### D21 — Opus plans; the free tiers build what it planned
 

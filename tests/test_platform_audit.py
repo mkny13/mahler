@@ -351,6 +351,36 @@ class BuildBodyTests(unittest.TestCase):
         self.assertIn("Observed ledger outcomes", body)
         self.assertIn("Possible tier inconsistencies", body)
 
+    def test_launch_failures_are_visible_without_hiding_inversion(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"lo": {"tier": 1, "max_size": "s"},
+                             "hi": {"tier": 3, "max_size": "s"},
+                             "failed": {"tier": 2}, "unused": {"tier": 2}}}
+        for platform, outcomes in {
+            "lo": ["DONE"] * 9 + ["NEEDS-YOU"] + ["launch failed: bug"] * 90,
+            "hi": ["DONE"] * 7 + ["exit 1"] * 3 + ["not claimed"] * 40,
+            "failed": ["launch failed: bug"] * 3,
+        }.items():
+            for outcome in outcomes:
+                led.create_run(project="p", number=1, role="build", platform=platform,
+                               epoch=1, status="ended", outcome=outcome, size="s")
+        rows = platform_audit.outcome_report(cfg, led.platform_outcomes(), {})
+        lo = next(row for row in rows if row[0] == "lo")
+        self.assertEqual(len(lo), 9)
+        self.assertEqual(lo[8], 90)
+        self.assertEqual(platform_audit.tier_inversions(rows, min_runs=10),
+                         [("lo", 1, 90.0, "hi", 3, 70.0)])
+        self.assertEqual(platform_audit.tier_inversions(rows, min_runs=11), [])
+        body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        self.assertIn("| Runs started | Didn't start |", body)
+        self.assertIn("done-rate over runs that actually started", body)
+        self.assertIn("| lo | 1 | 10 | 90 | 90.0 | 10.0 | 0 | s |", body)
+        self.assertIn("| hi | 3 | 10 | 40 | 70.0 | 0.0 | 0 | s |", body)
+        self.assertIn("| failed | 2 | 0 | 3 | — | — |", body)
+        self.assertIn("| unused | 2 | 0 | 0 | — | — |", body)
+        self.assertIn("outperforms", body)
+
     def test_policy_defaults_and_overrides_reach_comparison(self):
         cfg = {"platforms": {"copilot": {"tier": 2, "max_size": "s"},
                              "agy-gemini": {"tier": 3, "max_size": "m"}}}
@@ -365,7 +395,7 @@ class BuildBodyTests(unittest.TestCase):
         self.assertEqual(pol["inversion_margin_pct"], 15.0)
         body = platform_audit.build_body(cfg, led, pol)
         self.assertIn("| Sizes |", body)
-        self.assertIn("| copilot | 2 | 10 | 90.0 | 0.0 | 0 | s |", body)
+        self.assertIn("| copilot | 2 | 10 | 0 | 90.0 | 0.0 | 0 | s |", body)
         self.assertIn("`copilot` (tier 2, sizes s, 90.0% of 10 runs)", body)
         self.assertIn("`agy-gemini` (tier 3, sizes s+m, 70.0% of 20 runs)", body)
         for override in [{"inversion_min_runs": 11},
