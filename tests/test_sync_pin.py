@@ -45,8 +45,12 @@ class FakeGH:
                  "createdAt": t(-60), "updatedAt": t(0),
                  "url": f"https://github.com/x/y/issues/{n}",
                  "labels": [{"name": l} for l in i["labels"]],
-                 "comments": [{"createdAt": at, "body": body}
-                              for at, body in i.get("comments", [])]}
+                 "comments": [{"createdAt": at, "body": body,
+                               "authorAssociation": "OWNER" if owner else "NONE",
+                               "author": {"login": "x" if owner else "stranger"}}
+                              for at, body, owner in
+                              (c if len(c) == 3 else (*c, True)
+                               for c in i.get("comments", []))]}
                 for n, i in sorted(self.issues.items())]
 
     def issues_changed(self, etag=None):
@@ -106,10 +110,32 @@ class PinTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
             sync.sync(self.ctx, "x")
 
-    def command(self, body, minutes=1):
-        """A user comment arrives; sync processes it."""
-        self.gh.issues[5]["comments"].append((t(minutes), body))
+    def command(self, body, minutes=1, owner=True):
+        """A comment arrives (the owner's, unless owner=False); sync processes it."""
+        self.gh.issues[5]["comments"].append((t(minutes), body, owner))
         self.sync()
+
+    def test_non_owner_cannot_pin_a_platform(self):
+        """A pin bypasses the approval gate, so a stranger's `/mahler platform`
+        must do nothing — same rule as `/mahler approve` (mahler#433)."""
+        before = list(self.gh.issues[5]["labels"])
+        self.command("/mahler platform agy-claude", owner=False)
+        self.assertIn("ignored /mahler platform from non-owner", self.lines())
+        self.assertEqual(self.gh.edits, [])
+        self.assertEqual(self.gh.issues[5]["labels"], before)
+        self.assertIsNone(self.led.item("x", 5)["pin"])
+
+    def test_non_owner_cannot_approve(self):
+        self.command("/mahler approve", owner=False)
+        self.assertIn("ignored /mahler approve from non-owner", self.lines())
+        self.assertIsNone(self.led.get_kv(tick.approval_key("x", 5)))
+        self.command("/mahler approve", minutes=2)
+        self.assertIsNotNone(self.led.get_kv(tick.approval_key("x", 5)))
+
+    def test_non_owner_cannot_unpin(self):
+        self.command("/mahler platform agy-claude")
+        self.command("/mahler platform none", minutes=2, owner=False)
+        self.assertEqual(self.led.item("x", 5)["pin"], "agy-claude")
 
     def lines(self):
         return "\n".join(self.ctx.lines)

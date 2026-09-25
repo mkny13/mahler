@@ -122,9 +122,12 @@ def prepare(ctx, project, item, role, platform, run_id):
     worktree on the right ref, the project's linked files, and — for a build —
     the saved work replayed onto current base (D19).
 
-    -> dict(run_dir, worktree, branch, base_ref, replayed, kept). `replayed`
-    says whether earlier work was carried over; `kept` is the ref the old tip
-    was parked on when it no longer applied. Both feed prompt.build.
+    -> dict(run_dir, worktree, branch, run_branch, push_branch, base_ref,
+    replayed, kept). `branch` is what the run is told it works on;
+    `run_branch` the local branch it holds (None when detached); `push_branch`
+    where its work must land. `replayed` says whether earlier work was carried
+    over; `kept` is the ref the old tip was parked on when it no longer
+    applied. Both feed prompt.build.
     """
     pol = ctx.policy(project)
     repo, base = pol["path"], pol.get("base", "main")
@@ -141,20 +144,33 @@ def prepare(ctx, project, item, role, platform, run_id):
 
     git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
     branch, start = None, f"origin/{base}"
+    push_branch, run_branch = None, None
     if role == "sort":
+        git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
+    elif role == "review":
+        # a review reads the PR's head (D11), detached, so it never holds the
+        # branch a fix run needs to check out (mahler#433)
+        branch = item["branch"] or f"mahler/{item['number']}-{slug(item['title'])}"
+        start = start_ref(repo, base, item["branch"], branch)
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
         # a fix run works on the PR's head branch itself (D18): its pushes
-        # re-trigger CI. A review checks out that same head, read-only
-        # (D11). A build gets the item's canonical branch name.
-        branch = (item["branch"] if role in ("fix", "review") and item["branch"]
+        # re-trigger CI. A build gets the item's canonical branch name.
+        branch = (item["branch"] if role == "fix" and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
+        push_branch = run_branch = branch
         start = start_ref(repo, base, item["branch"], branch)
         try:
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
-        except GitError:          # branch still checked out by a kept worktree
-            branch = f"{branch}-r{run_id}"
-            git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
+        except GitError:          # branch still checked out by another worktree
+            if not _free_branch(ctx, project, repo, branch, pol):
+                # mahler#433: work on a private name, but a fix still pushes
+                # to the PR's head, or it never reaches the PR
+                run_branch = f"{branch}-r{run_id}"
+                if role != "fix":
+                    push_branch = run_branch
+            git(repo, "worktree", "add", "--quiet", "-B", run_branch, wt, start)
+        branch = run_branch
     # git created the worktree under the process umask; keep it user-only —
     # it can hold linked .env files and repo content (issue #75)
     config.ensure_private_dir(wt)
@@ -171,7 +187,43 @@ def prepare(ctx, project, item, role, platform, run_id):
         if kept:
             start = f"origin/{base}"
     return {"run_dir": run_dir, "worktree": wt, "branch": branch,
+            "run_branch": run_branch, "push_branch": push_branch or branch,
             "base_ref": start, "replayed": replayed, "kept": kept}
+
+
+RUN_WT_RE = re.compile(r"(\d+)-run(\d+)$")
+
+
+def _free_branch(ctx, project, repo, branch, pol):
+    """`branch` is checked out in another worktree. When that worktree is a
+    leftover of an ended run of this project, detach it so the branch is
+    free again without discarding retained work (mahler#433). -> True when freed."""
+    git(repo, "worktree", "prune", check=False)
+    holder, cur = None, None
+    for line in git(repo, "worktree", "list", "--porcelain", check=False).splitlines():
+        if line.startswith("worktree "):
+            cur = line[len("worktree "):]
+        elif line == f"branch refs/heads/{branch}":
+            holder = cur
+    if holder is None:
+        return True                             # the prune above freed it
+    m = RUN_WT_RE.search(os.path.basename(holder))
+    run = ctx.led.run(int(m.group(2))) if m and hasattr(ctx, "led") else None
+    if not run or run["status"] != "ended" or run["project"] != project:
+        return False
+    # git reports the resolved path (/private/var/… on macOS); resolve the
+    # root the same way before checking containment.
+    root = os.path.realpath(worktree_root(pol))
+    holder = os.path.realpath(holder)
+    if os.path.commonpath((root, holder)) != root or holder == root:
+        return False
+    # An ended run may have failed to snapshot. Keep its index, dirty files,
+    # and local commits; detaching at HEAD frees only the branch name.
+    try:
+        git(holder, "checkout", "--quiet", "--detach", "HEAD")
+    except GitError:
+        return False
+    return True
 
 
 def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", stdin_path=None):
@@ -246,7 +298,7 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
         prefix = (f"( {pol['setup']} ) > {setup_log} 2>&1 || "
                   f"{{ echo 97 > {shlex.quote(status_path)}; exit 97; }}; ")
     pid = spawn(argv, wt, log_path, status_path, env=env, prefix=prefix)
-    return {"pid": pid, "worktree": wt, "branch": prep["branch"],
+    return {"pid": pid, "worktree": wt, "branch": prep.get("run_branch", prep["branch"]),
             "base_ref": prep["base_ref"], "log_path": log_path,
             "status_path": status_path}
 

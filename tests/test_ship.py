@@ -383,10 +383,12 @@ class ShipTests(unittest.TestCase):
         led = self.led
 
         def fake_start(ctx, project, it, role, platform, handoff_from=None,
-                       size=None, context=None):
+                       size=None, context=None, review_fix=False):
             role_seen.append((role, platform, context))
-            led.claim(project, it["number"], "run:14", "auto", 30,
-                      platform=platform, run_id=14, handoff_from=handoff_from)
+            rid = led.create_run(project=project, number=it["number"], role=role,
+                                 platform=platform, epoch=1, status="running")
+            led.claim(project, it["number"], f"run:{rid}", "auto", 30,
+                      platform=platform, run_id=rid, handoff_from=handoff_from)
             return True
 
         patcher = mock.patch.object(ship, "start", side_effect=fake_start)
@@ -486,6 +488,162 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(role, "fix")
         self.assertIn("auth.py: missing null check on session token", context)
         self.assertEqual(self.item()["attempts"], 1)
+
+    # ---------- mahler#433: the review gate's budget, duplicates and authors ----------
+
+    def review_failed(self, **item):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]), **item)
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": "a.py: off by one"}))
+
+    def test_pre_pr_build_failures_do_not_use_the_fix_budget(self):
+        self.led.upsert_item("x", 5, attempts=3, esc_fails=1, esc_tier=2,
+                             labels=json.dumps(["size:m"]))
+        self.ship()                                      # opens the PR
+        item = self.item()
+        self.assertEqual((item["pr"], item["attempts"], item["esc_fails"], item["esc_tier"]),
+                         (88, 0, 0, 2))
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual([c[0] for c in calls], ["fix"])
+        self.assertEqual(self.item()["attempts"], 1)
+
+    def test_no_second_fix_while_one_runs_and_a_no_push_fix_counts(self):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        fix = self.led.last_run("x", 5)
+        # the fix is still going, but the item is back in verifying (and the
+        # lease free): the same failed sha must not start a second fix
+        self.led.release("x", 5)
+        self.led.set_state("x", 5, "verifying", "test")
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        # it ended without moving the PR head: a failed attempt, and the next
+        # fix is told where to push
+        self.led.update_run(fix["id"], status="ended")
+        self.led.release("x", 5)
+        self.ship()
+        self.assertEqual(len(calls), 2)
+        self.assertIn("pushed nothing to `mahler/5-x`", calls[1][2])
+        self.assertIn("git push origin HEAD:mahler/5-x", calls[1][2])
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (2, 0))
+
+    def check_delayed_no_push_replacement(self, delay):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        fix = self.led.last_run("x", 5)
+        self.led.update_run(fix["id"], status="ended")
+        self.led.release("x", 5)
+        self.led.set_state("x", 5, "verifying", "test")
+        key = f"reviewfix:x#5:88:{self.gh.head_sha}"
+        with delay:
+            for _ in range(3):
+                self.ship()
+                rec = json.loads(self.led.get_kv(key))
+                self.assertEqual(rec["run"], fix["id"])
+                self.assertTrue(rec["accounted"])
+                self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]),
+                                 (1, 0))
+        self.assertEqual(len(calls), 1)
+        self.ship()
+        self.assertEqual(len(calls), 2)
+        self.assertIn(f"previous fix run (run {fix['id']}) pushed nothing", calls[1][2])
+        self.assertIn("git push origin HEAD:mahler/5-x", calls[1][2])
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (2, 0))
+        replacement = json.loads(self.led.get_kv(key))
+        self.assertNotEqual(replacement["run"], fix["id"])
+        self.assertFalse(replacement.get("accounted", False))
+
+    def test_no_push_context_survives_capacity_delay(self):
+        self.check_delayed_no_push_replacement(
+            mock.patch.dict(self.cfg["concurrency"], {"total": 0}))
+
+    def test_no_push_context_survives_routing_delay(self):
+        self.check_delayed_no_push_replacement(
+            mock.patch.object(ship.router, "pick_for_project", return_value=(None, [])))
+
+    def test_no_push_context_survives_launch_failure(self):
+        # This patch is entered after the helper installs its successful launcher.
+        self.check_delayed_no_push_replacement(
+            mock.patch.object(ship, "start", return_value=False))
+
+    def test_review_excludes_every_author_of_the_pr(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        for role, platform in (("build", "agy-claude"), ("fix", "agy-gemini"),
+                               ("review", "cline-free")):
+            if role == "fix":
+                self.led.event("pr_opened", "x", 5, {"pr": 88})
+            rid = self.led.create_run(project="x", number=5, role=role,
+                                      platform=platform, epoch=1, status="running")
+            self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn(calls[0][1], ("agy-claude", "agy-gemini"))
+
+    def test_review_falls_back_to_excluding_only_the_latest_author(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.cfg["routing"]["review"] = ["agy-claude", "agy-gemini"]
+        for role, platform in (("build", "agy-claude"), ("fix", "agy-gemini")):
+            rid = self.led.create_run(project="x", number=5, role=role,
+                                      platform=platform, epoch=1, status="running")
+            self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual([c[1] for c in calls], ["agy-claude"])
+
+    def test_escalation_past_every_platform_clamps_to_the_strongest(self):
+        """#184 sat 6 hours asking for tier 4 when claude (3) was the top."""
+        self.cfg["routing"]["build"] = ["agy-claude", "agy-gemini", "claude"]
+        self.review_failed(esc_tier=4)
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual([c[0] for c in calls], ["fix"])
+        self.assertEqual(self.cfg["platforms"][calls[0][1]]["tier"], 3)   # the top one
+
+    def test_escalation_to_an_approval_platform_asks_first(self):
+        self.cfg["platforms"]["fable"] = dict(self.cfg["platforms"]["claude"],
+                                              model="claude-fable-5-1", tier=5)
+        self.cfg["routing"]["build"] = ["agy-claude", "agy-gemini", "claude", "fable"]
+        later = iso(NOW + timedelta(hours=2))
+        self.led.record_usage("fable", "5h", 10, later)
+        self.led.record_usage("fable", "weekly", 10, later)
+        self.review_failed(esc_tier=4)
+        calls = []
+        self.patch_review_start(calls)
+        ping = self.ship()
+        self.assertEqual(calls, [])
+        item = self.item()
+        self.assertEqual(item["state"], "needs_you")
+        self.assertIn("/mahler approve", item["question"])
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(ping.call_args[0][0], "Approve a run? — x #5")
+        # the owner approves: back to the conductor, which starts it on fable
+        from mahler import sync
+        sync._apply_instruction(self.ctx, "x", self.item(), "approve", None)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.ship()
+        self.assertEqual([(c[0], c[1]) for c in calls], [("fix", "fable")])
+
+    def test_approval_platforms_are_never_picked_unasked(self):
+        self.cfg["platforms"]["fable"] = dict(self.cfg["platforms"]["claude"],
+                                              model="claude-fable-5-1", tier=5)
+        self.cfg["routing"]["review"] = ["fable", "agy-gemini"]
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual([c[1] for c in calls], ["agy-gemini"])
 
     def test_stale_review_verdict_on_a_new_sha_re_reviews(self):
         """A fix round (or any new push) changes the head sha: a verdict

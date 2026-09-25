@@ -12,7 +12,7 @@ from . import config, router, runner
 from .finalize import retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
-from .tick import busy_platforms, start
+from .tick import ask_approval, busy_platforms, is_approved, start
 
 
 def ship(ctx, projects):
@@ -312,8 +312,8 @@ def _start_review_run(ctx, project, item, pr, view, sha):
                 "the review waits for the next tick")
         return
     busy = busy_platforms(cfg, active)
-    last = led.last_run(project, n)
-    builder_platform = last["platform"] if last else None
+    authors = _pr_authors(led, project, n)
+    builder_platform = authors[0] if authors else None
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
     # Claude reviews when the item touches a high-risk surface (D11); the free
@@ -322,10 +322,18 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     # order (still excluding the builder below) rather than deadlocking on a
     # pin that `exclude` would immediately rule back out.
     pin = ("claude" if router.risk_min_tier(row_get(item, "title", "")) > 0
-           and builder_platform != "claude" else None)
+           and "claude" not in authors else None)
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
-        burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+        burst_lines=ctx.burst_lines, exclude=set(authors),
+        approved=is_approved(led, project, n))
+    if not platform and len(authors) > 1:
+        # every candidate wrote part of it: settle for not grading the latest
+        pin = "claude" if pin and builder_platform != "claude" else None
+        platform, reasons = router.pick_for_project(
+            cfg, led, pol, "review", pin, busy, size=size,
+            burst_lines=ctx.burst_lines, exclude={builder_platform},
+            approved=is_approved(led, project, n))
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — "
                 f"{'; '.join(reasons)}")
@@ -344,12 +352,61 @@ def _fix_wait(ctx, project, item, key, reason):
     led, n = ctx.led, item["number"]
     led.release(project, n, holder=CONDUCTOR)
     minutes = ctx.policy(project).get("verify_timeout_minutes", 120)
-    if led.now() - parse(led.get_kv(key)) <= timedelta(minutes=minutes):
+    raw = led.get_kv(key)
+    try:
+        stamp = json.loads(raw)["at"]
+    except (ValueError, TypeError, KeyError):
+        stamp = raw
+    if led.now() - parse(stamp) <= timedelta(minutes=minutes):
         return
     question = f"No fix run could start for PR #{item['pr']} after {minutes} minutes: {reason}"
     led.set_state(project, n, "needs_you", question, question=question, options="[]")
     ctx.ping(f"Fix waiting — {project} #{n}", question,
              project, n, priority="high", tags="warning")
+
+
+def _fix_tier(ctx, project, item, pr, cur_tier, size=None):
+    """The escalation tier a fix run routes with, clamped to what the project
+    can reach (mahler#433). -> the tier, or None when the next step needs a
+    platform the owner approves by hand: then the item goes to needs-you
+    with a ping, and the conductor lets go of it."""
+    n = item["number"]
+    tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if item["pin"]:
+        return tier
+    tier, gated = router.tier_ceiling(ctx.cfg, ctx.policy(project), "fix", tier,
+                                      is_approved(ctx.led, project, n), size=size)
+    if gated:
+        ask_approval(ctx, project, n, gated, tier)
+        ctx.led.release(project, n, holder=CONDUCTOR)
+        return None
+    return tier
+
+
+def _pr_authors(led, project, n):
+    """Platforms that wrote this PR, latest first (mahler#433): the build that
+    opened it and every fix run since. Review runs never count — a reviewer
+    must differ from the authors, not from the last reviewer."""
+    opened = led.q1("SELECT at FROM events WHERE project=? AND number=? AND kind='pr_opened' "
+                    "ORDER BY id DESC LIMIT 1", (project, n))
+    runs = led.q("SELECT role, platform, started_at FROM runs WHERE project=? AND number=? "
+                 "AND role IN ('build','fix') AND platform IS NOT NULL "
+                 "AND COALESCE(outcome, '') NOT IN ('not claimed') "
+                 "AND COALESCE(outcome, '') NOT LIKE 'launch failed%' ORDER BY id DESC",
+                 (project, n))
+    out, seen_build = [], False
+    for r in runs:
+        if r["role"] == "build":
+            if seen_build:
+                continue
+            seen_build = True
+        elif opened and (r["started_at"] or "") < opened["at"]:
+            continue
+        if seen_build and r["role"] == "fix":
+            continue                            # a fix from before the PR's build
+        if r["platform"] not in out:
+            out.append(r["platform"])
+    return out
 
 
 def _review_triggered_fix(ctx, project, item, pr, view, findings):
@@ -360,7 +417,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     failure and a CI failure on the same sha are never double-counted as one
     event. Left as its own function rather than sharing `_red_ci`'s body
     (mahler#232's per-cycle dedup fix lives there) so this new path can never
-    perturb that already-hardened one."""
+    perturb that already-hardened one.
+
+    The key also records the fix run it started (mahler#433). Seeing the same
+    failed sha again after that run ended means the fix pushed nothing to the
+    PR head: that counts as a failed attempt, and the next fix is told where
+    to push. While the run is still going, nothing else starts."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
@@ -372,8 +434,22 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
-    if not led.get_kv(key):
-        led.set_kv(key, iso(led.now()))
+    raw = led.get_kv(key)
+    try:
+        rec = json.loads(raw) if raw else None
+    except ValueError:                          # the old format: a bare timestamp
+        rec = {"at": raw}
+    rec = rec if isinstance(rec, dict) else ({"at": raw} if raw else None)
+    prev = led.run(rec["run"]) if rec and rec.get("run") else None
+    if prev and prev["status"] != "ended":
+        ctx.say(f"{project}#{n}: PR #{pr} — review fix run {prev['id']} still going")
+        return
+    if rec is None or (prev and not rec.get("accounted")):
+        # Keep the previous run for the replacement prompt across capacity,
+        # routing, and launch retries. Account for its failure only once.
+        led.set_kv(key, json.dumps({"at": iso(led.now()),
+                                   "run": prev["id"] if prev else None,
+                                   "accounted": True}))
 
         cur_fails = row_get(item, "esc_fails", 0)
         new_fails = cur_fails + 1
@@ -401,10 +477,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
         cur_tier = new_tier
-        ctx.ping(f"Review failed — {project} #{n}",
-                 f"PR #{pr}: the independent review found blocking issues; "
-                 "the conductor starts a fix run on it",
-                 project, n, priority="high", tags="warning")
+        if not prev:
+            ctx.ping(f"Review failed — {project} #{n}",
+                     f"PR #{pr}: the independent review found blocking issues; "
+                     "the conductor starts a fix run on it",
+                     project, n, priority="high", tags="warning")
 
     active = led.active_runs()
     if len(active) >= cfg["concurrency"]["total"]:
@@ -415,12 +492,16 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     busy = busy_platforms(cfg, active)
     if size == "l":
         size = "m"
-    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
-    if effective_min_tier >= 2 and size == "s":
+    base_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if base_tier >= 2 and size == "s":
         size = "m"
+    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier, size=size)
+    if effective_min_tier is None:
+        return
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "fix", item["pin"], busy, size=size,
-        burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+        burst_lines=ctx.burst_lines, min_tier=effective_min_tier,
+        approved=is_approved(led, project, n))
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -436,9 +517,15 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                f"STATUS: DONE:\n\n{findings}" if findings else
                "- an independent review of this PR found blocking issues (see the PR "
                "comments); address them, verify, push, and end with STATUS: DONE")
+    if prev:
+        context = (f"- the previous fix run (run {prev['id']}) pushed nothing to `{head}`, "
+                   f"the PR's head branch. Push your fix to it with "
+                   f"`git push origin HEAD:{head}`\n" + context)
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from, size=size, context=context):
+             handoff_from=handoff_from, size=size, context=context, review_fix=True):
         led.upsert_item(project, n, attempts=attempts)
+        run = led.last_run(project, n)
+        led.set_kv(key, json.dumps({"at": iso(led.now()), "run": run["id"] if run else None}))
 
 
 def _red_ci(ctx, project, item, pr, view):
@@ -511,14 +598,18 @@ def _red_ci(ctx, project, item, pr, view):
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     if size == "l":
         size = "m"
-    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
-    if effective_min_tier >= 2 and size == "s":
+    base_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
+    if base_tier >= 2 and size == "s":
         size = "m"
+    effective_min_tier = _fix_tier(ctx, project, item, pr, cur_tier, size=size)
+    if effective_min_tier is None:
+        return
     # D26: route within the project's declared accounts: fallback order,
     # equal round-robin, or an explicit cross-account priority.
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "fix", item["pin"], busy, size=size,
-        burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+        burst_lines=ctx.burst_lines, min_tier=effective_min_tier,
+        approved=is_approved(led, project, n))
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -549,7 +640,9 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         needs = needs_human_of(gh.issue_body(n))
         pr = gh.pr_create(branch, base, item["title"],
                           pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
-    led.upsert_item(project, n, pr=pr)
+    # mahler#433: build failures before the PR don't eat the budget its CI and
+    # review fix rounds get; the escalation tier they reached is kept.
+    led.upsert_item(project, n, pr=pr, attempts=0, esc_fails=0)
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
     ctx.say(f"{project}#{n}: opened PR #{pr} from `{branch}` (base {base}) — verifying")
 

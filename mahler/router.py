@@ -465,6 +465,69 @@ def cap_escalation(cfg, pol, tier, size=None, *, role="fix", pin=None):
     return min(tier, max(tiers, default=0))
 
 
+# The owner approves every run on these models by hand (mahler#433): the
+# strongest, dearest platforms. A platform's own `approval = true|false`
+# overrides the model match.
+APPROVAL_MODELS = ("fable", "astra")
+
+
+def needs_approval(pconf):
+    if "approval" in pconf:
+        return bool(pconf["approval"])
+    models = " ".join(str(pconf.get(k) or "") for k in ("model", "build_model", "sort_model"))
+    return any(m in models.lower() for m in APPROVAL_MODELS)
+
+
+def project_candidates(cfg, pol, role):
+    """Every enabled platform the project may route `role` to, quota aside —
+    the same accounts pick_for_project walks."""
+    accts = accounts_of(pol)
+    mode = account_mode_of(pol)
+    if mode == "equal":
+        return candidates_for_accounts(cfg, role, accts)
+    if mode == "priority":
+        return candidates_for_priority(cfg, role, accts, pol.get("routing") or {})
+    return [name for account in accts for name in candidates(cfg, role, account=account)]
+
+
+def _size_eligible(role, size, pconf):
+    """Size limits don't apply to sort or plan roles."""
+    if role in ("sort", "plan"):
+        return True
+    limit = pconf.get("max_size")
+    if limit and SIZES.get(size or "m", 2) > SIZES[limit]:
+        return False
+    min_limit = pconf.get("min_size")
+    if min_limit and SIZES.get(size or "m", 2) < SIZES[min_limit]:
+        return False
+    return True
+
+
+def tier_ceiling(cfg, pol, role, min_tier, approved=False, size=None):
+    """Clamp an escalation tier to what the project can reach (mahler#433).
+    -> (tier to route with, [platforms that need the owner's approval]).
+
+    Escalating past the strongest usable platform used to leave the item
+    waiting, silently, for a platform that doesn't exist. Now, when stronger
+    platforms exist but need approval, they're returned so the caller asks;
+    otherwise the tier is clamped to the strongest usable platform, which
+    keeps trying until the item's attempts run out."""
+    if not min_tier:
+        return min_tier, []
+    names = project_candidates(cfg, pol, role)
+    names = [n for n in names if _size_eligible(role, size, cfg["platforms"][n])]
+    usable = [tier_of(cfg["platforms"][n]) for n in names
+              if approved or not needs_approval(cfg["platforms"][n])]
+    top = max(usable, default=0)
+    if min_tier <= top:
+        return min_tier, []
+    gated = [n for n in names if not approved and needs_approval(cfg["platforms"][n])
+             and tier_of(cfg["platforms"][n]) > top]
+    if gated:
+        return min_tier, gated
+    return top, []
+
+
 RISK_KEYWORDS = (
     "recipes/", "agents.md", "claude.md", "prompt context",
     "meta-programming", "credentials", "credential boundary",
@@ -486,7 +549,7 @@ def risk_min_tier(text):
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
          account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
-         exclude=()):
+         exclude=(), approved=False):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -505,6 +568,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     D11's "review by a different platform than the builder": this applies
     even to a pinned platform, since a pinned reviewer identical to the
     builder would defeat the point.
+
+    A platform that `needs_approval` is skipped unless it is pinned or the
+    item carries the owner's approval (`approved`, mahler#433).
     """
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
@@ -521,6 +587,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]
+        if needs_approval(pconf) and not approved and name != pin:
+            reasons.append(f"{name}: needs your approval (/mahler approve)")
+            continue
         # Escalation tier (DESIGN D8 rule 4): build and fix skip platforms below min_tier
         if min_tier and not pin and role in ("build", "fix"):
             t = tier_of(pconf)
@@ -553,7 +622,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
 
 
 def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
-                      burst_lines=None, min_tier=0, exclude=()):
+                      burst_lines=None, min_tier=0, exclude=(), approved=False):
     """Route within a project's declared accounts (DESIGN D26).
 
     Default ("order"): tries each account in turn, spending the first with
@@ -565,16 +634,19 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     mode = account_mode_of(pol)
     if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, exclude=exclude)
+                    min_tier=min_tier, accounts=accts, exclude=exclude,
+                    approved=approved)
     if mode == "priority":
         order = candidates_for_priority(
             cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude)
+                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude,
+                    approved=approved)
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                             account=account, min_tier=min_tier, exclude=exclude)
+                             account=account, min_tier=min_tier, exclude=exclude,
+                             approved=approved)
         reasons += why
         if platform:
             return platform, reasons

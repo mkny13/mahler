@@ -982,6 +982,18 @@ never run.
 - **Opus builds only by escalation** (D8 rule 4, now built): two failed attempts on a tier move
   the item up a tier. Each platform has a `tier`: Cline and Kilo 1, agy-claude and Copilot 2,
   agy-gemini and Claude 3, Claude Opus 4. Fix runs never route to Opus by size alone.
+- **Escalation stops at what the project can reach, and Fable and Astra need your approval**
+  (mahler#433, your decision 2026-09-23). An escalation past the strongest platform in the
+  project's routing is clamped to it. The item keeps trying there until its attempts run out,
+  then goes to `failed` with a ping. It no longer waits silently for a tier that doesn't exist
+  (phish-in#184 sat 6 hours that way). Fable and Astra are the tier-5 models (Astra is
+  configured on the work account; Fable has no route and none is planned). Platforms on
+  either model, or any with `approval = true`, are never picked on their own. When only they are stronger, the item goes
+  to needs-you and asks. `/mahler approve` on the issue allows them for that item; a pin
+  (`/mahler platform <name>`) counts as approval too. Both commands work only from the repo owner:
+  a pin skips the approval gate, so a stranger's comment on a public issue must not be able to
+  spend Fable or Astra (a review found that hole). Anyone else's `/mahler approve` or
+  `/mahler platform` is ignored and logged.
 - **Claude has low/medium/high slots.** `claude-low` selects Haiku for `size:s`, `claude`
   selects Sonnet through `size:m`, and `claude-opus` selects Opus for `size:l`; they are
   opt-in routing choices, not extra quota.

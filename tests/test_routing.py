@@ -1110,3 +1110,46 @@ class PeakOverrideCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ApprovalTests(unittest.TestCase):
+    """mahler#433: Fable and Astra run only with the owner's approval, and an
+    escalation never waits for a tier the project can't reach."""
+
+    def cfg(self, build):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["platforms"]["fable"] = dict(cfg["platforms"]["claude"],
+                                         model="claude-fable-5-1", tier=5)
+        cfg["platforms"]["fable"].pop("max_size", None)
+        cfg["platforms"]["astra"] = dict(cfg["platforms"]["codex-high"],
+                                         model="gpt-6-astra", tier=5)
+        cfg["routing"]["build"] = build
+        return cfg
+
+    def test_approval_models_and_the_override(self):
+        self.assertTrue(router.needs_approval({"model": "claude-fable-5-1"}))
+        self.assertTrue(router.needs_approval({"model": "gpt-6-astra"}))
+        self.assertFalse(router.needs_approval({"model": "claude-opus-5-5"}))
+        self.assertFalse(router.needs_approval({"model": "gpt-6-astra", "approval": False}))
+        self.assertTrue(router.needs_approval({"model": "gpt-5.6-sol", "approval": True}))
+
+    def test_pick_skips_them_unless_approved_or_pinned(self):
+        cfg = self.cfg(["fable", "claude"])
+        led = led_with(fable=(5, 5), claude=(5, 5))
+        name, reasons = router.pick(cfg, led, "build")
+        self.assertEqual(name, "claude")
+        self.assertIn("fable: needs your approval (/mahler approve)", reasons)
+        self.assertEqual(router.pick(cfg, led, "build", approved=True)[0], "fable")
+        self.assertEqual(router.pick(cfg, led, "build", pin="fable")[0], "fable")
+
+    def test_ceiling_clamps_to_the_strongest_usable_tier(self):
+        cfg = self.cfg(["agy-claude", "claude"])
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4), (3, []))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 2), (2, []))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 0), (0, []))
+
+    def test_ceiling_asks_for_the_approval_platforms_above_it(self):
+        cfg = self.cfg(["claude", "fable", "astra"])
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4, size="l"), (4, ["fable", "astra"]))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 4, approved=True, size="l"), (4, []))
+        self.assertEqual(router.tier_ceiling(cfg, {}, "fix", 9, approved=True, size="l"), (5, []))

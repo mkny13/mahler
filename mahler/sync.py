@@ -14,6 +14,7 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  label_names, parse_command, part_of, pin_of, priority_of)
 from .ledger import iso, parse
 from .ship import record_release_item_if_needed, record_uat_if_needed
+from .tick import approval_key
 from .watchdog import request_stop
 
 
@@ -285,7 +286,11 @@ def _process_comments(ctx, project, item, comments):
             continue
         cmd = parse_command(body)
         if cmd:
-            _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd)
+            author = (c.get("author") or {}).get("login") or ""
+            gh_repo = getattr(ctx.gh(project), "repo", "")
+            repo_owner = gh_repo.split("/")[0] if isinstance(gh_repo, str) and "/" in gh_repo else ""
+            is_owner = c.get("authorAssociation") == "OWNER" or (repo_owner and author.casefold() == repo_owner.casefold())
+            _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd, is_owner=is_owner)
         elif led.item(project, item["number"])["state"] == "needs_you":
             led.set_state(project, item["number"], "inbox", "you answered — re-sorting",
                           sorted_at=None)
@@ -294,12 +299,26 @@ def _process_comments(ctx, project, item, comments):
         led.upsert_item(project, item["number"], last_comment_at=iso(newest))
 
 
-def _apply_instruction(ctx, project, item, verb, arg):
+def _apply_instruction(ctx, project, item, verb, arg, is_owner=True):
     led, n = ctx.led, item["number"]
     if verb == "go":
         led.set_state(project, n, "ready", "you said go", attempts=0, setup_fails=0,
                       esc_tier=0, esc_fails=0,
                       sorted_at=iso(led.now() - timedelta(days=1)))
+    elif verb == "approve":
+        if not is_owner:
+            ctx.say(f"{project}#{n}: ignored /mahler approve from non-owner")
+            return
+        # mahler#433: the owner allows approval-gated platforms (Fable, Astra)
+        # for this item. An item with an open PR goes back to the conductor,
+        # which starts the fix it was waiting for; anything else is rescheduled.
+        led.set_kv(approval_key(project, n), iso(led.now()))
+        if item["state"] == "needs_you":
+            if item["pr"]:
+                led.set_state(project, n, "verifying", "you approved — the conductor retries")
+            else:
+                led.set_state(project, n, "ready", "you approved",
+                              sorted_at=item["sorted_at"] or iso(led.now()))
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
         for run in led.active_runs(project):
@@ -308,6 +327,11 @@ def _apply_instruction(ctx, project, item, verb, arg):
     elif verb == "inbox":
         led.set_state(project, n, "inbox", "back to inbox", sorted_at=None)
     elif verb == "platform" and arg:
+        # A pin exempts its platform from the approval gate (router), so it is
+        # as much the owner's call as /mahler approve (mahler#433).
+        if not is_owner:
+            ctx.say(f"{project}#{n}: ignored /mahler platform from non-owner")
+            return
         if arg in ("none", "auto"):
             _set_pin(ctx, project, n, None)
         elif arg in ctx.cfg["platforms"]:

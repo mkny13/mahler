@@ -170,6 +170,7 @@ class CatchUpTests(unittest.TestCase):
 class ParsingTests(unittest.TestCase):
     def test_commands(self):
         self.assertEqual(parse_command("/mahler go"), ("go", None))
+        self.assertEqual(parse_command("ok\n/mahler approve"), ("approve", None))
         self.assertEqual(parse_command("thanks!\n/mahler platform agy-gemini"),
                          ("platform", "agy-gemini"))
         self.assertIsNone(parse_command("just a reply"))
@@ -518,3 +519,117 @@ class SpawnStdinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrepareHeldBranchTests(unittest.TestCase):
+    """mahler#433: reviews never hold the PR's head branch, and a fix whose
+    branch is held either frees it (an ended run's leftover) or still pushes
+    to the PR head."""
+
+    def setUp(self):
+        from mahler.ledger import Ledger
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        d = tmp.name
+        self.repo = os.path.join(d, "repo")
+        remote = os.path.join(d, "remote.git")
+        self.worktrees = os.path.join(d, "worktrees")
+        sh(d, "git", "init", "-q", "--bare", "-b", "main", remote)
+        sh(d, "git", "clone", "-q", remote, self.repo)
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            sh(self.repo, "git", "config", k, v)
+        sh(self.repo, "git", "commit", "--allow-empty", "-qm", "init")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        sh(self.repo, "git", "push", "-q", "origin", "main:mahler/5-x")
+        runs = os.path.join(d, "runs")
+        patcher = mock.patch.object(config, "RUNS_DIR", runs)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        policy = {"path": self.repo, "repo": "x/y", "base": "main", "link": [],
+                  "rules": "", "run_timeout_minutes": 60, "worktree_root": self.worktrees}
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+        self.ctx = SimpleNamespace(cfg={"platforms": {"codex": {"kind": "codex"}}},
+                                   policy=lambda project: policy, led=self.led)
+        self.item = {"number": 5, "title": "x", "branch": "mahler/5-x", "pr": 88}
+
+    def prepare(self, role, run_id):
+        return runner.prepare(self.ctx, "x", self.item, role, "codex", run_id)
+
+    def hold(self, status):
+        """Another run's worktree holding the head branch."""
+        rid = self.led.create_run(project="x", number=5, role="review", platform="codex",
+                                  epoch=1, status=status)
+        wt = os.path.join(self.worktrees, "x", f"5-run{rid}")
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        sh(self.repo, "git", "worktree", "add", "-q", "-B", "mahler/5-x", wt, "origin/mahler/5-x")
+        return wt
+
+    def test_review_checks_out_the_head_detached(self):
+        prep = self.prepare("review", 8)
+        self.assertEqual((prep["branch"], prep["run_branch"]), ("mahler/5-x", None))
+        r = subprocess.run(["git", "-C", prep["worktree"], "symbolic-ref", "-q", "HEAD"],
+                           capture_output=True)
+        self.assertNotEqual(r.returncode, 0)             # detached
+        fix = self.prepare("fix", 9)                     # so the fix gets the branch itself
+        self.assertEqual((fix["run_branch"], fix["push_branch"]), ("mahler/5-x", "mahler/5-x"))
+
+    def test_an_ended_runs_leftover_is_preserved_and_the_branch_reused(self):
+        old = self.hold("ended")
+        prep = self.prepare("fix", 9)
+        self.assertEqual(prep["run_branch"], "mahler/5-x")
+        self.assertTrue(os.path.isdir(old))
+        self.assertEqual(sh(old, "git", "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+
+    def test_ended_holder_keeps_unsnapshotted_work(self):
+        old = self.hold("ended")
+        tracked = os.path.join(old, "tracked.txt")
+        with open(tracked, "w") as f:
+            f.write("local commit")
+        sh(old, "git", "add", "tracked.txt")
+        sh(old, "git", "commit", "-qm", "unpushed work")
+        tip = sh(old, "git", "rev-parse", "HEAD")
+        with open(tracked, "w") as f:
+            f.write("staged work")
+        sh(old, "git", "add", "tracked.txt")
+        with open(tracked, "w") as f:
+            f.write("unstaged work")
+        with open(os.path.join(old, "untracked.txt"), "w") as f:
+            f.write("untracked work")
+        before = sh(old, "git", "status", "--porcelain")
+        prep = self.prepare("fix", 9)
+        self.assertEqual(prep["run_branch"], "mahler/5-x")
+        self.assertEqual(sh(old, "git", "rev-parse", "HEAD"), tip)
+        self.assertEqual(sh(old, "git", "status", "--porcelain"), before)
+        self.assertEqual(sh(old, "git", "show", ":tracked.txt"), "staged work")
+        with open(tracked) as f:
+            self.assertEqual(f.read(), "unstaged work")
+        with open(os.path.join(old, "untracked.txt")) as f:
+            self.assertEqual(f.read(), "untracked work")
+
+    def test_failed_detach_preserves_holder_and_uses_private_branch(self):
+        old = self.hold("ended")
+        real_git = runner.git
+
+        def fail_detach(repo, *args, **kwargs):
+            if args[:1] == ("checkout",):
+                raise runner.GitError("cannot detach")
+            return real_git(repo, *args, **kwargs)
+
+        with mock.patch.object(runner, "git", side_effect=fail_detach):
+            prep = self.prepare("fix", 9)
+        self.assertTrue(os.path.isdir(old))
+        self.assertEqual(sh(old, "git", "rev-parse", "--abbrev-ref", "HEAD"), "mahler/5-x")
+        self.assertEqual((prep["run_branch"], prep["push_branch"]),
+                         ("mahler/5-x-r9", "mahler/5-x"))
+
+    def test_a_live_holder_keeps_a_private_branch_but_pushes_to_the_head(self):
+        live = self.hold("running")
+        prep = self.prepare("fix", 9)
+        self.assertEqual((prep["branch"], prep["run_branch"], prep["push_branch"]),
+                         ("mahler/5-x-r9", "mahler/5-x-r9", "mahler/5-x"))
+        self.assertTrue(os.path.isdir(live))             # never touched
+        ctx = SimpleNamespace(policy=lambda p: {"base": "main", "repo": "x/y"})
+        text = prompt.build(ctx, "x", self.item, "fix", "codex", prep, context="")
+        self.assertIn("git push origin\n   HEAD:mahler/5-x", text)
+        self.assertNotIn("mahler/5-x-r9`", text.split("Rules:")[1])

@@ -547,11 +547,13 @@ def has_sections(body, *headings):
 
 
 
-COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform)\b\s*(\S*)", re.IGNORECASE | re.MULTILINE)
+COMMAND_RE = re.compile(r"^\s*/mahler\s+(go|park|platform|approve)\b\s*(\S*)",
+                        re.IGNORECASE | re.MULTILINE)
 
 
 def parse_command(body):
-    """`/mahler go` · `/mahler park` · `/mahler platform agy-gemini` — or None."""
+    """`/mahler go` · `/mahler park` · `/mahler platform agy-gemini` ·
+    `/mahler approve` — or None."""
     m = COMMAND_RE.search(body or "")
     if not m:
         return None
