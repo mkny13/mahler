@@ -1,5 +1,6 @@
 """`mahler serve`: the console's HTTP surface (DESIGN D10, D27)."""
 
+from datetime import timedelta
 import json
 import os
 import tempfile
@@ -140,10 +141,22 @@ class TestWrites(_Served):
         self.assertEqual((brief["count"], brief["seen"]), (0, cursor))
 
     def test_end_session_records_override(self):
-        status, _, body = self.post("end_session", {"project": "mahler"})
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"ok": True})
-        self.assertIsNotNone(self.led.get_kv("hot_hold_end:mahler"))
+        self.cfg["projects"]["mahler"]["hot_hold"] = True
+        with mock.patch("mahler.presence.last_claude_activity",
+                        return_value=self.led.now() - timedelta(minutes=4)) as activity:
+            before = json.loads(self.request("/api/state")[2])
+            self.assertIn('"end_session"', json.dumps(before["banners"]))
+            status, _, body = self.post("end_session", {"project": "mahler"})
+            self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
+            self.assertIsNotNone(self.led.get_kv("hot_hold_end:mahler"))
+            event = self.led.q1("SELECT * FROM events WHERE kind='hot_hold_end'")
+            self.assertEqual(event["project"], "mahler")
+            after = json.loads(self.request("/api/state")[2])
+            self.assertNotIn('"end_session"', json.dumps(after["banners"]))
+            self.assertNotIn('"end_session"', json.dumps(after["idle"]))
+            self.assertNotIn('data-act="end_session"', self.request("/fragment")[2])
+            activity.return_value = self.led.now() + timedelta(seconds=1)
+            self.assertIn('data-act="end_session"', self.request("/fragment")[2])
         self.assertEqual(self.post("end_session", {"project": "unknown"})[0], 400)
 
     def test_same_origin_is_allowed(self):

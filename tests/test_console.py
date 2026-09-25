@@ -2570,3 +2570,83 @@ class ConsoleReleasesPageTests(unittest.TestCase):
         self.assertIn('Proposed v0.84', doc)
         self.assertNotIn('Patch v0.84', doc)
         self.assertNotIn('Minor v0.84', doc)
+
+
+class ConsoleRevisionTests(unittest.TestCase):
+    def test_document_and_fragment_identify_embedded_script(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        s = state.build(make_cfg(), led)
+        revision = page.asset_revision()
+        marker = f'data-console-revision="{revision}"'
+        self.assertIn(marker, page.document(s))
+        self.assertIn(marker, page.app(s))
+        with mock.patch.object(page, "JS", page.JS + "\n// deployed change"):
+            self.assertNotEqual(revision, page.asset_revision())
+            self.assertNotIn(marker, page.app(s))
+
+    def test_browser_revision_payload_and_acknowledgement(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        # Run the production functions with a minimal DOM boundary, without a
+        # browser dependency or access to the live console.
+        def functions_between(start, end):
+            return page.JS[page.JS.index(start):page.JS.index(end)]
+        script = functions_between("  function reloadHasDraft", "  function refresh")
+        script += functions_between("  function payloadFor", "  // a needs-you")
+        script += functions_between("  function post(action", "  function numberValue")
+        script += r'''
+const assert = require("assert");
+let settingsDirty = false, reloading = false, loadedRevision = "old";
+let fields = [], reloads = 0, stores = {}, saved = [], refreshes = [];
+let app = {querySelectorAll: () => fields};
+let root = {getAttribute: key => ({"data-view":"backlog", "data-tab":"browse", "data-theme":"dark"})[key]};
+let document = {createElement: () => ({set innerHTML(value) {this.content = {
+  querySelector: () => value ? {getAttribute: () => value} : null
+};}})};
+let window = {location: {reload: () => reloads++}};
+function store(kind, key, value) { stores[key] = value; }
+assert.equal(acceptRevision("old"), true);
+settingsDirty = true;
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 0);
+settingsDirty = false;
+fields = [{tagName:"TEXTAREA", value:"unsaved draft", defaultValue:""}];
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 0);
+fields = [];
+assert.equal(acceptRevision(""), false);
+assert.equal(reloads, 0);
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 1);
+assert.deepEqual(stores, {"mahler.view":"backlog", "mahler.tab":"browse", "mahler.theme":"dark"});
+assert.equal(acceptRevision("new"), false);
+assert.equal(reloads, 1);
+// Once the new document loads, the matching revision must not reload again.
+loadedRevision = "new"; reloading = false;
+assert.equal(acceptRevision("new"), true);
+assert.equal(reloads, 1);
+const attrs = {"data-act":"future_action", "data-project":"mahler", "data-number":"42", "class":"btn"};
+const button = {attributes:Object.entries(attrs).map(([name,value]) => ({name,value})), getAttribute:key => attrs[key]};
+assert.deepEqual(payloadFor(button, "future_action"), {project:"mahler", number:"42"});
+assert.deepEqual(payloadFor(button, "uat_pass"), {project:"mahler", number:42});
+function showSavedToast(message) { saved.push(message); }
+function showErrorToast(message) { throw Error(message); }
+function refresh(force) { refreshes.push(force); return Promise.resolve(); }
+function fetch(url, options) {
+  assert.equal(url, "/api/end_session");
+  assert.deepEqual(JSON.parse(options.body), {project:"mahler"});
+  return Promise.resolve({json: () => Promise.resolve({ok:true})});
+}
+post("end_session", payloadFor(button, "end_session")).then(() => {
+  assert.deepEqual(saved, ["Session ended — hold lifted."]);
+  assert.deepEqual(refreshes, [true]);
+}).catch(err => { console.error(err); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        refresh = functions_between("  function refresh(force)", "  function showErrorToast")
+        self.assertLess(refresh.index("!acceptRevision(html)"), refresh.index("app.innerHTML = html"))
+        self.assertIn("if (settingsDirty)", refresh)
