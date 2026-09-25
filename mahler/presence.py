@@ -3,15 +3,16 @@
 Claude Code writes each session's transcript under
 ~/.claude/projects/<cwd with every non-alphanumeric char replaced by '-'>/.
 Edit timestamps in transcripts matching the project path (including nested
-worktrees) identify writers; read-only conversations do not hold builds. Mahler's own runs live under ~/.mahler/worktrees, which
-encodes differently, so they never count as human activity.
+worktrees) identify writers; read-only conversations do not hold builds.
+Mahler's own runs live under ~/.mahler/worktrees, which encodes differently,
+so they never count as human activity.
 """
 
 import glob
 import json
-from dataclasses import dataclass
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
