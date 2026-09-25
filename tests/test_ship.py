@@ -701,6 +701,18 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.lease("x", 5))
         self.assertEqual(ping.call_args[0][0], "Rebuilding — x #5")
 
+    def test_rebuild_pr_is_not_reported_as_unowned(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "CONFLICTING"
+        self.gh.rollup = []
+        self.gh.prs = [self._open(88, 5)]
+
+        ping = self.ship()
+
+        self.assertEqual(self.unowned_pings(ping), [])
+        self.assertEqual(self.item()["pr"], None)
+        self.assertIsNotNone(self.led.get_kv("unowned:x#88"))
+
     def test_mergeability_not_known_yet_waits(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.mergeable = "UNKNOWN"
