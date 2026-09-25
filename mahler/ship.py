@@ -503,7 +503,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                "- an independent review of this PR found blocking issues (see the PR "
                "comments); address them, verify, push, and end with STATUS: DONE")
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from, size=size, context=context):
+             handoff_from=handoff_from, size=size, context=context, fix_reason="review"):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
 
@@ -597,7 +597,7 @@ def _red_ci(ctx, project, item, pr, view):
                     if conductor and (conductor["holder"] == CONDUCTOR
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from, size=size):
+             handoff_from=handoff_from, size=size, fix_reason="ci"):
         led.upsert_item(project, n, attempts=attempts)
 
 
