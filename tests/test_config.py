@@ -177,7 +177,11 @@ class PlatformVariantTests(unittest.TestCase):
     def test_no_variants_declared_is_unchanged(self):
         before = set(config.DEFAULTS['platforms'])
         after = set(config.resolve_platforms(copy.deepcopy(config.DEFAULTS))['platforms'])
-        self.assertEqual(before, after)
+        # Issue #421 (D33): the built-in claude-opus slot declares
+        # `variants = ["claude-opus-5"]`, so the resolved set carries that one
+        # synthetic variant in addition to every slot name — and nothing else.
+        self.assertEqual(after - before, {"claude-opus/claude-opus-5/default"})
+        self.assertEqual(before - after, set())
 
     def test_variant_tier_drives_escalation_routing(self):
         """D8 rule 4: escalation skips a candidate below min_tier. A variant's
@@ -204,3 +208,47 @@ class PlatformVariantTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PinnedModelVersionsTests(unittest.TestCase):
+    """Issue #421 (D33): the built-in Claude slots pin exact model IDs instead
+    of the `haiku`/`sonnet`/`opus` aliases, which silently follow the newest
+    release. `claude-opus` additionally keeps `claude-opus-5` as a variant
+    candidate, so the previous version isn't dropped when a newer Opus ships."""
+
+    def test_claude_low_pins_haiku_4_5(self):
+        low = config.DEFAULTS["platforms"]["claude-low"]
+        self.assertEqual(low["sort_model"], "claude-haiku-4-5-20251001")
+        self.assertEqual(low["build_model"], "claude-haiku-4-5-20251001")
+
+    def test_claude_pins_sonnet_5(self):
+        med = config.DEFAULTS["platforms"]["claude"]
+        self.assertEqual(med["sort_model"], "claude-sonnet-5")
+        self.assertEqual(med["build_model"], "claude-sonnet-5")
+
+    def test_claude_opus_pins_opus_5_5_and_keeps_opus_5_as_variant(self):
+        opus = config.DEFAULTS["platforms"]["claude-opus"]
+        self.assertEqual(opus["sort_model"], "claude-opus-5-5")
+        self.assertEqual(opus["build_model"], "claude-opus-5-5")
+        self.assertEqual(opus["variants"], ["claude-opus-5"])
+        resolved = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
+        self.assertIn("claude-opus/claude-opus-5/default", resolved["platforms"])
+        variant = resolved["platforms"]["claude-opus/claude-opus-5/default"]
+        self.assertEqual(variant["sort_model"], "claude-opus-5")
+        self.assertEqual(variant["build_model"], "claude-opus-5")
+        self.assertEqual(variant["slot"], "claude-opus")
+        self.assertEqual(variant["quota_group"], "claude")
+        self.assertEqual(variant["tier"], 4)          # inherits the slot's tier
+
+    def test_pinned_models_have_price_rows(self):
+        prices = config.DEFAULTS["prices"]
+        for name in ("claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5-5"):
+            self.assertIn(name, prices, f"{name} has no [prices] entry")
+            for key in ("in", "out"):
+                self.assertIsInstance(prices[name][key], (int, float))
+
+    def test_aliases_are_not_used_for_routing(self):
+        for slot in ("claude-low", "claude", "claude-opus"):
+            for key in ("sort_model", "build_model"):
+                self.assertNotIn(config.DEFAULTS["platforms"][slot][key],
+                                 ("haiku", "sonnet", "opus"), slot)

@@ -216,7 +216,8 @@ verify = "python3 -m unittest discover -s tests"
 
 # Raw API-equivalent costs (USD per million tokens). CLI-reported cost wins.
 # Built-in list prices supplied for issue #416, source date 2026-09-23.
-# Add other exact model IDs here; unknown prices stay NULL, never zero.
+# Issue #421 (D33): the built-in Claude slots now pin exact model IDs, so their
+# prices are listed here too. Unknown prices stay NULL, never zero.
 # cached_in defaults to in; reasoning tokens use out. Quota cost weights are
 # applied by scorecard readers, never to the raw run cost stored in the ledger.
 [prices."gpt-6-luna"]
@@ -231,6 +232,15 @@ out = 10.00
 in = 4.00
 cached_in = 0.20
 out = 20.00
+
+[prices."claude-haiku-4-5-20251001"]
+in = 0.80
+out = 4.00
+
+[prices."claude-sonnet-5"]
+in = 3.00
+cached_in = 0.30
+out = 15.00
 
 
 
