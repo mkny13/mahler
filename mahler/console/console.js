@@ -18,7 +18,8 @@
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
   var openRelease = null;       // the project whose release preview is open (mahler#359)
   var openCapture = false;
-  var suppressKeep = [];        // data-keep keys to drop on the next restore (mahler#251)
+  var pendingUploads = 0;
+  var settingsEdits = 0;
   var errorToastTimer = null;   // timer for auto-dismissing error toast
   var settingsDirty = false;    // never poll-refresh an unsaved settings form
 
@@ -238,11 +239,15 @@
   // A full reload cannot use the fragment swap's draft restoration. Defer it
   // while any form has edits, including drafts whose input has lost focus.
   function reloadHasDraft() {
-    if (settingsDirty) { return true; }
+    if (settingsDirty || pendingUploads) { return true; }
     var fields = app.querySelectorAll("input, textarea, select");
     for (var i = 0; i < fields.length; i++) {
       var field = fields[i];
-      if (field.tagName === "SELECT") {
+      if (field.classList && (field.classList.contains("attach-id") ||
+          field.classList.contains("attach-name")) && field.value) { return true; }
+      if (field.savedState !== undefined) {
+        if (fieldState(field) !== field.savedState) { return true; }
+      } else if (field.tagName === "SELECT") {
         var defaultIndex = 0;
         for (var j = 0; j < field.options.length; j++) {
           if (field.options[j].defaultSelected) { defaultIndex = j; }
@@ -279,7 +284,7 @@
 
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
-    if (settingsDirty) { return Promise.resolve(); }
+    if (settingsDirty || pendingUploads) { return Promise.resolve(); }
     var active = document.activeElement;
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
@@ -288,23 +293,20 @@
     if (errorToastTimer) { clearTimeout(errorToastTimer); errorToastTimer = null; }
     var toast = document.getElementById("error-toast");
     if (toast) { toast.remove(); }
-    var skip = suppressKeep;
-    suppressKeep = [];
     return fetch(statsUrl(), { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
-      if (settingsDirty || !acceptRevision(html)) { return; }
+      if (settingsDirty || pendingUploads || !acceptRevision(html)) { return; }
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) {
         var k = inputs[i].getAttribute("data-keep");
-        if (inputs[i].value && skip.indexOf(k) === -1) { keep[k] = inputs[i].value; }
+        if (inputs[i].value) { keep[k] = inputs[i].value; }
       }
       // Both layouts carry the same key; the active draft wins over its hidden twin.
       var focused = document.activeElement;
-      if (focused && focused.hasAttribute("data-keep") &&
-          skip.indexOf(focused.getAttribute("data-keep")) === -1) {
+      if (focused && focused.hasAttribute("data-keep")) {
         keep[focused.getAttribute("data-keep")] = focused.value;
       }
       app.innerHTML = html;
@@ -360,7 +362,36 @@
     setTimeout(function () { if (toast.parentNode) { toast.remove(); } }, 4000);
   }
 
-  function post(action, payload) {
+  function fieldState(field) {
+    if (field.type === "checkbox" || field.type === "radio") { return field.checked; }
+    if (field.tagName === "SELECT") { return field.selectedIndex; }
+    return field.value;
+  }
+
+  function post(action, payload, source) {
+    // Snapshot before the request: a successful save must not consume newer edits.
+    var submitted = [];
+    var edits = settingsEdits;
+    if (source && (action === "settings" || action === "capture")) {
+      var fields = source.querySelectorAll(action === "settings" ? "input, textarea, select" : "[data-keep], [data-capture-select]");
+      for (var i = 0; i < fields.length; i++) {
+        submitted.push({field: fields[i], state: fieldState(fields[i])});
+      }
+      if (action === "capture") {
+        // Fragment restoration mirrors drafts into both layouts. Clear matching
+        // twins too, without consuming a different draft in another composer.
+        var twins = app.querySelectorAll("[data-keep]");
+        for (var t = 0; t < twins.length; t++) {
+          for (var f = 0; f < fields.length; f++) {
+            if (twins[t] !== fields[f] && twins[t].getAttribute("data-keep") === fields[f].getAttribute("data-keep") &&
+                fieldState(twins[t]) === fieldState(fields[f])) {
+              submitted.push({field: twins[t], state: fieldState(twins[t])});
+              break;
+            }
+          }
+        }
+      }
+    }
     return fetch("/api/" + action, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
@@ -375,14 +406,20 @@
       } else if (action === "end_session") {
         showSavedToast("Session ended — hold lifted.");
       } else if (action === "capture") {
-        // Clear every part of the composer on the next restore, but keep the project.
-        suppressKeep = ["capture", "capture_att_id", "capture_att_name"];
+        submitted.forEach(function (entry) {
+          var field = entry.field;
+          if (fieldState(field) !== entry.state) { return; }
+          if (field.hasAttribute("data-capture-select")) {
+            field.captureInitialIndex = field.selectedIndex;
+          } else { field.value = ""; }
+        });
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
         openCapture = false;
       } else if (action === "cut_release") {
         openRelease = null;
       } else if (action === "settings") {
-        settingsDirty = false;
+        submitted.forEach(function (entry) { entry.field.savedState = entry.state; });
+        settingsDirty = settingsEdits !== edits;
         showSavedToast("Settings will apply on the next scheduler tick.");
       } else if (action === "answer" && res.resuming) {
         showSavedToast("Answer posted — resuming.");
@@ -584,12 +621,12 @@
       } else if (item && el.getAttribute("data-route-move") === "down" && item.nextElementSibling) {
         item.parentNode.insertBefore(item.nextElementSibling, item);
       }
-      settingsDirty = true;
+      settingsDirty = true; settingsEdits++;
       return;
     }
     if (el.hasAttribute("data-route-remove")) {
       var removeItem = el.closest("[data-route-platform]");
-      if (removeItem) { removeItem.remove(); settingsDirty = true; }
+      if (removeItem) { removeItem.remove(); settingsDirty = true; settingsEdits++; }
       return;
     }
     if (el.hasAttribute("data-route-add")) {
@@ -602,7 +639,7 @@
         if (current[ci].getAttribute("data-route-platform") === select.value) { exists = true; }
       }
       if (select && list && !exists) {
-        list.appendChild(routeItem(select.value)); settingsDirty = true;
+        list.appendChild(routeItem(select.value)); settingsDirty = true; settingsEdits++;
       }
       return;
     }
@@ -688,7 +725,7 @@
       var act = el.getAttribute("data-act");
       el.disabled = true;
       if (act === "digest_seen") { root.removeAttribute("data-digest"); }
-      post(act, payloadFor(el, act)).catch(function (err) { if (window.console) { console.warn(err); } })
+      post(act, payloadFor(el, act), el.closest(".cap")).catch(function (err) { if (window.console) { console.warn(err); } })
         .finally(function () { el.disabled = false; });
     }
   });
@@ -701,7 +738,13 @@
     btn.textContent = "Uploading...";
     btn.disabled = true;
 
+    pendingUploads++;
     var reader = new FileReader();
+    reader.onerror = reader.onabort = function () {
+      pendingUploads--;
+      btn.disabled = false;
+      showErrorToast("Failed to read file.");
+    };
     reader.onload = function(e) {
       var dataUrl = e.target.result;
       var b64 = dataUrl.split(",")[1];
@@ -730,6 +773,7 @@
         idIn.value = "";
         nameIn.value = "";
       }).finally(function() {
+        pendingUploads--;
         btn.disabled = false;
       });
     };
@@ -738,7 +782,7 @@
 
   document.addEventListener("change", function (ev) {
     var el = ev.target;
-    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
+    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; settingsEdits++; }
     if (el && el.hasAttribute && el.hasAttribute("data-capture-select")) { updateCaptureSave(el); }
     if (el && el.classList && el.classList.contains("attach-in") && el.files && el.files.length > 0) {
       var file = el.files[0];
@@ -772,7 +816,7 @@
 
   document.addEventListener("input", function (ev) {
     var el = ev.target;
-    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
+    if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; settingsEdits++; }
     if (el && el.classList && el.classList.contains("ver-input")) {
       var ov = el.closest(".releaseov");
       if (ov) {
@@ -809,7 +853,7 @@
     if (!form.reportValidity()) { return; }
     var button = form.querySelector('[type="submit"]');
     if (button) { button.disabled = true; }
-    post("settings", settingsPayload(form)).catch(function (err) {
+    post("settings", settingsPayload(form), form).catch(function (err) {
       if (window.console) { console.warn(err); }
       showErrorToast("Settings could not be saved.");
     }).finally(function () { if (button) { button.disabled = false; } });
