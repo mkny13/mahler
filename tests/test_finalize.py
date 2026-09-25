@@ -417,6 +417,21 @@ class RunTests(unittest.TestCase):
         self.assertLess(abs((until - (NOW + timedelta(hours=24))).total_seconds()), 60)
         self.assertEqual(self.led.get_kv("hold_reason:cline-free"), "model_unavailable")
 
+    def test_codex_named_model_rejection_does_not_spend_attempts(self):
+        self.run["platform"] = "codex"
+        self.write_exit(1)
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "turn.failed",
+                                 "error": {"message": "Model 'foo' is not supported"}}) + "\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["attempts"], item["esc_fails"]), (0, 0))
+        self.assertEqual(self.led.get_kv("hold_reason:codex"), "model_unavailable")
+        hold = self.led.usage("codex")[router.HOLD]
+        self.assertEqual(datetime.fromisoformat(hold["resets_at"]), NOW + timedelta(hours=24))
+        ping.assert_called_once()
+
     def test_model_rejection_past_the_grace_period_is_a_normal_attempt(self):
         """A model that ran a while before erroring is a different problem —
         it must not spend the 24h hold on what might be a mid-run fluke."""

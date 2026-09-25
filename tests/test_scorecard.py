@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import unittest
 
 from mahler.ledger import Ledger, iso
-from mahler.scorecard import attempts
+from mahler.scorecard import attempts, table
 
 
 class AttemptTests(unittest.TestCase):
@@ -142,6 +142,21 @@ class AttemptTests(unittest.TestCase):
             with self.subTest(why=why):
                 rid = self.run_attempt(outcome=outcome, stop_reason=reason, exit_code=1)
                 self.result(rid, 'excluded', why)
+
+    def test_model_unavailable_excluded_from_variant_and_parent_scores(self):
+        parent = self.run_attempt(role='plan', outcome='SPLIT')
+        self.advance()
+        rejected = self.run_attempt(number=2, outcome='no status line',
+                                    stop_reason='model_unavailable', exit_code=1)
+        self.led.upsert_item('p', 2, parent=1)
+        self.result(rejected, 'excluded', 'model_unavailable')
+        self.result(parent, 'pending')
+        self.advance()
+        self.run_attempt(number=2)
+        self.result(parent, 'success')
+        build = next(row for row in table(self.led, {}, since=None)
+                     if row['role'] == 'build')
+        self.assertEqual((build['n'], build['successes'], build['rate']), (1, 1, 1.0))
 
     def test_ready_first_build_success_failure_pending_and_exclusions(self):
         for role in ('sort', 'plan'):

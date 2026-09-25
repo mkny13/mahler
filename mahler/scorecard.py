@@ -30,7 +30,7 @@ def _exclusion(run):
         return 'setup failed'
     if outcome == 'not claimed':
         return 'not claimed'
-    if run['stop_reason'] in {'quota', 'preempted', 'closed', 'parked'}:
+    if run['stop_reason'] in {'quota', 'preempted', 'closed', 'parked', 'model_unavailable'}:
         return run['stop_reason']
     if outcome.split(' ', 1)[0] in {'BLOCKED', 'NEEDS-YOU'}:
         return outcome.split(' ', 1)[0]

@@ -90,11 +90,16 @@ class ModelUnavailableDetectionTests(unittest.TestCase):
     def test_matches_and_does_not_confuse_with_quota(self):
         for text in ("Model not found: bogus-model", "unsupported model",
                      "Error: invalid model 'foo'", "MODEL_NOT_FOUND",
-                     "the API does not support model gpt-1"):
+                     "the API does not support model gpt-1",
+                     "Model 'foo' not found", "Model 'foo' is not supported",
+                     'Model "org/foo-1" is not allowed',
+                     "Model foo is not enabled"):
             with self.subTest(text=text):
                 self.assertTrue(platforms.is_model_unavailable(text))
         for text in ("429 rate limit exceeded", "Add credits to continue",
-                     "Daily free limit reached. Try again in 2h", "", None):
+                     "Daily free limit reached. Try again in 2h",
+                     "Model foo loaded but file not found",
+                     "Model foo is supported", "", None):
             with self.subTest(text=text):
                 self.assertFalse(platforms.is_model_unavailable(text))
 
@@ -114,11 +119,15 @@ class ModelUnavailableDetectionTests(unittest.TestCase):
             self.assertFalse(res["quota_hit"])
 
     def test_codex_turn_failed(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = self._log(d, {"type": "turn.failed",
-                                 "error": {"message": "unsupported model gpt-1"}})
-            res = platforms.read_log(path, "codex")
-            self.assertTrue(res["model_unavailable"])
+        for message in ("unsupported model gpt-1", "Model 'foo' not found",
+                        "Model 'foo' is not supported",
+                        'Model "org/foo-1" is not allowed'):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as d:
+                path = self._log(d, {"type": "turn.failed",
+                                     "error": {"message": message}})
+                res = platforms.read_log(path, "codex")
+                self.assertTrue(res["model_unavailable"])
+                self.assertFalse(res["quota_hit"])
 
     def test_copilot_error_event(self):
         with tempfile.TemporaryDirectory() as d:

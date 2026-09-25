@@ -105,13 +105,25 @@ MODEL_UNAVAILABLE_WORDS = (
     "model not allowed", "model not enabled", "model_not_found",
 )
 
+# Match one model ID, optionally quoted, rather than arbitrary intervening
+# prose (which could describe an unrelated failure).
+MODEL_UNAVAILABLE_PATTERN = re.compile(
+    r"""\bmodel\s+['"`]?[-\w./:]+['"`]?\s+(?:is\s+)?not\s+"""
+    r"(?:found|supported|allowed|enabled)\b"
+)
+
 
 def is_model_unavailable(text):
     """Whether error text says a model isn't supported, found or allowed."""
     if not text:
         return False
+    if isinstance(text, dict):
+        return any(is_model_unavailable(value) for value in text.values())
+    if isinstance(text, list):
+        return any(is_model_unavailable(value) for value in text)
     lower = str(text).lower()
-    return any(p in lower for p in MODEL_UNAVAILABLE_WORDS)
+    return (any(p in lower for p in MODEL_UNAVAILABLE_WORDS)
+            or bool(MODEL_UNAVAILABLE_PATTERN.search(lower)))
 
 # Guardrails (DESIGN D12): destructive command stems agents must never run.
 # Kept platform-neutral; each argv builder renders its own CLI's deny syntax.
@@ -774,7 +786,7 @@ def read_log(path, kind, model=None):
                 elif t == "result":
                     res["final"] = ev.get("result")
                     res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
-                    if ev.get("is_error") and is_model_unavailable(json.dumps(ev)):
+                    if ev.get("is_error") and is_model_unavailable(ev):
                         res["model_unavailable"] = True
             elif kind == "cline":
                 if ev.get("type") == "run_result":
@@ -784,7 +796,7 @@ def read_log(path, kind, model=None):
                         blob = json.dumps(ev).lower()
                         if any(w in blob for w in QUOTA_WORDS):
                             _note_quota_hit(res, ev)
-                        if any(w in blob for w in MODEL_UNAVAILABLE_WORDS):
+                        if is_model_unavailable(ev):
                             res["model_unavailable"] = True
                         if ev.get("text"):
                             res["last_error"] = ev.get("text")
@@ -792,7 +804,7 @@ def read_log(path, kind, model=None):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
-                    if any(w in blob for w in MODEL_UNAVAILABLE_WORDS):
+                    if is_model_unavailable(ev):
                         res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
             elif kind == "copilot":
@@ -808,7 +820,7 @@ def read_log(path, kind, model=None):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
-                    if any(w in blob for w in MODEL_UNAVAILABLE_WORDS):
+                    if is_model_unavailable(ev):
                         res["model_unavailable"] = True
             elif kind == "codex":
                 t = ev.get("type")
@@ -824,7 +836,7 @@ def read_log(path, kind, model=None):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
-                    if any(w in blob for w in MODEL_UNAVAILABLE_WORDS):
+                    if is_model_unavailable(ev):
                         res["model_unavailable"] = True
             elif kind == "kilo":
                 if ev.get("sessionID"):
@@ -833,7 +845,7 @@ def read_log(path, kind, model=None):
                     blob = json.dumps(ev).lower()
                     if any(w in blob for w in QUOTA_WORDS):
                         _note_quota_hit(res, ev)
-                    if any(w in blob for w in MODEL_UNAVAILABLE_WORDS):
+                    if is_model_unavailable(ev):
                         res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
                 elif ev.get("type") == "step_finish":
@@ -856,7 +868,7 @@ def read_log(path, kind, model=None):
                         blob = json.dumps(r).lower()
                         if "quota" in blob:
                             _note_quota_hit(res, r)
-                        if is_model_unavailable(blob):
+                        if is_model_unavailable(r):
                             res["model_unavailable"] = True
                 elif ev.get("event") == "step_update":
                     su = ev.get("step_update") or {}
