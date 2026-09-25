@@ -11,7 +11,7 @@ import html
 import json
 import os
 
-from .state import STATS_RANGES, _hhmm
+from .state import MODELS_LABEL, STATS_RANGES, _hhmm
 from ..ledger import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +22,7 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
          ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
-         ("capacity", "Capacity"), ("stats", "Stats"), ("history", "Event stream"),
+         ("capacity", "Capacity"), ("stats", "Stats"), ("models", MODELS_LABEL), ("history", "Event stream"),
          ("settings", "Settings"))
 
 
@@ -319,6 +319,7 @@ def _desktop(s):
         "releases": (str(s["releases_suggested"]) if s.get("releases_suggested") else "", "acc"),
         "capacity": ("", "mut"),
         "stats": ("", "mut"),
+        "models": ("", "mut"),
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
         "settings": ("", "mut"),
     }
@@ -343,7 +344,7 @@ def _desktop(s):
             f'{peak_btn}</div>')
 
     views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
-             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_history(s)
+             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_models(s) + _d_history(s)
              + _settings_form(s["settings"], "desktop"))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
@@ -859,9 +860,10 @@ def _phone(s):
             f'<button class="tab" data-tab-go="releases"><span>Releases</span>'
             f'<span class="mono t-acc">{sugg or ""}</span></button>'
             f'<button class="tab" data-tab-go="browse"><span>Browse</span></button>'
-            f'<button class="tab" data-tab-go="stats"><span>Stats</span></button></div></header>')
+            f'<button class="tab" data-tab-go="stats"><span>Stats</span></button>'
+            f'<button class="tab" data-tab-go="models"><span>{e(MODELS_LABEL)}</span></button></div></header>')
     return (f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}'
-            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}'
+            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}{_p_models(s)}'
             f'{_settings_form(s["settings"], "phone")}</div></div>')
 
 
@@ -1215,3 +1217,25 @@ def _release_preview_overlays(s):
                    f'</button>'
                    f'</div></div></div>')
     return "".join(out)
+
+
+def _model_rows(s):
+    data = s["models"]
+    groups = []
+    for group in data["groups"]:
+        rows = "".join(
+            f'<tr><td class="t-{e(r["tone"])}">{e(r["text"])}'
+            f'<details><summary>{e(r["details_label"])}</summary>'
+            + "".join(f'<p>{e(detail)}</p>' for detail in r["details"])
+            + '</details></td></tr>' for r in group["rows"])
+        groups.append(f'<table><caption>{e(group["title"])}</caption><tbody>{rows}</tbody></table>')
+    return f'<p class="t-mut">{e(data["note"])}</p>' + (
+        "".join(groups) or f'<p>{e(data["empty"])}</p>')
+
+
+def _d_models(s):
+    return f'<section class="view view-models">{_model_rows(s)}</section>'
+
+
+def _p_models(s):
+    return f'<section class="tabv tabv-models"><div class="pad">{_model_rows(s)}</div></section>'

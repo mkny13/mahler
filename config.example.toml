@@ -220,3 +220,16 @@ in = 4.00
 cached_in = 0.20
 out = 20.00
 
+
+
+# D33 model scorecard; measurement does not change routing by itself.
+[measure]
+min_attempts = 8
+window_days = 60
+bars = { build = 0.70, fix = 0.70, sort = 0.80, plan = 0.75 }
+explore_share = { build = 0.15, fix = 0.15, sort = 0.15, plan = 0.05 }
+
+# Optional weighting of API-equivalent costs for a shared quota_group.
+# Unspecified groups use 1.0; this never enables paid usage.
+# [quota_groups.claude]
+# cost_weight = 1.0

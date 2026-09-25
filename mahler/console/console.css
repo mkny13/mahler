@@ -635,3 +635,14 @@ a { color: var(--acc); text-decoration: none; }
   .releaseov { align-items: flex-end; }
   .releaseov .box { width: 100%; max-height: 92vh; border-radius: 6px 6px 0 0; }
 }
+
+/* Model scorecard shares the console's plain rows on both layouts. */
+:root[data-view="models"] .rail-i[data-go="models"],
+:root[data-tab="models"] .tab[data-tab-go="models"] { color: var(--acc); }
+:root[data-view="models"] .vt-models { display: inline; }
+:root[data-view="models"] .view-models { display: flex; }
+:root[data-tab="models"] .tabv-models { display: block; }
+.view-models, .tabv-models .pad { gap: 16px; }
+.view-models table, .tabv-models table { width: 100%; border-collapse: collapse; }
+.view-models caption, .tabv-models caption { text-align: left; font-weight: 600; }
+.view-models td, .tabv-models td { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }

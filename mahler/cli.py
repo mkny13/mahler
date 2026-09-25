@@ -815,6 +815,28 @@ def cmd_backfill_usage(a, cfg, led):
     print(f"{'Would update' if a.dry_run else 'Updated'} {updated} run(s); skipped {skipped}.")
 
 
+def _scorecard_days(value):
+    if not re.fullmatch(r"[1-9][0-9]*d", value):
+        raise argparse.ArgumentTypeError("use a positive day window, e.g. 30d")
+    return int(value[:-1])
+
+
+def cmd_scorecard(a, cfg, led):
+    from . import scorecard
+    since = led.now() - timedelta(days=a.since) if a.since else None
+    rows = scorecard.table(led, cfg, project=a.project, since=since)
+    rows = [r for r in rows if (not a.role or r["role"] == a.role)
+            and (not a.size or r["size"] == a.size)]
+    if a.raw:
+        print(json.dumps([attempt for row in rows for attempt in row["attempts"]], indent=2))
+    else:
+        print("Model scorecard · API-equivalent dollars (weighted)")
+        for row in rows:
+            print(f'{row["role"]} / {row["size"] or "unknown size"}: {scorecard.summary(row)}')
+        if not rows:
+            print("No attempts in this window.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -829,6 +851,14 @@ def main(argv=None):
     s.add_argument("--json", action="store_true")
     s.add_argument("--project", help="filter by project")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("scorecard", help="model cost and first-attempt success by role and size")
+    s.add_argument("--project")
+    s.add_argument("--role")
+    s.add_argument("--size")
+    s.add_argument("--since", type=_scorecard_days, metavar="30d")
+    s.add_argument("--raw", action="store_true")
+    s.set_defaults(fn=cmd_scorecard)
 
     s = sub.add_parser("serve", help="the operator console (D27)")
     s.add_argument("--host", type=str, default=None,

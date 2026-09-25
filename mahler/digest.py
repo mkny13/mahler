@@ -8,6 +8,7 @@ and the key is written only after a successful POST, so a failed send retries
 on the next tick instead of being lost for the day.
 """
 
+import json
 from datetime import timedelta
 
 from . import notify
@@ -26,7 +27,7 @@ def _local_now():
 
 # ---------- gathering ----------
 
-def gather(led, cfg, since, now=None):
+def gather(led, cfg, since, now=None, local_now=None):
     """Collect the last-24h picture from the ledger. `since` is an aware UTC
     datetime; event `at` stamps are ISO UTC strings."""
     now = now or led.now()
@@ -58,7 +59,8 @@ def gather(led, cfg, since, now=None):
             "weekly": rows["weekly"]["used_pct"] if "weekly" in rows else None,
         })
 
-    return {"shipped": shipped, "waiting": waiting, "handoffs": handoffs,
+    weekly = weekly_models(led, cfg) if (local_now or now.astimezone()).weekday() == 0 else None
+    return {"models": weekly, "shipped": shipped, "waiting": waiting, "handoffs": handoffs,
             "usage": usage, "since": since, "now": now}
 
 
@@ -108,6 +110,9 @@ def format_digest(data):
     for u in data["usage"]:
         lines.append(f"- {u['platform']}: 5h {_pct(u['5h'])}, "
                      f"week {_pct(u['weekly'])}")
+    if data.get("models") is not None:
+        lines.append("Weekly model scorecard:")
+        lines.extend(data["models"]["lines"])
     return "\n".join(lines)
 
 
@@ -138,10 +143,42 @@ def _maybe_send(ctx):
     if not should_send(led, local, hour):
         return
     now = led.now()
-    data = gather(led, cfg, since=now - timedelta(hours=24), now=now)
+    data = gather(led, cfg, since=now - timedelta(hours=24), now=now, local_now=local)
     body = format_digest(data)
     if notify.send(cfg, TITLE, body):
+        if data.get("models") is not None:
+            led.set_kv("weekly_model_scorecard", json.dumps(data["models"]["snapshot"]))
         led.set_kv(KV_KEY, local.date().isoformat())
         ctx.say(f"digest sent for {local.date().isoformat()}")
     else:
         ctx.say("digest: ntfy send failed — will retry next tick")
+
+
+def weekly_models(led, cfg):
+    """Compare to the last successfully delivered weekly snapshot, not wall time."""
+    from . import scorecard
+    rows = scorecard.table(led, cfg)
+    try:
+        previous = json.loads(led.get_kv("weekly_model_scorecard") or "{}")
+    except (ValueError, TypeError):
+        previous = {}
+    if not isinstance(previous, dict):
+        previous = {}
+    lines, snapshot = [], {}
+    for role, size in sorted({(r["role"], r["size"] or "") for r in rows
+                              if r["role"] in {"build", "plan"}}):
+        best = scorecard.ranked(rows, role, size or None)[0]
+        lines.append(f'- Top {role}/{size or "unknown size"}: {scorecard.summary(best)}')
+    for row in rows:
+        key = json.dumps(scorecard.identity(row))
+        old = previous.get(key, {})
+        snapshot[key] = {"good": row["status"] == "good", "dominated": row["dominated"]}
+        name = f'{row["role"]}/{row["size"] or "unknown size"} · {row["model"] or "unknown model"} · {row["effort"] or "default"} ({row["platform"]})'
+        if snapshot[key]["good"] and not old.get("good"):
+            lines.append(f"- Newly good: {name}")
+        if row["dominated"] and not old.get("dominated"):
+            lines.append(f"- Newly dominated: {name}")
+    unpriced = sorted({r["model"] or "unknown model" for r in rows if not r["priced"]})
+    if unpriced:
+        lines.append("- Unpriced models: " + ", ".join(unpriced))
+    return {"lines": lines or ["- No attempts in this window."], "snapshot": snapshot}
