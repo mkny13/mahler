@@ -10,6 +10,9 @@ enabled = false                 # opt in only after repo, path and verify are co
 repo = "your-org/your-repo"
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
+# Explore unproven variants on a deterministic share of low-risk, unpinned items.
+# Defaults to true with a personal account, false for work-only projects.
+# explore = false
 verify = "python3 -m unittest discover -s tests"
 # A project may span more than one account (DESIGN D26): by default it tries
 # each of its accounts in declared order and spends the first with headroom.

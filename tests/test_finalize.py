@@ -115,6 +115,17 @@ class RunTests(unittest.TestCase):
         cands = tick._candidates(self.ctx, [config.project_policy(self.cfg, "x")])
         self.assertEqual([(p["name"], r, it["number"]) for p, r, it in cands], [])
 
+    def test_failed_exploration_preserves_attempt_and_escalation_budget(self):
+        self.run["explore"] = 1
+        self.led.update_run(self.run_id, explore=1)
+        self.led.upsert_item("x", 5, attempts=2, esc_tier=1, esc_fails=1)
+        with open(self.log, "w") as fh:
+            fh.write("could not finish\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"], item["esc_tier"], item["esc_fails"]),
+                         ("ready", 2, 1, 1))
+
     def test_no_status_line_is_still_a_failed_attempt(self):
         with open(self.log, "w") as fh:
             fh.write("Now opening the PR:\n")          # the mahler#8 failure mode

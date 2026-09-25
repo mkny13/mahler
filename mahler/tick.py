@@ -470,9 +470,17 @@ def schedule(ctx, projects):
 
             # D26: route within the project's declared accounts: fallback
             # order, equal round-robin, or an explicit cross-account priority.
-            platform, reasons = router.pick_for_project(
-                cfg, led, p, routing_role, pin, busy, size=effective_size,
+            platform = router.explore_for_project(
+                cfg, led, p, it, routing_role, busy, size=effective_size,
                 burst_lines=burst_lines, min_tier=effective_min_tier)
+            explore = platform is not None
+            reasons = []
+            if explore:
+                ctx.say(f"{name}#{n}: trying {platform} ({routing_role} exploration)")
+            else:
+                platform, reasons = router.pick_for_project(
+                    cfg, led, p, routing_role, pin, busy, size=effective_size,
+                    burst_lines=burst_lines, min_tier=effective_min_tier)
             if not platform:
                 ctx.hold("no_platform", project=name, number=n, role=routing_role,
                          size=effective_size or "m", blockers=router.reason_groups(reasons))
@@ -483,7 +491,8 @@ def schedule(ctx, projects):
                 continue
             if ctx.dry_run:
                 ctx.say(f"{name}#{n}: would {role} on {platform}")
-            elif not start(ctx, name, it, role, platform, size=effective_size):
+            elif not start(ctx, name, it, role, platform, size=effective_size,
+                           **({"explore": True} if explore else {})):
                 continue
             total += 1
             in_project[name] = in_project.get(name, 0) + 1
@@ -501,7 +510,7 @@ def schedule(ctx, projects):
             started.add(name)
 
 
-def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None):
+def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None, explore=False):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     if not launch_health.allowed(ctx, project, n):
         return False
@@ -510,8 +519,10 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     pconf = ctx.cfg["platforms"][platform]
     effort = platforms.effort_value(pconf, role) or "default"
     model = pconf.get("sort_model" if role == "sort" else "build_model") or pconf.get("model")
-    run_id = led.create_run(project=project, number=n, role=role, platform=platform, size=size,
-                            model=model, effort=effort, epoch=0, status="running", est_mins=round(est, 2))
+    run_id = led.create_run(project=project, number=n, role=role, platform=platform, size=size or "m",
+                            model=model, effort=effort, explore=int(explore),
+                            routing_role="plan" if role == "sort" and needs_plan(row_get(item, "labels")) else role,
+                            epoch=0, status="running", est_mins=round(est, 2))
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],
                             platform=platform, run_id=run_id, capacity=role != "sort",
                             handoff_from=handoff_from)
