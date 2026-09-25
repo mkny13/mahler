@@ -123,6 +123,13 @@ def _watch_pr(ctx, project, item, pr):
     if view["state"] != "OPEN":                 # merged or closed, by us or outside Mahler
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
+    # A recovering/expired lease can leave the item verifying while its fix
+    # is still alive, even if the per-SHA record was never saved. Do not
+    # review, merge, or launch a second fix against a moving head.
+    if any(r["number"] == n and r["role"] in ("build", "fix")
+           for r in led.active_runs(project)):
+        ctx.say(f"{project}#{n}: PR #{pr} — author run still in progress")
+        return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
         _rebuild_on_base(ctx, project, item, pr, base)
@@ -394,16 +401,19 @@ def _pr_authors(led, project, n):
                  "AND COALESCE(outcome, '') NOT IN ('not claimed') "
                  "AND COALESCE(outcome, '') NOT LIKE 'launch failed%' ORDER BY id DESC",
                  (project, n))
-    out, seen_build = [], False
+    out, seen_pre_build = [], False
     for r in runs:
-        if r["role"] == "build":
-            if seen_build:
-                continue
-            seen_build = True
-        elif opened and (r["started_at"] or "") < opened["at"]:
-            continue
-        if seen_build and r["role"] == "fix":
-            continue                            # a fix from before the PR's build
+        if opened:
+            if (r["started_at"] or "") < opened["at"]:
+                # Include the build that opened the PR, plus all authors
+                # since then, including rebuilds during the PR's lifetime.
+                if r["role"] != "build" or seen_pre_build:
+                    continue
+                seen_pre_build = True
+        elif seen_pre_build:
+            break                              # no event: latest build and its fixes
+        elif r["role"] == "build":
+            seen_pre_build = True
         if r["platform"] not in out:
             out.append(r["platform"])
     return out
@@ -441,6 +451,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         rec = {"at": raw}
     rec = rec if isinstance(rec, dict) else ({"at": raw} if raw else None)
     prev = led.run(rec["run"]) if rec and rec.get("run") else None
+    if rec and rec.get("run") and prev is None:
+        # Missing execution evidence is not proof that the previous run
+        # ended. Keep the bounded wait instead of spending another round.
+        _fix_wait(ctx, project, item, key, "previous fix run cannot be accounted for")
+        return
     if prev and prev["status"] != "ended":
         ctx.say(f"{project}#{n}: PR #{pr} — review fix run {prev['id']} still going")
         return
@@ -532,7 +547,7 @@ def _red_ci(ctx, project, item, pr, view):
     """Red CI on a verifying item: a fix run (D18's second run role) starts on
     the PR's head branch, its prompt carrying the failing-log tail (runner
     fetches it). Routing is the build routing (D8), and `max_attempts` caps
-    build and fix runs together — each red cycle counts as an attempt — then
+    post-PR fix rounds — each red cycle counts as an attempt — then
     escalation as today (retry_or_fail's stuck branch).
 
     This runs every tick while the PR stays red, so the counting above must

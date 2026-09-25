@@ -533,6 +533,80 @@ class ShipTests(unittest.TestCase):
         self.assertIn("git push origin HEAD:mahler/5-x", calls[1][2])
         self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (2, 0))
 
+    def test_active_fix_without_per_sha_record_blocks_shipping(self):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        self.led.create_run(project="x", number=5, role="fix", platform="agy-claude",
+                            epoch=1, status="running")
+        for verdict in ("fail", "pass"):
+            self.led.set_kv("review:x#5", json.dumps({
+                "sha": self.gh.head_sha, "verdict": verdict}))
+            self.ship()
+        self.gh.rollup = [{"state": "FAILURE"}]
+        self.ship()
+        self.assertEqual(calls, [])
+        self.assertEqual(self.gh.merged, [])
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_missing_fix_run_waits_then_alerts_without_replacement(self):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        key = f"reviewfix:x#5:88:{self.gh.head_sha}"
+        self.led.set_kv(key, json.dumps({"at": iso(NOW), "run": 999999}))
+        self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.led.set_kv(key, json.dumps({
+            "at": iso(NOW - timedelta(days=1)), "run": 999999}))
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIn("cannot be accounted for", self.item()["question"])
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(calls, [])
+        ping.assert_called_once()
+
+    def test_review_capacity_timeout_accepts_structured_fix_record(self):
+        self.review_failed()
+        key = f"reviewfix:x#5:88:{self.gh.head_sha}"
+        self.led.set_kv(key, json.dumps({
+            "at": iso(NOW - timedelta(days=1)), "accounted": True}))
+        with mock.patch.object(ship.router, "pick_for_project", return_value=(None, ["busy"])):
+            ping = self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        ping.assert_called_once()
+
+    def test_no_push_fixes_exhaust_budget_and_ping(self):
+        self.review_failed()
+        calls = []
+        self.patch_review_start(calls)
+        for _ in range(2):
+            self.ship()
+            run = self.led.last_run("x", 5)
+            self.led.update_run(run["id"], status="ended")
+            self.led.release("x", 5)
+            self.led.set_state("x", 5, "verifying", "fix ended without a push")
+        ping = self.ship()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertEqual(self.item()["attempts"], 3)
+        self.assertEqual(ping.call_args[0][0], "Stuck — x #5")
+
+    def test_authors_include_all_post_pr_builds_and_fixes(self):
+        def run(role, platform, at):
+            rid = self.led.create_run(project="x", number=5, role=role,
+                                      platform=platform, epoch=1, status="ended")
+            self.led.update_run(rid, started_at=iso(at))
+        run("build", "obsolete", NOW - timedelta(days=2))
+        run("build", "original", NOW - timedelta(days=1))
+        self.led.event("pr_opened", "x", 5, {"pr": 88})
+        run("fix", "fixer", NOW + timedelta(seconds=1))
+        run("build", "rebuilder", NOW + timedelta(seconds=2))
+        run("review", "reviewer", NOW + timedelta(seconds=3))
+        self.assertEqual(ship._pr_authors(self.led, "x", 5),
+                         ["rebuilder", "fixer", "original"])
+
     def check_delayed_no_push_replacement(self, delay):
         self.review_failed()
         calls = []

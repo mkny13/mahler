@@ -631,5 +631,17 @@ class PrepareHeldBranchTests(unittest.TestCase):
         self.assertTrue(os.path.isdir(live))             # never touched
         ctx = SimpleNamespace(policy=lambda p: {"base": "main", "repo": "x/y"})
         text = prompt.build(ctx, "x", self.item, "fix", "codex", prep, context="")
-        self.assertIn("git push origin\n   HEAD:mahler/5-x", text)
+        self.assertIn("git push origin HEAD:mahler/5-x", text)
         self.assertNotIn("mahler/5-x-r9`", text.split("Rules:")[1])
+
+    def test_ci_context_uses_pr_head_when_local_branch_is_private(self):
+        self.hold("running")
+        prep = self.prepare("fix", 9)
+        gh = mock.Mock()
+        gh.failed_run_log.return_value = (123, "the failing log")
+        ctx = SimpleNamespace(policy=lambda p: {"base": "main", "repo": "x/y"},
+                              gh=lambda p: gh)
+        text = prompt.build(ctx, "x", self.item, "fix", "codex", prep)
+        gh.failed_run_log.assert_called_once_with("mahler/5-x", 150)
+        self.assertIn("the failing log", text)
+        self.assertIn("git push origin HEAD:mahler/5-x", text)

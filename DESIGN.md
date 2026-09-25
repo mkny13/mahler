@@ -836,8 +836,14 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   base and the project's `verify` passes when Mahler runs it, the build counts as done. The PR
   goes up with a note that the agent didn't confirm it had finished; CI and review decide
   from there. Otherwise it's a failed attempt, as before.
-- Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
-  (D8) applies as before.
+- Red CI or blocking review findings start a `fix` run. Opening a PR resets `attempts`
+  and `esc_fails`, giving post-PR fixes their own `max_attempts` budget while preserving
+  the escalation tier (mahler#433). A fix that ends without moving the PR head counts
+  toward that budget; an active or unaccounted-for fix never starts a duplicate.
+  Reviews use detached worktrees, and fixes always push to the PR head even when their
+  local branch has a private suffix. Ended holders are detached without discarding
+  retained work. Reviewers exclude all authors since the PR opened plus its original
+  builder, falling back to excluding the latest author if no other platform can run.
 - Shorter recipes also mean fewer tokens on every run, and a smaller surface for the model to
   lose track of.
 - **Sessions hand over too** (mahler#407, 2026-09-22). mahler#395 and groundwork#153 came

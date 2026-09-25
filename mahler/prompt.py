@@ -75,7 +75,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
     pol = ctx.policy(project)
     base = pol.get("base", "main")
     handoff = (context if context is not None else
-               ci_handoff(ctx, project, item, prep["branch"]) if role == "fix"
+               ci_handoff(ctx, project, item, prep.get("push_branch") or prep["branch"]) if role == "fix"
                else handoff_text(base, prep["replayed"], prep["kept"]))
 
     sizing = ""
