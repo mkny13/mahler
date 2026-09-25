@@ -98,7 +98,7 @@ class ShipTests(unittest.TestCase):
             self.led.record_usage(name, "weekly", 10, later)
         self.led.upsert_item("x", 5, state="verifying", priority=2,
                              title="Wired the exporter",
-                             branch="mahler/snapshot/5-run7",
+                             branch="mahler/5-wired-the-exporter",
                              summary="wired the exporter", sorted_at=iso(NOW))
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = FakeGH()
@@ -118,6 +118,7 @@ class ShipTests(unittest.TestCase):
     # ---------- opening the PR ----------
 
     def test_pushes_the_branch_and_opens_the_pr(self):
+        self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")
         ping = self.ship()
         self.assertEqual(self.gh.pushed, [("mahler/5-wired-the-exporter",
                                            "mahler/snapshot/5-run7")])
@@ -131,15 +132,18 @@ class ShipTests(unittest.TestCase):
         self.assertIn("- the new ping arrives", body)
         item = self.item()
         self.assertEqual((item["pr"], item["state"]), (88, "verifying"))
+        self.assertEqual(item["branch"], "mahler/5-wired-the-exporter")
         self.assertEqual(self.gh.merged, [])           # CI is watched from the next tick
         ping.assert_not_called()
 
     def test_pr_opening_is_idempotent(self):
         """A tick that died after `gh pr create` must not open a second PR."""
+        self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")
         self.gh.existing_pr = 88
         self.ship()
         self.assertEqual(self.gh.created, [])
         self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
 
     def test_nothing_to_ship_is_a_failed_attempt(self):
         self.led.upsert_item("x", 5, branch=None)
@@ -198,17 +202,161 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(json.loads(row["labels"]), ["type:feature"])
         self.assertEqual(row["shipped_at"], iso(NOW))
 
-    def test_closed_unmerged_pr_is_not_release_or_uat_evidence(self):
-        """A PR closed without merging is not OPEN, but nothing shipped: no
-        release-note item, no UAT entry, and a shipped event marked unmerged
-        so the scorecard doesn't start a bug window from it (mahler#417)."""
+    def assert_nothing_shipped(self, ping):
+        self.assertEqual(self.led.unreleased_items("x"), [])
+        self.assertIsNone(self.led.uat("x", 5))
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipped'"), [])
+        self.assertEqual(self.gh.comments, [])
+        self.assertFalse(any(c.args[0].startswith("Shipped") for c in ping.call_args_list))
+
+    def test_closed_unmerged_pr_returns_to_ready(self):
         self.gh.view_state = "CLOSED"
         self.led.upsert_item("x", 5, pr=88)
+        branch = self.item()["branch"]
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "ready")
+        self.assertEqual(self.item()["attempts"], 1)
+        self.assertEqual(self.item()["branch"], branch)
+        self.assertIsNone(self.item()["pr"])
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("PR #88 was closed without merging", self.last_event())
+        self.assert_nothing_shipped(ping)
+        self.ship()  # Not counted again once it leaves verifying.
+        self.assertEqual(self.item()["attempts"], 1)
+
+    def test_closed_deleted_pr_branch_rebuilds_from_latest_snapshot(self):
+        def git(*args):
+            return subprocess.run(["git", "-C", self.tmp, *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+
+        origin = os.path.join(self.tmp, "origin.git")
+        git("init", "--bare", "-b", "main", origin)
+        git("init", "-b", "main")
+        git("remote", "add", "origin", origin)
+        author = ["-c", "user.name=test", "-c", "user.email=test@example.com"]
+        git(*author, "commit", "--allow-empty", "-m", "base")
+        git("push", "origin", "main")
+        for run in (7, 8):
+            git(*author, "commit", "--allow-empty", "-m", f"completed work {run}")
+            snapshot = f"mahler/snapshot/5-run{run}"
+            git("push", "origin", f"HEAD:refs/heads/{snapshot}")
+            self.led.upsert_item("x", 5, branch=snapshot)
+            with mock.patch.object(self.gh, "push_branch",
+                                   side_effect=gh_module.GH("x/y").push_branch):
+                self.ship()
+            self.gh.existing_pr = 88
+        completed = git("rev-parse", "HEAD")
+        head = self.item()["branch"]
+        git("push", "origin", "--delete", head)
+        self.gh.existing_pr = None
+        self.gh.view_state = "CLOSED"
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "ready")
+        self.assertEqual(self.item()["branch"], snapshot)
+        self.assertIsNone(self.item()["pr"])
+        git("fetch", "origin", "--prune")
+        self.assertFalse(runner.remote_has(self.tmp, head))
+        start = runner.start_ref(self.tmp, "main", self.item()["branch"], head)
+        self.assertEqual(git("rev-parse", start), completed)
+        self.assert_nothing_shipped(ping)
+
+    def test_merged_pr_with_saved_snapshot_records_shipping(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.view_state = "MERGED"
         self.ship()
-        self.assertEqual(self.led.unreleased_items("x"), [])
-        self.assertEqual(self.led.q("SELECT * FROM uat"), [])
-        detail = json.loads(self.led.q("SELECT detail FROM events WHERE kind='shipped'")[0]["detail"])
-        self.assertEqual(detail, {"pr": 88, "merged": False})
+        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.gh.pushed, [])
+        self.assertEqual(self.gh.created, [])
+        self.assertIsNotNone(self.led.uat("x", 5))
+        self.assertEqual(len(self.led.unreleased_items("x")), 1)
+
+    def test_closed_unmerged_pr_fails_at_attempt_limit(self):
+        self.gh.view_state = "CLOSED"
+        limit = self.ctx.policy("x")["max_attempts"]
+        self.led.upsert_item("x", 5, pr=88, attempts=limit - 1)
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertEqual(self.item()["attempts"], limit)
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("PR #88 was closed without merging", self.last_event())
+        ping.assert_called_once()
+        self.assertIn("Stuck", ping.call_args.args[0])
+        self.assert_nothing_shipped(ping)
+
+    def test_closed_pr_adopts_replacement_on_actual_pr_head(self):
+        self.gh.view_state = "CLOSED"
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "pr_for_head", return_value=99) as lookup:
+            ping = self.ship()
+        self.assertEqual(lookup.call_args_list[-1], mock.call("mahler/5-x"))
+        self.assertEqual((self.item()["pr"], self.item()["state"]), (99, "verifying"))
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assert_nothing_shipped(ping)
+        self.gh.view_state = "OPEN"
+        self.gh.rollup = [{"state": "PENDING"}]
+        with mock.patch.object(self.gh, "pr_view", wraps=self.gh.pr_view) as view:
+            self.ship()
+        view.assert_called_once_with(99)
+
+    def test_rebuild_adopts_fresh_pr_before_watching_stale_pr(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.existing_pr = 99
+        with mock.patch.object(self.gh, "pr_view", wraps=self.gh.pr_view) as view, mock.patch.object(
+                self.gh, "pr_for_head", wraps=self.gh.pr_for_head) as lookup:
+            ping = self.ship()
+        view.assert_called_once_with(88)
+        lookup.assert_called_once_with("mahler/5-x")
+        self.assertEqual((self.item()["pr"], self.item()["state"]), (99, "verifying"))
+        self.assertEqual(self.item()["branch"], "mahler/5-x")
+        self.assertEqual(self.gh.pushed, [("mahler/5-x", "mahler/snapshot/5-run7")])
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        self.assert_nothing_shipped(ping)
+
+    def test_rebuild_with_snapshot_and_closed_pr_opens_replacement_pr(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.existing_pr = None
+        self.gh.view_state = "CLOSED"
+        ping = self.ship()
+        self.assertEqual(self.gh.pushed, [("mahler/5-x", "mahler/snapshot/5-run7")])
+        self.assertEqual(len(self.gh.created), 1)
+        self.assertEqual(self.gh.created[0][0], "mahler/5-x")
+        self.assertEqual((self.item()["pr"], self.item()["state"]), (88, "verifying"))
+        self.assertEqual(self.item()["branch"], "mahler/5-x")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        self.assert_nothing_shipped(ping)
+
+    def test_closed_immediately_after_merge_request_is_not_shipped(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "pr_merge", side_effect=lambda *a: setattr(
+                self.gh, "view_state", "CLOSED")):
+            ping = self.ship()
+        self.assertEqual(self.item()["state"], "ready")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assert_nothing_shipped(ping)
+
+    def test_closed_pr_dry_run_reports_retry_without_writes(self):
+        self.ctx.dry_run = True
+        self.gh.view_state = "CLOSED"
+        for attempts, expected in ((0, "ready"), (self.ctx.policy("x")["max_attempts"] - 1, "failed")):
+            with self.subTest(expected=expected):
+                self.led.upsert_item("x", 5, pr=88, attempts=attempts)
+                before = dict(self.item())
+                ping = self.ship()
+                self.assertIn(f"closed without merging — would go to {expected}", self.ctx.lines[-1])
+                self.assertEqual(dict(self.item()), before)
+                self.assertIsNone(self.led.lease("x", 5))
+                self.assert_nothing_shipped(ping)
+                ping.assert_not_called()
+
+    def test_replacement_lookup_failure_does_not_consume_attempt(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.view_state = "CLOSED"
+        with mock.patch.object(self.gh, "pr_for_head", side_effect=gh_module.GHError("down")):
+            ping = self.ship()
+        self.assertEqual((self.item()["state"], self.item()["attempts"]), ("verifying", 0))
+        self.assert_nothing_shipped(ping)
 
     def test_shipped_issue_snapshot_is_idempotent_on_retry(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["type:bug"]))
@@ -697,7 +845,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         item = self.item()
         self.assertEqual((item["state"], item["pr"], item["attempts"]), ("ready", None, 0))
-        self.assertEqual(item["branch"], "mahler/snapshot/5-run7")   # the rebuild resumes it
+        self.assertEqual(item["branch"], "mahler/5-wired-the-exporter")   # the rebuild resumes it
         self.assertIsNone(self.led.lease("x", 5))
         self.assertEqual(ping.call_args[0][0], "Rebuilding — x #5")
 
@@ -733,7 +881,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         self.assertEqual((self.item()["state"], self.item()["pr"], self.item()["attempts"]),
                          ("ready", None, 2))
-        self.assertEqual(self.item()["branch"], "mahler/snapshot/5-run7")
+        self.assertEqual(self.item()["branch"], "mahler/5-wired-the-exporter")
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("does not contain current main", self.last_event())
 
@@ -945,9 +1093,13 @@ class ShipTests(unittest.TestCase):
     def test_pr_resolved_outside_mahler_is_just_done(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.view_state = "MERGED"
-        self.ship()
+        ping = self.ship()
         self.assertEqual(self.gh.merged, [])
         self.assertEqual(self.item()["state"], "done")
+        self.assertIn("**Shipped**", self.gh.comments[-1])
+        self.assertIsNotNone(self.led.uat("x", 5))
+        self.assertEqual(self.led.unreleased_items("x")[0]["pr"], 88)
+        self.assertEqual(ping.call_args.args[0], "Shipped — x #5")
 
     # ---------- the lease fence (D6) ----------
 
@@ -973,7 +1125,7 @@ class ShipTests(unittest.TestCase):
     def test_one_failing_item_does_not_break_the_pass(self):
         self.led.upsert_item("x", 5, pr=88)
         self.led.upsert_item("x", 6, state="verifying", title="Other thing",
-                             branch="mahler/snapshot/6-run9", summary="other",
+                             branch="mahler/6-other-thing", summary="other",
                              pr=89, sorted_at=iso(NOW))
         self.gh.fail_view = {88}
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
