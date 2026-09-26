@@ -9,6 +9,7 @@
   "use strict";
   var root = document.documentElement;
   var app = document.getElementById("app");
+  var loadedRevision = root.getAttribute("data-console-revision");
   var REFRESH_MS = 30000;
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
@@ -267,7 +268,30 @@
         if (v !== undefined) { again[j].value = v; }
       }
       apply();
+      noteRevision();
     }).catch(function (err) { if (window.console) { console.warn(err); } });
+  }
+
+  // refresh() swaps only #app, so a server restart can pair new controls with
+  // this older script. Say so rather than reload: a reload would drop drafts.
+  function noteRevision() {
+    var marker = app.querySelector("[data-console-revision]");
+    var revision = marker && marker.getAttribute("data-console-revision");
+    if (!revision || revision === loadedRevision || document.getElementById("reload-note")) { return; }
+    var note = document.createElement("div");
+    note.id = "reload-note";
+    note.className = "bn";
+    note.style.position = "fixed";
+    note.style.bottom = "12px";
+    note.style.right = "12px";
+    note.style.left = "12px";
+    note.style.zIndex = "30";
+    note.style.maxWidth = "560px";
+    note.style.margin = "0 auto";
+    note.style.background = "var(--bg)";
+    note.innerHTML = '<span class="kind mono">Updated</span><span class="txt">Console updated. ' +
+      '<button type="button" data-reload-console>Reload</button></span>';
+    document.body.appendChild(note);
   }
 
   function showErrorToast(message) {
@@ -325,6 +349,8 @@
         if (window.console) { console.warn(action, res.error || "failed"); }
         showErrorToast(res.error || "The action was refused or failed.");
         if (action === "settings") { return; }
+      } else if (action === "end_session") {
+        showSavedToast("Session ended — hold lifted.");
       } else if (action === "capture") {
         // Clear every part of the composer on the next restore, but keep the project.
         suppressKeep = ["capture", "capture_att_id", "capture_att_name"];
@@ -473,7 +499,15 @@
       var attachId = cap && cap.querySelector(".attach-id");
       return { text: ta ? ta.value : "", project: sel ? sel.value : "", attachment: (attachId && attachId.value) ? attachId.value : null };
     }
-    return {};
+    // Actions newer than this script still reach the server with their data-* fields.
+    var payload = {};
+    for (var a = 0; a < el.attributes.length; a++) {
+      var attr = el.attributes[a];
+      if (attr.name.indexOf("data-") === 0 && attr.name !== "data-act") {
+        payload[attr.name.slice(5)] = attr.value;
+      }
+    }
+    return payload;
   }
 
   // a needs-you ping deep-links here: #needs/<project>/<n> lands the console on
@@ -490,6 +524,10 @@
     if (el) { el.scrollIntoView({ behavior: "auto", block: "nearest" }); }
     history.replaceState(null, "", location.pathname + location.search);
   }
+
+  document.addEventListener("click", function (ev) {
+    if (ev.target.closest("[data-reload-console]")) { window.location.reload(); }
+  });
 
   document.addEventListener("click", function (ev) {
     var el = ev.target.closest("button, a");

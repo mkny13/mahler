@@ -7,6 +7,7 @@ expanded are browser-side state: attributes on <html> that CSS keys off and
 console.js keeps across the 30-second refresh, which swaps only #app.
 """
 
+import hashlib
 import html
 import json
 import os
@@ -38,12 +39,17 @@ def _a(url, text, cls=""):
     return f"<span{c}>{e(text)}</span>" if cls else e(text)
 
 
+def asset_revision():
+    """Identify the browser code embedded by this server process."""
+    return hashlib.sha256(JS.encode("utf-8")).hexdigest()
+
+
 def document(s):
     """The full page: head, the #app fragment, and the script."""
     land = s["landing"]
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="auto" data-view="{e(land['view'])}" data-tab="{e(land['tab'])}"
- data-stats-range="{e(s['stats_range'])}">
+ data-console-revision="{asset_revision()}" data-stats-range="{e(s['stats_range'])}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -71,7 +77,8 @@ def app(s):
     """The #app fragment — what the 30-second refresh replaces."""
     counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": s["uat_count"],
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
-    return (f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
+    return (f'<span hidden data-console-revision="{asset_revision()}"></span>'
+            + f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
             + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s)
             + _bug_overlays(s) + _capture_overlay(s) + _release_preview_overlays(s))
 

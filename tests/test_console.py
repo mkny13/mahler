@@ -2570,3 +2570,74 @@ class ConsoleReleasesPageTests(unittest.TestCase):
         self.assertIn('Proposed v0.84', doc)
         self.assertNotIn('Patch v0.84', doc)
         self.assertNotIn('Minor v0.84', doc)
+
+
+class ConsoleRevisionTests(unittest.TestCase):
+    def test_document_and_fragment_identify_embedded_script(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        s = state.build(make_cfg(), led)
+        revision = page.asset_revision()
+        marker = f'data-console-revision="{revision}"'
+        self.assertIn(marker, page.document(s))
+        self.assertIn(marker, page.app(s))
+        with mock.patch.object(page, "JS", page.JS + "\n// deployed change"):
+            self.assertNotEqual(revision, page.asset_revision())
+            self.assertNotIn(marker, page.app(s))
+
+    def test_browser_revision_notice_payload_and_acknowledgement(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        # Run the production functions against a minimal DOM boundary.
+        def functions_between(start, end):
+            return page.JS[page.JS.index(start):page.JS.index(end)]
+        script = functions_between("  function noteRevision", "  function showErrorToast")
+        script += functions_between("  function post(", "  function numberValue")
+        script += functions_between("  function payloadFor", "  // a needs-you")
+        script += r'''
+const assert = require("assert");
+let loadedRevision = "old", fragmentRevision = "old", notes = [], reloads = 0;
+let saved = [], refreshes = [];
+let app = {querySelector: () => fragmentRevision ? {getAttribute: () => fragmentRevision} : null};
+let document = {
+  getElementById: id => notes.find(n => n.id === id) || null,
+  createElement: () => ({style: {}}),
+  body: {appendChild: n => notes.push(n)},
+};
+let window = {location: {reload: () => reloads++}};
+noteRevision();
+assert.equal(notes.length, 0);
+fragmentRevision = null;
+noteRevision();
+assert.equal(notes.length, 0);
+fragmentRevision = "new";
+noteRevision();
+noteRevision();
+assert.equal(notes.length, 1);
+assert.ok(notes[0].innerHTML.includes("data-reload-console"));
+assert.equal(reloads, 0);
+const attrs = {"data-act":"future_action", "data-project":"mahler", "data-number":"42", "class":"btn"};
+const button = {attributes:Object.entries(attrs).map(([name,value]) => ({name,value})), getAttribute:key => attrs[key]};
+assert.deepEqual(payloadFor(button, "future_action"), {project:"mahler", number:"42"});
+assert.deepEqual(payloadFor(button, "uat_pass"), {project:"mahler", number:42});
+function showSavedToast(message) { saved.push(message); }
+function showErrorToast(message) { throw Error(message); }
+function refresh(force) { refreshes.push(force); return Promise.resolve(); }
+function fetch(url, options) {
+  assert.equal(url, "/api/end_session");
+  assert.deepEqual(JSON.parse(options.body), {project:"mahler"});
+  return Promise.resolve({json: () => Promise.resolve({ok:true})});
+}
+post("end_session", payloadFor(button, "end_session")).then(() => {
+  assert.deepEqual(saved, ["Session ended — hold lifted."]);
+  assert.deepEqual(refreshes, [true]);
+}).catch(err => { console.error(err); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The notice never blocks or replaces the fragment swap.
+        refresh = functions_between("  function refresh(force)", "  function noteRevision")
+        self.assertLess(refresh.index("app.innerHTML = html"), refresh.index("noteRevision()"))
+        self.assertNotIn("location.reload", refresh)
