@@ -174,10 +174,12 @@ class TierEscalationTests(unittest.TestCase):
         self.led.upsert_item("p", 93, state="verifying", title="fix me",
                              labels='["size:m"]', branch="b", pr=10)
         view = {"headRefName": "b", "headRefOid": "sha"}
-        with mock.patch("mahler.router.pick_for_project", return_value=(None, ["busy"])):
+        with mock.patch("mahler.router.explore_for_project", return_value=None), \
+             mock.patch("mahler.router.pick_for_project", return_value=(None, ["busy"])):
             ship._review_triggered_fix(self.ctx, "p", self.led.item("p", 93),
                                        10, view, "findings")
-        with mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
+        with mock.patch("mahler.router.explore_for_project", return_value=None), \
+             mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
              mock.patch("mahler.ship.start", return_value=True) as start:
             ship._review_triggered_fix(self.ctx, "p", self.led.item("p", 93),
                                        10, view, "findings")

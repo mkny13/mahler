@@ -616,6 +616,38 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertIn("Stuck", ping.call_args[0][0])
 
+    def test_deferred_exploration_failures_preserve_retry_and_escalation_budgets(self):
+        """DONE is provisional: later CI/review failure is still the explored
+        attempt's failure and must leave room for a normal fix at the cap."""
+        max_attempts = self.cfg["defaults"]["max_attempts"]
+        for trigger, n in (("ci", 5), ("review", 6)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item(
+                    "x", n, pr=88, state="verifying", title="Low risk change",
+                    branch=f"mahler/{n}-change", sorted_at=iso(NOW),
+                    labels='["size:s"]', attempts=max_attempts - 1,
+                    esc_tier=1, esc_fails=1)
+                self.led.create_run(
+                    project="x", number=n, role="build", platform="agy-gemini",
+                    size="s", epoch=1, status="ended", outcome="DONE", explore=1,
+                    ended_at=iso(NOW))
+                view = {"headRefName": f"mahler/{n}-change",
+                        "headRefOid": f"failed-{trigger}"}
+                with mock.patch.object(ship, "start", return_value=True) as start, \
+                        mock.patch.object(self.ctx, "ping"):
+                    item = self.led.item("x", n)
+                    if trigger == "ci":
+                        ship._red_ci(self.ctx, "x", item, 88, view)
+                    else:
+                        ship._review_triggered_fix(
+                            self.ctx, "x", item, 88, view, "blocking finding")
+                item = self.led.item("x", n)
+                self.assertEqual((item["state"], item["attempts"], item["esc_tier"],
+                                  item["esc_fails"]),
+                                 ("verifying", max_attempts - 1, 1, 1))
+                start.assert_called_once()
+                self.assertNotIn("explore", start.call_args.kwargs)
+
     # ---------- independent review before merge (DESIGN D11) ----------
 
     def patch_review_start(self, role_seen):

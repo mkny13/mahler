@@ -183,6 +183,7 @@ def attempts(led, since, until=None):
             'project', 'number', 'role', 'size', 'platform', 'model', 'effort', 'cost_usd', 'tokens_in',
             'tokens_cached', 'tokens_out', 'tokens_reasoning', 'actual_mins')},
             result=outcome, why=why))
+        result[-1]["role"] = run["routing_role"] or run["role"]
     return result
 
 
