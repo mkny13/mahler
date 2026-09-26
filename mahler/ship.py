@@ -419,16 +419,25 @@ def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):
 
 
 def _finding_files(findings):
-    """Return repo-relative file references without their line numbers.
+    """Return each finding's leading repo-relative location without line numbers.
 
-    Review findings are free text, but the review recipe requires locations.
-    Unknown locations are inconclusive rather than evidence of divergence.
+    The review recipe separates findings with `` | `` and requires each one to
+    name its file.  Only the leading ``file:`` location is structural; dotted
+    expressions later in the prose (for example ``json.loads``) are not files.
+    Unknown or malformed locations are inconclusive rather than evidence of
+    divergence.
     Directory paths and every dotted filename component remain significant:
     ``src/a/index.test.ts`` and ``src/b/index.test.tsx`` are distinct files.
     """
-    return set(re.findall(
-        r"(?<![\w.])(?:[\w@+.-]+/)*[\w@+-]+(?:\.[\w@+-]+)+",
-        findings or ""))
+    locations = set()
+    for finding in re.split(r"\s+\|\s+", findings or ""):
+        match = re.match(
+            r"\s*(?:[-*]\s+)?`?(?P<path>(?:[\w@+.-]+/)*"
+            r"[\w@+-]+(?:\.[\w@+-]+)+)`?:",
+            finding)
+        if match:
+            locations.add(match.group("path"))
+    return locations
 
 
 def _review_not_converging(ctx, project, item, pr, view):

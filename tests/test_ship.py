@@ -1279,6 +1279,18 @@ class TestReviewConvergence(unittest.TestCase):
         for finding in findings:
             self.assertIn(finding, self.item()["question"])
 
+    def test_shared_dotted_expression_does_not_mask_divergent_locations(self):
+        findings = ["auth.py:10 missing validation before json.loads",
+                    "db.py:20 transaction leaks when json.loads raises",
+                    "api.py:30 unbounded input passed to json.loads"]
+        self.assertEqual(ship._finding_files(" | ".join(findings)),
+                         {"auth.py", "db.py", "api.py"})
+        self.rounds(findings)
+        with mock.patch.object(ship, "start") as start:
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+
     def test_retry_does_not_reescalate_the_same_history(self):
         history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
         self.ship()
