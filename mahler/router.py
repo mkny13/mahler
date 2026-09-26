@@ -574,10 +574,14 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         reasons.append(f"{pin}: pinned, but it spends the "
                        f"{account_of(cfg['platforms'][pin])} account, not {target}")
     peak_active, peak_until = peak_state(cfg, led)
+    measured = (routing_mode or cfg.get("routing_mode", "list")) == "measured"
+    # In measured mode burst promotion happens after ranking, including when
+    # direct callers merge several account routes round-robin.
+    route_burst = None if measured else burst_lines
     cand = (candidate_order if candidate_order is not None else
-            candidates_for_accounts(cfg, role, accts, pin, burst_lines)
-            if accounts is not None else candidates(cfg, role, pin, burst_lines, account))
-    if not pin and (routing_mode or cfg.get("routing_mode", "list")) == "measured":
+            candidates_for_accounts(cfg, role, accts, pin, route_burst)
+            if accounts is not None else candidates(cfg, role, pin, route_burst, account))
+    if not pin and measured:
         cand = measured_order(cfg, cand, scorecard_rows or [], role, size, burst_lines)
     for name in cand:
         if name in busy or name in exclude:
