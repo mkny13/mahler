@@ -983,7 +983,9 @@ def run_env(cfg, account, base=None):
 
 def project_policy(cfg, name):
     """Defaults overlaid with one project's own entry."""
-    return {**_merge(cfg["defaults"], cfg["projects"].get(name, {})), "name": name}
+    pol = {**_merge(cfg["defaults"], cfg["projects"].get(name, {})), "name": name}
+    pol.setdefault("explore", DEFAULT_ACCOUNT in accounts_of(pol))
+    return pol
 
 
 def maintenance_policy(cfg, name):

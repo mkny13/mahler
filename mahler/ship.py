@@ -483,9 +483,17 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
-    platform, reasons = router.pick_for_project(
-        cfg, led, pol, "fix", item["pin"], busy, size=size,
+    platform = router.explore_for_project(
+        cfg, led, pol, item, "fix", busy, size=size,
         burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+    explore = platform is not None
+    reasons = []
+    if explore:
+        ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
+    else:
+        platform, reasons = router.pick_for_project(
+            cfg, led, pol, "fix", item["pin"], busy, size=size,
+            burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -503,7 +511,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                "- an independent review of this PR found blocking issues (see the PR "
                "comments); address them, verify, push, and end with STATUS: DONE")
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from, size=size, context=context, fix_reason="review"):
+             handoff_from=handoff_from, size=size, context=context, fix_reason="review",
+             **({"explore": True} if explore else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
 
@@ -583,9 +592,17 @@ def _red_ci(ctx, project, item, pr, view):
         size = "m"
     # D26: route within the project's declared accounts: fallback order,
     # equal round-robin, or an explicit cross-account priority.
-    platform, reasons = router.pick_for_project(
-        cfg, led, pol, "fix", item["pin"], busy, size=size,
+    platform = router.explore_for_project(
+        cfg, led, pol, item, "fix", busy, size=size,
         burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+    explore = platform is not None
+    reasons = []
+    if explore:
+        ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
+    else:
+        platform, reasons = router.pick_for_project(
+            cfg, led, pol, "fix", item["pin"], busy, size=size,
+            burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -597,7 +614,8 @@ def _red_ci(ctx, project, item, pr, view):
                     if conductor and (conductor["holder"] == CONDUCTOR
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
-             handoff_from=handoff_from, size=size, fix_reason="ci"):
+             handoff_from=handoff_from, size=size, fix_reason="ci",
+             **({"explore": True} if explore else {})):
         led.upsert_item(project, n, attempts=attempts)
 
 
