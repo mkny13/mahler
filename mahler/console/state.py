@@ -52,6 +52,8 @@ def build(cfg, led, stats_range="week"):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
     here; the page keeps that in the browser."""
+    from .. import scorecard
+    measurement_rows = scorecard.table(led, cfg)
     now = led.now()
     projects = config.enabled_projects(cfg)
     peak = _peak(cfg, led)
@@ -89,7 +91,8 @@ def build(cfg, led, stats_range="week"):
         "quota": quota,
         "capability_sections": _capability_sections(quota),
         "capacity": _capacity_line(quota),
-        "models": models(led, cfg),
+        "models": models(led, cfg, measurement_rows),
+        "measured_routes": measured_routes(cfg, led, projects, measurement_rows),
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
         "releases": releases_data,
@@ -104,6 +107,8 @@ def build(cfg, led, stats_range="week"):
         "settings": config.settings(cfg),
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
+    if s["idle"]:
+        s["idle"]["reasons"].extend({"text": text} for text in s["measured_routes"])
     s["landing"] = {
         "tab": "triage" if needs or s["uat_count"] else "now",
         "view": "needs" if needs else "test" if s["uat_count"] else "now",
@@ -1566,9 +1571,38 @@ def _idle(cfg, led, s, hot, now):
 MODELS_LABEL = "Models"
 
 
-def models(led, cfg):
+def measured_routes(cfg, led, projects, rows):
+    """Project/role/size routes cannot be represented by a single quota-pool order."""
+    result = []
+    from ..tick import busy_platforms
+    bursts = router.all_bursts(cfg, led)
+    busy = busy_platforms(cfg, led.active_runs())
+    for pol in projects:
+        if router.routing_mode(cfg, pol) != "measured":
+            continue
+        accts = config.accounts_of(pol)
+        for role in ("plan", "sort", "build", "fix", "review"):
+            for size in ("s", "m", "l"):
+                if config.account_mode_of(pol) == "priority":
+                    order = router.candidates_for_priority(cfg, role, accts, pol.get("routing") or {})
+                elif config.account_mode_of(pol) == "equal":
+                    order = router.candidates_for_accounts(cfg, role, accts)
+                else:
+                    order = [n for a in accts for n in router.candidates(cfg, role, account=a)]
+                order = router.measured_order(cfg, order, rows, role, size, bursts)
+                if not order:
+                    continue
+                pick, _ = router.pick_for_project(
+                    cfg, led, pol, role, size=size, busy=busy, burst_lines=bursts, scorecard_rows=rows)
+                reason = router.pick_reason(cfg, rows, role, size, pick) if pick else "no headroom"
+                result.append(f'{pol["name"]} · {role} · {size}: '
+                              + " → ".join(order) + f". Unpinned preference: {reason}")
+    return result
+
+
+def models(led, cfg, rows=None):
     from .. import scorecard
-    rows = scorecard.table(led, cfg)
+    rows = scorecard.table(led, cfg) if rows is None else rows
     groups = []
     for role, size in sorted({(r["role"], r["size"]) for r in rows},
                              key=lambda pair: (pair[0], pair[1] or "", pair[1] is not None)):

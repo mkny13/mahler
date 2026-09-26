@@ -500,9 +500,64 @@ def risk_min_tier(text):
     return 0
 
 
+def routing_mode(cfg, pol=None):
+    return (pol or {}).get("routing_mode", cfg.get("routing_mode", "list"))
+
+
+def platform_slot(cfg, name):
+    """The configured platform slot behind a route candidate.
+
+    D33 represents model/effort variants as synthetic platform names, but
+    those variants are still the same platform for D11's independent-review
+    boundary.
+    """
+    return cfg["platforms"].get(name, {}).get("slot", name)
+
+
+def measured_rows(cfg, rows, role, size):
+    """Match proof to the current model and effort, never an obsolete slot pin."""
+    from . import platforms, scorecard
+    result = {}
+    run_role = "sort" if role == "plan" else role
+    for row in scorecard.ranked(rows, role, size or "m"):
+        pc = cfg["platforms"].get(row["platform"], {})
+        model = pc.get("sort_model" if run_role == "sort" else "build_model") or pc.get("model")
+        effort = platforms.effort_value(pc, run_role) or "default"
+        if row["model"] == model and (row["effort"] or "default") == effort:
+            result[row["platform"]] = row
+    return result
+
+
+def measured_order(cfg, order, rows, role, size, burst_lines=None):
+    proof = measured_rows(cfg, rows, role, size)
+
+    def key(name):
+        row = proof.get(name, {})
+        status = row.get("status", "unproven")
+        cost = row.get("cost_per_success")
+        return ({"good": 0, "unproven": 1, "below": 2}[status],
+                cost if status == "good" and cost is not None else float("inf"))
+    order = sorted(order, key=key)  # stable: fallback candidates retain list order
+    if burst_lines and role == "build":
+        order = sorted(order, key=lambda n: not bool(
+            platform_burst(n, cfg["platforms"][n], burst_lines)))
+    return order
+
+
+def pick_reason(cfg, rows, role, size, name):
+    row = measured_rows(cfg, rows, role, size).get(name)
+    if not row:
+        return f"{name}: unproven (no matching measurements)"
+    cost = row["cost_per_success"]
+    price = ("cost unknown" if cost is None else "no successes yet" if cost == float("inf")
+             else f"${cost:.2f} per success")
+    return (f'{name} · {row["effort"] or "default"}: '
+            f'{row["successes"]}/{row["n"]} first try, {price} · {row["status"]}')
+
+
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
          account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
-         exclude=(), explore=False):
+         exclude=(), explore=False, scorecard_rows=None, routing_mode=None):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -517,10 +572,11 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     D26). Equal mode supplies their round-robin merge; priority mode supplies
     `candidate_order`, the project's exact cross-account route.
 
-    `exclude` skips named platforms outright, same as `busy` — for DESIGN
-    D11's "review by a different platform than the builder": this applies
-    even to a pinned platform, since a pinned reviewer identical to the
-    builder would defeat the point.
+    `exclude` skips whole platform slots, same as `busy` — for DESIGN D11's
+    "review by a different platform than the builder". A D33 synthetic
+    model/effort variant cannot review another variant on its underlying
+    builder slot. This applies even to a pinned platform, since a pinned
+    reviewer identical to the builder would defeat the point.
     """
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
@@ -529,11 +585,18 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         reasons.append(f"{pin}: pinned, but it spends the "
                        f"{account_of(cfg['platforms'][pin])} account, not {target}")
     peak_active, peak_until = peak_state(cfg, led)
+    measured = (routing_mode or cfg.get("routing_mode", "list")) == "measured"
+    # In measured mode burst promotion happens after ranking, including when
+    # direct callers merge several account routes round-robin.
+    route_burst = None if measured else burst_lines
     cand = (candidate_order if candidate_order is not None else
-            candidates_for_accounts(cfg, role, accts, pin, burst_lines)
-            if accounts is not None else candidates(cfg, role, pin, burst_lines, account))
+            candidates_for_accounts(cfg, role, accts, pin, route_burst)
+            if accounts is not None else candidates(cfg, role, pin, route_burst, account))
+    if not pin and measured:
+        cand = measured_order(cfg, cand, scorecard_rows or [], role, size, burst_lines)
+    excluded_slots = {platform_slot(cfg, name) for name in exclude}
     for name in cand:
-        if name in busy or name in exclude:
+        if name in busy or platform_slot(cfg, name) in excluded_slots:
             reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]
@@ -570,7 +633,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
 
 
 def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
-                      burst_lines=None, min_tier=0, exclude=()):
+                      burst_lines=None, min_tier=0, exclude=(), scorecard_rows=None):
     """Route within a project's declared accounts (DESIGN D26).
 
     Default ("order"): tries each account in turn, spending the first with
@@ -580,18 +643,29 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     """
     accts = accounts_of(pol)
     mode = account_mode_of(pol)
+    measured = routing_mode(cfg, pol) == "measured"
+    if measured:
+        if mode == "priority":
+            order = candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
+        elif mode == "equal":
+            order = candidates_for_accounts(cfg, role, accts, pin)
+        else:
+            order = [n for account in accts for n in candidates(cfg, role, pin, account=account)]
+        return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
+                    min_tier=min_tier, accounts=accts, candidate_order=order,
+                    exclude=exclude, scorecard_rows=scorecard_rows, routing_mode="measured")
     if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, exclude=exclude)
+                    min_tier=min_tier, accounts=accts, exclude=exclude, routing_mode="list")
     if mode == "priority":
         order = candidates_for_priority(
             cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude)
+                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude, routing_mode="list")
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                             account=account, min_tier=min_tier, exclude=exclude)
+                             account=account, min_tier=min_tier, exclude=exclude, routing_mode="list")
         reasons += why
         if platform:
             return platform, reasons
@@ -626,7 +700,7 @@ def reason_groups(reasons):
 
 
 def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
-                        burst_lines=None, min_tier=0):
+                        burst_lines=None, min_tier=0, scorecard_rows=None):
     """Choose the cheapest eligible unproven variant for D33 exploration."""
     from . import platforms, run_usage, scorecard
     from .ledger import row_get
@@ -660,7 +734,7 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
         order = [name for account in accts
                  for name in candidates(cfg, role, burst_lines=burst_lines, account=account)]
 
-    rows = scorecard.table(led, cfg)
+    rows = scorecard.table(led, cfg) if scorecard_rows is None else scorecard_rows
     effective_size = size or "m"
     matching = [r for r in rows if r["role"] == role and r["size"] == effective_size]
     samples = [attempt for row in matching for attempt in row["attempts"]]

@@ -1,3 +1,8 @@
+# Opt-in measured routing (D33). Defaults to list order.
+# A project may override this with routing_mode = "list" or "measured".
+# Enable personal projects once build s and m each have two good variants.
+routing_mode = "list"
+
 # ~/.mahler/config.toml — only what differs from the defaults in mahler/config.py.
 # Nothing is managed until a project here says enabled = true.
 

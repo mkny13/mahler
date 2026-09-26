@@ -825,6 +825,11 @@ def _d_capacity(s):
            '<button class="seg" data-capacity-mode="capability">By capability</button></div>']
     if not s["quota"]:
         out.append('<span class="empty">No platforms are routed yet.</span>')
+    if s.get("measured_routes"):
+        out.append('<details><summary>Measured routing preferences</summary>')
+        for route in s["measured_routes"]:
+            out.append(f'<p class="foot-note">{e(route)}</p>')
+        out.append('</details>')
     out.append('<div class="cap-quota-pools">')
     for q in s["quota"]:
         out.append(_cap_card(q, "group"))

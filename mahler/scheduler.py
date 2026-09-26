@@ -32,7 +32,15 @@ class Ctx:
         self.passes_filed = set()  # projects with a pass filed (or dry-run queued) this tick
         self._gh = {}
         self._labels = {}          # (project, number) -> labels from this tick's sync
+        self._scorecard_rows = None
         self.burst_lines = None    # D23: set by compute_burst during this tick
+
+    @property
+    def scorecard_rows(self):
+        from . import scorecard
+        if self._scorecard_rows is None:
+            self._scorecard_rows = scorecard.table(self.led, self.cfg)
+        return self._scorecard_rows
 
     def policy(self, project):
         return config.project_policy(self.cfg, project)
@@ -87,6 +95,7 @@ def take_lock():
 
 def tick(ctx):
     ctx.holds = []
+    ctx._scorecard_rows = None
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
     outbox.drain(ctx)
     compute_burst(ctx, projects)    # D23: before watchdog so running runs
