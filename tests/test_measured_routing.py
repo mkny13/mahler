@@ -1,6 +1,7 @@
 import copy
 import unittest
 from unittest.mock import patch
+from contextlib import ExitStack
 
 from mahler import config, router, scorecard
 from mahler.ledger import Ledger
@@ -70,6 +71,43 @@ class MeasuredRoutingTests(unittest.TestCase):
             self.assertEqual(ctx.scorecard_rows, [])
             self.assertEqual(ctx.scorecard_rows, [])
             table.assert_called_once_with(self.led, self.cfg)
+
+    def test_unproven_and_below_keep_list_order(self):
+        rows = [dict(r, status="unproven") for r in self.rows]
+        order = list(self.cfg["platforms"])
+        self.assertEqual(router.measured_order(self.cfg, order, rows, "build", "m"), order)
+        rows = [dict(r, status="below") for r in rows]
+        self.assertEqual(router.measured_order(self.cfg, order, rows, "build", "m"),
+                         ["unknown", "bad", "expensive", "cheap"])
+
+    def test_tick_reuses_snapshot_across_schedule_ship_and_digest(self):
+        from mahler import scheduler
+        ctx = Ctx(self.cfg, self.led)
+        ctx.dry_run = True
+        snapshots = []
+        def consume(c, *args):
+            snapshots.append(c.scorecard_rows)
+        with ExitStack() as stack:
+            table = stack.enter_context(patch.object(scorecard, "table", return_value=[]))
+            stack.enter_context(patch.object(scheduler, "_project_ok", return_value=True))
+            for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
+                         "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                         "janitor.maybe_run", "outbox.drain"):
+                stack.enter_context(patch("mahler.scheduler." + name))
+            for name in ("schedule", "ship", "digest.maybe_send"):
+                stack.enter_context(patch("mahler.scheduler." + name, side_effect=consume))
+            scheduler.tick(ctx)
+            self.assertEqual(table.call_count, 1)
+            self.assertEqual(len(snapshots), 3)
+            scheduler.tick(ctx)
+            self.assertEqual(table.call_count, 2)
+
+    def test_console_explains_measured_routes(self):
+        from mahler.console.state import measured_routes
+        result = measured_routes(self.cfg, self.led, [dict(self.pol, name="test")], self.rows)
+        self.assertIn("cheap → expensive → unknown → bad", result[0])
+        self.assertIn("9/10 first try, $0.05 per success", result[0])
+        self.assertEqual(measured_routes(self.cfg, self.led, [{"name": "test"}], self.rows), [])
 
     def test_mode_validation(self):
         self.cfg["routing_mode"] = "typo"

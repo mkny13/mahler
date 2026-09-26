@@ -390,7 +390,7 @@ def _start_review_run(ctx, project, item, pr, view, sha):
            and builder_platform != "claude" else None)
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
-        scorecard_rows=ctx.scorecard_rows, burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — "
                 f"{'; '.join(reasons)}")
@@ -573,7 +573,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         size = "m"
     platform = router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
-        scorecard_rows=ctx.scorecard_rows, burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     explore = platform is not None
     reasons = []
     if explore:
@@ -582,7 +582,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     else:
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
-            scorecard_rows=ctx.scorecard_rows, burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -685,7 +685,7 @@ def _red_ci(ctx, project, item, pr, view):
     # equal round-robin, or an explicit cross-account priority.
     platform = router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
-        scorecard_rows=ctx.scorecard_rows, burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     explore = platform is not None
     reasons = []
     if explore:
@@ -694,7 +694,7 @@ def _red_ci(ctx, project, item, pr, view):
     else:
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
-            scorecard_rows=ctx.scorecard_rows, burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
