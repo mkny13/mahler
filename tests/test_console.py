@@ -2406,6 +2406,55 @@ class ConsoleReleasesStateTests(unittest.TestCase):
         self.assertEqual(draft["version_options"]["minor"], "0.2.0")
         self.assertEqual(draft["version_options"]["major"], "1.0.0")
 
+    def test_deep_history_bounds_loading_rendering_and_fragment_growth(self):
+        from mahler import releases
+
+        def seed(start, stop):
+            for release_no in range(start, stop):
+                numbers = list(range(release_no * 10 + 1000, release_no * 10 + 1010))
+                for number in numbers:
+                    self.led.snapshot_release_item(
+                        "mahler", number, title=f"Published change {number}",
+                        summary="A complete release note", labels=["type:feature"])
+                self.led.create_release(
+                    "mahler", f"1.0.{release_no}", checkpoint_sha="abc123",
+                    published_at=iso(SAT_NOON + timedelta(minutes=release_no)),
+                    item_numbers=numbers)
+
+        seed(0, 60)
+        for number in range(200, 260):
+            self.led.snapshot_release_item(
+                "mahler", number, title=f"Draft change {number}",
+                labels=[["type:feature"], ["type:bug"], [], ["type:chore"]][number % 4])
+        expected_ids = [r["id"] for r in self.led.list_releases("mahler")][:10]
+        with mock.patch.object(self.led, "release_items_for_release",
+                               wraps=self.led.release_items_for_release) as load_items:
+            result = state._releases(self.cfg, self.led, [{"name": "mahler"}], SAT_NOON)[0]
+        self.assertEqual(load_items.call_args_list, [mock.call(i) for i in expected_ids])
+        self.assertEqual(len(result["published"]), 10)
+        self.assertEqual(result["published_total"], 60)
+        self.assertEqual(result["published_omitted"], 50)
+        self.assertEqual([r["id"] for r in result["published"]], expected_ids)
+        draft = result["draft"]
+        self.assertEqual(draft["items_total"], 60)
+        self.assertEqual([it["number"] for it in draft["items"]], list(range(259, 239, -1)))
+        self.assertEqual(sum(len(draft[c]) for c in ("features", "fixes", "other", "maintenance")), 20)
+        self.assertEqual(draft["item_numbers"], list(range(200, 260)))
+        overlay = page._release_preview_overlays({"releases": [result]})
+        for number in range(200, 260):
+            self.assertIn(f"Draft change {number}", overlay)
+        self.assertIn(",".join(str(n) for n in range(200, 260)), overlay)
+        snapshot = state.build(self.cfg, self.led)
+        before = page.app(snapshot)
+        self.assertEqual(before.count("Published release history (10 of 60)"), 2)
+        self.assertEqual(before.count("…and 40 earlier items"), 2)
+        self.assertIn('/api/releases/mahler.json?limit=60', before)
+        self.assertIn("50 earlier releases — full notes in the JSON feed ↗", before)
+        self.assertEqual(len(releases.build_feed(self.led, "mahler", limit=60)["releases"]), 60)
+        seed(60, 120)
+        after = page.app(state.build(self.cfg, self.led))
+        self.assertLess(len(after.encode()), len(before.encode()) * 1.2)
+
     def test_two_part_baseline_proposes_next_build_version(self):
         self.led.create_release("mahler", "0.83", checkpoint_sha="sha_old",
                                 published_at="2026-09-01T12:00:00Z", item_numbers=[])
