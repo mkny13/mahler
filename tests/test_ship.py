@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, finalize, gh as gh_module, platforms, runner, scheduler, ship
+from mahler import config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -765,6 +765,31 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         _, platform, _ = calls[0]
         self.assertNotEqual(platform, "claude")
+
+    def test_claude_variant_never_pins_its_own_slot_for_review(self):
+        """A D33 variant is still the Claude platform that built the PR.
+
+        High-risk review must fall back to another platform rather than pin
+        the base Claude slot or deadlock after slot-wide exclusion.
+        """
+        variant = "claude/claude-sonnet-5/high"
+        self.cfg["platforms"][variant] = dict(
+            self.cfg["platforms"]["claude"], slot="claude",
+            build_model="claude-sonnet-5", effort="high")
+        self.cfg["projects"]["x"]["routing_mode"] = "measured"
+        self.led.upsert_item("x", 5, pr=88, title="database migration for users",
+                             labels="[]")
+        rid = self.led.create_run(project="x", number=5, role="build",
+                                  platform=variant, epoch=1, status="running")
+        self.led.update_run(rid, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+
+        self.ship()
+
+        self.assertEqual(len(calls), 1)
+        _, platform, _ = calls[0]
+        self.assertNotEqual(router.platform_slot(self.cfg, platform), "claude")
 
     def test_review_in_flight_just_waits(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
