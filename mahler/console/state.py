@@ -810,6 +810,10 @@ def _graph(items):
 
 # ---------- releases (DESIGN D31, mahler#359) ----------
 
+RELEASES_HISTORY_CAP = 10
+DRAFT_ITEMS_CAP = 20
+
+
 def _releases(cfg, led, projects, now):
     from .. import releases
     out = []
@@ -845,6 +849,9 @@ def _releases(cfg, led, projects, now):
                 "formatted_line": it.formatted_line(),
             }
 
+        # Ledger draft items are oldest first; keep the full notes for publication.
+        visible_items = list(reversed(draft.items))[:DRAFT_ITEMS_CAP]
+        visible_notes = releases.synthesize_notes(visible_items)
         draft_dict = {
             "count": draft.count,
             "age": age_str,
@@ -858,17 +865,18 @@ def _releases(cfg, led, projects, now):
             "summary": draft.notes.summary,
             "maintenance_details": draft.notes.maintenance_details,
             "expanded_notes": draft.notes.render(include_maintenance=True, collapsed_maintenance=True),
-            "features": [_item_dict(it) for it in draft.notes.features],
-            "fixes": [_item_dict(it) for it in draft.notes.fixes],
-            "other": [_item_dict(it) for it in draft.notes.other],
-            "maintenance": [_item_dict(it) for it in draft.notes.maintenance],
-            "items": [_item_dict(it) for it in draft.items],
+            "features": [_item_dict(it) for it in visible_notes.features],
+            "fixes": [_item_dict(it) for it in visible_notes.fixes],
+            "other": [_item_dict(it) for it in visible_notes.other],
+            "maintenance": [_item_dict(it) for it in visible_notes.maintenance],
+            "items": [_item_dict(it) for it in visible_items],
+            "items_total": len(draft.items),
             "item_numbers": [it.number for it in draft.items],
         }
 
         pub_rows = [r for r in led.list_releases(proj) if r["state"] == "published"]
         published = []
-        for r in pub_rows:
+        for r in pub_rows[:RELEASES_HISTORY_CAP]:
             item_rows = led.release_items_for_release(r["id"])
             rel_items = [releases._to_release_item(it) for it in item_rows]
             rel_notes = releases.synthesize_notes(rel_items)
@@ -907,6 +915,8 @@ def _releases(cfg, led, projects, now):
             "project": proj,
             "draft": draft_dict,
             "published": published,
+            "published_total": len(pub_rows),
+            "published_omitted": len(pub_rows) - len(published),
             "action": action_state,
         })
     return out
