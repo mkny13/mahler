@@ -1306,6 +1306,101 @@ class ShipTests(unittest.TestCase):
         self.assertIn("unowned-PR check failed", " ".join(self.ctx.lines))
 
 
+class TestReviewConvergence(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+
+    def rounds(self, findings):
+        self.led.upsert_item("x", 5, state="verifying", pr=88, attempts=0,
+                             labels='["size:m"]')
+        history = [{"sha": f"head-{i}", "findings": finding,
+                    "at": iso(NOW), "run_id": i}
+                   for i, finding in enumerate(findings, 1)]
+        self.gh.head_sha = history[-1]["sha"]
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+        return history
+
+    def test_two_divergent_transitions_escalate_before_attempt_limit(self):
+        findings = ["auth.py: null check", "db.py: query", "api.py: unsafe input"]
+        self.rounds(findings)
+        self.led.upsert_item("x", 5, attempts=self.ctx.policy("x")["max_attempts"] - 1)
+        with mock.patch.object(ship, "start") as start:
+            ping = self.ship()
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(json.loads(self.item()["options"]),
+                         ["cut scope", "split the item", "merge with follow-ups", "keep fixing"])
+        for i, finding in enumerate(findings, 1):
+            self.assertIn(f"Round {i}", self.item()["question"])
+            self.assertIn(finding, self.item()["question"])
+        ping.assert_called_once()
+        self.assertFalse(self.gh.merged)
+
+    def test_one_divergence_then_overlap_or_repeat_starts_a_fix(self):
+        sequences = [
+            ["a.py: bug", "b.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: remaining bug"],
+            ["a.py: bug"] * 5,
+            ["a.py: bug | b.py: bug", "c.py: bug", "b.py: recurring bug"],
+            ["a.py: bug", "unknown location", "c.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: bug", "c.py: bug"],
+        ]
+        for findings in sequences:
+            with self.subTest(findings=findings):
+                self.rounds(findings)
+                with mock.patch.object(ship, "start", return_value=True) as start:
+                    self.ship()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_full_paths_and_compound_filenames_remain_distinct(self):
+        findings = ["src/auth/index.test.js:10 null check",
+                    "src/db/index.test.ts:20 query",
+                    "src/api/index.test.tsx:30 unsafe input"]
+        self.assertEqual(ship._finding_files(" | ".join(findings)), {
+            "src/auth/index.test.js", "src/db/index.test.ts", "src/api/index.test.tsx"})
+        self.rounds(findings)
+        with mock.patch.object(ship, "start") as start:
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        for finding in findings:
+            self.assertIn(finding, self.item()["question"])
+
+    def test_retry_does_not_reescalate_the_same_history(self):
+        history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
+        self.ship()
+        self.led.upsert_item("x", 5, state="verifying")
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        start.assert_called_once()
+        self.assertEqual(json.loads(self.led.get_kv("reviewfindings:x#5")), history)
+
+    def test_pass_breaks_streak_and_failed_finalization_is_idempotent(self):
+        from types import SimpleNamespace
+
+        history = self.rounds(["a.py: bug", "b.py: bug"])
+        self.led.set_kv("review:x#5", json.dumps({"sha": "head-3", "verdict": "pending"}))
+        ending = SimpleNamespace(
+            led=self.led, project="x", number=5, item=self.item(),
+            run={"id": 20, "platform": "agy-gemini"}, rest="c.py: bug",
+            ctx=self.ctx, set_state=mock.Mock())
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            finalize._review_failed(ending)
+            finalize._review_failed(ending)
+            recorded = json.loads(self.led.get_kv("reviewfindings:x#5"))
+            self.assertEqual(recorded, history + [{
+                "sha": "head-3", "findings": ending.rest,
+                "at": iso(NOW), "run_id": 20}])
+            finalize._review_passed(ending)
+        self.assertEqual(self.led.get_kv("reviewconvergence:x#5"), "3")
+
+
 class HelpersTests(unittest.TestCase):
     def test_pr_body_round_trip(self):
         body = gh_module.pr_body(5, "wired the exporter", "- the new ping arrives")
