@@ -621,6 +621,14 @@ doesn't rely on that and stops on its own thresholds regardless.
   data or migrations, or the free tiers are exhausted. This is where the BACKLOG's
   **adversarial cross-product review** plugs in (ROADMAP Phase 7). It's agent review, not a
   human gate.
+- **Review has a blocking bar** (mahler#499). Only a *realistic* scenario with a real
+  consequence (a broken "Done when" item, a regression, data loss, unrecoverable state) or
+  any security issue blocks a merge. Contrived edge cases, hardening and heuristic misses on
+  unusual input are notes posted on a pass. Re-reviews check the previous blockers were
+  fixed before hunting in unchanged code. Why: an adversarial reviewer with no bar can
+  always construct one more breaking input, so heuristic features never converged (mahler#474
+  and #423 each burned three build/fix/review cycles on a fresh edge case every round).
+  Raising `max_attempts` would only have spent more quota reaching the same end.
 - **Runtime signals later:** post-deploy error capture (Vercel logs, a tiny error endpoint,
   or Sentry's free tier) becomes issues automatically.
 

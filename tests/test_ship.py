@@ -805,6 +805,20 @@ class ShipTests(unittest.TestCase):
             'verdict': 'pass', 'review_run': run['id'], 'reviewed_sha': 'reviewed-head'})
         self.assertIn("no blocking issues", self.gh.comments[-1])
 
+    def test_review_pass_lists_non_blocking_notes(self):
+        run = self.review_run()
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: REVIEW-PASS a.py: odd filenames miss | b.py: add a test\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(self.ctx, "say"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, run)
+        self.assertEqual(json.loads(self.led.get_kv("review:x#5"))["verdict"], "pass")
+        body = self.gh.comments[-1]
+        self.assertIn("no blocking issues", body)
+        self.assertIn("- a.py: odd filenames miss", body)
+        self.assertIn("- b.py: add a test", body)
+
     def test_review_fail_posts_findings_and_records_the_verdict(self):
         run = self.review_run()
         with open(self.log, "w") as fh:
