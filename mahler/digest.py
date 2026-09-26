@@ -27,7 +27,7 @@ def _local_now():
 
 # ---------- gathering ----------
 
-def gather(led, cfg, since, now=None, local_now=None):
+def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
     """Collect the last-24h picture from the ledger. `since` is an aware UTC
     datetime; event `at` stamps are ISO UTC strings."""
     now = now or led.now()
@@ -59,7 +59,7 @@ def gather(led, cfg, since, now=None, local_now=None):
             "weekly": rows["weekly"]["used_pct"] if "weekly" in rows else None,
         })
 
-    weekly = weekly_models(led, cfg) if (local_now or now.astimezone()).weekday() == 0 else None
+    weekly = weekly_models(led, cfg, scorecard_rows) if (local_now or now.astimezone()).weekday() == 0 else None
     return {"models": weekly, "shipped": shipped, "waiting": waiting, "handoffs": handoffs,
             "usage": usage, "since": since, "now": now}
 
@@ -143,7 +143,8 @@ def _maybe_send(ctx):
     if not should_send(led, local, hour):
         return
     now = led.now()
-    data = gather(led, cfg, since=now - timedelta(hours=24), now=now, local_now=local)
+    data = gather(led, cfg, since=now - timedelta(hours=24), now=now, local_now=local,
+                  scorecard_rows=getattr(ctx, "scorecard_rows", None) if local.weekday() == 0 else None)
     body = format_digest(data)
     if notify.send(cfg, TITLE, body):
         if data.get("models") is not None:
@@ -154,10 +155,10 @@ def _maybe_send(ctx):
         ctx.say("digest: ntfy send failed — will retry next tick")
 
 
-def weekly_models(led, cfg):
+def weekly_models(led, cfg, rows=None):
     """Compare to the last successfully delivered weekly snapshot, not wall time."""
     from . import scorecard
-    rows = scorecard.table(led, cfg)
+    rows = scorecard.table(led, cfg) if rows is None else rows
     try:
         previous = json.loads(led.get_kv("weekly_model_scorecard") or "{}")
     except (ValueError, TypeError):
