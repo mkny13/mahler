@@ -2332,6 +2332,16 @@ class GraphTests(unittest.TestCase):
         self.assertEqual(g['edges'], [])
 
 
+    def test_view_toggle_keys_on_root_with_a_valid_attribute_name(self):
+        # console.js sets data-<toggle> on <html>; the CSS must match that, and the
+        # name must be legal for setAttribute even with a '/' (mahler#487)
+        s = {"backlog": [{"project": "phish-in/couch-tour", "items": []}]}
+        graph = {"phish-in/couch-tour": {"nodes": [], "edges": []}}
+        html = page._backlog_groups(s, phone=False, dep_graph=graph)
+        self.assertNotIn("#mahler", html)
+        self.assertIn('data-toggle="view_phish-in-couch-tour"', html)
+        self.assertIn(':root[data-view_phish-in-couch-tour="open"]', html)
+
 class ConsoleReleasesStateTests(unittest.TestCase):
     def setUp(self):
         self.cfg, self.led = make_cfg(), make_led()

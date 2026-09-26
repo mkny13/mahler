@@ -283,17 +283,21 @@ def _backlog_groups(s, phone, dep_graph=None):
         toggle = ""
         if not phone and dep_graph and g["project"] in dep_graph:
             proj = e(g["project"])
+            # console.js sets the flag on <html>; an attribute name can't hold the
+            # '/' of a project like phish-in/couch-tour (mahler#487)
+            key = "view_" + "".join(c if c.isalnum() or c == "-" else "-"
+                                     for c in g["project"].lower())
             graph_svg = f'<div class="grp-graph">{_graph_svg(dep_graph[g["project"]])}</div>'
             toggle = (f'<div class="viewtog">'
                       f'<style>'
-                      f'#mahler[data-view_{proj}="open"] .grp.open[data-group="{proj}"] .grp-items {{ display: none; }} '
-                      f'#mahler[data-view_{proj}="open"] .grp.open[data-group="{proj}"] .grp-graph {{ display: block; }} '
-                      f'#mahler:not([data-view_{proj}="open"]) .grp[data-group="{proj}"] button[data-mode="list"], '
-                      f'#mahler[data-view_{proj}="open"] .grp[data-group="{proj}"] button[data-mode="graph"] '
+                      f':root[data-{key}="open"] .grp.open[data-group="{proj}"] .grp-items {{ display: none; }} '
+                      f':root[data-{key}="open"] .grp.open[data-group="{proj}"] .grp-graph {{ display: block; }} '
+                      f':root:not([data-{key}="open"]) .grp[data-group="{proj}"] button[data-mode="list"], '
+                      f':root[data-{key}="open"] .grp[data-group="{proj}"] button[data-mode="graph"] '
                       f'{{ background: var(--surf); color: var(--ink); pointer-events: none; }}'
                       f'</style>'
-                      f'<button data-toggle="view_{proj}" data-mode="list">List</button>'
-                      f'<button data-toggle="view_{proj}" data-mode="graph">Graph</button></div>')
+                      f'<button data-toggle="{key}" data-mode="list">List</button>'
+                      f'<button data-toggle="{key}" data-mode="graph">Graph</button></div>')
 
         out.append(f'<div class="grp" data-group="{e(g["project"])}">'
                    f'<div class="grp-h-row"><button class="grp-h" data-toggle-group="{e(g["project"])}">'
