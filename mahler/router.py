@@ -632,7 +632,7 @@ def lease_label(led, lease):
         pr = item["pr"] if item else None
         detail = f"conductor (watching PR #{pr})" if pr else "conductor (opening PR)"
     elif row.get("run_id") and (holder.startswith("run:") or "/" not in holder):
-        run = led.run(row["run_id"])
+        run = led.run_for_lease(row)
         if run:
             minutes = max(0, int((led.now() - parse(run["started_at"])).total_seconds() // 60))
             detail = f"{run['platform']} {run['role']} run {run['id']}, {minutes}m"

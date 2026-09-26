@@ -1560,7 +1560,8 @@ class RecordedIdleTests(unittest.TestCase):
         run = self.led.create_run(project="mahler", number=1, role="review",
                                   platform="claude", epoch=1,
                                   started_at=iso(self.led.now() - timedelta(minutes=14)))
-        self.led.claim("mahler", 1, f"run:{run}", "auto", 30, run_id=run)
+        self.led.claim("mahler", 1, f"run:{run}", "auto", 30,
+                       platform="claude", run_id=run)
         holds = [self.hold("capacity", max_parallel=1,
                           holders=[{"number": 1, "label": "old label"}])]
         text = self.idle(holds)["reasons"][0]["text"]

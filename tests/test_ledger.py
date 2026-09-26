@@ -10,7 +10,7 @@ import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from mahler import config
+from mahler import config, router
 from mahler.ledger import Ledger, RoutedLedger, SCHEMA, iso, outcome_not_started, remote_lease_operation
 
 
@@ -38,6 +38,17 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.led.last_run("p", 1)["role"], "review")
         self.assertEqual(self.led.last_run("p", 1, roles=("build", "fix"))["role"], "fix")
         self.assertIsNone(self.led.last_run("p", 2, roles=("build", "fix")))
+
+    def test_run_for_lease_requires_matching_project_number_and_platform(self):
+        run_id = self.led.create_run(project="p", number=1, role="build",
+                                     platform="claude", epoch=1)
+        lease = {"run_id": run_id, "project": "p", "number": 1,
+                 "platform": "claude"}
+        self.assertEqual(self.led.run_for_lease(lease)["id"], run_id)
+        for field, value in (("project", "other"), ("number", 2),
+                             ("platform", "copilot")):
+            with self.subTest(field=field):
+                self.assertIsNone(self.led.run_for_lease({**lease, field: value}))
 
     def test_auto_vs_auto_never_double_assigns(self):
         a, _ = self.led.claim("p", 1, "run:1", "auto", 10)
@@ -373,6 +384,21 @@ class RemoteLedgerTests(unittest.TestCase):
         self.assertNotIn("run:7", argv)
         self.assertEqual(request["holder"], "work-laptop/run:7")
         self.assertEqual(kwargs["timeout"], 8)
+
+    def test_remote_lease_never_uses_colliding_local_run_details(self):
+        canonical_run = self.canonical.create_run(
+            project="mahler", number=151, role="build", platform="copilot", epoch=1)
+        local_run = self.local.create_run(
+            project="mahler", number=151, role="review", platform="copilot", epoch=1,
+            started_at=iso(self.clock() - timedelta(minutes=42)))
+        self.assertEqual(local_run, canonical_run)  # ids collide across machines
+        self.canonical.claim("mahler", 151, f"run:{canonical_run}", "auto", 10,
+                             platform="copilot", run_id=canonical_run)
+
+        lease = self.routed.lease("mahler", 151)
+        self.assertIsNone(self.routed.run_for_lease(lease))
+        self.assertEqual(router.lease_label(self.routed, lease),
+                         f"mahler#151 — copilot auto run {canonical_run}")
 
     def test_remote_command_accepts_safe_argv_for_an_explicit_python(self):
         self.cfg["projects"]["mahler"]["remote_ledger"]["command"] = [
@@ -1261,4 +1287,3 @@ class RunAccountingMigrationTests(unittest.TestCase):
                     self.assertEqual(led.run(1)[key], value)
             finally:
                 led.close()
-

@@ -807,6 +807,22 @@ class Ledger:
     def run(self, run_id):
         return self.q1("SELECT * FROM runs WHERE id=?", (run_id,))
 
+    def run_for_lease(self, lease):
+        """Return this ledger's run only when it owns the lease identity.
+
+        Run ids are machine-local (D24), so an integer alone is not enough
+        to associate a lease with a run. The duplicated lease fields are the
+        local consistency check; RoutedLedger adds the machine boundary.
+        """
+        row = dict(lease)
+        run = self.run(row.get("run_id")) if row.get("run_id") else None
+        if not run:
+            return None
+        if (run["project"], run["number"], run["platform"]) != (
+                row.get("project"), row.get("number"), row.get("platform")):
+            return None
+        return run
+
     def active_runs(self, project=None):
         sql = "SELECT * FROM runs WHERE status IN ('running','stopping')"
         args = ()
@@ -1242,6 +1258,13 @@ class RoutedLedger:
                 if lease:
                     rows.append(lease)
         return rows
+
+    def run_for_lease(self, lease):
+        """Resolve run details only for leases authoritative on this machine."""
+        row = dict(lease)
+        if self._remote(row.get("project")):
+            return None
+        return self.local.run_for_lease(row)
 
     def expired_leases(self):
         """The canonical host, not this laptop, expires remote-project rows."""

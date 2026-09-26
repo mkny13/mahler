@@ -562,7 +562,8 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 6, state="verifying", branch="mahler/6-fix")
         run = self.led.create_run(project="x", number=5, role="review",
                                   platform="claude", epoch=1)
-        self.led.claim("x", 5, f"run:{run}", "auto", 10, run_id=run)
+        self.led.claim("x", 5, f"run:{run}", "auto", 10,
+                       platform="claude", run_id=run)
         claim = self.led.claim
         def bounded_claim(*args, **kwargs):
             return claim(*args, **kwargs, max_parallel=1)

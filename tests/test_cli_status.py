@@ -77,7 +77,8 @@ class StatusCliTests(unittest.TestCase):
         self.led.release("proj", 1)
         run = self.led.create_run(project="proj", number=1, role="review",
                                   platform="claude", epoch=1)
-        self.led.claim("proj", 1, f"run:{run}", "auto", 10, run_id=run)
+        self.led.claim("proj", 1, f"run:{run}", "auto", 10,
+                       platform="claude", run_id=run)
         buf = io.StringIO()
         with patch.object(self.led, "claim", side_effect=bounded_claim), patch("sys.stdout", buf):
             self.assertEqual(cli.cmd_claim(args, self.cfg, self.led), 1)
