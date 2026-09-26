@@ -95,10 +95,17 @@ def columns(log, run, cfg):
     if number(log.get("cost_usd")):
         out.update(cost_usd=log["cost_usd"], cost_source="cli")
     else:
-        price = cfg.get("prices", {}).get(model, {})
-        rates = [price.get("in"), price.get("cached_in", price.get("in")), price.get("out")]
-        if all(number(r) for r in rates) and tokens.get("out") is not None:
-            cost = ((tokens.get("in") or 0) * rates[0] + (tokens.get("cached") or 0) * rates[1]
-                    + ((tokens.get("out") or 0) + (tokens.get("reasoning") or 0)) * rates[2]) / 1e6
+        cost = price(tokens, model, cfg)
+        if cost is not None:
             out.update(cost_usd=cost, cost_source="priced")
     return out
+
+
+def price(tokens, model, cfg):
+    """API-equivalent dollars for `tokens` at `[prices."<model>"]`, or None if unpriced."""
+    rates = cfg.get("prices", {}).get(model) or {}
+    rates = [rates.get("in"), rates.get("cached_in", rates.get("in")), rates.get("out")]
+    if not all(number(r) for r in rates) or tokens.get("out") is None:
+        return None
+    return ((tokens.get("in") or 0) * rates[0] + (tokens.get("cached") or 0) * rates[1]
+            + ((tokens.get("out") or 0) + (tokens.get("reasoning") or 0)) * rates[2]) / 1e6
