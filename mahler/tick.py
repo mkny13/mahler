@@ -415,8 +415,13 @@ def schedule(ctx, projects):
             if in_project.get(name, 0) >= p["max_parallel"]:
                 if name not in said:
                     said.add(name)
-                    ctx.say(f"{name}: at capacity ({total} running)")
-                    ctx.hold("capacity", project=name, max_parallel=p["max_parallel"])
+                    holders = [{"number": r["number"], "label": router.lease_label(led, lease)}
+                               for r in led.active_runs() if r["project"] == name
+                               if (lease := led.lease(name, r["number"])) and lease["capacity"]]
+                    detail = "; ".join(h["label"] for h in holders) or f"{in_project.get(name, 0)} running or planned"
+                    ctx.say(f"{name}: at capacity ({detail})")
+                    ctx.hold("capacity", project=name, max_parallel=p["max_parallel"],
+                             holders=holders)
                 continue
             if role == "build" and in_project.get(name, 0) + in_flight[name] >= p["max_parallel"]:
                 if name not in said:
@@ -521,9 +526,12 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         if "unavailable" in info:
             ctx.say(f"{project}#{n}: canonical lease host unavailable — skipped")
         elif "at_capacity" in info:
-            held = ", ".join(f"#{row['number']} by {row['holder']}"
+            held = ", ".join(router.lease_label(led, row)
                              for row in info["at_capacity"])
             ctx.say(f"{project}#{n}: canonical project capacity held ({held}) — skipped")
+            ctx.hold("capacity", project=project, max_parallel=pol["max_parallel"],
+                     holders=[{"number": row["number"], "label": router.lease_label(led, row)}
+                              for row in info["at_capacity"]])
         else:
             ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
         return False
@@ -546,7 +554,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         if handoff_from:
             restored, _ = led.claim(
                 project, n, handoff_from[0], "auto", pol["auto_lease_minutes"],
-                handoff_from=(f"run:{run_id}", lease["epoch"]))
+                capacity=False, handoff_from=(f"run:{run_id}", lease["epoch"]))
             if restored is None:
                 # Do not release a canonical slot we could not safely restore;
                 # its short lease will expire and shipping will retry.

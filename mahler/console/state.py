@@ -1252,7 +1252,15 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
         elif (kind, project) not in seen:
             seen.add((kind, project))
             if kind == "capacity":
-                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s).",
+                labels = []
+                for holder in h.get("holders", []):
+                    lease = led.lease(project, holder["number"]) if led else None
+                    if lease and lease["capacity"]:
+                        labels.append(router.lease_label(led, lease))
+                if h.get("holders") and not labels:
+                    continue  # the recorded holder no longer consumes a run slot
+                detail = " Held by " + "; ".join(labels) + "." if labels else ""
+                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s)." + detail,
                             "items": _reason_items(cfg, pending, [(project, i["number"])
                                             for i in pending[project] if i["state"] == "ready"])})
             elif kind == "lease_host":
@@ -1450,9 +1458,7 @@ def _idle(cfg, led, s, hot, now):
         verifying = led.items(name, ["verifying"])
         if builds and verifying and len(verifying) >= p.get("max_parallel", 1):
             v = verifying[0]
-            slot = ("the project's only parallel slot" if p.get("max_parallel", 1) == 1
-                    else "one of the project's parallel slots")
-            text = f"{_ref(name, v['number'])} holds {slot} until its PR merges"
+            text = f"New builds wait for {_ref(name, v['number'])} to merge"
             wait_text, pending_m = _verification_wait(led, name, v, now)
             text += wait_text if v["pr"] else "."
             timeout = p.get("verify_timeout_minutes", 60) - pending_m

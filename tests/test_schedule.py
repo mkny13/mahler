@@ -310,7 +310,7 @@ class FairnessTests(unittest.TestCase):
         self.assertEqual(plan(ctx, led),
                          ["a#1: would build on agy-claude",
                           "b#5: would build on agy-claude"])
-        self.assertIn("a: at capacity (2 running)", ctx.lines)
+        self.assertIn("a: at capacity (1 running or planned)", ctx.lines)
 
     def test_unmerged_change_holds_the_build_slot(self):
         """The live failure (mahler#27): with max_parallel 1, three builds ran

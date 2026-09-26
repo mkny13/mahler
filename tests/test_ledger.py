@@ -177,18 +177,18 @@ class LeaseTests(unittest.TestCase):
                                   max_parallel=1, capacity=True)
         self.assertIsNotNone(build)
 
-    def test_handoff_keeps_same_capacity_slot_without_release(self):
+    def test_handoff_releases_capacity_without_releasing_ownership(self):
         run, _ = self.led.claim("p", 1, "run:1", "auto", 10,
                                 max_parallel=1)
         conductor, info = self.led.claim(
-            "p", 1, "conductor", "auto", 10, max_parallel=1,
+            "p", 1, "conductor", "auto", 10, max_parallel=1, capacity=False,
             handoff_from=("run:1", run["epoch"]))
         other, blocked = self.led.claim("p", 2, "run:2", "auto", 10,
                                         max_parallel=1)
         self.assertEqual(info["handed_off_from"]["holder"], "run:1")
         self.assertEqual(conductor["holder"], "conductor")
-        self.assertIsNone(other)
-        self.assertIn("at_capacity", blocked)
+        self.assertIsNotNone(other)
+        self.assertNotIn("at_capacity", blocked)
         # Verify epoch was incremented (fencing)
         self.assertGreater(conductor["epoch"], run["epoch"])
         # Verify old epoch is fenced

@@ -489,6 +489,85 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.lease("x", 5))
         self.assertEqual(self.gh.merged, [89])
 
+    def test_review_quota_wait_does_not_block_another_review_or_merge(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.upsert_item("x", 6, pr=89, state="verifying", title="another change",
+                             labels='["size:m"]', branch="mahler/6-fix")
+        # Upgrade an idle lease left by the previous daemon release.
+        old, _ = self.led.claim("x", 5, "conductor", "auto", 10)
+        claim = self.led.claim
+        def bounded_claim(*args, **kwargs):
+            return claim(*args, **kwargs, max_parallel=1)
+        started = []
+        def review_start(ctx, project, item, role, platform, **kwargs):
+            lease, _ = ctx.led.claim(project, item["number"], "run:99", "auto", 10,
+                                    handoff_from=kwargs["handoff_from"])
+            self.assertIsNotNone(lease)
+            started.append(item["number"])
+            ctx.led.claim(project, item["number"], "conductor", "auto", 10,
+                          capacity=False, handoff_from=("run:99", lease["epoch"]))
+            ctx.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass"}))
+            return True
+        with mock.patch.object(self.led, "claim", side_effect=bounded_claim), \
+             mock.patch("mahler.router.pick_for_project",
+                        side_effect=[(None, ["no quota"]), ("claude", [])]), \
+             mock.patch.object(ship, "start", side_effect=review_start):
+            self.ship()
+        self.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass"}))
+        self.assertEqual(started, [6])
+        lease = self.led.lease("x", 5)
+        self.assertEqual(lease["capacity"], 0)
+        self.assertEqual(lease["epoch"], old["epoch"])
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, ["no quota"])):
+            self.ship()
+        self.assertEqual(self.gh.merged, [89])
+        self.assertEqual(self.item()["state"], "verifying")
+
+    def test_only_one_merge_request_per_project_per_tick(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 6, pr=89, state="verifying", title="small fix",
+                             branch="mahler/6-fix")
+        self.gh.queue = True
+        self.ship()
+        self.assertEqual(self.gh.merged, [88])
+        self.ship()
+        self.assertEqual(self.gh.merged, [88, 89])
+
+    def test_second_merge_rechecks_base_after_first_tick(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 6, pr=89, state="verifying", title="small fix",
+                             branch="mahler/6-fix")
+        self.gh.queue = True
+        self.ship()
+        with mock.patch.object(self.gh, "base_in_head", return_value=False):
+            self.ship()
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(self.led.item("x", 6)["state"], "ready")
+
+    def test_run_capacity_refuses_review_and_fix_until_holder_finishes(self):
+        from mahler import tick
+        self.cfg["projects"]["x"]["max_parallel"] = 1
+        self.led.upsert_item("x", 6, state="verifying", branch="mahler/6-fix")
+        run = self.led.create_run(project="x", number=5, role="review",
+                                  platform="claude", epoch=1)
+        self.led.claim("x", 5, f"run:{run}", "auto", 10, run_id=run)
+        claim = self.led.claim
+        def bounded_claim(*args, **kwargs):
+            return claim(*args, **kwargs, max_parallel=1)
+        with mock.patch.object(self.led, "claim", side_effect=bounded_claim), \
+             mock.patch.object(self.ctx, "say") as say, \
+             mock.patch.object(runner, "prepare", return_value={}), \
+             mock.patch("mahler.prompt.build", return_value="prompt"), \
+             mock.patch.object(runner, "launch", return_value={}):
+            for role in ("build", "review", "fix"):
+                self.assertFalse(tick.start(self.ctx, "x", self.led.item("x", 6),
+                                            role, "agy-claude"))
+            self.assertIn(f"x#5 — claude review run {run}", str(say.call_args_list))
+            self.led.update_run(run, status="ended")
+            self.led.release("x", 5)
+            self.assertTrue(tick.start(self.ctx, "x", self.led.item("x", 6),
+                                       "review", "agy-claude"))
+
     def test_red_ci_does_not_reescalate_every_tick_on_the_same_sha(self):
         """mahler#232 — a tick that can't start a fix run (no free slot, no
         platform) must not re-count the same red CI cycle: esc_fails/esc_tier

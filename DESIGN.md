@@ -311,7 +311,7 @@ Two rules use this:
   The first PR to merge wins and closes the issue. The other holder's next heartbeat returns
   `item_closed`: it stops, and its branch is kept as `mahler/abandoned/<issue>-<run>` for
   14 days. The cost is bounded by how often runs check the lease: a few minutes of tokens.
-- **Parallel items in one project** start on current base and hold their slot until they merge
+- **Parallel items in one project** start on current base and gate new builds until they merge
   (D19), so they rarely collide; when one does, the conductor sends it back for a rebuild. Items
   sharing an `area:` label aren't run concurrently — `tick.schedule()` gates `build`/`fix`
   starts on area collision against both running and in-flight (`verifying`) items
@@ -863,14 +863,16 @@ merging away from agents, and nobody took the rebase over.
 
 Throughput counts merged changes, not finished runs. So:
 
-- **The slot is held until merge.** A `verifying` item counts against its project's
-  `max_parallel` for builds. Sorts don't write code, so they don't wait. A red PR keeps holding
-  the slot until it's fixed (D18 fix runs) or closed, and pings once, because that project's
-  builds stop behind it. Exception (mahler#449): a failed review or red CI waiting for a fix
-  platform or global run slot releases the conductor's capacity lease so other green PRs
-  can ship. It remains `verifying` and retries without recounting the failed head. After
-  `verify_timeout_minutes` without a fix starting, it moves to `needs_you` and pings with
-  the routing reason. Ordinary new builds still observe the in-flight-item gate.
+- **Run capacity ends when execution ends** (mahler#486). Build, fix and review runs
+  take a project slot; sorting and the conductor's PR watch lease do not. The conductor
+  retains item ownership and fencing, and requests at most one merge per project per tick.
+  Each later merge rechecks the current base. Interactive work still takes capacity.
+  The separate in-flight build gate is unchanged: a `verifying` item counts against
+  `max_parallel` for new builds until it merges or leaves that state.
+  The earlier narrow exception (mahler#449) released capacity while a failed review or
+  red CI waited for a fix platform; all idle conductor waits now release capacity.
+  Its fix-wait timeout still moves the item to `needs_you` and pings after
+  `verify_timeout_minutes` without a fix starting.
 - **Every build starts on current base.** Resumed work is rebased onto `origin/<base>` at
   launch, and the run's branch is force-pushed to match. If the rebase doesn't apply cleanly,
   the old tip is kept on `mahler/snapshot/<n>-stale-run<id>`, the branch starts fresh from base,
@@ -1079,8 +1081,10 @@ one project; all other execution state and every other project remain local to e
 - `max_parallel` is enforced canonically too. A capacity-taking claim counts live capacity
   leases for the project and compares the count in the same `BEGIN IMMEDIATE` transaction that
   grants the item lease. Sorting does not take capacity (D19). A completed build atomically
-  hands its item lease from the run to the conductor, and a red-CI repair hands it back, so the
-  slot remains occupied through PR, CI, and merge with no cross-machine release/claim race.
+  hands its item lease from the run to the conductor with capacity off, preserving fencing
+  while releasing the run slot. Every build, fix and review claims capacity atomically.
+  The conductor holds no slot while watching PRs, CI or quota; merge requests are serialized
+  one per project per tick (D19).
 - **Failure is closed and project-scoped.** Timeout, SSH failure, a bad host key, non-zero exit,
   malformed JSON, or a rejected protocol response can never grant, renew, release, or validate
   a lease. A candidate is skipped, a running job loses its heartbeat and yields, a fence check
@@ -1252,7 +1256,7 @@ GitHub's PR state before announcing that the change shipped.
 
 - Request the merge once per PR head SHA, recording the SHA and request time
   in ledger KV. Re-read the PR immediately so synchronous merges still finish
-  in the same tick. Otherwise keep the item verifying and retain its slot.
+  in the same tick. Otherwise keep the item verifying and retain its non-capacity item lease (D19).
 - Poll on later ticks. An open, green PR that has not merged after
   `verify_timeout_minutes` goes to `needs_you`, releases the conductor lease,
   and sends the same console-linked notification as a pending-CI timeout.

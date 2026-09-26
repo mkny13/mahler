@@ -725,7 +725,7 @@ class IdleReasonTests(unittest.TestCase):
         self.assertEqual(r["countdown"], "cline-free 47m · kilo 47m")
         self.assertEqual(r["platforms"], ["cline-free", "kilo"])
 
-    def test_verifying_item_holds_the_only_slot(self):
+    def test_verifying_item_gates_builds_without_holding_run_slot(self):
         cfg, led = make_cfg(), make_led()
         all_fresh(led)
         led.upsert_item("mahler", 39, title="probe", state="verifying", pr=112,
@@ -734,8 +734,7 @@ class IdleReasonTests(unittest.TestCase):
         idle = self.idle(cfg, led)
         self.assertEqual(idle["headline"], "Nothing is running. One thing is holding it:")
         r = idle["reasons"][0]
-        self.assertEqual(r["text"], "mahler#39 holds the project's only parallel slot until its "
-                                    "PR merges — CI has been pending 6 minutes.")
+        self.assertEqual(r["text"], "New builds wait for mahler#39 to merge — CI has been pending 6 minutes.")
         self.assertEqual(r["countdown"], "verify timeout in 54m")
         self.assertEqual(r["action"], "Open PR #112")
         self.assertEqual(r["href"], "https://github.com/mkny13/mahler/pull/112")
@@ -1556,6 +1555,27 @@ class RecordedIdleTests(unittest.TestCase):
     def item(self, n, title=None):
         return {"ref": f"mahler#{n}",
                 "url": f"https://github.com/mkny13/mahler/issues/{n}", "title": title}
+
+    def test_capacity_names_current_run_and_elapsed(self):
+        run = self.led.create_run(project="mahler", number=1, role="review",
+                                  platform="claude", epoch=1,
+                                  started_at=iso(self.led.now() - timedelta(minutes=14)))
+        self.led.claim("mahler", 1, f"run:{run}", "auto", 30, run_id=run)
+        holds = [self.hold("capacity", max_parallel=1,
+                          holders=[{"number": 1, "label": "old label"}])]
+        text = self.idle(holds)["reasons"][0]["text"]
+        self.assertIn(f"mahler#1 — claude review run {run}, 14m", text)
+
+    def test_idle_conductor_does_not_render_stale_run_capacity(self):
+        self.led.upsert_item("mahler", 1, state="verifying", pr=91, labels='["size:m"]')
+        self.led.claim("mahler", 1, "conductor", "auto", 30, capacity=False)
+        self.led.set_kv("ci:mahler#1:91", json.dumps({"state": "green"}))
+        holds = [self.hold("capacity", max_parallel=1,
+                          holders=[{"number": 1, "label": "old run"}])]
+        texts = " ".join(r["text"] for r in self.idle(holds)["reasons"])
+        self.assertNotIn("limit of", texts)
+        self.assertNotIn("parallel slot", texts)
+        self.assertIn("independent review", texts)
 
     def test_route_grouping_and_size_only(self):
         holds = [self.hold("no_platform", n, role="build", size="m", blockers={"size": ["kilo"]})

@@ -316,14 +316,13 @@ def _save_work(e):
 def _close_the_books(e, code):
     """The lease, the run row and the worktree, once the ending is decided."""
     ctx, led, run = e.ctx, e.led, e.run
-    # A finished change keeps the canonical project slot while the conductor
-    # opens/watches/merges its PR (D19, D24). Transfer the same item lease in
-    # one transaction so a second machine cannot claim another issue in the
-    # release/claim gap. On transport failure the run lease is left to expire.
+    # Keep item ownership and fencing through the handoff, but release run
+    # capacity immediately. Watching a PR does not execute a run (D19, D24).
+    # On transport failure the old lease is left to expire.
     if led.item(e.project, e.number)["state"] == "verifying":
         transferred, info = led.claim(
             e.project, e.number, CONDUCTOR, "auto", e.pol["auto_lease_minutes"],
-            handoff_from=(f"run:{run['id']}", run["epoch"]))
+            capacity=False, handoff_from=(f"run:{run['id']}", run["epoch"]))
         if transferred is None:
             detail = info.get("unavailable") or "canonical lease transfer refused"
             ctx.say(f"{e.project}#{e.number}: {detail}; existing lease left to expire safely")
