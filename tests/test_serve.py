@@ -449,6 +449,15 @@ class TestReleasesFeed(_Served):
             feed = json.loads(body)
             self.assertEqual(feed["project"], "mahler")
 
+    def test_releases_feed_decodes_project_name(self):
+        project = "phish-in/couch-tour"
+        self.cfg["projects"][project] = {"enabled": True, "repo": "mkny13/couch-tour"}
+
+        status, _, body = self.request("/api/releases/phish-in%2Fcouch-tour.json")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["project"], project)
+
     def test_releases_feed_unknown_or_disabled_project(self):
         status, _, _ = self.request("/api/releases/nonexistent")
         self.assertEqual(status, 404)
