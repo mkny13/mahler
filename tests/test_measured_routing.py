@@ -118,10 +118,20 @@ class MeasuredRoutingTests(unittest.TestCase):
 
     def test_console_explains_measured_routes(self):
         from mahler.console.state import measured_routes
-        result = measured_routes(self.cfg, self.led, [dict(self.pol, name="test")], self.rows)
+        # Console routing checks installed CLIs; CI need not have Codex installed.
+        with patch("mahler.platforms.available", return_value=True):
+            result = measured_routes(self.cfg, self.led, [dict(self.pol, name="test")], self.rows)
         self.assertIn("cheap → expensive → unknown → bad", result[0])
         self.assertIn("9/10 first try, $0.05 per success", result[0])
         self.assertEqual(measured_routes(self.cfg, self.led, [{"name": "test"}], self.rows), [])
+
+    def test_console_measured_routes_without_installed_clis(self):
+        from mahler.console.state import measured_routes
+        with patch("mahler.platforms.available", return_value=False):
+            result = measured_routes(self.cfg, self.led, [dict(self.pol, name="test")], self.rows)
+        self.assertTrue(result)
+        self.assertIn("cheap → expensive → unknown → bad", result[0])
+        self.assertTrue(all(row.endswith("Unpinned preference: no headroom") for row in result))
 
     def test_mode_validation(self):
         self.cfg["routing_mode"] = "typo"
