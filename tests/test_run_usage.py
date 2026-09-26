@@ -143,3 +143,39 @@ class UsageTests(unittest.TestCase):
             self.assertIsNone(led.run(credit)['tokens_out'])
             for rid in (active, failed, missing):
                 self.assertIsNone(led.run(rid)['cost_source'])
+
+    def test_backfill_reprices_unpriced_runs_from_stored_tokens(self):
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['prices'] = {'new-model': {'in': 2, 'cached_in': 1, 'out': 10}}
+        tokens = dict(tokens_in=1000, tokens_cached=500, tokens_out=100, tokens_reasoning=50)
+        def create(model, status='ended', **cols):
+            rid = led.create_run(project='p', number=1, role='build', platform='gone',
+                                 epoch=0, log_path='/nonexistent/agent.log', status=status)
+            led.update_run(rid, model=model, **cols)
+            return rid
+        stale = create('new-model', cost_source='unpriced', **tokens)
+        still = create('no-price-yet', cost_source='unpriced', **tokens)
+        no_tokens = create('new-model', cost_source='unpriced', credits=3)
+        cli = create('new-model', cost_source='cli', cost_usd=0.5, **tokens)
+        running = create('new-model', status='running', cost_source='unpriced', **tokens)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            cmd_backfill_usage(SimpleNamespace(dry_run=True), cfg, led)
+            self.assertEqual(led.run(stale)['cost_source'], 'unpriced')
+            cmd_backfill_usage(SimpleNamespace(dry_run=False), cfg, led)
+            cmd_backfill_usage(SimpleNamespace(dry_run=False), cfg, led)
+        self.assertIn('Would re-price 1 unpriced run(s)', output.getvalue())
+        self.assertIn('Re-priced 1 unpriced run(s)', output.getvalue())
+        self.assertIn('Re-priced 0 unpriced run(s)', output.getvalue())
+        self.assertEqual(led.run(stale)['cost_source'], 'priced')
+        # (1000*2 + 500*1 + (100+50)*10) / 1e6, the same formula columns() uses
+        self.assertAlmostEqual(led.run(stale)['cost_usd'], 0.004)
+        self.assertEqual(led.run(stale)['cost_usd'], run_usage.columns(
+            {'tokens': {'in': 1000, 'cached': 500, 'out': 100, 'reasoning': 50}},
+            {'model': 'new-model'}, cfg)['cost_usd'])
+        for rid in (still, no_tokens, running):
+            self.assertEqual(led.run(rid)['cost_source'], 'unpriced')
+            self.assertIsNone(led.run(rid)['cost_usd'])
+        self.assertEqual(led.run(cli)['cost_source'], 'cli')
+        self.assertEqual(led.run(cli)['cost_usd'], 0.5)

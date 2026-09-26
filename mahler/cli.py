@@ -788,7 +788,7 @@ def cmd_console_walkthrough(a, cfg, led):
 
 def cmd_backfill_usage(a, cfg, led):
     """Recover historical accounting without touching active runs or leases."""
-    from .run_usage import columns
+    from .run_usage import columns, price
     updated = skipped = 0
     rows = led.con.execute(
         "SELECT * FROM runs WHERE status='ended' AND tokens_out IS NULL "
@@ -812,7 +812,21 @@ def cmd_backfill_usage(a, cfg, led):
         if not a.dry_run:
             led.update_run(run["id"], **columns(log, run, cfg))
         updated += 1
-    print(f"{'Would update' if a.dry_run else 'Updated'} {updated} run(s); skipped {skipped}.")
+    # Runs ended before their model had a [prices] row kept their tokens but were
+    # stamped 'unpriced'; price them from the stored columns now. CLI costs stay.
+    repriced = 0
+    for row in led.con.execute(
+            "SELECT * FROM runs WHERE status='ended' AND cost_source='unpriced' "
+            "AND tokens_out IS NOT NULL ORDER BY id").fetchall():
+        tokens = {k: row[f"tokens_{k}"] for k in ("in", "cached", "out", "reasoning")}
+        cost = price(tokens, row["model"], cfg)
+        if cost is None:
+            continue
+        if not a.dry_run:
+            led.update_run(row["id"], cost_usd=cost, cost_source="priced")
+        repriced += 1
+    print(f"{'Would update' if a.dry_run else 'Updated'} {updated} run(s); skipped {skipped}. "
+          f"{'Would re-price' if a.dry_run else 'Re-priced'} {repriced} unpriced run(s).")
 
 
 def _scorecard_days(value):
@@ -935,7 +949,7 @@ def main(argv=None):
     s.add_argument("project", nargs="?")
     s.set_defaults(fn=cmd_backup)
 
-    s = sub.add_parser("backfill-usage", help="recover accounting from ended run logs")
+    s = sub.add_parser("backfill-usage", help="recover accounting from ended run logs; price runs whose model now has a [prices] row")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_backfill_usage)
 
