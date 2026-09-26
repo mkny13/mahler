@@ -21,6 +21,83 @@
   var errorToastTimer = null;   // timer for auto-dismissing error toast
   var settingsDirty = false;    // never poll-refresh an unsaved settings form
 
+  var mermaidPromise = null;
+  var graphCache = Object.create(null);
+  var graphQueue = Promise.resolve();
+  var graphSequence = 0;
+
+  function graphTheme() {
+    var theme = root.getAttribute("data-theme") || "auto";
+    return theme === "dark" || (theme === "auto" &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches) ? "dark" : "default";
+  }
+
+  function loadMermaid() {
+    if (!mermaidPromise) {
+      mermaidPromise = new Promise(function (resolve, reject) {
+        var script = document.createElement("script");
+        script.src = "https://cdn.jsdelivr.net/npm/mermaid@12.0.0/dist/mermaid.min.js";
+        script.integrity = "sha384-xzghz1GQ5u9HCpVskeDPqMsdogD1yvuMQbEK53+wi+G70+6J1AG0L2cfi9PHjDWI";
+        script.crossOrigin = "anonymous";
+        script.onload = function () {
+          if (window.mermaid) { resolve(window.mermaid); }
+          else { reject(new Error("Mermaid unavailable")); }
+        };
+        script.onerror = function () { reject(new Error("Mermaid download failed; using SVG fallback")); };
+        document.head.appendChild(script);
+      });
+    }
+    return mermaidPromise;
+  }
+
+  function renderGraphs() {
+    var theme = graphTheme();
+    app.querySelectorAll(".grp.open .grp-graph").forEach(function (graph) {
+      var key = graph.getAttribute("data-graph-key");
+      if (root.getAttribute("data-" + key) !== "open") { return; }
+      var src = graph.querySelector(".mermaid-src").textContent;
+      if (!src) { return; }
+      var cached = graphCache[key];
+      function install(entry) {
+        // A poll or theme change may have replaced this request meanwhile.
+        if (!app.contains(graph) || graphTheme() !== theme ||
+            graph.querySelector(".mermaid-src").textContent !== src) { return; }
+        var out = graph.querySelector(".mermaid-out");
+        if (out.innerHTML !== entry.svg) { out.innerHTML = entry.svg; }
+        graph.classList.add("rendered");
+      }
+      if (cached && cached.src === src && cached.theme === theme) {
+        if (cached.svg) { install(cached); }
+        else if (cached.pending) { cached.pending.then(function () {
+          if (cached.svg) { install(cached); }
+        }); }
+        return;
+      }
+      graph.classList.remove("rendered");
+      graph.querySelector(".mermaid-out").innerHTML = "";
+      var entry = { src: src, theme: theme };
+      graphCache[key] = entry;
+      // Serialize initialize/render so simultaneous projects cannot mix themes.
+      entry.pending = graphQueue.then(function () { return loadMermaid(); }).then(async function (mermaid) {
+        mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme: theme });
+        var container = document.createElement("div");
+        container.style.position = "absolute";
+        container.style.visibility = "hidden";
+        document.body.appendChild(container);
+        try {
+          var result = await mermaid.render("g-" + key + "-" + (++graphSequence), src, container);
+          entry.svg = result.svg;
+          install(entry);
+        } finally {
+          container.remove(); // also removes Mermaid's error diagram on failure
+        }
+      }).catch(function (err) {
+        if (window.console) { console.warn("Graph uses SVG fallback", err); }
+      });
+      graphQueue = entry.pending;
+    });
+  }
+
   function e(value) {
     var span = document.createElement("span");
     span.textContent = value == null ? "" : String(value);
@@ -171,6 +248,7 @@
     }
     
     applyCaptureProject();
+    renderGraphs();
   }
 
   // the capture select remembers the last project you saved to, in
@@ -610,6 +688,7 @@
       if (root.getAttribute(name) === "open") { root.removeAttribute(name); }
       else { root.setAttribute(name, "open"); }
       syncWhy();
+      renderGraphs();
       return;
     }
     if (el.hasAttribute("data-toggle-group")) {

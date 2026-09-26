@@ -2314,6 +2314,61 @@ class GraphTests(unittest.TestCase):
         edges = sorted((e['from'], e['to'], e['kind']) for e in g['edges'])
         self.assertEqual(edges, [(1, 2, 'parent'), (1, 3, 'parent'), (2, 3, 'depends')])
 
+    def test_mermaid_browser_lifecycle(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        result = subprocess.run(["node", "tests/console_graph_test.js"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_mermaid_groups_dependencies_links_and_fallback(self):
+        self.led.upsert_item("mahler", 1, title="Parent", state="ready")
+        self.led.upsert_item("mahler", 2, title="Nested", parent=1, state="working")
+        self.led.upsert_item("mahler", 3, title="Child", parent=2, depends="[2]", state="needs_you")
+        self.led.upsert_item("mahler", 4, title="Independent", state="ready")
+        snapshot = state.build(self.cfg, self.led)
+        graph = snapshot["dep_graph"]["mahler"]
+        source = state._mermaid(graph["nodes"], graph["edges"])
+        self.assertEqual(source, graph["mermaid"])
+        self.assertIn('subgraph p1["#1 Parent"]', source)
+        self.assertIn('    subgraph p2["#2 Nested"]', source)
+        self.assertIn('      n3["#3<br/>Child"]', source)
+        self.assertIn("n2 --> n3", source)
+        self.assertNotIn("n1 --> n2", source)
+        self.assertIn('subgraph free["No dependencies"]\n    direction TB\n    n4', source)
+        for node in graph["nodes"]:
+            self.assertIn(f'click n{node["number"]} "{node["url"]}" _blank', source)
+            self.assertIn(f'class n{node["number"]} {node["tone"]}', source)
+        html = page._backlog_groups(snapshot, phone=False, dep_graph=snapshot["dep_graph"])
+        self.assertIn('class="mermaid-src" hidden', html)
+        self.assertIn('class="mermaid-out"', html)
+        self.assertIn('class="dep-graph"', html)
+        self.assertIn('&lt;br/&gt;', html)
+        phone = page._backlog_groups(snapshot, phone=True, dep_graph=snapshot["dep_graph"])
+        self.assertNotIn("mermaid-src", phone)
+        self.assertNotIn("dep-graph", phone)
+
+    def test_mermaid_titles_cannot_inject_syntax_or_html(self):
+        title = '\"<script>#;\n&`' + "z" * 80
+        source = state._mermaid([{"number": 1, "title": title, "tone": "mut",
+                                 "url": 'javascript:alert(1)'}], [])
+        label = next(line for line in source.splitlines() if 'n1["' in line)
+        text = label.split("<br/>", 1)[1][:-2]
+        for char in '\"<>#;\n&`':
+            self.assertNotIn(char, text)
+        self.assertLessEqual(len(text), 40)
+        self.assertNotIn("click", source)
+
+    def test_mermaid_parent_cycle_emits_each_node_once(self):
+        nodes = [{"number": n, "title": str(n)} for n in (1, 2)]
+        source = state._mermaid(nodes, [
+            {"from": 1, "to": 2, "kind": "parent"},
+            {"from": 2, "to": 1, "kind": "parent"}])
+        self.assertEqual(source.count('n1["'), 1)
+        self.assertEqual(source.count('n2["'), 1)
+
     def test_qualified_refs_do_not_create_false_local_graph_edges(self):
         self.led.upsert_item("mahler", 1, state="ready")
         self.led.upsert_item("mahler", 2, state="ready", depends=json.dumps([
