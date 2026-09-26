@@ -488,6 +488,19 @@ def _review_not_converging(ctx, project, item, pr, view):
     return True
 
 
+def _explored_head(led, project, n):
+    """Whether the PR head now failing came from an exploration run (mahler#423).
+
+    Judged by the run that pushed it — the latest build/fix that ended DONE —
+    not the latest row: a fix that failed to launch or died on quota leaves a
+    newer row with explore=0, and must not turn an explored failure into a
+    spent attempt on the next tick."""
+    run = led.q1("SELECT explore FROM runs WHERE project=? AND number=? "
+                 "AND role IN ('build','fix') AND outcome='DONE' "
+                 "ORDER BY id DESC LIMIT 1", (project, n))
+    return bool(run and run["explore"])
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -503,7 +516,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     last = led.last_run(project, n, roles=("build", "fix"))
-    explore_failure = bool(last and last["explore"])
+    explore_failure = _explored_head(led, project, n)
     attempts = item["attempts"] + (0 if explore_failure else 1)
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
@@ -613,7 +626,7 @@ def _red_ci(ctx, project, item, pr, view):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     last = led.last_run(project, n, roles=("build", "fix"))
-    explore_failure = bool(last and last["explore"])
+    explore_failure = _explored_head(led, project, n)
     attempts = item["attempts"] + (0 if explore_failure else 1)
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
