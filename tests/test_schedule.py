@@ -1003,7 +1003,7 @@ class ScheduleHoldTests(unittest.TestCase):
                     plan(ctx, led)
                 expected = {"kind": kind, "project": "a"}
                 expected.update({
-                    "capacity": {"max_parallel": 2}, "slot": {"verifying": [2, 3]},
+                    "capacity": {"max_parallel": 2, "holders": []}, "slot": {"verifying": [2, 3]},
                     "area": {"number": 1, "area": "console"},
                     "files": {"number": 1, "files": ["mahler/tick.py"]},
                     "hot_hold": {"number": 1}, "lease_host": {},
