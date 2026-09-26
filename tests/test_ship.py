@@ -1358,6 +1358,24 @@ class TestReviewConvergence(unittest.TestCase):
                 self.assertEqual(self.item()["state"], "verifying")
                 self.assertEqual(start.call_args.args[3], "fix")
 
+    def test_repeated_extensionless_location_starts_a_fix(self):
+        self.rounds([
+            f"Dockerfile: missing runtime dependency | {name}.py: bug"
+            for name in ("a", "b", "c")
+        ])
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_extensionless_locations_preserve_paths_and_ignore_prose(self):
+        self.assertEqual(ship._finding_files(
+            "Dockerfile: missing dependency | - `build/Makefile`:10 broken target"
+            " | * deploy/Makefile:20 missing target using os.path"
+            " | explanation mentions another/Dockerfile"),
+            {"Dockerfile", "build/Makefile", "deploy/Makefile"})
+
     def test_full_paths_and_compound_filenames_remain_distinct(self):
         findings = ["src/auth/index.test.js:10 null check",
                     "src/db/index.test.ts:20 query",
