@@ -7,6 +7,7 @@ Never merge once the item's lease has gone to a session (D6).
 """
 
 import json
+import re
 from datetime import timedelta
 
 from . import config, router, runner
@@ -421,6 +422,72 @@ def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):
              project, n, priority="high", tags="warning")
 
 
+def _finding_files(findings):
+    """Return each finding's leading repo-relative location without line numbers.
+
+    The review recipe separates findings with `` | `` and requires each one to
+    name its file.  Only the leading ``file:`` location is structural; dotted
+    expressions later in the prose (for example ``json.loads``) are not files.
+    Unknown or malformed locations are inconclusive rather than evidence of
+    divergence.
+    Directory paths and every dotted filename component remain significant:
+    ``src/a/index.test.ts`` and ``src/b/index.test.tsx`` are distinct files.
+    Extensions are optional, and leading-dot basenames are valid:
+    ``Dockerfile``, ``build/Makefile``, and ``.gitignore`` all count.
+    """
+    locations = set()
+    for finding in re.split(r"\s+\|\s+", findings or ""):
+        match = re.match(
+            r"\s*(?:[-*]\s+)?`?(?P<path>(?:[\w@+.-]+/)*"
+            r"\.?[\w@+-]+(?:\.[\w@+-]+)*)`?:",
+            finding)
+        if match:
+            locations.add(match.group("path"))
+    return locations
+
+
+def _review_not_converging(ctx, project, item, pr, view):
+    """Pause after two consecutive reviews move to previously untouched files."""
+    led, n = ctx.led, item["number"]
+    history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+    key = f"reviewconvergence:{project}#{n}"
+    rounds = history[int(led.get_kv(key) or 0):]
+    if len(rounds) < 3 or rounds[-1]["sha"] != view.get("headRefOid"):
+        return False
+
+    # A location-less review is inconclusive. Overlap with any earlier round
+    # means the latest problem is not new, so it resets the divergence streak.
+    seen_files = set()
+    divergent = 0
+    for round_ in rounds:
+        files = _finding_files(round_["findings"])
+        if not files or files & seen_files:
+            divergent = 0
+        elif seen_files:
+            divergent += 1
+        seen_files.update(files)
+    if divergent < 2:
+        return False
+
+    options = ["cut scope", "split the item", "merge with follow-ups", "keep fixing"]
+    evidence = "\n".join(
+        f"Round {i} ({round_['sha'] or 'unknown head'}, run {round_['run_id']}): "
+        f"{round_['findings']}"
+        for i, round_ in enumerate(history, 1))
+    question = (f"Review findings are not converging on PR #{pr}: two consecutive rounds "
+                "moved to different files. Should we cut scope, split the item, merge "
+                "with follow-ups, or keep fixing?\n\n" + evidence)
+    led.set_state(project, n, "needs_you", question, question=question,
+                  options=json.dumps(options))
+    # Keep the evidence for diagnosis, but an explicit owner retry starts a
+    # fresh convergence window rather than escalating the same rounds again.
+    led.set_kv(key, str(len(history)))
+    led.release(project, n, holder=CONDUCTOR)
+    ctx.ping(f"Review not converging — {project} #{n}", question,
+             project, n, priority="high", tags="warning")
+    return True
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -431,6 +498,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     (mahler#232's per-cycle dedup fix lives there) so this new path can never
     perturb that already-hardened one."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    if _review_not_converging(ctx, project, item, pr, view):
+        return
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     attempts = item["attempts"] + 1

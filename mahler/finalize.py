@@ -137,7 +137,7 @@ def _post_review_comment(e, passed, findings=""):
             body += f" {findings}"
     else:
         lines = [f"**Review** — {e.run['platform']} found blocking issues; "
-                 "a fix round starts on this PR:", ""]
+                 "the conductor will assess the next fix round:", ""]
         lines += [f"- {f.strip()}" for f in (findings or "").split("|") if f.strip()]
         body = "\n".join(lines)
     try:
@@ -149,11 +149,22 @@ def _post_review_comment(e, passed, findings=""):
 def _review_passed(e):
     _post_review_comment(e, passed=True, findings=e.rest)
     _update_review_kv(e, verdict="pass")
+    history = json.loads(e.led.get_kv(f"reviewfindings:{e.project}#{e.number}") or "[]")
+    e.led.set_kv(f"reviewconvergence:{e.project}#{e.number}", str(len(history)))
     e.set_state("verifying", "review passed — the conductor ships it")
     return True
 
 
 def _review_failed(e):
+    key = f"reviewfindings:{e.project}#{e.number}"
+    history = json.loads(e.led.get_kv(key) or "[]")
+    # Finalization can be retried after a partial tick. A run is one review
+    # round even if its outcome handler executes more than once.
+    if not any(round_["run_id"] == e.run["id"] for round_ in history):
+        review = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
+        history.append({"sha": review.get("sha"), "findings": e.rest or "",
+                        "at": iso(e.led.now()), "run_id": e.run["id"]})
+        e.led.set_kv(key, json.dumps(history))
     _post_review_comment(e, passed=False, findings=e.rest)
     _update_review_kv(e, verdict="fail", findings=e.rest or "")
     e.set_state("verifying", "review found blocking issues — the conductor starts a fix")
