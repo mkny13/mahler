@@ -1498,7 +1498,9 @@ def models(led, cfg):
                                  "tone": {"good": "acc", "below": "bad", "unproven": "mut"}[r["status"]],
                                  "details_label": "Run outcomes",
                                  "details": [f'Run {a["run"]} · {a["project"]}#{a["number"]} · '
-                                             f'{a["result"]}: {a["why"]}' for a in r["attempts"]]}
+                                             f'{a["result"]}: {a["why"]}' for a in reversed(r["attempts"][-20:])]
+                                            + ([f'…and {len(r["attempts"]) - 20} earlier runs']
+                                               if len(r["attempts"]) > 20 else [])}
                                 for r in entries]})
     return {"groups": groups, "empty": "No attempts in this window.",
             "note": f'Last {scorecard.policy(cfg)["window_days"]} days · API-equivalent dollars '

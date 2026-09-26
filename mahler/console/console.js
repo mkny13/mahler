@@ -232,6 +232,7 @@
     refresh(true);
   }
 
+  var lastFragment = null;
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
     if (settingsDirty) { return Promise.resolve(); }
@@ -249,6 +250,8 @@
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
+      // Submitted drafts still need clearing even when server state is unchanged.
+      if (html === lastFragment && !skip.length) { return; }
       var keep = {};
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) {
@@ -262,6 +265,7 @@
         keep[focused.getAttribute("data-keep")] = focused.value;
       }
       app.innerHTML = html;
+      lastFragment = html;
       var again = app.querySelectorAll("[data-keep]");
       for (var j = 0; j < again.length; j++) {
         var v = keep[again[j].getAttribute("data-keep")];
