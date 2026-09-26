@@ -31,6 +31,50 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_exploration_flag_defaults_and_migrates(self):
+        run = self.led.create_run(project="p", number=1, role="build",
+                                  platform="kilo", epoch=1)
+        self.assertEqual(self.led.run(run)["explore"], 0)
+        self.led.update_run(run, explore=1)
+        self.assertEqual(self.led.run(run)["explore"], 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA.replace(
+                "    explore     INTEGER NOT NULL DEFAULT 0,", ""))
+            con.execute(
+                "INSERT INTO runs(project,number,role,platform,epoch,status,started_at) "
+                "VALUES ('p',1,'build','kilo',1,'ended','2026-09-12')")
+            con.commit()
+            con.close()
+            migrated = Ledger(path)
+            try:
+                self.assertEqual(migrated.run(1)["explore"], 0)
+            finally:
+                migrated.close()
+
+    def test_configured_model_migrates_without_rewriting_runtime_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA.replace(
+                "    configured_model TEXT,              -- routing identity; empty means CLI default\n", ""))
+            con.execute(
+                "INSERT INTO runs(project,number,role,platform,model,epoch,status,started_at) "
+                "VALUES ('p',1,'build','kilo','actual-model',1,'ended','2026-09-12')")
+            con.commit()
+            con.close()
+            migrated = Ledger(path)
+            try:
+                self.assertIsNone(migrated.run(1)["configured_model"])
+                self.assertEqual(migrated.run(1)["model"], "actual-model")
+                run = migrated.create_run(project="p", number=2, role="build",
+                                           platform="kilo", configured_model="auto", epoch=1)
+                migrated.update_run(run, model="actual-model")
+                self.assertEqual(migrated.run(run)["configured_model"], "auto")
+            finally:
+                migrated.close()
+
     def test_last_run_can_select_latest_builder_without_review(self):
         for role in ("build", "fix", "review"):
             self.led.create_run(project="p", number=1, role=role,

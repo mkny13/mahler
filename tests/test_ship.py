@@ -616,6 +616,74 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertIn("Stuck", ping.call_args[0][0])
 
+    def test_deferred_exploration_failures_preserve_retry_and_escalation_budgets(self):
+        """DONE is provisional: later CI/review failure is still the explored
+        attempt's failure and must leave room for a normal fix at the cap."""
+        max_attempts = self.cfg["defaults"]["max_attempts"]
+        for trigger, n in (("ci", 5), ("review", 6)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item(
+                    "x", n, pr=88, state="verifying", title="Low risk change",
+                    branch=f"mahler/{n}-change", sorted_at=iso(NOW),
+                    labels='["size:s"]', attempts=max_attempts - 1,
+                    esc_tier=1, esc_fails=1)
+                self.led.create_run(
+                    project="x", number=n, role="build", platform="agy-gemini",
+                    size="s", epoch=1, status="ended", outcome="DONE", explore=1,
+                    ended_at=iso(NOW))
+                view = {"headRefName": f"mahler/{n}-change",
+                        "headRefOid": f"failed-{trigger}"}
+                with mock.patch.object(ship, "start", return_value=True) as start, \
+                        mock.patch.object(self.ctx, "ping"):
+                    item = self.led.item("x", n)
+                    if trigger == "ci":
+                        ship._red_ci(self.ctx, "x", item, 88, view)
+                    else:
+                        ship._review_triggered_fix(
+                            self.ctx, "x", item, 88, view, "blocking finding")
+                item = self.led.item("x", n)
+                self.assertEqual((item["state"], item["attempts"], item["esc_tier"],
+                                  item["esc_fails"]),
+                                 ("verifying", max_attempts - 1, 1, 1))
+                start.assert_called_once()
+                self.assertNotIn("explore", start.call_args.kwargs)
+
+    def test_exploration_attribution_survives_a_failed_fix_launch(self):
+        """A fix that never launched (or died on quota) leaves a newer run row
+        with explore=0; the failing head still came from the explored DONE
+        run, so the next tick must not spend an attempt on it."""
+        max_attempts = self.cfg["defaults"]["max_attempts"]
+        for trigger, n in (("ci", 7), ("review", 8)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item(
+                    "x", n, pr=88, state="verifying", title="Low risk change",
+                    branch=f"mahler/{n}-change", sorted_at=iso(NOW),
+                    labels='["size:s"]', attempts=max_attempts - 1,
+                    esc_tier=1, esc_fails=1)
+                self.led.create_run(
+                    project="x", number=n, role="build", platform="agy-gemini",
+                    size="s", epoch=1, status="ended", outcome="DONE", explore=1,
+                    ended_at=iso(NOW))
+                for outcome in ("launch failed: boom", "exit 1"):
+                    self.led.create_run(
+                        project="x", number=n, role="fix", platform="agy-gemini",
+                        size="s", epoch=0, status="ended", outcome=outcome, explore=0,
+                        ended_at=iso(NOW))
+                view = {"headRefName": f"mahler/{n}-change",
+                        "headRefOid": f"failed-{trigger}"}
+                with mock.patch.object(ship, "start", return_value=True) as start, \
+                        mock.patch.object(self.ctx, "ping"):
+                    item = self.led.item("x", n)
+                    if trigger == "ci":
+                        ship._red_ci(self.ctx, "x", item, 88, view)
+                    else:
+                        ship._review_triggered_fix(
+                            self.ctx, "x", item, 88, view, "blocking finding")
+                item = self.led.item("x", n)
+                self.assertEqual((item["state"], item["attempts"]),
+                                 ("verifying", max_attempts - 1))
+                start.assert_called_once()
+
     # ---------- independent review before merge (DESIGN D11) ----------
 
     def patch_review_start(self, role_seen):
@@ -821,6 +889,7 @@ class ShipTests(unittest.TestCase):
 
     def test_review_fail_posts_findings_and_records_the_verdict(self):
         run = self.review_run()
+        self.led.set_kv("review:x#5", json.dumps({"sha": "reviewed-head"}))
         with open(self.log, "w") as fh:
             fh.write("STATUS: REVIEW-FAIL auth.py: missing null check | db.py: unindexed query\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
@@ -832,7 +901,14 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(info["verdict"], "fail")
         event = self.led.q1("SELECT detail FROM events WHERE kind='review_verdict'")
         self.assertEqual(json.loads(event['detail']), {
-            'verdict': 'fail', 'review_run': run['id'], 'reviewed_sha': None})
+            'verdict': 'fail', 'review_run': run['id'], 'reviewed_sha': 'reviewed-head'})
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        self.assertEqual(history, [{
+            "sha": "reviewed-head",
+            "findings": "auth.py: missing null check | db.py: unindexed query",
+            "at": iso(NOW),
+            "run_id": run["id"],
+        }])
         self.assertIn("missing null check", info["findings"])
         body = self.gh.comments[-1]
         self.assertIn("auth.py: missing null check", body)
@@ -1310,6 +1386,145 @@ class ShipTests(unittest.TestCase):
             self.ship()
         self.assertEqual(self.item()["state"], "done")
         self.assertIn("unowned-PR check failed", " ".join(self.ctx.lines))
+
+
+class TestReviewConvergence(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+
+    def rounds(self, findings):
+        self.led.upsert_item("x", 5, state="verifying", pr=88, attempts=0,
+                             labels='["size:m"]')
+        history = [{"sha": f"head-{i}", "findings": finding,
+                    "at": iso(NOW), "run_id": i}
+                   for i, finding in enumerate(findings, 1)]
+        self.gh.head_sha = history[-1]["sha"]
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+        return history
+
+    def test_two_divergent_transitions_escalate_before_attempt_limit(self):
+        findings = ["auth.py: null check", "db.py: query", "api.py: unsafe input"]
+        self.rounds(findings)
+        self.led.upsert_item("x", 5, attempts=self.ctx.policy("x")["max_attempts"] - 1)
+        with mock.patch.object(ship, "start") as start:
+            ping = self.ship()
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertEqual(json.loads(self.item()["options"]),
+                         ["cut scope", "split the item", "merge with follow-ups", "keep fixing"])
+        for i, finding in enumerate(findings, 1):
+            self.assertIn(f"Round {i}", self.item()["question"])
+            self.assertIn(finding, self.item()["question"])
+        ping.assert_called_once()
+        self.assertFalse(self.gh.merged)
+
+    def test_one_divergence_then_overlap_or_repeat_starts_a_fix(self):
+        sequences = [
+            ["a.py: bug", "b.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: remaining bug"],
+            ["a.py: bug"] * 5,
+            ["a.py: bug | b.py: bug", "c.py: bug", "b.py: recurring bug"],
+            ["a.py: bug", "unknown location", "c.py: bug"],
+            ["a.py: bug", "b.py: bug", "b.py: bug", "c.py: bug"],
+        ]
+        for findings in sequences:
+            with self.subTest(findings=findings):
+                self.rounds(findings)
+                with mock.patch.object(ship, "start", return_value=True) as start:
+                    self.ship()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_repeated_extensionless_location_starts_a_fix(self):
+        self.rounds([
+            f"Dockerfile: missing runtime dependency | {name}.py: bug"
+            for name in ("a", "b", "c")
+        ])
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_repeated_dotfile_location_starts_a_fix(self):
+        self.assertEqual(
+            ship._finding_files(".gitignore: blocker | config/.env.local: leak"),
+            {".gitignore", "config/.env.local"})
+        self.rounds([
+            f".gitignore: same blocker | {name}.py: bug"
+            for name in ("a", "b", "c")
+        ])
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[3], "fix")
+
+    def test_extensionless_locations_preserve_paths_and_ignore_prose(self):
+        self.assertEqual(ship._finding_files(
+            "Dockerfile: missing dependency | - `build/Makefile`:10 broken target"
+            " | * deploy/Makefile:20 missing target using os.path"
+            " | explanation mentions another/Dockerfile"),
+            {"Dockerfile", "build/Makefile", "deploy/Makefile"})
+
+    def test_full_paths_and_compound_filenames_remain_distinct(self):
+        findings = ["src/auth/index.test.js:10 null check",
+                    "src/db/index.test.ts:20 query",
+                    "src/api/index.test.tsx:30 unsafe input"]
+        self.assertEqual(ship._finding_files(" | ".join(findings)), {
+            "src/auth/index.test.js", "src/db/index.test.ts", "src/api/index.test.tsx"})
+        self.rounds(findings)
+        with mock.patch.object(ship, "start") as start:
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+        for finding in findings:
+            self.assertIn(finding, self.item()["question"])
+
+    def test_shared_dotted_expression_does_not_mask_divergent_locations(self):
+        findings = ["auth.py:10 missing validation before json.loads",
+                    "db.py:20 transaction leaks when json.loads raises",
+                    "api.py:30 unbounded input passed to json.loads"]
+        self.assertEqual(ship._finding_files(" | ".join(findings)),
+                         {"auth.py", "db.py", "api.py"})
+        self.rounds(findings)
+        with mock.patch.object(ship, "start") as start:
+            self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "needs_you")
+
+    def test_retry_does_not_reescalate_the_same_history(self):
+        history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
+        self.ship()
+        self.led.upsert_item("x", 5, state="verifying")
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        start.assert_called_once()
+        self.assertEqual(json.loads(self.led.get_kv("reviewfindings:x#5")), history)
+
+    def test_pass_breaks_streak_and_failed_finalization_is_idempotent(self):
+        from types import SimpleNamespace
+
+        history = self.rounds(["a.py: bug", "b.py: bug"])
+        self.led.set_kv("review:x#5", json.dumps({"sha": "head-3", "verdict": "pending"}))
+        ending = SimpleNamespace(
+            led=self.led, project="x", number=5, item=self.item(),
+            run={"id": 20, "platform": "agy-gemini"}, rest="c.py: bug",
+            ctx=self.ctx, set_state=mock.Mock())
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            finalize._review_failed(ending)
+            finalize._review_failed(ending)
+            recorded = json.loads(self.led.get_kv("reviewfindings:x#5"))
+            self.assertEqual(recorded, history + [{
+                "sha": "head-3", "findings": ending.rest,
+                "at": iso(NOW), "run_id": 20}])
+            finalize._review_passed(ending)
+        self.assertEqual(self.led.get_kv("reviewconvergence:x#5"), "3")
 
 
 class HelpersTests(unittest.TestCase):
