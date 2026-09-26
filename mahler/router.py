@@ -504,6 +504,16 @@ def routing_mode(cfg, pol=None):
     return (pol or {}).get("routing_mode", cfg.get("routing_mode", "list"))
 
 
+def platform_slot(cfg, name):
+    """The configured platform slot behind a route candidate.
+
+    D33 represents model/effort variants as synthetic platform names, but
+    those variants are still the same platform for D11's independent-review
+    boundary.
+    """
+    return cfg["platforms"].get(name, {}).get("slot", name)
+
+
 def measured_rows(cfg, rows, role, size):
     """Match proof to the current model and effort, never an obsolete slot pin."""
     from . import platforms, scorecard
@@ -562,10 +572,11 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     D26). Equal mode supplies their round-robin merge; priority mode supplies
     `candidate_order`, the project's exact cross-account route.
 
-    `exclude` skips named platforms outright, same as `busy` — for DESIGN
-    D11's "review by a different platform than the builder": this applies
-    even to a pinned platform, since a pinned reviewer identical to the
-    builder would defeat the point.
+    `exclude` skips whole platform slots, same as `busy` — for DESIGN D11's
+    "review by a different platform than the builder". A D33 synthetic
+    model/effort variant cannot review another variant on its underlying
+    builder slot. This applies even to a pinned platform, since a pinned
+    reviewer identical to the builder would defeat the point.
     """
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
@@ -583,8 +594,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             if accounts is not None else candidates(cfg, role, pin, route_burst, account))
     if not pin and measured:
         cand = measured_order(cfg, cand, scorecard_rows or [], role, size, burst_lines)
+    excluded_slots = {platform_slot(cfg, name) for name in exclude}
     for name in cand:
-        if name in busy or name in exclude:
+        if name in busy or platform_slot(cfg, name) in excluded_slots:
             reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]

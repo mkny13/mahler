@@ -58,6 +58,26 @@ class MeasuredRoutingTests(unittest.TestCase):
         self.cfg["platforms"]["cheap"]["model"] = "replacement"
         self.assertEqual(self.pick(), "expensive")
 
+    def test_review_excludes_every_variant_on_the_builder_slot(self):
+        builder = "cheap/model-a/low"
+        sibling = "cheap/model-b/medium"
+        base = self.cfg["platforms"]["cheap"]
+        self.cfg["platforms"][builder] = dict(base, slot="cheap", model="model-a",
+                                               effort="low")
+        self.cfg["platforms"][sibling] = dict(base, slot="cheap", model="model-b",
+                                               effort="medium")
+        self.cfg["routing"]["build"] = [sibling, "expensive"]
+        rows = [dict(r, platform=sibling, model="model-b", cost_per_success=.01)
+                for r in self.rows if r["platform"] == "cheap"]
+        rows += [r for r in self.rows if r["platform"] == "expensive"]
+
+        platform, reasons = router.pick_for_project(
+            self.cfg, self.led, self.pol, "review", exclude={builder},
+            scorecard_rows=rows)
+
+        self.assertEqual(platform, "expensive")
+        self.assertIn(f"{sibling}: excluded (same platform as the builder)", reasons)
+
     def test_burst_is_stable_after_measurement(self):
         for name in ("cheap", "expensive"):
             self.cfg["platforms"][name]["kind"] = "claude"
