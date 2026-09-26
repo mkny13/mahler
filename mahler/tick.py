@@ -477,7 +477,7 @@ def schedule(ctx, projects):
             # order, equal round-robin, or an explicit cross-account priority.
             platform = router.explore_for_project(
                 cfg, led, p, it, routing_role, busy, size=effective_size,
-                burst_lines=burst_lines, min_tier=effective_min_tier)
+                scorecard_rows=ctx.scorecard_rows, burst_lines=burst_lines, min_tier=effective_min_tier)
             explore = platform is not None
             reasons = []
             if explore:
@@ -485,7 +485,7 @@ def schedule(ctx, projects):
             else:
                 platform, reasons = router.pick_for_project(
                     cfg, led, p, routing_role, pin, busy, size=effective_size,
-                    burst_lines=burst_lines, min_tier=effective_min_tier)
+                    scorecard_rows=ctx.scorecard_rows, burst_lines=burst_lines, min_tier=effective_min_tier)
             if not platform:
                 ctx.hold("no_platform", project=name, number=n, role=routing_role,
                          size=effective_size or "m", blockers=router.reason_groups(reasons))
