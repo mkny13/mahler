@@ -6,7 +6,9 @@ so a missing reading can never push Claude into paid extra usage. Running
 work is stopped at the *hard* line (see watchdog.py).
 """
 
+import hashlib
 import json
+from statistics import median
 
 from datetime import timedelta
 from itertools import zip_longest
@@ -500,7 +502,7 @@ def risk_min_tier(text):
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
          account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
-         exclude=()):
+         exclude=(), explore=False):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -545,7 +547,8 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         # to sort or plan roles (DESIGN D21).
         if role not in ("sort", "plan"):
             limit = pconf.get("max_size")
-            if limit and not pin and SIZES.get(size or "m", 2) > SIZES[limit]:
+            if (limit and not pin and SIZES.get(size or "m", 2) >
+                    SIZES[limit] + (1 if explore and not is_metered(led, name, pconf) else 0)):
                 reasons.append(f"{name}: only takes size:{limit}")
                 continue
             min_limit = pconf.get("min_size")
@@ -620,6 +623,75 @@ def reason_groups(reasons):
         if name not in names:
             names.append(name)
     return groups
+
+
+def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
+                        burst_lines=None, min_tier=0):
+    """Choose the cheapest eligible unproven variant for D33 exploration."""
+    from . import platforms, run_usage, scorecard
+    from .ledger import row_get
+
+    if (not pol.get("explore", DEFAULT_ACCOUNT in accounts_of(pol))
+            or row_get(item, "pin") or risk_min_tier(row_get(item, "title"))):
+        return None
+    share = scorecard.policy(cfg)["explore_share"].get(role, 0)
+    project = item["project"]
+    key = f"{project}#{item['number']}:{role}:{item['attempts']}"
+    if int(hashlib.sha1(key.encode()).hexdigest(), 16) % 1000 >= share * 1000:
+        return None
+
+    # An exploration failure preserves attempts, so its deterministic hash is
+    # unchanged. Force the immediate retry onto the normal route instead of
+    # repeatedly exploring the same item. Build and fix share this guard because
+    # failed fixes re-enter the ready queue as builds.
+    run_role = "sort" if role == "plan" else role
+    retry_roles = ("build", "fix") if run_role in ("build", "fix") else (run_role,)
+    last = led.last_run(project, item["number"], roles=retry_roles)
+    if last and last["explore"]:
+        return None
+
+    accts = accounts_of(pol)
+    if account_mode_of(pol) == "priority":
+        order = candidates_for_priority(cfg, role, accts, pol.get("routing") or {},
+                                        burst_lines=burst_lines)
+    elif account_mode_of(pol) == "equal":
+        order = candidates_for_accounts(cfg, role, accts, burst_lines=burst_lines)
+    else:
+        order = [name for account in accts
+                 for name in candidates(cfg, role, burst_lines=burst_lines, account=account)]
+
+    rows = scorecard.table(led, cfg)
+    effective_size = size or "m"
+    matching = [r for r in rows if r["role"] == role and r["size"] == effective_size]
+    samples = [attempt for row in matching for attempt in row["attempts"]]
+    # Before usage history exists, equal input/output estimates rank known
+    # prices. Unpriced variants remain behind every priced variant.
+    tokens = {}
+    for kind in ("in", "cached", "out", "reasoning"):
+        values = [attempt[f"tokens_{kind}"] for attempt in samples
+                  if attempt[f"tokens_{kind}"] is not None]
+        tokens[kind] = median(values) if values else (
+            1e6 if kind in ("in", "out") else 0)
+
+    choices = []
+    for name in order:
+        pconf = cfg["platforms"][name]
+        model = pconf.get("sort_model" if run_role == "sort" else "build_model") or pconf.get("model")
+        effort = platforms.effort_value(pconf, run_role) or "default"
+        row = next((candidate for candidate in matching
+                    if (candidate["platform"], candidate["model"], candidate["effort"])
+                    == (name, model, effort)), None)
+        if row is not None and row["status"] != "unproven":
+            continue
+        candidate, _ = pick(cfg, led, role, busy=busy, size=size,
+                            burst_lines=burst_lines, min_tier=min_tier,
+                            accounts=accts, candidate_order=[name], explore=True)
+        if candidate:
+            cost = run_usage.columns({"tokens": tokens}, {"model": model}, cfg)["cost_usd"]
+            group = pconf.get("quota_group", name)
+            weight = cfg.get("quota_groups", {}).get(group, {}).get("cost_weight", 1)
+            choices.append((cost * weight if cost is not None else float("inf"), name))
+    return min(choices, key=lambda choice: choice[0])[1] if choices else None
 
 
 def lease_label(led, lease):

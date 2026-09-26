@@ -73,7 +73,8 @@ class Ending:
 def _retry(e):
     """No usable outcome: another attempt, or `failed` once they run out."""
     retry_or_fail(e.ctx, e.project, e.number, e.item, e.reason, e.outcome,
-                  platform=e.run["platform"], duration_mins=e.duration_mins)
+                  platform=e.run["platform"], duration_mins=e.duration_mins,
+                  explore=bool(row_get(e.run, "explore", 0)))
     return True
 
 
@@ -667,8 +668,12 @@ def _setup_failed_comment(ctx, run, fails, tail, stuck):
         ctx.say(f"#{run['number']}: couldn't post setup-failure comment — {e}")
 
 
-def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None):
+def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None, explore=False):
     led = ctx.led
+    if explore:
+        led.set_state(project, n, "ready" if item["sorted_at"] else "inbox",
+                      "exploration failed — retry on the normal route")
+        return
     if reason in NO_ATTEMPT:
         led.set_state(project, n, "ready" if item["sorted_at"] else "inbox", f"retry ({reason})")
         return

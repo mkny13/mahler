@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS runs (
     nudged      INTEGER NOT NULL DEFAULT 0,
     model       TEXT,                    -- the modelID a stateless route actually used (mahler#141)
     effort      TEXT,
+    explore     INTEGER NOT NULL DEFAULT 0,
+    routing_role TEXT,                   -- plan uses the sort execution recipe
     tokens_in   INTEGER,
     tokens_cached INTEGER,
     tokens_out  INTEGER,
@@ -271,7 +273,8 @@ class Ledger:
             if col not in cols:
                 self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
         run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
-        for col, ddl in (("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
+        for col, ddl in (("routing_role", "TEXT"), ("explore", "INTEGER NOT NULL DEFAULT 0"),
+                         ("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
                          ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
                          ("cost_usd", "REAL"), ("cost_source", "TEXT"),
                          ("credits", "REAL"), ("quota_used", "TEXT")):
