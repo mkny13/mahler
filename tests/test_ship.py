@@ -807,6 +807,7 @@ class ShipTests(unittest.TestCase):
 
     def test_review_fail_posts_findings_and_records_the_verdict(self):
         run = self.review_run()
+        self.led.set_kv("review:x#5", json.dumps({"sha": "reviewed-head"}))
         with open(self.log, "w") as fh:
             fh.write("STATUS: REVIEW-FAIL auth.py: missing null check | db.py: unindexed query\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
@@ -818,7 +819,14 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(info["verdict"], "fail")
         event = self.led.q1("SELECT detail FROM events WHERE kind='review_verdict'")
         self.assertEqual(json.loads(event['detail']), {
-            'verdict': 'fail', 'review_run': run['id'], 'reviewed_sha': None})
+            'verdict': 'fail', 'review_run': run['id'], 'reviewed_sha': 'reviewed-head'})
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        self.assertEqual(history, [{
+            "sha": "reviewed-head",
+            "findings": "auth.py: missing null check | db.py: unindexed query",
+            "at": iso(NOW),
+            "run_id": run["id"],
+        }])
         self.assertIn("missing null check", info["findings"])
         body = self.gh.comments[-1]
         self.assertIn("auth.py: missing null check", body)
