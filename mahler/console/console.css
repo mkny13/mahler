@@ -287,6 +287,9 @@ a { color: var(--acc); text-decoration: none; }
 .grp-graph { display: none; overflow-x: auto; }
 .grp-graph.rendered .graph-wrap { display: none; }
 .mermaid-out svg { max-width: 100%; height: auto; }
+.mermaid-out .node.bad rect { stroke: var(--bad) !important; }
+.mermaid-out .node.acc rect { stroke: var(--acc) !important; }
+.mermaid-out .node.mut rect { stroke: var(--mut) !important; }
 
 
 .ev { display: grid; grid-template-columns: 46px 108px minmax(0, 1fr) 74px; gap: 10px;

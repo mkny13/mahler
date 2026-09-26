@@ -859,8 +859,8 @@ def _mermaid(nodes, edges):
         if (edge["kind"] == "depends" and edge["from"] in by_number
                 and edge["to"] in by_number):
             lines.append(f'  n{edge["from"]} --> n{edge["to"]}')
-    for tone in ("bad", "acc", "mut"):
-        lines.append(f"  classDef {tone} fill:var(--surf),stroke:var(--{tone}),color:var(--ink)")
+    for tone, color in (("bad", "#a8180f"), ("acc", "#1256c4"), ("mut", "#4a5158")):
+        lines.append(f"  classDef {tone} fill:transparent,stroke:{color}")
     for number, node in by_number.items():
         tone = node.get("tone", "mut")
         lines.append(f'  class n{number} {tone if tone in ("bad", "acc", "mut") else "mut"}')
