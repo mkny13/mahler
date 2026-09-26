@@ -185,7 +185,6 @@ class PlatformVariantTests(unittest.TestCase):
             "claude-opus/claude-opus-5-5/default",
             "claude-opus/claude-opus-5-5/medium",
             "claude-opus/claude-opus-5-5/high",
-            "claude-opus/claude-opus-5/default",
             "agy-gemini/gemini-3.1-pro-high/default",
             "agy-gemini/gemini-3.8-flash/low",
             "agy-gemini/gemini-3.8-flash/medium",
@@ -226,8 +225,7 @@ if __name__ == '__main__':
 class PinnedModelVersionsTests(unittest.TestCase):
     """Issue #421 (D33): the built-in Claude slots pin exact model IDs instead
     of the `haiku`/`sonnet`/`opus` aliases, which silently follow the newest
-    release. `claude-opus` additionally keeps `claude-opus-5` as a variant
-    candidate, so the previous version isn't dropped when a newer Opus ships."""
+    release. `claude-opus` keeps the 5.5 effort levels as variant candidates."""
 
     def test_claude_low_pins_haiku_4_5(self):
         low = config.DEFAULTS["platforms"]["claude-low"]
@@ -239,21 +237,22 @@ class PinnedModelVersionsTests(unittest.TestCase):
         self.assertEqual(med["sort_model"], "claude-sonnet-5")
         self.assertEqual(med["build_model"], "claude-sonnet-5")
 
-    def test_claude_opus_pins_opus_5_5_and_keeps_opus_5_as_variant(self):
+    def test_claude_opus_pins_opus_5_5(self):
         opus = config.DEFAULTS["platforms"]["claude-opus"]
         self.assertEqual(opus["sort_model"], "claude-opus-5-5")
         self.assertEqual(opus["build_model"], "claude-opus-5-5")
         self.assertEqual(opus["variants"], [
             "claude-opus-5-5", "claude-opus-5-5@medium",
-            "claude-opus-5-5@high", "claude-opus-5"])
+            "claude-opus-5-5@high"])
         resolved = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
-        self.assertIn("claude-opus/claude-opus-5/default", resolved["platforms"])
-        variant = resolved["platforms"]["claude-opus/claude-opus-5/default"]
-        self.assertEqual(variant["sort_model"], "claude-opus-5")
-        self.assertEqual(variant["build_model"], "claude-opus-5")
-        self.assertEqual(variant["slot"], "claude-opus")
-        self.assertEqual(variant["quota_group"], "claude")
-        self.assertEqual(variant["tier"], 4)          # inherits the slot's tier
+        self.assertNotIn("claude-opus/claude-opus-5/default", resolved["platforms"])
+        for variant in ("default", "medium", "high"):
+            v = resolved["platforms"][f"claude-opus/claude-opus-5-5/{variant}"]
+            self.assertEqual(v["sort_model"], "claude-opus-5-5")
+            self.assertEqual(v["build_model"], "claude-opus-5-5")
+            self.assertEqual(v["slot"], "claude-opus")
+            self.assertEqual(v["quota_group"], "claude")
+            self.assertEqual(v["tier"], 4)          # inherits the slot's tier
 
     def test_pinned_models_have_price_rows(self):
         prices = config.DEFAULTS["prices"]
@@ -284,7 +283,7 @@ class BuiltInVariantCandidatesTests(unittest.TestCase):
             "claude-sonnet-5@high", "claude-opus-5-5@low"])
         self.assertEqual(platforms["claude-opus"]["variants"], [
             "claude-opus-5-5", "claude-opus-5-5@medium",
-            "claude-opus-5-5@high", "claude-opus-5"])
+            "claude-opus-5-5@high"])
         self.assertEqual(platforms["agy-gemini"]["variants"], [
             "gemini-3.1-pro-high", "gemini-3.8-flash@low",
             "gemini-3.8-flash@medium"])

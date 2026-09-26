@@ -110,7 +110,7 @@ verify = "python3 -m unittest discover -s tests"
 # codex-low: gpt-5.6-luna, then GPT-6 Luna low/medium/high
 # codex: gpt-5.6-terra, then GPT-6 Luna high and GPT-6 Sol low
 # claude: claude-sonnet-5, then Sonnet low/high and Opus 5.5 low
-# claude-opus: Opus 5.5 default/medium/high, then Opus 5
+# claude-opus: Opus 5.5 default/medium/high
 # agy-gemini: current Pro, then Gemini Flash low/medium
 
 # Work logins on this same machine (DESIGN D25). Log each CLI in once with its

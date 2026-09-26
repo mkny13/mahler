@@ -1008,7 +1008,7 @@ never run.
   opt-in routing choices, not extra quota.
 - **One Claude account, one run slot.** `claude-low`, `claude`, and `claude-opus` share the same 5-hour and
   weekly windows (there is no separate Opus window on Pro, and `--model opus` runs
-  `claude-opus-5` inside the plan, not on overage; checked 2026-09-13). So they count together
+  `claude-opus-5-5` inside the plan, not on overage; checked 2026-09-13). So they count together
   against `max_runs`, and an Opus run starts only below 5h 45%, leaving room to finish under the
   70% hard line. A planning run stopped halfway starts over, so this matters.
 - **A goal closes when all its sub-issues are done.**

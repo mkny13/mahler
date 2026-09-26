@@ -206,7 +206,7 @@ class RouterTests(unittest.TestCase):
 
     def test_claude_opus_model_flag(self):
         # Issue #421 (D33): claude-opus pins `claude-opus-5-5` exactly, with
-        # `claude-opus-5` kept as a variant candidate. The flag names the pin.
+        # the 5.5 effort levels as variant candidates. The flag names the pin.
         argv = platforms.claude_argv(self.cfg["platforms"]["claude-opus"], "hi", "wt", "build")
         self.assertIn("claude-opus-5-5", argv)
 
