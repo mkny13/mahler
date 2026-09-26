@@ -1287,7 +1287,7 @@ that's the thing actually missing.
   of what `state._idle` already computes exposed to the page.
 - **A Dependencies view, not a literal force-directed graph.** A spatial node-link layout at this
   density invites exactly the clutter the console's "no shadows, no filled cards" ethos exists to
-  avoid, and pulling in a layout library would cross the "no dependency outside the standard library"
+  avoid, and pulling in a server layout library would cross the "no dependency outside the standard library"
   line before the MCP phase means to. Instead: one **server-rendered SVG per project**, laid out in
   ranked columns — a plain longest-path rank computed in `state.py` (root items with no parent and no
   unmet dependency at rank 0, everything else one rank past its farthest predecessor), no client
@@ -1301,6 +1301,13 @@ that's the thing actually missing.
 - This is new surface beyond the Phase 2 mock, not a deviation from it — `docs/console/design.md`'s
   screens don't cover it. It's designed here, in the same voice and constraints as D27, rather than
   redone in Claude Design, since it's additive to an existing view rather than a new screen.
+
+- **Amended 2026-09-25 (mahler#490):** the Graph view renders with Mermaid,
+  lazy-loaded in the browser from a pinned, SRI-checked CDN URL only when Graph
+  is opened; the server emits Mermaid text from the same `_graph` data and still
+  ships the ranked SVG as the offline fallback. The standard-library rule (D27)
+  governs the daemon, which this doesn't touch.
+
 
 ### D30 — Work-repo compute strategy: decompose to size:s
 

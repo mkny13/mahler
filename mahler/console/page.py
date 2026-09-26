@@ -295,7 +295,10 @@ def _backlog_groups(s, phone, dep_graph=None):
             # '/' of a project like phish-in/couch-tour (mahler#487)
             key = "view_" + "".join(c if c.isalnum() or c == "-" else "-"
                                      for c in g["project"].lower())
-            graph_svg = f'<div class="grp-graph">{_graph_svg(dep_graph[g["project"]])}</div>'
+            graph = dep_graph[g["project"]]
+            graph_svg = (f'<div class="grp-graph" data-graph-key="{key}">'
+                         f'<pre class="mermaid-src" hidden>{e(graph.get("mermaid", ""))}</pre>'
+                         f'<div class="mermaid-out"></div>{_graph_svg(graph)}</div>')
             toggle = (f'<div class="viewtog">'
                       f'<style>'
                       f':root[data-{key}="open"] .grp.open[data-group="{proj}"] .grp-items {{ display: none; }} '
