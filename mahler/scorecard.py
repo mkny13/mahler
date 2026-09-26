@@ -180,9 +180,10 @@ def attempts(led, since, until=None):
             continue
         outcome, why = classify(run)
         result.append(dict(run=run['id'], **{k: run[k] for k in (
-            'project', 'number', 'role', 'size', 'platform', 'model', 'effort', 'cost_usd', 'tokens_in',
+            'project', 'number', 'role', 'size', 'platform', 'model', 'configured_model', 'effort', 'cost_usd', 'tokens_in',
             'tokens_cached', 'tokens_out', 'tokens_reasoning', 'actual_mins')},
             result=outcome, why=why))
+        result[-1]["role"] = run["routing_role"] or run["role"]
     return result
 
 

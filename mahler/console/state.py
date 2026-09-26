@@ -572,7 +572,8 @@ def _runs(cfg, led, now):
         lease = led.lease(project, n)
         held = bool(lease and lease["holder"] == f"run:{r['id']}")
         wt = (r["worktree"] or "").rstrip("/").rsplit("/", 1)[-1]
-        meta = [r["platform"], f"run {r['id']}"]
+        label = f"trying {_platform_label(cfg, r['platform'])}" if r["explore"] else r["platform"]
+        meta = [label, f"run {r['id']}"]
         if wt:
             meta.append(f"worktree {wt}")
         meta += [f"epoch {r['epoch']}", "lease held" if held else "no lease"]
