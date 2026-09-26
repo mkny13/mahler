@@ -500,7 +500,6 @@ def risk_min_tier(text):
     return 0
 
 
-
 def routing_mode(cfg, pol=None):
     return (pol or {}).get("routing_mode", cfg.get("routing_mode", "list"))
 
@@ -521,6 +520,7 @@ def measured_rows(cfg, rows, role, size):
 
 def measured_order(cfg, order, rows, role, size, burst_lines=None):
     proof = measured_rows(cfg, rows, role, size)
+
     def key(name):
         row = proof.get(name, {})
         status = row.get("status", "unproven")
@@ -539,7 +539,8 @@ def pick_reason(cfg, rows, role, size, name):
     if not row:
         return f"{name}: unproven (no matching measurements)"
     cost = row["cost_per_success"]
-    price = f"${cost:.2f} per success" if cost is not None else "cost unknown"
+    price = ("cost unknown" if cost is None else "no successes yet" if cost == float("inf")
+             else f"${cost:.2f} per success")
     return (f'{name} · {row["effort"] or "default"}: '
             f'{row["successes"]}/{row["n"]} first try, {price} · {row["status"]}')
 

@@ -1574,7 +1574,9 @@ MODELS_LABEL = "Models"
 def measured_routes(cfg, led, projects, rows):
     """Project/role/size routes cannot be represented by a single quota-pool order."""
     result = []
+    from ..tick import busy_platforms
     bursts = router.all_bursts(cfg, led)
+    busy = busy_platforms(cfg, led.active_runs())
     for pol in projects:
         if router.routing_mode(cfg, pol) != "measured":
             continue
@@ -1591,10 +1593,10 @@ def measured_routes(cfg, led, projects, rows):
                 if not order:
                     continue
                 pick, _ = router.pick_for_project(
-                    cfg, led, pol, role, size=size, burst_lines=bursts, scorecard_rows=rows)
+                    cfg, led, pol, role, size=size, busy=busy, burst_lines=bursts, scorecard_rows=rows)
                 reason = router.pick_reason(cfg, rows, role, size, pick) if pick else "no headroom"
                 result.append(f'{pol["name"]} · {role} · {size}: '
-                              + " → ".join(order) + f". Current pick: {reason}")
+                              + " → ".join(order) + f". Unpinned preference: {reason}")
     return result
 
 
