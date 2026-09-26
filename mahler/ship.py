@@ -432,13 +432,14 @@ def _finding_files(findings):
     divergence.
     Directory paths and every dotted filename component remain significant:
     ``src/a/index.test.ts`` and ``src/b/index.test.tsx`` are distinct files.
-    Extensions are optional: ``Dockerfile`` and ``build/Makefile`` count too.
+    Extensions are optional, and leading-dot basenames are valid:
+    ``Dockerfile``, ``build/Makefile``, and ``.gitignore`` all count.
     """
     locations = set()
     for finding in re.split(r"\s+\|\s+", findings or ""):
         match = re.match(
             r"\s*(?:[-*]\s+)?`?(?P<path>(?:[\w@+.-]+/)*"
-            r"[\w@+-]+(?:\.[\w@+-]+)*)`?:",
+            r"\.?[\w@+-]+(?:\.[\w@+-]+)*)`?:",
             finding)
         if match:
             locations.add(match.group("path"))

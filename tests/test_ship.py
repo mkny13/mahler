@@ -1369,6 +1369,20 @@ class TestReviewConvergence(unittest.TestCase):
         start.assert_called_once()
         self.assertEqual(start.call_args.args[3], "fix")
 
+    def test_repeated_dotfile_location_starts_a_fix(self):
+        self.assertEqual(
+            ship._finding_files(".gitignore: blocker | config/.env.local: leak"),
+            {".gitignore", "config/.env.local"})
+        self.rounds([
+            f".gitignore: same blocker | {name}.py: bug"
+            for name in ("a", "b", "c")
+        ])
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[3], "fix")
+
     def test_extensionless_locations_preserve_paths_and_ignore_prose(self):
         self.assertEqual(ship._finding_files(
             "Dockerfile: missing dependency | - `build/Makefile`:10 broken target"
