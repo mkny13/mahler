@@ -137,7 +137,7 @@ def _post_review_comment(e, passed, findings=""):
             body += f" {findings}"
     else:
         lines = [f"**Review** — {e.run['platform']} found blocking issues; "
-                 "a fix round starts on this PR:", ""]
+                 "the conductor will assess the next fix round:", ""]
         lines += [f"- {f.strip()}" for f in (findings or "").split("|") if f.strip()]
         body = "\n".join(lines)
     try:

@@ -621,6 +621,16 @@ doesn't rely on that and stops on its own thresholds regardless.
   data or migrations, or the free tiers are exhausted. This is where the BACKLOG's
   **adversarial cross-product review** plugs in (ROADMAP Phase 7). It's agent review, not a
   human gate.
+- **Review convergence** (mahler#474): retain failed-review findings by run and head.
+  Before another fix, two consecutive transitions to previously untouched file references
+  (three failed reviews) pause the item in `needs_you` with every round's evidence and the
+  choices cut scope / split the item / merge with follow-ups / keep fixing. File overlap,
+  including a subset or a repeat from any earlier round in the active window, breaks the
+  streak. References ignore line numbers while preserving directory paths and compound
+  filenames; missing locations are inconclusive. This deterministic heuristic does not
+  infer different defects within the same file. A passing review or an escalation starts
+  a fresh comparison window, preserving the evidence while allowing an owner's retry.
+  Existing attempt limits still apply.
 - **Runtime signals later:** post-deploy error capture (Vercel logs, a tiny error endpoint,
   or Sentry's free tier) becomes issues automatically.
 
