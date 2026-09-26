@@ -133,9 +133,14 @@ def _post_review_comment(e, passed, findings=""):
     if not pr:
         return
     if passed:
-        body = f"**Review** — {e.run['platform']} found no blocking issues."
-        if findings:
-            body += f" {findings}"
+        # Non-blocking notes ride along on a pass (recipes/review.md rule 4).
+        notes = [n.strip() for n in (findings or "").split("|") if n.strip()]
+        if notes and notes != ["no findings"]:
+            lines = [f"**Review** — {e.run['platform']} found no blocking issues. "
+                     "Notes (not required for merge):", ""]
+            body = "\n".join(lines + [f"- {n}" for n in notes])
+        else:
+            body = f"**Review** — {e.run['platform']} found no blocking issues."
     else:
         lines = [f"**Review** — {e.run['platform']} found blocking issues; "
                  "the conductor will assess the next fix round:", ""]
