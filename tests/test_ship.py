@@ -544,6 +544,18 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [88])
         self.assertEqual(self.led.item("x", 6)["state"], "ready")
 
+    def test_failed_review_launch_restores_watch_lease_without_capacity(self):
+        from mahler import tick
+        self.led.upsert_item("x", 5, pr=88)
+        lease, _ = self.led.claim("x", 5, "conductor", "auto", 10, capacity=False)
+        with mock.patch.object(runner, "prepare", side_effect=RuntimeError("setup failed")):
+            self.assertFalse(tick.start(self.ctx, "x", self.item(), "review", "agy-claude",
+                                        handoff_from=("conductor", lease["epoch"])))
+        restored = self.led.lease("x", 5)
+        self.assertEqual(restored["holder"], "conductor")
+        self.assertEqual(restored["capacity"], 0)
+        self.assertFalse(self.led.lease_check("x", 5, lease["epoch"]))
+
     def test_run_capacity_refuses_review_and_fix_until_holder_finishes(self):
         from mahler import tick
         self.cfg["projects"]["x"]["max_parallel"] = 1
@@ -784,6 +796,7 @@ class ShipTests(unittest.TestCase):
             finalize.finalize(self.ctx, run)
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        self.assertEqual(self.led.lease("x", 5)["capacity"], 0)
         info = json.loads(self.led.get_kv("review:x#5"))
         self.assertEqual(info["verdict"], "pass")
         event = self.led.q1("SELECT detail FROM events WHERE kind='review_verdict'")
