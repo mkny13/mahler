@@ -99,6 +99,7 @@ DEFAULT_MEASURE = {
 }
 
 DEFAULTS = {
+    "routing_mode": "list",
     "measure": DEFAULT_MEASURE,
     "quota_groups": {},  # optional cost_weight per shared quota pool
 
@@ -921,6 +922,10 @@ def account_mode_of(conf):
 
 def validate_accounts(cfg):
     """A project sets `account` or `accounts`, never both (D26)."""
+    for scope, conf in [("global", cfg), ("defaults", cfg.get("defaults", {})),
+                        *cfg.get("projects", {}).items()]:
+        if conf.get("routing_mode", "list") not in ("list", "measured"):
+            raise ValueError(f"{scope}: routing_mode must be list or measured")
     for name, proj in cfg.get("projects", {}).items():
         if "account" in proj and "accounts" in proj:
             raise ValueError(f"project {name!r} sets both 'account' and "
