@@ -209,9 +209,8 @@ DEFAULTS = {
         # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
         # for hard tasks (size:l by default via min_size: "l", or via explicit
         # `platform:claude-opus` pin) without spending Antigravity's separate,
-        # # scarcer Claude/Opus pool. Issue #421 (D33): pinned to `claude-opus-5-5`
-        # with `claude-opus-5` kept as a variant candidate, so the previous
-        # version isn't dropped when a newer Opus ships.
+        # scarcer Claude/Opus pool. Issue #421 (D33): pinned to `claude-opus-5-5`
+        # with the 5.5 effort levels as variant candidates.
         "claude-opus": {
             "enabled": True, "kind": "claude",
             "sort_model": "claude-opus-5-5", "build_model": "claude-opus-5-5",
@@ -221,7 +220,7 @@ DEFAULTS = {
             "stale_minutes": 15,
             "quota_group": "claude",
             "variants": ["claude-opus-5-5", "claude-opus-5-5@medium",
-                         "claude-opus-5-5@high", "claude-opus-5"],
+                         "claude-opus-5-5@high"],
         },
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
