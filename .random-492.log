@@ -1,0 +1,13 @@
+.......................................serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /attachments/../config.toml HTTP/1.1" 404 -
+.......................................................................................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 400 -
+serve: 127.0.0.1 "POST /api/clear_backoff HTTP/1.1" 400 -
+...............serve: 127.0.0.1 "GET /api/state?range=last7 HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/state?range=custom&start=2026-09-01&end=2026-09-12 HTTP/1.1" 200 -
+.serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /api/run/abc/log HTTP/1.1" 404 -
+...................................serve: 127.0.0.1 "GET /api/settings HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/settings HTTP/1.1" 400 -
+................................serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET / HTTP/1.1" 200 -
+...............................

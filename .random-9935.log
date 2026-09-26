@@ -1,0 +1,225 @@
+................................................................serve: 127.0.0.1 "GET /api/releases/mahler HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/releases/mahler.json HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/projects/mahler/releases.json HTTP/1.1" 200 -
+.....................serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/resume HTTP/1.1" 200 -
+..................serve: code updated abc123 -> def456, restarting
+.....................serve: 127.0.0.1 "GET /api/run/9999/log HTTP/1.1" 200 -
+.....................serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /attachments/../config.toml HTTP/1.1" 404 -
+.........................................................serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /api/run/abc/log HTTP/1.1" 404 -
+.............................................serve: 127.0.0.1 "GET /fragment HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/state HTTP/1.1" 200 -
+..............serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.........serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PUT / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "DELETE / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message only GET, and POST to /api/<action>
+serve: 127.0.0.1 "PATCH / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 405, message Method Not Allowed
+serve: 127.0.0.1 "POST / HTTP/1.1" 405 -
+serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "POST /api/drop_tables HTTP/1.1" 404 -
+.serve: cannot read HEAD, will retry
+.serve: 127.0.0.1 "GET /api/state HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/end_session HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /api/state HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /fragment HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /fragment HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/end_session HTTP/1.1" 400 -
+.............serve: 127.0.0.1 "POST /api/pause HTTP/1.1" 200 -
+............serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+.....................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...............serve: cannot read HEAD, will retry
+....serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+...........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.............................serve: 127.0.0.1 "GET /api/settings HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/settings HTTP/1.1" 400 -
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...serve: 127.0.0.1 "POST /api/attach HTTP/1.1" 200 -
+serve: 127.0.0.1 "GET /attachments/5f13d19ff2554233afca6f73c6660e71.png HTTP/1.1" 200 -
+..serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.....serve: cannot read HEAD, will retry
+.....serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+................serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /api/releases/nonexistent HTTP/1.1" 404 -
+serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /api/releases/mahler HTTP/1.1" 404 -
+...................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /api/run/9997/log HTTP/1.1" 404 -
+.......................serve: 127.0.0.1 "POST /api/answer HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 200 -
+serve: 127.0.0.1 "POST /api/answer_undo HTTP/1.1" 400 -
+..............serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+............serve: 127.0.0.1 code 404, message Not Found
+serve: 127.0.0.1 "GET /status HTTP/1.1" 404 -
+...serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+....................serve: 127.0.0.1 "POST /api/attach HTTP/1.1" 200 -
+..serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..........................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..............serve: 127.0.0.1 code 400, message invalid limit: must be a positive integer
+serve: 127.0.0.1 "GET /api/releases/mahler?limit=0 HTTP/1.1" 400 -
+serve: 127.0.0.1 code 400, message invalid limit: must be a positive integer
+serve: 127.0.0.1 "GET /api/releases/mahler?limit=-5 HTTP/1.1" 400 -
+serve: 127.0.0.1 code 400, message invalid limit: must be a positive integer
+serve: 127.0.0.1 "GET /api/releases/mahler?limit=abc HTTP/1.1" 400 -
+........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+....serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+..serve: cannot read HEAD, will retry
+....serve: cannot read HEAD, will retry
+................serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+.....serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+.............serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+...........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry

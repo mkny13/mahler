@@ -11,6 +11,7 @@ import hashlib
 import html
 import json
 import os
+from urllib.parse import quote
 
 from .state import MODELS_LABEL, STATS_RANGES, _hhmm
 from ..ledger import parse
@@ -654,11 +655,18 @@ def _project_releases_card(r, brief, phone=False):
             out.append(f'<details class="rel-maint"><summary class="rel-maint-sum">Maintenance details ({len(draft["maintenance"])})</summary>'
                        f'<div class="rel-items">{"".join(m_items)}</div></details>')
 
+    earlier_items = draft.get("items_total", len(draft["items"])) - len(draft["items"])
+    if earlier_items:
+        out.append(f'<div class="mono t-mut">…and {earlier_items} earlier items</div>')
+
     out.append('</div>')
 
     # Published history
+    omitted = r.get("published_omitted", 0)
+    history_count = (f'{len(published)} of {r["published_total"]}'
+                     if omitted else str(len(published)))
     out.append('<div class="rel-history-block">')
-    out.append(f'<div class="rel-hist-head"><span class="lbl">Published release history ({len(published)})</span></div>')
+    out.append(f'<div class="rel-hist-head"><span class="lbl">Published release history ({history_count})</span></div>')
     if not published:
         out.append('<div class="empty rel-empty-history">No releases published yet.</div>')
     else:
@@ -707,6 +715,10 @@ def _project_releases_card(r, brief, phone=False):
                 out.append(f'<details class="rel-maint"><summary class="rel-maint-sum">Maintenance details ({len(pub["maintenance"])})</summary>'
                            f'<div class="rel-items">{"".join(m_items)}</div></details>')
             out.append('</div>')
+
+    if omitted:
+        feed_url = f'/api/releases/{quote(proj, safe="")}.json?limit={r["published_total"]}'
+        out.append(_a(feed_url, f'{omitted} earlier releases — full notes in the JSON feed ↗', "link"))
 
     out.append('</div>')
     out.append('</div>')

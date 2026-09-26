@@ -25,7 +25,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from . import config
 from .console import actions, page, state
@@ -150,7 +150,7 @@ class _Handler(BaseHTTPRequestHandler):
                     proj = proj[:-len(".json")]
             else:
                 proj = path[len("/api/projects/"):-len("/releases.json")]
-            proj = proj.strip("/")
+            proj = unquote(proj).strip("/")
             if not proj:
                 self.send_error(404)
                 return
