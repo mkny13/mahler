@@ -65,6 +65,20 @@ class MeasuredRoutingTests(unittest.TestCase):
         self.assertEqual(self.pick(burst_lines=bursts), "cheap")
         self.assertEqual(self.pick(burst_lines={"expensive": {"5h": (90, 97)}}), "expensive")
 
+    def test_direct_pick_promotes_burst_after_account_merge(self):
+        self.cfg["routing_mode"] = "measured"
+        self.cfg["routing"]["build"] = ["bad", "cheap"]
+        self.cfg["accounts"] = {"work": {"routing": {"build": ["unknown", "expensive"]}}}
+        for name in ("unknown", "expensive"):
+            self.cfg["platforms"][name]["account"] = "work"
+        self.cfg["platforms"]["cheap"]["kind"] = "claude"
+        picked, reasons = router.pick(
+            self.cfg, self.led, "build", accounts=["personal", "work"],
+            busy={"cheap"}, burst_lines={"cheap": {"5h": (90, 97)}},
+            scorecard_rows=[])
+        self.assertEqual(picked, "bad")
+        self.assertEqual(reasons, ["cheap: busy"])
+
     def test_context_reuses_empty_scorecard(self):
         ctx = Ctx(self.cfg, self.led)
         with patch.object(scorecard, "table", return_value=[]) as table:
