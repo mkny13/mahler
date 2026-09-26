@@ -527,7 +527,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     model = pconf.get("sort_model" if role == "sort" else "build_model") or pconf.get("model")
     routing_role = "plan" if role == "sort" and needs_plan(row_get(item, "labels")) else role
     run_id = led.create_run(project=project, number=n, role=role, platform=platform,
-                            size=size or "m", model=model, effort=effort,
+                            size=size or "m", model=model, configured_model=model or "", effort=effort,
                             explore=int(explore), routing_role=routing_role,
                             epoch=0, status="running", est_mins=round(est, 2))
     lease, info = led.claim(project, n, f"run:{run_id}", "auto", pol["auto_lease_minutes"],

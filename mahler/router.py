@@ -678,10 +678,20 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
         pconf = cfg["platforms"][name]
         model = pconf.get("sort_model" if run_role == "sort" else "build_model") or pconf.get("model")
         effort = platforms.effort_value(pconf, run_role) or "default"
-        row = next((candidate for candidate in matching
-                    if (candidate["platform"], candidate["model"], candidate["effort"])
-                    == (name, model, effort)), None)
-        if row is not None and row["status"] != "unproven":
+        # Runtime accounting records the actual model, which can change on
+        # every auto/free run. Proof belongs to the configured routing identity.
+        # Legacy runs lack that snapshot: known auto streams pool their runtime
+        # models; pinned models still require an exact historical match.
+        dynamic = not model or model in {"auto", "kilo/kilo-auto/free"}
+        resolved = sum(
+            attempt["result"] in {"success", "failure"}
+            and (attempt["configured_model"] == (model or "")
+                 if attempt["configured_model"] is not None else
+                 dynamic or attempt["model"] == model)
+            for row in matching
+            if row["platform"] == name and row["effort"] == effort
+            for attempt in row["attempts"])
+        if resolved >= scorecard.policy(cfg)["min_attempts"]:
             continue
         candidate, _ = pick(cfg, led, role, busy=busy, size=size,
                             burst_lines=burst_lines, min_tier=min_tier,
