@@ -118,7 +118,7 @@ def cmd_status(a, cfg, led):
         items = [i for i in items if i["project"] == a.project]
     for i in items:
         lease = led.lease(i["project"], i["number"])
-        held = f"  held by {lease['holder']}" if lease else ""
+        held = f"  held by {router.lease_label(led, lease)}" if lease else ""
         tries = f"  tries {i['attempts']}" if i["attempts"] else ""
         setup = f"  setup failed ×{i['setup_fails']}" if i["setup_fails"] else ""
         est = int(led.issue_estimate(ests, i["project"]))
@@ -397,7 +397,7 @@ def cmd_claim(a, cfg, led):
             print(f"{project}#{n}: canonical lease host unavailable; claim denied safely")
             return 1
         if "at_capacity" in info:
-            held = ", ".join(f"{project}#{row['number']} by {row['holder']}"
+            held = ", ".join(router.lease_label(led, row)
                              for row in info["at_capacity"])
             print(f"{project} is at its canonical capacity ({held}); claim denied")
             return 1

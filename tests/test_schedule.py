@@ -310,7 +310,7 @@ class FairnessTests(unittest.TestCase):
         self.assertEqual(plan(ctx, led),
                          ["a#1: would build on agy-claude",
                           "b#5: would build on agy-claude"])
-        self.assertIn("a: at capacity (2 running)", ctx.lines)
+        self.assertIn("a: at capacity (1 running or planned)", ctx.lines)
 
     def test_unmerged_change_holds_the_build_slot(self):
         """The live failure (mahler#27): with max_parallel 1, three builds ran
@@ -1003,7 +1003,7 @@ class ScheduleHoldTests(unittest.TestCase):
                     plan(ctx, led)
                 expected = {"kind": kind, "project": "a"}
                 expected.update({
-                    "capacity": {"max_parallel": 2}, "slot": {"verifying": [2, 3]},
+                    "capacity": {"max_parallel": 2, "holders": []}, "slot": {"verifying": [2, 3]},
                     "area": {"number": 1, "area": "console"},
                     "files": {"number": 1, "files": ["mahler/tick.py"]},
                     "hot_hold": {"number": 1}, "lease_host": {},

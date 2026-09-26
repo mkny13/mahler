@@ -56,8 +56,33 @@ class StatusCliTests(unittest.TestCase):
 
         self.assertEqual(ret, 0)
         output = buf.getvalue()
+        self.assertIn(f"proj#2 — platform1 build run {run_id}, 0m", output)
         self.assertIn("https://github.com/owner/proj/issues/1", output)
         self.assertIn("https://github.com/owner/proj/pull/123", output)
+
+    def test_interactive_claim_ignores_watch_lease_but_names_running_holder(self):
+        from types import SimpleNamespace
+        from mahler import config
+        self.cfg["defaults"] = config.DEFAULTS["defaults"].copy()
+        self.led.upsert_item("proj", 1, state="verifying", pr=91)
+        self.led.upsert_item("proj", 2, state="ready")
+        self.led.claim("proj", 1, "conductor", "auto", 10, capacity=False)
+        claim = self.led.claim
+        def bounded_claim(*args, **kwargs):
+            return claim(*args, **kwargs, max_parallel=1)
+        args = SimpleNamespace(item=("proj", 2), holder="test", steal=False)
+        with patch.object(self.led, "claim", side_effect=bounded_claim), patch("sys.stdout", io.StringIO()):
+            self.assertEqual(cli.cmd_claim(args, self.cfg, self.led), 0)
+        self.led.release("proj", 2)
+        self.led.release("proj", 1)
+        run = self.led.create_run(project="proj", number=1, role="review",
+                                  platform="claude", epoch=1)
+        self.led.claim("proj", 1, f"run:{run}", "auto", 10,
+                       platform="claude", run_id=run)
+        buf = io.StringIO()
+        with patch.object(self.led, "claim", side_effect=bounded_claim), patch("sys.stdout", buf):
+            self.assertEqual(cli.cmd_claim(args, self.cfg, self.led), 1)
+        self.assertIn(f"proj#1 — claude review run {run}", buf.getvalue())
 
     def test_status_quota_shows_reset_countdown_chips(self):
         # mahler#52: quota lines append `[5h in ...  · wk in ...]` chips

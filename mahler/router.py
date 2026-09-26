@@ -620,3 +620,26 @@ def reason_groups(reasons):
         if name not in names:
             names.append(name)
     return groups
+
+
+def lease_label(led, lease):
+    """Plain description of item ownership, including local run details when known."""
+    row = dict(lease)
+    ref = f"{row['project']}#{row['number']}"
+    holder = row["holder"]
+    if holder == "conductor" or holder.endswith("/conductor"):
+        item = led.item(row["project"], row["number"])
+        pr = item["pr"] if item else None
+        detail = f"conductor (watching PR #{pr})" if pr else "conductor (opening PR)"
+    elif row.get("run_id") and (holder.startswith("run:") or "/" not in holder):
+        run = led.run_for_lease(row)
+        if run:
+            minutes = max(0, int((led.now() - parse(run["started_at"])).total_seconds() // 60))
+            detail = f"{run['platform']} {run['role']} run {run['id']}, {minutes}m"
+        else:
+            detail = f"{row.get('platform') or 'unknown platform'} auto run {row['run_id']}"
+    else:
+        detail = f"{row.get('kind', 'unknown')} {holder}"
+        if row.get("platform"):
+            detail += f" ({row['platform']})"
+    return f"{ref} — {detail}"

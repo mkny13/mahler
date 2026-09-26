@@ -2,7 +2,8 @@
 
 The mechanical tail of a build run, in code: push the branch, open the PR,
 watch CI across ticks, start a fix run when CI goes red, and squash-merge on
-green — but never merge once the item's lease has gone to a session (D6).
+green. Only executing runs take capacity; conductor watch leases do not.
+Never merge once the item's lease has gone to a session (D6).
 """
 
 import json
@@ -65,11 +66,15 @@ def _unowned_prs(ctx, project):
 
 
 def _ship_project(ctx, project):
+    ctx.merge_requested = False
     for item in ctx.led.items(project, ["verifying"]):
         try:
             _ship_item(ctx, project, item)
         except Exception as e:                  # noqa: BLE001 — one item can't stop the rest
             ctx.say(f"{project}#{item['number']}: shipping failed — {e}")
+        # One conductor serializes merge requests; next tick rechecks base freshness.
+        if ctx.merge_requested:
+            break
 
 
 def _ship_lease(ctx, project, item):
@@ -77,13 +82,11 @@ def _ship_lease(ctx, project, item):
     -> True when we hold it; each refusal says why and leaves the PR alone."""
     led, n = ctx.led, item["number"]
     lease, info = led.claim(project, n, CONDUCTOR, "auto",
-                            ctx.policy(project)["auto_lease_minutes"])
+                            ctx.policy(project)["auto_lease_minutes"], capacity=False)
     if lease is not None:
         return True
     if "unavailable" in info:
         ctx.say(f"{project}#{n}: canonical lease host unavailable — shipping skipped")
-    elif "at_capacity" in info:
-        ctx.say(f"{project}#{n}: canonical project capacity is already held — shipping skipped")
     else:                                       # a session pre-empted the item (D6)
         pr = f"PR #{item['pr']}" if item["pr"] else "its PR (not yet open)"
         led.set_state(project, n, "working",
@@ -287,6 +290,7 @@ def _merge_queued(ctx, project, item, pr, view):
         if not contains:
             _rebuild_on_base(ctx, project, item, pr, fresh["baseRefName"], stale=True)
             return
+        ctx.merge_requested = True  # even an uncertain API failure consumes this tick
         gh.pr_merge(pr, sha)
         led.set_kv(key, json.dumps({"sha": sha, "since": iso(led.now())}))
         after = gh.pr_view(pr)
