@@ -353,6 +353,9 @@ def _record_run_usage(ctx, run, kind, log):
     if kind == "claude":
         # one reading covers every platform sharing that Claude login (D21, D25)
         record_claude_usage(ctx, log["usage"], backoff_until=until, platform=run["platform"])
+        if log.get("credit_exhausted"):
+            led.record_usage(run["platform"], router.HOLD, 100.0, until)
+            led.set_kv(f"hold_reason:{run['platform']}", "no_credit")
         return
     for w, pct, resets in log["usage"]:
         led.record_usage(run["platform"], w, pct, resets)
