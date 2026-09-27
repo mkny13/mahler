@@ -437,7 +437,120 @@ class AccountEnvTests(Base):
                              os.path.expanduser("~/.config/gh-work"))
 
 
+class ServeLogRotationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "serve.err.log")
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.now = datetime(2026, 9, 27, 12, 0)
+
+    def rotations(self):
+        return sorted(name for name in os.listdir(self.tmp.name)
+                      if name.startswith("serve.err.log."))
+
+    def test_defaults_set_a_five_megabyte_cap_and_keep_five(self):
+        self.assertEqual(self.cfg["serve"]["log_max_bytes"], 5 * 1024 * 1024)
+        self.assertEqual(self.cfg["serve"]["log_keep"], 5)
+
+    def test_at_or_below_cap_is_unchanged(self):
+        self.cfg["serve"].update(log_max_bytes=5, log_keep=2)
+        for content in (b"1234", b"12345"):
+            with self.subTest(size=len(content)):
+                with open(self.path, "wb") as fh:
+                    fh.write(content)
+                inode = os.stat(self.path).st_ino
+                self.assertIsNone(janitor.rotate_serve_log(
+                    self.cfg, log_path=self.path, now=self.now))
+                with open(self.path, "rb") as fh:
+                    self.assertEqual(fh.read(), content)
+                self.assertEqual(os.stat(self.path).st_ino, inode)
+                self.assertEqual(self.rotations(), [])
+
+    def test_over_cap_is_copied_and_live_inode_truncated(self):
+        self.cfg["serve"].update(log_max_bytes=5, log_keep=2)
+        content = b"123456"
+        with open(self.path, "wb") as fh:
+            fh.write(content)
+        inode = os.stat(self.path).st_ino
+
+        rotated = janitor.rotate_serve_log(
+            self.cfg, log_path=self.path, now=self.now)
+
+        self.assertEqual(rotated, self.path + ".2026-09-27")
+        self.assertEqual(os.stat(self.path).st_ino, inode)
+        self.assertEqual(os.path.getsize(self.path), 0)
+        with open(rotated, "rb") as fh:
+            self.assertEqual(fh.read(), content)
+
+    def test_same_day_rotation_uses_first_available_numeric_suffix(self):
+        self.cfg["serve"].update(log_max_bytes=1, log_keep=5)
+        write(self.path + ".2026-09-27", "first")
+        write(self.path + ".2026-09-27.1", "second")
+        write(self.path, "new")
+
+        rotated = janitor.rotate_serve_log(
+            self.cfg, log_path=self.path, now=self.now)
+
+        self.assertEqual(rotated, self.path + ".2026-09-27.2")
+        with open(self.path + ".2026-09-27") as fh:
+            self.assertEqual(fh.read(), "first")
+        with open(self.path + ".2026-09-27.1") as fh:
+            self.assertEqual(fh.read(), "second")
+
+    def test_retention_deletes_only_oldest_matching_rotations(self):
+        self.cfg["serve"].update(log_max_bytes=1, log_keep=2)
+        for name in ("serve.err.log.2026-09-24", "serve.err.log.2026-09-25",
+                     "serve.err.log.2026-09-26", "serve.err.log.not-a-date",
+                     "other.log.2026-09-20"):
+            write(os.path.join(self.tmp.name, name), name)
+        write(self.path, "new")
+
+        janitor.rotate_serve_log(self.cfg, log_path=self.path, now=self.now)
+
+        self.assertEqual(self.rotations(), [
+            "serve.err.log.2026-09-26",
+            "serve.err.log.2026-09-27",
+            "serve.err.log.not-a-date",
+        ])
+        self.assertTrue(os.path.exists(os.path.join(
+            self.tmp.name, "other.log.2026-09-20")))
+
+    def test_retention_is_enforced_when_live_log_is_below_cap(self):
+        self.cfg["serve"].update(log_max_bytes=10, log_keep=2)
+        for date in ("2026-09-24", "2026-09-25", "2026-09-26"):
+            write(f"{self.path}.{date}", date)
+        write(self.path, "small")
+
+        self.assertIsNone(janitor.rotate_serve_log(
+            self.cfg, log_path=self.path, now=self.now))
+
+        self.assertEqual(self.rotations(), [
+            "serve.err.log.2026-09-25", "serve.err.log.2026-09-26"
+        ])
+        with open(self.path) as fh:
+            self.assertEqual(fh.read(), "small")
+
+    def test_invalid_limits_fail_before_touching_the_log(self):
+        write(self.path, "content")
+        for key, value in (("log_max_bytes", 0), ("log_keep", "five")):
+            with self.subTest(key=key, value=value):
+                cfg = copy.deepcopy(self.cfg)
+                cfg["serve"][key] = value
+                with self.assertRaisesRegex(ValueError, f"serve.{key}"):
+                    janitor.rotate_serve_log(cfg, log_path=self.path, now=self.now)
+                with open(self.path) as fh:
+                    self.assertEqual(fh.read(), "content")
+
+
 class BehaviorTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.state_patch = mock.patch.object(
+            config, "STATE", os.path.join(self.tmp.name, "state"))
+        self.state_patch.start()
+        self.addCleanup(self.state_patch.stop)
+
     def test_dry_run_reports_without_deleting(self):
         run_id = self.make_run(12)
         self.push_branch("mahler/snapshot/13-run6")
@@ -462,6 +575,16 @@ class BehaviorTests(Base):
         janitor.maybe_run(self.ctx)
         self.assertEqual(self.ctx.lines, [])        # gated: nothing swept again today
         self.assertTrue(os.path.isdir(os.path.join(self.wtroot, "t", "14-run2")))
+
+    def test_missing_log_is_reported_without_preventing_sweep(self):
+        run_id = self.make_run(12)
+        wt = os.path.join(self.wtroot, "t", f"12-run{run_id}")
+
+        janitor.maybe_run(self.ctx)
+
+        self.assertFalse(os.path.isdir(wt))
+        self.assertTrue(any("serve log rotation failed" in line
+                            and "serve.err.log" in line for line in self.ctx.lines))
 
     def test_never_raises_over_an_unreachable_project(self):
         # "t2" is skipped outright (unreachable path); "t3" is reachable but
@@ -488,6 +611,18 @@ class BehaviorTests(Base):
         self.assertFalse(os.path.isdir(wt))                      # t's own sweep still ran
         today = datetime.now().astimezone().date().isoformat()
         self.assertEqual(self.led.get_kv(janitor.KV_KEY), today)  # day still marked swept
+
+    def test_log_rotation_failure_is_reported_without_preventing_sweep(self):
+        run_id = self.make_run(12)
+        wt = os.path.join(self.wtroot, "t", f"12-run{run_id}")
+
+        with mock.patch.object(janitor, "rotate_serve_log",
+                               side_effect=PermissionError("read-only")):
+            janitor.maybe_run(self.ctx)
+
+        self.assertFalse(os.path.isdir(wt))
+        self.assertTrue(any("serve log rotation failed" in line and "read-only" in line
+                            for line in self.ctx.lines))
 
 
 if __name__ == "__main__":
