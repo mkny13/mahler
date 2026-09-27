@@ -281,3 +281,95 @@ class ResumeArgvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadLogContractTests(unittest.TestCase):
+    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy')
+
+    def read(self, kind, lines):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'agent.log')
+            with open(path, 'w') as stream:
+                for line in lines:
+                    stream.write((line if isinstance(line, str) else json.dumps(line)) + '\n')
+            return platforms.read_log(path, kind, model='configured')
+
+    def empty_result(self):
+        return dict(final=None, ok=None, usage=[], quota_hit=False,
+                    credit_exhausted=False, overage=False, retry_after=None,
+                    last_text='', model='configured', session_id=None,
+                    last_error=None, model_unavailable=False,
+                    tokens=dict.fromkeys(('in', 'cached', 'out', 'reasoning')),
+                    cost_usd=None, credits=None, quota_used={})
+
+    def test_empty_missing_and_non_object_logs_have_identical_schema(self):
+        for kind in self.kinds:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(platforms.read_log(os.path.join(directory, 'missing'),
+                                                   kind, 'configured'), self.empty_result())
+                self.assertEqual(self.read(kind, []), self.empty_result())
+                self.assertEqual(self.read(kind, [None, [], 42, '"ignored"', {}]),
+                                 self.empty_result())
+
+    def test_final_and_status_across_protocols(self):
+        final = 'STATUS: DONE complete'
+        cases = (
+            ('claude', [{'type': 'assistant', 'message': {'content': [
+                {'type': 'text', 'text': 'earlier'}]}},
+                {'type': 'result', 'subtype': 'success', 'result': final}], True),
+            ('cline', [{'type': 'run_result', 'finishReason': 'completed', 'text': final}], True),
+            ('copilot', [{'type': 'assistant.message', 'data': {'content': 'earlier'}},
+                {'type': 'assistant.message', 'data': {'content': final}},
+                {'type': 'result', 'exitCode': 0}], True),
+            ('codex', [{'type': 'item.completed', 'item': {'type': 'agent_message', 'text': final}},
+                {'type': 'turn.completed'}], True),
+            ('kilo', [{'type': 'text', 'part': {'text': final}}], None),
+            ('agy', [{'event': 'step_update', 'step_update': {'text_delta': 'earlier'}},
+                {'event': 'result', 'result': {'status': 'SUCCESS', 'response': final}}], True),
+        )
+        for kind, events, ok in cases:
+            with self.subTest(kind=kind):
+                expected = self.empty_result()
+                expected.update(final=None if kind == 'kilo' else final, ok=ok, last_text=final)
+                result = self.read(kind, events)
+                self.assertEqual(result, expected)
+                self.assertEqual(platforms.status_line(result['last_text']), ('DONE', 'complete'))
+
+    def test_plaintext_malformed_json_redaction_and_tail(self):
+        secret = 'ghp_' + 'a' * 36
+        for kind in self.kinds:
+            with self.subTest(kind=kind):
+                result = self.read(kind, ['  first  ', '{broken json', None, '(' + secret + ')', 'last'])
+                separator = '' if kind == 'agy' else '\n'
+                self.assertEqual(result['last_text'], separator.join(
+                    ['first', '{broken json', '(<redacted>)', 'last']))
+                self.assertEqual(self.read(kind, ['x' * 1600])['last_text'], 'x' * 1500)
+                error = 'Error: invalid model bogus'
+                result = self.read(kind, [error])
+                self.assertEqual(result['last_error'], error)
+                self.assertTrue(result['model_unavailable'])
+                result = self.read(kind, ['Add credits to continue. Try again in 2h'])
+                self.assertTrue(result['credit_exhausted'])
+                self.assertTrue(result['quota_hit'])
+                self.assertEqual(result['retry_after'], 120)
+
+    def test_structured_error_classification_preserves_protocol_differences(self):
+        message = '429 rate limit exceeded. Try again in 2h'
+        cases = (
+            ('claude', {'type': 'rate_limit_event', 'rate_limit_info': {
+                'status': 'rejected'}, 'message': message}, None, None),
+            ('cline', {'type': 'error', 'message': message}, None, message),
+            ('copilot', {'type': 'session.error', 'message': message}, None, None),
+            ('codex', {'type': 'turn.failed', 'error': {'message': message}}, False, None),
+            ('kilo', {'type': 'error', 'error': {'data': {'message': message}}}, None, message),
+            ('agy', {'event': 'result', 'result': {'status': 'FAILED',
+                'response': message}}, False, None),
+        )
+        for kind, event, ok, last_error in cases:
+            with self.subTest(kind=kind):
+                result = self.read(kind, [event])
+                self.assertTrue(result['quota_hit'])
+                self.assertFalse(result['credit_exhausted'])
+                self.assertEqual(result['retry_after'], 120)
+                self.assertEqual(result['ok'], ok)
+                self.assertEqual(result['last_error'], last_error)
