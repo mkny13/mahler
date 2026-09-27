@@ -494,8 +494,8 @@ class CapacityPageTests(unittest.TestCase):
 
     def test_every_page_links_to_it(self):
         html = self.html()
-        # the left rail, the Now view's capacity line, and the sidebar block
-        self.assertEqual(html.count('data-go="capacity"'), 3)
+        # only the left rail: Now and the sidebar no longer repeat it (mahler#532)
+        self.assertEqual(html.count('data-go="capacity"'), 1)
 
     def test_one_card_per_quota_group_with_its_windows(self):
         html = self.html()

@@ -50,12 +50,36 @@ DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"
 _STATE_DETAIL = re.compile(r"^(\w+) -> (\w+)(?: \((.*)\))?$", re.S)
 
 
-def build(cfg, led, stats_range="week"):
+SCORECARD_TTL = 300                    # seconds the console reuses a scorecard
+SCORECARD_SECTIONS = ("models", "capacity", "browse")  # views that show measured rows
+
+
+def scorecard_rows(cfg, led):
+    """scorecard.table rescans all run history (about a second on the live
+    ledger), so the console reuses it until a run starts or ends, the config
+    changes, or SCORECARD_TTL passes (mahler#532). The cache hangs off the
+    ledger, so separate ledgers never share one."""
+    from .. import scorecard
+    sig = (tuple(led.con.execute(
+        "SELECT count(*), max(id), max(ended_at) FROM runs").fetchone()),
+        json.dumps(cfg, sort_keys=True, default=str))
+    now = led.now()
+    cached = getattr(led, "_console_scorecard", None)
+    if cached and cached[0] == sig and 0 <= (now - cached[1]).total_seconds() < SCORECARD_TTL:
+        return cached[2]
+    rows = scorecard.table(led, cfg)
+    led._console_scorecard = (sig, now, rows)
+    return rows
+
+
+def build(cfg, led, stats_range="week", section=None):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
-    here; the page keeps that in the browser."""
-    from .. import scorecard
-    measurement_rows = scorecard.table(led, cfg)
+    here; the page keeps that in the browser. `section` is the view or tab
+    being rendered; the model scorecard is only built for the sections that
+    show it (None builds everything, for /api/state)."""
+    measured = section is None or section in SCORECARD_SECTIONS
+    measurement_rows = scorecard_rows(cfg, led) if measured else []
     now = led.now()
     projects = config.enabled_projects(cfg)
     peak = _peak(cfg, led)
@@ -94,8 +118,8 @@ def build(cfg, led, stats_range="week"):
         "quota": quota,
         "capability_sections": _capability_sections(quota),
         "capacity": _capacity_line(quota),
-        "models": models(led, cfg, measurement_rows),
-        "measured_routes": measured_routes(cfg, led, projects, measurement_rows),
+        "models": models(led, cfg, measurement_rows) if measured else None,
+        "measured_routes": measured_routes(cfg, led, projects, measurement_rows) if measured else [],
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
         "releases": releases_data,
@@ -111,8 +135,6 @@ def build(cfg, led, stats_range="week"):
         "settings": config.settings(cfg),
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
-    if s["idle"]:
-        s["idle"]["reasons"].extend({"text": text} for text in s["measured_routes"])
     s["landing"] = {
         "tab": "triage" if needs or s["uat_count"] else "now",
         "view": "needs" if needs else "test" if s["uat_count"] else "now",
