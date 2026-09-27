@@ -8,11 +8,12 @@ tick instead, so all GitHub traffic keeps the project's own login (D25).
 """
 
 import json
+from datetime import timedelta
 
 from .. import config, presence, router
 from ..ledger import iso
 from ..gh import AGENT_MARK, parse_command
-from .state import SEEN_KEY, brief_seen_key
+from .state import CAPTURE_RECENT_MINUTES, SEEN_KEY, brief_seen_key
 
 
 class ActionError(ValueError):
@@ -157,11 +158,28 @@ def capture(cfg, led, body):
         raise ActionError("project must be enabled")
     if not isinstance(text, str) or not 1 <= len(text.strip()) <= 8000:
         raise ActionError("text must be 1-8000 characters")
+    client_id = body.get("client_id")
+    if client_id is not None and (not isinstance(client_id, str)
+                                  or not 1 <= len(client_id) <= 200):
+        raise ActionError("client_id must be 1-200 characters")
     payload = {"text": text.strip()}
     if body.get("attachment"):
         payload["attachment"] = body["attachment"]
-    id = led.queue_action("capture", project, None, payload)
-    led.event("console_capture_queued", project, None, {"id": id})
+    if client_id is not None:
+        payload["client_id"] = client_id
+    with led._tx():
+        if client_id is not None:
+            recent_since = iso(led.now() - timedelta(minutes=CAPTURE_RECENT_MINUTES))
+            rows = led.pending_actions("capture")
+            rows += led.q(
+                "SELECT * FROM console_actions "
+                "WHERE kind='capture' AND status='done' AND created_at>=? "
+                "ORDER BY created_at,id", (recent_since,))
+            for row in rows:
+                if json.loads(row["payload"]).get("client_id") == client_id:
+                    return {"id": row["id"], "deduplicated": True}
+        id = led.queue_action("capture", project, None, payload)
+        led.event("console_capture_queued", project, None, {"id": id})
     return {"id": id}
 
 

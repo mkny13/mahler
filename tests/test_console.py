@@ -1921,14 +1921,19 @@ class CaptureActionTests(unittest.TestCase):
         self.cfg, self.led = make_cfg(), make_led()
         self.addCleanup(self.led.close)
 
-    def capture(self, text='Buy milk', project='mahler'):
-        return actions.run(self.cfg, self.led, 'capture', {'text': text, 'project': project})['id']
+    def capture(self, text='Buy milk', project='mahler', client_id=None):
+        body = {'text': text, 'project': project}
+        if client_id is not None:
+            body['client_id'] = client_id
+        return actions.run(self.cfg, self.led, 'capture', body)['id']
 
     def test_bad_input_is_refused(self):
         for body in ({}, {'text': 'hi'}, {'project': 'mahler'}, {'text': 'hi', 'project': None},
                      {'text': 'hi', 'project': 7}, {'text': 'hi', 'project': 'old'},
                      {'text': 'hi', 'project': 'nope'}, {'text': None, 'project': 'mahler'},
-                     {'text': '   ', 'project': 'mahler'}, {'text': 'x' * 8001, 'project': 'mahler'}):
+                     {'text': '   ', 'project': 'mahler'}, {'text': 'x' * 8001, 'project': 'mahler'},
+                     {'text': 'hi', 'project': 'mahler', 'client_id': ''},
+                     {'text': 'hi', 'project': 'mahler', 'client_id': 7}):
             with self.assertRaises(actions.ActionError, msg=body):
                 actions.run(self.cfg, self.led, 'capture', body)
 
@@ -1946,6 +1951,27 @@ class CaptureActionTests(unittest.TestCase):
         self.assertEqual(json.loads(row['payload'])['text'], 'Buy milk')
         ev = self.led.q1("SELECT * FROM events WHERE kind='console_capture_queued'")
         self.assertEqual(json.loads(ev['detail'])['id'], id)
+
+    def test_duplicate_client_id_queues_only_one_capture(self):
+        body = {'text': 'Buy milk', 'project': 'mahler', 'client_id': 'capture-123'}
+        first = actions.run(self.cfg, self.led, 'capture', body)
+        second = actions.run(self.cfg, self.led, 'capture', body)
+
+        self.assertEqual(second, {'id': first['id'], 'deduplicated': True})
+        rows = self.led.q("SELECT * FROM console_actions WHERE kind='capture'")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(json.loads(rows[0]['payload'])['client_id'], 'capture-123')
+
+    def test_recently_done_client_id_is_deduplicated_for_ten_minutes(self):
+        body = {'text': 'Buy milk', 'project': 'mahler', 'client_id': 'capture-123'}
+        first = actions.run(self.cfg, self.led, 'capture', body)
+        self.led.finish_action(first['id'], 'done', '42')
+
+        duplicate = actions.run(self.cfg, self.led, 'capture', body)
+        self.assertEqual(duplicate, {'id': first['id'], 'deduplicated': True})
+        self.led.clock.t += timedelta(minutes=11)
+        fresh = actions.run(self.cfg, self.led, 'capture', body)
+        self.assertNotEqual(fresh['id'], first['id'])
 
 
 class CaptureOutboxTests(unittest.TestCase):
@@ -2263,20 +2289,84 @@ class CapturePageTests(unittest.TestCase):
 
     def test_no_note_without_a_recent_capture(self):
         doc = page.document(state.build(self.cfg, self.led))
-        self.assertNotIn('Saved to', doc)
+        self.assertNotIn('class="capnote t-good"', doc)
 
     def test_successful_capture_clears_text_and_attachment_on_refresh(self):
         doc = page.document(state.build(self.cfg, self.led))
         self.assertIn('data-keep="capture_att_id"', doc)
         self.assertIn('data-keep="capture_att_name"', doc)
+        self.assertIn('class="cap-client-id" data-keep="capture_client_id"', doc)
         self.assertIn('class="attach-btn" data-attach>Attach photo or screenshot</button>', doc)
 
         script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
         self.assertIn(
-            'suppressKeep = ["capture", "capture_att_id", "capture_att_name"]',
+            'suppressKeep = ["capture", "capture_att_id", "capture_att_name", "capture_client_id"]',
             script,
         )
         self.assertIn('skip.indexOf(k) === -1', script)
+
+    def test_capture_posts_are_timed_idempotent_and_confirmed(self):
+        script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
+        post = script[script.index("  function post("):script.index("  function numberValue")]
+        upload = script[script.index("  function uploadAttachment("):script.index(
+            '  document.addEventListener("change"')]
+        capture = script[script.index('    if (act === "capture")'):script.index(
+            '    // Actions newer than this script')]
+        self.assertIn('var POST_TIMEOUT_MS = 20000;', script)
+        self.assertIn('new AbortController()', post)
+        self.assertIn('signal: controller.signal', post)
+        self.assertIn('showSavedToast("Saved to " + payload.project', post)
+        self.assertIn('new AbortController()', upload)
+        self.assertIn('signal: controller.signal', upload)
+        self.assertIn('window.crypto.randomUUID()', capture)
+        self.assertIn('client_id:', capture)
+
+    def test_stalled_capture_times_out_without_clearing_the_composer(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        source = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
+        post = source[source.index("  function post("):source.index("  function numberValue")]
+        script = r'''
+const assert = require("assert");
+var POST_TIMEOUT_MS = 5;
+var CAPTURE_TIMEOUT_MESSAGE = "Didn't hear back — not sure it saved. Check Backlog before resending.";
+var suppressKeep = [];
+var openCapture = true;
+var errors = [];
+var button = {disabled: true};
+var payload = {text: "still here", project: "mahler", attachment: "shot.png",
+               client_id: "capture-123"};
+var window = {console: {warn: function () {}}};
+function showErrorToast(message) { errors.push(message); }
+function showSavedToast() { throw new Error("capture was not saved"); }
+function store() {}
+function refresh() { throw new Error("timed-out capture must not refresh"); }
+function fetch(url, options) {
+  return new Promise(function (resolve, reject) {
+    options.signal.addEventListener("abort", function () {
+      var err = new Error("aborted");
+      err.name = "AbortError";
+      reject(err);
+    });
+  });
+}
+''' + post + r'''
+(async function () {
+  try { await post("capture", payload); }
+  catch (err) { assert.equal(err.name, "AbortError"); }
+  finally { button.disabled = false; }
+  assert.equal(button.disabled, false);
+  assert.deepEqual(errors, [CAPTURE_TIMEOUT_MESSAGE]);
+  assert.equal(payload.text, "still here");
+  assert.equal(payload.attachment, "shot.png");
+  assert.equal(openCapture, true);
+  assert.deepEqual(suppressKeep, []);
+})().catch(function (err) { console.error(err); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
@@ -2718,7 +2808,8 @@ class ConsoleRevisionTests(unittest.TestCase):
         # Run the production functions against a minimal DOM boundary.
         def functions_between(start, end):
             return page.JS[page.JS.index(start):page.JS.index(end)]
-        script = functions_between("  function noteRevision", "  function showErrorToast")
+        script = 'var POST_TIMEOUT_MS = 20000;\nvar CAPTURE_TIMEOUT_MESSAGE = "timeout";\n'
+        script += functions_between("  function noteRevision", "  function showErrorToast")
         script += functions_between("  function post(", "  function numberValue")
         script += functions_between("  function payloadFor", "  // a needs-you")
         script += r'''
