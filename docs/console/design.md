@@ -243,9 +243,12 @@ The health view. Sections top to bottom:
    `--acc`, second outlined) at 44px, and below them a 44px text input
    (*"or say something…"*) with a 44×44 send button. Answering collapses the
    card to `You said: <answer>` + an `Undo` link.
-3. **`READY TO TEST · N`** — per item: ref + meta, title, a one-line *what to
-   check* in `--mut`, a staging link, then **Pass** (filled `--accq`, `--acc`
-   text and border) and **Fail** (outlined `--bad`) at 44px. Pass →
+3. **`READY TO TEST · N`** — expanded test sessions grouped like the desktop
+   view, with at most 10 changes per session. Each session header has its title,
+   pending count and a two-tap **Pass all**; each inline change has ref + meta,
+   title, a one-line *what to check* in `--mut`, a staging/PR link, then **Pass**
+   (filled `--accq`, `--acc` text and border) and **Fail** (outlined `--bad`) at
+   44px. Pass →
    *"Passed — issue closed, UAT recorded."* Fail → bug sheet, then
    *"Failed — p1 bug filed and routed. The revert is one tap away in History."*
 4. **`CAPTURE`** — 3-row textarea (*"Type or dictate. Goes to the inbox — no
@@ -342,8 +345,14 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
-- **Ready to test** — title, ref/meta, what-to-check, staging link on the left;
-  **Pass** / **Fail** right-aligned at 36px.
+- **Ready to test** — expanded test sessions, grouped by project and area (or parent,
+  then `Other changes`), with at most 10 changes per session and numbered parts for
+  larger groups. Each session header shows its title, pending count, shared staging
+  link when applicable, and a two-tap **Pass all** control; sessions are ordered by
+  pending count and are not collapsible. Each inline change row keeps its title,
+  ref/meta, what-to-check and staging/PR link on the left, with **Pass** / **Fail**
+  right-aligned at 36px. **Pass all** passes the still-undecided rows in sequence;
+  **Fail** remains per change.
 - **Capture** — same composer at `max-width: 560px`, plus an explicit target
   line: *"Opens a GitHub issue in mkny13/&lt;project&gt; · labels type:feature, p2,
   mahler:inbox"* (reads *"the inbox repo"* with no project selected).

@@ -1274,6 +1274,23 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - **Ready to test** lists shipped issues whose PR carried a "Needs a human to check" list
   and that have no verdict yet (D10). Pass records the verdict. Fail files a linked
   `type:bug p1` with your note and the SHA, which routes like any other bug.
+- Ready-to-test changes are shown in bounded, expanded **test sessions**, not as one
+  unstructured queue. Mahler groups them by project and then by the first alphabetically
+  sorted `area:*` label, or by `Part of #<parent>` when there is no area label, or by
+  `Other changes` when neither applies. A session contains at most 10 changes; larger
+  groups split into numbered parts. Sessions with the most changes still awaiting a
+  verdict appear first, and each change remains an inline row. The header includes the
+  session title, pending count, shared staging link when applicable, and **Pass all**;
+  sessions are not collapsible. **Pass all** is a two-tap confirmation bound to the
+  exact changes in the rendered session: it passes every change with no verdict yet.
+  **Fail** remains per change and opens the ordinary failure flow. This bounds a review
+  session to something one person can check in a sitting, since one row per change
+  outgrew that limit.
+- **Pass all** deliberately sends one ordinary `uat_pass` request per change from the
+  browser, in sequence. If a request fails partway through, earlier passes remain
+  recorded and the remaining changes keep no verdict; tapping **Pass all** again
+  finishes the remainder. That partial-progress trade-off is accepted instead of
+  introducing a separate all-or-nothing UAT write.
 - **Undo a merge goes through the normal pipeline.** The tick makes the revert commit,
   files the issue and hands it to the conductor, so CI gates a revert like any change. The
   console always asks first.
