@@ -31,8 +31,30 @@ from . import config, redact
 from .console import actions, page, state
 from . import version as _version
 
+CLIENT_LOG_WINDOW_SECONDS = 60
+CLIENT_LOG_MAX_EVENTS = 60
 MAX_BODY = 64 * 1024
 TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+
+
+
+class _ClientLogLimiter:
+    """Per-server, per-source fixed windows; never takes the action lock."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.windows = {}
+
+    def allow(self, address):
+        now = time.monotonic()
+        with self.lock:
+            self.windows = {ip: entry for ip, entry in self.windows.items()
+                            if now - entry[0] < CLIENT_LOG_WINDOW_SECONDS}
+            start, count = self.windows.get(address, (now, 0))
+            if count >= CLIENT_LOG_MAX_EVENTS:
+                return False
+            self.windows[address] = (start, count + 1)
+            return True
 
 
 def _default_get_head():
@@ -60,6 +82,10 @@ class _Handler(BaseHTTPRequestHandler):
     led = None
     lock = None
     load_cfg = None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.client_log_limiter = _ClientLogLimiter()
 
     def handle_one_request(self):
         # Reset for each request, including when a connection is reused.
@@ -243,6 +269,8 @@ class _Handler(BaseHTTPRequestHandler):
         
         path = urlsplit(self.path).path
         max_body = 14 * 1024 * 1024 if path == "/api/attach" else MAX_BODY
+        if length < 0:
+            return 400, "bad Content-Length"
         if length > max_body:
             return 413, "body too large"
         return None
@@ -259,6 +287,17 @@ class _Handler(BaseHTTPRequestHandler):
         refused = self._refusal()
         if refused:
             self._json(refused[0], {"ok": False, "error": refused[1]})
+            return
+        if name == "client_log":
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length)
+                if self.client_log_limiter.allow(self.client_address[0]):
+                    actions.ACTIONS[name]({}, self.led, json.loads(raw))
+            except Exception:
+                # Invalid reports and telemetry failures must not affect the UI.
+                pass
+            self._send(204, b"", "application/json")
             return
         length = int(self.headers.get("Content-Length") or 0)
         try:

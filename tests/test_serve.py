@@ -78,6 +78,134 @@ class _Served(unittest.TestCase):
         return self.request(f"/api/{action}", "POST", json.dumps(body or {}).encode(), h)
 
 
+
+class TestClientLog(_Served):
+    payload = {"action": "pause", "error": "network failed", "elapsed_ms": 12.5}
+
+    def events(self):
+        return [json.loads(row[0]) for row in self.led.con.execute(
+            "SELECT detail FROM events WHERE kind='console_client_error'")]
+
+    def test_records_redacted_detail_and_empty_response(self):
+        payload = dict(self.payload, action="TOKEN=secret", error="PASSWORD=hidden")
+        status, _, body = self.post("client_log", payload)
+        self.assertEqual((status, body), (204, ""))
+        self.assertEqual(self.events(), [{
+            "action": "TOKEN=<redacted>", "error": "PASSWORD=<redacted>", "elapsed_ms": 12.5}])
+
+    def test_malformed_reports_are_silently_discarded(self):
+        bodies = [b"not JSON", b"[]", b"null", b"{}", b'"text"', bytes([255]),
+                  b'{"action":1,"error":"x","elapsed_ms":1}',
+                  b'{"action":"x","error":[],"elapsed_ms":1}']
+        bodies += [json.dumps(dict(self.payload, elapsed_ms=value)).encode()
+                   for value in ("1", None, True, float("nan"), float("inf"))]
+        for body in bodies:
+            with self.subTest(body=body):
+                status, _, response = self.request("/api/client_log", "POST", body, {
+                    "Content-Type": "application/json", "X-Mahler-Console": "1"})
+                self.assertEqual((status, response), (204, ""))
+        self.assertEqual(self.events(), [])
+
+    def test_write_failure_returns_204(self):
+        with mock.patch.object(self.led, "event", side_effect=RuntimeError("broken")):
+            self.assertEqual(self.post("client_log", self.payload)[0], 204)
+
+    def test_auth_still_applies(self):
+        for headers, expected in [
+            ({"X-Mahler-Console": ""}, 403),
+            ({"Content-Type": "text/plain"}, 415),
+            ({"Origin": "https://elsewhere.example"}, 403),
+        ]:
+            self.assertEqual(self.post("client_log", self.payload, headers)[0], expected)
+        with mock.patch.object(serve, "write_allowed_from", return_value=False):
+            self.assertEqual(self.post("client_log", self.payload)[0], 403)
+        self.assertEqual(self.events(), [])
+
+    def test_rate_cap_and_window_reset(self):
+        with mock.patch.object(serve.time, "monotonic", return_value=100):
+            for _ in range(serve.CLIENT_LOG_MAX_EVENTS + 2):
+                self.assertEqual(self.post("client_log", self.payload)[0], 204)
+        self.assertEqual(len(self.events()), serve.CLIENT_LOG_MAX_EVENTS)
+        with mock.patch.object(serve.time, "monotonic",
+                               return_value=100 + serve.CLIENT_LOG_WINDOW_SECONDS):
+            self.assertEqual(self.post("client_log", self.payload)[0], 204)
+        self.assertEqual(len(self.events()), serve.CLIENT_LOG_MAX_EVENTS + 1)
+
+    def test_ip_budgets_are_independent(self):
+        limiter = serve._ClientLogLimiter()
+        for _ in range(serve.CLIENT_LOG_MAX_EVENTS):
+            self.assertTrue(limiter.allow("127.0.0.1"))
+        self.assertFalse(limiter.allow("127.0.0.1"))
+        self.assertTrue(limiter.allow("100.64.0.2"))
+
+    def test_does_not_wait_for_action_lock_or_load_config(self):
+        results = queue.Queue()
+        with mock.patch.object(self.httpd.RequestHandlerClass, "load_cfg",
+                               side_effect=AssertionError("must not load config")):
+            with self.httpd.RequestHandlerClass.lock:
+                worker = threading.Thread(
+                    target=lambda: results.put(self.post("client_log", self.payload)))
+                worker.start()
+                try:
+                    status, _, _ = results.get(timeout=1)
+                    self.assertEqual(status, 204)
+                finally:
+                    # Release the lock even if a regression leaves the request waiting.
+                    pass
+            worker.join(timeout=5)
+        self.assertEqual(len(self.events()), 1)
+
+    def test_browser_reports_without_waiting_for_telemetry(self):
+        import shutil
+        import subprocess
+        from pathlib import Path
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for browser logic regression")
+        source = (Path(__file__).parents[1] / "mahler/console/console.js").read_text()
+        post = source[source.index("  function post("):source.index("  function numberValue")]
+        script = r"""
+const assert = require("assert");
+var POST_TIMEOUT_MS = 5, CAPTURE_TIMEOUT_MESSAGE = "capture timeout";
+var window = {console: {warn() {}}};
+var errors = [], reports = [], mode;
+function showErrorToast(message) { errors.push(message); }
+function refresh() { return Promise.resolve(); }
+function fetch(url, options) {
+  if (url === "/api/client_log") {
+    reports.push(JSON.parse(options.body));
+    assert.equal(options.headers["X-Mahler-Console"], "1");
+    assert.equal(options.keepalive, true);
+    if (mode === "network") return Promise.reject(new Error("logging failed"));
+    if (mode === "non-json") throw new Error("sync logging failure");
+    return new Promise(() => {}); // Must not delay retry/toast flow.
+  }
+  if (mode === "timeout") return new Promise((resolve, reject) => {
+    options.signal.addEventListener("abort", () => {
+      var err = new Error("aborted"); err.name = "AbortError"; reject(err);
+    });
+  });
+  if (mode === "network") return Promise.reject(new Error("network failed"));
+  return Promise.resolve({json: () => mode === "non-json" ?
+    Promise.reject(new Error("bad JSON")) : Promise.resolve({ok: false, error: "refused"})});
+}
+""" + post + r"""
+(async () => {
+  for (mode of ["timeout", "network", "refused", "non-json"]) {
+    reports = []; errors = [];
+    await post("pause", {}).catch(() => {});
+    assert.equal(reports.length, 1);
+    assert.equal(reports[0].action, "pause");
+    assert.equal(typeof reports[0].elapsed_ms, "number");
+    assert.ok(reports[0].elapsed_ms >= 0);
+    assert.match(reports[0].error, /timeout|network failed|refused|non-JSON/);
+    assert.equal(errors.length, 1);
+  }
+})().catch(err => { console.error(err); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class TestPages(_Served):
     def test_binds_loopback_only(self):
         self.assertEqual(self.httpd.server_address[0], "127.0.0.1")
