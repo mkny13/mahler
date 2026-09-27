@@ -125,3 +125,51 @@ class StateFilePermissionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TickResourceTests(unittest.TestCase):
+    def test_lock_and_ledger_close_on_every_owned_exit(self):
+        for failure in (None, 'context', 'tick', 'exit_code', 'ledger_close', 'output'):
+            with self.subTest(failure=failure):
+                lock = mock.Mock()
+                led = mock.Mock()
+                error = RuntimeError(failure)
+                with mock.patch.object(scheduler, 'take_lock', return_value=lock), \
+                     mock.patch.object(scheduler, 'Ctx') as ctx, \
+                     mock.patch.object(scheduler, 'tick') as tick, \
+                     mock.patch('mahler.launch_health.tick_exit_code', return_value=3) as code, \
+                     mock.patch.object(scheduler.sys, 'stdout') as stdout:
+                    ctx.return_value.lines = ['tick complete']
+                    targets = {'context': ctx, 'tick': tick, 'exit_code': code,
+                               'ledger_close': led.close, 'output': stdout.write}
+                    if failure:
+                        targets[failure].side_effect = error
+                        with self.assertRaises(RuntimeError) as caught:
+                            scheduler.main_tick({}, led)
+                        self.assertIs(caught.exception, error)
+                    else:
+                        self.assertEqual(scheduler.main_tick({}, led), 3)
+                    led.close.assert_called_once_with()
+                    lock.close.assert_called_once_with()
+
+    def test_busy_tick_does_not_take_ledger_ownership(self):
+        led = mock.Mock()
+        with mock.patch.object(scheduler, 'take_lock', return_value=None), \
+             mock.patch('builtins.print'):
+            self.assertEqual(scheduler.main_tick({}, led), 0)
+        led.close.assert_not_called()
+
+    def test_real_lock_is_released_while_handle_is_still_referenced(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(config, 'STATE', tmp), \
+             mock.patch.object(config, 'LOCK_PATH', os.path.join(tmp, 'tick.lock')):
+            lock = scheduler.take_lock()
+            self.addCleanup(lock.close)
+            with mock.patch.object(scheduler, 'take_lock', return_value=lock), \
+                 mock.patch.object(scheduler, 'tick'), \
+                 mock.patch('mahler.launch_health.tick_exit_code', return_value=0):
+                scheduler.main_tick({}, mock.Mock())
+            self.assertTrue(lock.closed)
+            next_lock = scheduler.take_lock()
+            self.assertIsNotNone(next_lock)
+            next_lock.close()

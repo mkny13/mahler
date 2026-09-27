@@ -256,79 +256,88 @@ class Ledger:
         self.path = path
         self.con = sqlite3.connect(path, isolation_level=None, timeout=10,
                                    check_same_thread=not thread_safe)
-        self.con.row_factory = sqlite3.Row
-        self.con.execute("PRAGMA journal_mode=WAL")
-        self.con.execute("PRAGMA busy_timeout=10000")
-        self.con.executescript(SCHEMA)
-        # columns added after the daemon's DB already existed
-        cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
-        for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"),
-                         ("issue_body", "TEXT"),
-                         ("setup_fails", "INTEGER NOT NULL DEFAULT 0"),
-                         ("parent", "INTEGER"),
-                         ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),
-                         ("esc_fails", "INTEGER NOT NULL DEFAULT 0"),
-                         ("files", "TEXT NOT NULL DEFAULT '[]'"),
-                         ("question", "TEXT"),
-                         ("options", "TEXT NOT NULL DEFAULT '[]'")):
-            if col not in cols:
-                self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
-        run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
-        for col, ddl in (("configured_model", "TEXT"), ("routing_role", "TEXT"), ("explore", "INTEGER NOT NULL DEFAULT 0"),
-                         ("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
-                         ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
-                         ("cost_usd", "REAL"), ("cost_source", "TEXT"),
-                         ("credits", "REAL"), ("quota_used", "TEXT")):
-            if col not in run_cols:
-                self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
-        if "nudged" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
-        if "model" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN model TEXT")
-        if "effort" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN effort TEXT")
-        if "est_mins" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN est_mins REAL")
-        if "actual_mins" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN actual_mins REAL")
-        if "size" not in run_cols:
-            self.con.execute("ALTER TABLE runs ADD COLUMN size TEXT")
-        lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
-        if "capacity" not in lease_cols:
-            self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
-        rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(releases)")}
-        for col, ddl in (("checkpoint_sha", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'published'"),
-                         ("created_at", "TEXT"), ("published_at", "TEXT"),
-                         ("updated_at", "TEXT"), ("notes", "TEXT NOT NULL DEFAULT ''"),
-                         ("remote_url", "TEXT")):
-            if col not in rel_cols:
-                self.con.execute(f"ALTER TABLE releases ADD COLUMN {col} {ddl}")
-        item_rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(release_items)")}
-        for col, ddl in (("pr", "INTEGER"), ("title", "TEXT"), ("summary", "TEXT"),
-                         ("merge_sha", "TEXT"), ("labels", "TEXT NOT NULL DEFAULT '[]'"),
-                         ("shipped_at", "TEXT"), ("release_id", "INTEGER")):
-            if col not in item_rel_cols:
-                self.con.execute(f"ALTER TABLE release_items ADD COLUMN {col} {ddl}")
-        uat_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(uat)")}
-        for col, ddl in (("pr", "INTEGER"), ("sha", "TEXT"), ("title", "TEXT"),
-                         ("needs", "TEXT"), ("shipped_at", "TEXT"),
-                         ("verdict", "TEXT"), ("verdict_at", "TEXT"),
-                         ("bug", "INTEGER"), ("note", "TEXT")):
-            if col not in uat_cols:
-                self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
-        # migrate legacy 'tracking' state to 'parent'
-        self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
-        if path != ":memory:":
-            # 0600 on the database and its WAL/SHM sidecars (issue #75): the
-            # file is created umask-masked, so chmod explicitly — same pattern
-            # as backup.py's dumps. Fixes a file created loose by an older
-            # version too.
-            for side in (path, path + "-wal", path + "-shm"):
-                try:
-                    os.chmod(side, 0o600)
-                except OSError:
-                    pass
-        self.clock = clock
+        try:
+            self.con.row_factory = sqlite3.Row
+            self.con.execute("PRAGMA journal_mode=WAL")
+            self.con.execute("PRAGMA busy_timeout=10000")
+            self.con.executescript(SCHEMA)
+            # columns added after the daemon's DB already existed
+            cols = {r["name"] for r in self.con.execute("PRAGMA table_info(items)")}
+            for col, ddl in (("pr", "INTEGER"), ("summary", "TEXT"),
+                             ("issue_body", "TEXT"),
+                             ("setup_fails", "INTEGER NOT NULL DEFAULT 0"),
+                             ("parent", "INTEGER"),
+                             ("esc_tier", "INTEGER NOT NULL DEFAULT 0"),
+                             ("esc_fails", "INTEGER NOT NULL DEFAULT 0"),
+                             ("files", "TEXT NOT NULL DEFAULT '[]'"),
+                             ("question", "TEXT"),
+                             ("options", "TEXT NOT NULL DEFAULT '[]'")):
+                if col not in cols:
+                    self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
+            run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
+            for col, ddl in (("configured_model", "TEXT"), ("routing_role", "TEXT"), ("explore", "INTEGER NOT NULL DEFAULT 0"),
+                             ("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
+                             ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
+                             ("cost_usd", "REAL"), ("cost_source", "TEXT"),
+                             ("credits", "REAL"), ("quota_used", "TEXT")):
+                if col not in run_cols:
+                    self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
+            if "nudged" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN nudged INTEGER NOT NULL DEFAULT 0")
+            if "model" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN model TEXT")
+            if "effort" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN effort TEXT")
+            if "est_mins" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN est_mins REAL")
+            if "actual_mins" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN actual_mins REAL")
+            if "size" not in run_cols:
+                self.con.execute("ALTER TABLE runs ADD COLUMN size TEXT")
+            lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
+            if "capacity" not in lease_cols:
+                self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
+            rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(releases)")}
+            for col, ddl in (("checkpoint_sha", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'published'"),
+                             ("created_at", "TEXT"), ("published_at", "TEXT"),
+                             ("updated_at", "TEXT"), ("notes", "TEXT NOT NULL DEFAULT ''"),
+                             ("remote_url", "TEXT")):
+                if col not in rel_cols:
+                    self.con.execute(f"ALTER TABLE releases ADD COLUMN {col} {ddl}")
+            item_rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(release_items)")}
+            for col, ddl in (("pr", "INTEGER"), ("title", "TEXT"), ("summary", "TEXT"),
+                             ("merge_sha", "TEXT"), ("labels", "TEXT NOT NULL DEFAULT '[]'"),
+                             ("shipped_at", "TEXT"), ("release_id", "INTEGER")):
+                if col not in item_rel_cols:
+                    self.con.execute(f"ALTER TABLE release_items ADD COLUMN {col} {ddl}")
+            uat_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(uat)")}
+            for col, ddl in (("pr", "INTEGER"), ("sha", "TEXT"), ("title", "TEXT"),
+                             ("needs", "TEXT"), ("shipped_at", "TEXT"),
+                             ("verdict", "TEXT"), ("verdict_at", "TEXT"),
+                             ("bug", "INTEGER"), ("note", "TEXT")):
+                if col not in uat_cols:
+                    self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
+            # migrate legacy 'tracking' state to 'parent'
+            self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
+            if path != ":memory:":
+                # 0600 on the database and its WAL/SHM sidecars (issue #75): the
+                # file is created umask-masked, so chmod explicitly — same pattern
+                # as backup.py's dumps. Fixes a file created loose by an older
+                # version too.
+                for side in (path, path + "-wal", path + "-shm"):
+                    try:
+                        os.chmod(side, 0o600)
+                    except OSError:
+                        pass
+            self.clock = clock
+        except BaseException:
+            # A failed constructor has no caller to close its connection.
+            con, self.con = self.con, None
+            try:
+                con.close()
+            except Exception:
+                pass  # Preserve the original setup error.
+            raise
 
     def now(self):
         return self.clock()

@@ -2994,3 +2994,67 @@ class RecentProblemsRenderingTests(unittest.TestCase):
         snapshot = state.build(make_cfg(), led)
         self.assertEqual(snapshot['recent_problems'], [])
         self.assertIn('No recent problems.', page._d_now(snapshot))
+
+
+class AttachmentResourceTests(unittest.TestCase):
+    def test_descriptor_ownership_and_partial_file_cleanup(self):
+        import base64
+        import errno
+
+        data = b'\x89PNG\r\n\x1a\nimage'
+        body = {'name': 'photo.png', 'type': 'image/png',
+                'data': base64.b64encode(data).decode()}
+        for failure in (None, 'wrap', 'write', 'flush'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp, \
+                 mock.patch.object(config, 'STATE', tmp), \
+                 mock.patch.object(config, 'ATTACHMENTS_DIR', tmp):
+                led = mock.Mock()
+                error = OSError('attachment failed')
+                real_fdopen = os.fdopen
+                handles = []
+
+                def wrap(fd, mode):
+                    if failure == 'wrap':
+                        raise error
+                    handle = real_fdopen(fd, mode)
+                    handles.append(handle)
+                    wrapper = mock.MagicMock(wraps=handle)
+                    wrapper.__enter__.return_value = wrapper
+
+                    def finish(*args):
+                        wrapper.close()
+                        if failure == 'flush':
+                            raise error
+                    wrapper.__exit__.side_effect = finish
+                    if failure == 'write':
+                        def partial_write(data):
+                            handle.write(data[:8])
+                            raise error
+                        wrapper.write.side_effect = partial_write
+                    handles.append(wrapper)
+                    return wrapper
+
+                with mock.patch('os.open', wraps=os.open) as opened, \
+                     mock.patch('os.close', wraps=os.close) as closed, \
+                     mock.patch('os.fdopen', side_effect=wrap) as wrapped:
+                    if failure:
+                        with self.assertRaises(actions.ActionError) as caught:
+                            actions.attach({}, led, body)
+                        self.assertIs(caught.exception.__cause__, error)
+                        self.assertEqual(os.listdir(tmp), [])
+                        led.event.assert_not_called()
+                    else:
+                        result = actions.attach({}, led, body)
+                        self.assertEqual(Path(tmp, result['id']).read_bytes(), data)
+                        led.event.assert_called_once()
+                    opened.assert_called_once()
+                    fd = wrapped.call_args.args[0]
+                    with self.assertRaises(OSError) as caught:
+                        os.fstat(fd)
+                    self.assertEqual(caught.exception.errno, errno.EBADF)
+                    if failure == 'wrap':
+                        closed.assert_called_once_with(fd)
+                    else:
+                        closed.assert_not_called()
+                        self.assertTrue(handles[0].closed)
+                        handles[1].close.assert_called_once_with()

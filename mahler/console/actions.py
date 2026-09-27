@@ -397,11 +397,19 @@ def attach(cfg, led, body):
     
     fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "wb") as f:
+        f = os.fdopen(fd, "wb")
+        fd = None  # The file object now owns the descriptor.
+        with f:
             f.write(data)
-    except Exception:
-        os.remove(file_path)
-        raise ActionError("failed to write attachment")
+    except BaseException as exc:
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
+            os.remove(file_path)
+        if isinstance(exc, Exception):
+            raise ActionError("failed to write attachment") from exc
+        raise
         
     led.event("attachment_saved", detail={"id": filename, "name": name})
     return {"id": filename, "name": name}

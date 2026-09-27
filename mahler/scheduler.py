@@ -158,16 +158,19 @@ def main_tick(cfg, led, dry_run=False, hot_hold=True):
     if lock is None:
         print("mahler: another tick is running; exiting")
         return 0
-    ctx = Ctx(cfg, led, dry_run=dry_run, hot_hold=hot_hold)
     try:
-        tick(ctx)
-        # Inspect the breaker before closing the ledger. CLI returns this code
-        # to the stable launcher even when all tick passes survived.
-        from .launch_health import tick_exit_code
-        rc = tick_exit_code(led)
+        try:
+            ctx = Ctx(cfg, led, dry_run=dry_run, hot_hold=hot_hold)
+            tick(ctx)
+            # Inspect the breaker before closing the ledger. CLI returns this code
+            # to the stable launcher even when all tick passes survived.
+            from .launch_health import tick_exit_code
+            rc = tick_exit_code(led)
+        finally:
+            led.close()
+        for line in ctx.lines:
+            print(line)
+        sys.stdout.flush()
+        return rc
     finally:
-        led.close()
-    for line in ctx.lines:
-        print(line)
-    sys.stdout.flush()
-    return rc
+        lock.close()
