@@ -17,6 +17,24 @@ def capture_title(text, limit=80):
     return cut[:sp] if sp > 0 else cut
 
 
+def uat_bug_title(item_id, title):
+    """Return the shared title shape for a UAT-failure bug."""
+    return f"UAT fail: {title} ({item_id})"
+
+
+def uat_bug_body(item_id, title, area, source, note):
+    """Return the shared body shape for a UAT-failure bug."""
+    lines = [f"**UAT item:** `{item_id}` — {title}",
+             f"**Area:** {area or 'none'}",
+             f"**Source:** {source or 'none'}"]
+    if note:
+        lines += ["", note]
+    lines += ["", "---",
+              "Filed automatically from the in-app UAT check. "
+              "Passing this item again does not close this issue."]
+    return "\n".join(lines)
+
+
 def format_attachment(cfg, payload):
     filename = payload.get("attachment")
     if not filename:
@@ -118,19 +136,22 @@ def uat_fail(ctx, row, payload):
     if pol.get("scope") == "label":
         labels.append(pol["scope_label"])
     note = payload.get("note") or ""
-    lines = []
-    if note:
-        lines += ["> " + line for line in note.splitlines()] + [""]
-    lines += [f"Found checking #{number} — PR #{r['pr'] or '?'}, "
-              f"build {r['sha'] or 'unknown'}."]
-    
+    item_id = f"{project}#{number}"
+    title = r["title"] or item_id
+    source = (f"https://github.com/{pol['repo']}/pull/{r['pr']}"
+              if r["pr"] else ctx.url(project, number))
+    area = "none"
+    item = ctx.led.item(project, number)
+    if item and item["labels"]:
+        for label in json.loads(item["labels"]):
+            if isinstance(label, str) and label.startswith("area:"):
+                area = label.split(":", 1)[1]
+                break
+    body = uat_bug_body(item_id, title, area, source, note)
     att = format_attachment(ctx.cfg, payload)
     if att:
-        lines += [att]
-        
-    lines += ["", "## Needs a human to check", r["needs"] or ""]
-    url = ctx.gh(project).create_issue(f"UAT failed: {r['title'] or f'{project}#{number}'}",
-                                       "\n".join(lines), labels)
+        body = body.replace("\n\n---", f"{att}\n\n---", 1)
+    url = ctx.gh(project).create_issue(uat_bug_title(item_id, title), body, labels)
     try:
         bug = int(url.rstrip("/").rsplit("/", 1)[-1])
     except ValueError:
