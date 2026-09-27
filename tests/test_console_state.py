@@ -1,3 +1,4 @@
+import console_snapshot
 """Models state from synthetic run history."""
 import unittest
 from datetime import datetime, timezone
@@ -59,7 +60,7 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(row['details'][20], '…and 101 earlier runs')
         self.assertIn('121 of 121 done first try', row['text'])
         self.assertEqual(len(table(self.led, cfg)[0]['attempts']), 121)
-        fragment = page.app(state.build(cfg, self.led))
+        fragment = console_snapshot.app(state.build(cfg, self.led))
         self.assertEqual(fragment.count('<p>Run '), 40)  # 20 per layout
         self.assertEqual(fragment.count('…and 101 earlier runs'), 2)
         self.assertLess(len(fragment.encode()), 300_000)
@@ -74,7 +75,7 @@ class ModelsTests(unittest.TestCase):
         script += r'''
 const assert = require('assert');
 let swaps = 0, applies = 0, revisions = 0, html = 'first';
-let app = {querySelectorAll: () => [], set innerHTML(v) { swaps++; }};
+let app = {querySelector: () => null, querySelectorAll: () => [], set innerHTML(v) { swaps++; }};
 let document = {hidden: false, activeElement: null, getElementById: () => null};
 let settingsDirty = false, errorToastTimer = null, suppressKeep = [];
 let window = {console};
@@ -86,13 +87,13 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
   await refresh();
   await refresh();
   await refresh(true);
-  assert.deepStrictEqual([swaps, applies, revisions], [1, 1, 1]);
+  assert.deepStrictEqual([swaps, applies, revisions], [1, 2, 1]);
   html = 'changed';
   await refresh();
-  assert.deepStrictEqual([swaps, applies, revisions], [2, 2, 2]);
+  assert.deepStrictEqual([swaps, applies, revisions], [2, 3, 2]);
   suppressKeep = ['submitted'];
   await refresh(true);
-  assert.deepStrictEqual([swaps, applies, revisions], [3, 3, 3]);
+  assert.deepStrictEqual([swaps, applies, revisions], [3, 4, 3]);
 })().catch(err => { console.error(err); process.exit(1); });
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)

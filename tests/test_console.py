@@ -1,3 +1,4 @@
+import console_snapshot
 """The operator console (DESIGN D27): its state, its copy, its page, its writes."""
 
 import copy
@@ -127,7 +128,7 @@ class SettingsPageTests(unittest.TestCase):
         self.addCleanup(self.led.close)
 
     def test_desktop_and_phone_render_complete_settings_forms(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
 
         self.assertIn('<button class="rail-i" data-go="settings">', doc)
         self.assertIn('class="btn settings-head-link" data-go="settings"', doc)
@@ -150,7 +151,7 @@ class SettingsPageTests(unittest.TestCase):
             "env": {"ANTHROPIC_AUTH_TOKEN": "do-not-render-this"},
             "routing": {"sort": ["claude"], "plan": [], "build": ["agy-claude"]},
         }})
-        doc = page.document(state.build(cfg, self.led))
+        doc = console_snapshot.document(state.build(cfg, self.led))
 
         self.assertNotIn("do-not-render-this", doc)
         self.assertIn("Account · work", doc)
@@ -158,7 +159,7 @@ class SettingsPageTests(unittest.TestCase):
 
     def test_browser_serializes_and_preserves_unsaved_settings(self):
         self.assertIn('post("settings", settingsPayload(form))', page.JS)
-        self.assertIn('if (settingsDirty)', page.JS)
+        self.assertIn('if (settingsDirty && !force', page.JS)
         self.assertIn('data-route-platform', page.JS)
         self.assertIn(':root[data-view="settings"] .view-settings', page.CSS)
         self.assertIn(':root[data-tab="settings"] .tabv-settings', page.CSS)
@@ -435,7 +436,7 @@ class CapacityPageTests(unittest.TestCase):
         self.s = state.build(self.cfg, self.led)
 
     def html(self):
-        return page.app(self.s)
+        return console_snapshot.app(self.s)
 
     def test_active_slots_and_shared_pool_clear_when_runs_finish(self):
         self.addCleanup(self.led.close)
@@ -546,7 +547,7 @@ class BrowseQuotaPageTests(unittest.TestCase):
         self.s = state.build(self.cfg, self.led)
 
     def html(self):
-        return page.app(self.s)
+        return console_snapshot.app(self.s)
 
     def test_browse_quota_rows_with_windows_have_a_chevron_toggle_button(self):
         html = self.html()
@@ -657,7 +658,7 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(rows["mahler"], {"closed": 1, "prev_closed": 1, "delta": 0})
 
     def test_page_has_desktop_and_mobile_stats_with_range_controls(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
 
         self.assertIn('<button class="rail-i" data-go="stats">', doc)
         self.assertIn('<section class="view view-stats">', doc)
@@ -1055,12 +1056,12 @@ class PeakOverrideTests(unittest.TestCase):
     @local_timezone("America/Los_Angeles")
     def test_page_renders_peak_banner_only_when_active(self):
         cfg = make_cfg()
-        off_peak_doc = page.document(state.build(cfg, make_led(SAT_NOON)))
+        off_peak_doc = console_snapshot.document(state.build(cfg, make_led(SAT_NOON)))
         self.assertNotIn('class="peakline"', off_peak_doc)
         self.assertNotIn('class="peakrow"', off_peak_doc)
         self.assertNotIn("Claude peak hours 05:00", off_peak_doc)
 
-        peak_doc = page.document(state.build(cfg, make_led(MON_PEAK)))
+        peak_doc = console_snapshot.document(state.build(cfg, make_led(MON_PEAK)))
         self.assertIn('class="peakline"', peak_doc)
         self.assertIn('class="peakrow"', peak_doc)
         self.assertIn("Claude peak hours 05:00", peak_doc)
@@ -1171,8 +1172,8 @@ class PageTests(unittest.TestCase):
                              state="ready", options=json.dumps(["First choice", "Second choice"]))
         self.led.set_state("mahler", 9, "needs_you", "Pick <b>one</b>?")
 
-    def test_document_has_both_layouts_and_lands_on_needs(self):
-        doc = page.document(state.build(self.cfg, self.led))
+    def test_snapshot_covers_both_layouts_and_lands_on_needs(self):
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('<div class="dk">', doc)
         self.assertIn('<div class="ph">', doc)
         self.assertIn('data-view="needs" data-tab="triage"', doc)
@@ -1181,7 +1182,7 @@ class PageTests(unittest.TestCase):
         self.assertIn('href="https://github.com/mkny13/mahler/issues/9"', doc)
 
     def test_needs_details_and_choices_render_safely_in_both_layouts(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertEqual(doc.count('data-need-details="mahler#9"'), 2)
         self.assertGreaterEqual(doc.count("A &lt;script&gt;alert(1)&lt;/script&gt; title"), 2)
         self.assertEqual(doc.count("Body &lt;img src=x onerror=alert(2)&gt;"), 2)
@@ -1190,7 +1191,7 @@ class PageTests(unittest.TestCase):
         self.assertIn('store("session", "mahler.needDetails"', doc)
 
     def test_fragment_is_just_the_app(self):
-        frag = page.app(state.build(self.cfg, self.led))
+        frag = console_snapshot.app(state.build(self.cfg, self.led))
         self.assertNotIn("<html", frag)
         self.assertIn('id="counts"', frag)
 
@@ -1214,7 +1215,7 @@ class PageTests(unittest.TestCase):
         self.led.queue_action("cut_release", project="mahler",
                               payload={"version": "1.1.0", "checkpoint_sha": "sha_head"})
 
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn("v1.0.0", doc)
 
 
@@ -1285,10 +1286,10 @@ class UatPageTests(unittest.TestCase):
                          '- the new ping arrives')
 
     def frag(self):
-        return page.app(state.build(self.cfg, self.led))
+        return console_snapshot.app(state.build(self.cfg, self.led))
 
     def doc(self):
-        return page.document(state.build(self.cfg, self.led))
+        return console_snapshot.document(state.build(self.cfg, self.led))
 
     def test_renders_the_row_with_pass_and_fail(self):
         frag = self.frag()
@@ -1320,7 +1321,7 @@ class UatPageTests(unittest.TestCase):
         self.led2.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter', '- x')
         actions.run(self.cfg, self.led2, 'uat_fail',
                     {'project': 'mahler', 'number': 9, 'note': 'nope'})
-        self.assertIn("Failed — p1 bug filed and routed.", page.app(state.build(self.cfg, self.led2)))
+        self.assertIn("Failed — p1 bug filed and routed.", console_snapshot.app(state.build(self.cfg, self.led2)))
 
     def test_phone_has_a_ready_to_test_section(self):
         frag = self.frag()
@@ -1374,7 +1375,7 @@ class UatPageTests(unittest.TestCase):
         led.upsert_item('mahler', 11, title='Ready item', state='ready')
         led.upsert_item('groundwork', 5, title='Backlog item', state='inbox')
         s = state.build(cfg, led)
-        html = page.app(s)
+        html = console_snapshot.app(s)
 
         # Content-bearing inline span classes that must not sit directly adjacent
         # without a text separator. Chrome/structural classes are excluded.
@@ -1520,7 +1521,7 @@ class ConsoleHashTests(unittest.TestCase):
         cfg, led = make_cfg(), make_led()
         for n in needs:
             led.upsert_item(n[0], n[1], title=n[2], state="needs_you")
-        return page.document(state.build(cfg, led))
+        return console_snapshot.document(state.build(cfg, led))
 
     def test_needs_items_carry_a_data_need_anchor(self):
         doc = self.page([("mahler", 9, "Which key?"), ("groundwork", 81, "Date format")])
@@ -1850,7 +1851,7 @@ class AnswerTests(unittest.TestCase):
         failed = next(n for n in s['needs'] if n['number'] == 10)
         self.assertEqual(failed['options'], [{'label': 'Retry', 'text': '/mahler go'},
                                             {'label': 'Park it', 'text': '/mahler park'}])
-        doc = page.document(s)
+        doc = console_snapshot.document(s)
         self.assertEqual(doc.count('You said: &lt;yes&gt;'), 2)
         self.assertIn('data-act="answer_undo"', doc)
         self.assertIn('data-keep="need:mahler#10"', doc)
@@ -2273,7 +2274,7 @@ class CapturePageTests(unittest.TestCase):
         self.addCleanup(self.led.close)
 
     def test_composer_has_the_dropdown_and_starts_with_save_disabled(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('placeholder="Type or dictate."', doc)
         self.assertIn('<option value="" disabled>Project</option>', doc)
         self.assertIn('<option value="mahler">mahler</option>', doc)
@@ -2283,16 +2284,16 @@ class CapturePageTests(unittest.TestCase):
 
     def test_confirmation_note_after_saving(self):
         actions.run(self.cfg, self.led, 'capture', {'text': 'hi', 'project': 'mahler'})
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('Saved to mkny13/mahler as a new issue', doc)
         self.assertIn('It settles 10 minutes before anything picks it up.', doc)
 
     def test_no_note_without_a_recent_capture(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertNotIn('class="capnote t-good"', doc)
 
     def test_successful_capture_clears_text_and_attachment_on_refresh(self):
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('data-keep="capture_att_id"', doc)
         self.assertIn('data-keep="capture_att_name"', doc)
         self.assertIn('class="cap-client-id" data-keep="capture_client_id"', doc)
@@ -2377,7 +2378,7 @@ if __name__ == "__main__":
         self.led.upsert_item("mahler", 2, title="b", state="inbox", priority=2)
         self.led.queue_action("capture", project="mahler", payload={"text": "pending cap"})
         s = state.build(self.cfg, self.led)
-        html = page.document(s)
+        html = console_snapshot.document(s)
         self.assertIn('<span class="ref mono t-mut"></span>', html)
         self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/1" target="_blank">mahler#1</a> <span class="pr-link"><a href="https://github.com/mkny13/mahler/pull/42" target="_blank">PR #42</a></span></span>', html)
         self.assertIn('<span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/2" target="_blank">mahler#2</a></span>', html)
@@ -2590,14 +2591,14 @@ class ConsoleReleasesStateTests(unittest.TestCase):
             self.assertIn(f"Draft change {number}", overlay)
         self.assertIn(",".join(str(n) for n in range(200, 260)), overlay)
         snapshot = state.build(self.cfg, self.led)
-        before = page.app(snapshot)
+        before = console_snapshot.app(snapshot)
         self.assertEqual(before.count("Published release history (10 of 60)"), 2)
         self.assertEqual(before.count("…and 40 earlier items"), 2)
         self.assertIn('/api/releases/mahler.json?limit=60', before)
         self.assertIn("50 earlier releases — full notes in the JSON feed ↗", before)
         self.assertEqual(len(releases.build_feed(self.led, "mahler", limit=60)["releases"]), 60)
         seed(60, 120)
-        after = page.app(state.build(self.cfg, self.led))
+        after = console_snapshot.app(state.build(self.cfg, self.led))
         self.assertLess(len(after.encode()), len(before.encode()) * 1.2)
 
     def test_two_part_baseline_proposes_next_build_version(self):
@@ -2760,7 +2761,7 @@ class ConsoleReleasesPageTests(unittest.TestCase):
 
     def test_desktop_and_phone_render_releases(self):
         s = state.build(self.cfg, self.led)
-        doc = page.document(s)
+        doc = console_snapshot.document(s)
         # Desktop view
         self.assertIn('data-view="releases"', doc)
         self.assertIn('view-releases', doc)
@@ -2779,7 +2780,7 @@ class ConsoleReleasesPageTests(unittest.TestCase):
 
     def test_cut_release_modal_displays_next_two_part_build_version(self):
         self.led.create_release("mahler", "0.83", checkpoint_sha="sha_old", item_numbers=[])
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('Cut release · mahler', doc)
         self.assertIn('value="0.84"', doc)
         self.assertIn('Proposed v0.84', doc)
@@ -2794,11 +2795,11 @@ class ConsoleRevisionTests(unittest.TestCase):
         s = state.build(make_cfg(), led)
         revision = page.asset_revision()
         marker = f'data-console-revision="{revision}"'
-        self.assertIn(marker, page.document(s))
-        self.assertIn(marker, page.app(s))
+        self.assertIn(marker, console_snapshot.document(s))
+        self.assertIn(marker, console_snapshot.app(s))
         with mock.patch.object(page, "JS", page.JS + "\n// deployed change"):
             self.assertNotEqual(revision, page.asset_revision())
-            self.assertNotIn(marker, page.app(s))
+            self.assertNotIn(marker, console_snapshot.app(s))
 
     def test_browser_revision_notice_payload_and_acknowledgement(self):
         import shutil
@@ -2872,7 +2873,7 @@ class RecentProblemsRenderingTests(unittest.TestCase):
         self.assertIn('&lt;script&gt;', desktop)
         self.assertNotIn('<script>bad()', desktop)
         self.assertIn('/issues/508', desktop)
-        self.assertNotIn('Recent problems', page._phone(snapshot))
+        self.assertNotIn('Recent problems', page._phone(snapshot, "now"))
         self.assertNotIn('recent-problems', page._d_side(snapshot))
         self.assertNotIn('recent-problems', page._banners(snapshot))
 

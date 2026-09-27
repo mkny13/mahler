@@ -23,6 +23,27 @@
   var errorToastTimer = null;   // timer for auto-dismissing error toast
   var settingsDirty = false;    // never poll-refresh an unsaved settings form
 
+  var layoutMedia = window.matchMedia("(max-width: 759px)");
+  var layout = layoutMedia.matches ? "phone" : "desktop";
+  function rememberSelection() {
+    ["layout", "view", "tab"].forEach(function (key) {
+      var value = key === "layout" ? layout : root.getAttribute("data-" + key);
+      document.cookie = "mahler_" + key + "=" + encodeURIComponent(value) + "; Path=/; SameSite=Strict";
+    });
+  }
+  function selectionUrl() {
+    rememberSelection();
+    return "&layout=" + layout + "&view=" + encodeURIComponent(root.getAttribute("data-view")) +
+      "&tab=" + encodeURIComponent(root.getAttribute("data-tab")) +
+      "&run=" + encodeURIComponent(openRun || "") + "&revert=" + encodeURIComponent(openRevert || "") +
+      "&bug=" + encodeURIComponent(openBug || "") + "&release=" + encodeURIComponent(openRelease || "") +
+      "&capture=" + (openCapture ? "1" : "");
+  }
+  layoutMedia.addEventListener("change", function () {
+    layout = layoutMedia.matches ? "phone" : "desktop";
+    refresh(true);
+  });
+
   var mermaidPromise = null;
   var graphCache = Object.create(null);
   var graphQueue = Promise.resolve();
@@ -277,11 +298,13 @@
     root.setAttribute("data-view", view);
     store("session", "mahler.view", view);
     if (view === "history") { markSeen(); }
+    return refresh(true);
   }
   function setTab(tab) {
     root.setAttribute("data-tab", tab);
     store("session", "mahler.tab", tab);
     window.scrollTo(0, 0);
+    return refresh(true);
   }
 
   function statsRange() {
@@ -302,9 +325,9 @@
     if (value.indexOf("custom:") === 0) {
       var bits = value.split(":");
       return "/fragment?range=custom&start=" + encodeURIComponent(bits[1] || "") +
-             "&end=" + encodeURIComponent(bits[2] || "");
+             "&end=" + encodeURIComponent(bits[2] || "") + selectionUrl();
     }
-    return "/fragment?range=" + encodeURIComponent(value);
+    return "/fragment?range=" + encodeURIComponent(value) + selectionUrl();
   }
   function setRange(value) {
     root.setAttribute("data-stats-range", value);
@@ -313,9 +336,18 @@
   }
 
   var lastFragment = null;
+  var fragmentBytes = 0;
+  var refreshSequence = 0;
+  var drafts = {};
+  var settingsDraft = null;
+  function saveSettingsDraft() {
+    var form = app.querySelector("[data-settings-form]");
+    if (settingsDirty && form) { settingsDraft = form; }
+  }
+
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
-    if (settingsDirty) { return Promise.resolve(); }
+    if (settingsDirty && !force && app.querySelector("[data-settings-form]")) { return Promise.resolve(); }
     var active = document.activeElement;
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
@@ -326,25 +358,37 @@
     if (toast) { toast.remove(); }
     var skip = suppressKeep;
     suppressKeep = [];
-    return fetch(statsUrl(), { cache: "no-store" }).then(function (r) {
+    var sequence = ++refreshSequence;
+    var url = statsUrl();
+    return fetch(url, { cache: "no-store" }).then(function (r) {
       if (!r.ok) { throw new Error("refresh " + r.status); }
       return r.text();
     }).then(function (html) {
+      if (sequence !== refreshSequence || url !== statsUrl()) { return; }
+      fragmentBytes = new TextEncoder().encode(html).length;
       // Submitted drafts still need clearing even when server state is unchanged.
-      if (html === lastFragment && !skip.length) { return; }
-      var keep = {};
+      if (html === lastFragment && !skip.length) {
+        // Reopening an unchanged overlay still needs its visibility restored.
+        if (force) { apply(); }
+        return;
+      }
+      var keep = drafts;
+      skip.forEach(function (key) { delete keep[key]; });
       var inputs = app.querySelectorAll("[data-keep]");
       for (var i = 0; i < inputs.length; i++) {
         var k = inputs[i].getAttribute("data-keep");
-        if (inputs[i].value && skip.indexOf(k) === -1) { keep[k] = inputs[i].value; }
+        if (skip.indexOf(k) === -1) { keep[k] = inputs[i].value; }
       }
-      // Both layouts carry the same key; the active draft wins over its hidden twin.
+      // The focused composer wins when the section and overlay share a draft key.
       var focused = document.activeElement;
       if (focused && focused.hasAttribute("data-keep") &&
           skip.indexOf(focused.getAttribute("data-keep")) === -1) {
         keep[focused.getAttribute("data-keep")] = focused.value;
       }
+      saveSettingsDraft();
       app.innerHTML = html;
+      var form = app.querySelector("[data-settings-form]");
+      if (form && settingsDirty && settingsDraft) { form.replaceWith(settingsDraft); }
       lastFragment = html;
       var again = app.querySelectorAll("[data-keep]");
       for (var j = 0; j < again.length; j++) {
@@ -478,6 +522,7 @@
       } else if (action === "settings") {
         serverConfirmed = true;
         settingsDirty = false;
+        settingsDraft = null;
         showSavedToast("Settings will apply on the next scheduler tick.");
       } else if (action === "answer" && res.resuming) {
         serverConfirmed = true;
@@ -691,13 +736,16 @@
     var m = /^#needs\/([^/]+)\/(\d+)$/.exec(location.hash || "");
     if (!m) { return; }
     var ref = m[1] + "#" + m[2];
-    setView("needs");
+    root.setAttribute("data-view", "needs");
+    store("session", "mahler.view", "needs");
     root.setAttribute("data-tab", "triage");
     store("session", "mahler.tab", "triage");
-    apply();
+    refresh(true).then(function () {
     var el = app.querySelector('[data-need="' + ref.replace(/"/g, "") + '"]');
     if (el) { el.scrollIntoView({ behavior: "auto", block: "nearest" }); }
     history.replaceState(null, "", location.pathname + location.search);
+    });
+    return true;
   }
 
   document.addEventListener("click", function (ev) {
@@ -721,12 +769,12 @@
         var g = openGroups(); g[group] = true;
         store("local", "mahler.open", JSON.stringify(g));
       }
-      setView(el.getAttribute("data-go"));
-      apply();
+      setView(el.getAttribute("data-go")).then(function () {
       if (group) {
         var target = app.querySelector('.dk [data-group="' + group.replace(/"/g, "") + '"]');
         if (target) { target.scrollIntoView(); }
       }
+      });
       return;
     }
     if (el.hasAttribute("data-tab-go")) { setTab(el.getAttribute("data-tab-go")); return; }
@@ -792,32 +840,36 @@
       return;
     }
     if (el.hasAttribute("data-open-revert")) {
-      openRevert = el.getAttribute("data-open-revert"); apply();
+      openRevert = el.getAttribute("data-open-revert"); refresh(true).then(function () {
       var keep = app.querySelector('.revertov.show [data-close-revert]');
       if (keep) { keep.focus(); }
+      });
       return;
     }
     if (el.hasAttribute("data-close-revert")) { openRevert = null; apply(); return; }
     if (el.hasAttribute("data-open-bug")) {
-      openBug = el.getAttribute("data-open-bug"); apply();
+      openBug = el.getAttribute("data-open-bug"); refresh(true).then(function () {
       var sheet = app.querySelector('.bugov.show textarea');
       if (sheet) { sheet.focus(); }
+      });
       return;
     }
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
-    if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); apply(); return; }
+    if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); refresh(true); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
     if (el.hasAttribute("data-open-capture")) {
-      openCapture = true; apply();
+      openCapture = true; refresh(true).then(function () {
       var ta = app.querySelector('.captureov.show textarea');
       if (ta) { ta.focus(); }
+      });
       return;
     }
     if (el.hasAttribute("data-close-capture")) { openCapture = false; apply(); return; }
     if (el.hasAttribute("data-open-release")) {
-      openRelease = el.getAttribute("data-open-release"); apply();
+      openRelease = el.getAttribute("data-open-release"); refresh(true).then(function () {
       var verInp = app.querySelector('.releaseov.show .ver-input');
       if (verInp) { verInp.focus(); }
+      });
       return;
     }
     if (el.hasAttribute("data-close-release")) { openRelease = null; apply(); return; }
@@ -964,8 +1016,7 @@
     }
   });
 
-  // Native details are duplicated across the phone and desktop layouts. Keep
-  // both copies in sync, and restore the expanded item after a fragment swap.
+  // Remember expanded details across navigation and fragment swaps.
   document.addEventListener("toggle", function (ev) {
     var detail = ev.target;
     if (!detail || !detail.hasAttribute || !detail.hasAttribute("data-need-details")) { return; }
@@ -1003,13 +1054,34 @@
   });
   document.addEventListener("visibilitychange", function () { if (!document.hidden) { refresh(); } });
 
+  try {
+    var longTasks = new PerformanceObserver(function (list) {
+      list.getEntries().forEach(function (entry) {
+        if (entry.duration < 1000) { return; }
+        try {
+          fetch("/api/client_log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
+            body: JSON.stringify({
+              kind: "longtask", duration_ms: entry.duration, layout: layout,
+              view: root.getAttribute(layout === "phone" ? "data-tab" : "data-view"),
+              elements: app.querySelectorAll("*").length, fragment_bytes: fragmentBytes,
+              heap_bytes: performance.memory ? performance.memory.usedJSHeapSize : null,
+              minutes_since_load: performance.now() / 60000
+            }), keepalive: true
+          }).catch(function () {});
+        } catch (ignore) {}
+      });
+    });
+    longTasks.observe({type: "longtask", buffered: true});
+  } catch (ignore) {}
+
   // a stored view or tab this page no longer has falls back to the landing one
-  if (!app.querySelector(".view-" + root.getAttribute("data-view"))) { root.setAttribute("data-view", "now"); }
-  if (!app.querySelector(".tabv-" + root.getAttribute("data-tab"))) { root.setAttribute("data-tab", "now"); }
+  if (!["now", "needs", "test", "capture", "backlog", "releases", "capacity", "stats", "models", "history", "settings"].includes(root.getAttribute("data-view"))) { root.setAttribute("data-view", "now"); }
+  if (!["now", "triage", "releases", "browse", "stats", "models", "settings"].includes(root.getAttribute("data-tab"))) { root.setAttribute("data-tab", "now"); }
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
-  applyHash();
-  if (load("local", "mahler.stats.range")) { refresh(true); }
+  if (!applyHash()) { refresh(true); }
   setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();

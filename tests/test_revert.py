@@ -1,3 +1,4 @@
+import console_snapshot
 """Real squash reverts in isolated repositories, without GitHub or network."""
 
 from pathlib import Path
@@ -124,7 +125,7 @@ class RevertTests(unittest.TestCase):
             with self.assertRaises(actions.ActionError):
                 actions.run(self.cfg, self.led, 'revert', {'event': event})
         snapshot = state.build(self.cfg, self.led)
-        doc = page.document(snapshot)
+        doc = console_snapshot.document(snapshot)
         self.assertIn('data-open-revert=', doc)
         self.assertIn('Revert mahler#1 squash-merged #2?', doc)
         self.assertIn('The branch is kept for 14 days.', doc)
@@ -132,7 +133,7 @@ class RevertTests(unittest.TestCase):
         self.queue()
         with self.assertRaises(actions.ActionError):
             self.queue()
-        doc = page.document(state.build(self.cfg, self.led))
+        doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('revert queued', doc)
         self.assertNotIn('data-open-revert=', doc)
 

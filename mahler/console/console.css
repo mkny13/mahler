@@ -670,3 +670,7 @@ a { color: var(--acc); text-decoration: none; }
 .uat-session header .btn { margin-left: auto; min-height: 44px; white-space: normal; }
 .uat-session .puat { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
 .puat .body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* Only the rendered section exists; navigation highlights may already point
+   at the next request while this section remains on screen. */
+.dbody > section.view, .pbody > section.tabv { display: flex; }
