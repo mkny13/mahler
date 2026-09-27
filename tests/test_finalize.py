@@ -388,6 +388,45 @@ class RunTests(unittest.TestCase):
         run = self.led.q("SELECT stop_reason FROM runs WHERE id=?", (self.run_id,))[0]
         self.assertEqual(run["stop_reason"], "quota")
 
+    def test_no_credit_backs_off_without_spending_item_attempt(self):
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error", "message":
+                                 "Insufficient balance. Your Cline Credits balance is $-0.07"}) + "\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"]), ("ready", 0))
+        self.assertEqual(self.led.run(self.run_id)["stop_reason"], "no_credit")
+        hold = self.led.usage("cline-free")[router.HOLD]
+        until = datetime.fromisoformat(hold["resets_at"].replace("Z", "+00:00"))
+        self.assertEqual(until, NOW + timedelta(hours=1))
+        self.assertEqual(ping.call_count, 0)
+
+    def test_credit_alert_fires_once_after_a_day_and_recovery_pings_once(self):
+        self.led.set_kv("credit_state:cline-free", json.dumps({
+            "since": iso(NOW - timedelta(hours=24)), "failures": 4,
+            "balance": "$-0.07", "alerted": False}))
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error", "message": "credits balance is $-0.07"}) + "\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        self.assertEqual(ping.call_count, 1)
+        self.assertIn("still retrying every 24h", ping.call_args.args[1])
+        self.assertEqual(len(self.led.q("SELECT kind FROM events WHERE kind='credit_exhausted'")), 1)
+        # A successful startup clears the hold and emits exactly one recovery ping.
+        self.run_id = self.led.create_run(project="x", number=5, role="build",
+                                          platform="cline-free", epoch=2, status="running")
+        self.run.update(id=self.run_id, epoch=2)
+        self.led.claim("x", 5, f"run:{self.run_id}", "auto", 60,
+                       platform="cline-free", run_id=self.run_id)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE recovered\n")
+        with mock.patch.object(self.ctx, "ping") as recovered:
+            self.finalize()
+        self.assertEqual(self.led.get_kv("credit_state:cline-free"), "{}")
+        self.assertEqual(recovered.call_count, 2)  # recovery + normal DONE handoff
+        self.assertTrue(any("credits recovered" in call.args[0] for call in recovered.call_args_list))
+
     def write_exit(self, code, when=NOW):
         with open(self.run["status_path"], "w") as fh:
             fh.write(str(code))

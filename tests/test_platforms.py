@@ -38,6 +38,46 @@ class NetworkErrorDetectionTests(unittest.TestCase):
                 self.assertFalse(platforms.is_network_error(p))
 
 
+class CreditExhaustionTests(unittest.TestCase):
+    def test_credit_phrases_are_distinct_from_rate_limits(self):
+        for text in ("Insufficient balance. Your Cline Credits balance is $-0.07",
+                     "Add credits to continue, or switch to a free model",
+                     "credits balance is $-0.01"):
+            with self.subTest(text=text):
+                self.assertTrue(platforms.is_credit_exhausted(text))
+        self.assertFalse(platforms.is_credit_exhausted("429 rate limit exceeded"))
+
+    def test_logs_classify_cline_and_kilo_credit_failures(self):
+        cases = (
+            ("cline", {"type": "error", "message": "Insufficient balance. Your Cline Credits balance is $-0.07"}),
+            ("kilo", {"type": "error", "error": {"data": {"statusCode": 402,
+                    "message": "Add credits to continue"}}}),
+        )
+        for kind, event in cases:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "agent.log")
+                with open(path, "w") as fh:
+                    fh.write(json.dumps(event) + "\n")
+                result = platforms.read_log(path, kind)
+                self.assertTrue(result["credit_exhausted"])
+                self.assertTrue(result["quota_hit"])
+
+    def test_rate_limit_stays_quota(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "agent.log")
+            with open(path, "w") as fh:
+                fh.write(json.dumps({"type": "error", "message": "429 rate limit exceeded"}) + "\n")
+            result = platforms.read_log(path, "cline")
+            self.assertFalse(result["credit_exhausted"])
+            self.assertTrue(result["quota_hit"])
+
+    def test_status_line_strips_markdown_emphasis(self):
+        self.assertEqual(platforms.status_line("STATUS: **DONE** all set"),
+                         ("DONE", "all set"))
+        self.assertEqual(platforms.status_line("STATUS: MERGED by mistake"),
+                         ("MERGED", "by mistake"))
+
+
 class ReadLogResumeInfoTests(unittest.TestCase):
     def test_kilo_log_extracts_session_id_and_last_error(self):
         with tempfile.TemporaryDirectory() as d:
