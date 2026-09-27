@@ -859,12 +859,62 @@ def _cap_card(q, kind):
         + active_meta + '</div></div>')
 
 
+def _weekly_account(row):
+    bar = ""
+    if row["used_pct"] is not None:
+        bar = (f'<span class="bar"><span class="f-acc" style="width:{row["used_pct"]:.2f}%"></span>'
+               f'<i class="weekly-soft" style="left:{row["soft"]:.2f}%"></i></span>')
+    return (f'<div class="weekly-account"><strong>{e(row["name"])}</strong> '
+            f'<span class="t-mut">{e(row["model"])}</span>'
+            f'<div>{e(row["usage_text"])}</div>{bar}'
+            f'<div>{e(row["reset_text"])}</div>'
+            + (f'<div class="t-mut">{e(row["stale_text"])}</div>' if row["stale"] else '')
+            + (f'<div>{e(row["overlay"]["text"])}</div>' if row["overlay"] else '') + '</div>')
+
+
+def _weekly_quota(s, phone=False):
+    v = s.get("weekly_quota")
+    if v is None:
+        return ""
+    out = [f'<div class="weekly-quota"><h2>{e(v["title"])}</h2><p class="foot-note">{e(v["note"])}</p>']
+    if not v["rows"]:
+        return "".join(out) + f'<p>{e(v["empty"])}</p></div>'
+    if phone:
+        out.append(f'<p class="mono">{e(v["now_label"])}</p>')
+        for day in v["days"]:
+            out.append(f'<details class="weekly-day"><summary>{e(day["range"])} · {len(day["rows"])}</summary>')
+            out.extend(_weekly_account(r) for r in day["rows"])
+            if not day["rows"]:
+                out.append(f'<p class="t-mut">{e(v["no_resets"])}</p>')
+            out.append('</details>')
+        if v["unscheduled"]:
+            out.append(f'<h3>{e(v["other_label"])}</h3>')
+            out.extend(_weekly_account(r) for r in v["unscheduled"])
+    else:
+        out.append('<div class="weekly-grid"><div></div><div class="weekly-days">')
+        out.extend(f'<span title="{e(d["range"])}">{e(d["label"])}</span>' for d in v["days"])
+        out.append(f'</div><div></div><div class="weekly-now">{e(v["now_label"])}</div>')
+        for row in v["rows"]:
+            out.append(_weekly_account(row))
+            out.append('<div class="weekly-track" aria-hidden="true">')
+            if row["position"] is not None:
+                align = ' weekly-reset-end' if row["position"] > 85 else ''
+                out.append(f'<span class="weekly-reset{align}" style="left:{row["position"]:.4f}%">'
+                           f'<span>{e(row["resets_at"].astimezone().strftime("%H:%M"))}</span></span>')
+            if row["overlay"]:
+                out.append(f'<span class="weekly-short" style="width:{row["overlay"]["position"]:.4f}%"></span>')
+            out.append('</div>')
+        out.append('</div>')
+    return "".join(out) + '</div>'
+
+
 def _d_capacity(s):
     """Capacity can show account quota pools or individual routing slots."""
     out = ['<section class="view view-capacity">',
            '<div class="cap-toggle" role="group" aria-label="Capacity view">'
            '<button class="seg" data-capacity-mode="quota">By quota</button>'
-           '<button class="seg" data-capacity-mode="capability">By capability</button></div>']
+           '<button class="seg" data-capacity-mode="capability">By capability</button>'
+           '<button class="seg" data-capacity-mode="weekly">Weekly</button></div>']
     if not s["quota"]:
         out.append('<span class="empty">No platforms are routed yet.</span>')
     if s.get("measured_routes"):
@@ -885,6 +935,7 @@ def _d_capacity(s):
     out.append('</div><div class="foot-note">By quota shows one shared account pool. By capability '
                'groups the routing slots by the largest route they can take. Tick marks the soft line; hard line '
                'yields work in flight.</div>')
+    out.append('<div class="cap-weekly">' + _weekly_quota(s) + '</div>')
     out.append("</section>")
     return "".join(out)
 
@@ -1170,6 +1221,7 @@ def _p_browse(s):
                    f'</span>{tick}</span>{details}</div>')
     out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs there. '
                'Hard line yields work in flight.</div></div>')
+    out.append(_weekly_quota(s, phone=True))
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Backlog</span>'
                f'{_backlog_groups(s, phone=True)}</div>')
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Releases</span>'

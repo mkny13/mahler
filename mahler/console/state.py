@@ -117,6 +117,8 @@ def build(cfg, led, stats_range="week", section=None):
         "dep_graph": dep_graph,
         "quota": quota,
         "capability_sections": _capability_sections(quota),
+        "weekly_quota": (_weekly_quota_view(cfg, led, quota, now)
+                         if section in (None, "capacity", "browse") else None),
         "capacity": _capacity_line(quota),
         "models": models(led, cfg, measurement_rows) if measured else None,
         "measured_routes": measured_routes(cfg, led, projects, measurement_rows) if measured else [],
@@ -533,6 +535,66 @@ def _quota(cfg, led, peak, active_by_platform=None):
                                for member in members]
         out.append(row)
     return out
+
+
+def _weekly_quota_view(cfg, led, quota, now):
+    """Seven elapsed 24-hour ranges; never extrapolate a missing/past reset.
+
+    Use the consolidated quota snapshot so shared routing slots appear once.
+    Localize each endpoint separately to preserve host timezone/DST conventions.
+    """
+    days = []
+    for i in range(7):
+        start, end = now + timedelta(days=i), now + timedelta(days=i + 1)
+        days.append({"label": start.astimezone().strftime("%a %d %b"),
+                     "range": (f"{start.astimezone():%a %d %b %H:%M %Z} → "
+                               f"{end.astimezone():%a %d %b %H:%M %Z}"), "rows": []})
+    rows = []
+    for q in quota:
+        windows = {w["window"]: w for w in q["windows"]}
+        window = next((w for w in ("weekly", "monthly") if w in windows), None)
+        if window is None:
+            # Configured accounts without a reading still belong on the schedule.
+            configured = {w for m in q["members"]
+                          for w in cfg["platforms"][m].get("windows", router.WINDOWS)}
+            window = next((w for w in ("weekly", "monthly") if w in configured), None)
+        if window is None:
+            continue
+        w = windows.get(window, {})
+        reset = w.get("resets")
+        seconds = (reset - now).total_seconds() if reset else None
+        day = int(seconds // 86400) if seconds is not None and 0 <= seconds < 604800 else None
+        reset_text = (f"{reset.astimezone():%a %d %b %H:%M %Z}" if reset else "unknown")
+        if seconds is not None and seconds < 0:
+            reset_text += " · awaiting updated reset"
+        elif seconds is not None and seconds >= 604800:
+            reset_text += " · beyond this week"
+        pct = w.get("pct")
+        soft = w.get("soft")
+        row = {"name": q["name"], "model": q["model"], "window": window,
+               "used_pct": pct, "soft": soft, "resets_at": reset,
+               "reset_text": reset_text, "day": day,
+               "position": seconds / 6048 if day is not None else None,
+               "usage_text": (f"{window} · {pct:.0f}% used · soft line {soft:.0f}%"
+                              if pct is not None else f"{window} · usage unknown"),
+               "stale": q["state"] == "stale", "stale_text": "Stale reading", "overlay": None}
+        short = windows.get("5h")
+        if q["claude"] and short and short.get("resets"):
+            delta = (short["resets"] - now).total_seconds()
+            if 0 <= delta < 86400:
+                row["overlay"] = {"position": delta / 6048,
+                                  "text": f"5h resets {short['resets'].astimezone():%a %H:%M %Z}"}
+        rows.append(row)
+        if day is not None:
+            days[day]["rows"].append(row)
+    for day in days:
+        day["rows"].sort(key=lambda r: r["resets_at"])
+    return {"title": "Weekly resets", "days": days, "rows": rows,
+            "unscheduled": [r for r in rows if r["day"] is None],
+            "note": "Next 7 days · each column starts at the current time. Times use the server’s local timezone. Shading shows current usage, not time remaining.",
+            "now_label": f"Now · {now.astimezone():%H:%M %Z}",
+            "empty": "No weekly or monthly quota windows.",
+            "no_resets": "No resets in this range.", "other_label": "Unknown or outside this week"}
 
 
 def _capability_sections(quota):
