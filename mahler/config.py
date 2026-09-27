@@ -101,6 +101,7 @@ DEFAULT_MEASURE = {
 DEFAULTS = {
     "routing_mode": "list",
     "measure": DEFAULT_MEASURE,
+    "warmup": {"enabled": True, "targets": []},
     "quota_groups": {},  # optional cost_weight per shared quota pool
 
     # Issue #416: announced list prices, 2026-09-23, USD per million tokens.
@@ -552,6 +553,7 @@ def load(path=None):
             user = tomllib.load(fh)
     cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
+    configure_warmup(cfg, user)
     return cfg
 
 
@@ -1016,3 +1018,51 @@ def platform_audit_policy(cfg):
 def enabled_projects(cfg):
     return [project_policy(cfg, n) for n in cfg["projects"]
             if project_policy(cfg, n).get("enabled")]
+
+
+# Only install defaults whose login/platform exists on this machine. Explicit
+# targets, including an empty list, are authoritative and validated fail-closed.
+WARMUP_TARGETS = (
+    ("claude-personal", "claude", "personal", "claude-low"),
+    ("claude-work", "claude", "work", "work-claude-low"),
+    ("antigravity", "agy", "personal", "agy-gemini"),
+    ("chatgpt-work", "codex", "work", "work-codex-gpt1-low"),
+    ("chatgpt-makastel", "codex", "work-makastel", "work-codex-makastel-low"),
+)
+
+
+def configure_warmup(cfg, user):
+    if "targets" not in user.get("warmup", {}):
+        cfg["warmup"]["targets"] = [
+            dict(name=n, kind=k, account=a, platform=p,
+                 start="05:00", end="24:00", days="weekdays")
+            for n, k, a, p in WARMUP_TARGETS
+            if p in cfg["platforms"] and
+            (a == DEFAULT_ACCOUNT or a in cfg["accounts"])]
+    seen, groups = set(), set()
+    for target in cfg["warmup"]["targets"]:
+        name, account = target["name"], target["account"]
+        if not name or name in seen:
+            raise ValueError("warmup target names must be unique and nonempty")
+        seen.add(name)
+        if account != DEFAULT_ACCOUNT and account not in cfg["accounts"]:
+            raise ValueError(f"warmup {name}: unknown account {account!r}")
+        pc = cfg["platforms"].get(target["platform"])
+        if (not pc or pc.get("kind") != target["kind"] or
+                account_of(pc) != account or target["kind"] not in ("claude", "agy", "codex")):
+            raise ValueError(f"warmup {name}: platform kind/account mismatch")
+        if target["kind"] == "agy" and account != DEFAULT_ACCOUNT:
+            raise ValueError("warmup agy requires the personal login")
+        group = (account, pc.get("quota_group", target["platform"]))
+        if group in groups:
+            raise ValueError("warmup targets must have distinct quota groups")
+        groups.add(group)
+        target.setdefault("start", "05:00")
+        target.setdefault("end", "24:00")
+        target.setdefault("days", "weekdays")
+        start, end = target["start"], target["end"]
+        valid = lambda v: isinstance(v, str) and re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", v)
+        if not valid(start) or not (valid(end) or end == "24:00") or start >= end:
+            raise ValueError(f"warmup {name}: require 00:00 <= start < end <= 24:00")
+        if target["days"] not in ("weekdays", "daily", "off"):
+            raise ValueError(f"warmup {name}: days must be weekdays, daily, or off")
