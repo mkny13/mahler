@@ -1,6 +1,7 @@
 # Opt-in measured routing (D33). Defaults to list order.
 # A project may override this with routing_mode = "list" or "measured".
-# Enable personal projects once build s and m each have two good variants.
+# Free pools always stay ahead of paid personal quota, so measured routing is
+# safe to enable for personal projects even while candidates are unproven.
 routing_mode = "list"
 
 # ~/.mahler/config.toml — only what differs from the defaults in mahler/config.py.
@@ -111,6 +112,10 @@ verify = "python3 -m unittest discover -s tests"
 # The slot's own name (work-codex-gpt1-low here) is untouched and stays the
 # default variant, so existing routing, pins, labels and history stay valid.
 # Add a variant name to a routing list or a `platform:` pin to use it.
+# Variants inherit their slot's cost class. By default personal `kind =
+# "claude"` slots are paid and every other slot (including work-account
+# Claude) is free. An unusual slot can override that classification:
+# cost_class = "free" # or "paid"
 # [platforms.work-codex-gpt1-low]
 # variants = ["gpt-6-luna@low", "gpt-6-luna@medium", "gpt-5.6-luna"]
 # variant_tiers = { "gpt-6-luna@medium" = 2 }   # default: this slot's own tier

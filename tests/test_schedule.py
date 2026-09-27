@@ -268,7 +268,9 @@ class FairnessTests(unittest.TestCase):
     def test_sorts_are_not_deferred_when_headroom_is_plenty(self):
         """With room everywhere the tiebreak is age again: the older sort
         still goes first."""
-        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        # This is a fairness test, so keep deterministic D33 exploration from
+        # changing which otherwise-equivalent sort platform is selected.
+        ctx, led = mk_ctx({"a": proj(max_parallel=2, explore=False)}, total=2, max_runs=2)
         seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
         item(led, "a", 1, state="inbox", age_minutes=60)
         item(led, "a", 2, age_minutes=10)

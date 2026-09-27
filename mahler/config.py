@@ -928,6 +928,9 @@ def validate_accounts(cfg):
                         *cfg.get("projects", {}).items()]:
         if conf.get("routing_mode", "list") not in ("list", "measured"):
             raise ValueError(f"{scope}: routing_mode must be list or measured")
+    for name, pconf in cfg.get("platforms", {}).items():
+        if pconf.get("cost_class", "free") not in ("free", "paid"):
+            raise ValueError(f"platform {name!r}: cost_class must be free or paid")
     for name, proj in cfg.get("projects", {}).items():
         if "account" in proj and "accounts" in proj:
             raise ValueError(f"project {name!r} sets both 'account' and "
