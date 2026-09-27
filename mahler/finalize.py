@@ -235,9 +235,13 @@ def _ended_out_of_reach(e):
     """Quota or a lost lease: the item goes back in the queue for whichever
     platform can afford it next (D9)."""
     e.set_state("ready", f"handoff ({e.reason})")
-    e.ping(f"Handoff — {e.project} #{e.number}",
-           f"{e.run['platform']} stopped ({e.reason}); next platform picks it up",
-           priority="low")
+    # Credit exhaustion is deliberately quiet until it lasts a day. The
+    # platform-level alert is emitted by _record_credit_failure, not once per
+    # item that happened to be leased when the outage was discovered.
+    if e.reason != "no_credit":
+        e.ping(f"Handoff — {e.project} #{e.number}",
+               f"{e.run['platform']} stopped ({e.reason}); next platform picks it up",
+               priority="low")
     return True
 
 
