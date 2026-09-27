@@ -2857,3 +2857,28 @@ post("end_session", payloadFor(button, "end_session")).then(() => {
         refresh = functions_between("  function refresh(force)", "  function noteRevision")
         self.assertLess(refresh.index("app.innerHTML = html"), refresh.index("noteRevision()"))
         self.assertNotIn("location.reload", refresh)
+
+
+class RecentProblemsRenderingTests(unittest.TestCase):
+    def test_desktop_only_summary_and_history_route(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        led.event('console_client_error', 'mahler', 508, '<script>bad()</script>')
+        snapshot = state.build(make_cfg(), led)
+        self.assertEqual(len(snapshot['recent_problems']), 1)
+        desktop = page._d_now(snapshot)
+        self.assertIn('Recent problems · 24 hours', desktop)
+        self.assertIn('data-go="history"', desktop)
+        self.assertIn('&lt;script&gt;', desktop)
+        self.assertNotIn('<script>bad()', desktop)
+        self.assertIn('/issues/508', desktop)
+        self.assertNotIn('Recent problems', page._phone(snapshot))
+        self.assertNotIn('recent-problems', page._d_side(snapshot))
+        self.assertNotIn('recent-problems', page._banners(snapshot))
+
+    def test_empty_summary(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        snapshot = state.build(make_cfg(), led)
+        self.assertEqual(snapshot['recent_problems'], [])
+        self.assertIn('No recent problems.', page._d_now(snapshot))
