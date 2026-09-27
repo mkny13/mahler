@@ -204,6 +204,72 @@ class TestRequestLogging(_Served):
             self.assertTrue(fallback.called)
 
 
+class TestSlowRequests(_Served):
+    def setUp(self):
+        super().setUp()
+        self.cfg["serve"]["slow_request_ms"] = 10
+
+    def slow_event(self):
+        row = self.led.q1(
+            "SELECT * FROM events WHERE kind='console_slow_request' ORDER BY id DESC LIMIT 1")
+        self.assertIsNotNone(row)
+        return json.loads(row["detail"])
+
+    def test_lock_wait_over_threshold_records_event(self):
+        held = threading.Event()
+        lock = self.httpd.RequestHandlerClass.lock
+
+        def hold_lock():
+            with lock:
+                held.set()
+                time.sleep(0.08)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        self.assertTrue(held.wait(timeout=5))
+        try:
+            self.assertEqual(self.post("pause")[0], 200)
+        finally:
+            holder.join(timeout=5)
+
+        detail = self.slow_event()
+        self.assertEqual(detail["path"], "/api/pause")
+        self.assertGreaterEqual(detail["wait_ms"], 10)
+        self.assertGreaterEqual(detail["action_ms"], 0)
+
+    def test_action_over_threshold_records_event(self):
+        run = serve.actions.run
+
+        def slow_action(*args):
+            time.sleep(0.05)
+            return run(*args)
+
+        with mock.patch.object(serve.actions, "run", side_effect=slow_action):
+            self.assertEqual(self.post("pause")[0], 200)
+
+        detail = self.slow_event()
+        self.assertEqual(detail["path"], "/api/pause")
+        self.assertGreaterEqual(detail["action_ms"], 10)
+        self.assertGreaterEqual(detail["wait_ms"], 0)
+
+    def test_event_write_failure_does_not_fail_request(self):
+        self.cfg["serve"]["slow_request_ms"] = 0
+        event = self.led.event
+
+        def fail_slow_event(kind, *args, **kwargs):
+            if kind == "console_slow_request":
+                raise OSError("event sink unavailable")
+            return event(kind, *args, **kwargs)
+
+        with mock.patch.object(self.led, "event", side_effect=fail_slow_event) as write:
+            status, _, body = self.post("pause")
+
+        self.assertEqual((status, json.loads(body)), (200, {"ok": True}))
+        self.assertTrue(self.led.paused())
+        self.assertTrue(any(call.args[0] == "console_slow_request"
+                            for call in write.call_args_list))
+
+
 class TestWrites(_Served):
     def test_pause_then_resume(self):
         status, _, body = self.post("pause")
