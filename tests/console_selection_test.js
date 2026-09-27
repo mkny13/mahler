@@ -81,6 +81,10 @@ async function finish(promise, html) {
   await finish(context.setTab("triage"), "triage");
   assert.equal(attrs["data-tab"], "triage");
   assert.equal(applied, revisionNotes);
+  const priorApplies = applied, priorSwaps = swaps;
+  await finish(context.refresh(true), "triage");
+  assert.equal(swaps, priorSwaps);
+  assert.equal(applied, priorApplies + 1, "reopening an unchanged overlay restores visibility");
 
   // Telemetry excludes short tasks and works without the optional heap API.
   let callback, reports = [];

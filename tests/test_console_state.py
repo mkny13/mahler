@@ -87,13 +87,13 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
   await refresh();
   await refresh();
   await refresh(true);
-  assert.deepStrictEqual([swaps, applies, revisions], [1, 1, 1]);
+  assert.deepStrictEqual([swaps, applies, revisions], [1, 2, 1]);
   html = 'changed';
   await refresh();
-  assert.deepStrictEqual([swaps, applies, revisions], [2, 2, 2]);
+  assert.deepStrictEqual([swaps, applies, revisions], [2, 3, 2]);
   suppressKeep = ['submitted'];
   await refresh(true);
-  assert.deepStrictEqual([swaps, applies, revisions], [3, 3, 3]);
+  assert.deepStrictEqual([swaps, applies, revisions], [3, 4, 3]);
 })().catch(err => { console.error(err); process.exit(1); });
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)

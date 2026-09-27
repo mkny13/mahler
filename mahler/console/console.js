@@ -367,7 +367,11 @@
       if (sequence !== refreshSequence || url !== statsUrl()) { return; }
       fragmentBytes = new TextEncoder().encode(html).length;
       // Submitted drafts still need clearing even when server state is unchanged.
-      if (html === lastFragment && !skip.length) { return; }
+      if (html === lastFragment && !skip.length) {
+        // Reopening an unchanged overlay still needs its visibility restored.
+        if (force) { apply(); }
+        return;
+      }
       var keep = drafts;
       skip.forEach(function (key) { delete keep[key]; });
       var inputs = app.querySelectorAll("[data-keep]");
