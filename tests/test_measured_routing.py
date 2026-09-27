@@ -138,6 +138,12 @@ class MeasuredRoutingTests(unittest.TestCase):
         self.assertEqual(self.pick(burst_lines=bursts), "cheap")
         self.assertEqual(self.pick(burst_lines={"expensive": {"5h": (90, 97)}}), "expensive")
 
+    def test_burst_still_promotes_paid_claude_ahead_of_free_class(self):
+        self.cfg["routing"]["build"] = ["cheap", "unknown"]
+        self.cfg["platforms"]["cheap"]["kind"] = "claude"
+        self.assertEqual(self.pick(), "unknown")
+        self.assertEqual(self.pick(burst_lines={"cheap": {"5h": (90, 97)}}), "cheap")
+
     def test_direct_pick_promotes_burst_after_account_merge(self):
         self.cfg["routing_mode"] = "measured"
         self.cfg["routing"]["build"] = ["bad", "cheap"]
