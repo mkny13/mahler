@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from contextlib import ExitStack
 
-from mahler import config, router, scorecard
+from mahler import config, router, scorecard, tick
 from mahler.ledger import Ledger
 from mahler.scheduler import Ctx
 
@@ -58,6 +58,41 @@ class MeasuredRoutingTests(unittest.TestCase):
         self.assertEqual(router.cost_class({"kind": "codex"}), "free")
         self.assertEqual(router.cost_class(dict(personal_claude, cost_class="free")), "free")
         self.assertEqual(router.cost_class(dict(work_claude, cost_class="paid")), "paid")
+
+    def test_dry_run_routes_free_ahead_of_paid_at_every_size(self):
+        self.cfg["platforms"] = {
+            "paid": {"enabled": True, "metered": False, "kind": "claude",
+                     "model": "paid", "effort": "medium"},
+            "free-s": {"enabled": True, "metered": False, "kind": "cline",
+                       "model": "free-s", "effort": "medium", "max_size": "s"},
+            "free-m": {"enabled": True, "metered": False, "kind": "agy",
+                       "model": "free-m", "effort": "medium", "min_size": "m",
+                       "max_size": "m"},
+            "free-l": {"enabled": True, "metered": False, "kind": "codex",
+                       "model": "free-l", "effort": "medium", "min_size": "l"},
+        }
+        self.cfg["routing"] = {"build": ["paid", "free-s", "free-m", "free-l"]}
+        self.cfg["concurrency"]["total"] = 1
+        self.cfg["projects"] = {"p": {
+            "enabled": True, "repo": "x/p", "path": "/tmp/p", "hot_hold": False,
+            "max_parallel": 1, "routing_mode": "measured", "explore": False,
+        }}
+        rows = [dict(role="build", size=size, platform="paid", model="paid",
+                     effort="medium", status="good", cost_per_success=.01,
+                     n=10, successes=10)
+                for size in ("s", "m", "l")]
+        for number, (size, expected) in enumerate(
+                (("s", "free-s"), ("m", "free-m"), ("l", "free-l")), 1):
+            with self.subTest(size=size):
+                led = Ledger(":memory:")
+                self.addCleanup(led.close)
+                led.upsert_item("p", number, state="ready", title="Build it",
+                                labels=f'["size:{size}"]', sorted_at="2000-01-01T00:00:00Z")
+                ctx = Ctx(self.cfg, led, dry_run=True)
+                ctx._scorecard_rows = rows
+                with patch("mahler.platforms.available", return_value=True):
+                    tick.schedule(ctx, list(config.enabled_projects(self.cfg)))
+                self.assertIn(f"p#{number}: would build on {expected}", ctx.lines)
 
     def test_list_mode_and_project_override(self):
         self.pol = {}
