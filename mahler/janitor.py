@@ -1,4 +1,4 @@
-"""Daily janitor (mahler#7, DESIGN D12): prune stale worktrees and old refs.
+"""Daily janitor (mahler#7, DESIGN D12): rotate logs and prune stale work.
 
 Every run normally cleans up after itself — finalize.py removes its
 worktree — but a crash, a hung daemon or a deliberately kept worktree leaves
@@ -13,6 +13,10 @@ things behind. Once a day the tick sweeps, per project:
   * up to 100 remote fix branches ending in `-r<run_id>` whose run ended
     and whose commits are contained in main or the item's current PR head.
 
+The same daily pass also copy-and-truncates the host-wide console stderr log
+when it exceeds its configured cap.  The live file is never renamed because
+launchd and the running server retain its open file descriptor.
+
 Only these Mahler worktrees and branch patterns are touched. Fix branches
 with unique work survive and are reported. Like the digest (mahler#6) the sweep
 is gated by a kv key (`last_janitor_date`) so it runs once a day; `mahler tick --dry-run`
@@ -21,6 +25,7 @@ reports what it would do without deleting anything.
 
 import os
 import re
+import shutil
 from datetime import datetime, timedelta
 
 from . import config, runner
@@ -36,6 +41,8 @@ MAX_FIX_BRANCH_DELETIONS = 100
 # They retain the prepared revert for at least 14 days, including after shipping.
 RETENTION_DAYS = 14
 WORKTREE_GRACE_HOURS = 24
+SERVE_LOG_MAX_BYTES = 5 * 1024 * 1024
+SERVE_LOG_KEEP = 5
 
 
 def _local_now():
@@ -56,6 +63,13 @@ def _maybe_run(ctx):
     today = _local_now().date().isoformat()
     if not ctx.dry_run and led.get_kv(KV_KEY) == today:
         return                                   # already swept today
+    if not ctx.dry_run:
+        try:
+            rotated = rotate_serve_log(ctx.cfg)
+            if rotated:
+                _say(ctx, f"rotated serve log to {rotated}")
+        except Exception as e:                   # noqa: BLE001 — rotation is best-effort
+            _say(ctx, f"serve log rotation failed (continuing) — {e}")
     for pol in config.enabled_projects(ctx.cfg):
         if not os.path.isdir(pol["path"]):       # same reachability rule as the tick
             continue
@@ -65,6 +79,78 @@ def _maybe_run(ctx):
             ctx.say(f"janitor: {pol['name']} sweep failed (continuing) — {e}")
     if not ctx.dry_run:
         led.set_kv(KV_KEY, today)
+
+
+# ---------- host-wide console log rotation ----------
+
+def rotate_serve_log(cfg, *, log_path=None, now=None):
+    """Copy and truncate an oversized ``serve.err.log`` in place.
+
+    Returns the rotation path, or ``None`` when the live file is within the
+    configured limit.  Errors deliberately propagate to ``_maybe_run``, which
+    reports them without preventing any project sweep or escaping the tick.
+    """
+    serve = cfg.get("serve") or {}
+    max_bytes = _positive_int(serve.get("log_max_bytes", SERVE_LOG_MAX_BYTES),
+                              "serve.log_max_bytes")
+    keep = _positive_int(serve.get("log_keep", SERVE_LOG_KEEP), "serve.log_keep")
+    log_path = log_path or os.path.join(config.STATE, "logs", "serve.err.log")
+    now = now or _local_now()
+
+    rotation = None
+    copied = False
+    with open(log_path, "r+b") as live:
+        if os.fstat(live.fileno()).st_size <= max_bytes:
+            _prune_rotations(log_path, keep)
+            return None
+        rotation = _next_rotation(log_path, now)
+        try:
+            with open(rotation, "xb") as saved:
+                shutil.copyfileobj(live, saved)
+            copied = True
+            live.truncate(0)
+        except Exception:
+            if rotation and not copied:
+                try:
+                    os.unlink(rotation)
+                except OSError:
+                    pass
+            raise
+
+    _prune_rotations(log_path, keep)
+    return rotation
+
+
+def _positive_int(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _next_rotation(log_path, now):
+    stem = f"{log_path}.{now.date().isoformat()}"
+    candidate = stem
+    suffix = 0
+    while os.path.exists(candidate):
+        suffix += 1
+        candidate = f"{stem}.{suffix}"
+    return candidate
+
+
+def _prune_rotations(log_path, keep):
+    directory = os.path.dirname(log_path) or "."
+    basename = os.path.basename(log_path)
+    pattern = re.compile(
+        rf"^{re.escape(basename)}\.(\d{{4}}-\d{{2}}-\d{{2}})(?:\.(\d+))?$"
+    )
+    rotations = []
+    for entry in os.listdir(directory):
+        match = pattern.fullmatch(entry)
+        if match:
+            rotations.append((match.group(1), int(match.group(2) or 0), entry))
+    rotations.sort()
+    for _, _, entry in rotations[:-keep]:
+        os.unlink(os.path.join(directory, entry))
 
 
 # ---------- the sweep (unit-tested; dry_run only *reports*) ----------
