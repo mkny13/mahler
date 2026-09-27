@@ -1,11 +1,4 @@
-"""Render the console's state as HTML (D27): one document, two layouts.
-
-The desktop (`.dk`) and phone (`.ph`) layouts are both in the page and a
-media query picks one, so a rotating tablet or a resized window never needs a
-round trip. Which view or tab is showing, the theme, and which groups are
-expanded are browser-side state: attributes on <html> that CSS keys off and
-console.js keeps across the 30-second refresh, which swaps only #app.
-"""
+"""Server-rendered console: one active section in one responsive layout."""
 
 import hashlib
 import html
@@ -45,9 +38,11 @@ def asset_revision():
     return hashlib.sha256(JS.encode("utf-8")).hexdigest()
 
 
-def document(s):
+def document(s, layout="desktop", view=None, tab=None):
     """The full page: head, the #app fragment, and the script."""
-    land = s["landing"]
+    layout, selected = selection(s, layout, view, tab)
+    land = dict(s["landing"])
+    land["tab" if layout == "phone" else "view"] = selected
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="auto" data-view="{e(land['view'])}" data-tab="{e(land['tab'])}"
  data-console-revision="{asset_revision()}" data-stats-range="{e(s['stats_range'])}">
@@ -60,7 +55,7 @@ def document(s):
 <style>{CSS}</style>
 </head>
 <body>
-<div id="app">{app(s)}</div>
+<div id="app">{app(s, layout, view, tab)}</div>
 <script>{JS}</script>
 </body>
 </html>"""
@@ -74,14 +69,42 @@ var b=sessionStorage.getItem("mahler.tab");if(b)d.setAttribute("data-tab",b);
 var r=localStorage.getItem("mahler.stats.range");if(r)d.setAttribute("data-stats-range",r);}catch(e){}})();"""
 
 
-def app(s):
-    """The #app fragment — what the 30-second refresh replaces."""
+TABS = ("now", "triage", "releases", "browse", "stats", "models", "settings")
+
+
+def selection(s, layout="desktop", view=None, tab=None):
+    layout = "phone" if layout == "phone" else "desktop"
+    choices = TABS if layout == "phone" else dict(VIEWS)
+    selected = tab if layout == "phone" else view
+    if selected not in choices:
+        selected = s["landing"]["tab" if layout == "phone" else "view"]
+    return layout, selected
+
+
+def app(s, layout="desktop", view=None, tab=None, overlays=None):
+    """Only render the requested layout, section and open overlay forms."""
+    layout, selected = selection(s, layout, view, tab)
     counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": s["uat_count"],
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
-    return (f'<span hidden data-console-revision="{asset_revision()}"></span>'
-            + f'<script type="application/json" id="counts">{e(json.dumps(counts))}</script>'
-            + _desktop(s) + _phone(s) + _run_overlays(s) + _revert_overlays(s)
-            + _bug_overlays(s) + _capture_overlay(s) + _release_preview_overlays(s))
+    out = (f'<span hidden data-console-revision="{asset_revision()}" '
+           f'data-rendered-layout="{layout}" data-rendered-section="{selected}"></span>'
+           + f'<script type="application/json" id="counts">{json.dumps(counts)}</script>'
+           + (_phone(s, selected) if layout == "phone" else _desktop(s, selected)))
+    overlays = overlays or {}
+    for name, collection, key, render in (
+        ("run", "runs", "id", _run_overlays),
+        ("revert", "events", "id", _revert_overlays),
+        ("bug", "uat", "ref", _bug_overlays),
+        ("release", "releases", "project", _release_preview_overlays),
+    ):
+        if overlays.get(name):
+            subset = dict(s)
+            subset[collection] = [row for row in s[collection]
+                                  if str(row[key]) == overlays[name]]
+            out += render(subset)
+    if overlays.get("capture") == "1":
+        out += _capture_overlay(s)
+    return out
 
 
 # ---------- shared pieces ----------
@@ -328,7 +351,7 @@ def _event_text(ev):
 
 # ---------- desktop ----------
 
-def _desktop(s):
+def _desktop(s, view):
     rail_counts = {
         "now": (str(len(s["runs"])) if s["runs"] else "", "acc"),
         "needs": (str(s["needs_count"]) if s["needs"] else "", "bad"),
@@ -362,9 +385,8 @@ def _desktop(s):
             f'<button class="btn settings-head-link" data-go="settings">Settings</button>'
             f'{peak_btn}</div>')
 
-    views = (_d_now(s) + _d_needs(s) + _d_test(s) + _d_capture(s) + _d_backlog(s)
-             + _d_releases(s) + _d_capacity(s) + _d_stats(s) + _d_models(s) + _d_history(s)
-             + _settings_form(s["settings"], "desktop"))
+    views = (_settings_form(s["settings"], "desktop") if view == "settings"
+             else globals()["_d_" + view](s))
     main = f'<main class="dmain">{head}<div class="dbody">{views}</div></main>'
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
@@ -914,7 +936,7 @@ def _d_stats(s):
 
 # ---------- phone ----------
 
-def _phone(s):
+def _phone(s, tab):
     runs, needs = len(s["runs"]), s["needs_count"]
     sugg = s.get("releases_suggested")
     head = (f'<header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span>'
@@ -932,9 +954,10 @@ def _phone(s):
             f'<button class="tab" data-tab-go="browse"><span>Browse</span></button>'
             f'<button class="tab" data-tab-go="stats"><span>Stats</span></button>'
             f'<button class="tab" data-tab-go="models"><span>{e(MODELS_LABEL)}</span></button></div></header>')
-    return (f'<div class="ph">{head}<div class="pbody">{_p_triage(s)}{_p_now(s)}'
-            f'{_p_releases(s)}{_p_browse(s)}{_p_stats(s)}{_p_models(s)}'
-            f'{_settings_form(s["settings"], "phone")}</div></div>')
+    content = (_settings_form(s["settings"], "phone") if tab == "settings"
+               else globals()["_p_" + tab](s))
+    return f'<div class="ph">{head}<div class="pbody">{content}</div></div>'
+
 
 
 _SETTING_LABELS = {

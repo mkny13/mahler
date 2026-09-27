@@ -27,6 +27,24 @@ def client_log(cfg, led, body):
     try:
         if not isinstance(body, dict):
             return
+        if body.get("kind") == "longtask":
+            fields = ("duration_ms", "elements", "fragment_bytes", "minutes_since_load")
+            if any(isinstance(body.get(k), bool) or
+                   not isinstance(body.get(k), (int, float)) or
+                   not math.isfinite(body[k]) or body[k] < 0 for k in fields):
+                return
+            if body["duration_ms"] < 1000 or body.get("layout") not in ("desktop", "phone"):
+                return
+            from .page import VIEWS, TABS
+            if body.get("view") not in (TABS if body["layout"] == "phone" else dict(VIEWS)):
+                return
+            detail = {k: body[k] for k in fields}
+            detail.update(layout=body["layout"], view=body["view"])
+            heap = body.get("heap_bytes")
+            if isinstance(heap, (int, float)) and not isinstance(heap, bool) and math.isfinite(heap) and heap >= 0:
+                detail["heap_bytes"] = heap
+            led.event("console_client_longtask", detail=detail)
+            return
         action, error, elapsed = (body.get(key) for key in ("action", "error", "elapsed_ms"))
         if (not isinstance(action, str) or not isinstance(error, str)
                 or isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))

@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -240,10 +241,24 @@ class _Handler(BaseHTTPRequestHandler):
                     range_key = ((query.get("start") or [""])[0],
                                  (query.get("end") or [""])[0])
                 _, s = self._state(range_key)
+                cookies = SimpleCookie()
+                try:
+                    cookies.load(self.headers.get("Cookie", ""))
+                except Exception:
+                    pass
+                def preference(key, default=None):
+                    return (query.get(key) or [
+                        cookies["mahler_" + key].value if "mahler_" + key in cookies else default
+                    ])[0]
+                selected = dict(layout=preference("layout", "desktop"),
+                                view=preference("view"), tab=preference("tab"))
                 if path == "/":
-                    out, ctype = page.document(s), "text/html; charset=utf-8"
+                    out, ctype = page.document(s, **selected), "text/html; charset=utf-8"
                 elif path == "/fragment":
-                    out, ctype = page.app(s), "text/html; charset=utf-8"
+                    out, ctype = page.app(s, **selected, overlays={
+                        key: (query.get(key) or [""])[0]
+                        for key in ("run", "revert", "bug", "capture", "release")
+                    }), "text/html; charset=utf-8"
                 else:
                     out, ctype = json.dumps(s, default=_json_default), "application/json"
         except Exception:
