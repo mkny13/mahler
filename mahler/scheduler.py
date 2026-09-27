@@ -22,6 +22,7 @@ from .sync import close_finished_parents, mirror_labels, sync
 from .tick import expire, queue_maintenance, schedule
 from .usage import compute_burst, refresh_usage
 from .watchdog import watchdog
+from .warmup import warmup_pass
 
 
 class Ctx:
@@ -112,6 +113,7 @@ def tick(ctx):
         ctx.hold("paused")
     else:
         refresh_usage(ctx, projects)
+        warmup_pass(ctx)
         queue_maintenance(ctx, projects)
         platform_audit.queue(ctx, projects)
         schedule(ctx, projects)

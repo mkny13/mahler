@@ -1536,3 +1536,54 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
 - **Build:** a registered deploy or release carrying UAT items.
 - **Hot hold:** a pause on new autonomous starts in a project while untracked activity is seen.
 - **Reserve:** the share of Claude quota kept for your own chats.
+
+### D34 — Warm-up: keep the 5-hour windows chained during active hours
+
+Decided 2026-09-27 (mahler#535). The first small turn starts at 05:00 local time
+on weekdays; subsequent turns start an idle login's next five-hour window as
+soon as the previous one expires, until 24:00. Chaining gives the most resets
+in any stretch of the day; weekly quota remains the binding cap. A window
+already started by Mike or a build needs no warm-up. Learning different start
+times is deferred to mahler#536.
+
+- This is a global tick pass after usage refresh and before scheduling, with
+  separate targets for personal Claude, work Claude, personal Antigravity's
+  Gemini pool, and the work and work-makastel ChatGPT logins. Defaults include
+  only configured account/platform pairs; explicit target lists replace them.
+  `[warmup] enabled = false` disables the pass. Each target has `name`, `kind`,
+  `account`, `platform`, `start`, `end`, and `days` (weekdays, daily, or off).
+- Known active windows require no probe. A missing/expired reset or zero usage
+  triggers a free OAuth, app-server, or Antigravity `/usage` read. Failure to
+  obtain a five-hour reading means skip, never spend blind. Exhausted quota,
+  account blocks, overage represented as exhaustion, and global pause all
+  prevent nudges. The pass does not consume reset credits.
+- Persist the fire time under `warmup:<name>:last` before spending. Four hours
+  must pass before another nudge, except when a free reading proves a later
+  window has already ended. Failed nudges back off thirty minutes, persisted
+  under `warmup:<name>:failed`. Exceptions are isolated per target. Re-read and
+  fan out usage only within that login's quota group after a successful turn.
+- D22's peak restriction applies to builds, not these single small turns.
+  Claude reuses the lean Haiku probe; Antigravity uses Flash at low effort;
+  Codex uses its configured low-slot model at low effort, an ephemeral session
+  and a read-only sandbox in a temporary directory. All have 90-second limits.
+- D25 still applies. Account environments come from `run_env`; work logins
+  require their own CLI home. Strip inherited personal credentials and API
+  billing keys. Personal nudges also remove an invoking work agent's login
+  variables. Unknown accounts and mismatched platforms fail configuration load.
+- No GitHub Actions: exporting work OAuth logins to GitHub secrets would violate
+  the on-Mini boundary, and cron cannot cheaply determine an active window.
+- `mahler warmup --dry-run [target]` shows window state, expected scheduled nudge,
+  and the action without writes or paid turns. `mahler warmup [target]` requests
+  a nudge now, outside the schedule if necessary, while preserving all quota,
+  pause, disabled-target, and retry guards. It takes the tick lock to prevent
+  overlapping CLI/tick nudges. Events record target and fired/skipped/failed.
+
+Live checks on 2026-09-27 used an isolated ledger, without changing daemon state.
+Antigravity was startable: a Flash turn moved its idle reset to 02:01:57 UTC,
+about five hours after the turn, and usage rose to 0.1%. It consumed 16,288 input
+and 2 output tokens. Makastel Codex moved its idle reset to 02:02:10 UTC, about
+five hours after its turn; 12,907 input (8,960 cached) and 5 output tokens.
+Claude Haiku completed with 647 input and 507 output tokens (304 thinking).
+Both Claude accounts were already active: the personal reset remained at
+00:00 UTC, as expected; starting a fresh idle Claude window remains a live UAT
+check. These CLI contexts make the nudges larger than the two-word prompt.

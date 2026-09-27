@@ -388,6 +388,28 @@ if __name__ == "__main__":
     return 0
 
 
+def cmd_warmup(a, cfg, led):
+    from .scheduler import Ctx, take_lock
+    from .warmup import warmup_pass
+    lock = None if a.dry_run else take_lock()
+    if not a.dry_run and lock is None:
+        print("mahler: another tick is running; try again")
+        return 1
+    try:
+        ctx = Ctx(cfg, led, dry_run=a.dry_run)
+        try:
+            failures = warmup_pass(ctx, target=a.target, manual=True)
+        except ValueError as exc:
+            print(f"mahler: {exc}", file=sys.stderr)
+            return 1
+        for line in ctx.lines:
+            print(line)
+        return int(bool(failures))
+    finally:
+        if lock is not None:
+            lock.close()
+
+
 def cmd_usage(a, cfg, led):
     if a.probe:
         from . import platforms
@@ -937,6 +959,11 @@ def main(argv=None):
     s = sub.add_parser("hooks", help="install Claude Code session hooks")
     s.add_argument("project")
     s.set_defaults(fn=cmd_hooks)
+
+    s = sub.add_parser("warmup", help="inspect or nudge idle login windows now")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("target", nargs="?")
+    s.set_defaults(fn=cmd_warmup)
 
     s = sub.add_parser("usage", help="quota per platform")
     s.add_argument("--probe", action="store_true", help="take fresh readings now")
