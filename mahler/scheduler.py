@@ -127,6 +127,10 @@ def tick(ctx):
                     backup.run(ctx, p["name"], spec)
                 except Exception as e:
                     ctx.say(f"{p['name']}: backup failed — {e}")
+        try:
+            backup.run_ledger(ctx)                     # mahler#533: also while paused
+        except Exception as e:
+            ctx.say(f"mahler: ledger backup failed — {e}")
     digest.maybe_send(ctx)                  # informational: also runs while paused
     janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
     return ctx.lines
