@@ -677,3 +677,27 @@ a { color: var(--acc); text-decoration: none; }
 
 /* a view switch still in flight after 150 ms (mahler#532): dim the old section */
 #app[aria-busy="true"] .dbody, #app[aria-busy="true"] .pbody { opacity: .5; pointer-events: none; }
+
+/* Weekly reset schedule: quota amounts and the time axis are separate scales. */
+.cap-weekly { display: none; }
+:root[data-capacity-mode="weekly"] .cap-weekly { display: block; }
+:root[data-capacity-mode="weekly"] .cap-quota-pools,
+:root[data-capacity-mode="weekly"] .cap-capability,
+:root[data-capacity-mode="weekly"] .view-capacity > .foot-note { display: none; }
+:root[data-capacity-mode="weekly"] .cap-toggle [data-capacity-mode="weekly"] { background: var(--ink); color: var(--paper); }
+.weekly-quota { min-inline-size: 0; }
+.weekly-quota h2 { font-size: 14px; margin-block: 12px; }
+.weekly-grid { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 3fr); gap: 0 12px; font-size: 11px; }
+.weekly-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.weekly-days > span { border-inline-start: 1px solid var(--line); padding: 4px; overflow-wrap: anywhere; }
+.weekly-now { border-inline-start: 2px solid var(--acc); padding: 6px; color: var(--acc); }
+.weekly-account { min-inline-size: 0; overflow-wrap: anywhere; padding-block: 12px; border-block-end: 1px solid var(--line); font-size: 11px; line-height: 1.6; }
+.weekly-account .bar { position: relative; margin-block: 6px; }
+.weekly-soft { position: absolute; inset-block: -2px; border-inline-start: 1px solid var(--ink); }
+.weekly-track { position: relative; border-inline-start: 2px solid var(--acc); border-block-end: 1px solid var(--line); background: repeating-linear-gradient(to right, transparent 0, transparent calc(100% / 7 - 1px), var(--line) calc(100% / 7 - 1px), var(--line) calc(100% / 7)); }
+.weekly-reset { position: absolute; inset-block: 12px; border-inline-start: 2px solid var(--ink); }
+.weekly-reset > span { display: inline-block; margin-inline-start: 4px; background: var(--paper); }
+.weekly-reset-end > span { transform: translateX(calc(-100% - 8px)); }
+.weekly-short { position: absolute; inset-block-end: 5px; inset-inline-start: 0; block-size: 3px; min-inline-size: 2px; background: var(--acc); }
+.weekly-day { border-block-end: 1px solid var(--line); padding-block: 10px; }
+.weekly-day summary { cursor: pointer; font-size: 12px; overflow-wrap: anywhere; }

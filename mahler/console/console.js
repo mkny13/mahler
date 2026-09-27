@@ -321,10 +321,10 @@
 
   function capacityMode() {
     var value = load("local", "mahler.capacity.mode");
-    return value === "capability" ? value : "quota";
+    return ["capability", "weekly"].indexOf(value) !== -1 ? value : "quota";
   }
   function setCapacityMode(value) {
-    value = value === "capability" ? value : "quota";
+    value = ["capability", "weekly"].indexOf(value) !== -1 ? value : "quota";
     root.setAttribute("data-capacity-mode", value);
     store("local", "mahler.capacity.mode", value);
   }
