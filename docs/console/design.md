@@ -337,8 +337,12 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
-- **Ready to test** — title, ref/meta, what-to-check, staging link on the left;
-  **Pass** / **Fail** right-aligned at 36px.
+- **Ready to test** — grouped into test sessions (mahler#504): a header with the
+  session name, `N changes · N checks · merged …`, a shared staging link when the
+  project has one, `Show N changes ▸`, and **Pass all N** right-aligned (first tap
+  arms it as *"Tap again to pass N"*). Collapsed by default. Inside, each change:
+  title, ref/meta, its checks as a list, staging link on the left; **Pass** /
+  **Fail** right-aligned at 36px.
 - **Capture** — same composer at `max-width: 560px`, plus an explicit target
   line: *"Opens a GitHub issue in mkny13/&lt;project&gt; · labels type:feature, p2,
   mahler:inbox"* (reads *"the inbox repo"* with no project selected).

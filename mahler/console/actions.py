@@ -255,6 +255,36 @@ def uat_pass(cfg, led, body):
     return _queue_verdict(cfg, led, "uat_pass", body, {}, "pass")
 
 
+UAT_PASS_ALL_MAX = 50
+
+
+def uat_pass_all(cfg, led, body):
+    """Pass a whole test session in one go (mahler#504). A change already
+    failed, passed or queued is skipped, not refused: you fail the one that
+    broke, then pass the rest."""
+    items = body.get("items")
+    if not isinstance(items, list) or not items or len(items) > UAT_PASS_ALL_MAX:
+        raise ActionError(f"items must be a list of 1 to {UAT_PASS_ALL_MAX} changes")
+    ids, skipped = [], 0
+    with led._tx():
+        rows = [_uat_target(cfg, led, it if isinstance(it, dict) else {}) for it in items]
+        seen = set()
+        for row in rows:
+            key = (row["project"], row["number"])
+            if key in seen or row["verdict"] or _verdict_pending(led, *key):
+                skipped += 1
+                continue
+            seen.add(key)
+            id = led.queue_action("uat_pass", row["project"], row["number"], {},
+                                  delay_seconds=0)
+            led.event("console_uat_queued", row["project"], row["number"],
+                      {"verdict": "pass", "id": id, "via": "pass_all"})
+            ids.append(id)
+        if not ids:
+            raise ActionError("every change in this session already has a verdict")
+    return {"ids": ids, "skipped": skipped}
+
+
 def uat_fail(cfg, led, body):
     note = body.get("note")
     if not isinstance(note, str) or len(note) > 2000:
@@ -403,7 +433,7 @@ def cut_release(cfg, led, body):
 
 ACTIONS = {f.__name__: f for f in (pause, resume, peak_override, peak_restore,
                                    clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail, attach, cut_release,
+                                   capture, revert, uat_pass, uat_pass_all, uat_fail, attach, cut_release,
                                    save_settings)}
 
 

@@ -1042,6 +1042,129 @@ class UatStateTests(unittest.TestCase):
                          {"tab": "triage", "view": "test"})
 
 
+class UatSessionTests(unittest.TestCase):
+    """Ready to test as sittings (mahler#504): grouped by project and area or
+    goal, capped per session, passed as a whole."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+
+    def ship(self, project, n, labels=(), parent=None, needs='- it works'):
+        self.led.upsert_item(project, n, title=f'change {n}', state='done',
+                             labels=json.dumps(list(labels)), parent=parent)
+        self.led.add_uat(project, n, 100 + n, 'abc1234', f'change {n}', needs)
+
+    def sessions(self, cfg=None):
+        return state.build(cfg or self.cfg, self.led)["uat_sessions"]
+
+    def test_groups_by_area_then_goal_then_the_rest(self):
+        self.led.upsert_item('mahler', 1, title='The UAT loop', state='ready')
+        self.ship('mahler', 10, labels=['area:console', 'p2'])
+        self.ship('mahler', 11, labels=['area:console'], parent=1)   # area wins
+        self.ship('mahler', 12, parent=1)
+        self.ship('mahler', 13)
+        self.ship('mahler', 14)
+        self.ship('groundwork', 5, labels=['area:console'])          # per project
+        got = {c["label"]: [u["number"] for u in c["items"]] for c in self.sessions()}
+        self.assertEqual(got, {
+            'mahler · console': [11, 10],
+            'mahler · Other changes': [14, 13],
+            'mahler · #1 The UAT loop': [12],
+            'groundwork · console': [5],
+        })
+
+    def test_biggest_session_first(self):
+        self.ship('mahler', 10)
+        for n in (20, 21, 22):
+            self.ship('mahler', n, labels=['area:router'])
+        self.assertEqual([c["label"] for c in self.sessions()],
+                         ['mahler · router', 'mahler · Other changes'])
+
+    def test_a_big_group_splits_into_parts(self):
+        for n in range(1, state.UAT_SESSION_MAX + 4):
+            self.ship('mahler', n)
+        ss = self.sessions()
+        self.assertEqual([len(c["items"]) for c in ss], [state.UAT_SESSION_MAX, 3])
+        self.assertEqual(ss[0]["label"], 'mahler · Other changes · part 1 of 2')
+        self.assertEqual(len({c["key"] for c in ss}), 2)
+        self.assertTrue(ss[0]["meta"].startswith(f'{state.UAT_SESSION_MAX} changes · '))
+
+    def test_open_leaves_out_queued_verdicts(self):
+        self.ship('mahler', 10)
+        self.ship('mahler', 11)
+        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 11})
+        self.assertEqual(self.sessions()[0]["open"], ['mahler#10'])
+
+    def test_a_staging_url_without_a_placeholder_is_the_sessions_link(self):
+        self.ship('mahler', 10)
+        cfg = make_cfg(projects={'mahler': {'uat_url': 'https://staging.example.com'}})
+        c = self.sessions(cfg)[0]
+        self.assertEqual((c["link"], c["link_label"]), ('https://staging.example.com', 'Staging'))
+        cfg = make_cfg(projects={'mahler': {'uat_url': 'https://s.example.com/{number}'}})
+        self.assertIsNone(self.sessions(cfg)[0]["link"])
+
+    def test_checks_are_listed_per_change(self):
+        self.ship('mahler', 10, needs='- one\n- [ ] two\n\n* three')
+        u = self.sessions()[0]["items"][0]
+        self.assertEqual(u["checks"], ['one', 'two', 'three'])
+
+    def test_page_renders_sessions_with_pass_all(self):
+        self.ship('mahler', 10, needs='- one\n- two')
+        self.ship('mahler', 11)
+        frag = page.app(state.build(self.cfg, self.led))
+        self.assertIn('data-uat-session="mahler-other-1"', frag)
+        self.assertIn('mahler · Other changes', frag)
+        self.assertIn('data-act="uat_pass_all"', frag)
+        self.assertIn('data-items="mahler#11,mahler#10"', frag)
+        self.assertIn('Pass all 2', frag)
+        self.assertIn('data-arm="Tap again to pass 2"', frag)
+        self.assertIn('<ul class="checks"><li>one</li><li>two</li></ul>', frag)
+        self.assertIn('class="puats"', frag)                              # phone too
+        # collapsed to its header until opened, remembered like backlog groups
+        self.assertIn('data-group="uat:mahler-other-1"', frag)
+        self.assertIn('data-toggle-group="uat:mahler-other-1"', frag)
+        self.assertIn('Show 2 changes ▸', frag)
+
+    def test_one_open_change_has_no_pass_all(self):
+        self.ship('mahler', 10)
+        self.assertNotIn('data-act="uat_pass_all"', page.app(state.build(self.cfg, self.led)))
+
+    def items(self, *ns):
+        return {'items': [{'project': 'mahler', 'number': n} for n in ns]}
+
+    def test_pass_all_queues_a_pass_per_open_change(self):
+        for n in (10, 11, 12):
+            self.ship('mahler', n)
+        actions.run(self.cfg, self.led, 'uat_fail',
+                    {'project': 'mahler', 'number': 11, 'note': 'broke'})
+        self.led.set_uat_verdict('mahler', 12, 'pass')
+        res = actions.run(self.cfg, self.led, 'uat_pass_all', self.items(10, 11, 12, 10))
+        self.assertEqual((len(res["ids"]), res["skipped"]), (1, 3))
+        self.assertEqual([(r["kind"], r["number"]) for r in self.led.pending_actions()],
+                         [('uat_fail', 11), ('uat_pass', 10)])
+        ev = self.led.q1("SELECT * FROM events WHERE kind='console_uat_queued' "
+                         "ORDER BY id DESC")
+        self.assertEqual(json.loads(ev["detail"])["via"], "pass_all")
+
+    def test_pass_all_with_nothing_left_is_refused(self):
+        self.ship('mahler', 10)
+        self.led.set_uat_verdict('mahler', 10, 'pass')
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, 'uat_pass_all', self.items(10))
+
+    def test_pass_all_validates_every_change_first(self):
+        self.ship('mahler', 10)
+        for body in ({}, {'items': []}, {'items': 'mahler#10'},
+                     {'items': [{'project': 'mahler', 'number': 10}, 'x']},
+                     self.items(10, 999),
+                     {'items': [{'project': 'old', 'number': 10}]},
+                     self.items(*range(1, actions.UAT_PASS_ALL_MAX + 2))):
+            with self.subTest(body=str(body)[:60]), self.assertRaises(actions.ActionError):
+                actions.run(self.cfg, self.led, 'uat_pass_all', body)
+        self.assertEqual(self.led.pending_actions(), [])                 # all or nothing
+
+
 class UatPageTests(unittest.TestCase):
     """The Ready-to-test view: Pass, Fail, and the bug sheet."""
 
@@ -1101,6 +1224,9 @@ class UatPageTests(unittest.TestCase):
                        "pending": None}],
              "uat_count": 1, "banners": [],
              "capture": {"recent": [], "projects": []}}
+        s["uat_sessions"] = [{"key": "mahler-other-1", "label": "mahler · Other changes",
+                              "meta": "1 change", "items": s["uat"], "open": ["mahler#239"],
+                              "link": None, "link_label": None}]
         html = page._p_triage(s)
         self.assertIn('mahler#239</a> · merged 20:01', html)
         self.assertNotIn('mahler#239merged', html)
@@ -1114,6 +1240,9 @@ class UatPageTests(unittest.TestCase):
                        "pending": None}],
              "uat_count": 1, "banners": [],
              "capture": {"recent": [], "projects": []}}
+        s["uat_sessions"] = [{"key": "mahler-other-1", "label": "mahler · Other changes",
+                              "meta": "1 change", "items": s["uat"], "open": ["mahler#239"],
+                              "link": None, "link_label": None}]
         html = page._d_test(s)
         self.assertIn('mahler#239</a> · merged 20:01', html)
         self.assertNotIn('mahler#239merged', html)

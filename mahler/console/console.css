@@ -535,6 +535,29 @@ a { color: var(--acc); text-decoration: none; }
         display: flex; flex-direction: column; gap: 9px; }
 .puat .t { font-size: 14px; line-height: 1.4; }
 .puat .uatbtns .btn { min-height: 44px; flex: 1; }
+.uat .checks, .puat .checks { margin: 0; padding-left: 18px; color: var(--mut); font-size: 13px;
+  line-height: 1.45; overflow-wrap: anywhere; }
+/* Test sessions: the queue as sittings, with Pass all (mahler#504). */
+.uats { margin-bottom: 6px; }
+.uats:first-child { border-top: none; }
+.uats-h { display: flex; gap: 16px; align-items: flex-start; padding: 4px 0 6px; }
+.uats-h .body { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.uats-h .t { font-size: 15.5px; font-weight: 600; }
+.uats-h .lnk { font-size: 13px; }
+.uats-h .lnk a { color: var(--acc); }
+.uats, .puats { border-top: 1px solid var(--line); padding-top: 10px; }
+.uats-items { display: none; }
+.uats.open .uats-items, .puats.open .uats-items { display: flex; flex-direction: column; }
+.puats.open .uats-items { gap: 10px; }
+.uats-more { align-self: flex-start; border: none; background: none; padding: 4px 0;
+  color: var(--acc); font-size: 13px; cursor: pointer; min-height: 32px; }
+.uats .sh-hide, .puats .sh-hide, .uats.open .sh-show, .puats.open .sh-show { display: none; }
+.uats.open .sh-hide, .puats.open .sh-hide { display: inline; }
+.uat-all.armed { background: var(--acc); color: var(--bg); }
+.puats { display: flex; flex-direction: column; gap: 10px; }
+.puats .uats-h { flex-direction: column; gap: 8px; padding: 6px 0 0; }
+.puats .uats-h .uatbtns { width: 100%; }
+.puats .uats-h .uatbtns .btn { min-height: 44px; flex: 1; }
 
 /* The bug sheet: Fail opens it, 'File p1 bug' confirms (mahler#250). */
 .bugov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }

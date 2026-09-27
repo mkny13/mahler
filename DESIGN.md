@@ -1206,6 +1206,13 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - **Ready to test** lists shipped issues whose PR carried a "Needs a human to check" list
   and that have no verdict yet (D10). Pass records the verdict. Fail files a linked
   `type:bug p1` with your note and the SHA, which routes like any other bug.
+- **Ready to test is grouped into test sessions** (mahler#504). One change at a time
+  outgrew what one person can check, so the queue shows sittings instead. A session is one
+  project and `area:` label, else the change's parent goal, else "Other changes". It holds
+  at most 10 changes, because a sitting longer than that doesn't get done; a bigger group
+  splits into parts. Sessions start collapsed to their header, biggest first. **Pass all**
+  (two taps) queues a pass for every change in the session with no verdict yet. Fail stays
+  per change, so you fail the one that broke and then pass the rest.
 - **Undo a merge goes through the normal pipeline.** The tick makes the revert commit,
   files the issue and hands it to the conductor, so CI gates a revert like any change. The
   console always asks first.

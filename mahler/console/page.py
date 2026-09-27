@@ -427,10 +427,17 @@ def _uat_link(u):
     return f'<span class="lnk">{_a(u["link"], u["link_label"] + " ↗")}</span>'
 
 
+def _uat_checks(u):
+    checks = u.get("checks", [u["check"]] if u["check"] else [])
+    if not checks:
+        return ""
+    return ('<ul class="checks">' + "".join(f"<li>{e(c)}</li>" for c in checks) + "</ul>")
+
+
 def _uat_left(u):
     return (f'<div class="body"><span class="t">{e(u["title"])}</span>'
             f'<span class="meta">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span>'
-            f'<span class="check">{e(u["check"])}</span>{_uat_link(u)}</div>')
+            f'{_uat_checks(u)}{_uat_link(u)}</div>')
 
 
 def _uat_buttons(u):
@@ -450,11 +457,37 @@ def _uat_done(u):
     return ""
 
 
+def _uat_pass_all(c):
+    """One tap arms it, the second passes every change in the session that
+    has no verdict yet (mahler#504)."""
+    n = len(c["open"])
+    if n < 2:
+        return ""
+    return (f'<div class="uatbtns"><button class="btn uat-pass uat-all" data-act="uat_pass_all" '
+            f'data-items="{e(",".join(c["open"]))}" data-arm="Tap again to pass {n}">'
+            f'Pass all {n}</button></div>')
+
+
+def _uat_session_head(c):
+    link = (f'<span class="lnk">{_a(c["link"], c["link_label"] + " ↗")}</span>'
+            if c["link"] else "")
+    n = len(c["items"])
+    more = (f'<button class="uats-more" data-toggle-group="uat:{e(c["key"])}">'
+            f'<span class="sh-show">Show {n} change{"s" if n != 1 else ""} ▸</span>'
+            f' <span class="sh-hide">Hide changes ▾</span></button>')
+    return (f'<div class="uats-h"><div class="body"><span class="t">{e(c["label"])}</span>'
+            f'<span class="meta">{e(c["meta"])}</span>{link}{more}</div>{_uat_pass_all(c)}</div>')
+
+
 def _d_test(s):
     out = ['<section class="view view-test">']
-    for u in s["uat"]:
-        out.append(f'<div class="uat" data-uat="{e(u["ref"])}">'
-                   f'{_uat_left(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+    for c in s["uat_sessions"]:
+        out.append(f'<div class="uats" data-uat-session="{e(c["key"])}" '
+                   f'data-group="uat:{e(c["key"])}">{_uat_session_head(c)}<div class="uats-items">')
+        for u in c["items"]:
+            out.append(f'<div class="uat" data-uat="{e(u["ref"])}">'
+                       f'{_uat_left(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+        out.append("</div></div>")
     out.append("</section>")
     return "".join(out)
 
@@ -1033,12 +1066,17 @@ def _p_triage(s):
     if s["uat"]:
         out.append(f'<div class="psect" style="gap:12px"><span class="lbl">Ready to test · '
                    f'{s["uat_count"]}</span>')
-        for u in s["uat"]:
-            out.append(f'<div class="puat" data-uat="{e(u["ref"])}">'
-                       f'<div class="row"><span class="meta" style="font-size:10.5px">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span></div>'
-                       f'<div class="t">{e(u["title"])}</div>'
-                       f'<div class="check">{e(u["check"])}</div>'
-                       f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+        for c in s["uat_sessions"]:
+            out.append(f'<div class="puats" data-uat-session="{e(c["key"])}" '
+                       f'data-group="uat:{e(c["key"])}">{_uat_session_head(c)}'
+                       f'<div class="uats-items">')
+            for u in c["items"]:
+                out.append(f'<div class="puat" data-uat="{e(u["ref"])}">'
+                           f'<div class="row"><span class="meta" style="font-size:10.5px">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span></div>'
+                           f'<div class="t">{e(u["title"])}</div>'
+                           f'{_uat_checks(u)}'
+                           f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+            out.append("</div></div>")
         out.append("</div>")
     out.append("</div></section>")
     return "".join(out)

@@ -426,6 +426,13 @@
       return { project: el.getAttribute("data-project"),
         number: Number(el.getAttribute("data-number")) };
     }
+    if (act === "uat_pass_all") {
+      return { items: (el.getAttribute("data-items") || "").split(",").filter(Boolean)
+        .map(function (ref) {
+          var i = ref.lastIndexOf("#");
+          return { project: ref.slice(0, i), number: Number(ref.slice(i + 1)) };
+        }) };
+    }
     if (act === "uat_fail") {
       var bug = el.closest(".bugov");
       var ta = bug && bug.querySelector("textarea");
@@ -623,6 +630,13 @@
         var input = wrap.querySelector(".attach-in");
         if (input) { input.click(); }
       }
+      return;
+    }
+    if (el.hasAttribute("data-arm") && !el.classList.contains("armed")) {
+      // a bulk verdict takes two taps: the first only arms it (mahler#504)
+      var label = el.textContent;
+      el.classList.add("armed"); el.textContent = el.getAttribute("data-arm");
+      setTimeout(function () { el.classList.remove("armed"); el.textContent = label; }, 4000);
       return;
     }
     if (el.hasAttribute("data-act")) {

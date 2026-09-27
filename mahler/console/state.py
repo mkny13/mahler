@@ -78,6 +78,7 @@ def build(cfg, led, stats_range="week"):
         "needs": needs,
         "needs_count": sum(n["pending"] is None for n in needs),
         "uat": uat,
+        "uat_sessions": _uat_sessions(cfg, led, uat, now),
         # the count you act on: items with no verdict, recorded or queued
         "uat_count": sum(u["pending"] is None for u in uat),
         "backlog": backlog,
@@ -687,9 +688,82 @@ def _uat(cfg, led, projects):
             "url": _issue_url(cfg, project, n),
             "title": row["title"] or _ref(project, n),
             "meta": " · ".join(meta), "check": "; ".join(needs)[:200],
+            "checks": [t[:200] for t in needs[:UAT_CHECKS_SHOWN]],
             "link": link, "link_label": link_label,
             "pending": queued.get((project, n)),
+            "shipped": shipped,
         })
+    return out
+
+
+# A test session is one sitting: past this many changes it stops getting done,
+# so a bigger group splits into parts (mahler#504).
+UAT_SESSION_MAX = 10
+# checks listed per change inside a session; the issue has the rest
+UAT_CHECKS_SHOWN = 6
+
+
+def _uat_group(led, project, number):
+    """What a change gets tested alongside: its area label, else its parent
+    goal, else the project's other changes. Returns (key, label)."""
+    it = led.item(project, number)
+    if it:
+        try:
+            labels = json.loads(it["labels"] or "[]")
+        except ValueError:
+            labels = []
+        areas = sorted(l[5:] for l in labels
+                       if isinstance(l, str) and l.startswith("area:") and l[5:])
+        if areas:
+            return f"area:{areas[0]}", areas[0]
+        if it["parent"]:
+            goal = led.item(project, it["parent"])
+            title = goal["title"] if goal and goal["title"] else None
+            return (f"goal:{it['parent']}",
+                    f"#{it['parent']} {title}" if title else f"goal #{it['parent']}")
+    return "other", "Other changes"
+
+
+def _uat_sessions(cfg, led, uat, now):
+    """Ready to test as sittings, not single changes (mahler#504): one
+    session per project and area (or parent goal), at most UAT_SESSION_MAX
+    changes each, the biggest first. Pass all covers a whole session; Fail
+    stays per change."""
+    groups = {}
+    for u in uat:                      # newest shipment first, as pending_uat
+        key, label = _uat_group(led, u["project"], u["number"])
+        g = groups.setdefault((u["project"], key), {"label": label, "items": []})
+        g["items"].append(u)
+    out = []
+    for (project, key), g in groups.items():
+        items = g["items"]
+        parts = [items[i:i + UAT_SESSION_MAX]
+                 for i in range(0, len(items), UAT_SESSION_MAX)]
+        pol = config.project_policy(cfg, project)
+        shared = pol.get("uat_url")
+        if shared and ("{number}" in shared or "{pr}" in shared):
+            shared = None               # a per-change link: each row keeps its own
+        for i, part in enumerate(parts, 1):
+            open_ = [u for u in part if u["pending"] is None]
+            label = f"{project} · {g['label']}"
+            if len(parts) > 1:
+                label += f" · part {i} of {len(parts)}"
+            shipped = [u["shipped"] for u in part if u["shipped"]]
+            meta = [f"{len(part)} change{'s' if len(part) != 1 else ''}",
+                    f"{sum(len(u['checks']) for u in part)} checks"]
+            if shipped:
+                first, last = _brief_when(min(shipped), now), _brief_when(max(shipped), now)
+                meta.append(f"merged {first}" if first == last else f"merged {first}–{last}")
+            out.append({
+                "key": re.sub(r"[^A-Za-z0-9_.-]+", "-", f"{project}-{key}-{i}"),
+                "project": project, "label": label, "meta": " · ".join(meta),
+                "items": part, "open": [u["ref"] for u in open_],
+                "link": shared,
+                "link_label": (pol.get("uat_url_label") or "Staging") if shared else None,
+                "newest": max(shipped) if shipped else None,
+            })
+    out.sort(key=lambda c: (-len(c["open"]), -(c["newest"].timestamp() if c["newest"] else 0),
+                            c["label"]))
     return out
 
 
