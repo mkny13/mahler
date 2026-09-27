@@ -215,6 +215,75 @@ class StaleReportTests(unittest.TestCase):
         self.assertNotIn("c", {r[0] for r in rows})
 
 
+
+class VariantProvenanceTests(unittest.TestCase):
+    """D33 variants inherit D25 provenance without changing audit inputs."""
+
+    def check_variant(self, platforms, dates, expected_date, root=None):
+        cfg = {"platforms": platforms}
+        before = copy.deepcopy(cfg)
+        rows = platform_audit.stale_report(cfg, dates, NOW, stale_days=90)
+        row = next(row for row in rows if row[0] == "variant")
+        age = (NOW.date() - datetime.fromisoformat(expected_date).date()).days if expected_date else None
+        self.assertEqual(row, ("variant", expected_date, age,
+                               expected_date is None or age >= 90))
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        with mock.patch.object(platform_audit, "verified_dates", return_value=dates):
+            body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        table = body.split("## Observed ledger outcomes", 1)[0]
+        cell = f"`variant` (via `{root}`)" if root else "variant"
+        flag = "**NO ANNOTATION FOUND**" if not expected_date else ("**STALE**" if age >= 90 else "ok")
+        self.assertIn(f"| {cell} | {expected_date or '—'} | {age if age is not None else '—'} | {flag} |", table)
+        self.assertEqual(cfg, before)
+
+    def test_base_slot_variant_inherits_fresh_and_stale_dates(self):
+        for date in ("2026-09-01", "2026-01-01"):
+            with self.subTest(date=date):
+                self.check_variant({"base": {}, "variant": {"slot": "base"}},
+                                   {"base": date}, date, "base")
+
+    def test_derived_slot_variant_follows_slot_then_from_chain(self):
+        # Synthetic entries copy `from`; following it first would bypass the owner.
+        self.check_variant({"base": {}, "middle": {"from": "base"},
+                            "work": {"from": "middle"}, "wrong": {},
+                            "variant": {"slot": "work", "from": "wrong"}},
+                           {"base": "2026-09-01", "wrong": "2026-01-01"},
+                           "2026-09-01", "base")
+
+    def test_own_annotation_wins_even_with_invalid_provenance(self):
+        for owner in ("base", "missing", "variant"):
+            with self.subTest(owner=owner):
+                self.check_variant({"base": {}, "variant": {"slot": owner}},
+                                   {"base": "2026-01-01", "variant": "2026-09-10"},
+                                   "2026-09-10")
+
+    def test_missing_evidence_has_no_via_suffix(self):
+        for platforms in (
+            {"variant": {"slot": "unknown", "from": "base"}, "base": {}},
+            {"variant": {"slot": "work"}, "work": {"from": "unknown"}},
+            {"variant": {"slot": "base"}, "base": {}},
+            {"variant": {"slot": "variant"}},
+            {"variant": {"slot": "work"}, "work": {"from": "variant"}},
+            {"variant": {"from": "work"}, "work": {"slot": "variant"}},
+        ):
+            with self.subTest(platforms=platforms):
+                self.check_variant(platforms, {"unknown": "2026-09-01"}, None)
+
+    def test_all_enabled_expanded_variants_inherit_root_dates(self):
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"]["work-test"] = dict(cfg["platforms"]["codex"], **{"from": "codex"})
+        config.expand_variants(cfg)
+        dates = platform_audit.verified_dates(platform_audit._design_md_text())
+        rows = platform_audit.stale_report(cfg, dates, NOW, stale_days=90)
+        variants = [row for row in rows if cfg["platforms"][row[0]].get("slot")]
+        self.assertTrue(variants)
+        for name, date, _, _ in variants:
+            with self.subTest(name=name):
+                self.assertIsNotNone(date)
+                self.assertEqual(date, dates[platform_audit._root_platform(cfg, name)])
+
+
 class DerivedPlatformInheritanceTests(unittest.TestCase):
     """mahler#227: a `from = "<base>"` derived platform (D25) inherits its
     root base's verified date instead of being permanently flagged."""
@@ -498,7 +567,10 @@ class BuildBodyTests(unittest.TestCase):
         cfg["platforms"]["claude-work"] = {"enabled": True, "from": "claude"}
         pol = config.platform_audit_policy(cfg)
         body = platform_audit.build_body(cfg, led, pol)
-        self.assertNotIn("via", body[:body.index("Observed ledger outcomes")])
+        table = body[:body.index("Observed ledger outcomes")]
+        self.assertIn("| claude-work | — | — | **NO ANNOTATION FOUND** |", table)
+        self.assertNotIn("`claude-work` (via", table)
+        self.assertNotIn("`claude` (via", table)
 
 
 if __name__ == "__main__":

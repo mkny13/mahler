@@ -988,6 +988,26 @@ outcomes support the current ladder where attribution is clear: `codex-work` (79
 names separate; ambiguous rename attribution must not become automatic aliasing. These
 ledger outcomes do not advance any `verified <date>` annotation.
 
+**Decision record (2026-09-27, mahler#517):** Retain every checked-in tier, size
+gate, model pin, and routing default. The reported inversions reflect effective runtime
+overrides and mixed account/project/task/model-era workloads: `agy-gemini` is already
+tier 3 in `config.py`, although the report shows runtime tier 2, and
+`work-codex-makastel-medium` is an account-specific derived slot. Aggregate done-rate
+is an anomaly signal, not like-for-like evidence for changing escalation tiers. D33's
+per-role/per-size first-attempt success and cost scorecard supplies routing evidence.
+Kilo's observed models are dynamic choices behind `kilo/kilo-auto/free`; its missing
+price remains an accepted unknown for that free aggregate route. Dominated rows cover
+historical/base-slot observations or account-specific runtime variants, so they do not
+justify a checked-in pin change. Measured routing ranks proven variants; pin changes
+need attributable per-variant evidence.
+
+The missing annotations on D33 synthetic variants were false positives. The audit now
+follows their `slot` owner and then any D25 `from` chain to the root annotation, with
+an entry's own annotation taking precedence. Unknown owners and cyclic provenance
+remain missing evidence, without a misleading inheritance suffix. This corrects
+attribution only: no live CLI/model verification was performed and no existing
+verification date is advanced.
+
 ### D21 — Opus plans; the free tiers build what it planned
 
 Decided 2026-09-13. The research agrees on the split and on its limits:
