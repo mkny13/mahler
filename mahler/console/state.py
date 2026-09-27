@@ -85,6 +85,7 @@ def build(cfg, led, stats_range="week"):
         "needs": needs,
         "needs_count": sum(n["pending"] is None for n in needs),
         "uat": uat,
+        "sessions": _uat_sessions(uat),
         # the count you act on: items with no verdict, recorded or queued
         "uat_count": sum(u["pending"] is None for u in uat),
         "backlog": backlog,
@@ -722,7 +723,16 @@ def _uat(cfg, led, projects):
             link, link_label = _pr_url(cfg, project, row["pr"]), f"PR #{row['pr']}"
         else:
             link, link_label = None, None
+        item = led.item(project, n)
+        labels = json.loads(row_get(item, "labels", "[]") or "[]")
+        areas = sorted(label for label in labels if label.startswith("area:"))
+        parent = row_get(item, "parent")
+        group = areas[0] if areas else f"Part of #{parent}" if parent else "Other changes"
+        shared = bool(uat_url and "{number}" not in uat_url and "{pr}" not in uat_url)
         out.append({
+            "group": group, "shared_link": link if shared else None,
+            "pr_link": _pr_url(cfg, project, row["pr"]) if row["pr"] else None,
+            "pr_label": f"PR #{row['pr']}" if row["pr"] else None,
             "project": project, "number": n, "ref": _ref(project, n),
             "url": _issue_url(cfg, project, n),
             "title": row["title"] or _ref(project, n),
@@ -731,6 +741,34 @@ def _uat(cfg, led, projects):
             "pending": queued.get((project, n)),
         })
     return out
+
+
+def _uat_sessions(uat):
+    """Bounded review sessions; retain the flat queue for per-change overlays."""
+    groups = {}
+    for u in uat:
+        groups.setdefault((u["project"], u.get("group", "Other changes")), []).append(u)
+    sessions = []
+    for (project, group), changes in sorted(groups.items()):
+        parts = (len(changes) + 9) // 10
+        for offset in range(0, len(changes), 10):
+            part = offset // 10 + 1
+            rows = changes[offset:offset + 10]
+            count = sum(u["pending"] is None for u in rows)
+            title = f"{project} · {group}"
+            if parts > 1:
+                title += f" · Part {part} of {parts}"
+            sessions.append({
+                "title": title, "project": project, "group": group,
+                "part": part, "parts": parts, "changes": rows,
+                "pending_count": count,
+                "link": rows[0].get("shared_link"), "link_label": rows[0]["link_label"],
+                # Confirmation is local to this rendered snapshot, never persisted.
+                "pass_all": {"confirmed": False, "disabled": count == 0,
+                             "label": f"Pass all {count}",
+                             "confirm_label": f"Tap again to pass all {count}"},
+            })
+    return sorted(sessions, key=lambda session: -session["pending_count"])
 
 
 # ---------- backlog ----------

@@ -501,6 +501,41 @@
     });
   }
 
+  // Shared across both layouts, including requests whose refresh is still pending.
+  var verdictRequests = Object.create(null);
+  var passAllBusy = false;
+
+  function verdictKey(payload) { return payload.project + "#" + payload.number; }
+
+  function passAll(button) {
+    if (passAllBusy || button.disabled) { return Promise.resolve(); }
+    var candidates = Array.from(button.closest(".uat-session").querySelectorAll('[data-act="uat_pass"]'))
+      .map(function (el) { return payloadFor(el, "uat_pass"); })
+      .filter(function (payload) { return !verdictRequests[verdictKey(payload)]; });
+    if (!candidates.length) { button.disabled = true; return Promise.resolve(); }
+    // Bind confirmation to the exact membership; a new render always starts unconfirmed.
+    var signature = candidates.map(verdictKey).join(",");
+    if (button.getAttribute("data-pass-all-state") !== signature) {
+      button.setAttribute("data-pass-all-state", signature);
+      button.textContent = "Tap again to pass all " + candidates.length;
+      return Promise.resolve();
+    }
+    passAllBusy = true;
+    button.disabled = true;
+    candidates.forEach(function (payload) { verdictRequests[verdictKey(payload)] = true; });
+    // Existing endpoints fence queued/recorded verdicts even if another browser acts.
+    var chain = Promise.resolve();
+    candidates.forEach(function (payload) {
+      chain = chain.then(function () { return post("uat_pass", payload); });
+    });
+    return chain.finally(function () {
+      candidates.forEach(function (payload) { delete verdictRequests[verdictKey(payload)]; });
+      passAllBusy = false;
+      button.disabled = false;
+      button.setAttribute("data-pass-all-state", "idle");
+    });
+  }
+
   function numberValue(form, name) {
     var el = form.querySelector('[data-setting="' + name + '"]');
     return el && el.value !== "" ? Number(el.value) : "";
@@ -807,12 +842,21 @@
       }
       return;
     }
+    if (el.hasAttribute("data-pass-all")) {
+      passAll(el).catch(function (err) { if (window.console) { console.warn(err); } });
+      return;
+    }
     if (el.hasAttribute("data-act")) {
       var act = el.getAttribute("data-act");
+      var verdict = act === "uat_pass" || act === "uat_fail";
+      var payload = payloadFor(el, act);
+      var key = verdict ? verdictKey(payload) : null;
+      if (verdict && (passAllBusy || verdictRequests[key])) { return; }
+      if (verdict) { verdictRequests[key] = true; }
       el.disabled = true;
       if (act === "digest_seen") { root.removeAttribute("data-digest"); }
-      post(act, payloadFor(el, act)).catch(function (err) { if (window.console) { console.warn(err); } })
-        .finally(function () { el.disabled = false; });
+      post(act, payload).catch(function (err) { if (window.console) { console.warn(err); } })
+        .finally(function () { if (verdict) { delete verdictRequests[key]; } el.disabled = false; });
     }
   });
 
