@@ -436,7 +436,10 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
            # max_size is otherwise the routing contract's exact ceiling.
            "route_size": ROUTE_SIZE_NAMES.get(pconf.get("max_size"), "large"),
            "until": None, "over": [], "soft_pct": 100}
-    if state == "soft" and hold_until and hold_until > now:
+    if state == "no_credit" and hold_until and hold_until > now:
+        row.update(state="no_credit", until=hold_until, label="credits", tone="bad", width=100,
+                   detail=f"out of credits, next try {_hhmm(hold_until)}")
+    elif state == "soft" and hold_until and hold_until > now:
         row.update(state="hold", until=hold_until, label="hold", tone="warn",
                    width=100, detail=f"on hold until {_hhmm(hold_until)} — {router.hold_label(led, name)}")
     elif state == "hard" and not metered:
@@ -1568,6 +1571,13 @@ def _idle(cfg, led, s, hot, now):
                                     for q in backoff if q["until"]) or None,
             "action": "Clear backoff", "act": "clear_backoff",
             "platforms": [q["name"] for q in backoff]})
+    no_credit = [q for q in s["quota"] if q["state"] == "no_credit"]
+    if no_credit:
+        reasons.append({
+            "text": f"{_join(q['name'] for q in no_credit)} "
+                    f"{'is' if len(no_credit) == 1 else 'are'} out of credits.",
+            "countdown": " · ".join(f"{q['name']} next try {_dur(q['until'] - now)}"
+                                    for q in no_credit if q["until"]) or None})
     holds = [q for q in s["quota"] if q["state"] == "hold"]
     if holds:
         reasons.append({

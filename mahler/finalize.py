@@ -8,6 +8,7 @@ the item moves to whatever state its outcome implies.
 
 import json
 import os
+import re
 import subprocess
 from datetime import timedelta
 
@@ -16,7 +17,7 @@ from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
 
-NO_ATTEMPT = ("quota", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
+NO_ATTEMPT = ("quota", "no_credit", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
               "model_unavailable")
 
 MAX_OPTIONS = 3
@@ -263,7 +264,7 @@ ENDINGS = (
     (lambda e: e.verb == "YIELDED", _ended_preempted),
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
-    (lambda e: e.reason in ("quota", "lost-lease", "handoff"), _ended_out_of_reach),
+    (lambda e: e.reason in ("quota", "no_credit", "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),
@@ -280,15 +281,66 @@ def _dispatch(e):
 
 # ---------- finalize ----------
 
+def _credit_state(led, platform):
+    try:
+        state = json.loads(led.get_kv(f"credit_state:{platform}") or "{}")
+    except (TypeError, ValueError):
+        state = {}
+    return state if isinstance(state, dict) else {}
+
+
 def _backoff_until(ctx, run, log):
     """When a quota error named its own reset time, honour it (mahler#124);
     otherwise wait the platform's flat backoff. None when quota wasn't hit."""
     if not log["quota_hit"]:
         return None
     pconf = ctx.cfg["platforms"][run["platform"]]
-    minutes = log["retry_after"] if log["retry_after"] is not None \
-        else pconf.get("backoff_minutes", 60)
+    if log.get("credit_exhausted"):
+        # The first retry is in one hour, then 2h, 4h ... capped at a day.
+        # A reset time named by the provider wins, as it does for daily caps.
+        state = _credit_state(ctx.led, run["platform"])
+        failures = int(state.get("failures") or 0) + 1
+        minutes = log["retry_after"] if log["retry_after"] is not None else min(24 * 60, 60 * (2 ** (failures - 1)))
+    else:
+        minutes = log["retry_after"] if log["retry_after"] is not None \
+            else pconf.get("backoff_minutes", 60)
     return iso(ctx.led.now() + timedelta(minutes=minutes))
+
+
+def _record_credit_failure(ctx, run, log):
+    """Persist the platform's credit outage without spending item attempts."""
+    led, platform, now = ctx.led, run["platform"], ctx.led.now()
+    state = _credit_state(led, platform)
+    if not state.get("since"):
+        state["since"] = iso(now)
+    state["failures"] = int(state.get("failures") or 0) + 1
+    raw = (log.get("last_error") or log.get("last_text") or "").strip()
+    match = re.search(r"balance(?:\s+is)?\s+(\$-\d+(?:\.\d+)?)", raw, re.IGNORECASE)
+    state["balance"] = match.group(1) if match else raw[-240:]
+    state.setdefault("alerted", False)
+    since = parse(state["since"])
+    if since and not state["alerted"] and now - since >= timedelta(hours=24):
+        detail = (f"{platform} has been out of credits since {state['since']} "
+                  f"(balance {state['balance'] or 'unavailable'}); still retrying every 24h")
+        led.event("credit_exhausted", detail=detail)
+        ctx.ping(f"Mahler: {platform} is out of credits", detail, priority="high", tags="warning")
+        state["alerted"] = True
+    led.set_kv(f"credit_state:{platform}", json.dumps(state))
+
+
+def _record_credit_recovery(ctx, platform):
+    """Clear an outage after a real successful startup and notify once."""
+    led = ctx.led
+    state = _credit_state(led, platform)
+    if not state:
+        return
+    led.clear_usage(platform, [router.HOLD])
+    led.set_kv(f"hold_reason:{platform}", None)
+    led.set_kv(f"credit_state:{platform}", "{}")
+    led.event("credit_recovered", detail=f"{platform} recovered from an out-of-credit outage")
+    if state.get("alerted"):
+        ctx.ping(f"Mahler: {platform} credits recovered",
+                 f"{platform} passed startup and is back in rotation.", priority="high", tags="white_check_mark")
 
 
 def _record_run_usage(ctx, run, kind, log):
@@ -300,6 +352,10 @@ def _record_run_usage(ctx, run, kind, log):
         return
     for w, pct, resets in log["usage"]:
         led.record_usage(run["platform"], w, pct, resets)
+    if log.get("credit_exhausted"):
+        until = _backoff_until(ctx, run, log)
+        led.record_usage(run["platform"], router.HOLD, 100.0, until)
+        led.set_kv(f"hold_reason:{run['platform']}", "no_credit")
     if until:
         for w in ctx.cfg["platforms"][run["platform"]].get("windows", router.WINDOWS):
             led.record_usage(run["platform"], w, 100.0, until)
@@ -374,13 +430,18 @@ def finalize(ctx, run):
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
-    reason = run["stop_reason"] or ("quota" if log["quota_hit"] else None) or \
+    reason = run["stop_reason"] or ("no_credit" if log.get("credit_exhausted") else
+                                     "quota" if log["quota_hit"] else None) or \
              ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
              ("setup-failed" if setup_failed else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
     if verb == "BLOCKED" and rest and not setup_failed:
         outcome = f"{verb} {rest}"
+    if log.get("credit_exhausted"):
+        _record_credit_failure(ctx, run, log)
+    elif reason is None and (log.get("ok") is True or verb in {"DONE", "READY", "SPLIT", "REVIEW-PASS"}):
+        _record_credit_recovery(ctx, run["platform"])
     ctx.say(f"{project}#{n}: run {run['id']} ({run['role']} on {run['platform']}) ended — "
             f"{outcome}{f' [{reason}]' if reason else ''}")
     if ctx.dry_run:
@@ -744,6 +805,7 @@ REASON_TEXT = {
     "closed": "the issue was closed", "parked": "parked", "lost-lease": "lost its lease",
     "setup-failed": "the project's setup step failed (exit 97)",
     "model_unavailable": "the CLI rejected its model",
+    "no_credit": "the platform is out of credits",
 }
 
 

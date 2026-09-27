@@ -71,6 +71,12 @@ class CreditExhaustionTests(unittest.TestCase):
             self.assertFalse(result["credit_exhausted"])
             self.assertTrue(result["quota_hit"])
 
+    def test_status_line_strips_markdown_emphasis(self):
+        self.assertEqual(platforms.status_line("STATUS: **DONE** all set"),
+                         ("DONE", "all set"))
+        self.assertEqual(platforms.status_line("STATUS: MERGED by mistake"),
+                         ("MERGED", "by mistake"))
+
 
 class ReadLogResumeInfoTests(unittest.TestCase):
     def test_kilo_log_extracts_session_id_and_last_error(self):

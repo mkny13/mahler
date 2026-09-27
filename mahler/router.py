@@ -318,6 +318,7 @@ def codex_detail(led, name, pconf):
 HOLD_REASON_TEXT = {
     "silent": "a run never started",
     "model_unavailable": "the CLI rejected its model",
+    "no_credit": "the platform is out of credits",
 }
 
 
@@ -341,6 +342,9 @@ def usage_state(led, name, pconf, burst_lines=None):
         # sat silent at startup, or its model was rejected). Soft, so a run
         # already making progress keeps going.
         until = hold_until
+        if led.get_kv(f"hold_reason:{name}") == "no_credit":
+            return "no_credit", (f"out of credits, next try {until.astimezone():%H:%M} "
+                                  f"(in {fmt_countdown(until - now)})")
         return "soft", (f"on hold until {until.astimezone():%H:%M} "
                         f"(in {fmt_countdown(until - now)}) ({hold_label(led, name)})")
     if not is_metered(led, name, pconf):
