@@ -661,3 +661,12 @@ a { color: var(--acc); text-decoration: none; }
 .view-models table, .tabv-models table { width: 100%; border-collapse: collapse; }
 .view-models caption, .tabv-models caption { text-align: left; font-weight: 600; }
 .view-models td, .tabv-models td { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+
+/* Test sessions share their heading and bulk verdict across both layouts. */
+.uat-session { border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+.uat-session header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 12px; }
+.uat-session h3 { flex-basis: 100%; margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.uat-session header .lnk a { color: var(--acc); }
+.uat-session header .btn { margin-left: auto; min-height: 44px; white-space: normal; }
+.uat-session .puat { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+.puat .body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

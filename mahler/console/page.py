@@ -13,7 +13,7 @@ import json
 import os
 from urllib.parse import quote
 
-from .state import MODELS_LABEL, STATS_RANGES, _hhmm
+from .state import MODELS_LABEL, STATS_RANGES, _hhmm, _uat_sessions
 from ..ledger import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -479,11 +479,32 @@ def _uat_done(u):
     return ""
 
 
+def _uat_cards(s, phone=False):
+    out = []
+    for session in (s["sessions"] if "sessions" in s else _uat_sessions(s["uat"])):
+        confirm = session["pass_all"]
+        out.append(f'<article class="uat-session"><header><h3>{e(session["title"])}</h3>'
+                   f'<span class="meta">{session["pending_count"]} awaiting verdict</span>'
+                   f'{_uat_link(session)}'
+                   f'<button class="btn uat-pass" data-pass-all data-pass-all-state="idle" '
+                   f'data-confirm-label="{e(confirm["confirm_label"])}"'
+                   f'{" disabled" if confirm["disabled"] else ""}>{e(confirm["label"])}</button>'
+                   '</header>')
+        for u in session["changes"]:
+            row = dict(u)
+            if session["link"]:
+                row["link"] = None
+            elif "pr_link" in row:
+                row["link"], row["link_label"] = row["pr_link"], row["pr_label"]
+            out.append(f'<div class="{"puat" if phone else "uat"}" data-uat="{e(u["ref"])}">'
+                       f'{_uat_left(row)}{_uat_done(u) or _uat_buttons(u)}</div>')
+        out.append('</article>')
+    return "".join(out)
+
+
 def _d_test(s):
     out = ['<section class="view view-test">']
-    for u in s["uat"]:
-        out.append(f'<div class="uat" data-uat="{e(u["ref"])}">'
-                   f'{_uat_left(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+    out.append(_uat_cards(s))
     out.append("</section>")
     return "".join(out)
 
@@ -1084,12 +1105,7 @@ def _p_triage(s):
     if s["uat"]:
         out.append(f'<div class="psect" style="gap:12px"><span class="lbl">Ready to test · '
                    f'{s["uat_count"]}</span>')
-        for u in s["uat"]:
-            out.append(f'<div class="puat" data-uat="{e(u["ref"])}">'
-                       f'<div class="row"><span class="meta" style="font-size:10.5px">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span></div>'
-                       f'<div class="t">{e(u["title"])}</div>'
-                       f'<div class="check">{e(u["check"])}</div>'
-                       f'{_uat_link(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
+        out.append(_uat_cards(s, phone=True))
         out.append("</div>")
     out.append("</div></section>")
     return "".join(out)
