@@ -868,7 +868,7 @@ def _weekly_account(row):
             f'<span class="t-mut">{e(row["model"])}</span>'
             f'<div>{e(row["usage_text"])}</div>{bar}'
             f'<div>{e(row["reset_text"])}</div>'
-            + ('<div class="t-mut">Stale reading</div>' if row["stale"] else '')
+            + (f'<div class="t-mut">{e(row["stale_text"])}</div>' if row["stale"] else '')
             + (f'<div>{e(row["overlay"]["text"])}</div>' if row["overlay"] else '') + '</div>')
 
 

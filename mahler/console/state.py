@@ -577,7 +577,7 @@ def _weekly_quota_view(cfg, led, quota, now):
                "position": seconds / 6048 if day is not None else None,
                "usage_text": (f"{window} · {pct:.0f}% used · soft line {soft:.0f}%"
                               if pct is not None else f"{window} · usage unknown"),
-               "stale": q["state"] == "stale", "overlay": None}
+               "stale": q["state"] == "stale", "stale_text": "Stale reading", "overlay": None}
         short = windows.get("5h")
         if q["claude"] and short and short.get("resets"):
             delta = (short["resets"] - now).total_seconds()

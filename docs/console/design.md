@@ -656,3 +656,22 @@ the GitHub call. Delivery is not exactly-once across a process crash between the
 GitHub post and the local commit; the queue does not automatically retry recorded
 failures. Console replies explicitly bypass the GitHub wrapper's agent marker so
 the existing comment sync handles answers and `/mahler` commands.
+
+### Weekly quota resets (mahler#534)
+
+Capacity has a third mode, **Weekly**, alongside By quota and By capability.
+The seven columns are elapsed 24-hour ranges starting now, not midnight-aligned
+calendar days. The header names each range's starting day; its tooltip gives both
+endpoints. Reset rules share a time axis, with Now at the left edge. Each account
+has a separate current-usage bar and soft-line tick, so usage cannot be confused
+with elapsed time. Shared quota groups appear once. Weekly windows take precedence
+when a group reports both weekly and monthly usage.
+
+Phone Browse includes the same schedule as seven expandable ranges, retaining
+empty days so gaps remain visible. Unknown, past, and later resets stay listed
+separately. Missing readings say usage unknown; stale readings are labelled.
+A known Claude 5h reset within the first 24 hours adds a thin band and a text label.
+All dates use the server's local timezone, shown explicitly; each endpoint is
+localized separately across daylight-saving changes. Neither layout predicts a
+missing reset or rolls a past reset forward. The schedule is built only for
+Capacity, phone Browse, and the full state API; other page fragments omit it.
