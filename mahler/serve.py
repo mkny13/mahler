@@ -19,7 +19,6 @@ launchd plist template in launcher/ says how.
 
 import ipaddress
 import json
-import subprocess
 import sys
 import threading
 import time

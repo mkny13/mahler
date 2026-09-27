@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import re
-import sqlite3
 from typing import Any, List, Optional
 
 from .ledger import iso, parse, row_get
