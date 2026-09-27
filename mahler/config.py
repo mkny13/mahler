@@ -156,7 +156,8 @@ DEFAULTS = {
     "scheduling": {"priority_projects": ["mahler"]},
     "ntfy": {"server": "https://ntfy.sh", "topic": "", "topic_high": ""},
     # the operator console (`mahler serve`, DESIGN D10, D27)
-    "serve": {"host": "127.0.0.1", "port": 8787, "public_url": ""},
+    "serve": {"host": "127.0.0.1", "port": 8787, "public_url": "",
+              "slow_request_ms": 3000},
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
     # tick at/after `hour` local time; once-only via the ledger kv table
     "digest": {"hour": 8},

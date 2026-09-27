@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import config
+from . import config, redact
 from .console import actions, page, state
 from . import version as _version
 
@@ -266,9 +266,21 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(400, {"ok": False, "error": "the body is not valid JSON"})
             return
+        wait_started = time.monotonic()
+        wait_ms = action_ms = None
         try:
-            with self.lock:
-                result = actions.run(self.load_cfg(), self.led, name, body)
+            try:
+                with self.lock:
+                    wait_ms = (time.monotonic() - wait_started) * 1000
+                    action_started = time.monotonic()
+                    try:
+                        result = actions.run(self.load_cfg(), self.led, name, body)
+                    finally:
+                        action_ms = (time.monotonic() - action_started) * 1000
+            finally:
+                # The event is deliberately outside the action lock: a slow
+                # or broken telemetry write must not delay other console work.
+                self._record_slow_request(path, wait_ms, action_ms)
         except actions.ActionError as e:
             self._json(400, {"ok": False, "error": str(e)})
             return
@@ -276,6 +288,23 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(500, {"ok": False, "error": "the action failed"})
             raise
         self._json(200, {"ok": True, **(result or {})})
+
+    def _record_slow_request(self, path, wait_ms, action_ms):
+        """Best-effort telemetry for a POST delayed before or inside its action."""
+        try:
+            if wait_ms is None or action_ms is None:
+                return
+            threshold = self.load_cfg()["serve"].get("slow_request_ms", 3000)
+            if max(wait_ms, action_ms) <= threshold:
+                return
+            self.led.event("console_slow_request", detail={
+                "path": redact.redact(path),
+                "wait_ms": wait_ms,
+                "action_ms": action_ms,
+            })
+        except Exception:
+            # Observability must never change the request's result.
+            pass
 
     def _reject(self):
         self.send_error(405, "only GET, and POST to /api/<action>")
