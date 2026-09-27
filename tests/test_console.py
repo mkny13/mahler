@@ -2152,10 +2152,14 @@ class UatOutboxTests(unittest.TestCase):
         id = self.queue('uat_fail', note='the ping never arrived')
         self.drain()
         title, body, labels = self.gh.create_issue.call_args[0]
-        self.assertEqual(title, 'UAT failed: Wired the exporter')
-        self.assertIn('> the ping never arrived', body)
-        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
-        self.assertIn('## Needs a human to check\n- the new ping arrives', body)
+        self.assertEqual(title, 'UAT fail: Wired the exporter (mahler#9)')
+        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertIn('**Area:** none', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
+        self.assertIn('the ping never arrived', body)
+        self.assertIn('---', body)
+        self.assertIn('Filed automatically from the in-app UAT check. '
+                      'Passing this item again does not close this issue.', body)
         self.assertEqual(labels, ['type:bug', 'p1'])
         self.gh.comment.assert_called_once_with(9, "❌ **UAT failed** — filed #42.",
                                                 agent=False)
@@ -2173,8 +2177,8 @@ class UatOutboxTests(unittest.TestCase):
         self.queue('uat_fail', note='')
         self.drain()
         body = self.gh.create_issue.call_args[0][1]
-        self.assertNotIn('>', body)
-        self.assertIn('Found checking #9 — PR #88, build 4c1f0ab.', body)
+        self.assertNotIn('Found checking', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
         self.assertIsNone(self.uat()['note'])
 
     def test_fail_labels_the_project_scope(self):
@@ -2217,6 +2221,36 @@ class UatOutboxTests(unittest.TestCase):
         self.drain()
         body = self.gh.create_issue.call_args[0][1]
         self.assertIn('\n\nAttachment: [some-uuid.png](https://console.example.com/attachments/some-uuid.png) (`~/.mahler/attachments/some-uuid.png`)', body)
+
+
+class UatBugShapeTests(unittest.TestCase):
+    """The #292 UAT-failure title and body contract."""
+
+    def test_title_uses_item_id(self):
+        from mahler.console import outbox
+        self.assertEqual(outbox.uat_bug_title('mahler#9', 'Wired the exporter'),
+                         'UAT fail: Wired the exporter (mahler#9)')
+
+    def test_body_contains_all_fields_and_verbatim_note(self):
+        from mahler.console import outbox
+        body = outbox.uat_bug_body(
+            'mahler#9', 'Wired the exporter', 'console',
+            'https://github.com/mkny13/mahler/pull/88',
+            'the ping never arrived')
+        self.assertIn('**UAT item:** `mahler#9` — Wired the exporter', body)
+        self.assertIn('**Area:** console', body)
+        self.assertIn('**Source:** https://github.com/mkny13/mahler/pull/88', body)
+        self.assertIn('the ping never arrived', body)
+        self.assertTrue(body.endswith(
+            'Filed automatically from the in-app UAT check. '
+            'Passing this item again does not close this issue.'))
+
+    def test_body_without_note_has_no_note_paragraph(self):
+        from mahler.console import outbox
+        body = outbox.uat_bug_body('couch-tour#258', 'Gradient', None, '', '')
+        lines = body.split('\n')
+        source = next(i for i, line in enumerate(lines) if line.startswith('**Source:**'))
+        self.assertEqual(lines[source + 1:source + 3], ['', '---'])
 
 
 class CaptureStateTests(unittest.TestCase):
