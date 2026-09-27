@@ -72,6 +72,28 @@ from . import redact
 
 HOME = os.path.expanduser("~")
 
+# Credit exhaustion is separate from a transient rate limit.  Keep these
+# phrases ahead of QUOTA_WORDS: the latter intentionally contains "credit" and
+# would otherwise turn a permanent account balance failure into a one-hour
+# retry (mahler#523).
+CREDIT_EXHAUSTED_WORDS = (
+    "insufficient balance",
+    "add credits to continue",
+    "credits balance is $-",
+)
+
+
+def is_credit_exhausted(text):
+    """Whether text identifies an account with no spendable credits."""
+    if not text:
+        return False
+    if isinstance(text, dict):
+        return is_credit_exhausted(json.dumps(text))
+    if isinstance(text, list):
+        return is_credit_exhausted(json.dumps(text))
+    lower = str(text).lower()
+    return any(word in lower for word in CREDIT_EXHAUSTED_WORDS)
+
 # Free-tier exhaustion doesn't always say "quota": Kilo's out-of-credits error
 # (mahler#29) is "Add credits to continue" / error_type "usage_limit_exceeded".
 QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage limit",
@@ -715,6 +737,21 @@ def _note_quota_hit(res, ev):
         res["retry_after"] = ra
 
 
+def _note_credit_exhausted(res, ev):
+    """Record an account balance failure, retaining a named reset time."""
+    res["credit_exhausted"] = True
+    _note_quota_hit(res, ev)
+
+
+def _classify_error(res, ev):
+    """Classify an error before the broad quota vocabulary."""
+    blob = json.dumps(ev).lower()
+    if is_credit_exhausted(blob):
+        _note_credit_exhausted(res, ev)
+    elif any(word in blob for word in QUOTA_WORDS):
+        _note_quota_hit(res, ev)
+
+
 def _extract_error_message(ev):
     """Extract a human-readable error message from an agent JSON event."""
     err = ev.get("error")
@@ -735,14 +772,16 @@ def read_log(path, kind, model=None):
     """Summarise a run's stream-json log.
 
     Returns {'final': str|None, 'ok': bool|None, 'usage': [(window, pct, resets)],
-             'quota_hit': bool, 'overage': bool, 'retry_after': int|None,
+             'quota_hit': bool, 'credit_exhausted': bool, 'overage': bool,
+             'retry_after': int|None,
              'last_text': str, 'model': str|None, 'session_id': str|None,
              'last_error': str|None, 'model_unavailable': bool,
              'tokens': {in, cached, out, reasoning},
              'cost_usd': float|None, 'credits': float|None, 'quota_used': dict}
     Missing token usage is represented by None counts, never invented zeros.
     """
-    res = {"final": None, "ok": None, "usage": [], "quota_hit": False, "overage": False,
+    res = {"final": None, "ok": None, "usage": [], "quota_hit": False,
+           "credit_exhausted": False, "overage": False,
            "retry_after": None, "last_text": "", "model": model, "session_id": None,
            "last_error": None, "model_unavailable": False,
            "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
@@ -762,6 +801,8 @@ def read_log(path, kind, model=None):
                 line_str = line.strip()
                 if line_str:
                     texts.append(line_str)
+                    if is_credit_exhausted(line_str):
+                        _note_credit_exhausted(res, line_str)
                     if is_network_error(line_str) or line_str.lower().startswith("error:"):
                         res["last_error"] = line_str
                     if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
@@ -798,16 +839,14 @@ def read_log(path, kind, model=None):
                     res["ok"] = ev.get("finishReason") == "completed"
                     if not res["ok"]:
                         blob = json.dumps(ev).lower()
-                        if any(w in blob for w in QUOTA_WORDS):
-                            _note_quota_hit(res, ev)
+                        _classify_error(res, ev)
                         if is_model_unavailable(ev):
                             res["model_unavailable"] = True
                         if ev.get("text"):
                             res["last_error"] = ev.get("text")
                 elif ev.get("type") == "error" or ev.get("error"):
                     blob = json.dumps(ev).lower()
-                    if any(w in blob for w in QUOTA_WORDS):
-                        _note_quota_hit(res, ev)
+                    _classify_error(res, ev)
                     if is_model_unavailable(ev):
                         res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
@@ -822,8 +861,7 @@ def read_log(path, kind, model=None):
                     res["ok"] = ev.get("exitCode") == 0
                 elif t == "error" or "error" in (t or ""):
                     blob = json.dumps(ev).lower()
-                    if any(w in blob for w in QUOTA_WORDS):
-                        _note_quota_hit(res, ev)
+                    _classify_error(res, ev)
                     if is_model_unavailable(ev):
                         res["model_unavailable"] = True
             elif kind == "codex":
@@ -838,8 +876,7 @@ def read_log(path, kind, model=None):
                 elif t in {"turn.failed", "error"} or "error" in (t or ""):
                     res["ok"] = False
                     blob = json.dumps(ev).lower()
-                    if any(w in blob for w in QUOTA_WORDS):
-                        _note_quota_hit(res, ev)
+                    _classify_error(res, ev)
                     if is_model_unavailable(ev):
                         res["model_unavailable"] = True
             elif kind == "kilo":
@@ -847,8 +884,7 @@ def read_log(path, kind, model=None):
                     res["session_id"] = ev.get("sessionID")
                 if ev.get("type") == "error":
                     blob = json.dumps(ev).lower()
-                    if any(w in blob for w in QUOTA_WORDS):
-                        _note_quota_hit(res, ev)
+                    _classify_error(res, ev)
                     if is_model_unavailable(ev):
                         res["model_unavailable"] = True
                     res["last_error"] = _extract_error_message(ev)
@@ -870,8 +906,7 @@ def read_log(path, kind, model=None):
                     res["ok"] = r.get("status") == "SUCCESS"
                     if not res["ok"]:
                         blob = json.dumps(r).lower()
-                        if "quota" in blob:
-                            _note_quota_hit(res, r)
+                        _classify_error(res, r)
                         if is_model_unavailable(r):
                             res["model_unavailable"] = True
                 elif ev.get("event") == "step_update":
@@ -890,9 +925,9 @@ def read_log(path, kind, model=None):
 def status_line(text):
     """Last `STATUS: ...` line an agent printed -> (verb, rest) or (None, None)."""
     for line in reversed((text or "").splitlines()):
-        line = line.strip().strip("`*")
+        line = line.strip().strip("`*_~")
         if line.upper().startswith("STATUS:"):
             body = line.split(":", 1)[1].strip()
             verb, _, rest = body.partition(" ")
-            return verb.upper(), rest.strip()
+            return verb.strip("`*_~").upper(), rest.strip()
     return None, None
