@@ -336,7 +336,7 @@ Header row: current view title, and right-aligned a bordered peak-hours button
   grouped into Large, Medium, and Small routes by the largest issue size each
   slot can take. Each slot carries its shared account reading and its own soft
   line; the selection persists in local storage. Reachable from any view via
-  the rail, the Now view's capacity line, or the sidebar's `CAPACITY` header.
+  the rail. (Now and the sidebar no longer repeat capacity — mahler#532.)
   In both modes, a card with running or stopping tasks has a 1px blue accent
   border, an **in use** header badge, accent model text, and active issue refs
   in its metadata. Shared pools aggregate their member slots. The highlight
@@ -367,11 +367,10 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 2. **Needs-you card** — the single oldest open item: `NEEDS YOU · N` label, the
    question, ref + wait time, its answer buttons, and `All N →`. Hidden when the
    queue is empty.
-3. **`BACKLOG`** — one row per project: name + `14 · 5 ready · 2 live · 1 you`.
-   Clicking jumps to that project, expanded, in the Backlog view.
-4. **`CAPACITY`** — the compact quota gauges (76px name column, 9px bar, 52px
-   label) with the model name on a second line, then `Event stream →`. The
-   header is a link to the full-screen Capacity view (mahler#335).
+3. `Event stream →`.
+
+Backlog and Capacity are **not** repeated here (mahler#532): they are their own
+views, and rebuilding them beside every page made every page slower.
 
 There is deliberately **no quick-capture box here** — Capture is one rail click
 away, and a second composer was redundant.
@@ -533,7 +532,7 @@ The code is `mahler/console/` (state, page, actions, CSS, JS), served by
 
 - Both layouts (`3a` desktop, `2a` phone) in one server-rendered document, both
   themes, the 1100px and 760px breakpoints, the 30-second refresh.
-- Now (runs, live status/logs, the 0-runs explanation, capacity), Needs you,
+- Now (runs, live status/logs, the 0-runs explanation), Needs you,
   Backlog and the desktop dependency graph, Event stream, Ready to test, quota
   gauges, the right sidebar, banners, the unread-digest chip, and run detail.
 - Writes that only touch the ledger: Pause all / Resume, the peak-hours override,

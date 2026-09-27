@@ -122,9 +122,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status, obj):
         self._send(status, json.dumps(obj, default=_json_default), "application/json")
 
-    def _state(self, stats_range="week"):
+    def _state(self, stats_range="week", section=None):
         cfg = self.load_cfg()
-        return cfg, state.build(cfg, self.led, stats_range)
+        return cfg, state.build(cfg, self.led, stats_range, section=section)
 
     def do_GET(self):
         request = urlsplit(self.path)
@@ -240,7 +240,6 @@ class _Handler(BaseHTTPRequestHandler):
                 if range_key == "custom":
                     range_key = ((query.get("start") or [""])[0],
                                  (query.get("end") or [""])[0])
-                _, s = self._state(range_key)
                 cookies = SimpleCookie()
                 try:
                     cookies.load(self.headers.get("Cookie", ""))
@@ -252,6 +251,10 @@ class _Handler(BaseHTTPRequestHandler):
                     ])[0]
                 selected = dict(layout=preference("layout", "desktop"),
                                 view=preference("view"), tab=preference("tab"))
+                # Only the rendered section's data is built; /api/state gets it all.
+                section = None if path == "/api/state" else (
+                    selected["tab"] if selected["layout"] == "phone" else selected["view"]) or ""
+                _, s = self._state(range_key, section)
                 if path == "/":
                     out, ctype = page.document(s, **selected), "text/html; charset=utf-8"
                 elif path == "/fragment":

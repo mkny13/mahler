@@ -9,7 +9,7 @@ let requests = [], swaps = 0, applied = 0, revisionNotes = 0, resize;
 const input = value => ({value, getAttribute: () => "draft", hasAttribute: () => true});
 const media = {matches: false, addEventListener: (event, callback) => { resize = callback; }};
 const context = vm.createContext({
-  TextEncoder, console,
+  TextEncoder, console, setTimeout, clearTimeout,
   root: {getAttribute: k => attrs[k], setAttribute: (k, v) => attrs[k] = v},
   document: {hidden: false, activeElement: null, getElementById: () => null},
   window: {matchMedia: () => media, scrollTo() {}, console},
@@ -18,6 +18,9 @@ const context = vm.createContext({
   openRun: null, openRevert: null, openBug: null, openRelease: null, openCapture: false,
   apply() { applied++; }, noteRevision() { revisionNotes++; },
   app: {
+    busy: false,
+    setAttribute(k) { if (k === "aria-busy") { this.busy = true; } },
+    removeAttribute(k) { if (k === "aria-busy") { this.busy = false; } },
     querySelectorAll: () => inputs,
     querySelector: () => form,
     set innerHTML(html) {
@@ -85,6 +88,13 @@ async function finish(promise, html) {
   await finish(context.refresh(true), "triage");
   assert.equal(swaps, priorSwaps);
   assert.equal(applied, priorApplies + 1, "reopening an unchanged overlay restores visibility");
+
+  // A slow switch dims the old section after 150 ms and clears when it lands.
+  let slow = context.setTab("triage");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(context.app.busy, true, "a slow view switch shows it is loading");
+  await finish(slow, "triage");
+  assert.equal(context.app.busy, false, "loading state clears when the view arrives");
 
   // Telemetry excludes short tasks and works without the optional heap API.
   let callback, reports = [];

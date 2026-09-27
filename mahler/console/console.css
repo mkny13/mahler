@@ -674,3 +674,6 @@ a { color: var(--acc); text-decoration: none; }
 /* Only the rendered section exists; navigation highlights may already point
    at the next request while this section remains on screen. */
 .dbody > section.view, .pbody > section.tabv { display: flex; }
+
+/* a view switch still in flight after 150 ms (mahler#532): dim the old section */
+#app[aria-busy="true"] .dbody, #app[aria-busy="true"] .pbody { opacity: .5; pointer-events: none; }

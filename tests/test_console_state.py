@@ -129,3 +129,55 @@ class RecentProblemsTests(unittest.TestCase):
         self.assertEqual(len(rows), state.RECENT_PROBLEMS_SHOWN)
         self.assertTrue(rows[0]['text'].startswith('11 '))
         self.assertTrue(all(len(r['text']) <= 200 and '\n' not in r['text'] for r in rows))
+
+
+class ScorecardCacheTests(unittest.TestCase):
+    """mahler#532: the scorecard rescans all history, so pages that don't show
+    it skip it and the rest reuse it until a run changes or it goes stale."""
+
+    def setUp(self):
+        from test_console import make_cfg
+        self.now = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.cfg = make_cfg()
+
+    def table(self):
+        from unittest import mock
+        from mahler import scorecard
+        return mock.patch.object(scorecard, 'table', wraps=scorecard.table)
+
+    def test_views_without_measurements_never_build_it(self):
+        with self.table() as table:
+            for section in ('now', 'needs', 'test', 'backlog', 'triage', ''):
+                s = state.build(self.cfg, self.led, section=section)
+                self.assertIsNone(s['models'])
+                self.assertEqual(s['measured_routes'], [])
+        table.assert_not_called()
+
+    def test_models_reuses_rows_until_a_run_changes_or_ttl(self):
+        from datetime import timedelta
+        with self.table() as table:
+            state.build(self.cfg, self.led, section='models')
+            state.build(self.cfg, self.led, section='capacity')
+            self.assertEqual(table.call_count, 1)
+            self.led.upsert_item('p', 1)
+            self.led.create_run(project='p', number=1, role='build', platform='slot',
+                                epoch=1, status='ended', ended_at=iso(self.now), outcome='DONE')
+            state.build(self.cfg, self.led, section='models')
+            self.assertEqual(table.call_count, 2)
+            self.now += timedelta(seconds=state.SCORECARD_TTL + 1)
+            state.build(self.cfg, self.led, section='models')
+            self.assertEqual(table.call_count, 3)
+
+    def test_full_state_still_includes_measurements(self):
+        s = state.build(self.cfg, self.led)
+        self.assertIsNotNone(s['models'])
+
+    def test_separate_ledgers_do_not_share_a_cache(self):
+        other = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(other.close)
+        with self.table() as table:
+            state.build(self.cfg, self.led, section='models')
+            state.build(self.cfg, other, section='models')
+        self.assertEqual(table.call_count, 2)

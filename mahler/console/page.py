@@ -409,9 +409,6 @@ def _d_now(s):
     if s["idle"]:
         out.append(_idle(s, phone=False))
     out.append("</div>")
-    out.append(f'<div class="sect rule"><button class="link" data-go="capacity">'
-               f'<span class="lbl">Capacity</span></button>'
-               f'<span class="capline">{e(s["capacity"])}</span></div>')
     out.append('<div class="sect rule recent-problems"><span class="lbl">Recent problems · 24 hours</span>')
     for ev in s.get("recent_problems", []):
         tone, text = _event_text(ev)
@@ -802,18 +799,10 @@ def _d_side(s):
                    f'<span class="meta">{_a(first["url"], first["ref"])} · {e(first["meta"])}</span>'
                    f'{_answer_buttons(first)}'
                    f'<button class="link" data-go="needs">All {s["needs_count"]} →</button></div>')
-    out.append('<div class="sblock"><span class="lbl">Backlog</span>')
-    for g in s["backlog"]:
-        out.append(f'<button class="sproj" data-go="backlog" data-open-group="{e(g["project"])}">'
-                   f'<span>{e(g["project"])}</span><span class="mono">{e(g["counts"])}</span></button>')
-    out.append('</div><div class="sblock" style="gap:7px">'
-               '<button class="link" data-go="capacity"><span class="lbl">Capacity</span></button>')
-    for q in s["quota"]:
-        out.append(f'<div class="sq"><div class="sq-row"><span class="name mono">{e(q["name"])}</span>'
-                   f'<span class="bar"><span class="f-{q["tone"]}" style="width:{q["width"]:.0f}%">'
-                   f'</span></span><span class="val mono t-{q["tone"]}">{e(q["label"])}</span></div>'
-                   f'<span class="model mono">{e(q["model"])}</span></div>')
-    out.append('<button class="link" data-go="history">Event stream →</button></div></aside>')
+    # Backlog and Capacity have their own views; repeating them here made
+    # every page pay for them (mahler#532).
+    out.append('<div class="sblock"><button class="link" data-go="history">Event stream →</button>'
+               '</div></aside>')
     return "".join(out)
 
 
@@ -1100,9 +1089,6 @@ def _p_now(s):
     if s["idle"]:
         out.append(_idle(s, phone=True))
     out.append('</div>')
-    out.append(f'<div class="psect" style="gap:9px"><span class="lbl">Capacity</span>'
-               f'<span class="capline">{e(s["capacity"])}</span>'
-               f'<button class="link" data-tab-go="browse">All quota gauges →</button></div>')
     out.append("</div></section>")
     return "".join(out)
 

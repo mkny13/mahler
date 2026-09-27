@@ -298,13 +298,21 @@
     root.setAttribute("data-view", view);
     store("session", "mahler.view", view);
     if (view === "history") { markSeen(); }
-    return refresh(true);
+    return loading(refresh(true));
   }
   function setTab(tab) {
     root.setAttribute("data-tab", tab);
     store("session", "mahler.tab", tab);
     window.scrollTo(0, 0);
-    return refresh(true);
+    return loading(refresh(true));
+  }
+  // The nav highlight and title switch at once; the old section dims until
+  // the new one arrives, so a click never looks ignored (mahler#532).
+  function loading(promise) {
+    var timer = setTimeout(function () { app.setAttribute("aria-busy", "true"); }, 150);
+    function done() { clearTimeout(timer); app.removeAttribute("aria-busy"); }
+    return promise.then(function (v) { done(); return v; },
+      function (err) { done(); throw err; });
   }
 
   function statsRange() {
