@@ -10,6 +10,7 @@ import copy
 import json
 import subprocess
 import unittest
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
@@ -1050,6 +1051,126 @@ class ScheduleHoldTests(unittest.TestCase):
         ctx.dry_run = False
         scheduler.record_holds(ctx)
         self.assertEqual(len(json.loads(led.get_kv("schedule_holds"))["holds"]), 200)
+
+class AccountStartTests(unittest.TestCase):
+    """_account_start updates all counters in one place; verify each one."""
+
+    def _make_state(self, cfg):
+        return {"total": 0, "in_project": {}, "per_group": {},
+                "busy": set(), "tiers": [], "busy_areas": defaultdict(set),
+                "busy_files": defaultdict(set), "in_flight": {},
+                "hot": {}, "burst_lines": None}
+
+    def test_total_and_project_count_increment(self):
+        cfg = mk_cfg({"a": proj()})
+        st = self._make_state(cfg)
+        tick._account_start(cfg, "agy-claude", "a", None, [], st)
+        self.assertEqual(st["total"], 1)
+        self.assertEqual(st["in_project"]["a"], 1)
+        tick._account_start(cfg, "agy-claude", "a", None, [], st)
+        self.assertEqual(st["total"], 2)
+        self.assertEqual(st["in_project"]["a"], 2)
+
+    def test_area_added_to_busy_areas(self):
+        cfg = mk_cfg({"a": proj()})
+        st = self._make_state(cfg)
+        tick._account_start(cfg, "agy-claude", "a", "router", [], st)
+        self.assertIn("router", st["busy_areas"]["a"])
+
+    def test_none_area_not_added(self):
+        cfg = mk_cfg({"a": proj()})
+        st = self._make_state(cfg)
+        tick._account_start(cfg, "agy-claude", "a", None, [], st)
+        self.assertEqual(st["busy_areas"]["a"], set())
+
+    def test_files_added_to_busy_files(self):
+        cfg = mk_cfg({"a": proj()})
+        st = self._make_state(cfg)
+        tick._account_start(cfg, "agy-claude", "a", None, ["mahler/tick.py", "mahler/gh.py"], st)
+        self.assertEqual(st["busy_files"]["a"], {"mahler/tick.py", "mahler/gh.py"})
+
+    def test_quota_group_incremented_and_busy_set_updated(self):
+        cfg = mk_cfg({"a": proj()}, max_runs=1)
+        st = self._make_state(cfg)
+        tick._account_start(cfg, "claude", "a", None, [], st)
+        group = cfg["platforms"]["claude"].get("quota_group", "claude")
+        self.assertEqual(st["per_group"][group], 1)
+        # claude and claude-opus share the "claude" quota_group with max_runs=1
+        self.assertIn("claude", st["busy"])
+        self.assertIn("claude-opus", st["busy"])
+
+    def test_tier_appended(self):
+        cfg = mk_cfg({"a": proj()})
+        st = self._make_state(cfg)
+        self.assertEqual(st["tiers"], [])
+        tick._account_start(cfg, "agy-claude", "a", None, [], st)
+        self.assertEqual(len(st["tiers"]), 1)
+        tier = router.tier_of(cfg["platforms"]["agy-claude"])
+        self.assertEqual(st["tiers"][0], tier)
+
+
+class ScheduleStateUpdateTests(unittest.TestCase):
+    """schedule() updates accounting after a successful start but not
+    after a rejected or failed start — the issue's Done-when #3."""
+
+    def test_successful_dry_run_updates_accounting(self):
+        """A dry-run 'would build' still counts toward totals so later
+        candidates see accurate headroom within the same schedule pass."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=1)}, total=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, age_minutes=30)
+        item(led, "a", 2, age_minutes=10)
+        lines = plan(ctx, led)
+        # max_parallel=1 so only one starts
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0], "a#1: would build on agy-claude")
+        # The second item is held back by capacity, proving accounting was updated
+        self.assertTrue(any("a: at capacity" in l for l in ctx.lines))
+
+    def test_failed_start_does_not_update_accounting(self):
+        """When start() returns False (e.g. lease conflict), the item's slot
+        is not consumed — a later candidate in the same project can still start."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=2), "b": proj()}, total=3, max_runs=3)
+        ctx.dry_run = False  # need real start path
+        seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
+        item(led, "a", 1, age_minutes=30)
+        item(led, "a", 2, age_minutes=20)
+        item(led, "b", 3, age_minutes=10)
+        # Mock start: first call fails (returns False), rest succeed
+        call_count = [0]
+        def mock_start(ctx, project, item_arg, role, platform, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return False
+            return True  # pretend it succeeded
+        with mock.patch.object(platforms, "available", return_value=True), \
+             mock.patch.object(tick, "start", side_effect=mock_start):
+            tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+        # start was called at least twice — the first failure didn't consume
+        # the slot, so subsequent candidates were still attempted
+        self.assertGreaterEqual(call_count[0], 2)
+
+    def test_rejected_candidate_does_not_pollute_busy_areas(self):
+        """An ineligible candidate (e.g. area collision) must not add its
+        area to busy_areas — only successful starts update collision sets."""
+        ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        seed(led, **{"agy-claude": (10, 10)})
+        # Item 1 is running with area:router → seeds busy_areas
+        led.upsert_item("a", 1, state="working", labels='["area:router"]')
+        led.create_run(project="a", number=1, role="build", platform="agy-claude", epoch=1)
+        # Item 2 also has area:router → should be held by collision
+        led.upsert_item("a", 2, state="ready", priority=2, labels='["area:router"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=20)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        # Item 3 has area:scheduler → should NOT be blocked
+        led.upsert_item("a", 3, state="ready", priority=2, labels='["area:scheduler"]',
+                        state_changed_at=iso(NOW - timedelta(minutes=10)),
+                        sorted_at=iso(NOW - timedelta(days=1)))
+        lines = plan(ctx, led)
+        # Item 2 is blocked, item 3 starts — the rejected item 2 did not
+        # accidentally add "router" a second time or pollute anything
+        self.assertTrue(any("a#2: waiting — area:router" in l for l in ctx.lines))
+        self.assertEqual(lines, ["a#3: would build on agy-claude"])
 
 
 if __name__ == "__main__":
