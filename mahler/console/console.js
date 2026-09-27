@@ -11,6 +11,8 @@
   var app = document.getElementById("app");
   var loadedRevision = root.getAttribute("data-console-revision");
   var REFRESH_MS = 30000;
+  var POST_TIMEOUT_MS = 20000;
+  var CAPTURE_TIMEOUT_MESSAGE = "Didn't hear back — not sure it saved. Check Backlog before resending.";
   var THEMES = ["auto", "light", "dark"];
   var openRun = null;
   var openRevert = null;
@@ -420,33 +422,61 @@
   }
 
   function post(action, payload) {
+    var controller = new AbortController();
+    var timedOut = false;
+    var serverConfirmed = false;
+    var timeout = setTimeout(function () {
+      timedOut = true;
+      controller.abort();
+    }, POST_TIMEOUT_MS);
     return fetch("/api/" + action, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
       body: JSON.stringify(payload || {}),
+      signal: controller.signal,
     }).then(function (r) {
       return r.json().catch(function () { return { ok: false }; });
+    }).finally(function () {
+      clearTimeout(timeout);
     }).then(function (res) {
       if (!res.ok) {
         if (window.console) { console.warn(action, res.error || "failed"); }
         showErrorToast(res.error || "The action was refused or failed.");
-        if (action === "settings") { return; }
+        if (action === "settings" || action === "capture") { return; }
       } else if (action === "end_session") {
+        serverConfirmed = true;
         showSavedToast("Session ended — hold lifted.");
       } else if (action === "capture") {
+        serverConfirmed = true;
         // Clear every part of the composer on the next restore, but keep the project.
-        suppressKeep = ["capture", "capture_att_id", "capture_att_name"];
+        suppressKeep = ["capture", "capture_att_id", "capture_att_name", "capture_client_id"];
         if (payload && payload.project) { store("local", "mahler.capture.project", payload.project); }
+        showSavedToast("Saved to " + payload.project + " — check Backlog to confirm.");
         openCapture = false;
       } else if (action === "cut_release") {
+        serverConfirmed = true;
         openRelease = null;
       } else if (action === "settings") {
+        serverConfirmed = true;
         settingsDirty = false;
         showSavedToast("Settings will apply on the next scheduler tick.");
       } else if (action === "answer" && res.resuming) {
+        serverConfirmed = true;
         showSavedToast("Answer posted — resuming.");
+      } else {
+        serverConfirmed = true;
       }
       return refresh(true);
+    }).catch(function (err) {
+      if (serverConfirmed) { throw err; }
+      if (action === "capture") {
+        showErrorToast(CAPTURE_TIMEOUT_MESSAGE);
+      } else if (timedOut || (err && err.name === "AbortError")) {
+        showErrorToast("Didn't hear back — the action may not have completed. Try again.");
+      } else {
+        showErrorToast("The action failed. Check the connection and try again.");
+      }
+      throw err;
     });
   }
 
@@ -579,7 +609,14 @@
       var ta = cap && cap.querySelector(".cap-ta");
       var sel = cap && cap.querySelector("[data-capture-select]");
       var attachId = cap && cap.querySelector(".attach-id");
-      return { text: ta ? ta.value : "", project: sel ? sel.value : "", attachment: (attachId && attachId.value) ? attachId.value : null };
+      var clientId = cap && cap.querySelector(".cap-client-id");
+      if (clientId && !clientId.value) {
+        clientId.value = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() :
+          String(Date.now()) + "-" + Math.random().toString(16).slice(2);
+      }
+      return { text: ta ? ta.value : "", project: sel ? sel.value : "",
+        attachment: (attachId && attachId.value) ? attachId.value : null,
+        client_id: clientId ? clientId.value : "" };
     }
     // Actions newer than this script still reach the server with their data-* fields.
     var payload = {};
@@ -770,11 +807,18 @@
     reader.onload = function(e) {
       var dataUrl = e.target.result;
       var b64 = dataUrl.split(",")[1];
+      var controller = new AbortController();
+      var timedOut = false;
+      var timeout = setTimeout(function () {
+        timedOut = true;
+        controller.abort();
+      }, POST_TIMEOUT_MS);
 
       fetch("/api/attach", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
         body: JSON.stringify({ name: file.name, type: file.type || "application/octet-stream", data: b64 }),
+        signal: controller.signal,
       }).then(function(r) { return r.json(); }).then(function(res) {
         if (!res.ok) {
           showErrorToast(res.error || "Failed to attach file.");
@@ -789,12 +833,17 @@
           btn.classList.add("attached");
         }
       }).catch(function(err) {
-        showErrorToast("Failed to attach file.");
+        if (timedOut || (err && err.name === "AbortError")) {
+          showErrorToast("Didn't hear back — the attachment wasn't confirmed. Try attaching it again.");
+        } else {
+          showErrorToast("Failed to attach file.");
+        }
         btn.textContent = "Attach photo or screenshot";
         btn.classList.remove("attached");
         idIn.value = "";
         nameIn.value = "";
       }).finally(function() {
+        clearTimeout(timeout);
         btn.disabled = false;
       });
     };

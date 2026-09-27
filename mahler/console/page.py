@@ -207,6 +207,7 @@ def _composer(s, rows, save_label):
             f'<div class="attach-wrap"><input type="file" accept="image/*" class="attach-in" hidden>'
             f'<input type="hidden" class="attach-id" data-keep="capture_att_id">'
             f'<input type="hidden" class="attach-name" data-keep="capture_att_name">'
+            f'<input type="hidden" class="cap-client-id" data-keep="capture_client_id">'
             f'<button class="attach-btn" data-attach>Attach photo or screenshot</button></div>'
             f'<div class="cap-row">'
             f'<select class="cap-select" data-capture-select>{_capture_opts(cap)}</select>'
