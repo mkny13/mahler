@@ -297,21 +297,14 @@ def needs_plan(labels_json):
     return False
 
 
-def schedule(ctx, projects):
-    """Hand out run slots across every project at once (mahler#9).
+def _init_schedule_state(ctx, projects):
+    """Collect all mutable scheduling state before the main loop.
 
-    Order: priority first; then ready builds before inbox sorts when the
-    platform a sort would choose is the last one with headroom (sorts must
-    not eat a scarce builder); then priority projects (mahler work prioritized
-    over other projects, all else being equal); then oldest state_changed_at.
-    The ordered list is then dealt round-robin by project — each pass starts
-    at most one run per project — so no project waits more than one slot
-    behind another. Per-project max_parallel, per-platform max_runs, leases,
-    hot hold and the settle/dependency gates all still apply.
+    Returns a dict with: total, in_project, per_group, busy, tiers,
+    busy_areas, busy_files, in_flight, hot, burst_lines.
     """
     led, cfg = ctx.led, ctx.cfg
     active = led.active_runs()
-    total = len(active)
     in_project, per_group = {}, {}
     for r in active:
         in_project[r["project"]] = in_project.get(r["project"], 0) + 1
@@ -327,7 +320,6 @@ def schedule(ctx, projects):
 
     # area: label collision (D6): items sharing an area within a project
     # aren't run concurrently. File paths are project-local too (mahler#231).
-    # Seed busy_areas from what's currently running...
     # Planned-file collision (mahler#210): same idea, mechanical — seed
     # busy_files from the same running/verifying items' `## Plan` Files: list.
     busy_areas = defaultdict(set)
@@ -362,12 +354,17 @@ def schedule(ctx, projects):
                 last and not presence.hot_hold_overridden(led, p["name"], last)
                 and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
 
-    # Burst before a Claude window resets (D23): in the last lead-time before a
-    # window rolls over, Claude's reserve expires unused, so burst lines let
-    # Claude build first with higher headroom. Never while you're using Claude.
     burst_lines = compute_burst(ctx, projects)
+    return {"total": len(active), "in_project": in_project, "per_group": per_group,
+            "busy": busy, "tiers": tiers, "busy_areas": busy_areas,
+            "busy_files": busy_files, "in_flight": in_flight, "hot": hot,
+            "burst_lines": burst_lines}
 
-    work = _candidates(ctx, projects)
+
+def _order_candidates(ctx, work, st, projects):
+    """Deterministic candidate sort: priority → builds-before-sorts when
+    headroom is scarce → priority projects → oldest state_changed_at."""
+    cfg = ctx.cfg
     # each account has its own builders, so "a sort must not eat the last
     # builder" is judged per account (D25); a multi-account project competes
     # in every bucket it can draw from (D26)
@@ -378,7 +375,8 @@ def schedule(ctx, projects):
         # the same platform can share one quota_group slot (D21/#420), so
         # counting variants overstates capacity — dedupe to distinct groups
         # before judging whether a sort would take the last builder.
-        free = _headroom(ctx, "sort", per_group, busy, burst_lines, account)
+        free = _headroom(ctx, "sort", st["per_group"], st["busy"],
+                         st["burst_lines"], account)
         return {cfg["platforms"][name].get("quota_group", name) for name in free}
 
     sorts_wait = {acct: len(_headroom_groups(acct)) <= 1 for acct in buckets}
@@ -397,8 +395,147 @@ def schedule(ctx, projects):
                 p["name"], it["number"])
     work.sort(key=key)
 
-    said = set()             # projects already told they're at capacity
-    while work and total < cfg["concurrency"]["total"]:
+
+def _check_eligible(ctx, p, role, it, st):
+    """Per-candidate eligibility gates: capacity, in-flight slot, hot hold,
+    area/file collision, lease, remote-error.
+
+    Returns (eligible, area, item_files) — eligible is False when the
+    candidate is ineligible (a hold or skip was emitted).  area and
+    item_files are passed through to _account_start on success.
+    """
+    led, name, n = ctx.led, p["name"], it["number"]
+    if st["in_project"].get(name, 0) >= p["max_parallel"]:
+        if name not in st["said"]:
+            st["said"].add(name)
+            holders = [{"number": r["number"], "label": router.lease_label(led, lease)}
+                       for r in led.active_runs() if r["project"] == name
+                       if (lease := led.lease(name, r["number"])) and lease["capacity"]]
+            detail = ("; ".join(h["label"] for h in holders)
+                      or f"{st['in_project'].get(name, 0)} running or planned")
+            ctx.say(f"{name}: at capacity ({detail})")
+            ctx.hold("capacity", project=name, max_parallel=p["max_parallel"],
+                     holders=holders)
+        return False, None, []
+    if role == "build" and st["in_project"].get(name, 0) + st["in_flight"][name] >= p["max_parallel"]:
+        if name not in st["said"]:
+            st["said"].add(name)
+            ctx.say(f"{name}: builds wait — {st['in_flight'][name]} finished change(s) "
+                    "not merged yet")
+            ctx.hold("slot", project=name, verifying=[
+                v["number"] for v in led.items(name, ["verifying"])])
+        return False, None, []
+    # Hot hold (D6 layer 2): no new *code-writing* starts while an
+    # untracked Claude session is active in the project — running work
+    # continues, and the hold lifts hot_hold_minutes after the last
+    # transcript activity. Sorts are read-only triage (no worktree, no
+    # files) and fixes repair an item already in flight, so neither
+    # competes with the human's work; only builds are gated.
+    if role == "build" and st["hot"][name]:
+        ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
+        ctx.hold("hot_hold", project=name, number=n)
+        return False, None, []
+    area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
+    if area and area in st["busy_areas"][name]:
+        ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
+        ctx.hold("area", project=name, number=n, area=area)
+        return False, None, []
+    item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
+    file_overlap = st["busy_files"][name].intersection(item_files)
+    if file_overlap:
+        ctx.say(f"{name}#{n}: waiting — files already in progress: "
+                f"{', '.join(sorted(file_overlap))}")
+        ctx.hold("files", project=name, number=n, files=sorted(file_overlap))
+        return False, None, []
+    if led.lease(name, n):
+        return False, None, []
+    remote_error = getattr(led, "remote_error", lambda _project: None)(name)
+    if remote_error:
+        ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
+        ctx.hold("lease_host", project=name)
+        return False, None, []
+    return True, area, item_files
+
+
+def _route(ctx, p, role, it, st):
+    """Routing decision: returns (platform, explore, effective_size) or
+    (None, False, None) when no platform is available."""
+    cfg, led, name, n = ctx.cfg, ctx.led, p["name"], it["number"]
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    routing_role = "plan" if (role == "sort" and needs_plan(row_get(it, "labels", "[]"))) else role
+    pin = it["pin"] if role in ("build", "fix", "sort") else None
+
+    effective_min_tier = (max(row_get(it, "esc_tier", 0),
+                              router.risk_min_tier(row_get(it, "title", "")))
+                          if role in ("build", "fix") else 0)
+    effective_size = size
+    if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
+        effective_size = "m"
+
+    # D26: route within the project's declared accounts: fallback
+    # order, equal round-robin, or an explicit cross-account priority.
+    platform = router.explore_for_project(
+        cfg, led, p, it, routing_role, st["busy"], size=effective_size,
+        scorecard_rows=getattr(ctx, "scorecard_rows", None),
+        burst_lines=st["burst_lines"], min_tier=effective_min_tier)
+    explore = platform is not None
+    reasons = []
+    if explore:
+        ctx.say(f"{name}#{n}: trying {platform} ({routing_role} exploration)")
+    else:
+        platform, reasons = router.pick_for_project(
+            cfg, led, p, routing_role, pin, st["busy"], size=effective_size,
+            scorecard_rows=getattr(ctx, "scorecard_rows", None),
+            burst_lines=st["burst_lines"], min_tier=effective_min_tier)
+    if not platform:
+        ctx.hold("no_platform", project=name, number=n, role=routing_role,
+                 size=effective_size or "m", blockers=router.reason_groups(reasons))
+        if routing_role == "plan":
+            ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")
+        else:
+            ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
+        return None, False, None
+    return platform, explore, effective_size
+
+
+def _account_start(cfg, platform, name, area, item_files, st):
+    """Update quota-group, tier, project, area, and file occupancy after a
+    successful (or dry-run) start — one place for all post-start bookkeeping."""
+    st["total"] += 1
+    st["in_project"][name] = st["in_project"].get(name, 0) + 1
+    if area:
+        st["busy_areas"][name].add(area)
+    st["busy_files"][name].update(item_files)
+    group = cfg["platforms"][platform].get("quota_group", platform)
+    st["per_group"][group] = st["per_group"].get(group, 0) + 1
+    if st["per_group"][group] >= cfg["platforms"][platform].get("max_runs", 1):
+        for pname in cfg["platforms"]:
+            if cfg["platforms"][pname].get("quota_group", pname) == group:
+                st["busy"].add(pname)
+    st["tiers"].append(router.tier_of(cfg["platforms"][platform]))
+    st["busy"] |= tier_budget_busy(cfg, st["tiers"])
+
+
+def schedule(ctx, projects):
+    """Hand out run slots across every project at once (mahler#9).
+
+    Order: priority first; then ready builds before inbox sorts when the
+    platform a sort would choose is the last one with headroom (sorts must
+    not eat a scarce builder); then priority projects (mahler work prioritized
+    over other projects, all else being equal); then oldest state_changed_at.
+    The ordered list is then dealt round-robin by project — each pass starts
+    at most one run per project — so no project waits more than one slot
+    behind another. Per-project max_parallel, per-platform max_runs, leases,
+    hot hold and the settle/dependency gates all still apply.
+    """
+    cfg = ctx.cfg
+    st = _init_schedule_state(ctx, projects)
+    work = _candidates(ctx, projects)
+    _order_candidates(ctx, work, st, projects)
+
+    st["said"] = set()       # projects already told they're at capacity
+    while work and st["total"] < cfg["concurrency"]["total"]:
         started = set()      # projects that took a slot this pass
         for cand in list(work):
             p, role, it = cand
@@ -409,109 +546,21 @@ def schedule(ctx, projects):
             if name in started:
                 continue                    # its next item waits for the next pass
             work.remove(cand)
-            if total >= cfg["concurrency"]["total"]:
+            if st["total"] >= cfg["concurrency"]["total"]:
                 work.clear()
                 break
-            if in_project.get(name, 0) >= p["max_parallel"]:
-                if name not in said:
-                    said.add(name)
-                    holders = [{"number": r["number"], "label": router.lease_label(led, lease)}
-                               for r in led.active_runs() if r["project"] == name
-                               if (lease := led.lease(name, r["number"])) and lease["capacity"]]
-                    detail = "; ".join(h["label"] for h in holders) or f"{in_project.get(name, 0)} running or planned"
-                    ctx.say(f"{name}: at capacity ({detail})")
-                    ctx.hold("capacity", project=name, max_parallel=p["max_parallel"],
-                             holders=holders)
+            eligible, area, item_files = _check_eligible(ctx, p, role, it, st)
+            if not eligible:
                 continue
-            if role == "build" and in_project.get(name, 0) + in_flight[name] >= p["max_parallel"]:
-                if name not in said:
-                    said.add(name)
-                    ctx.say(f"{name}: builds wait — {in_flight[name]} finished change(s) "
-                            "not merged yet")
-                    ctx.hold("slot", project=name, verifying=[
-                        v["number"] for v in led.items(name, ["verifying"])])
-                continue
-            # Hot hold (D6 layer 2): no new *code-writing* starts while an
-            # untracked Claude session is active in the project — running work
-            # continues, and the hold lifts hot_hold_minutes after the last
-            # transcript activity. Sorts are read-only triage (no worktree, no
-            # files) and fixes repair an item already in flight, so neither
-            # competes with the human's work; only builds are gated.
-            if role == "build" and hot[name]:
-                ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
-                ctx.hold("hot_hold", project=name, number=n)
-                continue
-            area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
-            if area and area in busy_areas[name]:
-                ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
-                ctx.hold("area", project=name, number=n, area=area)
-                continue
-            item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
-            file_overlap = busy_files[name].intersection(item_files)
-            if file_overlap:
-                ctx.say(f"{name}#{n}: waiting — files already in progress: "
-                        f"{', '.join(sorted(file_overlap))}")
-                ctx.hold("files", project=name, number=n, files=sorted(file_overlap))
-                continue
-            if led.lease(name, n):
-                continue
-            remote_error = getattr(led, "remote_error", lambda _project: None)(name)
-            if remote_error:
-                ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
-                ctx.hold("lease_host", project=name)
-                continue
-            size = next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
-                         if l.startswith("size:")), None)
-            if role == "sort" and needs_plan(row_get(it, "labels", "[]")):
-                routing_role = "plan"
-            else:
-                routing_role = role
-            pin = it["pin"] if role in ("build", "fix", "sort") else None
-
-            effective_min_tier = max(row_get(it, "esc_tier", 0), router.risk_min_tier(row_get(it, "title", ""))) if role in ("build", "fix") else 0
-            effective_size = size
-            if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
-                effective_size = "m"
-
-            # D26: route within the project's declared accounts: fallback
-            # order, equal round-robin, or an explicit cross-account priority.
-            platform = router.explore_for_project(
-                cfg, led, p, it, routing_role, busy, size=effective_size,
-                scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=burst_lines, min_tier=effective_min_tier)
-            explore = platform is not None
-            reasons = []
-            if explore:
-                ctx.say(f"{name}#{n}: trying {platform} ({routing_role} exploration)")
-            else:
-                platform, reasons = router.pick_for_project(
-                    cfg, led, p, routing_role, pin, busy, size=effective_size,
-                    scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=burst_lines, min_tier=effective_min_tier)
+            platform, explore, effective_size = _route(ctx, p, role, it, st)
             if not platform:
-                ctx.hold("no_platform", project=name, number=n, role=routing_role,
-                         size=effective_size or "m", blockers=router.reason_groups(reasons))
-                if routing_role == "plan":
-                    ctx.say(f"{name}#{n}: waits for planning (routing.plan) — {'; '.join(reasons)}")
-                else:
-                    ctx.say(f"{name}#{n}: no platform for {role} — {'; '.join(reasons)}")
                 continue
             if ctx.dry_run:
                 ctx.say(f"{name}#{n}: would {role} on {platform}")
             elif not start(ctx, name, it, role, platform, size=effective_size,
                            **({"explore": True} if explore else {})):
                 continue
-            total += 1
-            in_project[name] = in_project.get(name, 0) + 1
-            if area:
-                busy_areas[name].add(area)
-            busy_files[name].update(item_files)
-            group = cfg["platforms"][platform].get("quota_group", platform)
-            per_group[group] = per_group.get(group, 0) + 1
-            if per_group[group] >= cfg["platforms"][platform].get("max_runs", 1):
-                for p in cfg["platforms"]:
-                    if cfg["platforms"][p].get("quota_group", p) == group:
-                        busy.add(p)
-            tiers.append(router.tier_of(cfg["platforms"][platform]))
-            busy |= tier_budget_busy(cfg, tiers)
+            _account_start(cfg, platform, name, area, item_files, st)
             started.add(name)
 
 
