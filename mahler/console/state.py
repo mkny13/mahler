@@ -18,6 +18,8 @@ from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
 
+RECENT_PROBLEMS_SHOWN = 5
+PROBLEM_KINDS = ("console_action_failed", "console_slow_request", "console_client_error")
 EVENTS_SHOWN = 50
 DIGEST_SHOWN = 20
 SEEN_KEY = "console_seen_event"        # kv: the newest event id marked seen
@@ -100,6 +102,7 @@ def build(cfg, led, stats_range="week"):
         "briefs": briefs,
         "briefs_unread": sum(b["count"] for b in briefs),
         "events": events,
+        "recent_problems": _recent_problems(cfg, led, now),
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
         "projects": project_names,
@@ -1190,6 +1193,16 @@ def _rows(cfg, led, where="", args=(), limit=EVENTS_SHOWN):
         if len(out) >= limit:
             break
     return out
+
+
+def _recent_problems(cfg, led, now):
+    marks = ",".join("?" for _ in PROBLEM_KINDS)
+    rows = _rows(cfg, led, f"AND kind IN ({marks}) AND at >= ? AND at <= ?",
+                 (*PROBLEM_KINDS, iso(now - timedelta(hours=24)), iso(now)),
+                 limit=RECENT_PROBLEMS_SHOWN)
+    for row in rows:
+        row["text"] = " ".join(row["text"].split())
+    return rows
 
 
 def _events(cfg, led):

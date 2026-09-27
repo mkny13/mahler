@@ -52,6 +52,52 @@ def cmd_tick(a, cfg, led):
     return scheduler.main_tick(cfg, led, dry_run=a.dry_run, hot_hold=not a.no_hot_hold)
 
 
+def _event_cell(value, width):
+    """Keep stored text (including terminal controls) inside one table cell."""
+    text = " ".join("".join(c if c.isprintable() else " " for c in str(value or "")).split())
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def cmd_events(a, cfg, led):
+    predicates, params = [], []
+    if a.project is not None:
+        predicates.append("project = ?")
+        params.append(a.project)
+    kinds = []
+    for kind in a.kind or []:
+        if kind.endswith("_"):
+            # substr gives literal prefix matching: '_' and '%' are not wildcards.
+            kinds.append("substr(kind, 1, ?) = ?")
+            params.extend((len(kind), kind))
+        else:
+            kinds.append("kind = ?")
+            params.append(kind)
+    if kinds:
+        predicates.append("(" + " OR ".join(kinds) + ")")
+    if a.since is not None:
+        try:
+            cutoff = iso(led.now() - _parse_duration(a.since))
+        except (ValueError, OverflowError) as exc:
+            print(f"mahler events: {exc}", file=sys.stderr)
+            return 2
+        predicates.append("at >= ?")
+        params.append(cutoff)
+    where = " WHERE " + " AND ".join(predicates) if predicates else ""
+    rows = led.q("SELECT * FROM events" + where + " ORDER BY at DESC, id DESC LIMIT ?",
+                 (*params, max(1, min(a.limit, 1000))))
+    if not rows:
+        print("No matching events.")
+        return 0
+    print(f"{'AT':25}  {'PROJECT/ISSUE':30}  {'KIND':30}  DETAIL")
+    for row in rows:
+        ref = row["project"] or "—"
+        if row["number"] is not None:
+            ref += f"#{row['number']}"
+        print(f"{_event_cell(row['at'], 25):25}  {_event_cell(ref, 30):30}  "
+              f"{_event_cell(row['kind'], 30):30}  {_event_cell(row['detail'], 160)}")
+    return 0
+
+
 def cmd_status(a, cfg, led):
     now = led.now()
     if not a.json:
@@ -865,6 +911,13 @@ def main(argv=None):
     s.add_argument("--json", action="store_true")
     s.add_argument("--project", help="filter by project")
     s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("events", help="inspect ledger event history, newest first")
+    s.add_argument("--project", help="filter by project")
+    s.add_argument("--kind", action="append", help="exact kind, or prefix ending in _; repeatable")
+    s.add_argument("--since", help="age window, e.g. 1h, 90m or 1h30m")
+    s.add_argument("-n", "--limit", type=int, default=50, help="row count (clamped to 1–1000; default 50)")
+    s.set_defaults(fn=cmd_events)
 
     s = sub.add_parser("scorecard", help="model cost and first-attempt success by role and size")
     s.add_argument("--project")

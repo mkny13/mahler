@@ -96,3 +96,35 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
 })().catch(err => { console.error(err); process.exit(1); });
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+
+
+class RecentProblemsTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+    def test_window_kinds_and_descriptions(self):
+        from datetime import timedelta
+        for kind in state.PROBLEM_KINDS:
+            self.led.event(kind, detail={'message': 'something failed'})
+        self.led.event('console_ok')
+        for hours in (24, 25, -1):
+            self.led.con.execute('INSERT INTO events(at, kind, detail) VALUES(?,?,?)',
+                                (iso(self.now - timedelta(hours=hours)), 'console_client_error', str(hours)))
+        rows = state._recent_problems({}, self.led, self.now)
+        self.assertEqual(len(rows), 4)
+        self.assertIn('24', [r['text'] for r in rows])
+        self.assertNotIn('25', [r['text'] for r in rows])
+        self.assertNotIn('-1', [r['text'] for r in rows])
+        self.assertEqual({r['kind'] for r in rows}, set(state.PROBLEM_KINDS))
+        self.assertIn('message=something failed', [r['text'] for r in rows])
+
+    def test_empty_bounded_and_newest_first(self):
+        self.assertEqual(state._recent_problems({}, self.led, self.now), [])
+        for i in range(12):
+            self.led.event('console_action_failed', detail=f'{i}\n' + 'x' * 400)
+        rows = state._recent_problems({}, self.led, self.now)
+        self.assertEqual(len(rows), state.RECENT_PROBLEMS_SHOWN)
+        self.assertTrue(rows[0]['text'].startswith('11 '))
+        self.assertTrue(all(len(r['text']) <= 200 and '\n' not in r['text'] for r in rows))

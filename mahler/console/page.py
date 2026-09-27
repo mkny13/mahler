@@ -390,6 +390,15 @@ def _d_now(s):
     out.append(f'<div class="sect rule"><button class="link" data-go="capacity">'
                f'<span class="lbl">Capacity</span></button>'
                f'<span class="capline">{e(s["capacity"])}</span></div>')
+    out.append('<div class="sect rule recent-problems"><span class="lbl">Recent problems · 24 hours</span>')
+    for ev in s.get("recent_problems", []):
+        tone, text = _event_text(ev)
+        out.append(f'<div class="ev"><span class="when mono">{e(ev["when"])}</span>'
+                   f'<span class="kind mono">{e(ev["kind"])}</span>'
+                   f'<span class="txt t-{tone}" style="overflow-wrap:anywhere">{text}</span></div>')
+    if not s.get("recent_problems"):
+        out.append('<span class="t-mut">No recent problems.</span>')
+    out.append('<button class="link" data-go="history">History →</button></div>')
     out.append("</section>")
     return "".join(out)
 
