@@ -1443,79 +1443,78 @@ def _platform_label(cfg, name):
     return _variant_label(cfg["platforms"].get(name, {})) or name
 
 
-def _hold_reasons(cfg, holds, pending, hot, now, led=None):
-    out, routes, settling, deps = [], {}, {}, []
-    seen = set()
+def _current_schedule_holds(holds, pending):
+    """Keep snapshot order and duplicates, but drop projects/items no longer queued."""
+    numbers = {project: {i["number"] for i in items} for project, items in pending.items()}
     for h in holds:
-        kind, project = h.get("kind"), h.get("project")
-        if project not in pending or not pending[project]:
-            continue
-        number = h.get("number")
-        if number is not None and number not in {i["number"] for i in pending[project]}:
-            continue
-        pol = config.project_policy(cfg, project)
-        ref = _ref(project, number)
-        if kind == "no_platform":
-            routes.setdefault((h["role"], h["size"]), []).append(h)
-        elif kind == "settling":
-            until = router._ts(h.get("until"))
-            if until and until > now:
-                settling.setdefault(pol["settle_minutes"], []).append(until)
-        elif kind == "deps":
-            deps.append(h)
-        elif kind in ("area", "files"):
-            overlap = f"area:{h['area']}" if kind == "area" else ", ".join(h["files"])
-            out.append({"text": f"{ref} waits — {overlap} already in progress."})
-        elif (kind, project) not in seen:
-            seen.add((kind, project))
-            if kind == "capacity":
-                labels = []
-                for holder in h.get("holders", []):
-                    lease = led.lease(project, holder["number"]) if led else None
-                    if lease and lease["capacity"]:
-                        labels.append(router.lease_label(led, lease))
-                if h.get("holders") and not labels:
-                    continue  # the recorded holder no longer consumes a run slot
-                detail = " Held by " + "; ".join(labels) + "." if labels else ""
-                out.append({"text": f"{project} is at its limit of {h['max_parallel']} run(s)." + detail,
-                            "items": _reason_items(cfg, pending, [(project, i["number"])
-                                            for i in pending[project] if i["state"] == "ready"])})
-            elif kind == "lease_host":
-                out.append({"text": f"{project} waits — its canonical lease host is unavailable.",
-                            "items": _reason_items(cfg, pending, [(project, i["number"])
-                                            for i in pending[project]])})
-            elif kind == "hot_hold" and not any(x["project"] == project for x in hot):
-                out.append({"text": f"You have been working in {project}, so new builds there wait "
-                                    f"until {pol['hot_hold_minutes']} minutes after you stop."})
-    for (role, size), items in routes.items():
-        groups = {}
-        for h in items:
-            for category, names in h["blockers"].items():
-                groups.setdefault(category, set()).update(names)
-        groups = {k: v for k, v in groups.items() if v}
-        active, until = router.peak_state(cfg, led) if led else (False, None)
-        if set(groups) == {"size"}:
-            text = (f"{len(items)} item(s) need a builder that takes size:{size}, "
-                    "and none in the route does.")
-        elif active and "peak" in groups and set(groups) <= {"size", "over", "busy", "stale", "peak"}:
-            platforms = ", ".join(sorted(_platform_label(cfg, n) for n in groups["peak"]))
-            text = (f"{len(items)} {role} item(s) (size:{size}) wait for off-peak hours: "
-                    f"{platforms} resumes at {until.astimezone():%H:%M} "
-                    f"{router.local_time_label(until)} "
-                    f"(in {router.fmt_countdown(until - now)})")
-        else:
-            summary = "; ".join(f"{label}: {', '.join(sorted(_platform_label(cfg, n) for n in groups[k]))}"
-                                for k, label in BLOCKER_LABELS.items() if k in groups)
-            text = (f"{len(items)} {role} item(s) have no platform with headroom — "
-                    f"{summary or 'no platforms in the route'}.")
-        out.append({"text": text,
-                    "items": _reason_items(cfg, pending,
-                                           [(h["project"], h["number"]) for h in items])})
+        queued = numbers.get(h.get("project"))
+        if queued and (h.get("number") is None or h["number"] in queued):
+            yield h
+
+
+def _project_hold_reason(cfg, h, pending, hot, led):
+    """Project-wide holds use current leases and session state."""
+    kind, project = h.get("kind"), h.get("project")
+    pol = config.project_policy(cfg, project)
+    if kind == "capacity":
+        labels = []
+        for holder in h.get("holders", []):
+            lease = led.lease(project, holder["number"]) if led else None
+            if lease and lease["capacity"]:
+                labels.append(router.lease_label(led, lease))
+        if h.get("holders") and not labels:
+            return None  # the recorded holder no longer consumes a run slot
+        detail = " Held by " + "; ".join(labels) + "." if labels else ""
+        return {"text": f"{project} is at its limit of {h['max_parallel']} run(s)." + detail,
+                "items": _reason_items(cfg, pending, [(project, i["number"])
+                                        for i in pending[project] if i["state"] == "ready"])}
+    elif kind == "lease_host":
+        return {"text": f"{project} waits — its canonical lease host is unavailable.",
+                "items": _reason_items(cfg, pending, [(project, i["number"])
+                                        for i in pending[project]])}
+    elif kind == "hot_hold" and not any(x["project"] == project for x in hot):
+        return {"text": f"You have been working in {project}, so new builds there wait "
+                        f"until {pol['hot_hold_minutes']} minutes after you stop."}
+
+
+def _route_hold_reason(cfg, role, size, items, pending, now, led):
+    groups = {}
+    for h in items:
+        for category, names in h["blockers"].items():
+            groups.setdefault(category, set()).update(names)
+    groups = {k: v for k, v in groups.items() if v}
+    active, until = router.peak_state(cfg, led) if led else (False, None)
+    if set(groups) == {"size"}:
+        text = (f"{len(items)} item(s) need a builder that takes size:{size}, "
+                "and none in the route does.")
+    elif active and "peak" in groups and set(groups) <= {"size", "over", "busy", "stale", "peak"}:
+        platforms = ", ".join(sorted(_platform_label(cfg, n) for n in groups["peak"]))
+        text = (f"{len(items)} {role} item(s) (size:{size}) wait for off-peak hours: "
+                f"{platforms} resumes at {until.astimezone():%H:%M} "
+                f"{router.local_time_label(until)} "
+                f"(in {router.fmt_countdown(until - now)})")
+    else:
+        summary = "; ".join(f"{label}: {', '.join(sorted(_platform_label(cfg, n) for n in groups[k]))}"
+                            for k, label in BLOCKER_LABELS.items() if k in groups)
+        text = (f"{len(items)} {role} item(s) have no platform with headroom — "
+                f"{summary or 'no platforms in the route'}.")
+    return {"text": text,
+            "items": _reason_items(cfg, pending,
+                                   [(h["project"], h["number"]) for h in items])}
+
+
+def _settling_hold_reasons(settling, now):
+    out = []
     for minutes, times in settling.items():
         first = max(1, int((min(times) - now).total_seconds() / 60 + .999))
         out.append({"text": f"{len(times)} item(s) were just sorted and settle for "
                             f"{minutes} minutes before a build starts.",
                     "countdown": f"first in {first}m"})
+    return out
+
+
+def _dependency_hold_reasons(cfg, deps, pending):
+    out = []
     if len(deps) > 3:
         reason = {"text": f"{len(deps)} items wait for other issues to close.",
                   "items": _reason_items(cfg, pending,
@@ -1529,6 +1528,37 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
             refs = _join(dependency_ref(d, h["project"]) for d in h["on"])
             out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close.",
                         "items": _reason_items(cfg, pending, [(h["project"], h["number"])])})
+    return out
+
+
+def _hold_reasons(cfg, holds, pending, hot, now, led=None):
+    """Immediate holds first, then routes, settling and dependencies in encounter order."""
+    out, routes, settling, deps = [], {}, {}, []
+    seen = set()
+    for h in _current_schedule_holds(holds, pending):
+        kind, project = h.get("kind"), h.get("project")
+        if kind == "no_platform":
+            routes.setdefault((h["role"], h["size"]), []).append(h)
+        elif kind == "settling":
+            until = router._ts(h.get("until"))
+            if until and until > now:
+                minutes = config.project_policy(cfg, project)["settle_minutes"]
+                settling.setdefault(minutes, []).append(until)
+        elif kind == "deps":
+            deps.append(h)
+        elif kind in ("area", "files"):
+            overlap = f"area:{h['area']}" if kind == "area" else ", ".join(h["files"])
+            ref = _ref(project, h.get("number"))
+            out.append({"text": f"{ref} waits — {overlap} already in progress."})
+        elif (kind, project) not in seen:
+            seen.add((kind, project))
+            reason = _project_hold_reason(cfg, h, pending, hot, led)
+            if reason:
+                out.append(reason)
+    out.extend(_route_hold_reason(cfg, role, size, items, pending, now, led)
+               for (role, size), items in routes.items())
+    out.extend(_settling_hold_reasons(settling, now))
+    out.extend(_dependency_hold_reasons(cfg, deps, pending))
     return out
 
 
@@ -1601,6 +1631,103 @@ def _verification_wait(led, project, item, now):
     return " — green, waiting for its turn to merge.", elapsed
 
 
+def _quota_idle_reasons(quota, now):
+    reasons = []
+    # metered platforms over a soft line, grouped by window and line
+    over = {}
+    for q in quota:
+        if q["state"] in ("soft", "hard") and q["metered"]:
+            for x in q["over"] or []:
+                over.setdefault((x["window"], x["soft"]), []).append((q["name"], x["resets"]))
+                break
+    for (window, line), plats in over.items():
+        names = [n for n, _ in plats]
+        verb = ("is" if len(names) == 1 else "are both" if len(names) == 2 else "are all")
+        resets = min((r for _, r in plats if r and r > now), default=None)
+        reasons.append({
+            "text": f"{_join(names)} {verb} past {line:.0f}% on the {window} window, so the "
+                    f"scheduler won't start there.",
+            "countdown": f"{window} resets {_when(resets, now)}" if resets else None})
+    stale = [q["name"] for q in quota if q["state"] == "stale"]
+    if stale:
+        reasons.append({"text": f"{_join(stale)} {'has' if len(stale) == 1 else 'have'} no "
+                                f"fresh quota reading, and Mahler counts unknown as over the "
+                                f"line."})
+    backoff = [q for q in quota if q["state"] == "backoff"]
+    if backoff:
+        reasons.append({
+            "text": f"{_join(q['name'] for q in backoff)} "
+                    f"{'is' if len(backoff) == 1 else 'are'} backing off after quota errors.",
+            "countdown": " · ".join(f"{q['name']} {_dur(q['until'] - now)}"
+                                    for q in backoff if q["until"]) or None,
+            "action": "Clear backoff", "act": "clear_backoff",
+            "platforms": [q["name"] for q in backoff]})
+    no_credit = [q for q in quota if q["state"] == "no_credit"]
+    if no_credit:
+        reasons.append({
+            "text": f"{_join(q['name'] for q in no_credit)} "
+                    f"{'is' if len(no_credit) == 1 else 'are'} out of credits.",
+            "countdown": " · ".join(f"{q['name']} next try {_dur(q['until'] - now)}"
+                                    for q in no_credit if q["until"]) or None})
+    holds = [q for q in quota if q["state"] == "hold"]
+    if holds:
+        reasons.append({
+            "text": f"{_join(q['name'] for q in holds)} "
+                    f"{'is' if len(holds) == 1 else 'are'} on hold after a run never started.",
+            "countdown": " · ".join(f"{q['name']} {_dur(q['until'] - now)}" for q in holds),
+            "action": "Clear backoff", "act": "clear_backoff",
+            "platforms": [q["name"] for q in holds]})
+    return reasons
+
+
+def _project_idle_reasons(cfg, led, projects, pending, schedule_holds, now):
+    reasons = []
+    for p in projects:
+        name = p["name"]
+        builds = [i for i in pending[name] if i["state"] == "ready"]
+        if (pending[name] and p.get("max_parallel", 1) == 0
+                and not any(h.get("kind") == "capacity" and h.get("project") == name
+                            for h in schedule_holds or [])):
+            reasons.append({"text": f"{name} has max_parallel set to 0, so its "
+                                    f"{len(pending[name])} waiting item(s) stay put."})
+            continue
+        verifying = led.items(name, ["verifying"])
+        if builds and verifying and len(verifying) >= p.get("max_parallel", 1):
+            v = verifying[0]
+            text = f"New builds wait for {_ref(name, v['number'])} to merge"
+            wait_text, pending_m = _verification_wait(led, name, v, now)
+            text += wait_text if v["pr"] else "."
+            timeout = p.get("verify_timeout_minutes", 60) - pending_m
+            reason = {"text": text,
+                      "countdown": f"verify timeout in {_dur(timedelta(minutes=timeout))}"
+                      if v["pr"] and timeout > 0 else None}
+            if v["pr"]:
+                reason.update(action=f"Open PR #{v['pr']}", href=_pr_url(cfg, name, v["pr"]))
+            reasons.append(reason)
+    return reasons
+
+
+def _hot_idle_reasons(hot, pending, now):
+    reasons = []
+    for h in hot:
+        if any(i["state"] == "ready" for i in pending.get(h["project"], [])):
+            reasons.append({
+                "text": f"You have been working in {h['project']}, so new builds there wait "
+                        f"until {h['hold_minutes']} minutes after you stop.",
+                "countdown": f"{_dur(h['until'] - now)} left",
+                "act": "end_session", "action": "End session", "project": h["project"]})
+    return reasons
+
+
+def _idle_headline(reasons):
+    n = len(reasons)
+    if not n:
+        return "Nothing is running."
+    word = NUMBER_WORDS[n] if n < len(NUMBER_WORDS) else str(n)
+    return (f"Nothing is running. {word} thing{'s are' if n != 1 else ' is'} "
+            "holding it:")
+
+
 def _idle(cfg, led, s, hot, now):
     """Why nothing is running: every reason that is actually binding, each a
     sentence with a countdown when one exists and an escape when you have one."""
@@ -1626,91 +1753,15 @@ def _idle(cfg, led, s, hot, now):
             "text": f"Claude is in your peak hours — it plans but doesn't build until "
                     f"{peak['until']} {peak['tz']}. Free tiers are unaffected.",
             "countdown": peak["left"], "action": "Let Claude build", "act": "peak_override"})
-    # metered platforms over a soft line, grouped by window and line
-    over = {}
-    for q in s["quota"]:
-        if q["state"] in ("soft", "hard") and q["metered"]:
-            for x in q["over"] or []:
-                over.setdefault((x["window"], x["soft"]), []).append((q["name"], x["resets"]))
-                break
-    for (window, line), plats in over.items():
-        names = [n for n, _ in plats]
-        verb = ("is" if len(names) == 1 else "are both" if len(names) == 2 else "are all")
-        resets = min((r for _, r in plats if r and r > now), default=None)
-        reasons.append({
-            "text": f"{_join(names)} {verb} past {line:.0f}% on the {window} window, so the "
-                    f"scheduler won't start there.",
-            "countdown": f"{window} resets {_when(resets, now)}" if resets else None})
-    stale = [q["name"] for q in s["quota"] if q["state"] == "stale"]
-    if stale:
-        reasons.append({"text": f"{_join(stale)} {'has' if len(stale) == 1 else 'have'} no "
-                                f"fresh quota reading, and Mahler counts unknown as over the "
-                                f"line."})
-    backoff = [q for q in s["quota"] if q["state"] == "backoff"]
-    if backoff:
-        reasons.append({
-            "text": f"{_join(q['name'] for q in backoff)} "
-                    f"{'is' if len(backoff) == 1 else 'are'} backing off after quota errors.",
-            "countdown": " · ".join(f"{q['name']} {_dur(q['until'] - now)}"
-                                    for q in backoff if q["until"]) or None,
-            "action": "Clear backoff", "act": "clear_backoff",
-            "platforms": [q["name"] for q in backoff]})
-    no_credit = [q for q in s["quota"] if q["state"] == "no_credit"]
-    if no_credit:
-        reasons.append({
-            "text": f"{_join(q['name'] for q in no_credit)} "
-                    f"{'is' if len(no_credit) == 1 else 'are'} out of credits.",
-            "countdown": " · ".join(f"{q['name']} next try {_dur(q['until'] - now)}"
-                                    for q in no_credit if q["until"]) or None})
-    holds = [q for q in s["quota"] if q["state"] == "hold"]
-    if holds:
-        reasons.append({
-            "text": f"{_join(q['name'] for q in holds)} "
-                    f"{'is' if len(holds) == 1 else 'are'} on hold after a run never started.",
-            "countdown": " · ".join(f"{q['name']} {_dur(q['until'] - now)}" for q in holds),
-            "action": "Clear backoff", "act": "clear_backoff",
-            "platforms": [q["name"] for q in holds]})
-    for p in projects:
-        name = p["name"]
-        builds = [i for i in pending[name] if i["state"] == "ready"]
-        if (pending[name] and p.get("max_parallel", 1) == 0
-                and not any(h.get("kind") == "capacity" and h.get("project") == name
-                            for h in schedule_holds or [])):
-            reasons.append({"text": f"{name} has max_parallel set to 0, so its "
-                                    f"{len(pending[name])} waiting item(s) stay put."})
-            continue
-        verifying = led.items(name, ["verifying"])
-        if builds and verifying and len(verifying) >= p.get("max_parallel", 1):
-            v = verifying[0]
-            text = f"New builds wait for {_ref(name, v['number'])} to merge"
-            wait_text, pending_m = _verification_wait(led, name, v, now)
-            text += wait_text if v["pr"] else "."
-            timeout = p.get("verify_timeout_minutes", 60) - pending_m
-            reason = {"text": text,
-                      "countdown": f"verify timeout in {_dur(timedelta(minutes=timeout))}"
-                      if v["pr"] and timeout > 0 else None}
-            if v["pr"]:
-                reason.update(action=f"Open PR #{v['pr']}", href=_pr_url(cfg, name, v["pr"]))
-            reasons.append(reason)
-    for h in hot:
-        if any(i["state"] == "ready" for i in pending.get(h["project"], [])):
-            reasons.append({
-                "text": f"You have been working in {h['project']}, so new builds there wait "
-                        f"until {h['hold_minutes']} minutes after you stop.",
-                "countdown": f"{_dur(h['until'] - now)} left",
-                "act": "end_session", "action": "End session", "project": h["project"]})
+    reasons.extend(_quota_idle_reasons(s["quota"], now))
+    reasons.extend(_project_idle_reasons(cfg, led, projects, pending, schedule_holds, now))
+    reasons.extend(_hot_idle_reasons(hot, pending, now))
     if schedule_holds is not None:
         reasons.extend(_hold_reasons(cfg, schedule_holds, pending, hot, now, led=led))
     if not reasons and schedule_holds is None:
         reasons.append({"text": f"{n_pending} item(s) queued, but no platform has "
                                 f"headroom for them right now."})
-    n = len(reasons)
-    if not n:
-        return {"headline": "Nothing is running.", "reasons": []}
-    word = NUMBER_WORDS[n] if n < len(NUMBER_WORDS) else str(n)
-    return {"headline": f"Nothing is running. {word} thing{'s are' if n != 1 else ' is'} "
-                        f"holding it:",
-            "reasons": reasons}
+    return {"headline": _idle_headline(reasons), "reasons": reasons}
 
 
 MODELS_LABEL = "Models"

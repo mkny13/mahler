@@ -1557,6 +1557,83 @@ class RecordedIdleTests(unittest.TestCase):
         return {"ref": f"mahler#{n}",
                 "url": f"https://github.com/mkny13/mahler/issues/{n}", "title": title}
 
+    def test_mixed_holds_preserve_order_counts_and_item_metadata(self):
+        self.led.upsert_item("mahler", 1, title="First item", state="ready")
+        route = self.hold("no_platform", role="build", size="m", blockers={"size": ["kilo"]})
+        capacity = {"kind": "capacity", "project": "mahler", "max_parallel": 2}
+        holds = [self.hold("deps", 2, on=[99]), route,
+                 self.hold("settling", 3, until=iso(self.led.now() + timedelta(seconds=61))),
+                 self.hold("area", 4, area="console"), capacity,
+                 self.hold("files", 5, files=["a.py"]), route, capacity,
+                 self.hold("lease_host"), self.hold("lease_host", 2)]
+        minutes = config.project_policy(self.cfg, "mahler")["settle_minutes"]
+        self.assertEqual(self.idle(holds), {
+            "headline": "Nothing is running. Seven things are holding it:",
+            "reasons": [
+                {"text": "mahler#4 waits — area:console already in progress."},
+                {"text": "mahler is at its limit of 2 run(s).",
+                 "items": [self.item(1, "First item")] + [self.item(n) for n in range(2, 6)]},
+                {"text": "mahler#5 waits — a.py already in progress."},
+                {"text": "mahler waits — its canonical lease host is unavailable.",
+                 "items": [self.item(1, "First item")] + [self.item(n) for n in range(2, 6)]},
+                {"text": "2 item(s) need a builder that takes size:m, and none in the route does.",
+                 "items": [self.item(1, "First item"), self.item(1, "First item")]},
+                {"text": f"1 item(s) were just sorted and settle for {minutes} minutes "
+                         "before a build starts.", "countdown": "first in 2m"},
+                {"text": "mahler#2 waits for mahler#99 to close.", "items": [self.item(2)]},
+            ]})
+
+    def test_stale_holds_do_not_displace_current_reasons(self):
+        self.led.upsert_item("mahler", 2, state="done")
+        holds = [self.hold("area", 2, area="obsolete"),
+                 self.hold("settling", until=iso(self.led.now())),
+                 self.hold("settling", until="invalid"),
+                 self.hold("capacity", holders=[{"number": 99}], max_parallel=1),
+                 {"kind": "lease_host", "project": "groundwork"},
+                 {"kind": "lease_host", "project": "old"},
+                 self.hold("files", 3, files=["current.py"])]
+        self.assertEqual(self.idle(holds), {
+            "headline": "Nothing is running. One thing is holding it:",
+            "reasons": [{"text": "mahler#3 waits — current.py already in progress."}]})
+
+    def test_headline_grammar_counts_reasons_including_repeated_item_holds(self):
+        for count, phrase in ((0, ""), (1, " One thing is holding it:"),
+                              (2, " Two things are holding it:"),
+                              (9, " Nine things are holding it:"),
+                              (10, " 10 things are holding it:")):
+            with self.subTest(count=count):
+                result = self.idle([self.hold("area", area="console")] * count)
+                self.assertEqual(result["headline"], "Nothing is running." + phrase)
+                self.assertEqual(result["reasons"], [
+                    {"text": "mahler#1 waits — area:console already in progress."}] * count)
+
+    def test_actionable_reasons_keep_payloads_and_precede_recorded_holds(self):
+        now = self.led.now()
+        self.idle([self.hold("hot_hold"), self.hold("area", area="console")])
+        result = state._idle(self.cfg, self.led, {
+            "paused": True,
+            "peak": {"active": True, "until": "11:00", "tz": "PT", "left": "1h left"},
+            "quota": [{"name": "kilo", "state": "backoff", "until": now + timedelta(minutes=5)},
+                      {"name": "codex", "state": "hold", "until": now + timedelta(minutes=2)}],
+        }, [{"project": "mahler", "hold_minutes": 20, "until": now + timedelta(minutes=3)}], now)
+        self.assertEqual(result, {
+            "headline": "Nothing is running. Six things are holding it:",
+            "reasons": [
+                {"text": "You paused everything, so nothing new starts.",
+                 "action": "Resume all", "act": "resume"},
+                {"text": "Claude is in your peak hours — it plans but doesn't build until "
+                         "11:00 PT. Free tiers are unaffected.",
+                 "countdown": "1h left", "action": "Let Claude build", "act": "peak_override"},
+                {"text": "kilo is backing off after quota errors.", "countdown": "kilo 5m",
+                 "action": "Clear backoff", "act": "clear_backoff", "platforms": ["kilo"]},
+                {"text": "codex is on hold after a run never started.", "countdown": "codex 2m",
+                 "action": "Clear backoff", "act": "clear_backoff", "platforms": ["codex"]},
+                {"text": "You have been working in mahler, so new builds there wait "
+                         "until 20 minutes after you stop.", "countdown": "3m left",
+                 "act": "end_session", "action": "End session", "project": "mahler"},
+                {"text": "mahler#1 waits — area:console already in progress."},
+            ]})
+
     def test_capacity_names_current_run_and_elapsed(self):
         run = self.led.create_run(project="mahler", number=1, role="review",
                                   platform="claude", epoch=1,
