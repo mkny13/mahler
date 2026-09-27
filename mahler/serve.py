@@ -23,7 +23,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -60,6 +60,26 @@ class _Handler(BaseHTTPRequestHandler):
     led = None
     lock = None
     load_cfg = None
+
+    def handle_one_request(self):
+        # Reset for each request, including when a connection is reused.
+        self._request_started = time.monotonic()
+        self._response_status = None
+        self._response_size = 0
+        try:
+            super().handle_one_request()
+        finally:
+            if self._response_status is not None:
+                self.log_message("end")
+
+    def log_request(self, code="-", size="-"):
+        # send_response calls this before headers/body; defer until completion.
+        self._response_status = code
+
+    def send_header(self, keyword, value):
+        super().send_header(keyword, value)
+        if keyword.lower() == "content-length" and self.command != "HEAD":
+            self._response_size = int(value)
 
     def _send(self, status, body, ctype):
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -228,6 +248,7 @@ class _Handler(BaseHTTPRequestHandler):
         return None
 
     def do_POST(self):
+        self.log_message("start")
         path = urlsplit(self.path).path
         name = path[len("/api/"):] if path.startswith("/api/") else None
         if name == "settings":
@@ -262,8 +283,26 @@ class _Handler(BaseHTTPRequestHandler):
     do_PUT = do_DELETE = do_PATCH = do_HEAD = _reject
 
     def log_message(self, fmt, *args):
-        # one line per hit; launchd captures stderr for us
-        sys.stderr.write("serve: %s %s\n" % (self.address_string(), fmt % args))
+        # launchd captures stderr. Never let a broken log sink fail a request.
+        line = "serve: request logging failed"
+        try:
+            elapsed = (time.monotonic() - self._request_started) * 1000
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            # Quote client-controlled fields so each event remains one line.
+            method = json.dumps(getattr(self, "command", None))
+            path = json.dumps(getattr(self, "path", ""))
+            message = json.dumps(fmt % args)
+            status = self._response_status if self._response_status is not None else "-"
+            line = (f"serve: {timestamp} method={method} path={path} "
+                    f"status={status} size={self._response_size} "
+                    f"duration_ms={elapsed:.3f} event={message}")
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+        except Exception:
+            try:
+                print(line, file=sys.stderr, flush=True)
+            except Exception:
+                pass
 
 
 def _json_default(o):

@@ -1,10 +1,13 @@
 """`mahler serve`: the console's HTTP surface (DESIGN D10, D27)."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import os
+import queue
+import re
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -119,6 +122,86 @@ class TestPages(_Served):
             self.assertEqual(self.request("/", method=method, data=b"{}")[0], 405, method)
         self.assertEqual(self.request("/", "POST", b"{}")[0], 405)
         self.assertEqual(self.post("drop_tables")[0], 404)
+
+
+class TestRequestLogging(_Served):
+    def setUp(self):
+        super().setUp()
+        self.lines = queue.Queue()
+        sink = mock.Mock()
+        def capture(line):
+            if "method=" in line:
+                self.lines.put(line)
+            return len(line)
+        sink.write.side_effect = capture
+        patcher = mock.patch.object(serve, "sys", mock.Mock(stderr=sink))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def next_line(self, event):
+        line = self.lines.get(timeout=5)
+        timestamp = line.split()[1]
+        self.assertIsNotNone(datetime.fromisoformat(timestamp).tzinfo)
+        self.assertIn(f'event="{event}"', line)
+        self.assertRegex(line, r'duration_ms=\d+\.\d{3}')
+        return line
+
+    def test_start_is_visible_during_lock_wait_and_sleeping_action(self):
+        entered = threading.Event()
+        release = threading.Event()
+        result = []
+
+        def slow_action(*args):
+            entered.set()
+            release.wait(timeout=5)
+            time.sleep(0.03)
+            return {"message": "done"}
+
+        lock = self.httpd.RequestHandlerClass.lock
+        with mock.patch.object(serve.actions, "run", side_effect=slow_action):
+            worker = threading.Thread(target=lambda: result.append(self.post("pause")))
+            try:
+                with lock:
+                    worker.start()
+                    start = self.next_line("start")
+                    self.assertIn('method="POST" path="/api/pause" status=- size=0', start)
+                    self.assertFalse(entered.is_set())
+                    self.assertTrue(self.lines.empty())
+                    time.sleep(0.03)
+                self.assertTrue(entered.wait(timeout=5))
+                self.assertTrue(self.lines.empty())
+            finally:
+                release.set()
+                worker.join(timeout=5)
+            end = self.next_line("end")
+        self.assertEqual(result[0][0], 200)
+        self.assertIn(f'status=200 size={len(result[0][2].encode())}', end)
+        duration = float(re.search(r'duration_ms=([\d.]+)', end)[1])
+        self.assertGreaterEqual(duration, 60)
+        self.assertTrue(self.lines.empty())
+
+    def test_get_and_error_response_sizes(self):
+        for path, status in (("/api/state", 200), ("/missing", 404)):
+            with self.subTest(path=path):
+                actual, _, body = self.request(path)
+                self.assertEqual(actual, status)
+                if status == 404:
+                    self.next_line("code 404, message Not Found")
+                end = self.next_line("end")
+                self.assertIn(f'method="GET" path="{path}"', end)
+                self.assertIn(f'status={status} size={len(body.encode())}', end)
+
+    def test_broken_logging_does_not_fail_request(self):
+        def broken_write(line):
+            if "method=" in line:
+                raise OSError("broken")
+            return len(line)
+        with mock.patch.object(serve.sys.stderr, "write", side_effect=broken_write), \
+                mock.patch("builtins.print", side_effect=OSError("also broken")) as fallback:
+            self.assertEqual(self.post("pause")[0], 200)
+            self.httpd.shutdown()
+            self.httpd.server_close()
+            self.assertTrue(fallback.called)
 
 
 class TestWrites(_Served):
