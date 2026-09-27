@@ -159,6 +159,8 @@ class BackupFailureTests(unittest.TestCase):
                 stack.enter_context(patch.object(self.led, "paused", return_value=True))
                 digest = stack.enter_context(patch("mahler.scheduler.digest.maybe_send"))
                 janitor = stack.enter_context(patch("mahler.scheduler.janitor.maybe_run"))
+                stack.enter_context(patch("mahler.scheduler.backup.run_ledger",
+                                          side_effect=RuntimeError("unexpected") if unexpected else None))
                 if unexpected:
                     run = stack.enter_context(patch("mahler.scheduler.backup.run",
                                                     side_effect=[RuntimeError("unexpected"), None]))
@@ -171,6 +173,132 @@ class BackupFailureTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 2)
                 digest.assert_called_once_with(self.ctx)
                 janitor.assert_called_once_with(self.ctx)
+
+
+class LedgerBackupTests(unittest.TestCase):
+    """Backing up Mahler's own ledger (mahler#533) — temp-dir files only,
+    never ~/.mahler."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.led_path = os.path.join(self.tmp.name, "mahler.db")
+        self.led = Ledger(self.led_path)
+        self.addCleanup(self.led.close)
+        self.led.set_kv("hello", "world")
+        self.root = os.path.join(self.tmp.name, "backups")
+
+    def test_backup_is_verified_private_and_contains_live_data(self):
+        res = backup.backup_ledger(self.led_path, root=self.root)
+        self.assertTrue(os.path.exists(res["path"]))
+        self.assertEqual(res["bytes"], os.path.getsize(res["path"]))
+        self.assertEqual(stat.S_IMODE(os.stat(res["path"]).st_mode), 0o600)
+        self.assertEqual(backup.integrity_check(res["path"]), "ok")
+        copy = Ledger(res["path"])
+        try:
+            self.assertEqual(copy.get_kv("hello"), "world")
+        finally:
+            copy.close()
+
+    def test_missing_source_raises(self):
+        with self.assertRaises(backup.BackupError):
+            backup.backup_ledger(":memory:", root=self.root)
+        with self.assertRaises(backup.BackupError):
+            backup.backup_ledger(os.path.join(self.tmp.name, "nope.db"), root=self.root)
+
+    def test_prune_keeps_policy_set(self):
+        os.makedirs(self.root, exist_ok=True)
+        now = datetime(2026, 9, 12, 3, 0)
+        stamps = [now - timedelta(days=i) for i in range(40)]
+        for s in stamps:
+            open(os.path.join(self.root, f"mahler-{s.strftime(backup.STAMP)}.db"), "w").close()
+        removed = backup.prune_ledger(root=self.root, daily=3, weekly=2, monthly=1)
+        remaining = os.listdir(self.root)
+        self.assertEqual(len(remaining) + len(removed), 40)
+        self.assertLessEqual(len(remaining), 3 + 2 + 1)
+        newest = f"mahler-{stamps[0].strftime(backup.STAMP)}.db"
+        self.assertIn(newest, remaining)
+
+    def test_optimize_and_checkpoint_does_not_raise(self):
+        backup.optimize_and_checkpoint(self.led)
+
+    def test_copy_off_disk_mirrors_file(self):
+        dest_dir = os.path.join(self.tmp.name, "offsite")
+        res = backup.backup_ledger(self.led_path, root=self.root)
+        backup.copy_off_disk(res["path"], dest_dir)
+        mirrored = os.path.join(dest_dir, os.path.basename(res["path"]))
+        with open(res["path"], "rb") as fh:
+            original = fh.read()
+        with open(mirrored, "rb") as fh:
+            self.assertEqual(fh.read(), original)
+
+
+class RunLedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.led_path = os.path.join(self.tmp.name, "mahler.db")
+        self.led = Ledger(self.led_path)
+        self.addCleanup(self.led.close)
+        self.root = os.path.join(self.tmp.name, "backups")
+        self.cfg = {"backup": {"hour": 0, "copy_to": ""}}
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.ping = Mock()
+        self.now = datetime(2026, 9, 12, 12)
+        clock = self.enterContext(patch("mahler.backup.datetime", wraps=datetime))
+        clock.now.side_effect = lambda: self.now
+
+    def test_backs_up_once_a_day_and_records_kv(self):
+        res = backup.run_ledger(self.ctx, root=self.root)
+        self.assertIsNotNone(res)
+        self.assertTrue(os.path.exists(res["path"]))
+        self.assertEqual(self.led.get_kv("backup:mahler:ledger"), self.now.isoformat())
+        self.ctx.ping.assert_not_called()
+        self.assertIsNone(backup.run_ledger(self.ctx, root=self.root))  # already done today
+
+    def test_checkpoints_the_live_connection(self):
+        with patch.object(backup, "optimize_and_checkpoint") as opt:
+            backup.run_ledger(self.ctx, root=self.root)
+        opt.assert_called_once_with(self.led)
+
+    def test_copy_to_mirrors_the_verified_backup(self):
+        self.cfg["backup"]["copy_to"] = os.path.join(self.tmp.name, "offsite")
+        res = backup.run_ledger(self.ctx, root=self.root)
+        mirrored = os.path.join(self.cfg["backup"]["copy_to"], os.path.basename(res["path"]))
+        self.assertTrue(os.path.exists(mirrored))
+
+    def test_copy_to_failure_pings_but_keeps_the_backup(self):
+        self.cfg["backup"]["copy_to"] = os.path.join(self.tmp.name, "offsite")
+        with patch("mahler.backup.copy_off_disk", side_effect=OSError("disk full")):
+            res = backup.run_ledger(self.ctx, root=self.root)
+        self.assertIsNotNone(res)
+        self.assertTrue(os.path.exists(res["path"]))
+        self.ctx.ping.assert_called_once()
+        self.assertEqual(self.led.get_kv("backup:mahler:ledger"), self.now.isoformat())
+
+    def test_failed_integrity_check_pings_and_does_not_raise_or_record_success(self):
+        with patch("mahler.backup.integrity_check", return_value="row 4 missing from index"):
+            self.assertIsNone(backup.run_ledger(self.ctx, root=self.root))
+        self.ctx.ping.assert_called_once()
+        self.assertIsNone(self.led.get_kv("backup:mahler:ledger"))
+        self.assertEqual(os.listdir(self.root) if os.path.isdir(self.root) else [], [])
+
+    def test_missing_ledger_path_pings_without_raising(self):
+        missing = os.path.join(self.tmp.name, "nope.db")
+        self.assertIsNone(backup.run_ledger(self.ctx, led_path=missing, root=self.root, force=True))
+        self.ctx.ping.assert_called_once()
+
+    def test_tick_calls_run_ledger_once(self):
+        with ExitStack() as stack:
+            stack.enter_context(patch("mahler.scheduler.config.enabled_projects", return_value=[]))
+            for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
+                         "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                         "schedule", "ship", "mirror_labels", "digest.maybe_send", "janitor.maybe_run"):
+                stack.enter_context(patch(f"mahler.scheduler.{name}"))
+            stack.enter_context(patch.object(self.led, "paused", return_value=True))
+            run_ledger = stack.enter_context(patch("mahler.scheduler.backup.run_ledger"))
+            scheduler.tick(self.ctx)
+        run_ledger.assert_called_once_with(self.ctx)
 
 
 if __name__ == "__main__":

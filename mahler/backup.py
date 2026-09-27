@@ -15,18 +15,31 @@ file at run time, handed to pg_dump as PG* environment variables (never on a
 command line other processes can see), and scrubbed from any error text. Dumps are
 medical data: files are 0600 in 0700 directories, on the SSD that Time Machine
 and Backblaze both cover.
+
+Mahler's own ledger (mahler#533) gets the same daily treatment, from the tick
+itself rather than a project spec: `sqlite3.Connection.backup()` (safe to run
+against the live WAL database) into ~/.mahler/backups/mahler/, verified with
+`PRAGMA integrity_check` on the copy, pruned to the same 14/8/12 policy, and
+optionally mirrored to an off-disk `[backup] copy_to` folder. `mahler
+restore-ledger` (cli.py) reverses it.
 """
 
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from datetime import datetime
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import config
+
 ROOT = "/Volumes/ExtSSD160/mahler-backups"
 STAMP = "%Y%m%d-%H%M%S"
 FILE_RE = re.compile(r"^(?P<name>.+)-(?P<stamp>\d{8}-\d{6})\.dump$")
+
+LEDGER_ROOT = os.path.join(config.STATE, "backups", "mahler")
+LEDGER_FILE_RE = re.compile(r"^mahler-(?P<stamp>\d{8}-\d{6})\.db$")
 
 
 class BackupError(RuntimeError):
@@ -134,6 +147,17 @@ def keep_set(stamps, daily=14, weekly=8, monthly=12):
     return keep
 
 
+def _prune_files(files, **policy):
+    """files: {stamp: path}. Deletes whatever keep_set() doesn't keep. -> removed paths."""
+    keep = keep_set(files, **policy)
+    removed = []
+    for stamp, path in files.items():
+        if stamp not in keep:
+            _rm(path)
+            removed.append(path)
+    return removed
+
+
 def prune(project, name, root=ROOT, **policy):
     dest = os.path.join(root, project)
     if not os.path.isdir(dest):
@@ -143,13 +167,7 @@ def prune(project, name, root=ROOT, **policy):
         m = FILE_RE.match(f)
         if m and m.group("name") == name:
             files[datetime.strptime(m.group("stamp"), STAMP)] = os.path.join(dest, f)
-    keep = keep_set(files, **policy)
-    removed = []
-    for stamp, path in files.items():
-        if stamp not in keep:
-            _rm(path)
-            removed.append(path)
-    return removed
+    return _prune_files(files, **policy)
 
 
 def due(led, project, spec, now=None):
@@ -194,4 +212,119 @@ def run(ctx, project, spec, force=False):
     led.event("backup", project, None,
               f"{spec['name']}: {res['bytes']} bytes, {res['entries']} entries, pruned {len(removed)}")
     ctx.say(f"{project}: backed up {spec['name']} ({res['bytes'] // 1024} KB, {res['entries']} entries)")
+    return res
+
+
+# ---------- Mahler's own ledger (mahler#533) ----------
+
+def integrity_check(path):
+    """PRAGMA integrity_check on a standalone sqlite file. -> 'ok' or the first
+    problem line. A separate connection, so it never disturbs a live handle."""
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    try:
+        row = con.execute("PRAGMA integrity_check").fetchone()
+        return row[0] if row else "no result"
+    finally:
+        con.close()
+
+
+def backup_ledger(led_path, root=None, now=None):
+    """Online copy of the live ledger via sqlite3.Connection.backup() (safe
+    while the daemon writes it), verified with integrity_check() on the copy.
+    -> {'path', 'bytes'}; raises BackupError."""
+    if led_path == ":memory:" or not os.path.isfile(led_path):
+        raise BackupError(f"no ledger file at {led_path!r}")
+    now = now or datetime.now()
+    root = root or LEDGER_ROOT
+    os.makedirs(root, mode=0o700, exist_ok=True)
+    final = os.path.join(root, f"mahler-{now.strftime(STAMP)}.db")
+    tmp = final + ".partial"
+    old_umask = os.umask(0o077)
+    try:
+        src = sqlite3.connect(led_path, timeout=10)
+        try:
+            dst = sqlite3.connect(tmp)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+    finally:
+        os.umask(old_umask)
+    result = integrity_check(tmp)
+    if result != "ok":
+        _rm(tmp)
+        raise BackupError(f"integrity check failed: {result}")
+    os.replace(tmp, final)
+    os.chmod(final, 0o600)
+    return {"path": final, "bytes": os.path.getsize(final)}
+
+
+def prune_ledger(root=None, **policy):
+    root = root or LEDGER_ROOT
+    if not os.path.isdir(root):
+        return []
+    files = {}
+    for f in os.listdir(root):
+        m = LEDGER_FILE_RE.match(f)
+        if m:
+            files[datetime.strptime(m.group("stamp"), STAMP)] = os.path.join(root, f)
+    return _prune_files(files, **policy)
+
+
+def optimize_and_checkpoint(led):
+    """Cheap daily upkeep on the live ledger: refresh the query planner's
+    stats and fold the WAL back into the main file so it doesn't grow
+    unbounded. Run only after a successful backup, on the live connection."""
+    led.con.execute("PRAGMA optimize")
+    led.con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+def copy_off_disk(path, copy_to):
+    """Mirror the just-verified backup to an off-mini folder (e.g. iCloud or
+    Google Drive). Raises OSError on failure — the caller pings, but a failed
+    mirror never invalidates the on-disk backup that already passed
+    integrity_check."""
+    os.makedirs(copy_to, exist_ok=True)
+    shutil.copy2(path, os.path.join(copy_to, os.path.basename(path)))
+
+
+def run_ledger(ctx, led_path=None, root=None, force=False):
+    """Back up Mahler's own ledger if due (or forced). Never raises — the
+    daemon must never break itself (DESIGN, cli.py's project rules).
+    -> result or None."""
+    led = ctx.led
+    led_path = led_path or led.path
+    pol = ctx.cfg.get("backup") or {}
+    spec = {"name": "ledger", "hour": pol.get("hour", 3)}
+    key = "backup:mahler:ledger"
+    copy_err = None
+    try:
+        if not force and not due(led, "mahler", spec):
+            return None
+        res = backup_ledger(led_path, root=root)
+        removed = prune_ledger(root=root)
+        optimize_and_checkpoint(led)
+        copy_to = pol.get("copy_to")
+        if copy_to:
+            try:
+                copy_off_disk(res["path"], copy_to)
+            except OSError as e:
+                copy_err = e
+    except (BackupError, OSError, sqlite3.Error) as e:
+        led.set_kv(f"{key}:failed_at", datetime.now().isoformat())
+        led.event("backup_failed", "mahler", None, f"ledger: {e}"[:500])
+        ctx.say(f"mahler: ledger backup FAILED — {e}")
+        ctx.ping("Backup failed — mahler ledger", str(e)[:300],
+                 priority="high", tags="warning")
+        return None
+    led.set_kv(key, datetime.now().isoformat())
+    led.set_kv(f"{key}:bytes", str(res["bytes"]))
+    led.event("backup", "mahler", None, f"ledger: {res['bytes']} bytes, pruned {len(removed)}")
+    ctx.say(f"mahler: backed up ledger ({res['bytes'] // 1024} KB, pruned {len(removed)})")
+    if copy_err is not None:
+        ctx.say(f"mahler: ledger off-disk copy failed — {copy_err}")
+        ctx.ping("Ledger off-disk copy failed", str(copy_err)[:300],
+                 priority="default", tags="warning")
     return res

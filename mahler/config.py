@@ -165,6 +165,11 @@ DEFAULTS = {
     # daily janitor (mahler#7, DESIGN D12): prune worktrees of ended runs and
     # old mahler/snapshot|abandoned branches; once-only via the ledger kv table
     "janitor": {"retention_days": 14, "worktree_grace_hours": 24},
+    # nightly backup of Mahler's own ledger (mahler#533, DESIGN D12): first
+    # tick after `hour` local time, backup.run_ledger's own once-a-day kv
+    # gate. `copy_to` is an optional off-mini mirror folder (e.g. an iCloud
+    # or Google Drive path); left empty, no off-disk copy is attempted.
+    "backup": {"hour": 3, "copy_to": ""},
     # Periodic calibration of run and issue duration estimates (mahler#59)
     "estimates": {
         "calibration_interval": 10,
