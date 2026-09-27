@@ -8,9 +8,10 @@ tick instead, so all GitHub traffic keeps the project's own login (D25).
 """
 
 import json
+import math
 from datetime import timedelta
 
-from .. import config, presence, router
+from .. import config, presence, redact, router
 from ..ledger import iso
 from ..gh import AGENT_MARK, parse_command
 from .state import CAPTURE_RECENT_MINUTES, SEEN_KEY, brief_seen_key
@@ -18,6 +19,25 @@ from .state import CAPTURE_RECENT_MINUTES, SEEN_KEY, brief_seen_key
 
 class ActionError(ValueError):
     """A request the console can't act on: bad input or a stale page."""
+
+
+
+def client_log(cfg, led, body):
+    """Best-effort browser diagnostics, including untrusted or malformed input."""
+    try:
+        if not isinstance(body, dict):
+            return
+        action, error, elapsed = (body.get(key) for key in ("action", "error", "elapsed_ms"))
+        if (not isinstance(action, str) or not isinstance(error, str)
+                or isinstance(elapsed, bool) or not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed)):
+            return
+        led.event("console_client_error", detail={
+            "action": redact.redact(action), "error": redact.redact(error),
+            "elapsed_ms": elapsed,
+        })
+    except Exception:
+        pass
 
 
 def pause(cfg, led, body):
@@ -434,7 +454,7 @@ def cut_release(cfg, led, body):
 ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_pass, uat_fail, attach, cut_release,
-                                   save_settings)}
+                                   save_settings, client_log)}
 
 
 def run(cfg, led, name, body):

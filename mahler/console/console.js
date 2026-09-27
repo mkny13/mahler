@@ -422,6 +422,22 @@
   }
 
   function post(action, payload) {
+    var started = performance.now();
+    var reported = false;
+    function reportError(message) {
+      if (reported || action === "client_log") { return; }
+      reported = true;
+      // Independent fetch: never await it or recursively report its failures.
+      try {
+        fetch("/api/client_log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Mahler-Console": "1" },
+          body: JSON.stringify({ action: action, error: String(message),
+            elapsed_ms: performance.now() - started }),
+          keepalive: true,
+        }).catch(function () {});
+      } catch (ignore) {}
+    }
     var controller = new AbortController();
     var timedOut = false;
     var serverConfirmed = false;
@@ -435,11 +451,14 @@
       body: JSON.stringify(payload || {}),
       signal: controller.signal,
     }).then(function (r) {
-      return r.json().catch(function () { return { ok: false }; });
+      return r.json().catch(function () {
+        return { ok: false, error: "The server returned a non-JSON response." };
+      });
     }).finally(function () {
       clearTimeout(timeout);
     }).then(function (res) {
       if (!res.ok) {
+        reportError(res.error || "The action was refused or failed.");
         if (window.console) { console.warn(action, res.error || "failed"); }
         showErrorToast(res.error || "The action was refused or failed.");
         if (action === "settings" || action === "capture") { return; }
@@ -469,6 +488,8 @@
       return refresh(true);
     }).catch(function (err) {
       if (serverConfirmed) { throw err; }
+      reportError(timedOut || (err && err.name === "AbortError") ?
+        "Fetch timeout" : (err && err.message) || String(err));
       if (action === "capture") {
         showErrorToast(CAPTURE_TIMEOUT_MESSAGE);
       } else if (timedOut || (err && err.name === "AbortError")) {
