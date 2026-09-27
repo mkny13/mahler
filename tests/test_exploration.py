@@ -107,6 +107,12 @@ class ExplorationTests(unittest.TestCase):
         self.cfg['platforms']['normal'].update(kind='codex', effort='high')
         self.assertEqual(self.pick(), 'normal')
 
+    def test_unpriced_free_candidate_precedes_priced_paid_candidate(self):
+        self.cfg['platforms']['cheap'].update(kind='claude', cost_class='paid')
+        self.cfg['routing'] = {role: ['cheap', 'unknown']
+                               for role in ('build', 'fix', 'sort', 'plan')}
+        self.assertEqual(self.pick(), 'unknown')
+
     def test_ci_and_review_fix_paths_can_explore(self):
         for review in (False, True):
             with self.subTest(review=review):

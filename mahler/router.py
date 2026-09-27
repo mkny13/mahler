@@ -28,6 +28,21 @@ PEAK_MANUAL = "manual"   # PEAK_OVERRIDE value: overridden until switched back (
 WINDOW_LABELS = {"5h": "5h", "weekly": "wk"}
 
 SIZES = {"s": 1, "m": 2, "l": 3}
+COST_CLASS_RANK = {"free": 0, "paid": 1}
+
+
+def cost_class(pconf):
+    """Whether a platform spends scarce personal quota (DESIGN D33).
+
+    Personal Claude slots are paid by default. Everything else, including a
+    Claude slot on a work account, is free unless the operator explicitly
+    overrides it. Synthetic variants inherit this field from their slot.
+    """
+    explicit = pconf.get("cost_class")
+    if explicit in COST_CLASS_RANK:
+        return explicit
+    return ("paid" if pconf.get("kind") == "claude"
+            and account_of(pconf) == DEFAULT_ACCOUNT else "free")
 
 
 def _ts(value):
@@ -532,10 +547,11 @@ def measured_order(cfg, order, rows, role, size, burst_lines=None):
     proof = measured_rows(cfg, rows, role, size)
 
     def key(name):
+        class_rank = COST_CLASS_RANK[cost_class(cfg["platforms"][name])]
         row = proof.get(name, {})
         status = row.get("status", "unproven")
         cost = row.get("cost_per_success")
-        return ({"good": 0, "unproven": 1, "below": 2}[status],
+        return (class_rank, {"good": 0, "unproven": 1, "below": 2}[status],
                 cost if status == "good" and cost is not None else float("inf"))
     order = sorted(order, key=key)  # stable: fallback candidates retain list order
     if burst_lines and role == "build":
@@ -774,7 +790,8 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
             cost = run_usage.columns({"tokens": tokens}, {"model": model}, cfg)["cost_usd"]
             group = pconf.get("quota_group", name)
             weight = cfg.get("quota_groups", {}).get(group, {}).get("cost_weight", 1)
-            choices.append((cost * weight if cost is not None else float("inf"), name))
+            choices.append(((COST_CLASS_RANK[cost_class(pconf)],
+                             cost * weight if cost is not None else float("inf")), name))
     return min(choices, key=lambda choice: choice[0])[1] if choices else None
 
 

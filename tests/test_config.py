@@ -174,6 +174,10 @@ class PlatformVariantTests(unittest.TestCase):
         cfg = config.resolve_platforms(cfg)
         self.assertEqual(cfg['platforms']['codex/gpt-6-luna/low']['quota_group'], 'codex')
 
+    def test_variants_inherit_the_slots_cost_class(self):
+        cfg = config.resolve_platforms(self.cfg(cost_class='paid'))
+        self.assertEqual(cfg['platforms']['codex/gpt-6-luna/low']['cost_class'], 'paid')
+
     def test_no_variants_declared_is_unchanged(self):
         before = set(config.DEFAULTS['platforms'])
         after = set(config.resolve_platforms(copy.deepcopy(config.DEFAULTS))['platforms'])

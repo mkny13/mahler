@@ -41,6 +41,24 @@ class MeasuredRoutingTests(unittest.TestCase):
                 self.assertEqual(self.pick(role=role, busy={"cheap", "expensive"}), "unknown")
                 self.assertEqual(self.pick(role=role, busy={"cheap", "expensive", "unknown"}), "bad")
 
+    def test_unproven_free_precedes_proven_cheap_paid(self):
+        self.cfg["routing"]["build"] = ["cheap", "unknown"]
+        self.cfg["platforms"]["cheap"]["kind"] = "claude"
+        self.assertEqual(self.pick(), "unknown")
+
+    def test_proven_free_variants_still_order_by_cost_per_success(self):
+        self.cfg["routing"]["build"] = ["expensive", "cheap"]
+        self.assertEqual(self.pick(), "cheap")
+
+    def test_cost_class_defaults_and_explicit_override(self):
+        personal_claude = {"kind": "claude"}
+        work_claude = {"kind": "claude", "account": "work"}
+        self.assertEqual(router.cost_class(personal_claude), "paid")
+        self.assertEqual(router.cost_class(work_claude), "free")
+        self.assertEqual(router.cost_class({"kind": "codex"}), "free")
+        self.assertEqual(router.cost_class(dict(personal_claude, cost_class="free")), "free")
+        self.assertEqual(router.cost_class(dict(work_claude, cost_class="paid")), "paid")
+
     def test_list_mode_and_project_override(self):
         self.pol = {}
         self.assertEqual(self.pick(), "bad")
@@ -156,6 +174,11 @@ class MeasuredRoutingTests(unittest.TestCase):
     def test_mode_validation(self):
         self.cfg["routing_mode"] = "typo"
         with self.assertRaisesRegex(ValueError, "routing_mode"):
+            config.validate_accounts(self.cfg)
+
+    def test_cost_class_validation(self):
+        self.cfg["platforms"]["cheap"]["cost_class"] = "metered"
+        with self.assertRaisesRegex(ValueError, "cost_class must be free or paid"):
             config.validate_accounts(self.cfg)
 
 
