@@ -1,3 +1,4 @@
+import console_snapshot
 """Models state from synthetic run history."""
 import unittest
 from datetime import datetime, timezone
@@ -59,7 +60,7 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(row['details'][20], '…and 101 earlier runs')
         self.assertIn('121 of 121 done first try', row['text'])
         self.assertEqual(len(table(self.led, cfg)[0]['attempts']), 121)
-        fragment = page.app(state.build(cfg, self.led))
+        fragment = console_snapshot.app(state.build(cfg, self.led))
         self.assertEqual(fragment.count('<p>Run '), 40)  # 20 per layout
         self.assertEqual(fragment.count('…and 101 earlier runs'), 2)
         self.assertLess(len(fragment.encode()), 300_000)
@@ -74,7 +75,7 @@ class ModelsTests(unittest.TestCase):
         script += r'''
 const assert = require('assert');
 let swaps = 0, applies = 0, revisions = 0, html = 'first';
-let app = {querySelectorAll: () => [], set innerHTML(v) { swaps++; }};
+let app = {querySelector: () => null, querySelectorAll: () => [], set innerHTML(v) { swaps++; }};
 let document = {hidden: false, activeElement: null, getElementById: () => null};
 let settingsDirty = false, errorToastTimer = null, suppressKeep = [];
 let window = {console};

@@ -495,11 +495,11 @@ class TestDynamicConfigReload(_Served):
                      'hot_hold = false\n' + extra)
 
     def test_project_added_after_start_shows_without_restart(self):
-        body = self.request("/")[2]
+        body = self.request("/?view=backlog")[2]
         self.assertNotIn("phish-in", body)
         self.write_config('[projects.phish-in]\nenabled = true\nrepo = "mkny13/couch-tour"\n'
                           'hot_hold = false\n')
-        body = self.request("/")[2]
+        body = self.request("/?view=backlog")[2]
         self.assertIn('href="https://github.com/mkny13/couch-tour/issues/3"', body)
 
     def test_settings_get_save_and_reload(self):

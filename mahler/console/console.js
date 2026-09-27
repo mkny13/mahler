@@ -347,7 +347,7 @@
 
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
-    if (settingsDirty && !force) { return Promise.resolve(); }
+    if (settingsDirty && !force && app.querySelector("[data-settings-form]")) { return Promise.resolve(); }
     var active = document.activeElement;
     if (!force && active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA") && active.value) {
       return Promise.resolve();          // never swap the page out from under typing
@@ -375,7 +375,7 @@
         var k = inputs[i].getAttribute("data-keep");
         if (skip.indexOf(k) === -1) { keep[k] = inputs[i].value; }
       }
-      // Both layouts carry the same key; the active draft wins over its hidden twin.
+      // The focused composer wins when the section and overlay share a draft key.
       var focused = document.activeElement;
       if (focused && focused.hasAttribute("data-keep") &&
           skip.indexOf(focused.getAttribute("data-keep")) === -1) {
@@ -518,6 +518,7 @@
       } else if (action === "settings") {
         serverConfirmed = true;
         settingsDirty = false;
+        settingsDraft = null;
         showSavedToast("Settings will apply on the next scheduler tick.");
       } else if (action === "answer" && res.resuming) {
         serverConfirmed = true;
@@ -740,6 +741,7 @@
     if (el) { el.scrollIntoView({ behavior: "auto", block: "nearest" }); }
     history.replaceState(null, "", location.pathname + location.search);
     });
+    return true;
   }
 
   document.addEventListener("click", function (ev) {
@@ -1010,8 +1012,7 @@
     }
   });
 
-  // Native details are duplicated across the phone and desktop layouts. Keep
-  // both copies in sync, and restore the expanded item after a fragment swap.
+  // Remember expanded details across navigation and fragment swaps.
   document.addEventListener("toggle", function (ev) {
     var detail = ev.target;
     if (!detail || !detail.hasAttribute || !detail.hasAttribute("data-need-details")) { return; }
@@ -1076,8 +1077,7 @@
   if (!["now", "triage", "releases", "browse", "stats", "models", "settings"].includes(root.getAttribute("data-tab"))) { root.setAttribute("data-tab", "now"); }
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
-  applyHash();
-  refresh(true);
+  if (!applyHash()) { refresh(true); }
   setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();
