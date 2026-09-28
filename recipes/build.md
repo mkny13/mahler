@@ -11,10 +11,23 @@ Start by reading:
 $handoff
 
 Rules:
+Time matters here: do not spend time that can be avoided; the earlier a correct, verified
+result is obtained, the better. Never trade verification for speed.
+
 1. **Checkpoint constantly.** Commit after each meaningful step and `git push -u origin
    $branch` at least every ~10 minutes — you can be stopped at any moment, and unpushed
    work is lost.
 2. **Verify before every push:** `$verify`. Fix what fails.
+2a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
+   reporting points while work is still possible: a summary that announces the next step
+   without taking it; an offer to continue unless the owner prefers otherwise; a list of
+   owner decisions when none blocks the remaining work; or a long turn or completed
+   milestone that merely feels like a good place to report. Put status notes and
+   recommendations in the same message as your next action, then carry on with everything
+   that does not depend on the owner's answer. The wanted stops are the recipe's final
+   STATUS lines. `NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in rules
+   4–5, where nothing can move without the owner. This rule does not override the
+   destructive-action cautions in rule 6.
 3. **Your job ends at the push.** When every "Done when" check passes, commit, push, and
    end with `STATUS: DONE <one-line summary of what changed>`. Do not open a PR, watch CI,
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
