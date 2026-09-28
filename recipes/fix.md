@@ -15,8 +15,10 @@ $handoff
 Rules:
 1. **Diagnose before changing anything.** Read the failing-log tail above (or fetch it:
    `gh run view <run-id> -R $repo --log-failed | tail -150`), find the cause, and fix
-   that — not the symptom. If the failure looks unrelated to this PR, end with
-   `STATUS: NEEDS-YOU` and say so instead of shotgun-fixing.
+   that — not the symptom. If the failure is unrelated to this PR (for example, a
+   runner, network, or infrastructure failure), end with `STATUS: BLOCKED <reason>`
+   and give a concise diagnostic reason so the conductor can retry. Do not make
+   speculative changes to unrelated code or shotgun-fix the failure.
 2. **Verify before every push:** `$verify`. Fix what fails.
 3. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
    $branch` (the branch already exists — you are pushing the PR forward) at least every
