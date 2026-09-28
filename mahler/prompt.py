@@ -6,12 +6,57 @@ processes, the prompt owns the words. `build()` turns a prepared worktree
 """
 
 import os
+import re
 import string
 
 from . import config, gh as gh_module
 from .ledger import row_get
 
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
+
+# The in-app What's New contract (DESIGN D31, mahler#358), injected into a
+# build prompt only when the issue itself asks for that work (mahler#569).
+# Most builds never touch a release feed; keeping the ~170-word block out of
+# unrelated prompts saves input tokens without weakening the contract.
+WHATS_NEW_GUIDANCE = """11. **In-app What's New contract:** When (and only when) the issue explicitly asks for an
+    in-app What's New surface or release feed:
+    - Follow DESIGN D31's schema v1 JSON contract (`schema_version`, `project`, `releases`
+      with `version`, `checkpoint_sha`, `published_at`, `remote_url`, `sections`, `maintenance`).
+    - Keep transport strictly read-only: apps consume the feed; they never publish releases or
+      write read/acknowledgement state back to Mahler.
+    - Client acknowledgement is local to each app installation, SemVer-based (store the highest
+      acknowledged version, show newer releases), and marked read only after the user views or
+      dismisses the surface.
+    - Missing, unreachable, or malformed feed responses must degrade gracefully and never block
+      app startup.
+    - Preserve the app's native design conventions (e.g. web, SwiftUI, Compose, CLI); do not force
+      foreign UI paradigms.
+    - Hide maintenance details initially: render features and fixes prominently; keep maintenance
+      collapsed or secondary so operational chores do not clutter user-facing notes.
+    - Exclude operational data: the feed provides release metadata only; never consume or display
+      issue comments, run logs, credentials, or UAT notes.
+    - Add automated tests in the app covering JSON payload parsing, SemVer comparison, offline fallback,
+      and local acknowledgement read-state persistence.
+    Do not add What's New UI or feed consumption to tasks that do not explicitly request it.
+"""
+
+# Explicit What's New / release-feed asks only: "what's new", "whats new",
+# "what is new", "release feed", "release notes feed" — but not a plain
+# "release", "release notes", or "new release", which most unrelated issues
+# mention somewhere.
+_WHATS_NEW_RE = re.compile(
+    r"what(?:['\u2019]?s|[\s-]*is)[\s-]*new"
+    r"|release[\s-]+(?:notes?[\s-]+)?feed",
+    re.IGNORECASE)
+
+
+def needs_whats_new(item):
+    """True when the cached issue title or body explicitly asks for an
+    in-app What's New surface or release feed (mahler#569). Decided from
+    the ledger's cached text, so it never needs a network call."""
+    return any(_WHATS_NEW_RE.search(t) for t in
+               (row_get(item, "title", ""), row_get(item, "issue_body", ""))
+               if t)
 
 
 def render(recipe, **vars):
@@ -89,10 +134,16 @@ def build(ctx, project, item, role, platform, prep, context=None):
                   "Such an item waits for a larger builder. When you split a size:l item, prefer size:s "
                   "sub-issues too.\n")
 
+    # mahler#569: only builds whose issue explicitly asks for a What's New
+    # surface or release feed carry the contract; the build recipe consumes
+    # `$whats_new` (other recipes don't have the placeholder, and ignore it).
+    whats_new = WHATS_NEW_GUIDANCE if needs_whats_new(item) else ""
+
     return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
                   platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
                   mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,
+                  whats_new=whats_new,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"
                          + pol["rules"].strip() + "\n") if pol.get("rules") else "")
