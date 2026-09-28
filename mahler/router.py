@@ -302,10 +302,19 @@ def codex_detail(led, name, pconf):
         parts.append("account usage blocked")
     count = quota.get("reset_credits")
     if count is not None:
-        parts.append(f"{count} reset credits available")
-        expiries = quota.get("credit_expiries") or []
+        # Credits with a known expiry are the banked (free) kind (mahler#557);
+        # the rest are counted as "other" without claiming what they are.
+        expiries = [e for e in (_ts(x) for x in quota.get("credit_expiries") or []) if e]
+        now = led.now()
+        expiries = [e for e in expiries if e > now]
         if expiries:
-            parts.append(f"next expires {expiries[0]}")
+            nxt = min(expiries)
+            parts.append(f"{len(expiries)} banked reset{'s' if len(expiries) != 1 else ''}"
+                         f" (next expires {fmt_countdown(nxt - now)})")
+            if count > len(expiries):
+                parts.append(f"{count - len(expiries)} other reset credits")
+        else:
+            parts.append(f"{count} reset credits available")
     sampled = _ts(quota.get("sampled_at"))
     if not sampled or led.now() - sampled >= timedelta(minutes=pconf.get("stale_minutes", 15)):
         parts.append("last reading is stale")

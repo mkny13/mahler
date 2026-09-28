@@ -8,9 +8,13 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, platforms, router, scheduler, usage
+from mahler import config, platforms, resets, router, scheduler, usage
 from mahler.console import state
 from mahler.ledger import Ledger
+
+
+def epoch(dt):
+    return int(dt.timestamp())
 
 
 def response(blocked=False, personal=False):
@@ -146,12 +150,12 @@ class CodexRefreshTests(unittest.TestCase):
         status, detail = router.usage_state(self.led, "codex", pc)
         self.assertEqual(status, "hard")
         self.assertIn("43200m 100%", detail)
-        self.assertIn("3 reset credits available", detail)
-        self.assertIn("next expires", detail)
+        self.assertIn("1 banked reset (next expires", detail)
+        self.assertIn("2 other reset credits", detail)
         rows = state._quota(self.cfg, self.led, None)
         self.assertEqual(len(rows), 2)
         for row in rows:
-            self.assertIn("3 reset credits available", row["detail"])
+            self.assertIn("1 banked reset (next expires", row["detail"])
             self.assertFalse(row["available"])
         self.now += timedelta(minutes=16)
         self.refresh()
@@ -212,4 +216,205 @@ class CodexRefreshTests(unittest.TestCase):
             args, _ = notify_send.call_args
             self.assertEqual(args[1], "Codex (work) quota exhausted")
             self.assertIn("no reset credits remaining", args[2])
+
+
+class CodexResetSpendTests(unittest.TestCase):
+    """Banked (expiring) reset credits are spent by the tick, never purchased
+    ones (mahler#557, D35); no real login or server."""
+
+    def setUp(self):
+        self.now = datetime(2026, 9, 16, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.personal = str(Path(self.tmp.name) / "personal")
+        self.work = str(Path(self.tmp.name) / "work")
+        for home in (self.personal, self.work):
+            Path(home).mkdir()
+            (Path(home) / "auth.json").write_text("{}")
+        self.cfg = config.resolve_platforms(config._merge(copy.deepcopy(config.DEFAULTS), {
+            "routing": {"sort": [], "build": ["codex", "codex-high"], "plan": []},
+            "platforms": {"codex-work": {"from": "codex", "account": "work"}},
+            "accounts": {
+                "personal": {"env": {"CODEX_HOME": self.personal}},
+                "work": {"env": {"CODEX_HOME": self.work},
+                         "routing": {"build": ["codex-work"]}}},
+            "projects": {"p": {"accounts": ["personal", "work"]}}}))
+        # Isolate the work login: the pass decides per login, so the tests
+        # route the ready project to the work account only.
+        self.cfg["projects"]["p"]["accounts"] = ["work"]
+        self.led.upsert_item("p", 1, state="ready", priority=2)
+        self.projects = [config.project_policy(self.cfg, "p")]
+
+    def banked(self, weekly_pct=58, weekly_reset=None, credit=None):
+        if credit is None:
+            credit = {"id": "credit-1", "status": "available",
+                      "expiresAt": epoch(self.now + timedelta(days=7))}
+        return {
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {
+                "primary": {"usedPercent": 20, "windowDurationMins": 300,
+                            "resetsAt": epoch(self.now + timedelta(hours=5))},
+                "secondary": {"usedPercent": weekly_pct,
+                              "windowDurationMins": 10080,
+                              "resetsAt": epoch(weekly_reset) if weekly_reset else None}},
+            "rateLimitResetCredits": {"availableCount": 1, "credits": [credit]}}
+
+    def seed(self, work=None, personal=None):
+        bodies = {self.personal: personal if personal is not None else response(),
+                  self.work: work if work is not None else response()}
+
+        def probe(*args, **kwargs):
+            return platforms._codex_usage(bodies[kwargs["env"]["CODEX_HOME"]])
+
+        with mock.patch.object(platforms, "probe_codex", side_effect=probe):
+            usage.refresh_usage(self.ctx(), self.projects)
+
+    def ctx(self):
+        return scheduler.Ctx(self.cfg, self.led, dry_run=False)
+
+    def run_pass(self, read=None, consume_result="reset"):
+        body = read if read is not None else response()
+        # The pass's targeting read is made with keep_ids=True; a raw body is
+        # parsed here the same way (credit ids present, never persisted).
+        read = platforms._codex_usage(body, keep_ids=True) if isinstance(body, dict) else body
+        with mock.patch.object(platforms, "probe_codex", return_value=read) as probe, \
+                mock.patch.object(platforms, "consume_codex_credit",
+                                  return_value=consume_result) as consume, \
+                mock.patch("mahler.notify.send") as ping:
+            resets.spend_banked(self.ctx(), self.projects)
+        return consume, probe, ping
+
+    def test_rule_a_spends_when_full_with_ready_work(self):
+        self.seed(work=self.banked(weekly_pct=95,
+                                   weekly_reset=self.now + timedelta(hours=72)))
+        consume, probe, ping = self.run_pass(
+            read=self.banked(weekly_pct=0, weekly_reset=self.now + timedelta(days=7)))
+        consume.assert_called_once()
+        kwargs = consume.call_args.kwargs
+        self.assertEqual(kwargs["credit_id"], "credit-1")
+        self.assertEqual(kwargs["env"]["CODEX_HOME"], self.work)
+        self.assertTrue(kwargs["idempotency_key"])
+        # The targeting read may carry credit ids; the standing probe may not.
+        self.assertTrue(probe.call_args_list[0].kwargs.get("keep_ids"))
+        ping.assert_called_once()
+        self.assertEqual(ping.call_args.args[1], "Codex (work): banked reset spent")
+        self.assertIn("rule a", ping.call_args.args[2])
+        self.assertIn("weekly window now resets", ping.call_args.args[2])
+        # The fresh reading is fanned out across the login's quota group.
+        self.assertEqual(self.led.usage("codex-work")["weekly"]["used_pct"], 0)
+        self.assertTrue(self.led.get_kv("notified:reset-spent:work:credit-1"))
+        self.assertEqual(len(self.led.q(
+            "SELECT detail FROM events WHERE kind='reset_spent'")), 1)
+
+    def test_rule_b_spends_when_credit_expiring_into_a_used_week(self):
+        self.seed(work=self.banked(
+            weekly_pct=70, weekly_reset=self.now + timedelta(hours=72),
+            credit={"id": "credit-1", "status": "available",
+                    "expiresAt": epoch(self.now + timedelta(hours=24))}))
+        consume, _, ping = self.run_pass(
+            read=self.banked(weekly_pct=0, weekly_reset=self.now + timedelta(days=7)))
+        consume.assert_called_once()
+        self.assertIn("rule b", ping.call_args.args[2])
+
+    def test_credits_without_expiry_are_never_spent(self):
+        # availableCount > 0 but no expiring row: the banked kind cannot be
+        # proven, so nothing is spent and nothing is pinged.
+        self.seed(work=self.banked(
+            weekly_pct=95, weekly_reset=self.now + timedelta(hours=72),
+            credit={"id": "secret", "status": "available", "expiresAt": None}))
+        consume, probe, ping = self.run_pass()
+        consume.assert_not_called()
+        ping.assert_not_called()
+        self.assertEqual(self.led.q(
+            "SELECT detail FROM events WHERE kind LIKE 'reset_%'"), [])
+
+    def test_stale_reading_decides_nothing(self):
+        self.seed(work=self.banked(weekly_pct=95,
+                                   weekly_reset=self.now + timedelta(hours=72)))
+        self.now += timedelta(minutes=16)
+        consume, _, ping = self.run_pass()
+        consume.assert_not_called()
+        ping.assert_not_called()
+
+    def test_expiring_unspent_pings_once(self):
+        body = self.banked(
+            weekly_pct=30, weekly_reset=self.now + timedelta(hours=72),
+            credit={"id": "credit-1", "status": "available",
+                    "expiresAt": epoch(self.now + timedelta(hours=24))})
+        self.seed(work=body)
+        consume, _, ping = self.run_pass()
+        consume.assert_not_called()
+        ping.assert_called_once()
+        self.assertIn("banked reset expiring", ping.call_args.args[1])
+        self.assertEqual(len(self.led.q(
+            "SELECT detail FROM events WHERE kind='reset_expiring'")), 1)
+        # A later tick in the same window stays silent.
+        self.run_pass()[2].assert_not_called()
+
+    def test_failed_call_backs_off_then_retries_with_same_key(self):
+        self.seed(work=self.banked(weekly_pct=95,
+                                   weekly_reset=self.now + timedelta(hours=72)))
+        consume, _, _ = self.run_pass(consume_result=None)
+        consume.assert_called_once()
+        key = consume.call_args.kwargs["idempotency_key"]
+        # A retry within the back-off window is skipped entirely.
+        self.run_pass(consume_result=None)[0].assert_not_called()
+        self.now += timedelta(minutes=31)
+        self.seed(work=self.banked(weekly_pct=95,
+                                   weekly_reset=self.now + timedelta(hours=72)))
+        consume2, _, _ = self.run_pass(consume_result=None)
+        consume2.assert_called_once()
+        self.assertEqual(consume2.call_args.kwargs["idempotency_key"], key)
+
+    def test_consume_requests_named_credit_and_parses_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "codex"
+            exe.write_text("#!/usr/bin/env python3\n" + '''
+import json, os, sys, time
+assert os.environ["CODEX_HOME"] == "isolated"
+assert json.loads(input())["method"] == "initialize"
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+assert json.loads(input())["method"] == "initialized"
+request = json.loads(input())
+assert request["method"] == "account/rateLimitResetCredit/consume"
+assert request["params"] == {"creditId": "credit-1", "idempotencyKey": "k-123"}
+print(json.dumps({"id": 2, "result": {"outcome": "reset"}}), flush=True)
+time.sleep(5)
+''')
+            exe.chmod(0o755)
+            with mock.patch.object(platforms, "codex_exe", return_value=str(exe)):
+                self.assertEqual(platforms.consume_codex_credit(
+                    env={**os.environ, "CODEX_HOME": "isolated"},
+                    credit_id="credit-1", idempotency_key="k-123"), "reset")
+        # Fails closed: no credit named, no call is made.
+        self.assertIsNone(platforms.consume_codex_credit(
+            credit_id=None, idempotency_key="k-123"))
+
+    def test_consume_error_response_is_not_a_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "codex"
+            exe.write_text("#!/usr/bin/env python3\n" + '''
+import json, os, sys, time
+assert json.loads(input())["method"] == "initialize"
+print(json.dumps({"id": 1, "result": {}}), flush=True)
+assert json.loads(input())["method"] == "initialized"
+print(json.dumps({"id": 2, "error": {"code": -1}}), flush=True)
+time.sleep(5)
+''')
+            exe.chmod(0o755)
+            with mock.patch.object(platforms, "codex_exe", return_value=str(exe)):
+                self.assertIsNone(platforms.consume_codex_credit(
+                    env={**os.environ, "CODEX_HOME": "isolated"},
+                    credit_id="credit-1", idempotency_key="k-123"))
+
+    def test_banked_resets_surface_in_capacity_detail(self):
+        self.seed(work=self.banked(
+            weekly_pct=70, weekly_reset=self.now + timedelta(hours=72),
+            credit={"id": "credit-1", "status": "available",
+                    "expiresAt": epoch(self.now + timedelta(hours=24))}))
+        detail = router.codex_detail(self.led, "codex-work",
+                                     self.cfg["platforms"]["codex-work"])
+        self.assertIn("1 banked reset (next expires 1d 0h)", detail)
 
