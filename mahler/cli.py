@@ -10,9 +10,10 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from . import config, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import GH, GHError
@@ -738,6 +739,50 @@ def cmd_backup(a, cfg, led):
     return 0 if ok else 1
 
 
+def cmd_restore_ledger(a, cfg, led):
+    """Verify a ledger backup, then swap it in. Never deletes the current
+    DB — it's moved aside. Refuses if the daemon still holds the tick lock;
+    stop it first (mahler#533)."""
+    from . import backup
+    src = a.file
+    if not os.path.isfile(src):
+        print(f"mahler: {src} not found", file=sys.stderr)
+        return 1
+    result = backup.integrity_check(src)
+    if result != "ok":
+        print(f"mahler: {src} fails integrity check: {result}", file=sys.stderr)
+        return 1
+    led.close()
+    uid = os.getuid()
+    lock = scheduler.take_lock()
+    if lock is None:
+        print("mahler: the daemon still holds the tick lock — stop it first:\n"
+              f"  launchctl bootout gui/{uid}/local.mahler\n"
+              f"  launchctl bootout gui/{uid}/local.mahler.serve\n"
+              "then run this again.", file=sys.stderr)
+        return 1
+    try:
+        dest = config.DB_PATH
+        if os.path.exists(dest):
+            aside = f"{dest}.before-restore-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            os.rename(dest, aside)
+            print(f"moved current ledger aside to {aside}")
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.remove(dest + suffix)
+            except OSError:
+                pass
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o600)
+    finally:
+        lock.close()
+    print(f"restored {src} -> {dest}")
+    print("restart the daemon:\n"
+          f"  launchctl bootstrap gui/{uid} ~/Library/LaunchAgents/local.mahler.plist\n"
+          f"  launchctl bootstrap gui/{uid} ~/Library/LaunchAgents/local.mahler.serve.plist")
+    return 0
+
+
 def cmd_log(a, cfg, led):
     run = led.run(a.run_id)
     if not run:
@@ -1001,6 +1046,10 @@ def main(argv=None):
     s = sub.add_parser("backup", help="back up project databases now")
     s.add_argument("project", nargs="?")
     s.set_defaults(fn=cmd_backup)
+
+    s = sub.add_parser("restore-ledger", help="restore Mahler's own ledger from a verified backup")
+    s.add_argument("file", help="path to a mahler-<stamp>.db backup")
+    s.set_defaults(fn=cmd_restore_ledger)
 
     s = sub.add_parser("backfill-usage", help="recover accounting from ended run logs; price runs whose model now has a [prices] row")
     s.add_argument("--dry-run", action="store_true")
