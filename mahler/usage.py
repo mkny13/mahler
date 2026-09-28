@@ -251,21 +251,22 @@ def compute_burst(ctx, projects):
     if ctx.burst_lines is not None:
         return ctx.burst_lines
     lines = router.all_bursts(ctx.cfg, ctx.led)
-    suppressed = None
+    suppressed = []
     if lines and ctx.hot_hold:
         quiet = timedelta(minutes=ctx.cfg["burst"].get("human_quiet_minutes", 20))
         for group in list(lines):
             flag = router._ts(ctx.led.get_kv(f"human:{group}"))
             if flag and ctx.led.now() - flag < quiet:
-                suppressed = "5h usage rose with no live Claude run"
+                suppressed.append(f"{group}: 5h usage rose with no live Claude run")
                 del lines[group]
-        if presence.human_claude_active(projects):
-            suppressed = "Claude in use (recent transcript activity)"
-            lines = None
+        for group in presence.human_claude_groups(ctx.cfg, projects):
+            if group in lines:
+                suppressed.append(f"{group}: Claude in use (recent transcript activity)")
+                del lines[group]
         lines = lines or None
     if suppressed:
-        ctx.say(f"D23: burst window open — deferring ({suppressed})")
-    elif lines:
+        ctx.say(f"D23: burst window open — deferring ({'; '.join(suppressed)})")
+    if lines:
         kind = router.burst_kind(lines)
         scope = "5h and weekly" if kind == "weekly" else "5h only"
         ctx.say(f"D23: {kind} burst active — Claude builds first, lines 90/97 (scope: {scope})")

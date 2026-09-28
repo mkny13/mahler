@@ -1086,6 +1086,10 @@ weekly window stood at 81%, over the 70% soft line, so Claude sat idle until the
   interactive Claude Code transcript outside Mahler's worktrees written in the last 20 minutes,
   or 5-hour usage that rose while no Mahler Claude run was live (that catches the Claude app on
   your phone or the web). The peak window (D22) still wins.
+- **Runs keep their launch lines** (mahler#544). A Claude run launched in burst keeps
+  those per-window limits until it ends, even after presence suppresses new starts,
+  the window resets, or the burst closes. Higher current limits still apply. The
+  burst hard line (97%), actual rate limits and paid-overage stops remain enforced.
 - **Never into paid usage.** Burst lines stop below 100%. As a backstop, any run whose
   `rate_limit_event` reports `isUsingOverage: true` is stopped at once and Claude is marked
   exhausted until the reset. This applies at all times, not just in a burst.
@@ -1179,7 +1183,9 @@ a personal project must never spend a work login.
   Claude logins too, using their own fresh samples and reset times. Personal reset times
   never lift work lines, or vice versa. Each bursting group's platforms move forward in
   their own account's build route. A usage-rise human flag suppresses only its quota group;
-  detected human Claude transcript activity suppresses all groups. The peak window (D22)
+  transcript activity suppresses only its login's group: `~/.claude/projects`
+  belongs to personal Claude, and each account's `CLAUDE_CONFIG_DIR/projects`
+  belongs to that account (amended mahler#544). The peak window (D22)
   still applies to every Claude login.
 - Concurrency: `concurrency.total` stays one global cap. Each login's slot is separate, so a
   second account usually wants the total raised by one.

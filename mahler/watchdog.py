@@ -7,6 +7,7 @@ process is gone, finalize.py turns what it left into a handoff.
 """
 
 import os
+import json
 from datetime import timedelta
 
 from . import config, platforms, router, runner
@@ -119,7 +120,21 @@ def _health(ctx, run, pol, now):
                          "at once so nothing autonomous eats into paid overage (DESIGN D8).",
                          run["project"], run["number"], priority="high", tags="warning")
             return "quota"
+        if log["quota_hit"]:
+            return "quota"
     claude_lines = ctx.burst_lines if pconf.get("kind") == "claude" else None
+    stamped = run["burst_lines"] if "burst_lines" in run.keys() else None
+    if pconf.get("kind") == "claude" and stamped:
+        # Only windows lifted at launch are retained; a session burst must
+        # never lift the weekly reserve. Current lines may be higher still.
+        retained = {}
+        for window, launch_lines in json.loads(stamped).items():
+            current = router.effective_lines(ctx.led, run["platform"], pconf,
+                                             window, claude_lines)
+            retained[window] = tuple(max(a, b) for a, b in zip(current, launch_lines))
+        group = pconf.get("quota_group", run["platform"])
+        current_burst = router.platform_burst(run["platform"], pconf, claude_lines) or {}
+        claude_lines = {group: {**current_burst, **retained}}
     state, detail = router.usage_state(ctx.led, run["platform"], pconf,
                                         burst_lines=claude_lines)
     if state == "hard":

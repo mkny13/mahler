@@ -197,7 +197,7 @@ class BurstScheduleTests(unittest.TestCase):
         """Recent Claude Code transcript activity suppresses the burst."""
         ctx, led = mk_ctx({"a": proj()}, total=1)
         seed_burst(led)
-        with mock.patch.object(presence, "human_claude_active", return_value=True):
+        with mock.patch.object(presence, "human_claude_groups", return_value={"claude"}):
             item(led, "a", 1, age_minutes=10)
             lines = plan(ctx, led)
         self.assertEqual(lines, ["a#1: would build on agy-claude"])
