@@ -1,4 +1,4 @@
-"""Keep the sorter's planning safeguards in the rendered prompt (mahler#238)."""
+"""Keep agent safeguards and outcome contracts in the rendered recipes."""
 
 import sqlite3
 import unittest
@@ -171,6 +171,40 @@ class BuildRecipeTests(unittest.TestCase):
         self.assertNotIn("$", self.rendered)
 
 
+class FixRecipeTests(unittest.TestCase):
+    def setUp(self):
+        rendered = prompt.render(
+            "fix", number=565, repo="example/project", title="CI failure",
+            platform="codex", worktree="/tmp/example-worktree",
+            branch="mahler/565-ci-failure", handoff="", rules="",
+            verify="python3 -m unittest", base="main",
+        )
+        self.text = " ".join(rendered.split())
+
+    def test_unrelated_technical_failure_is_retryable(self):
+        diagnosis = self.text.split("1. ", 1)[1].split("2. ", 1)[0]
+        self.assertIn("Diagnose before changing anything", diagnosis)
+        self.assertIn("If the failure is unrelated to this PR", diagnosis)
+        self.assertIn("runner, network, or infrastructure failure", diagnosis)
+        self.assertIn("end with `STATUS: BLOCKED <reason>`", diagnosis)
+        self.assertIn("concise diagnostic reason so the conductor can retry", diagnosis)
+        self.assertNotIn("NEEDS-YOU", diagnosis)
+        self.assertIn("Do not make speculative changes to unrelated code or "
+                      "shotgun-fix the failure", diagnosis)
+
+    def test_needs_you_is_reserved_for_owner_decisions(self):
+        owner_rule = self.text.split("5. ", 1)[1].split("6. ", 1)[0]
+        self.assertIn("Stop only for a decision genuinely only the owner can make "
+                      "(product intent, credentials, payment, accounts, destructive data)",
+                      owner_rule)
+        self.assertIn("Post it as an issue comment", owner_rule)
+        self.assertIn("STATUS: NEEDS-YOU <the question, on one line>", owner_rule)
+
+    def test_real_fixes_still_require_verification_and_push(self):
+        self.assertIn("Verify before every push:** `python3 -m unittest`", self.text)
+        self.assertIn("When the failure is fixed and `python3 -m unittest` passes, "
+                      "commit, push, and end with `STATUS: DONE", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
-
