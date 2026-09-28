@@ -1331,3 +1331,45 @@ class RunAccountingMigrationTests(unittest.TestCase):
                     self.assertEqual(led.run(1)[key], value)
             finally:
                 led.close()
+
+
+class LedgerInitializationResourcesTests(unittest.TestCase):
+    def test_setup_failure_closes_connection_once_and_preserves_error(self):
+        from unittest import mock
+
+        for stage in ('pragma', 'schema', 'migration'):
+            for close_fails in (False, True):
+                with self.subTest(stage=stage, close_fails=close_fails):
+                    error = sqlite3.OperationalError('setup failed')
+
+                    class Connection(sqlite3.Connection):
+                        closes = 0
+
+                        def execute(self, sql, *args):
+                            if (stage == 'pragma' and sql.startswith('PRAGMA')) or (
+                                    stage == 'migration' and sql.startswith('UPDATE items')):
+                                raise error
+                            return super().execute(sql, *args)
+
+                        def executescript(self, sql):
+                            if stage == 'schema':
+                                raise error
+                            return super().executescript(sql)
+
+                        def close(self):
+                            self.closes += 1
+                            super().close()
+                            if close_fails:
+                                raise RuntimeError('close failed')
+
+                    con = sqlite3.connect(':memory:', factory=Connection)
+                    led = Ledger.__new__(Ledger)
+                    with mock.patch('mahler.ledger.sqlite3.connect', return_value=con):
+                        with self.assertRaises(sqlite3.OperationalError) as caught:
+                            led.__init__(':memory:')
+                    self.assertIs(caught.exception, error)
+                    self.assertEqual(con.closes, 1)
+                    with self.assertRaises(sqlite3.ProgrammingError):
+                        con.execute('SELECT 1')
+                    led.__del__()
+                    self.assertEqual(con.closes, 1)

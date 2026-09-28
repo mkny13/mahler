@@ -277,10 +277,11 @@ class LaunchRecoveryTests(unittest.TestCase):
         def trip(ctx):
             ctx.led.set_kv('launch_broken', json.dumps({'signature': 'broken'}))
 
-        with patch.object(scheduler, 'take_lock', return_value=object()), \
+        with patch.object(scheduler, 'take_lock') as take_lock, \
                 patch.object(scheduler, 'tick', side_effect=trip):
             self.assertEqual(cli.cmd_tick(Namespace(dry_run=False, no_hot_hold=False),
                                           mk_cfg({}), self.led), 3)
+        take_lock.return_value.close.assert_called_once_with()
 
     def test_state_default_honors_mahler_home_in_fresh_process(self):
         result = subprocess.run(
