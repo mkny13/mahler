@@ -391,7 +391,7 @@ if __name__ == "__main__":
 
 def cmd_warmup(a, cfg, led):
     from .scheduler import Ctx, take_lock
-    from .warmup import warmup_pass
+    from .warmup import learned_lines, warmup_pass
     lock = None if a.dry_run else take_lock()
     if not a.dry_run and lock is None:
         print("mahler: another tick is running; try again")
@@ -399,6 +399,8 @@ def cmd_warmup(a, cfg, led):
     try:
         ctx = Ctx(cfg, led, dry_run=a.dry_run)
         try:
+            for line in learned_lines(cfg, led):
+                print(f"  {line}")
             failures = warmup_pass(ctx, target=a.target, manual=True)
         except ValueError as exc:
             print(f"mahler: {exc}", file=sys.stderr)

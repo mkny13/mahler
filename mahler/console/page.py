@@ -928,6 +928,12 @@ def _d_capacity(s):
         for route in s["measured_routes"]:
             out.append(f'<p class="foot-note">{e(route)}</p>')
         out.append('</details>')
+    if s.get("warmup_learned"):
+        out.append('<details class="cap-warmup"><summary>Learned warm-up times '
+                   '(report only)</summary>')
+        for line in s["warmup_learned"]:
+            out.append(f'<p class="foot-note">{e(line)}</p>')
+        out.append('</details>')
     out.append('<div class="cap-quota-pools">')
     for q in s["quota"]:
         out.append(_cap_card(q, "group"))

@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, presence, router
+from .. import config, presence, router, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -120,6 +120,7 @@ def build(cfg, led, stats_range="week", section=None):
         "weekly_quota": (week_calendar(cfg, led, now)
                          if section in (None, "capacity", "browse") else None),
         "capacity": _capacity_line(quota),
+        "warmup_learned": _warmup_learned(cfg, led),
         "models": models(led, cfg, measurement_rows) if measured else None,
         "measured_routes": measured_routes(cfg, led, projects, measurement_rows) if measured else [],
         "stats": stats(led, stats_range, project_names),
@@ -675,6 +676,16 @@ def _capability_sections(quota):
                          "composite_estimate":
                              f"≈ {available} of {total} slots available (approx.)"})
     return sections
+
+
+def _warmup_learned(cfg, led):
+    """mahler#536: one line per warm-up target with its learned warm-up time
+    and the reason, from the daily relearn's persisted kv. The learned time is
+    a report only — no schedule reads it."""
+    try:
+        return warmup.console_lines(cfg, led)
+    except Exception:
+        return []
 
 
 def _capacity_line(quota):
