@@ -17,8 +17,10 @@ Codex login, whether a banked reset should be spent now:
 
 Never spent: purchased resets. A credit is only treated as banked — and only
 ever targeted — when the rate-limits read showed it available *with* an expiry;
-purchased resets are never bought. If the fresh read cannot produce such a
-row, nothing is spent. Every spend pings ntfy with the login and the new
+if the fresh read cannot produce such a row, nothing is spent. A dry-run tick
+(`mahler tick --dry-run`) describes the proposed spend but never writes attempt
+state or calls the consume RPC, so a diagnostic tick can never spend a real
+reset. Every spend pings ntfy with the login and the new
 weekly reset time, and every credit about to expire unspent is pinged once so
 Mike can still spend it by hand.
 """
@@ -135,6 +137,13 @@ def _spend(ctx, name, pconf, account, rule):
     if (isinstance(stored, dict) and stored.get("credit_id") == credit["id"]
             and (t := parse(stored.get("at"))) and led.now() - t < RETRY_AFTER):
         return                      # same attempt already in flight or just failed
+    if ctx.dry_run:
+        # A dry-run tick is a diagnostic: it must never spend a real reset.
+        # Stop here, before attempt state is written or the consume RPC is
+        # called, and only describe the spend that would have happened.
+        ctx.say(f"codex ({account}): dry-run — would spend banked reset credit "
+                f"{credit['id']} (rule {rule}, expires {credit['expires_at']})")
+        return
     if not isinstance(stored, dict) or stored.get("credit_id") != credit["id"]:
         stored = {"credit_id": credit["id"], "key": str(uuid.uuid4()),
                   "at": iso(led.now())}

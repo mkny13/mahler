@@ -271,10 +271,10 @@ class CodexResetSpendTests(unittest.TestCase):
         with mock.patch.object(platforms, "probe_codex", side_effect=probe):
             usage.refresh_usage(self.ctx(), self.projects)
 
-    def ctx(self):
-        return scheduler.Ctx(self.cfg, self.led, dry_run=False)
+    def ctx(self, dry_run=False):
+        return scheduler.Ctx(self.cfg, self.led, dry_run=dry_run)
 
-    def run_pass(self, read=None, consume_result="reset"):
+    def run_pass(self, read=None, consume_result="reset", dry_run=False):
         body = read if read is not None else response()
         # The pass's targeting read is made with keep_ids=True; a raw body is
         # parsed here the same way (credit ids present, never persisted).
@@ -283,8 +283,24 @@ class CodexResetSpendTests(unittest.TestCase):
                 mock.patch.object(platforms, "consume_codex_credit",
                                   return_value=consume_result) as consume, \
                 mock.patch("mahler.notify.send") as ping:
-            resets.spend_banked(self.ctx(), self.projects)
+            resets.spend_banked(self.ctx(dry_run), self.projects)
         return consume, probe, ping
+
+    def test_dry_run_describes_the_spend_and_never_spends(self):
+        # A diagnostic tick must not consume a real reset: the guard fires
+        # before attempt state is written or the consume RPC is called.
+        self.seed(work=self.banked(weekly_pct=95,
+                                   weekly_reset=self.now + timedelta(hours=72)))
+        consume, probe, ping = self.run_pass(dry_run=True)
+        probe.assert_called_once()      # the targeting read still runs
+        probe.assert_called_with(keep_ids=True, env=mock.ANY)
+        consume.assert_not_called()
+        ping.assert_not_called()
+        self.assertIsNone(self.led.get_kv("reset:attempt:work"))
+        self.assertEqual(self.led.q(
+            "SELECT detail FROM events WHERE kind='reset_spent'"), [])
+        # The standing weekly reading is untouched, too.
+        self.assertEqual(self.led.usage("codex-work")["weekly"]["used_pct"], 95)
 
     def test_rule_a_spends_when_full_with_ready_work(self):
         self.seed(work=self.banked(weekly_pct=95,
