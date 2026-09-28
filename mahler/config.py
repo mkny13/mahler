@@ -1025,8 +1025,6 @@ def enabled_projects(cfg):
 # Only install defaults whose login/platform exists on this machine. Explicit
 # targets, including an empty list, are authoritative and validated fail-closed.
 WARMUP_TARGETS = (
-    ("claude-personal", "claude", "personal", "claude-low"),
-    ("claude-work", "claude", "work", "work-claude-low"),
     ("antigravity", "agy", "personal", "agy-gemini"),
     ("chatgpt-work", "codex", "work", "work-codex-gpt1-low"),
     ("chatgpt-makastel", "codex", "work-makastel", "work-codex-makastel-low"),

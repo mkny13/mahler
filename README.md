@@ -131,7 +131,7 @@ mahler release myapp --version X.Y.Z --publish  # publish git tag and GitHub rel
 Run `mahler --help` (or `mahler <command> --help`) for the full local CLI reference.
 
 Warm-up chains idle five-hour windows from 05:00 to midnight on weekdays for
-configured Claude personal/work, Antigravity Gemini, and work ChatGPT logins.
+configured Antigravity Gemini and work ChatGPT logins.
 Set `[warmup] enabled = false` to disable it, or replace `warmup.targets` with
 entries containing `name`, `kind`, `account`, `platform`, `start`, `end`, and
 `days` (`weekdays`, `daily`, or `off`). Times use the Mini's local timezone.

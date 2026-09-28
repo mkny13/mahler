@@ -187,7 +187,7 @@ class WarmupConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, 'config.toml')
             cfg = config.load(path)
-            self.assertEqual(len(cfg['warmup']['targets']), 2)
+            self.assertEqual(len(cfg['warmup']['targets']), 1)
             with open(path, 'w') as f:
                 f.write('[[warmup.targets]]\nname="bad"\nkind="claude"\naccount="typo"\nplatform="claude"\n')
             with self.assertRaisesRegex(ValueError, 'unknown account'):
@@ -236,15 +236,6 @@ class WarmupAdapterTests(unittest.TestCase):
         self.assertNotIn('OPENAI_API_KEY', kwargs['env'])
         self.assertFalse(os.path.exists(kwargs['cwd']))
 
-    @patch('mahler.platforms.probe_claude', return_value=[('5h', 1, None)])
-    def test_claude_work_environment_and_peer_recording(self, probe):
-        self.cfg['platforms']['work-low'] = dict(kind='claude', account='work', quota_group='claude@work')
-        self.target['kind'] = 'claude'
-        warmup.nudge(self.ctx, self.target)
-        self.assertEqual(probe.call_args.kwargs['env']['CLAUDE_CONFIG_DIR'], '/work/claude')
-        self.assertIn('5h', self.led.usage('work-low'))
-        self.assertFalse(self.led.usage('claude'))
-
     @patch('mahler.platforms.agy_exe', return_value='/bin/agy')
     @patch('mahler.warmup.subprocess.run')
     def test_agy_failed_status_is_not_success(self, run, exe):
@@ -258,15 +249,6 @@ class WarmupAdapterTests(unittest.TestCase):
     def test_free_codex_reader_uses_work_login(self, probe):
         warmup.read_usage(self.ctx, self.target)
         self.assertEqual(probe.call_args.kwargs['env']['CODEX_HOME'], '/work/codex')
-
-    @patch('mahler.platforms.oauth_usage', return_value=[])
-    def test_work_claude_reader_never_falls_back_to_personal(self, probe):
-        self.cfg['platforms']['work-low'] = dict(kind='claude', account='work')
-        self.cfg['accounts']['work']['env'] = {}
-        self.target['kind'] = 'claude'
-        with self.assertRaises(ValueError):
-            warmup.read_usage(self.ctx, self.target)
-        probe.assert_not_called()
 
 
 if __name__ == '__main__':
