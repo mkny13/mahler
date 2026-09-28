@@ -128,6 +128,41 @@ class EstimateTrackingTests(unittest.TestCase):
         self.assertEqual(self.led.run_estimate(ests, "claude", "build"),
                          self.led.run_estimate(ests, "claude", "build", None))
 
+    def test_non_started_attempts_do_not_skew_any_duration_average(self):
+        t0 = self.clock()
+        real_runs = (
+            (10, "DONE", None),
+            (20, "YIELDED", "quota"),
+            (30, "exit -15", "timeout"),
+            (40, "YIELDED", "handoff"),
+        )
+        for number, (mins, outcome, stop_reason) in enumerate(real_runs, 1):
+            self.led.upsert_item("p", number, state="done")
+            self.led.create_run(
+                project="p", number=number, role="build", platform="claude",
+                epoch=0, size="m", status="ended", outcome=outcome,
+                stop_reason=stop_reason, started_at=iso(t0),
+                ended_at=iso(t0 + timedelta(minutes=mins)))
+
+        # These attempts ended normally in ledger terms but never ran an agent.
+        # Their tiny elapsed times must not affect any fallback level or issue sum.
+        for number, outcome, seconds in (
+                (1, "launch failed: unavailable CLI", 2),
+                (2, "not claimed", 4)):
+            self.led.create_run(
+                project="p", number=number, role="build", platform="claude",
+                epoch=0, size="m", status="ended", outcome=outcome,
+                started_at=iso(t0), ended_at=iso(t0 + timedelta(seconds=seconds)))
+
+        ests = self.led.estimates()
+        self.assertAlmostEqual(ests["run_avg_size"][("claude", "build", "m")], 25.0,
+                               places=5)
+        self.assertAlmostEqual(ests["run_avg"][("claude", "build")], 25.0, places=5)
+        self.assertAlmostEqual(ests["plat_avg"]["claude"], 25.0, places=5)
+        self.assertAlmostEqual(ests["global_run_avg"], 25.0, places=5)
+        self.assertAlmostEqual(ests["proj_issue_avg"]["p"], 25.0, places=5)
+        self.assertAlmostEqual(ests["global_issue_avg"], 25.0, places=5)
+
     def test_update_run_computes_actual_mins(self):
         run_id = self.led.create_run(project="p", number=1, role="build", platform="claude", epoch=0)
         self.clock.advance(minutes=18, seconds=30)
@@ -164,6 +199,25 @@ class EstimateTrackingTests(unittest.TestCase):
         # Global or PR avg is multiplied by 1.2
         self.assertAlmostEqual(est, (12.0 + 24.0) / 2.0 * 1.2, places=1)
 
+    def test_calibration_excludes_attempts_that_never_started(self):
+        t0 = self.clock()
+        for number, est, actual in ((1, 10.0, 20.0), (2, 20.0, 40.0)):
+            self.led.create_run(
+                project="p", number=number, role="build", platform="claude", epoch=0,
+                est_mins=est, actual_mins=actual, status="ended", outcome="DONE",
+                started_at=iso(t0), ended_at=iso(t0 + timedelta(minutes=actual)))
+        for number, outcome in ((3, "launch failed: unavailable CLI"), (4, "not claimed")):
+            self.led.create_run(
+                project="p", number=number, role="build", platform="claude", epoch=0,
+                est_mins=100.0, actual_mins=1.0, status="ended", outcome=outcome,
+                started_at=iso(t0), ended_at=iso(t0 + timedelta(minutes=1)))
+
+        stats = self.led.calibrate_estimates(window=10)
+        self.assertEqual(stats["samples"], 2)
+        self.assertEqual(stats["raw_factor"], 2.0)
+        self.assertEqual(stats["factor"], 2.0)
+        self.assertEqual(stats["mae"], 15.0)
+
     def test_calibrate_clamps_extreme_outliers(self):
         t0 = self.clock()
         # Extreme run taking 10x longer (e.g. hung run)
@@ -193,6 +247,25 @@ class EstimateTrackingTests(unittest.TestCase):
         self.assertEqual(len(evs), 1)
         detail = json.loads(evs[0]["detail"])
         self.assertEqual(detail["total_actual_mins"], 22.5)
+        self.assertEqual(detail["runs_count"], 1)
+
+    def test_issue_done_stats_exclude_attempts_that_never_started(self):
+        t0 = self.clock()
+        self.led.upsert_item("p", 1, state="working")
+        self.led.create_run(
+            project="p", number=1, role="build", platform="claude", epoch=0,
+            actual_mins=12.0, status="ended", outcome="YIELDED", stop_reason="handoff",
+            started_at=iso(t0), ended_at=iso(t0 + timedelta(minutes=12)))
+        for outcome in ("launch failed: unavailable CLI", "not claimed"):
+            self.led.create_run(
+                project="p", number=1, role="build", platform="claude", epoch=0,
+                actual_mins=0.1, status="ended", outcome=outcome,
+                started_at=iso(t0), ended_at=iso(t0 + timedelta(seconds=6)))
+
+        self.led.set_state("p", 1, "done", "shipped")
+        event = self.led.q1("SELECT detail FROM events WHERE kind='issue_done_stats'")
+        detail = json.loads(event["detail"])
+        self.assertEqual(detail["total_actual_mins"], 12.0)
         self.assertEqual(detail["runs_count"], 1)
 
     def test_scheduler_periodic_calibration(self):
