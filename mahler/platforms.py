@@ -768,6 +768,141 @@ def _extract_error_message(ev):
     return json.dumps(ev)
 
 
+def _note_log_error(res, ev):
+    """Classify structured failures shared by the non-Claude protocols."""
+    _classify_error(res, ev)
+    if is_model_unavailable(ev):
+        res["model_unavailable"] = True
+
+
+def _read_plaintext(res, line, texts):
+    line_str = line.strip()
+    if line_str:
+        texts.append(line_str)
+        if is_credit_exhausted(line_str):
+            _note_credit_exhausted(res, line_str)
+        if is_network_error(line_str) or line_str.lower().startswith("error:"):
+            res["last_error"] = line_str
+        if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
+            res["model_unavailable"] = True
+
+
+def _read_claude_event(res, ev, texts, first_quota):
+    t = ev.get("type")
+    if t == "rate_limit_event":
+        res["usage"] = claude_samples_from_event(ev)
+        for window, pct, resets in res["usage"]:
+            first_quota.setdefault(window, pct)
+            res["quota_used"][window] = round(pct - first_quota[window], 1)
+        info = ev.get("rate_limit_info") or {}
+        if info.get("status") == "rejected":
+            _note_quota_hit(res, ev)
+        if info.get("isUsingOverage"):    # paid extra usage: stop at once (mahler#136)
+            res["overage"] = True
+            _note_quota_hit(res, ev)
+    elif t == "assistant":
+        for block in (ev.get("message") or {}).get("content") or []:
+            if block.get("type") == "text" and block.get("text"):
+                texts.append(block["text"])
+    elif t == "result":
+        res["final"] = ev.get("result")
+        res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
+        if ev.get("is_error") and is_model_unavailable(ev):
+            res["model_unavailable"] = True
+
+
+def _read_cline_event(res, ev, texts, first_quota):
+    if ev.get("type") == "run_result":
+        res["final"] = ev.get("text")
+        res["ok"] = ev.get("finishReason") == "completed"
+        if not res["ok"]:
+            _note_log_error(res, ev)
+            if ev.get("text"):
+                res["last_error"] = ev.get("text")
+    elif ev.get("type") == "error" or ev.get("error"):
+        _note_log_error(res, ev)
+        res["last_error"] = _extract_error_message(ev)
+
+
+def _read_copilot_event(res, ev, texts, first_quota):
+    t = ev.get("type")
+    if t == "assistant.message":
+        c = (ev.get("data") or {}).get("content")
+        if c:
+            res["final"] = c
+            texts.append(c)
+    elif t == "result":
+        res["ok"] = ev.get("exitCode") == 0
+    elif t == "error" or "error" in (t or ""):
+        _note_log_error(res, ev)
+
+
+def _read_codex_event(res, ev, texts, first_quota):
+    t = ev.get("type")
+    if t == "item.completed":
+        item = ev.get("item") or {}
+        if item.get("type") == "agent_message" and item.get("text"):
+            res["final"] = item["text"]
+            texts.append(item["text"])
+    elif t == "turn.completed":
+        res["ok"] = True
+    elif t in {"turn.failed", "error"} or "error" in (t or ""):
+        res["ok"] = False
+        _note_log_error(res, ev)
+
+
+def _read_kilo_event(res, ev, texts, first_quota):
+    if ev.get("sessionID"):
+        res["session_id"] = ev.get("sessionID")
+    if ev.get("type") == "error":
+        _note_log_error(res, ev)
+        res["last_error"] = _extract_error_message(ev)
+    elif ev.get("type") == "step_finish":
+        # kilo-auto/free is stateless per invocation: each `kilo run`
+        # is a fresh routing decision across the free pool, so the
+        # model actually used is the signal for whether a quota hit
+        # reflects one underlying free model being rate-limited
+        # rather than the whole account/pool (mahler#141).
+        model = ((ev.get("part") or {}).get("model") or {}).get("modelID")
+        if model:
+            res["model"] = model
+    else:
+        texts.extend(_collect_text(ev))
+
+
+def _read_agy_event(res, ev, texts, first_quota):
+    if ev.get("event") == "result":
+        r = ev.get("result") or {}
+        res["final"] = r.get("response")
+        res["ok"] = r.get("status") == "SUCCESS"
+        if not res["ok"]:
+            _note_log_error(res, r)
+    elif ev.get("event") == "step_update":
+        su = ev.get("step_update") or {}
+        if su.get("text_delta"):
+            texts.append(su["text_delta"])
+
+
+def _finish_log(res, texts, kind):
+    joined = "".join(texts) if kind == "agy" else "\n".join(texts)
+    # The last_text feeds handoff comments (GitHub) and the final text can land
+    # in a NEEDS-YOU ping (ntfy), so credential-shaped strings that leaked into
+    # the agent's own output are masked before anything sees them (issue #76).
+    res["final"] = redact.redact(res["final"])
+    res["last_text"] = redact.redact((res["final"] or joined)[-1500:])
+    return res
+
+
+_LOG_HANDLERS = {
+    "claude": _read_claude_event,
+    "cline": _read_cline_event,
+    "copilot": _read_copilot_event,
+    "codex": _read_codex_event,
+    "kilo": _read_kilo_event,
+    "agy": _read_agy_event,
+}
+
+
 def read_log(path, kind, model=None):
     """Summarise a run's stream-json log.
 
@@ -792,134 +927,20 @@ def read_log(path, kind, model=None):
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
         return res
+    handler = _LOG_HANDLERS.get(kind, _read_agy_event)
     texts = []
     with fh:
         for line in fh:
             try:
                 ev = json.loads(line)
             except ValueError:
-                line_str = line.strip()
-                if line_str:
-                    texts.append(line_str)
-                    if is_credit_exhausted(line_str):
-                        _note_credit_exhausted(res, line_str)
-                    if is_network_error(line_str) or line_str.lower().startswith("error:"):
-                        res["last_error"] = line_str
-                    if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
-                        res["model_unavailable"] = True
+                _read_plaintext(res, line, texts)
                 continue
             if not isinstance(ev, dict):
                 continue
             collect(res, ev, kind)
-            if kind == "claude":
-                t = ev.get("type")
-                if t == "rate_limit_event":
-                    res["usage"] = claude_samples_from_event(ev)
-                    for window, pct, resets in res["usage"]:
-                        first_quota.setdefault(window, pct)
-                        res["quota_used"][window] = round(pct - first_quota[window], 1)
-                    info = ev.get("rate_limit_info") or {}
-                    if info.get("status") == "rejected":
-                        _note_quota_hit(res, ev)
-                    if info.get("isUsingOverage"):    # paid extra usage: stop at once (mahler#136)
-                        res["overage"] = True
-                        _note_quota_hit(res, ev)
-                elif t == "assistant":
-                    for block in (ev.get("message") or {}).get("content") or []:
-                        if block.get("type") == "text" and block.get("text"):
-                            texts.append(block["text"])
-                elif t == "result":
-                    res["final"] = ev.get("result")
-                    res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
-                    if ev.get("is_error") and is_model_unavailable(ev):
-                        res["model_unavailable"] = True
-            elif kind == "cline":
-                if ev.get("type") == "run_result":
-                    res["final"] = ev.get("text")
-                    res["ok"] = ev.get("finishReason") == "completed"
-                    if not res["ok"]:
-                        blob = json.dumps(ev).lower()
-                        _classify_error(res, ev)
-                        if is_model_unavailable(ev):
-                            res["model_unavailable"] = True
-                        if ev.get("text"):
-                            res["last_error"] = ev.get("text")
-                elif ev.get("type") == "error" or ev.get("error"):
-                    blob = json.dumps(ev).lower()
-                    _classify_error(res, ev)
-                    if is_model_unavailable(ev):
-                        res["model_unavailable"] = True
-                    res["last_error"] = _extract_error_message(ev)
-            elif kind == "copilot":
-                t = ev.get("type")
-                if t == "assistant.message":
-                    c = (ev.get("data") or {}).get("content")
-                    if c:
-                        res["final"] = c
-                        texts.append(c)
-                elif t == "result":
-                    res["ok"] = ev.get("exitCode") == 0
-                elif t == "error" or "error" in (t or ""):
-                    blob = json.dumps(ev).lower()
-                    _classify_error(res, ev)
-                    if is_model_unavailable(ev):
-                        res["model_unavailable"] = True
-            elif kind == "codex":
-                t = ev.get("type")
-                if t == "item.completed":
-                    item = ev.get("item") or {}
-                    if item.get("type") == "agent_message" and item.get("text"):
-                        res["final"] = item["text"]
-                        texts.append(item["text"])
-                elif t == "turn.completed":
-                    res["ok"] = True
-                elif t in {"turn.failed", "error"} or "error" in (t or ""):
-                    res["ok"] = False
-                    blob = json.dumps(ev).lower()
-                    _classify_error(res, ev)
-                    if is_model_unavailable(ev):
-                        res["model_unavailable"] = True
-            elif kind == "kilo":
-                if ev.get("sessionID"):
-                    res["session_id"] = ev.get("sessionID")
-                if ev.get("type") == "error":
-                    blob = json.dumps(ev).lower()
-                    _classify_error(res, ev)
-                    if is_model_unavailable(ev):
-                        res["model_unavailable"] = True
-                    res["last_error"] = _extract_error_message(ev)
-                elif ev.get("type") == "step_finish":
-                    # kilo-auto/free is stateless per invocation: each `kilo run`
-                    # is a fresh routing decision across the free pool, so the
-                    # model actually used is the signal for whether a quota hit
-                    # reflects one underlying free model being rate-limited
-                    # rather than the whole account/pool (mahler#141).
-                    model = ((ev.get("part") or {}).get("model") or {}).get("modelID")
-                    if model:
-                        res["model"] = model
-                else:
-                    texts.extend(_collect_text(ev))
-            else:  # agy
-                if ev.get("event") == "result":
-                    r = ev.get("result") or {}
-                    res["final"] = r.get("response")
-                    res["ok"] = r.get("status") == "SUCCESS"
-                    if not res["ok"]:
-                        blob = json.dumps(r).lower()
-                        _classify_error(res, r)
-                        if is_model_unavailable(r):
-                            res["model_unavailable"] = True
-                elif ev.get("event") == "step_update":
-                    su = ev.get("step_update") or {}
-                    if su.get("text_delta"):
-                        texts.append(su["text_delta"])
-    joined = "".join(texts) if kind == "agy" else "\n".join(texts)
-    # The last_text feeds handoff comments (GitHub) and the final text can land
-    # in a NEEDS-YOU ping (ntfy), so credential-shaped strings that leaked into
-    # the agent's own output are masked before anything sees them (issue #76).
-    res["final"] = redact.redact(res["final"])
-    res["last_text"] = redact.redact((res["final"] or joined)[-1500:])
-    return res
+            handler(res, ev, texts, first_quota)
+    return _finish_log(res, texts, kind)
 
 
 def status_line(text):
