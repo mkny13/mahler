@@ -1593,3 +1593,44 @@ Claude Haiku completed with 647 input and 507 output tokens (304 thinking).
 Both Claude accounts were already active: the personal reset remained at
 00:00 UTC, as expected; starting a fresh idle Claude window remains a live UAT
 check. These CLI contexts make the nudges larger than the two-word prompt.
+
+### D35 — Spend banked Codex resets before they expire (mahler#557)
+
+Decided 2026-09-27 (mahler#557). Codex grants rate-limit reset credits that
+bank up and expire if unused; nothing in the loop spends them, so free weekly
+resets are lost. A new exception-safe tick pass, `resets.spend_banked`, runs
+per Codex login right after the usage refresh and before scheduling, and
+consumes a banked credit through the app-server RPC
+`account/rateLimitResetCredit/consume` when one of two rules fires:
+
+- (a) The login's weekly window is at or above its hard line, the next natural
+  weekly reset is more than 24 hours away, and there is ready work routed to
+  this login: full with work waiting, so a reset converts the wall into a
+  fresh week now.
+- (b) A banked credit expires within 48 hours, the week is at least 60% used,
+  and the natural weekly reset is not due before the credit expires — without
+  this the credit would expire against a nearly fresh week. A credit that
+  outlives the weekly rollover can still be spent later; it is not wasted.
+
+- Only provably banked credits are spent. A credit is targeted only when the
+  same-tick rate-limits read showed it available *with* an expiry; the consume
+  call always names that `creditId` and never lets the backend choose. A
+  counter without expiry rows proves nothing, so nothing is spent — purchased
+  resets are never bought. The scoped consume endpoint cannot spend them.
+- Attempts are idempotent per login: the attempt key (`reset:attempt:<account>`)
+  names the credit and carries the idempotency key; a retry after a failed
+  call reuses it, a new credit replaces it, and the same credit is not retried
+  for 30 minutes.
+- After a spend, a free reading refreshes the login's new window state and is
+  fanned out within its quota group, so routing sees the fresh week at once.
+  Every spend pings ntfy with the login and the new weekly reset time, and
+  emits a `reset_spent` event. A credit about to expire unspent (rule not
+  fired, week under 60%) pings once per expiry (`reset_expiring` event) so
+  Mike can still spend it in ChatGPT.
+- D25 applies unchanged: per-account env via `usage.codex_env` (the env
+  construction shared with the Codex probe), work logins with their own CLI
+  home, personal means the default login, API billing keys stripped.
+- The Console Capacity page shows banked resets per Codex login with a
+  humanized countdown to the next expiry.
+- The pass is silent-safe: one broken login or failed call never blocks the
+  others or the tick; nothing is spent on stale readings (fail closed).

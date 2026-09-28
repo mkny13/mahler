@@ -104,6 +104,27 @@ def _has_own_github_login(cfg, account):
     return any(k in env for k in ("GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN"))
 
 
+def codex_env(cfg, account):
+    """The environment for reading or spending one Codex login (D25), or None
+    when that login has no usable CLI home or auth. Personal means the default
+    login, not whichever CODEX_HOME the calling agent inherited; API billing
+    keys never reach a subscription read."""
+    own_env = (cfg.get("accounts", {}).get(account) or {}).get("env") or {}
+    if account != config.DEFAULT_ACCOUNT and not own_env.get("CODEX_HOME"):
+        return None
+    try:
+        env = dict(config.run_env(cfg, account) or os.environ)
+    except ValueError:
+        return None
+    home = os.path.expanduser(str(own_env.get("CODEX_HOME") or "~/.codex"))
+    env["CODEX_HOME"] = home
+    for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
+        env.pop(key, None)
+    if not os.path.isfile(os.path.join(home, "auth.json")):
+        return None
+    return env
+
+
 def refresh_codex(cfg, led, name, force=False):
     """One bounded probe per login, including failures; never fall back accounts."""
     pc = cfg["platforms"][name]
@@ -113,20 +134,8 @@ def refresh_codex(cfg, led, name, force=False):
     if not force and last and led.now() - last < timedelta(minutes=pc.get("stale_minutes", 15)):
         return
     account = config.account_of(pc)
-    own_env = (cfg.get("accounts", {}).get(account) or {}).get("env") or {}
-    if account != config.DEFAULT_ACCOUNT and not own_env.get("CODEX_HOME"):
-        return
-    try:
-        env = dict(config.run_env(cfg, account) or os.environ)
-    except ValueError:
-        return
-    # The conductor may itself run under codex-work. Personal means the
-    # default login, not whichever CODEX_HOME the calling agent inherited.
-    home = os.path.expanduser(str(own_env.get("CODEX_HOME") or "~/.codex"))
-    env["CODEX_HOME"] = home
-    for key in ("OPENAI_API_KEY", "CODEX_API_KEY"):
-        env.pop(key, None)
-    if not os.path.isfile(os.path.join(home, "auth.json")):
+    env = codex_env(cfg, account)
+    if env is None:
         return
     samples = platforms.probe_codex(env=env)
     for peer in quota_peers(cfg, name):

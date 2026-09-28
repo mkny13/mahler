@@ -490,7 +490,7 @@ class CodexUsage(list):
         self.metadata = metadata
 
 
-def _codex_usage(result):
+def _codex_usage(result, keep_ids=False):
     limits = result["rateLimits"]
     samples, windows = [], []
     for key in ("primary", "secondary"):
@@ -513,28 +513,30 @@ def _codex_usage(result):
         raise ValueError("invalid reset credit count")
     expiries = [_epoch_iso(c.get("expiresAt")) for c in credits.get("credits", [])
                 if c.get("status") == "available"]
-    return CodexUsage(samples, {
+    metadata = {
         "windows": windows,
         "blocked": result.get("ordinaryUsageAllowed") is False,
         "reset_credits": count,
         "credit_expiries": sorted(e for e in expiries if e),
-    })
+    }
+    if keep_ids:
+        # Transient, never persisted: opaque credit ids let the reset-spend
+        # pass (mahler#557) target one expiring banked credit. A credit with a
+        # known expiry is the banked kind; purchased resets are never spent.
+        metadata["credit_rows"] = [
+            {"id": c.get("id"), "status": c.get("status"),
+             "expires_at": _epoch_iso(c.get("expiresAt"))}
+            for c in credits.get("credits", []) if c.get("id")]
+    return CodexUsage(samples, metadata)
 
 
-def probe_codex(env=None, timeout=15):
-    """Read account quota over newline JSON-RPC, without starting a model turn.
-
-    stdio is app-server's default transport (older CLIs lack --stdio).
-    A single deadline covers initialization and the read; always reap the child.
-    No credentials, credit IDs, or server diagnostics are retained.
-    """
-    exe = codex_exe()
-    if not exe:
-        return []
-    proc = None
+def _codex_rpc(env, requests, timeout=15):
+    """Initialize app-server over stdio, run [(id, method, params), ...],
+    return the last request's result. One deadline covers initialization and
+    every read; always reap the child. Raises on any protocol failure."""
+    proc = subprocess.Popen([codex_exe(), "app-server"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
     try:
-        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         deadline, pending = time.monotonic() + timeout, b""
         with selectors.DefaultSelector() as selector:
             selector.register(proc.stdout, selectors.EVENT_READ)
@@ -566,21 +568,61 @@ def probe_codex(env=None, timeout=15):
                 "clientInfo": {"name": "mahler-probe", "version": "0.1.0"}}})
             receive(1)
             send({"method": "initialized"})
-            send({"id": 2, "method": "account/rateLimits/read", "params": {}})
-            return _codex_usage(receive(2))
+            result = None
+            for rid, method, params in requests:
+                send({"id": rid, "method": method, "params": params})
+                result = receive(rid)
+            return result
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+
+
+def probe_codex(env=None, timeout=15, keep_ids=False):
+    """Read account quota over newline JSON-RPC, without starting a model turn.
+
+    stdio is app-server's default transport (older CLIs lack --stdio).
+    No credentials, credit IDs, or server diagnostics are retained — pass
+    keep_ids only for the transient read right before spending a banked
+    reset credit (mahler#557).
+    -> CodexUsage, or [] if unavailable.
+    """
+    if not codex_exe():
+        return []
+    try:
+        return _codex_usage(_codex_rpc(
+            env, [(2, "account/rateLimits/read", {})], timeout), keep_ids=keep_ids)
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError,
             AttributeError, OverflowError):
         return []
-    finally:
-        if proc is not None:
-            try:
-                if proc.poll() is None:
-                    proc.kill()
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            proc.stdin.close()
-            proc.stdout.close()
+
+
+def consume_codex_credit(env=None, credit_id=None, idempotency_key=None, timeout=15):
+    """Spend one banked reset credit (mahler#557, D35).
+
+    `credit_id` must name a credit the rate-limits read showed with an expiry —
+    the banked kind. It is never omitted: letting the backend pick "the next
+    available credit" could spend one we cannot prove is banked, so this fails
+    closed instead. `idempotency_key` identifies the attempt; reuse it when
+    retrying. -> 'reset', 'nothingToReset', 'noCredit', 'alreadyRedeemed',
+    or None when the call could not be made.
+    """
+    if not codex_exe() or not credit_id or not idempotency_key:
+        return None
+    try:
+        result = _codex_rpc(env, [(2, "account/rateLimitResetCredit/consume", {
+            "creditId": credit_id, "idempotencyKey": idempotency_key})], timeout)
+        outcome = result.get("outcome")
+        return outcome if isinstance(outcome, str) else None
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError,
+            AttributeError, OverflowError):
+        return None
 
 
 def probe_claude(env=None):
