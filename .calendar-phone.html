@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html data-capacity-mode="weekly" lang="en" data-theme="auto" data-view="test" data-tab="browse"
+ data-console-revision="7e53089a7fc87eaaebebe54b6b6cb3d4ce72d1a785fc68c4e8b4990bbcedda68" data-stats-range="week">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Mahler</title>
+
+<style>/* The operator console (DESIGN D27, docs/console/design.md).
+   Neutral and minimal on purpose: no design system, no shadows, no filled
+   cards, no transitions. Structure is 1px rules and whitespace. */
+
+:root {
+  --bg: #ffffff; --surf: #f4f5f6; --ink: #0d1013; --mut: #4a5158; --line: #d6dadd;
+  --acc: #1256c4; --accq: #e8f0fd; --warn: #8f4a06; --warnq: #fcf0e6;
+  --bad: #a8180f; --badq: #fdeceb; --good: #10602c; --on: #ffffff;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="auto"] {
+    --bg: #0f1113; --surf: #181b1e; --ink: #f2f4f6; --mut: #a7aeb5; --line: #2b3135;
+    --acc: #7cb0ff; --accq: #16243a; --warn: #e59a5c; --warnq: #2b1d14;
+    --bad: #f4918a; --badq: #2e1a18; --good: #62d68f; --on: #0f1113;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1113; --surf: #181b1e; --ink: #f2f4f6; --mut: #a7aeb5; --line: #2b3135;
+  --acc: #7cb0ff; --accq: #16243a; --warn: #e59a5c; --warnq: #2b1d14;
+  --bad: #f4918a; --badq: #2e1a18; --good: #62d68f; --on: #0f1113;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+button, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; background: transparent; border: none; padding: 0; text-align: left; }
+a { color: var(--acc); text-decoration: none; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.lbl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px;
+       letter-spacing: .1em; line-height: 1; color: var(--mut); text-transform: uppercase; }
+.t-acc { color: var(--acc); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
+.t-good { color: var(--good); } .t-mut { color: var(--mut); } .t-ink { color: var(--ink); }
+.f-acc { background: var(--acc); } .f-warn { background: var(--warn); }
+.f-bad { background: var(--bad); } .f-mut { background: var(--mut); }
+.meta { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--mut); }
+.meta a { color: inherit; }
+.nowrap { white-space: nowrap; }
+[hidden] { display: none !important; }
+
+/* buttons */
+.btn { border: 1px solid var(--line); border-radius: 4px; min-height: 32px; padding: 0 10px;
+       font-size: 12.5px; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; }
+.btn-pri { background: var(--acc); color: var(--on); border-color: var(--acc); font-weight: 600; }
+.btn-acc { border-color: var(--acc); color: var(--acc); }
+.btn-bad { border-color: var(--bad); color: var(--bad); }
+.btn-warn { border-color: var(--warn); color: var(--warn); }
+.link { color: var(--acc); font-size: 12px; padding: 4px 0; }
+.btn:disabled, .link:disabled { opacity: .5; cursor: default; }
+
+/* bars */
+.bar { display: block; height: 3px; background: var(--line); position: relative; }
+.bar > span { display: block; height: 100%; }
+.tick { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--ink); opacity: .55; }
+
+/* ---------- desktop ---------- */
+.dk { display: grid; grid-template-columns: 190px minmax(0, 1fr) 306px; min-height: 100vh; }
+.rail { background: var(--surf); border-right: 1px solid var(--line); padding: 14px 0;
+        display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
+.brand { font-weight: 600; font-size: 16px; line-height: 1; }
+.rail .brand { padding: 0 16px 8px; }
+.rail-i { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+          padding: 10px 16px; min-height: 40px; border-left: 2px solid transparent;
+          font-size: 13.5px; color: var(--mut); width: 100%; }
+.rail-i .mono { font-size: 11px; white-space: nowrap; }
+.rail-foot { margin-top: auto; padding: 14px 16px 0; border-top: 1px solid var(--line); }
+.rail-foot .btn { display: block; width: 100%; min-height: 34px; font-size: 12px; color: var(--mut);
+                  text-align: center; }
+:root[data-view="now"] .rail-i[data-go="now"],
+:root[data-view="needs"] .rail-i[data-go="needs"],
+:root[data-view="test"] .rail-i[data-go="test"],
+:root[data-view="capture"] .rail-i[data-go="capture"],
+:root[data-view="backlog"] .rail-i[data-go="backlog"],
+:root[data-view="releases"] .rail-i[data-go="releases"],
+:root[data-view="capacity"] .rail-i[data-go="capacity"],
+:root[data-view="stats"] .rail-i[data-go="stats"],
+:root[data-view="history"] .rail-i[data-go="history"],
+:root[data-view="settings"] .rail-i[data-go="settings"] {
+  background: var(--bg); border-left-color: var(--acc); color: var(--ink); font-weight: 600;
+}
+
+.dmain { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-width: 0; }
+.dhead { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex;
+         align-items: center; gap: 12px; min-height: 57px; }
+.dtitle { font-weight: 600; font-size: 15px; line-height: 1; }
+.vt { display: none; }
+:root[data-view="now"] .vt-now, :root[data-view="needs"] .vt-needs,
+:root[data-view="test"] .vt-test, :root[data-view="capture"] .vt-capture,
+:root[data-view="backlog"] .vt-backlog, :root[data-view="releases"] .vt-releases,
+:root[data-view="capacity"] .vt-capacity, :root[data-view="stats"] .vt-stats,
+:root[data-view="history"] .vt-history, :root[data-view="settings"] .vt-settings { display: inline; }
+.peak-btn { margin-left: auto; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line);
+            border-radius: 4px; padding: 0 10px; min-height: 32px; }
+.settings-head-link { margin-left: auto; }
+.settings-head-link + .peak-btn { margin-left: 0; }
+:root[data-view="settings"] .settings-head-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
+.peak-btn .txt { font-size: 12px; color: var(--mut); white-space: nowrap; }
+.peak-btn .mono { font-size: 11px; white-space: nowrap; }
+.dbody { padding: 16px 20px 22px; }
+.view { display: none; flex-direction: column; gap: 16px; }
+:root[data-view="now"] .view-now, :root[data-view="needs"] .view-needs,
+:root[data-view="test"] .view-test, :root[data-view="capture"] .view-capture,
+:root[data-view="backlog"] .view-backlog, :root[data-view="releases"] .view-releases,
+:root[data-view="capacity"] .view-capacity, :root[data-view="stats"] .view-stats,
+:root[data-view="history"] .view-history, :root[data-view="settings"] .view-settings { display: flex; }
+
+/* Settings (#353): the same complete form is rendered for desktop and phone. */
+.settings-form { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 920px; }
+.settings-intro { margin: 0; color: var(--mut); line-height: 1.55; }
+.settings-section { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 10px; }
+.settings-section + .settings-section { border-top: 1px solid var(--line); padding-top: 16px; }
+.settings-section legend { padding: 0; margin-bottom: 4px; font-size: 14px; font-weight: 600; }
+.settings-help { color: var(--mut); font-size: 11.5px; line-height: 1.45; }
+.settings-section > .settings-help { margin: -4px 0 2px; }
+.platform-setting { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+                    display: flex; flex-direction: column; gap: 10px; }
+.platform-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.platform-head > .mono { font-size: 12.5px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--mut); }
+.check input { width: 16px; height: 16px; accent-color: var(--acc); }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; min-width: 0;
+                  font-size: 11.5px; color: var(--mut); }
+.settings-field input, .settings-field select, .route-add select {
+  min-height: 36px; width: 100%; border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 9px; background: var(--bg); color: var(--ink); font-size: 13px;
+}
+.route-scope { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+               display: flex; flex-direction: column; gap: 13px; }
+.settings-scope { font-size: 13px; font-weight: 600; }
+.settings-subtitle { font: 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+                     letter-spacing: .08em; text-transform: uppercase; color: var(--mut); }
+.route-role { display: flex; flex-direction: column; gap: 7px; }
+.route-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 5px; }
+.route-list li { border-top: 1px solid var(--line); padding-top: 5px; min-height: 37px;
+                 display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.route-list li > .mono { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.route-buttons { display: flex; gap: 5px; flex: none; }
+.route-buttons .btn { min-width: 34px; padding: 0 8px; }
+.route-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.settings-actions { position: sticky; bottom: 0; z-index: 2; border-top: 1px solid var(--line);
+                    background: var(--bg); padding: 12px 0; display: flex; align-items: center;
+                    justify-content: space-between; gap: 12px; }
+.settings-actions .btn { flex: none; }
+
+/* Capacity (mahler#335): one bordered card per quota group, all its windows. */
+.view-capacity { gap: 12px; }
+.cap-toggle { display: flex; gap: 0; align-self: flex-start; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.cap-toggle .seg { border: 0; border-radius: 0; background: transparent; color: var(--mut); padding: 6px 9px; font-size: 11px; }
+.cap-toggle .seg + .seg { border-left: 1px solid var(--line); }
+:root[data-capacity-mode="quota"] .cap-toggle [data-capacity-mode="quota"],
+:root[data-capacity-mode="capability"] .cap-toggle [data-capacity-mode="capability"] { background: var(--ink); color: var(--bg); }
+.cap-capability { display: none; }
+:root[data-capacity-mode="capability"] .cap-group { display: none; }
+:root[data-capacity-mode="capability"] .cap-capability { display: flex; }
+.capability-sections { flex-direction: column; gap: 18px; }
+.cap-section { display: flex; flex-direction: column; gap: 12px; }
+.cap-section h2 { margin: 0; color: var(--mut); font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+                  letter-spacing: .1em; text-transform: uppercase; }
+.cap-section .estimate { color: var(--mut); font-size: 10px; line-height: 1.5;
+                         letter-spacing: normal; text-transform: none; }
+.capcard { border: 1px solid var(--line); border-radius: 4px; padding: 12px 14px;
+           display: flex; flex-direction: column; gap: 7px; }
+.capcard.in-use { border-color: var(--acc); }
+.capcard.in-use .in-use-chip { border-color: var(--acc); color: var(--acc); white-space: nowrap; }
+.capcard-h { flex-wrap: wrap; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.capcard .name { font-size: 13px; }
+.capcard .val { font-size: 13px; white-space: nowrap; }
+.capcard .bar { height: 9px; }
+.capcard .detail { font-size: 11.5px; color: var(--mut); }
+.capwins { border-top: 1px solid var(--line); padding-top: 8px; display: flex;
+           flex-direction: column; gap: 6px; }
+.capwin { display: grid; grid-template-columns: 64px minmax(0, 1fr) 52px 76px 130px;
+          gap: 10px; align-items: center; font-size: 11.5px; }
+.capwin .win { text-transform: uppercase; letter-spacing: .07em; color: var(--mut); }
+.capwin .bar { height: 9px; }
+.capwin .wpct { text-align: right; }
+.capwin .soft, .capwin .resets { text-align: right; white-space: nowrap; }
+.capmeta { display: flex; flex-wrap: wrap; gap: 4px 14px; border-top: 1px solid var(--line);
+           padding-top: 8px; }
+
+/* Productivity stats (#352): server-rendered counts, browser-selected range. */
+.view-stats { gap: 16px; }
+.stats-controls { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.stats-range { color: var(--mut); }
+:root[data-stats-range="today"] .stats-range[data-stats-range="today"],
+:root[data-stats-range="week"] .stats-range[data-stats-range="week"],
+:root[data-stats-range="month"] .stats-range[data-stats-range="month"],
+:root[data-stats-range="last7"] .stats-range[data-stats-range="last7"],
+:root[data-stats-range="last30"] .stats-range[data-stats-range="last30"] {
+  border-color: var(--acc); color: var(--acc); background: var(--accq); font-weight: 600;
+}
+.stats-custom { display: flex; gap: 7px; align-items: center; color: var(--mut); }
+.stats-custom input { min-height: 32px; border: 1px solid var(--line); border-radius: 4px;
+                      padding: 0 7px; background: var(--bg); }
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.statcard { border: 1px solid var(--line); border-radius: 4px; padding: 14px;
+            display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; align-items: baseline; }
+.statcard .name { grid-column: 1 / -1; font-size: 12px; color: var(--mut); }
+.statcard .statnum { font-size: 30px; line-height: 1.1; }
+.statcard .statlabel { justify-self: end; color: var(--mut); }
+.statcard .statprev { font-size: 11px; color: var(--mut); }
+.statcard .statdelta { justify-self: end; font-size: 12px; }
+
+.sect { display: flex; flex-direction: column; gap: 8px; }
+.sect.rule { border-top: 1px solid var(--line); padding-top: 14px; gap: 7px; }
+.peakline { font-size: 13px; line-height: 1.5; color: var(--mut); }
+.drun { display: grid; grid-template-columns: 124px minmax(0, 1fr) 100px 116px 90px; gap: 10px;
+        align-items: center; border-top: 1px solid var(--line); padding: 10px 0; width: 100%; }
+.drun:hover { background: var(--surf); }
+.drun .ref { font-size: 12.5px; }
+.drun .plat, .drun .timing { font-size: 11.5px; }
+.idle { border: 1px solid var(--line); border-radius: 4px; padding: 14px; display: flex;
+        flex-direction: column; gap: 12px; }
+.idle-h { font-size: 14px; font-weight: 600; }
+.why { display: flex; gap: 14px; align-items: baseline; border-top: 1px solid var(--line); padding-top: 11px; }
+.why .txt { flex: 1; font-size: 13px; line-height: 1.45; }
+.why .cd { font-size: 11px; color: var(--mut); white-space: nowrap; }
+.why .btn { flex: none; font-size: 12px; }
+/* an aggregated hold reason that expands to the items behind it (mahler#269) */
+.why[data-why] { flex-direction: column; gap: 2px; align-items: stretch; }
+.why[data-why] .line { display: flex; gap: 14px; align-items: baseline; }
+.why-toggle { font-size: 12px; color: var(--mut); padding: 3px 0; align-self: flex-start;
+              display: flex; gap: 6px; align-items: center; }
+.why-toggle .o { display: none; }
+.why.open .why-toggle .c { display: none; }
+.why.open .why-toggle .o { display: inline; }
+.why-items { display: none; padding: 2px 0 4px; }
+.why.open .why-items { display: block; }
+.why-item { display: flex; gap: 10px; align-items: baseline; padding: 6px 0;
+            border-top: 1px solid var(--line); font-size: 12.5px; }
+.why-item .ref { font-size: 11px; flex: none; color: var(--mut); }
+.why-item .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.why-item.more { color: var(--mut); font-size: 11.5px; }
+.capline { font-size: 13px; line-height: 1.55; color: var(--mut); }
+
+.banners { display: flex; flex-direction: column; gap: 10px; }
+.bn { display: flex; flex-direction: column; gap: 5px; padding: 11px 14px; border-left: 3px solid; }
+.bn-warn { background: var(--warnq); border-left-color: var(--warn); }
+.bn-bad { background: var(--badq); border-left-color: var(--bad); }
+.bn .kind { font-size: 10px; letter-spacing: .08em; }
+.bn .txt { font-size: 13px; line-height: 1.45; }
+.bn .btn { align-self: flex-start; margin-top: 4px; font-size: 12px; }
+.bn-warn .kind, .bn-warn .btn { color: var(--warn); border-color: var(--warn); }
+.bn-bad .kind, .bn-bad .btn { color: var(--bad); border-color: var(--bad); }
+.banners .bn ~ .bn { display: none; }
+:root[data-banners="open"] .banners .bn ~ .bn { display: flex; }
+.bn-more { font-size: 12px; color: var(--mut); padding: 2px 0; display: flex; gap: 6px;
+           align-items: center; align-self: flex-start; }
+.bn-more .o { display: none; }
+:root[data-banners="open"] .bn-more .c { display: none; }
+:root[data-banners="open"] .bn-more .o { display: inline; }
+
+.need { border-top: 1px solid var(--line); padding-top: 13px; display: flex; gap: 16px; align-items: flex-start; }
+.need .body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.need .q { font-size: 14.5px; line-height: 1.45; }
+.need-details { min-width: 0; }
+.need-details summary { color: var(--acc); cursor: pointer; font-size: 12.5px; width: fit-content; }
+.need-detail-content { margin-top: 8px; padding: 10px; border-left: 2px solid var(--line);
+                       display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.need-detail-title { font-size: 13.5px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.need-detail-body { color: var(--mut); font-size: 12.5px; line-height: 1.5; white-space: pre-wrap;
+                    overflow-wrap: anywhere; max-width: 72ch; }
+.empty { font-size: 13px; color: var(--mut); }
+
+.grp { display: flex; flex-direction: column; gap: 6px; }
+.grp-h-row { display: flex; gap: 12px; align-items: center; border-bottom: 1px solid var(--line); }
+.grp-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+         padding: 9px 0; min-height: 38px; width: 100%; border: none; }
+.grp-h .name { font-size: 14px; font-weight: 600; }
+.grp-h .mono { font-size: 11px; color: var(--mut); }
+.grp-items { display: none; }
+.grp.open .grp-items { display: block; }
+.grp .sh-hide, .grp.open .sh-show { display: none; }
+.grp.open .sh-hide { display: inline; }
+.bl { display: grid; grid-template-columns: 34px 120px minmax(0, 1fr) 84px; gap: 10px; align-items: baseline;
+      padding: 7px 0; border-bottom: 1px solid var(--line); }
+.bl .p, .bl .st, .bl .ref { font-size: 11px; }
+.bl .title { font-size: 13px; color: var(--ink); }
+
+.viewtog { display: flex; gap: 4px; }
+.viewtog button { border: 1px solid var(--line); border-radius: 4px; min-height: 24px; padding: 0 9px;
+                   font-size: 11px; color: var(--mut); background: transparent; cursor: pointer; }
+.grp-graph { display: none; overflow-x: auto; }
+.grp-graph.rendered .graph-wrap { display: none; }
+.mermaid-out svg { max-width: 100%; height: auto; }
+.mermaid-out .node.bad rect { stroke: var(--bad) !important; }
+.mermaid-out .node.acc rect { stroke: var(--acc) !important; }
+.mermaid-out .node.mut rect { stroke: var(--mut) !important; }
+
+
+.ev { display: grid; grid-template-columns: 46px 108px minmax(0, 1fr) 74px; gap: 10px;
+      align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.ev .when { font-size: 11.5px; color: var(--mut); }
+.ev .kind { font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.ev .txt { font-size: 13px; line-height: 1.45; }
+
+.side { padding: 14px 16px; display: flex; flex-direction: column; gap: 16px; }
+.side-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.state { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; letter-spacing: .09em; }
+.pause { min-height: 36px; padding: 0 13px; font-size: 12.5px; font-weight: 600; flex: none; }
+.pause.on { background: var(--acc); color: var(--on); border-color: var(--acc); }
+.side .lbl { font-size: 10px; letter-spacing: .09em; }
+.needcard { border: 1px solid var(--bad); border-radius: 4px; padding: 12px; display: flex;
+            flex-direction: column; gap: 9px; }
+.needcard .lbl { color: var(--bad); }
+.needcard .q { font-size: 13.5px; line-height: 1.45; }
+.sblock { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 13px; }
+.sproj { display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+         padding: 5px 0; min-height: 30px; width: 100%; font-size: 13px; }
+.sproj .mono { font-size: 11px; color: var(--mut); white-space: nowrap; }
+.sq { display: flex; flex-direction: column; gap: 3px; }
+.sq-row { display: flex; align-items: center; gap: 9px; }
+.sq-row .name { width: 88px; font-size: 11.5px; flex: none; overflow: hidden; text-overflow: ellipsis;
+                white-space: nowrap; }
+.sq-row .bar { flex: 1; height: 9px; }
+.sq-row .val { width: 52px; font-size: 11px; text-align: right; flex: none; white-space: nowrap; }
+.sq .model { font-size: 10px; color: var(--mut); padding-left: 97px; overflow: hidden;
+             text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 1099px) and (min-width: 760px) {
+  .dk { grid-template-columns: 190px minmax(0, 1fr); }
+  .side { grid-column: 2; border-top: 1px solid var(--line); }
+  .dmain { border-right: none; }
+}
+
+/* ---------- phone ---------- */
+.ph { flex-direction: column; min-height: 100vh; }
+.phead { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 12px 14px 0;
+         display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line); }
+.phead-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.phead-row .brand { font-size: 17px; letter-spacing: -.01em; }
+.phead-row .state { font-size: 10px; margin-left: 8px; }
+.phead-btns { display: flex; gap: 6px; align-items: center; }
+.phead-btns .btn { min-height: 36px; }
+.phead-btns .theme { min-width: 44px; font-size: 12px; color: var(--mut); }
+.phead-btns .pause { font-size: 13px; padding: 0 12px; }
+.phead-btns .settings-link { font-size: 12px; padding: 0 8px; }
+:root[data-tab="settings"] .settings-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
+.tabs { display: flex; gap: 4px; }
+.tab { flex: 1; min-height: 46px; border-bottom: 2px solid transparent; display: flex;
+       align-items: center; justify-content: center; gap: 6px; font-size: 15px; color: var(--mut); }
+.tab .mono { font-size: 10px; }
+:root[data-tab="now"] .tab[data-tab-go="now"], :root[data-tab="triage"] .tab[data-tab-go="triage"],
+:root[data-tab="releases"] .tab[data-tab-go="releases"],
+:root[data-tab="browse"] .tab[data-tab-go="browse"], :root[data-tab="stats"] .tab[data-tab-go="stats"] {
+  border-bottom-color: var(--ink); color: var(--ink); font-weight: 600; }
+.tabv { display: none; }
+:root[data-tab="now"] .tabv-now, :root[data-tab="triage"] .tabv-triage,
+:root[data-tab="releases"] .tabv-releases,
+:root[data-tab="browse"] .tabv-browse, :root[data-tab="stats"] .tabv-stats,
+:root[data-tab="settings"] .tabv-settings { display: block; }
+.tabv-settings .settings-form { padding: 14px 14px 24px; }
+.ph .settings-grid { grid-template-columns: 1fr; }
+.ph .settings-field input, .ph .settings-field select, .ph .route-add select { min-height: 44px; }
+.ph .route-list li { min-height: 49px; }
+.ph .route-buttons .btn, .ph .route-add .btn { min-height: 44px; }
+.ph .settings-actions { padding: 12px 0 max(12px, env(safe-area-inset-bottom)); }
+.ph .settings-actions .settings-help { display: none; }
+.ph .settings-actions .btn { width: 100%; min-height: 48px; }
+.pad { padding: 14px 14px 24px; display: flex; flex-direction: column; gap: 22px; }
+.tabv-now .pad { gap: 18px; }
+.psect { display: flex; flex-direction: column; gap: 11px; }
+.ph .banners { gap: 0; }
+.ph .bn { border-left: none; border-bottom: 1px solid var(--line); padding: 10px 14px; gap: 6px; }
+.ph .bn .txt { font-size: 13.5px; }
+.ph .bn .btn { min-height: 36px; font-size: 12.5px; margin-top: 0; }
+.ph .bn-more { width: 100%; min-height: 42px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+               font-size: 12.5px; justify-content: space-between; }
+.peakrow { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+           border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; min-height: 44px; width: 100%; }
+.peakrow .txt { font-size: 12.5px; line-height: 1.45; color: var(--mut); }
+.peakrow .mono { font-size: 11px; white-space: nowrap; flex: none; }
+.runhead { display: flex; align-items: center; justify-content: space-between; gap: 9px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 8px;
+        border: 1px solid var(--line); border-radius: 20px; white-space: nowrap; flex: none; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); }
+.chip .mono { font-size: 10.5px; color: var(--mut); }
+.chip .o { display: none; }
+:root[data-digest="open"] .chip { background: var(--accq); border-color: var(--acc); }
+:root[data-digest="open"] .chip .mono { color: var(--acc); }
+:root[data-digest="open"] .chip .c { display: none; }
+:root[data-digest="open"] .chip .o { display: inline; }
+.digest { display: none; flex-direction: column; gap: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 12px; }
+:root[data-digest="open"] .digest { display: flex; }
+.dg { display: flex; gap: 10px; align-items: baseline; }
+.dg .when { font-size: 11px; color: var(--mut); width: 38px; flex: none; }
+.dg .txt { font-size: 13px; line-height: 1.45; }
+.digest .link { font-size: 12.5px; padding: 8px 0; align-self: flex-start; }
+.prun { border: 1px solid var(--line); border-radius: 4px; padding: 11px 12px; display: flex;
+        flex-direction: column; gap: 8px; min-height: 44px; width: 100%; }
+.prun:hover { background: var(--surf); }
+.prun .row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.prun .ref { font-size: 12.5px; }
+.prun .plat { font-size: 10px; letter-spacing: .06em; padding: 3px 5px; border: 1px solid var(--line);
+              border-radius: 3px; color: var(--mut); }
+.prun .title { font-size: 14px; line-height: 1.4; }
+.prun .mono { font-size: 11px; }
+.ph .idle { padding: 13px; gap: 13px; }
+.ph .idle-h { font-size: 14.5px; line-height: 1.45; }
+.ph .why { flex-direction: column; gap: 7px; }
+.ph .why .txt { font-size: 13.5px; }
+.ph .why .foot { display: flex; align-items: center; gap: 10px; }
+.ph .why .btn { min-height: 36px; font-size: 12.5px; }
+.ph .capline { font-size: 13.5px; line-height: 1.5; }
+.ph .link { font-size: 12.5px; padding: 6px 0; align-self: flex-start; }
+.pneed { border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 4px; padding: 12px;
+         display: flex; flex-direction: column; gap: 10px; }
+.pneed.p1 { border-left-color: var(--bad); }
+.pneed .row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.pchip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; padding: 2px 5px;
+         border-radius: 3px; color: var(--mut); }
+.pchip.p1 { background: var(--badq); color: var(--bad); }
+.pneed .q { font-size: 15px; line-height: 1.45; }
+.pneed .need-details summary { min-height: 36px; display: flex; align-items: center; }
+.pneed .need-detail-content { padding: 9px 0 9px 10px; }
+.pq { display: flex; flex-direction: column; gap: 5px; }
+.pq .row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pq .row > span:first-child { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.pq .name { font-size: 12.5px; white-space: nowrap; }
+.pq .model { font-size: 10.5px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pq .val { font-size: 11px; white-space: nowrap; flex: none; }
+.pq-right { display: flex; align-items: baseline; gap: 6px; flex: none; }
+.pq-toggle { font-size: 11px; color: var(--mut); padding: 0 2px; }
+.pq-toggle .o { display: none; }
+.pq .bar { height: 12px; }
+.pq .detail { font-size: 11.5px; color: var(--mut); }
+.pq-details { display: none; flex-direction: column; gap: 6px; padding-top: 2px; }
+.pq-win { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 11.5px; }
+.pq-win .win { white-space: nowrap; }
+.pq-win .bar { height: 9px; }
+.pq-win .resets { white-space: nowrap; text-align: right; }
+.foot-note { font-size: 11.5px; color: var(--mut); border-top: 1px solid var(--line); padding-top: 9px; }
+.ph .stats-controls { align-items: stretch; }
+.ph .stats-range { min-height: 40px; flex: 1 1 30%; justify-content: center; }
+.ph .stats-custom { width: 100%; flex-wrap: wrap; }
+.ph .stats-custom input { min-height: 44px; flex: 1; min-width: 125px; }
+.ph .stats-custom .btn { min-height: 44px; }
+.ph .grp { gap: 8px; }
+.ph .grp-h { min-height: 44px; padding: 10px 0; align-items: center; }
+.ph .grp-h .name { font-size: 14.5px; }
+.pbl { display: flex; gap: 9px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.pbl .ref { font-size: 11px; flex: none; }
+.pbl .title { flex: 1; font-size: 13.5px; line-height: 1.4; color: var(--ink); }
+.pbl .st { font-size: 10px; flex: none; }
+.pev { display: flex; gap: 9px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.pev .when { font-size: 11px; color: var(--mut); width: 38px; flex: none; }
+.pev .txt { flex: 1; font-size: 13px; line-height: 1.45; }
+.pev .kind { font-size: 12px; }
+
+/* ---------- overlays ---------- */
+.ov { display: none; position: fixed; inset: 0; z-index: 20; }
+.ov.show { display: flex; }
+.runov { background: var(--bg); flex-direction: column; }
+.runov .top { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex;
+              align-items: center; justify-content: space-between; gap: 10px; }
+.runov .back { font-size: 14px; color: var(--acc); min-height: 44px; }
+.runov .ref { font-size: 12px; }
+.runov .inner { padding: 14px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+.runov h2 { font-size: 16px; line-height: 1.35; font-weight: 600; margin: 0; }
+.runov .meta { font-size: 11.5px; }
+.runov .timing { font-size: 11.5px; }
+.runfoot { display: flex; gap: 10px; padding: 14px; border-top: 1px solid var(--line); flex: none; }
+.runfoot .btn { flex: 1; min-height: 48px; }
+@media (min-width: 760px) {
+  .runov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+  .runov .box { width: 560px; max-height: 80vh; background: var(--bg); border: 1px solid var(--line);
+                border-radius: 6px; display: flex; flex-direction: column; }
+  .runov .box .runfoot .btn { min-height: 38px; }
+}
+@media (max-width: 759px) {
+  .runov .box { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+}
+
+/* layout switch: desktop at 760px and up, the phone layout below. Last in
+   the file, so it wins over the layouts' own display rules. */
+.ph { display: none; }
+@media (max-width: 759px) {
+  .dk { display: none; }
+  .ph { display: flex; }
+}
+
+/* Needs-you answers (D27). */
+.answers { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.answers .btn { min-height: 36px; height: auto; white-space: normal; }
+.reply { display: flex; gap: 6px; max-width: 360px; }
+.reply input { min-width: 0; width: 100%; max-width: 320px; height: 34px;
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 9px; background: var(--bg); color: var(--ink); }
+.reply .btn { width: 34px; height: 34px; flex-shrink: 0; padding: 0; }
+.answered { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; color: var(--good); }
+.answered span { overflow-wrap: anywhere; white-space: pre-wrap; }
+.answered .link { color: var(--acc); flex-shrink: 0; }
+.needcard .answers .btn { flex: 1 1 44%; }
+.pneed .answers .btn { min-height: 44px; flex: 1 1 40%; }
+.pneed .reply { max-width: none; }
+.pneed .reply input { height: 44px; max-width: none; }
+.pneed .reply .btn { width: 44px; height: 44px; }
+.pneed .answered { color: var(--mut); padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+
+/* Capture composer (mahler#251): one composer, no second step. */
+.view-capture { max-width: 560px; }
+.cap { display: flex; flex-direction: column; gap: 10px; }
+.cap-ta { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px;
+          background: var(--bg); color: var(--ink); font-size: 13px; resize: vertical; }
+.cap-row { display: flex; gap: 8px; }
+.cap-select { flex: 1; min-width: 0; min-height: 38px; border: 1px solid var(--line);
+              border-radius: 4px; background: var(--bg); color: var(--ink); font-size: 13px;
+              padding: 0 8px; }
+.cap-save { flex: none; min-height: 38px; }
+.capnote { font-size: 13px; line-height: 1.45; }
+.attach-wrap { margin-bottom: 10px; }
+.attach-btn { border: 1px dashed var(--mut); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--mut); min-height: 38px; width: 100%; background: transparent; }
+.attach-btn.attached { border-style: solid; border-color: var(--acc); color: var(--acc); background: var(--accq); font-weight: 600; }
+.ph .cap-select, .ph .cap-save, .ph .attach-btn { min-height: 44px; }
+
+/* Merge Undo always opens a confirmation dialog (D27). */
+.undo { height: 30px; border: 1px solid var(--line); border-radius: 4px; color: var(--acc); }
+.revert-status { font-size: 11px; color: var(--mut); }
+.revertov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.revertov .box { width: 430px; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; }
+.revertov h2 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.revertov p { font-size: 14px; line-height: 1.5; }
+.revertfoot { display: flex; gap: 10px; }
+.revertfoot .btn { flex: 1; min-height: 38px; }
+.revert-confirm { background: var(--acc); border-color: var(--acc); color: var(--bg); }
+@media (max-width: 759px) {
+  .pev .undo { min-height: 36px; padding: 0 10px; }
+  .revertov { align-items: flex-end; }
+  .revertov .box { width: 100%; border-radius: 6px 6px 0 0; }
+  .revertfoot .btn { min-height: 48px; }
+}
+
+/* Ready to test — the UAT queue (mahler#250). */
+.uat { border-top: 1px solid var(--line); padding: 13px 0; display: flex; gap: 16px; align-items: flex-start; }
+.uat .body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.uat .t { font-size: 14.5px; line-height: 1.45; }
+.uat .check, .puat .check { color: var(--mut); font-size: 13px; overflow-wrap: anywhere; }
+.uat .lnk, .puat .lnk { font-size: 13px; }
+.uat .lnk a, .puat .lnk a { color: var(--acc); }
+.uatbtns { display: flex; gap: 8px; flex: none; }
+.uatbtns .btn { min-height: 36px; }
+.uat-pass { background: var(--accq); border-color: var(--acc); color: var(--acc); font-weight: 600; }
+.uat-fail { border-color: var(--bad); color: var(--bad); }
+.uat-done { font-size: 13px; align-self: center; }
+.puat { border: 1px solid var(--line); border-radius: 4px; padding: 12px;
+        display: flex; flex-direction: column; gap: 9px; }
+.puat .t { font-size: 14px; line-height: 1.4; }
+.puat .uatbtns .btn { min-height: 44px; flex: 1; }
+
+/* The bug sheet: Fail opens it, 'File p1 bug' confirms (mahler#250). */
+.bugov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.bugov .box { width: 430px; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px;
+  display: flex; flex-direction: column; gap: 10px; }
+.bugov h2 { margin: 0; font-size: 17px; }
+.bugov textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--line); border-radius: 4px;
+  padding: 9px 10px; background: var(--bg); color: var(--ink); font: inherit; resize: vertical; }
+.bugfoot { display: flex; gap: 10px; }
+.bugfoot .btn { flex: 1; min-height: 38px; }
+.bug-confirm { background: var(--bad); border-color: var(--bad); color: var(--on); font-weight: 600; }
+@media (max-width: 759px) {
+  .bugov { align-items: flex-end; }
+  .bugov .box { width: 100%; border-radius: 6px 6px 0 0; }
+  .bugfoot .btn { min-height: 48px; }
+}
+
+.log-panel {
+    background: var(--surf);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    overflow-y: auto;
+    height: 300px;
+    display: flex;
+    flex-direction: column;
+}
+
+.log-line {
+    display: flex;
+    gap: 8px;
+    word-break: break-all;
+}
+
+/* Capture overlay */
+.captureov { background: rgba(10, 12, 14, .45); align-items: flex-end; justify-content: center; }
+.captureov .box { width: 100%; max-width: 100%; padding: 20px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px 6px 0 0;
+  display: flex; flex-direction: column; gap: 10px; }
+.captureov h2 { margin: 0; font-size: 17px; }
+.capturefoot { display: flex; gap: 10px; }
+.capturefoot .btn { flex: 1; min-height: 48px; }
+@media (min-width: 760px) {
+  .captureov { align-items: center; }
+  .captureov .box { width: 430px; border-radius: 6px; }
+  .capturefoot .btn { min-height: 38px; }
+}
+
+/* Releases timeline and overlay (DESIGN D31, mahler#359) */
+.rel-grp { border: 1px solid var(--line); border-radius: 4px; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
+.brief { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.brief-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; }
+.brief-head .btn { margin-left: auto; }
+.brief-meta { font-size: 11.5px; }
+.brief-empty, .brief-context { color: var(--mut); font-size: 12px; line-height: 1.45; }
+.brief-cat { display: flex; flex-direction: column; }
+.brief-cat-title { color: var(--mut); font-size: 10.5px; font-weight: 600; letter-spacing: .05em;
+                   text-transform: uppercase; margin: 2px 0; }
+.brief-item { border-top: 1px solid var(--line); padding: 5px 0; display: grid;
+              grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline;
+              font-size: 13px; line-height: 1.4; }
+.brief-item .ref, .brief-ver { color: var(--mut); font-size: 10.5px; }
+.brief-item .summary { grid-column: 2 / -1; font-size: 11.5px; }
+.brief-maint { color: var(--mut); font-size: 12px; }
+.brief-maint summary { cursor: pointer; padding: 3px 0; }
+.brief-maint[open] { color: var(--ink); }
+.brief-context { border-top: 1px solid var(--line); padding-top: 7px; }
+.rel-proj-h { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; }
+.rel-status { font-size: 12px; }
+.rel-banner { margin: 4px 0; }
+.rel-draft-block { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.rel-draft-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rel-prop-ver strong { color: var(--ink); }
+.rel-cat { margin-top: 6px; }
+.rel-cat-title { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--mut); display: block; margin-bottom: 4px; }
+.rel-item { padding: 4px 0; font-size: 13px; line-height: 1.45; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: baseline; }
+.rel-item .ref { font-size: 11px; color: var(--mut); }
+.rel-item .title { min-width: 0; }
+.rel-item .summary { width: 100%; font-size: 12px; color: var(--mut); }
+.rel-maint { margin-top: 6px; font-size: 12.5px; }
+.rel-maint-sum { color: var(--mut); cursor: pointer; padding: 4px 0; font-size: 12px; }
+.rel-maint[open] .rel-maint-sum { color: var(--ink); margin-bottom: 6px; }
+.rel-history-block { border-top: 1px solid var(--line); padding-top: 12px; display: flex; flex-direction: column; gap: 10px; }
+.rel-pub-entry { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.rel-pub-bar { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rel-pub-ver a { color: var(--acc); }
+.rel-empty-draft, .rel-empty-history { font-size: 13px; color: var(--mut); }
+.rel-notes-plain { white-space: pre-wrap; font-family: inherit; font-size: 13px; }
+
+.releaseov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
+.releaseov .box { width: 560px; max-width: 100%; max-height: 90vh; overflow-y: auto; padding: 20px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.rel-ver-pills .btn-pill { font-size: 12px; padding: 4px 8px; min-height: 30px; }
+@media (max-width: 759px) {
+  .releaseov { align-items: flex-end; }
+  .releaseov .box { width: 100%; max-height: 92vh; border-radius: 6px 6px 0 0; }
+}
+
+/* Model scorecard shares the console's plain rows on both layouts. */
+:root[data-view="models"] .rail-i[data-go="models"],
+:root[data-tab="models"] .tab[data-tab-go="models"] { color: var(--acc); }
+:root[data-view="models"] .vt-models { display: inline; }
+:root[data-view="models"] .view-models { display: flex; }
+:root[data-tab="models"] .tabv-models { display: block; }
+.view-models, .tabv-models .pad { gap: 16px; }
+.view-models table, .tabv-models table { width: 100%; border-collapse: collapse; }
+.view-models caption, .tabv-models caption { text-align: left; font-weight: 600; }
+.view-models td, .tabv-models td { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+
+/* Test sessions share their heading and bulk verdict across both layouts. */
+.uat-session { border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+.uat-session header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-bottom: 12px; }
+.uat-session h3 { flex-basis: 100%; margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.uat-session header .lnk a { color: var(--acc); }
+.uat-session header .btn { margin-left: auto; min-height: 44px; white-space: normal; }
+.uat-session .puat { border: 0; border-top: 1px solid var(--line); border-radius: 0; }
+.puat .body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+
+/* Only the rendered section exists; navigation highlights may already point
+   at the next request while this section remains on screen. */
+.dbody > section.view, .pbody > section.tabv { display: flex; }
+
+/* a view switch still in flight after 150 ms (mahler#532): dim the old section */
+#app[aria-busy="true"] .dbody, #app[aria-busy="true"] .pbody { opacity: .5; pointer-events: none; }
+
+/* Weekly reset schedule: quota amounts and the time axis are separate scales. */
+.cap-weekly { display: none; }
+:root[data-capacity-mode="weekly"] .cap-weekly { display: block; }
+:root[data-capacity-mode="weekly"] .cap-quota-pools,
+:root[data-capacity-mode="weekly"] .cap-capability,
+:root[data-capacity-mode="weekly"] .view-capacity > .foot-note { display: none; }
+:root[data-capacity-mode="weekly"] .cap-toggle [data-capacity-mode="weekly"] { background: var(--ink); color: var(--bg); }
+.weekly-quota { min-inline-size: 0; }
+.weekly-quota h2 { font-size: 14px; margin-block: 12px; }
+.weekly-grid { display: grid; grid-template-columns: 42px repeat(7, minmax(0, 1fr)); font-size: 11px; }
+.weekly-grid > strong { padding: 8px 4px; overflow-wrap: anywhere; }
+.weekly-time { padding-block-start: 4px; color: var(--mut); }
+.weekly-cell { position: relative; min-block-size: 36px; min-inline-size: 0; border: 1px solid var(--line); }
+.weekly-hour { background: color-mix(in srgb, var(--acc) var(--fresh), var(--bg)); }
+.weekly-cell > .weekly-hour { min-block-size: 100%; }
+.weekly-hour summary { cursor: pointer; padding: 4px; font-size: 10px; list-style: none; }
+.weekly-hour summary::-webkit-details-marker { display: none; }
+.weekly-hour summary:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
+.weekly-tip { display: block; padding: 6px; background: var(--bg); color: var(--ink); overflow-wrap: anywhere; }
+.weekly-reset { display: block; position: relative; border-inline-start: 3px solid currentColor; background: var(--bg); padding: 3px; margin: 2px; overflow-wrap: anywhere; line-height: 1.4; }
+.weekly-cell > .weekly-reset { margin-block-start: -1px; }
+.weekly-cell:has(.weekly-reset) > .weekly-hour { min-block-size: 24px; }
+.weekly-personal { color: var(--acc); }
+.weekly-work { color: var(--good); }
+.weekly-now { position: absolute; inset-inline: 0; border-block-start: 2px solid var(--ink); pointer-events: none; z-index: 1; }
+.weekly-now::before { content: ""; position: absolute; inset-inline-start: -3px; inset-block-start: -4px; inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--ink); }
+.weekly-day { border-block-end: 1px solid var(--line); padding-block: 10px; }
+.weekly-day h3 { font-size: 14px; }
+.weekly-bar { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); }
+.weekly-bar .weekly-hour { min-block-size: 44px; }
+.weekly-bar summary { padding: 12px 0; text-align: center; }
+.weekly-bar .weekly-tip { position: absolute; inset-inline: 0; z-index: 2; border: 1px solid var(--line); }
+.weekly-bar { position: relative; }
+.weekly-bar-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--mut); margin-block-end: 8px; }
+</style>
+</head>
+<body>
+<div id="app"><span hidden data-console-revision="7e53089a7fc87eaaebebe54b6b6cb3d4ce72d1a785fc68c4e8b4990bbcedda68" data-rendered-layout="phone" data-rendered-section="browse"></span><script type="application/json" id="counts">{"runs": 1, "needs": 0, "uat": 151, "digest": 20, "digest_upto": 33505}</script><div class="ph"><header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span><span class="state t-acc">RUNNING · 1</span></div><div class="phead-btns"><button class="btn theme" data-theme-cycle><span class="tl" data-tl="auto">Auto</span><span class="tl" data-tl="light" hidden>Light</span><span class="tl" data-tl="dark" hidden>Dark</span></button><button class="btn" style="font-weight:bold" data-open-capture>+</button><button class="btn pause" data-act="pause">Pause all</button><button class="btn settings-link" data-tab-go="settings">Settings</button></div></div><div class="tabs"><button class="tab" data-tab-go="now"><span>Now</span><span class="mono t-acc">1</span></button><button class="tab" data-tab-go="triage"><span>Triage</span><span class="mono t-bad"></span></button><button class="tab" data-tab-go="releases"><span>Releases</span><span class="mono t-acc">7</span></button><button class="tab" data-tab-go="browse"><span>Browse</span></button><button class="tab" data-tab-go="stats"><span>Stats</span></button><button class="tab" data-tab-go="models"><span>Models</span></button></div></header><div class="pbody"><section class="tabv tabv-browse"><div class="pad"><div class="psect"><span class="lbl">Quota · worst window</span><style>:root[data-quota_agy-gemini="open"] [data-quota="agy-gemini"] .pq-details { display: flex; } :root[data-quota_agy-gemini="open"] [data-quota="agy-gemini"] .pq-toggle .c { display: none; } :root[data-quota_agy-gemini="open"] [data-quota="agy-gemini"] .pq-toggle .o { display: inline; } :root[data-quota_copilot="open"] [data-quota="copilot"] .pq-details { display: flex; } :root[data-quota_copilot="open"] [data-quota="copilot"] .pq-toggle .c { display: none; } :root[data-quota_copilot="open"] [data-quota="copilot"] .pq-toggle .o { display: inline; } :root[data-quota_claude="open"] [data-quota="claude"] .pq-details { display: flex; } :root[data-quota_claude="open"] [data-quota="claude"] .pq-toggle .c { display: none; } :root[data-quota_claude="open"] [data-quota="claude"] .pq-toggle .o { display: inline; } :root[data-quota_agy-claude="open"] [data-quota="agy-claude"] .pq-details { display: flex; } :root[data-quota_agy-claude="open"] [data-quota="agy-claude"] .pq-toggle .c { display: none; } :root[data-quota_agy-claude="open"] [data-quota="agy-claude"] .pq-toggle .o { display: inline; } :root[data-quota_work-codex-gpt1="open"] [data-quota="work-codex-gpt1"] .pq-details { display: flex; } :root[data-quota_work-codex-gpt1="open"] [data-quota="work-codex-gpt1"] .pq-toggle .c { display: none; } :root[data-quota_work-codex-gpt1="open"] [data-quota="work-codex-gpt1"] .pq-toggle .o { display: inline; } :root[data-quota_work-claude="open"] [data-quota="work-claude"] .pq-details { display: flex; } :root[data-quota_work-claude="open"] [data-quota="work-claude"] .pq-toggle .c { display: none; } :root[data-quota_work-claude="open"] [data-quota="work-claude"] .pq-toggle .o { display: inline; } :root[data-quota_work-codex-makastel="open"] [data-quota="work-codex-makastel"] .pq-details { display: flex; } :root[data-quota_work-codex-makastel="open"] [data-quota="work-codex-makastel"] .pq-toggle .c { display: none; } :root[data-quota_work-codex-makastel="open"] [data-quota="work-codex-makastel"] .pq-toggle .o { display: inline; }</style><div class="pq" data-quota="agy-gemini"><div class="row"><span><span class="name mono">agy-gemini</span><span class="model mono">2 capability slots</span></span><div class="pq-right"><span class="val mono t-warn">87%</span><button class="pq-toggle" data-toggle="quota_agy-gemini" aria-label="Toggle agy-gemini quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-warn" style="width:87%"></span><span class="tick" style="left:85%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 0%</span> <span class="bar"><span class="f-warn" style="width:0%"></span><span class="tick" style="left:85%"></span></span> <span class="resets mono t-mut">resets 03:01</span></div><div class="pq-win"><span class="win mono">weekly · 87%</span> <span class="bar"><span class="f-warn" style="width:87%"></span><span class="tick" style="left:85%"></span></span> <span class="resets mono t-mut">resets Tue 22:44</span></div></div></div><div class="pq" data-quota="cline-free"><div class="row"><span><span class="name mono">cline-free</span><span class="model mono">z-ai/glm-5.3-flash · free tier</span></span><div class="pq-right"><span class="val mono t-warn">hold</span><button class="btn btn-warn" data-act="unhold" data-platform="cline-free">Unhold</button></div></div><span class="bar"><span class="f-warn" style="width:100%"></span></span><span class="detail">on hold until 21:37 — the CLI rejected its model</span></div><div class="pq" data-quota="copilot"><div class="row"><span><span class="name mono">copilot</span><span class="model mono">2 capability slots</span></span><div class="pq-right"><span class="val mono t-warn">84%</span><button class="pq-toggle" data-toggle="quota_copilot" aria-label="Toggle copilot quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-warn" style="width:84%"></span><span class="tick" style="left:80%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">monthly · 84%</span> <span class="bar"><span class="f-warn" style="width:84%"></span><span class="tick" style="left:80%"></span></span> <span class="resets mono t-mut">resets Wed 20:00</span></div></div></div><div class="pq" data-quota="kilo"><div class="row"><span><span class="name mono">kilo</span><span class="model mono">kilo-auto/free · size s only</span></span><div class="pq-right"><span class="val mono t-acc">unmetered</span></div></div><span class="bar"><span class="f-acc" style="width:0%"></span></span><span class="detail">unmetered — no quota signal until an error</span></div><div class="pq" data-quota="claude"><div class="row"><span><span class="name mono">claude</span><span class="model mono">3 capability slots</span></span><div class="pq-right"><span class="val mono t-bad">84%</span><button class="pq-toggle" data-toggle="quota_claude" aria-label="Toggle claude quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-bad" style="width:100%"></span><span class="tick" style="left:60%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 4%</span> <span class="bar"><span class="f-bad" style="width:4%"></span><span class="tick" style="left:30%"></span></span> <span class="resets mono t-mut">resets 01:00</span></div><div class="pq-win"><span class="win mono">weekly · 84%</span> <span class="bar"><span class="f-bad" style="width:84%"></span><span class="tick" style="left:60%"></span></span> <span class="resets mono t-mut">resets Tue 05:00</span></div></div></div><div class="pq" data-quota="agy-claude"><div class="row"><span><span class="name mono">agy-claude</span><span class="model mono">claude-opus-4-6-thinking</span></span><div class="pq-right"><span class="val mono t-acc">72%</span><button class="pq-toggle" data-toggle="quota_agy-claude" aria-label="Toggle agy-claude quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-acc" style="width:72%"></span><span class="tick" style="left:85%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 0%</span> <span class="bar"><span class="f-acc" style="width:0%"></span><span class="tick" style="left:85%"></span></span> <span class="resets mono t-mut">resets 02:49</span></div><div class="pq-win"><span class="win mono">weekly · 72%</span> <span class="bar"><span class="f-acc" style="width:72%"></span><span class="tick" style="left:85%"></span></span> <span class="resets mono t-mut">resets Sat 16:15</span></div></div></div><div class="pq" data-quota="codex"><div class="row"><span><span class="name mono">codex</span><span class="model mono">2 capability slots · free tier</span></span><div class="pq-right"><span class="val mono t-mut">stale</span></div></div><span class="bar"><span class="f-mut" style="width:100%"></span><span class="tick" style="left:70%"></span></span><span class="detail">no fresh reading — counted as over the line · 43200m 0% resets 2026-10-28T02:06:05+00:00 · 0 reset credits available</span></div><div class="pq" data-quota="work-codex-gpt1"><div class="row"><span><span class="name mono">work-codex-gpt1</span><span class="model mono">5 capability slots · business plan</span></span><div class="pq-right"><span class="val mono t-acc">84%</span><button class="pq-toggle" data-toggle="quota_work-codex-gpt1" aria-label="Toggle work-codex-gpt1 quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-acc" style="width:84%"></span><span class="tick" style="left:100%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 57%</span> <span class="bar"><span class="f-acc" style="width:57%"></span><span class="tick" style="left:100%"></span></span> <span class="resets mono t-mut">resets 02:03</span></div><div class="pq-win"><span class="win mono">weekly · 84%</span> <span class="bar"><span class="f-acc" style="width:84%"></span><span class="tick" style="left:100%"></span></span> <span class="resets mono t-mut">resets Sat 02:42</span></div></div></div><div class="pq" data-quota="work-copilot"><div class="row"><span><span class="name mono">work-copilot</span><span class="model mono">auto · work account · size s only</span></span><div class="pq-right"><span class="val mono t-acc">unmetered</span></div></div><span class="bar"><span class="f-acc" style="width:0%"></span></span><span class="detail">unmetered — no quota signal until an error</span></div><div class="pq" data-quota="work-claude"><div class="row"><span><span class="name mono">work-claude</span><span class="model mono">3 capability slots · work account</span></span><div class="pq-right"><span class="val mono t-bad">7%</span><button class="pq-toggle" data-toggle="quota_work-claude" aria-label="Toggle work-claude quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-bad" style="width:100%"></span><span class="tick" style="left:0%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 7%</span> <span class="bar"><span class="f-bad" style="width:7%"></span><span class="tick" style="left:0%"></span></span> <span class="resets mono t-mut">resets 02:10</span></div><div class="pq-win"><span class="win mono">weekly · 5%</span> <span class="bar"><span class="f-bad" style="width:5%"></span><span class="tick" style="left:0%"></span></span> <span class="resets mono t-mut">resets Oct 4</span></div></div></div><div class="pq" data-quota="work-codex-makastel"><div class="row"><span><span class="name mono">work-codex-makastel</span><span class="model mono">4 capability slots · business plan</span></span><div class="pq-right"><span class="val mono t-acc">24%</span><button class="pq-toggle" data-toggle="quota_work-codex-makastel" aria-label="Toggle work-codex-makastel quota details"><span class="c">▾</span><span class="o">▴</span></button></div></div><span class="bar"><span class="f-acc" style="width:24%"></span><span class="tick" style="left:100%"></span></span><div class="pq-details"><div class="pq-win"><span class="win mono">5h · 0%</span> <span class="bar"><span class="f-acc" style="width:0%"></span><span class="tick" style="left:100%"></span></span> <span class="resets mono t-mut">resets 03:06</span></div><div class="pq-win"><span class="win mono">weekly · 24%</span> <span class="bar"><span class="f-acc" style="width:24%"></span><span class="tick" style="left:100%"></span></span> <span class="resets mono t-mut">resets Sat 07:27</span></div></div></div><div class="foot-note">Tick marks the soft line — Mahler stops starting runs there. Hard line yields work in flight.</div></div><div class="weekly-quota"><h2>Weekly reset calendar</h2><p>Freshest: Sun 18:00 – Mon 03:00 (4 routes early in their week). Leanest: Thu 23:00 – Sat 03:00 (0).</p><p class="foot-note">Sun–Sat · local time (EDT). Darker = more routes in the first 48 hours of their week, sampled on the hour. Weekly timing repeats from the latest known reset; monthly routes do not affect shading. Tap an hour for route names.</p><p class="weekly-legend"><span class="weekly-personal">Personal</span> / <span class="weekly-work">Work</span> · Reset colours: personal / work. Shading counts shared quota groups once.</p><p class="mono">Now · Sun 22:21 EDT</p><section class="weekly-day"><h3>Sun 27 Sep</h3><p>3–4 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 00:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 00:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 00:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 01:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 01:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 01:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 02:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 02:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 02:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 03:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 03:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 03:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 04:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 04:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 04:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 05:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 05:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 05:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 06:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 06:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 06:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 07:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 07:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 07:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 08:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 08:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 08:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 09:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 09:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 09:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 10:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 10:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 10:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 11:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 11:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 11:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 12:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 12:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 12:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 13:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 13:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 13:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 14:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 14:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 14:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 15:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 15:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 15:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 16:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 16:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 16:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sun 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sun 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sun 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 18:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 18:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 18:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 19:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 19:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 19:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 20:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 20:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 20:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 21:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 21:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 21:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 22:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 22:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 22:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Sun 23:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Sun 23:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Sun 23:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><span class="weekly-reset weekly-work">17:00 · work-claude · work · weekly</span></section><section class="weekly-day"><h3>Mon 28 Sep</h3><p>1–4 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:20%"><summary title="Mon 00:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Mon 00:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Mon 00:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Mon 01:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Mon 01:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Mon 01:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:20%"><summary title="Mon 02:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel" aria-label="Mon 02:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel">4</summary><span class="weekly-tip">Mon 02:00 · 4 routes early in their week: agy-claude, work-codex-gpt1, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Mon 03:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel" aria-label="Mon 03:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel">3</summary><span class="weekly-tip">Mon 03:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Mon 04:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel" aria-label="Mon 04:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel">3</summary><span class="weekly-tip">Mon 04:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Mon 05:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel" aria-label="Mon 05:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel">3</summary><span class="weekly-tip">Mon 05:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Mon 06:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel" aria-label="Mon 06:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel">3</summary><span class="weekly-tip">Mon 06:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Mon 07:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel" aria-label="Mon 07:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel">3</summary><span class="weekly-tip">Mon 07:00 · 3 routes early in their week: agy-claude, work-claude, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 08:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 08:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 08:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 09:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 09:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 09:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 10:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 10:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 10:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 11:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 11:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 11:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 12:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 12:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 12:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 13:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 13:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 13:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 14:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 14:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 14:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 15:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 15:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 15:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Mon 16:00 · 2 routes early in their week: agy-claude, work-claude" aria-label="Mon 16:00 · 2 routes early in their week: agy-claude, work-claude">2</summary><span class="weekly-tip">Mon 16:00 · 2 routes early in their week: agy-claude, work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 17:00 · 1 routes early in their week: work-claude" aria-label="Mon 17:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 17:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 18:00 · 1 routes early in their week: work-claude" aria-label="Mon 18:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 18:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 19:00 · 1 routes early in their week: work-claude" aria-label="Mon 19:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 19:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 20:00 · 1 routes early in their week: work-claude" aria-label="Mon 20:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 20:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 21:00 · 1 routes early in their week: work-claude" aria-label="Mon 21:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 21:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 22:00 · 1 routes early in their week: work-claude" aria-label="Mon 22:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 22:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Mon 23:00 · 1 routes early in their week: work-claude" aria-label="Mon 23:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Mon 23:00 · 1 routes early in their week: work-claude</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><p class="t-mut">No resets today.</p></section><section class="weekly-day"><h3>Tue 29 Sep</h3><p>1–3 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 00:00 · 1 routes early in their week: work-claude" aria-label="Tue 00:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 00:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 01:00 · 1 routes early in their week: work-claude" aria-label="Tue 01:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 01:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 02:00 · 1 routes early in their week: work-claude" aria-label="Tue 02:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 02:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 03:00 · 1 routes early in their week: work-claude" aria-label="Tue 03:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 03:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 04:00 · 1 routes early in their week: work-claude" aria-label="Tue 04:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 04:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 05:00 · 1 routes early in their week: work-claude" aria-label="Tue 05:00 · 1 routes early in their week: work-claude">1</summary><span class="weekly-tip">Tue 05:00 · 1 routes early in their week: work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 06:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 06:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 06:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 07:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 07:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 07:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 08:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 08:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 08:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 09:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 09:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 09:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 10:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 10:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 10:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 11:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 11:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 11:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 12:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 12:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 12:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 13:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 13:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 13:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 14:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 14:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 14:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 15:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 15:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 15:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 16:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 16:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 16:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 17:00 · 2 routes early in their week: claude, work-claude" aria-label="Tue 17:00 · 2 routes early in their week: claude, work-claude">2</summary><span class="weekly-tip">Tue 17:00 · 2 routes early in their week: claude, work-claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 18:00 · 1 routes early in their week: claude" aria-label="Tue 18:00 · 1 routes early in their week: claude">1</summary><span class="weekly-tip">Tue 18:00 · 1 routes early in their week: claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 19:00 · 1 routes early in their week: claude" aria-label="Tue 19:00 · 1 routes early in their week: claude">1</summary><span class="weekly-tip">Tue 19:00 · 1 routes early in their week: claude</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Tue 20:00 · 1 routes early in their week: claude" aria-label="Tue 20:00 · 1 routes early in their week: claude">1</summary><span class="weekly-tip">Tue 20:00 · 1 routes early in their week: claude</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 21:00 · 2 routes early in their week: claude, codex" aria-label="Tue 21:00 · 2 routes early in their week: claude, codex">2</summary><span class="weekly-tip">Tue 21:00 · 2 routes early in their week: claude, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Tue 22:00 · 2 routes early in their week: claude, codex" aria-label="Tue 22:00 · 2 routes early in their week: claude, codex">2</summary><span class="weekly-tip">Tue 22:00 · 2 routes early in their week: claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Tue 23:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Tue 23:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Tue 23:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><span class="weekly-reset weekly-personal">05:00 · claude · personal · weekly</span><span class="weekly-reset weekly-personal">20:13 · codex · personal · weekly</span><span class="weekly-reset weekly-personal">22:44 · agy-gemini · personal · weekly</span></section><section class="weekly-day"><h3>Wed 30 Sep</h3><p>3–3 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 00:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 00:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 00:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 01:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 01:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 01:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 02:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 02:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 02:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 03:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 03:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 03:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 04:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 04:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 04:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 05:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 05:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 05:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 06:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 06:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 06:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 07:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 07:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 07:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 08:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 08:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 08:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 09:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 09:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 09:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 10:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 10:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 10:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 11:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 11:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 11:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 12:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 12:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 12:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 13:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 13:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 13:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 14:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 14:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 14:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 15:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 15:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 15:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 16:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 16:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 16:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 17:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 17:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 17:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 18:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 18:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 18:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 19:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 19:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 19:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 20:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 20:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 20:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 21:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 21:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 21:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 22:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 22:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 22:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Wed 23:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Wed 23:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Wed 23:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><span class="weekly-reset weekly-personal">20:00 · copilot · personal · monthly</span></section><section class="weekly-day"><h3>Thu 01 Oct</h3><p>0–3 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 00:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 00:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 00:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 01:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 01:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 01:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 02:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 02:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 02:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 03:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 03:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 03:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 04:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 04:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 04:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Thu 05:00 · 3 routes early in their week: agy-gemini, claude, codex" aria-label="Thu 05:00 · 3 routes early in their week: agy-gemini, claude, codex">3</summary><span class="weekly-tip">Thu 05:00 · 3 routes early in their week: agy-gemini, claude, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 06:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 06:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 06:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 07:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 07:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 07:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 08:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 08:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 08:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 09:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 09:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 09:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 10:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 10:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 10:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 11:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 11:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 11:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 12:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 12:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 12:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 13:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 13:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 13:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 14:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 14:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 14:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 15:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 15:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 15:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 16:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 16:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 16:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 17:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 17:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 17:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 18:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 18:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 18:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 19:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 19:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 19:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Thu 20:00 · 2 routes early in their week: agy-gemini, codex" aria-label="Thu 20:00 · 2 routes early in their week: agy-gemini, codex">2</summary><span class="weekly-tip">Thu 20:00 · 2 routes early in their week: agy-gemini, codex</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Thu 21:00 · 1 routes early in their week: agy-gemini" aria-label="Thu 21:00 · 1 routes early in their week: agy-gemini">1</summary><span class="weekly-tip">Thu 21:00 · 1 routes early in their week: agy-gemini</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Thu 22:00 · 1 routes early in their week: agy-gemini" aria-label="Thu 22:00 · 1 routes early in their week: agy-gemini">1</summary><span class="weekly-tip">Thu 22:00 · 1 routes early in their week: agy-gemini</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Thu 23:00 · 0 routes early in their week" aria-label="Thu 23:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Thu 23:00 · 0 routes early in their week</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><p class="t-mut">No resets today.</p></section><section class="weekly-day"><h3>Fri 02 Oct</h3><p>0–0 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 00:00 · 0 routes early in their week" aria-label="Fri 00:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 00:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 01:00 · 0 routes early in their week" aria-label="Fri 01:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 01:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 02:00 · 0 routes early in their week" aria-label="Fri 02:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 02:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 03:00 · 0 routes early in their week" aria-label="Fri 03:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 03:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 04:00 · 0 routes early in their week" aria-label="Fri 04:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 04:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 05:00 · 0 routes early in their week" aria-label="Fri 05:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 05:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 06:00 · 0 routes early in their week" aria-label="Fri 06:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 06:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 07:00 · 0 routes early in their week" aria-label="Fri 07:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 07:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 08:00 · 0 routes early in their week" aria-label="Fri 08:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 08:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 09:00 · 0 routes early in their week" aria-label="Fri 09:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 09:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 10:00 · 0 routes early in their week" aria-label="Fri 10:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 10:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 11:00 · 0 routes early in their week" aria-label="Fri 11:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 11:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 12:00 · 0 routes early in their week" aria-label="Fri 12:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 12:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 13:00 · 0 routes early in their week" aria-label="Fri 13:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 13:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 14:00 · 0 routes early in their week" aria-label="Fri 14:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 14:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 15:00 · 0 routes early in their week" aria-label="Fri 15:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 15:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 16:00 · 0 routes early in their week" aria-label="Fri 16:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 16:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 17:00 · 0 routes early in their week" aria-label="Fri 17:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 17:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 18:00 · 0 routes early in their week" aria-label="Fri 18:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 18:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 19:00 · 0 routes early in their week" aria-label="Fri 19:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 19:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 20:00 · 0 routes early in their week" aria-label="Fri 20:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 20:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 21:00 · 0 routes early in their week" aria-label="Fri 21:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 21:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 22:00 · 0 routes early in their week" aria-label="Fri 22:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 22:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Fri 23:00 · 0 routes early in their week" aria-label="Fri 23:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Fri 23:00 · 0 routes early in their week</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><p class="t-mut">No resets today.</p></section><section class="weekly-day"><h3>Sat 03 Oct</h3><p>0–3 routes early in their week</p><div class="weekly-bar"><details class="weekly-hour" style="--fresh:0%"><summary title="Sat 00:00 · 0 routes early in their week" aria-label="Sat 00:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Sat 00:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Sat 01:00 · 0 routes early in their week" aria-label="Sat 01:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Sat 01:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:0%"><summary title="Sat 02:00 · 0 routes early in their week" aria-label="Sat 02:00 · 0 routes early in their week">0</summary><span class="weekly-tip">Sat 02:00 · 0 routes early in their week</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Sat 03:00 · 1 routes early in their week: work-codex-gpt1" aria-label="Sat 03:00 · 1 routes early in their week: work-codex-gpt1">1</summary><span class="weekly-tip">Sat 03:00 · 1 routes early in their week: work-codex-gpt1</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Sat 04:00 · 1 routes early in their week: work-codex-gpt1" aria-label="Sat 04:00 · 1 routes early in their week: work-codex-gpt1">1</summary><span class="weekly-tip">Sat 04:00 · 1 routes early in their week: work-codex-gpt1</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Sat 05:00 · 1 routes early in their week: work-codex-gpt1" aria-label="Sat 05:00 · 1 routes early in their week: work-codex-gpt1">1</summary><span class="weekly-tip">Sat 05:00 · 1 routes early in their week: work-codex-gpt1</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Sat 06:00 · 1 routes early in their week: work-codex-gpt1" aria-label="Sat 06:00 · 1 routes early in their week: work-codex-gpt1">1</summary><span class="weekly-tip">Sat 06:00 · 1 routes early in their week: work-codex-gpt1</span></details><details class="weekly-hour" style="--fresh:5%"><summary title="Sat 07:00 · 1 routes early in their week: work-codex-gpt1" aria-label="Sat 07:00 · 1 routes early in their week: work-codex-gpt1">1</summary><span class="weekly-tip">Sat 07:00 · 1 routes early in their week: work-codex-gpt1</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 08:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 08:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 08:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 09:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 09:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 09:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 10:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 10:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 10:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 11:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 11:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 11:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 12:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 12:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 12:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 13:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 13:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 13:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 14:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 14:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 14:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 15:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 15:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 15:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:10%"><summary title="Sat 16:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel" aria-label="Sat 16:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel">2</summary><span class="weekly-tip">Sat 16:00 · 2 routes early in their week: work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 17:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 18:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 18:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 18:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 19:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 19:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 19:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 20:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 20:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 20:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 21:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 21:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 21:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 22:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 22:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 22:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details><details class="weekly-hour" style="--fresh:15%"><summary title="Sat 23:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel" aria-label="Sat 23:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel">3</summary><span class="weekly-tip">Sat 23:00 · 3 routes early in their week: agy-claude, work-codex-gpt1, work-codex-makastel</span></details></div><div class="weekly-bar-labels"><span>00:00</span><span>12:00</span><span>24:00</span></div><span class="weekly-reset weekly-work">02:42 · work-codex-gpt1 · work · weekly</span><span class="weekly-reset weekly-work">07:27 · work-codex-makastel · work · weekly</span><span class="weekly-reset weekly-personal">16:15 · agy-claude · personal · weekly</span></section><aside><h3>No weekly cycle</h3><ul><li>cline-free</li><li>kilo</li><li>work-copilot</li></ul></aside></div><div class="psect" style="gap:10px"><span class="lbl">Backlog</span><div class="grp" data-group="mahler"><div class="grp-h-row"><button class="grp-h" data-toggle-group="mahler"><span class="name">mahler</span><span class="mono">8 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/554" target="_blank" rel="noopener">mahler#554</a></span><a href="https://github.com/mkny13/mahler/issues/554" target="_blank" rel="noopener" class="title">Console Capacity: Sun–Sat calendar of every route&#x27;s weekly reset, shaded by how many routes are early in their cycle</a><span class="st mono t-acc">working</span></div><div class="pbl"><span class="pchip p1">p1</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/472" target="_blank" rel="noopener">mahler#472</a></span><a href="https://github.com/mkny13/mahler/issues/472" target="_blank" rel="noopener" class="title">Variants: share quota backoff across sibling variants of one login (blocks enabling variants)</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/387" target="_blank" rel="noopener">mahler#387</a></span><a href="https://github.com/mkny13/mahler/issues/387" target="_blank" rel="noopener" class="title">Onboard mental-jukebox to Mahler</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/388" target="_blank" rel="noopener">mahler#388</a></span><a href="https://github.com/mkny13/mahler/issues/388" target="_blank" rel="noopener" class="title">Onboard puppy-growth-chart to Mahler</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535</a> <span class="pr-link"><a href="https://github.com/mkny13/mahler/pull/551" target="_blank" rel="noopener">PR #551</a></span></span><a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener" class="title">Warm-up: keep each login&#x27;s 5-hour windows chained during active hours (Claude personal/work, Antigravity, ChatGPT work)</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/536" target="_blank" rel="noopener">mahler#536</a></span><a href="https://github.com/mkny13/mahler/issues/536" target="_blank" rel="noopener" class="title">Warm-up: learn each login&#x27;s best warm-up time from when Mike actually starts and runs out</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/385" target="_blank" rel="noopener">mahler#385</a></span><a href="https://github.com/mkny13/mahler/issues/385" target="_blank" rel="noopener" class="title">onboard my other github repos to mahler</a><span class="st mono t-mut">parent</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/mahler/issues/503" target="_blank" rel="noopener">mahler#503</a></span><a href="https://github.com/mkny13/mahler/issues/503" target="_blank" rel="noopener" class="title">Console observability: timestamped request log, slow/blocked request logging, client-side error reporting, events view</a><span class="st mono t-mut">parent</span></div></div></div><div class="grp" data-group="groundwork"><div class="grp-h-row"><button class="grp-h" data-toggle-group="groundwork"><span class="name">groundwork</span><span class="mono">0 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"></div></div><div class="grp" data-group="phish-in"><div class="grp-h-row"><button class="grp-h" data-toggle-group="phish-in"><span class="name">phish-in</span><span class="mono">2 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/couch-tour/issues/250" target="_blank" rel="noopener">phish-in#250</a></span><a href="https://github.com/mkny13/couch-tour/issues/250" target="_blank" rel="noopener" class="title">Add automated UI test coverage for Android + macOS (prerequisite for dropping the beta-promotion gate)</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/couch-tour/issues/251" target="_blank" rel="noopener">phish-in#251</a></span><a href="https://github.com/mkny13/couch-tour/issues/251" target="_blank" rel="noopener" class="title">Drop native beta-promotion gate, auto-ship on green CI (parked on owner review of #250)</a><span class="st mono t-mut">parked</span></div></div></div><div class="grp" data-group="sit-stand-walk"><div class="grp-h-row"><button class="grp-h" data-toggle-group="sit-stand-walk"><span class="name">sit-stand-walk</span><span class="mono">0 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"></div></div><div class="grp" data-group="google-chat-nav"><div class="grp-h-row"><button class="grp-h" data-toggle-group="google-chat-nav"><span class="name">google-chat-nav</span><span class="mono">0 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"></div></div><div class="grp" data-group="movebreak"><div class="grp-h-row"><button class="grp-h" data-toggle-group="movebreak"><span class="name">movebreak</span><span class="mono">0 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"></div></div><div class="grp" data-group="hockey"><div class="grp-h-row"><button class="grp-h" data-toggle-group="hockey"><span class="name">hockey</span><span class="mono">3 open · <span class="sh-show">show</span><span class="sh-hide">hide</span></span></button></div><div class="grp-items"><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/hockey-draft-copilot/issues/62" target="_blank" rel="noopener">hockey#62</a> <span class="pr-link"><a href="https://github.com/mkny13/hockey-draft-copilot/pull/64" target="_blank" rel="noopener">PR #64</a></span></span><a href="https://github.com/mkny13/hockey-draft-copilot/issues/62" target="_blank" rel="noopener" class="title">AGENTS.md: replace the six stale facts and guard AGENTS-only claims in test_docs.js</a><span class="st mono t-acc">verifying</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/hockey-draft-copilot/issues/63" target="_blank" rel="noopener">hockey#63</a></span><a href="https://github.com/mkny13/hockey-draft-copilot/issues/63" target="_blank" rel="noopener" class="title">AGENTS.md: add the verification, test-seam, finishing and extension-reload rules the failed runs needed</a><span class="st mono t-mut">ready</span></div><div class="pbl"><span class="pchip">p2</span><span class="ref mono t-mut"><a href="https://github.com/mkny13/hockey-draft-copilot/issues/61" target="_blank" rel="noopener">hockey#61</a></span><a href="https://github.com/mkny13/hockey-draft-copilot/issues/61" target="_blank" rel="noopener" class="title">Agent Guidance &amp; Rule Calibration</a><span class="st mono t-mut">parent</span></div></div></div></div><div class="psect" style="gap:10px"><span class="lbl">Releases</span><button class="link" data-tab-go="releases">Releases timeline →</button></div><div class="psect" style="gap:10px"><span class="lbl">History</span><div class="pev"><span class="when mono">22:14</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/554" target="_blank" rel="noopener">mahler#554 build on work-codex-gpt1-medium, run 10049</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">22:13</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/556" target="_blank" rel="noopener">mahler#555 squash-merged #556</a></span><button class="undo" data-open-revert="33502">Undo</button></div><div class="pev"><span class="when mono">22:11</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/556" target="_blank" rel="noopener">mahler#555 opened PR #556</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">22:03</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/555" target="_blank" rel="noopener">mahler#555 build on work-codex-gpt1-medium/gpt-5.6-sol/high, run 10048</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:48</span><span class="txt t-mut"><span class="kind mono t-ink">ready</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 sorted</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:43</span><span class="txt t-mut"><span class="kind mono t-ink">ready</span> <a href="https://github.com/mkny13/mahler/issues/554" target="_blank" rel="noopener">mahler#554 new issue</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:43</span><span class="txt t-mut"><span class="kind mono t-ink">ready</span> <a href="https://github.com/mkny13/mahler/issues/555" target="_blank" rel="noopener">mahler#555 new issue</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:39</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/553" target="_blank" rel="noopener">mahler#541 squash-merged #553</a></span><button class="undo" data-open-revert="33486">Undo</button></div><div class="pev"><span class="when mono">21:38</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/541" target="_blank" rel="noopener">mahler#541 verdict=pass, review_run=10047, reviewed_sha=ce2b67c63d0fb8dd9293515cdfc1e40f90eaa702</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:37</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/541" target="_blank" rel="noopener">mahler#541 review on work-codex-makastel-medium, run 10047</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:37</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 sort on kilo, run 10046</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:36</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/553" target="_blank" rel="noopener">mahler#541 opened PR #553</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:36</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 sort on cline-free, run 10045</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:36</span><span class="txt t-mut"><span class="kind mono t-ink">inbox</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 you answered — re-sorting</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:36</span><span class="txt t-mut"><span class="kind mono t-ink">answered</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 via=console, resuming=False</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:34</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/541" target="_blank" rel="noopener">mahler#541 build on work-codex-gpt1-medium, run 10044</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:33</span><span class="txt t-mut"><span class="kind mono t-ink">console_answer_queued</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 id=51</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:32</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/552" target="_blank" rel="noopener">mahler#542 squash-merged #552</a></span><button class="undo" data-open-revert="33464">Undo</button></div><div class="pev"><span class="when mono">21:32</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/542" target="_blank" rel="noopener">mahler#542 verdict=pass, review_run=10043, reviewed_sha=55bb092c5e5bf3aca039432ea4ff1ddf2c7496b9</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:32</span><span class="txt t-mut"><span class="kind mono t-ink">uat_verdict</span> <a href="https://github.com/mkny13/mahler/issues/530" target="_blank" rel="noopener">mahler#530 verdict=pass, via=console</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:31</span><span class="txt t-mut"><span class="kind mono t-ink">console_uat_queued</span> <a href="https://github.com/mkny13/mahler/issues/530" target="_blank" rel="noopener">mahler#530 verdict=pass, id=50</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:31</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/542" target="_blank" rel="noopener">mahler#542 review on work-codex-makastel-medium, run 10043</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:30</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/552" target="_blank" rel="noopener">mahler#542 opened PR #552</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:27</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/542" target="_blank" rel="noopener">mahler#542 build on work-codex-gpt1-medium, run 10042</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:27</span><span class="txt t-ink"><span class="kind mono t-ink">needs_you</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 Should Claude warm-ups be removed, retained despite no reset shift, or retested exactly at the boundary? [OPTIONS: Remove Claude targets | Keep and waive criterion | Retest at boundary]</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:23</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 fix on work-codex-gpt1-medium/gpt-5.6-sol/high, run 10041</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:23</span><span class="txt t-mut"><span class="kind mono t-ink">escalated</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 retried a tier up (0 → 3)</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:22</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 verdict=fail, review_run=10040, reviewed_sha=075a8fbcfdef4237c7cc1b0c9d9f12d45331ac1c</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:21</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 review on work-codex-makastel-medium, run 10040</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:20</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/551" target="_blank" rel="noopener">mahler#535 opened PR #551</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:18</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/535" target="_blank" rel="noopener">mahler#535 build on work-codex-gpt1-medium, run 10039</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:17</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/550" target="_blank" rel="noopener">mahler#544 squash-merged #550</a></span><button class="undo" data-open-revert="33431">Undo</button></div><div class="pev"><span class="when mono">21:17</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/544" target="_blank" rel="noopener">mahler#544 verdict=pass, review_run=10038, reviewed_sha=07736fb6570154290f23f7d9ccf1293bb61a24a9</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:15</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/544" target="_blank" rel="noopener">mahler#544 review on work-codex-makastel-medium, run 10038</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:14</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/550" target="_blank" rel="noopener">mahler#544 opened PR #550</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:12</span><span class="txt t-mut"><span class="kind mono t-ink">backup</span> mahler ledger: 12083200 bytes, pruned 0</span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:10</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/544" target="_blank" rel="noopener">mahler#544 build on work-codex-gpt1-medium, run 10037</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:09</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/549" target="_blank" rel="noopener">mahler#533 squash-merged #549</a></span><button class="undo" data-open-revert="33416">Undo</button></div><div class="pev"><span class="when mono">21:07</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/549" target="_blank" rel="noopener">mahler#533 opened PR #549</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:05</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/533" target="_blank" rel="noopener">mahler#533 build on work-codex-gpt1-medium, run 10036</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:04</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/548" target="_blank" rel="noopener">mahler#539 squash-merged #548</a></span><button class="undo" data-open-revert="33406">Undo</button></div><div class="pev"><span class="when mono">21:04</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/539" target="_blank" rel="noopener">mahler#539 verdict=pass, review_run=10035, reviewed_sha=a72f77c2e646cf1fad5a19c5953b1d8848de42ae</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:04</span><span class="txt t-mut"><span class="kind mono t-ink">credit_recovered</span> work-codex-gpt1-medium recovered from an out-of-credit outage</span><span class="revert-status"></span></div><div class="pev"><span class="when mono">21:03</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/539" target="_blank" rel="noopener">mahler#539 review on work-codex-gpt1-medium, run 10035</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">17:45</span><span class="txt t-mut"><span class="kind mono t-ink">pr_opened</span> <a href="https://github.com/mkny13/mahler/pull/548" target="_blank" rel="noopener">mahler#539 opened PR #548</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">17:40</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/539" target="_blank" rel="noopener">mahler#539 build on work-codex-makastel-medium, run 10034</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">17:40</span><span class="txt t-mut"><span class="kind mono t-ink">ready</span> <a href="https://github.com/mkny13/mahler/issues/536" target="_blank" rel="noopener">mahler#536 sorted</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">17:37</span><span class="txt t-mut"><span class="kind mono t-ink">pr_merged</span> <a href="https://github.com/mkny13/mahler/pull/547" target="_blank" rel="noopener">mahler#540 squash-merged #547</a></span><button class="undo" data-open-revert="33388">Undo</button></div><div class="pev"><span class="when mono">17:37</span><span class="txt t-mut"><span class="kind mono t-ink">review_verdict</span> <a href="https://github.com/mkny13/mahler/issues/540" target="_blank" rel="noopener">mahler#540 verdict=pass, review_run=10033, reviewed_sha=736a765babcdfb4b23c979c6503d5ca6fc08a1ab</a></span><span class="revert-status"></span></div><div class="pev"><span class="when mono">17:36</span><span class="txt t-mut"><span class="kind mono t-ink">run_started</span> <a href="https://github.com/mkny13/mahler/issues/540" target="_blank" rel="noopener">mahler#540 review on work-codex-makastel-medium, run 10033</a></span><span class="revert-status"></span></div></div></div></section></div></div></div>
+
+</body>
+</html>
