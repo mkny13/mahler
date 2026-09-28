@@ -1,12 +1,20 @@
-"""Chain idle login windows with one small turn; never spend without a free read."""
+"""Chain idle login windows with one small turn; never spend without a free read.
 
+Learned warm-up times (mahler#536): the relearn pass collects data on when Mike
+starts using each login and when he runs out. The learned times are report-only —
+they never change any warm-up window. `learn_time` is a pure function covering
+the rule; `relearn` runs once daily and persists the result as kv entries.
+"""
+
+import glob
 import json
 import os
+import re
 import subprocess
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
-from . import config, platforms, usage
+from . import config, platforms, presence, usage
 from .ledger import iso, parse
 
 
