@@ -1,11 +1,12 @@
 """Tests for platform adapters and resume commands (mahler#426)."""
 
+import copy
 import json
 import os
 import tempfile
 import unittest
 
-from mahler import config, platforms
+from mahler import config, platforms, router
 
 
 class NetworkErrorDetectionTests(unittest.TestCase):
@@ -290,6 +291,27 @@ class ClineModelPinTests(unittest.TestCase):
                               {"model": "configured/model"})
         argv = platforms.cline_argv(pconf, "prompt", "/wt", "build")
         self.assertEqual(argv[argv.index("-m") + 1], "configured/model")
+
+
+class ClineProviderTests(unittest.TestCase):
+    def test_provider_is_passed_to_cline(self):
+        pconf = config.DEFAULTS["platforms"]["jetstream"]
+        for build in (platforms.cline_argv, platforms.cline_resume_argv):
+            argv = build(pconf, "prompt", "/wt", "build")
+            self.assertEqual(argv[argv.index("-P") + 1], "openai-compatible")
+            self.assertEqual(argv[argv.index("-m") + 1], "gpt-oss-120b")
+
+    def test_no_provider_flag_without_provider(self):
+        argv = platforms.cline_argv(config.DEFAULTS["platforms"]["cline-free"],
+                                    "prompt", "/wt", "build")
+        self.assertNotIn("-P", argv)
+
+    def test_jetstream_disabled_and_unrouted_by_default(self):
+        cfg = config.resolve_platforms(copy.deepcopy(config.DEFAULTS))
+        self.assertFalse(cfg["platforms"]["jetstream"]["enabled"])
+        for role in ("sort", "build", "plan"):
+            self.assertNotIn("jetstream", router.candidates(cfg, role))
+        self.assertNotIn("jetstream", str(config.DEFAULTS["routing"]))
 
 
 if __name__ == "__main__":
