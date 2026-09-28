@@ -862,52 +862,55 @@ def _cap_card(q, kind):
         + active_meta + unhold + '</div></div>')
 
 
-def _weekly_account(row):
-    bar = ""
-    if row["used_pct"] is not None:
-        bar = (f'<span class="bar"><span class="f-acc" style="width:{row["used_pct"]:.2f}%"></span>'
-               f'<i class="weekly-soft" style="left:{row["soft"]:.2f}%"></i></span>')
-    return (f'<div class="weekly-account"><strong>{e(row["name"])}</strong> '
-            f'<span class="t-mut">{e(row["model"])}</span>'
-            f'<div>{e(row["usage_text"])}</div>{bar}'
-            f'<div>{e(row["reset_text"])}</div>'
-            + (f'<div class="t-mut">{e(row["stale_text"])}</div>' if row["stale"] else '')
-            + (f'<div>{e(row["overlay"]["text"])}</div>' if row["overlay"] else '') + '</div>')
+def _weekly_marker(marker):
+    account = "work" if marker["account"] == "work" else "personal"
+    return f'<span class="weekly-reset weekly-{account}">{e(marker["text"])}</span>'
+
+
+def _weekly_hour(hour):
+    return (f'<details class="weekly-hour" style="--fresh:{hour["shade"]}%">'
+            f'<summary title="{e(hour["text"])}" aria-label="{e(hour["text"])}">'
+            f'{hour["count"]}</summary><span class="weekly-tip">{e(hour["text"])}</span></details>')
 
 
 def _weekly_quota(s, phone=False):
     v = s.get("weekly_quota")
     if v is None:
         return ""
-    out = [f'<div class="weekly-quota"><h2>{e(v["title"])}</h2><p class="foot-note">{e(v["note"])}</p>']
-    if not v["rows"]:
-        return "".join(out) + f'<p>{e(v["empty"])}</p></div>'
+    out = [f'<div class="weekly-quota"><h2>{e(v["title"])}</h2>'
+           f'<p>{e(v["summary"])}</p><p class="foot-note">{e(v["note"])}</p>'
+           f'<p class="weekly-legend"><span class="weekly-personal">Personal</span> / '
+           f'<span class="weekly-work">Work</span> · {e(v["legend"])}</p>'
+           f'<p class="mono">{e(v["now_label"])}</p>']
     if phone:
-        out.append(f'<p class="mono">{e(v["now_label"])}</p>')
         for day in v["days"]:
-            out.append(f'<details class="weekly-day"><summary>{e(day["range"])} · {len(day["rows"])}</summary>')
-            out.extend(_weekly_account(r) for r in day["rows"])
-            if not day["rows"]:
+            out.append(f'<section class="weekly-day"><h3>{e(day["label"])}</h3>'
+                       f'<p>{e(day["freshness"])}</p><div class="weekly-bar">')
+            out.extend(_weekly_hour(h) for h in day["hours"])
+            out.append('</div><div class="weekly-bar-labels"><span>00:00</span>'
+                       '<span>12:00</span><span>24:00</span></div>')
+            out.extend(_weekly_marker(m) for m in day["markers"])
+            if not day["markers"]:
                 out.append(f'<p class="t-mut">{e(v["no_resets"])}</p>')
-            out.append('</details>')
-        if v["unscheduled"]:
-            out.append(f'<h3>{e(v["other_label"])}</h3>')
-            out.extend(_weekly_account(r) for r in v["unscheduled"])
+            out.append('</section>')
     else:
-        out.append('<div class="weekly-grid"><div></div><div class="weekly-days">')
-        out.extend(f'<span title="{e(d["range"])}">{e(d["label"])}</span>' for d in v["days"])
-        out.append(f'</div><div></div><div class="weekly-now">{e(v["now_label"])}</div>')
-        for row in v["rows"]:
-            out.append(_weekly_account(row))
-            out.append('<div class="weekly-track" aria-hidden="true">')
-            if row["position"] is not None:
-                align = ' weekly-reset-end' if row["position"] > 85 else ''
-                out.append(f'<span class="weekly-reset{align}" style="left:{row["position"]:.4f}%">'
-                           f'<span>{e(row["resets_at"].astimezone().strftime("%H:%M"))}</span></span>')
-            if row["overlay"]:
-                out.append(f'<span class="weekly-short" style="width:{row["overlay"]["position"]:.4f}%"></span>')
-            out.append('</div>')
+        out.append('<div class="weekly-grid"><span></span>')
+        out.extend(f'<strong>{e(day["label"])}</strong>' for day in v["days"])
+        for hour in range(24):
+            out.append(f'<span class="weekly-time">{e(v["days"][0]["hours"][hour]["label"])}</span>')
+            for day in v["days"]:
+                out.append('<div class="weekly-cell">' + _weekly_hour(day["hours"][hour]))
+                out.extend(_weekly_marker(m) for m in day["markers"] if m["hour"] == hour)
+                if day["now_hour"] == hour:
+                    out.append(f'<span class="weekly-now" style="top:{day["now_minute"] / 60 * 100:.2f}%" '
+                               f'title="{e(v["now_label"])}" aria-label="{e(v["now_label"])}"></span>')
+                out.append('</div>')
         out.append('</div>')
+    for key in ("unknown", "unmetered", "outside"):
+        if v[key]:
+            out.append(f'<aside><h3>{e(v[key + "_label"])}</h3><ul>')
+            out.extend(f'<li>{e(name)}</li>' for name in v[key])
+            out.append('</ul></aside>')
     return "".join(out) + '</div>'
 
 
