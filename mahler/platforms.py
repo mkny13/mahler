@@ -299,6 +299,8 @@ def cline_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     # before wiring one.
     argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
             "-t", str(int(timeout_minutes) * 60)]
+    if pconf.get("provider"):
+        argv += ["-P", pconf["provider"]]
     if pconf.get("model"):
         argv += ["-m", pconf["model"]]
     return argv + effort_args(pconf, role) + [prompt]
@@ -376,6 +378,8 @@ def cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session
     #   `cline --cwd <wt> --json --auto-approve true -t <secs> [-m <model>] <prompt> < <resume_file>`
     argv = [cline_exe(), "--cwd", worktree, "--json", "--auto-approve", "true",
             "-t", str(int(timeout_minutes) * 60)]
+    if pconf.get("provider"):
+        argv += ["-P", pconf["provider"]]
     if pconf.get("model"):
         argv += ["-m", pconf["model"]]
     return argv + effort_args(pconf, role) + [prompt]

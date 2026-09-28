@@ -336,6 +336,18 @@ DEFAULTS["platforms"]["cline-free"] = {
     "stale_minutes": 60,
 }
 
+# Jetstream2 (Indiana University's public inference service) through Cline's
+# OpenAI-compatible provider. Opt-in: disabled until live config sets
+# `[platforms.jetstream] enabled = true` and adds it to a build group. The API
+# key lives only in Cline's own credential store (`cline auth`), never here.
+DEFAULTS["platforms"]["jetstream"] = {
+    "enabled": False, "kind": "cline", "provider": "openai-compatible",
+    "model": "gpt-oss-120b", "plan": "Jetstream2 inference service",
+    "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+}
+
 # Kilo (kilo.ai account, needs `kilo auth login` once) reports no account-wide
 # quota (mahler#25): "unmetered", backed off for an hour after a
 # rate-limit/quota error. Its default model needs an explicit `:free` route
