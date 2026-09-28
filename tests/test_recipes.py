@@ -122,6 +122,7 @@ class BuildRecipeTests(unittest.TestCase):
 
     def test_whats_new_contract_guidance_present(self):
         # Explicit trigger and scoping rule
+        self.assertIn("12. **In-app What's New contract:**", self.text)
         self.assertIn("When (and only when) the issue explicitly asks for an in-app What's New surface or release feed", self.text)
         self.assertIn("Do not add What's New UI or feed consumption to tasks that do not explicitly request it", self.text)
 
@@ -183,8 +184,8 @@ class BuildRecipeTests(unittest.TestCase):
                       self.text)
         self.assertIn("The wanted stops are the recipe's final STATUS lines", self.text)
         self.assertIn("`NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in "
-                      "rules 4–5, where nothing can move without the owner", self.text)
-        self.assertIn("does not override the destructive-action cautions in rule 6",
+                      "rules 5–6, where nothing can move without the owner", self.text)
+        self.assertIn("does not override the destructive-action cautions in rule 7",
                       self.text)
 
     def test_template_values_substituted_without_leftover_variables(self):
@@ -318,7 +319,7 @@ class FixRecipeTests(unittest.TestCase):
                       "shotgun-fix the failure", diagnosis)
 
     def test_needs_you_is_reserved_for_owner_decisions(self):
-        owner_rule = self.text.split("5. ", 1)[1].split("6. ", 1)[0]
+        owner_rule = self.text.split("6. ", 1)[1].split("7. ", 1)[0]
         self.assertIn("Stop only for a decision genuinely only the owner can make "
                       "(product intent, credentials, payment, accounts, destructive data)",
                       owner_rule)
@@ -348,13 +349,73 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("carry on with everything that does not depend on the owner's answer",
                       self.text)
         self.assertIn("The wanted stops are the recipe's final STATUS lines", self.text)
-        self.assertIn("`NEEDS-YOU` remains reserved for owner decisions under rule 5",
+        self.assertIn("`NEEDS-YOU` remains reserved for owner decisions under rule 6",
                       self.text)
         self.assertIn("`BLOCKED` remains available for unrelated runner, network, or "
                       "infrastructure failures under rule 1 so the conductor can retry, "
-                      "and for owner-dependent blockers under rule 6", self.text)
-        self.assertIn("does not override the destructive-action cautions in rule 7",
+                      "and for owner-dependent blockers under rule 7", self.text)
+        self.assertIn("does not override the destructive-action cautions in rule 8",
                       self.text)
+
+
+class CodingScopeRecipeTests(unittest.TestCase):
+    def test_verification_scope_and_review_in_both_rendered_prompts(self):
+        for role, blocker in (("build", 6), ("fix", 7)):
+            with self.subTest(role=role):
+                rendered = prompt.render(
+                    role, number=578, repo="example/project", title="Prompt guidance",
+                    platform="codex", worktree="/tmp/example-worktree",
+                    branch="mahler/578-guidance", handoff="", rules="",
+                    verify="python3 -m unittest", base="main", whats_new="",
+                )
+                text = " ".join(rendered.split())
+                verify = text.split("2. **Verify", 1)[1].split("3. **Finish", 1)[0]
+                scope = text.split("3. **Finish", 1)[1].split(
+                    "3a. " if role == "build" else "4. ", 1)[0]
+                for fragment in (
+                    "Run a check that exercises the change",
+                    "Neither a syntax-only check nor a command that failed to start "
+                    "counts as verification",
+                    "If declared dependencies are missing, install them using the "
+                    "project's own package manager and lockfile",
+                    "`npm install` or `pip install -r requirements.txt`",
+                    "never use `sudo` or the system package manager unless explicitly "
+                    "instructed otherwise",
+                    "Do not report `STATUS: DONE` when no real check exercised the change",
+                    "name the missing check and why it could not run in your final message",
+                    "do not claim the change is verified",
+                    f"Use the existing owner-dependent blocker ending in rule {blocker} "
+                    "only when that rule applies",
+                    "inability to run a check alone is not a new `BLOCKED` case",
+                ):
+                    with self.subTest(fragment=fragment):
+                        self.assertIn(fragment, verify)
+                for fragment in (
+                    "Once the issue's work is complete and its checks pass, checkpoint, "
+                    "push, and report",
+                    "without adding unrequested features, tests, files, documentation, "
+                    "or refactors",
+                    "Tests required by the issue's \"Done when\" checks or the repo's "
+                    '`AGENTS.md` are requested work',
+                    "Do not initiate extra review or hardening rounds",
+                    "or spawn reviewer sub-agents unless the issue asks for a review",
+                    "Mahler's conductor owns independent review through `recipes/review.md`",
+                    "Mention useful additions or a deeper review in the final message "
+                    "before the STATUS line instead of undertaking them",
+                ):
+                    with self.subTest(fragment=fragment):
+                        self.assertIn(fragment, scope)
+                owner_rule = text.split(f"{blocker}. If you genuinely cannot proceed", 1)[1]
+                self.assertTrue(owner_rule.startswith(
+                    " (missing access, an environment only the owner can fix)"))
+                summary = "changed" if role == "build" else "you fixed"
+                self.assertEqual(rendered.splitlines()[-4:], [
+                    f"STATUS: DONE <one-line summary of what {summary}>",
+                    "STATUS: NEEDS-YOU <the question, on one line> "
+                    "[OPTIONS: <choice> | <choice>]",
+                    "STATUS: BLOCKED <reason>",
+                    "STATUS: YIELDED <handoff summary>",
+                ])
 
 
 if __name__ == "__main__":

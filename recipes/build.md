@@ -18,7 +18,25 @@ result is obtained, the better. Never trade verification for speed.
    $branch` at least every ~10 minutes — you can be stopped at any moment, and unpushed
    work is lost.
 2. **Verify before every push:** `$verify`. Fix what fails.
-2a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
+   Run a check that exercises the change, such as the project's tests, type-checker,
+   build, or changed command. Neither a syntax-only check nor a command that failed
+   to start counts as verification. If declared dependencies are missing, install them
+   using the project's own package manager and lockfile (for example, `npm install`
+   or `pip install -r requirements.txt`); never use `sudo` or the system package manager
+   unless explicitly instructed otherwise. Do not report `STATUS: DONE` when no real
+   check exercised the change. If no real check can run, name the missing check and
+   why it could not run in your final message; do not claim the change is verified.
+   Use the existing owner-dependent blocker ending in rule 6 only when that rule
+   applies; inability to run a check alone is not a new `BLOCKED` case.
+3. **Finish the requested scope, then report.** Once the issue's work is complete and
+   its checks pass, checkpoint, push, and report without adding unrequested features,
+   tests, files, documentation, or refactors. Tests required by the issue's "Done when"
+   checks or the repo's `AGENTS.md` are requested work. Do not initiate extra review
+   or hardening rounds, or spawn reviewer sub-agents unless the issue asks for a review.
+   Mahler's conductor owns independent review through `recipes/review.md`. Mention
+   useful additions or a deeper review in the final message before the STATUS line
+   instead of undertaking them.
+3a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
    reporting points while work is still possible: a summary that announces the next step
    without taking it; an offer to continue unless the owner prefers otherwise; a list of
    owner decisions when none blocks the remaining work; or a long turn or completed
@@ -26,25 +44,25 @@ result is obtained, the better. Never trade verification for speed.
    recommendations in the same message as your next action, then carry on with everything
    that does not depend on the owner's answer. The wanted stops are the recipe's final
    STATUS lines. `NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in rules
-   4–5, where nothing can move without the owner. This rule does not override the
-   destructive-action cautions in rule 6.
-3. **Your job ends at the push.** When every "Done when" check passes, commit, push, and
+   5–6, where nothing can move without the owner. This rule does not override the
+   destructive-action cautions in rule 7.
+4. **Your job ends at the push.** When every "Done when" check passes, commit, push, and
    end with `STATUS: DONE <one-line summary of what changed>`. Do not open a PR, watch CI,
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
-4. Stop only for a decision genuinely only the owner can make (product intent, credentials,
+5. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data). Post it as an issue comment and end with
    `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
-5. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
+6. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
    push what you have and end with `STATUS: BLOCKED <reason>`.
-6. Never force-push `$base`, delete repos or releases, run destructive SQL against real
+7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
-7. **No macOS UI automation** — the Mac mini screen is locked.
-8. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
-9. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
+8. **No macOS UI automation** — the Mac mini screen is locked.
+9. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
+10. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
    <prefix>` to avoid collisions.
-10. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
+11. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
     avoid wiping other sessions' work.
 $whats_new
 $rules
