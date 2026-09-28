@@ -164,6 +164,29 @@ class BuildRecipeTests(unittest.TestCase):
             self.assertNotIn("What's New", line)
             self.assertNotIn("release", line)
 
+    def test_unattended_run_keeps_working_without_trading_verification_for_speed(self):
+        self.assertIn("Time matters here: do not spend time that can be avoided; the "
+                      "earlier a correct, verified result is obtained, the better", self.text)
+        self.assertIn("Never trade verification for speed", self.text)
+        for early_stop in (
+                "a summary that announces the next step without taking it",
+                "an offer to continue unless the owner prefers otherwise",
+                "a list of owner decisions when none blocks the remaining work",
+                "a long turn or completed milestone that merely feels like a good place "
+                "to report",
+        ):
+            with self.subTest(early_stop=early_stop):
+                self.assertIn(early_stop, self.text)
+        self.assertIn("Put status notes and recommendations in the same message as your "
+                      "next action", self.text)
+        self.assertIn("carry on with everything that does not depend on the owner's answer",
+                      self.text)
+        self.assertIn("The wanted stops are the recipe's final STATUS lines", self.text)
+        self.assertIn("`NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in "
+                      "rules 4–5, where nothing can move without the owner", self.text)
+        self.assertIn("does not override the destructive-action cautions in rule 6",
+                      self.text)
+
     def test_template_values_substituted_without_leftover_variables(self):
         for k, v in self.values.items():
             if k in ("handoff", "rules"):
@@ -306,6 +329,29 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("Verify before every push:** `python3 -m unittest`", self.text)
         self.assertIn("When the failure is fixed and `python3 -m unittest` passes, "
                       "commit, push, and end with `STATUS: DONE", self.text)
+
+    def test_unattended_run_keeps_working_without_trading_verification_for_speed(self):
+        self.assertIn("Time matters here: do not spend time that can be avoided; the "
+                      "earlier a correct, verified result is obtained, the better", self.text)
+        self.assertIn("Never trade verification for speed", self.text)
+        for early_stop in (
+                "a summary that announces the next step without taking it",
+                "an offer to continue unless the owner prefers otherwise",
+                "a list of owner decisions when none blocks the remaining work",
+                "a long turn or completed milestone that merely feels like a good place "
+                "to report",
+        ):
+            with self.subTest(early_stop=early_stop):
+                self.assertIn(early_stop, self.text)
+        self.assertIn("Put status notes and recommendations in the same message as your "
+                      "next action", self.text)
+        self.assertIn("carry on with everything that does not depend on the owner's answer",
+                      self.text)
+        self.assertIn("The wanted stops are the recipe's final STATUS lines", self.text)
+        self.assertIn("`NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in "
+                      "rules 5–6, where nothing can move without the owner", self.text)
+        self.assertIn("does not override the destructive-action cautions in rule 7",
+                      self.text)
 
 
 if __name__ == "__main__":
