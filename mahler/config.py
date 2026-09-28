@@ -114,6 +114,7 @@ DEFAULTS = {
         "claude-opus-5-5": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
         "claude-haiku-4-5-20251001": {"in": 0.80, "out": 4.00},
         "claude-sonnet-5": {"in": 3.00, "cached_in": 0.30, "out": 15.00},
+        "claude-sonnet-5-5": {"in": 2.00, "cached_in": 0.20, "out": 10.00},
     },
     "defaults": {
         "enabled": False,
@@ -206,14 +207,14 @@ DEFAULTS = {
         },
         "claude": {
             "enabled": True, "kind": "claude",
-            "sort_model": "claude-sonnet-5", "build_model": "claude-sonnet-5",
+            "sort_model": "claude-sonnet-5-5", "build_model": "claude-sonnet-5-5",
             "max_size": "m", "tier": 3,
             "soft": {"5h": 60, "weekly": 70},
             "hard": {"5h": 70, "weekly": 80},
             "stale_minutes": 15,
             "quota_group": "claude",
-            "variants": ["claude-sonnet-5", "claude-sonnet-5@low",
-                         "claude-sonnet-5@high", "claude-opus-5-5@low"],
+            "variants": ["claude-sonnet-5-5", "claude-sonnet-5-5@low",
+                         "claude-sonnet-5-5@high", "claude-opus-5-5@low"],
         },
         # Same CLI, same account/quota as "claude" (kind: claude) — forces Opus
         # for hard tasks (size:l by default via min_size: "l", or via explicit

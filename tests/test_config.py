@@ -184,8 +184,8 @@ class PlatformVariantTests(unittest.TestCase):
         # Issue #422 (D33): built-in slots declare incumbent-first candidates;
         # every declared entry is expanded into one synthetic platform.
         self.assertEqual(after - before, {
-            "claude/claude-sonnet-5/default", "claude/claude-sonnet-5/low",
-            "claude/claude-sonnet-5/high", "claude/claude-opus-5-5/low",
+            "claude/claude-sonnet-5-5/default", "claude/claude-sonnet-5-5/low",
+            "claude/claude-sonnet-5-5/high", "claude/claude-opus-5-5/low",
             "claude-opus/claude-opus-5-5/default",
             "claude-opus/claude-opus-5-5/medium",
             "claude-opus/claude-opus-5-5/high",
@@ -236,10 +236,10 @@ class PinnedModelVersionsTests(unittest.TestCase):
         self.assertEqual(low["sort_model"], "claude-haiku-4-5-20251001")
         self.assertEqual(low["build_model"], "claude-haiku-4-5-20251001")
 
-    def test_claude_pins_sonnet_5(self):
+    def test_claude_pins_sonnet_5_5(self):
         med = config.DEFAULTS["platforms"]["claude"]
-        self.assertEqual(med["sort_model"], "claude-sonnet-5")
-        self.assertEqual(med["build_model"], "claude-sonnet-5")
+        self.assertEqual(med["sort_model"], "claude-sonnet-5-5")
+        self.assertEqual(med["build_model"], "claude-sonnet-5-5")
 
     def test_claude_opus_pins_opus_5_5(self):
         opus = config.DEFAULTS["platforms"]["claude-opus"]
@@ -260,7 +260,7 @@ class PinnedModelVersionsTests(unittest.TestCase):
 
     def test_pinned_models_have_price_rows(self):
         prices = config.DEFAULTS["prices"]
-        for name in ("claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-opus-5-5"):
+        for name in ("claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"):
             self.assertIn(name, prices, f"{name} has no [prices] entry")
             for key in ("in", "out"):
                 self.assertIsInstance(prices[name][key], (int, float))
@@ -283,8 +283,8 @@ class BuiltInVariantCandidatesTests(unittest.TestCase):
         self.assertEqual(platforms["codex"]["variants"], [
             "gpt-5.6-terra", "gpt-6-luna@high", "gpt-6-sol@low"])
         self.assertEqual(platforms["claude"]["variants"], [
-            "claude-sonnet-5", "claude-sonnet-5@low",
-            "claude-sonnet-5@high", "claude-opus-5-5@low"])
+            "claude-sonnet-5-5", "claude-sonnet-5-5@low",
+            "claude-sonnet-5-5@high", "claude-opus-5-5@low"])
         self.assertEqual(platforms["claude-opus"]["variants"], [
             "claude-opus-5-5", "claude-opus-5-5@medium",
             "claude-opus-5-5@high"])
