@@ -117,6 +117,7 @@ Useful local CLI commands:
 ```bash
 mahler status
 mahler usage --probe
+mahler warmup --dry-run                   # inspect idle-window nudges without spending
 mahler add myapp "Describe the work"
 mahler pause
 mahler resume
@@ -128,6 +129,16 @@ mahler release myapp --version X.Y.Z --publish  # publish git tag and GitHub rel
 ```
 
 Run `mahler --help` (or `mahler <command> --help`) for the full local CLI reference.
+
+Warm-up chains idle five-hour windows from 05:00 to midnight on weekdays for
+configured Antigravity Gemini and work ChatGPT logins.
+Set `[warmup] enabled = false` to disable it, or replace `warmup.targets` with
+entries containing `name`, `kind`, `account`, `platform`, `start`, `end`, and
+`days` (`weekdays`, `daily`, or `off`). Times use the Mini's local timezone.
+`mahler warmup <target>` requests a nudge now, even outside scheduled hours;
+active windows, pause, exhausted quota, and retry guards still prevent spending.
+`--dry-run` only reads quota and reports what that manual request would do.
+
 
 On a managed GitHub issue, these comments take effect on the next tick:
 
