@@ -19,6 +19,41 @@ def quota_peers(cfg, platform):
     return [p for p, pc in cfg["platforms"].items() if pc.get("quota_group", p) == group]
 
 
+def _recent_warmup_fire(cfg, led, group, within=timedelta(hours=2)):
+    """True when a warm-up nudge fired on `group` recently: its own small turn
+    raises usage, which must never be mistaken for human use (mahler#536)."""
+    for t in cfg.get("warmup", {}).get("targets", []):
+        if group_of_target(cfg, t) != group:
+            continue
+        last = parse(led.get_kv(f"warmup:{t['name']}:last"))
+        if last and led.now() - last < within:
+            return True
+    return False
+
+
+def group_of_target(cfg, target):
+    pc = cfg["platforms"].get(target["platform"], {})
+    return pc.get("quota_group", target["platform"])
+
+
+def note_human_rise(cfg, led, platform, pct=None):
+    """A 5h usage rise (or a ≥90% reading) on `platform`'s login with no live
+    Mahler run means Mike is using the account elsewhere. Sets the quota
+    group's `human:` flag and emits the `human-use` / `human-out` events the
+    warm-up relearn learns from (mahler#536) — per group only, never let a
+    personal reading flag a work group (D25)."""
+    group = cfg["platforms"].get(platform, {}).get("quota_group", platform)
+    peers = quota_peers(cfg, platform)
+    if any(r["platform"] in peers for r in led.active_runs()):
+        return
+    if _recent_warmup_fire(cfg, led, group):
+        return
+    led.set_kv(f"human:{group}", iso(led.now()))
+    led.event("human-use", detail=group)
+    if pct is not None and pct >= 90:
+        led.event("human-out", detail=group)
+
+
 def record_claude_usage(ctx, samples, backoff_until=None, check_human=False,
                          platform="claude"):
     """Record usage across the platforms that share `platform`'s Claude login.
@@ -34,8 +69,7 @@ def record_claude_usage(ctx, samples, backoff_until=None, check_human=False,
         prev_5h = ctx.led.usage(pname).get("5h", {}).get("used_pct")
         for w, pct, resets in samples:
             if check_human and w == "5h" and prev_5h is not None and pct > prev_5h:
-                if not any(r["platform"] in peers for r in ctx.led.active_runs()):
-                    ctx.led.set_kv(f"human:{group}", iso(ctx.led.now()))
+                note_human_rise(ctx.cfg, ctx.led, pname, pct)
             ctx.led.record_usage(pname, w, pct, resets)
         if backoff_until:
             pconf = ctx.cfg["platforms"][pname]
@@ -138,6 +172,7 @@ def refresh_codex(cfg, led, name, force=False):
     if env is None:
         return
     samples = platforms.probe_codex(env=env)
+    prev_5h = led.usage(name).get("5h", {}).get("used_pct")
     for peer in quota_peers(cfg, name):
         peer_pc = cfg["platforms"][peer]
         if config.account_of(peer_pc) != account or not peer_pc.get("metered", True):
@@ -149,6 +184,9 @@ def refresh_codex(cfg, led, name, force=False):
         for w, pct, resets in samples:
             led.record_usage(peer, w, pct, resets)
     if isinstance(samples, platforms.CodexUsage):
+        new_5h = next((pct for w, pct, _ in samples if w == "5h"), None)
+        if prev_5h is not None and new_5h is not None and new_5h > prev_5h:
+            note_human_rise(cfg, led, name, new_5h)
         is_exhausted = bool(samples.metadata.get("blocked") or any(pct >= 100.0 for _, pct, _ in samples))
         notified_key = f"notified:codex-exhausted:{account}"
         if is_exhausted:
@@ -188,7 +226,11 @@ def refresh_usage(ctx, projects):
     if agy:
         pools = platforms.probe_agy()
         for name in own:
-            for w, pct, resets in pools.get(cfg["platforms"][name].get("pool"), []):
+            pc = cfg["platforms"][name]
+            prev_5h = led.usage(name).get("5h", {}).get("used_pct")
+            for w, pct, resets in pools.get(pc.get("pool"), []):
+                if w == "5h" and prev_5h is not None and pct > prev_5h:
+                    note_human_rise(cfg, led, name, pct)
                 led.record_usage(name, w, pct, resets)
     for name in wanted:
         pconf = cfg["platforms"][name]

@@ -1,12 +1,21 @@
-"""Chain idle login windows with one small turn; never spend without a free read."""
+"""Chain idle login windows with one small turn; never spend without a free read.
 
+Learned warm-up times (mahler#536): the relearn pass collects data on when Mike
+starts using each login and when he runs out. The learned times are report-only —
+they never change any warm-up window. `learn_time` is a pure function covering
+the rule; `relearn` runs once daily and persists the result as kv entries.
+"""
+
+import glob
 import json
 import os
+import re
+import statistics
 import subprocess
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
-from . import config, platforms, usage
+from . import config, platforms, presence, usage
 from .ledger import iso, parse
 
 
@@ -202,3 +211,261 @@ def warmup_pass(ctx, target=None, manual=False):
                                               'error': type(exc).__name__})
             ctx.say(f"{item['name']}: failed ({type(exc).__name__}); retry in 30 minutes")
     return failures
+
+
+# ---------- learned warm-up times (mahler#536: collect data, never reschedule) ----------
+#
+# The owner asked to *learn* each login's best warm-up time from when he actually
+# starts using it and when he runs out — but to change nothing: the learned times
+# are a report (dry-run output + a Capacity console line), never a new schedule.
+#
+# Per day of use we derive a first-use time F (local) and an exhaustion E (minutes
+# from F until the login's 5h window ran out). `learn_time` then applies the
+# decided rule to a slice of days. Read-only signals only: transcript timestamps
+# and ledger events, never transcript content, never Mahler's own worktrees.
+
+LEARN_WINDOW_DAYS = 30       # the owner reviews the report after a month
+LEARN_MIN_DAYS = 5           # fewer days of use than this → keep the configured time
+LEARN_ROUND_MINUTES = 15     # learned times are rounded to a quarter hour
+RELEARN_AFTER_HOUR = 3       # once daily, on the first tick at/after 03:00 local
+
+TS_RE = re.compile(r'"timestamp"\s*:\s*"'
+                   r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"')
+
+
+def group_of(cfg, target):
+    """The quota group string a target's human-use events are filed under."""
+    pc = cfg['platforms'].get(target['platform'], {})
+    return pc.get('quota_group', target['platform'])
+
+
+def learn_time(days, weekend):
+    """Pure rule for one slice of days. `days` is a list of (F, E) minute
+    offsets: F minutes after local midnight when use started, E minutes from
+    F until exhaustion (None when no exhaustion was seen that day).
+
+    - W = F + E − 5h, clamped to [F − 4h30, F − 30min] per day (the window
+      must be alive when Mike starts, and reset ≥30 min in), combined by
+      median across exhaustion days;
+    - no exhaustion days → W = F − 3h (median F);
+    - fewer than LEARN_MIN_DAYS days with any use → None (keep the
+      configured time);
+    - a weekend slice with no use at all → 'off';
+    - rounded to 15 minutes.
+
+    Returns minutes after local midnight, the string 'off', or None.
+    """
+    used = [(f, e) for f, e in days if f is not None]
+    if not used:
+        return 'off' if weekend else None
+    if len(used) < LEARN_MIN_DAYS:
+        return None
+    exhausted_days = [(f, e) for f, e in used if e is not None]
+    if exhausted_days:
+        candidates = [max(f - 270, min(f - 30, f + e - 300)) for f, e in exhausted_days]
+        w = statistics.median(candidates)
+    else:
+        w = statistics.median(f for f, _ in used) - 180
+    return int(w / LEARN_ROUND_MINUTES + 0.5) * LEARN_ROUND_MINUTES % 1440
+
+
+def hhmm(minutes):
+    return 'off' if minutes == 'off' else f'{minutes // 60:02d}:{minutes % 60:02d}'
+
+
+def _excluded_cwds():
+    """cwd prefixes that mean Mahler's own activity, never Mike's use."""
+    return (os.path.abspath(config.WORKTREES), os.path.abspath(tempfile.gettempdir()))
+
+
+USER_MSG_RE = re.compile(r'"(?:type|role)"\s*:\s*"user"')
+
+
+def transcript_first_use(root, since, now, excluded=None):
+    """Per local date, the earliest user-message timestamp in `root` (a Claude
+    `projects/` or Codex `sessions/` tree), read-only: timestamps and cwd
+    mentions only, never message content. Files untouched since `since` are
+    skipped by mtime. A transcript that mentions an excluded prefix (Mahler
+    worktrees, nudge temp dirs) anywhere is excluded whole: its queue-operation
+    records carry timestamps but no cwd, so per-line checks would let one of
+    Mahler's autonomous runs count as human use. And only user-message lines
+    count — other timestamped records (queue operations, tool traffic) say
+    nothing about when Mike himself started."""
+    excluded = _excluded_cwds() if excluded is None else excluded
+    out = {}
+    for path in glob.glob(os.path.join(os.path.expanduser(str(root)), '**', '*.jsonl'),
+                          recursive=True):
+        try:
+            if datetime.fromtimestamp(os.path.getmtime(path), timezone.utc) < since:
+                continue
+            per_file, excluded_file = {}, False
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if any(x in line for x in excluded):
+                        excluded_file = True
+                        break
+                    m = TS_RE.search(line)
+                    if not m or not USER_MSG_RE.search(line):
+                        continue
+                    ts = datetime.fromisoformat(m.group(1).replace('Z', '+00:00'))
+                    if not (since <= ts <= now):
+                        continue
+                    local = ts.astimezone()
+                    day = local.date()
+                    if day not in per_file or local < per_file[day]:
+                        per_file[day] = local
+            if excluded_file:
+                continue
+            for day, ts in per_file.items():
+                if day not in out or ts < out[day]:
+                    out[day] = ts
+        except OSError:
+            continue
+    return out
+
+
+def transcript_roots(cfg, target):
+    """Read-only transcript roots for a target's login (D25: per account).
+    Claude: the account's Claude Code `projects` dir(s); Codex: its CLI home's
+    `sessions`; Antigravity keeps no local transcripts (empty)."""
+    account = target['account']
+    if target['kind'] == 'claude':
+        if account == config.DEFAULT_ACCOUNT:
+            return [presence.CLAUDE_PROJECTS]
+        home = (cfg.get('accounts', {}).get(account, {}).get('env') or {}).get('CLAUDE_CONFIG_DIR')
+        return [os.path.join(os.path.expanduser(home), 'projects')] if home else []
+    if target['kind'] == 'codex':
+        home = (cfg.get('accounts', {}).get(account, {}).get('env') or {}).get('CODEX_HOME')
+        return [os.path.join(os.path.expanduser(str(home or '~/.codex')), 'sessions')]
+    return []
+
+
+def collect_days(cfg, led, target, since, now):
+    """Per local date, (F, E) minute offsets for one target, merging the
+    read-only signals: transcript first use, `human-use` rises, and `human-out`
+    exhaustion events on the target's quota group."""
+    first, out = {}, {}
+    for root in transcript_roots(cfg, target):
+        for day, ts in transcript_first_use(root, since, now).items():
+            if day not in first or ts < first[day]:
+                first[day] = ts
+    group = group_of(cfg, target)
+    # The same bounds as the transcript signals: an event older than the
+    # window must stop biasing the learned times (and let an unused weekend
+    # return to off) once the month rolls on.
+    for row in led.q("SELECT at, kind FROM events WHERE project IS NULL AND detail=? "
+                     "AND kind IN ('human-use', 'human-out') "
+                     "AND at >= ? AND at <= ? ORDER BY at",
+                     (group, iso(since), iso(now))):
+        ts = parse(row['at']).astimezone()
+        day = ts.date()
+        if row['kind'] == 'human-use' and (day not in first or ts < first[day]):
+            first[day] = ts
+        elif row['kind'] == 'human-out' and day in first and ts > first[day]:
+            if day not in out or ts < out[day]:
+                out[day] = ts
+    return {day: (int((ts - ts.replace(hour=0, minute=0, second=0, microsecond=0))
+                      .total_seconds() // 60),
+                  int((out[day] - ts).total_seconds() // 60) if day in out else None)
+            for day, ts in first.items()}
+
+
+def summarize(learned, days):
+    """The kv payload behind one learned slice: the learned time plus the F/E
+    counts the report's reason quotes."""
+    used = sorted(f for f, _ in days if f is not None)
+    exhausted = sorted(e for _, e in days if e is not None)
+    return {'learned': learned,
+            'F': int(statistics.median(used)) if used else None,
+            'E': int(statistics.median(exhausted)) if exhausted else None,
+            'n': len(used)}
+
+
+def learn_slice(cfg, led, target, now, weekend):
+    """One target's learned payload for the weekday or weekend slice."""
+    per_day = collect_days(cfg, led, target, now - timedelta(days=LEARN_WINDOW_DAYS), now)
+    days = [v for d, v in per_day.items() if (d.weekday() < 5) != weekend]
+    return summarize(learn_time(days, weekend), days)
+
+
+def relearn(ctx):
+    """Daily relearn pass (first tick at/after 03:00 local, once per day):
+    persists `warmup:learned:<target>:<weekday|weekend>` payloads. Report-only
+    — nothing that schedules a nudge ever reads these entries."""
+    if not relearn_due(ctx.led):
+        return
+    now = ctx.led.now()
+    for target in ctx.cfg.get('warmup', {}).get('targets', []):
+        if target.get('days') == 'off':
+            continue
+        for slice_name, weekend in (('weekday', False), ('weekend', True)):
+            payload = learn_slice(ctx.cfg, ctx.led, target, now, weekend)
+            payload['at'] = iso(now)
+            if not ctx.dry_run:
+                ctx.led.set_kv(f"warmup:learned:{target['name']}:{slice_name}",
+                               json.dumps(payload))
+    if not ctx.dry_run:
+        ctx.led.set_kv('warmup:learned:at', now.astimezone().strftime('%Y-%m-%d'))
+
+
+def relearn_due(led):
+    local = led.now().astimezone()
+    if local.hour < RELEARN_AFTER_HOUR:
+        return False
+    return led.get_kv('warmup:learned:at') != local.strftime('%Y-%m-%d')
+
+
+def reason(learned, payload, target):
+    """The plain-English reason a report line quotes."""
+    start = target.get('start', '05:00')
+    if learned == 'off':
+        return 'no use seen — warm-up would be off'
+    if learned is None:
+        return (f"not enough data yet ({payload.get('n', 0)} of {LEARN_MIN_DAYS} "
+                f"days with use) — keeping {start}")
+    f, e, n = payload.get('F'), payload.get('E'), payload.get('n')
+    text = f"usually starts ~{hhmm(f)}"
+    if e is not None:
+        text += f", runs out ~{e // 60}h{e % 60:02d}m in"
+    return f"{text} ({n} days) — learned {hhmm(learned)}; schedule keeps {start}"
+
+
+def learned_lines(cfg, led):
+    """Per-target report lines, computed fresh (a CLI run): the learned time
+    and its reason, or the clean fallback when there's too little data."""
+    lines = []
+    now = led.now()
+    for target in cfg.get('warmup', {}).get('targets', []):
+        if target.get('days') == 'off':
+            continue
+        per_day = collect_days(cfg, led, target, now - timedelta(days=LEARN_WINDOW_DAYS), now)
+        for slice_name, weekend in (('weekdays', False), ('weekends', True)):
+            days = [v for d, v in per_day.items() if (d.weekday() < 5) != weekend]
+            learned = learn_time(days, weekend)
+            lines.append(f"{target['name']} {slice_name}: "
+                         f"{reason(learned, summarize(learned, days), target)}")
+    return lines
+
+
+def console_lines(cfg, led):
+    """Per-target Capacity lines, from the persisted kv (the console rebuilds
+    state per request, so it never rescans transcripts): each target's learned
+    warm-up and reason, falling back cleanly where there's too little data."""
+    lines = []
+    for target in cfg.get('warmup', {}).get('targets', []):
+        if target.get('days') == 'off':
+            continue
+        for slice_name, label in (('weekday', 'weekdays'), ('weekend', 'weekends')):
+            raw = led.get_kv(f"warmup:learned:{target['name']}:{slice_name}")
+            try:
+                payload = json.loads(raw) if raw else None
+            except ValueError:
+                payload = None
+            if payload and payload.get('learned') is not None:
+                lines.append(f"{target['name']} {label}: learned warm-up "
+                             f"{hhmm(payload['learned'])} — "
+                             f"{reason(payload['learned'], payload, target)}")
+            else:
+                lines.append(f"{target['name']} {label}: no learned warm-up yet — "
+                             f"{reason(None, payload or {}, target)}")
+    return lines
