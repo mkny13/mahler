@@ -844,6 +844,9 @@ def _cap_card(q, kind):
     active_meta = (f'<span class="meta t-acc">in use · {e(", ".join(q["active_refs"]))}</span>'
                    if active_class else "")
     model_class = " t-acc" if active_class else ""
+    unhold = (f'<button class="btn btn-warn" data-act="unhold" '
+              f'data-platform="{e(q["unhold_platform"])}">Unhold</button>'
+              if q.get("unhold_platform") else "")
     return (
         f'<div class="capcard cap-{kind}{active_class}" data-quota="{e(q["name"])}">'
         f'<div class="capcard-h"><span class="name mono">{e(q["name"])}</span> '
@@ -856,7 +859,7 @@ def _cap_card(q, kind):
         f'<div class="capmeta">'
         + "".join(f'<span class="meta t-{ "good" if q["available"] and m == meta[-1] else "mut"}">'
                    f'{e(m)}</span> ' for m in meta)
-        + active_meta + '</div></div>')
+        + active_meta + unhold + '</div></div>')
 
 
 def _weekly_account(row):
@@ -1213,10 +1216,14 @@ def _p_browse(s):
             details = f'<span class="detail">{e(q["detail"])}</span>'
             toggle = ''
 
+        unhold = (f'<button class="btn btn-warn" data-act="unhold" '
+                  f'data-platform="{e(q["unhold_platform"])}">Unhold</button>'
+                  if q.get("unhold_platform") else "")
+
         out.append(f'<div class="pq" data-quota="{e(q["name"])}"><div class="row"><span><span class="name mono">{e(q["name"])}</span>'
                    f'<span class="model mono">{e(q["model"])}</span></span>'
                    f'<div class="pq-right"><span class="val mono t-{q["tone"]}">{e(q["label"])}</span>'
-                   f'{toggle}</div></div>'
+                   f'{toggle}{unhold}</div></div>'
                    f'<span class="bar"><span class="f-{q["tone"]}" style="width:{q["width"]:.0f}%">'
                    f'</span>{tick}</span>{details}</div>')
     out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs there. '

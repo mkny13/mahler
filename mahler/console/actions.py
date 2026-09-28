@@ -11,7 +11,7 @@ import json
 import math
 from datetime import timedelta
 
-from .. import config, presence, redact, router
+from .. import config, holds, presence, redact, router
 from ..ledger import iso
 from ..gh import AGENT_MARK, parse_command
 from .state import CAPTURE_RECENT_MINUTES, SEEN_KEY, brief_seen_key
@@ -115,6 +115,24 @@ def clear_backoff(cfg, led, body):
                 cleared.append(peer)
     led.event("backoff_cleared", detail={"platforms": sorted(set(cleared)),
                                          "asked": names, "by": "console"})
+
+
+def unhold(cfg, led, body):
+    """Clear explicit platform holds through the shared hold operation."""
+    names = body.get("platforms")
+    if names is None:
+        names = [body.get("platform")]
+    if (not isinstance(names, list) or not names
+            or any(not isinstance(name, str) for name in names)):
+        raise ActionError("platform must be a configured platform name")
+    try:
+        # Validate the complete request before changing any platform.
+        for name in names:
+            holds.inspect(cfg, led, name)
+        return {"platforms": [holds.clear(cfg, led, name, by="console")["platform"]
+                              for name in names]}
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
 
 
 def digest_seen(cfg, led, body):
@@ -478,7 +496,7 @@ def cut_release(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
-                                   clear_backoff, digest_seen, brief_seen, answer, answer_undo, stop_run,
+                                   clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_pass, uat_fail, attach, cut_release,
                                    save_settings, client_log)}
 

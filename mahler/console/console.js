@@ -671,6 +671,11 @@
     if (act === "clear_backoff") {
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
     }
+    if (act === "unhold") {
+      var platform = el.getAttribute("data-platform");
+      if (platform) { return { platform: platform }; }
+      return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
+    }
     if (act === "revert") { return { event: Number(el.getAttribute("data-event")) }; }
     if (act === "uat_pass") {
       return { project: el.getAttribute("data-project"),

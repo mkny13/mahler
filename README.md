@@ -120,6 +120,8 @@ mahler usage --probe
 mahler add myapp "Describe the work"
 mahler pause
 mahler resume
+mahler unhold cline-free --dry-run          # inspect an explicit platform hold
+mahler unhold cline-free                    # clear it after fixing the cause
 mahler version
 mahler release myapp                      # preview rolling draft release
 mahler release myapp --version X.Y.Z --publish  # publish git tag and GitHub release
@@ -237,4 +239,3 @@ stays NULL. Costs use a CLI-reported dollar amount when available, otherwise
 Cached input defaults to the input rate; reasoning uses the output rate. Unknown
 models remain unpriced. These are raw API-equivalent costs, before any scorecard
 quota-group weighting, and do not represent subscription charges.
-
