@@ -12,7 +12,7 @@ you are:
 
 - **A Mahler run** (your prompt came from a recipe, and `MAHLER_ISSUE` is set): implement,
   verify, commit and push to your branch, then end with a STATUS line. The conductor opens
-  the PR, watches CI and merges (DESIGN D18).
+  the PR, watches CI, coordinates independent review and merges (DESIGN D18).
 - **A chat session** (Claude Code, Codex or any other interactive agent): nothing picks up
   your PR unless you hand it over. Finish with `mahler ship` or merge it yourself. See
   "Working on an issue by hand" below. A PR you open and walk away from stays open.
@@ -23,8 +23,11 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 
 - **The daemon runs from `~/.mahler/app`, a separate clone pinned to a known-good commit.**
   Never edit anything under `~/.mahler/` from a task — changes reach the daemon only
-  through a merge to `main` with green CI (the launcher self-updates, and rolls back after
-  two failed ticks).
+  through a merge to `main` with green CI and passing unit tests. The launch-failure
+  circuit breaker pauses new launches, allowing periodic canaries; a global breaker
+  triggers immediate rollback when `launch_ok` names a different, launch-proven commit.
+  Runtime rollback records the rejected SHA in `bad_sha`, which self-update skips; a
+  newer commit remains eligible (DESIGN D17).
 - **`launcher/` is hand-installed.** Changing `mahler-launcher`, the plist or `install.sh`
   has no effect until someone re-runs `launcher/install.sh`. Say so in your final DONE
   summary (the conductor puts it on the PR), and ping via `mahler notify`.
@@ -128,6 +131,8 @@ e.g. decision numbers — never invent one).
     `janitor.py` (stale worktree/old-ref cleanup), `backup.py` (database backups),
     `presence.py` (human-session detection), `redact.py` (credential redaction),
     `version.py` (version info)
-- `recipes/`: the prompts runs receive (`sort.md`, `build.md`, `fix.md`). The STATUS-line
-  contract at the end of each is parsed by `platforms.status_line`.
+- `recipes/`: autonomous role prompts (`sort.md`, `build.md`, `fix.md`, and independent
+  review in `review.md`); their STATUS-line contracts are parsed by `platforms.status_line`.
+  `console_walkthrough.md` is a manually triggered console UAT walkthrough, ending in a
+  pass/fail report rather than an autonomous STATUS line.
 - `launcher/`: the stable launcher, launchd plist and installer.
