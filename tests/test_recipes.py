@@ -113,6 +113,9 @@ class BuildRecipeTests(unittest.TestCase):
             verify="python3 -m unittest",
             base="main",
             rules="",
+            # mahler#569: the contract is now a template value; a relevant
+            # build passes it (its title asks for the What's New contract).
+            whats_new=prompt.WHATS_NEW_GUIDANCE,
         )
         self.rendered = prompt.render("build", **self.values)
         self.text = " ".join(self.rendered.split())
@@ -169,6 +172,105 @@ class BuildRecipeTests(unittest.TestCase):
                 self.assertNotIn(f"${k}", self.rendered)
                 self.assertIn(str(v), self.rendered)
         self.assertNotIn("$", self.rendered)
+
+
+class WhatsNewMatchTests(unittest.TestCase):
+    """The injector matches explicit What's New / release-feed asks only
+    (mahler#569)."""
+
+    def test_explicit_asks_match(self):
+        for text in ("Add a What's New surface",
+                     "Build the in-app WHAT'S NEW panel",
+                     "Render what’s new from a feed",          # curly apostrophe
+                     "Consume the whats new feed offline",
+                     "Show what is new after each update",
+                     "Expose a release feed for the app",
+                     "Ship a Release-Notes Feed endpoint",
+                     "release notes feed in the console"):
+            with self.subTest(text=text):
+                self.assertTrue(prompt.needs_whats_new({"title": text, "issue_body": ""}))
+                self.assertTrue(prompt.needs_whats_new(
+                    {"title": "Console polish", "issue_body": f"Please {text}."}))
+
+    def test_unrelated_text_does_not_match(self):
+        for text in ("", "Release 2.0", "draft the release notes",
+                     "cut a new release and tag the build",
+                     "the release script needs tidy-up",
+                     "Explore what new ideas could fit",
+                     "what to do next"):
+            with self.subTest(text=text):
+                self.assertFalse(prompt.needs_whats_new({"title": text, "issue_body": ""}))
+                self.assertFalse(prompt.needs_whats_new(
+                    {"title": "Console polish", "issue_body": text}))
+
+    def test_missing_or_none_body_and_row_shapes(self):
+        # sqlite Row without an issue_body column (mahler#409's lesson), and
+        # a NULL cached body, must not blow up or trigger.
+        self.assertFalse(prompt.needs_whats_new({"title": "T"}))
+        self.assertFalse(prompt.needs_whats_new({"title": "T", "issue_body": None}))
+        self.assertTrue(prompt.needs_whats_new(None) is False)
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        item = con.execute("SELECT 'Add a What''s New surface' AS title, NULL AS issue_body"
+                           ).fetchone()
+        self.assertTrue(prompt.needs_whats_new(item))
+        con.close()
+
+
+class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
+    """prompt.build injects the What's New contract only for relevant issues
+    (mahler#569), with the STATUS-line contract untouched either way."""
+
+    STATUS_LINES = [
+        "STATUS: DONE <one-line summary of what changed>",
+        "STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]",
+        "STATUS: BLOCKED <reason>",
+        "STATUS: YIELDED <handoff summary>",
+    ]
+
+    def setUp(self):
+        class DummyCtx:
+            def policy(self, proj):
+                return {"repo": "a/b", "rules": ""}
+        self.ctx = DummyCtx()
+        self.prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
+        self.con = sqlite3.connect(":memory:")
+        self.con.row_factory = sqlite3.Row
+        self.addCleanup(self.con.close)
+
+    def rendered(self, title, body=""):
+        item = self.con.execute(
+            "SELECT 7 AS number, ? AS title, ? AS issue_body, NULL AS pr",
+            (title, body)).fetchone()
+        return prompt.build(self.ctx, "p", item, "build", "claude", self.prep)
+
+    def status_lines(self, rendered):
+        return [line.strip() for line in rendered.splitlines()
+                if line.startswith("STATUS:")]
+
+    def test_relevant_issue_gets_the_full_contract(self):
+        for title, body in (("Add a What's New surface to the app", ""),
+                            ("Console polish", "Consume the release feed per D31.")):
+            with self.subTest(title=title, body=body):
+                rendered = self.rendered(title, body)
+                text = " ".join(rendered.split())
+                self.assertIn("When (and only when) the issue explicitly asks for an "
+                              "in-app What's New surface or release feed", text)
+                self.assertIn("Do not add What's New UI or feed consumption to tasks "
+                              "that do not explicitly request it", text)
+                self.assertEqual(self.status_lines(rendered), self.STATUS_LINES)
+                self.assertNotIn("$", rendered)
+
+    def test_unrelated_issue_gets_none_of_the_contract(self):
+        rendered = self.rendered("Tidy the release script",
+                                 "Bump the changelog and cut a tag.")
+        text = " ".join(rendered.split())
+        for fragment in ("What's New", "release feed", "schema v1", "DESIGN D31",
+                         "SemVer", "acknowledged version"):
+            self.assertNotIn(fragment, text)
+        # No unresolved template variables either.
+        self.assertNotIn("$", rendered)
+        self.assertEqual(self.status_lines(rendered), self.STATUS_LINES)
 
 
 class FixRecipeTests(unittest.TestCase):
