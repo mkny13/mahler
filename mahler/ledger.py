@@ -26,6 +26,17 @@ from datetime import datetime, timedelta, timezone
 
 from .config import MAINTENANCE_PASSES, ensure_private_dir
 
+
+# Keep duration evidence aligned with outcome_not_started(): launch failures and
+# attempts that lost their claim never ran an agent, so their near-zero elapsed
+# time says nothing about future run duration.  This exact predicate is shared by
+# every duration query and the partial index that serves them.
+ESTIMATE_SAMPLE_SQL = (
+    "status = 'ended' AND ended_at IS NOT NULL "
+    "AND NOT coalesce(outcome = 'not claimed' "
+    "OR substr(outcome, 1, 14) = 'launch failed:', 0)"
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
     project          TEXT NOT NULL,
@@ -204,6 +215,12 @@ CREATE INDEX IF NOT EXISTS idx_release_items_unreleased
     ON release_items(project, release_id);
 CREATE INDEX IF NOT EXISTS idx_release_items_release
     ON release_items(release_id);
+"""
+
+SCHEMA += f"""
+CREATE INDEX IF NOT EXISTS idx_runs_estimate_samples
+    ON runs(ended_at DESC, id DESC)
+    WHERE {ESTIMATE_SAMPLE_SQL};
 """
 
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
@@ -620,8 +637,10 @@ class Ledger:
         self.event("state", project, number,
                    f"{cur['state'] if cur else None} -> {state}" + (f" ({why})" if why else ""))
         if state == "done" and (cur is None or cur["state"] != "done"):
-            runs = self.q("SELECT actual_mins, started_at, ended_at FROM runs WHERE project=? AND number=? AND status='ended'",
-                          (project, number))
+            runs = self.q(
+                "SELECT actual_mins, started_at, ended_at FROM runs "
+                f"WHERE project=? AND number=? AND {ESTIMATE_SAMPLE_SQL}",
+                (project, number))
             total_mins = 0.0
             for r in runs:
                 if r["actual_mins"] is not None:
@@ -967,24 +986,28 @@ class Ledger:
         return cur.rowcount
 
     def estimates(self):
-        rows = self.q("""
+        rows = self.q(f"""
             SELECT platform, role, count(*) as c, 
                    avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
-            FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform, role
+            FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL} GROUP BY platform, role
         """)
-        size_rows = self.q("""
+        size_rows = self.q(f"""
             SELECT platform, role, size, count(*) as c,
                    avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
-            FROM runs WHERE ended_at IS NOT NULL AND status='ended' AND size IS NOT NULL
+            FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL} AND size IS NOT NULL
             GROUP BY platform, role, size
         """)
-        plat_rows = self.q("""
+        plat_rows = self.q(f"""
             SELECT platform, count(*) as c, avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
-            FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY platform
+            FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL} GROUP BY platform
         """)
-        global_row = self.q1("""
+        global_row = self.q1(f"""
             SELECT avg((julianday(ended_at) - julianday(started_at))*24*60) as avg_mins
-            FROM runs WHERE ended_at IS NOT NULL AND status='ended'
+            FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL}
         """)
         global_avg = global_row["avg_mins"] if (global_row and global_row["avg_mins"]) else 15.0
 
@@ -993,23 +1016,25 @@ class Ledger:
                   for r in size_rows if r["c"] >= 3}
         by_p = {r["platform"]: r["avg_mins"] for r in plat_rows if r["c"] >= 3}
 
-        issue_avg = self.q("""
+        issue_avg = self.q(f"""
             SELECT items.project, avg(t.issue_mins) as avg_mins
             FROM items
             JOIN (
                 SELECT project, number, sum((julianday(ended_at) - julianday(started_at))*24*60) as issue_mins
-                FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY project, number
+                FROM runs INDEXED BY idx_runs_estimate_samples
+                WHERE {ESTIMATE_SAMPLE_SQL} GROUP BY project, number
             ) t ON items.project = t.project AND items.number = t.number
             WHERE items.state = 'done' GROUP BY items.project
         """)
         proj_issue_avg = {r["project"]: r["avg_mins"] for r in issue_avg}
         
-        global_issue_row = self.q1("""
+        global_issue_row = self.q1(f"""
             SELECT avg(t.issue_mins) as avg_mins
             FROM items
             JOIN (
                 SELECT project, number, sum((julianday(ended_at) - julianday(started_at))*24*60) as issue_mins
-                FROM runs WHERE ended_at IS NOT NULL AND status='ended' GROUP BY project, number
+                FROM runs INDEXED BY idx_runs_estimate_samples
+                WHERE {ESTIMATE_SAMPLE_SQL} GROUP BY project, number
             ) t ON items.project = t.project AND items.number = t.number
             WHERE items.state = 'done'
         """)
@@ -1050,10 +1075,11 @@ class Ledger:
         """Compare recent predicted vs actual durations and calculate a calibration factor.
         Clamps the factor between 0.5 and 2.0 to guard against wild outliers (mahler#59).
         """
-        rows = self.q("""
+        rows = self.q(f"""
             SELECT est_mins, actual_mins, platform, role
-            FROM runs
-            WHERE status = 'ended' AND est_mins IS NOT NULL AND actual_mins IS NOT NULL AND est_mins > 0
+            FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL}
+              AND est_mins IS NOT NULL AND actual_mins IS NOT NULL AND est_mins > 0
             ORDER BY ended_at DESC, id DESC
             LIMIT ?
         """, (window,))

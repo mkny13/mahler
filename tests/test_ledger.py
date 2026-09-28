@@ -11,7 +11,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from mahler import config, router
-from mahler.ledger import Ledger, RoutedLedger, SCHEMA, iso, outcome_not_started, remote_lease_operation
+from mahler.ledger import (ESTIMATE_SAMPLE_SQL, Ledger, RoutedLedger, SCHEMA, iso,
+                           outcome_not_started, remote_lease_operation)
 
 
 class Clock:
@@ -938,6 +939,7 @@ class IndexTests(unittest.TestCase):
     EXPECTED = {
         "idx_items_project_state", "idx_items_state",
         "idx_runs_status_project", "idx_runs_item_status", "idx_runs_ended",
+        "idx_runs_estimate_samples",
         "idx_events_kind_at", "idx_events_item",
     }
 
@@ -994,6 +996,18 @@ class IndexTests(unittest.TestCase):
             "EXPLAIN QUERY PLAN SELECT * FROM runs WHERE status IN ('running','stopping')"))
         # no full table scan: one of the runs-status indexes is chosen
         self.assertRegex(plan, r"USING INDEX idx_runs_\w+")
+
+    def test_planner_uses_partial_index_for_recent_estimate_samples(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        plan = " ".join(r[3] for r in led.q(f"""
+            EXPLAIN QUERY PLAN
+            SELECT est_mins, actual_mins FROM runs INDEXED BY idx_runs_estimate_samples
+            WHERE {ESTIMATE_SAMPLE_SQL}
+              AND est_mins IS NOT NULL AND actual_mins IS NOT NULL AND est_mins > 0
+            ORDER BY ended_at DESC, id DESC LIMIT 20
+        """))
+        self.assertIn("USING INDEX idx_runs_estimate_samples", plan)
 
 
 class PlatformOutcomeTests(unittest.TestCase):
