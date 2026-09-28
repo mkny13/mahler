@@ -1009,6 +1009,22 @@ remain missing evidence, without a misleading inheritance suffix. This corrects
 attribution only: no live CLI/model verification was performed and no existing
 verification date is advanced.
 
+**Decision record (2026-09-28, mahler#559):** Keep every checked-in `tier`, `min_size`,
+`max_size`, model pin, price, and routing default unchanged. All verification mentions
+remain fresh (3–16 days old against the 90-day threshold), and this review did not
+perform new live CLI, account, model, or quota verification, so no `DESIGN.md`
+verification date is advanced. The two aggregate tier inversions repeat the runtime,
+private-override, account, project, task, and model-era confounding already recorded in
+mahler#517; they are not like-for-like repository evidence. Dominated rows likewise
+describe historical base-slot or private account-variant observations, while D33's
+per-role/per-size scorecard remains the routing authority.
+
+The newly visible unpriced Cline pin, `z-ai/glm-5.3-flash`, remains explicitly unknown,
+as does the dynamic `kilo/kilo-auto/free` aggregate. A free operator route is not
+evidence of a zero API-equivalent list price; neither price is added or invented without
+trustworthy list-price evidence. This is a documentation judgment only: no checked-in
+tiers, size gates, model pins, prices, or routes change.
+
 ### D21 — Opus plans; the free tiers build what it planned
 
 Decided 2026-09-13. The research agrees on the split and on its limits:
