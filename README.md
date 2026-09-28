@@ -119,7 +119,7 @@ ships disabled and is in no default routing list. Mahler passes Cline
 config, git or logs.
 
 1. Install or update the Cline CLI (`npm install -g cline`).
-2. Run `cline auth` interactively and choose "Use your own API key", then
+2. Run `cline auth` interactively and choose "Bring your own provider (API key or local server)", then
    "OpenAI Compatible". Set base URL `https://llm.jetstream-cloud.org/api/` and
    model `gpt-oss-120b`, and paste the Jetstream key when Cline asks. Cline
    stores it in its own credential storage; don't put it in TOML or an env
