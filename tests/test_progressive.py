@@ -99,7 +99,7 @@ class WorkBurstTests(unittest.TestCase):
 
     def test_transcript_suppresses_work_burst(self):
         self.seed('claude-work', 2)
-        with mock.patch.object(presence, 'human_claude_active', return_value=True):
+        with mock.patch.object(presence, 'human_claude_groups', return_value={'claude@work'}):
             self.assertIsNone(usage.compute_burst(self.ctx, []))
 
     def test_usage_rise_suppresses_only_its_group(self):
@@ -107,7 +107,7 @@ class WorkBurstTests(unittest.TestCase):
         self.seed('claude', 2)
         usage.record_claude_usage(self.ctx, [('5h', 86, iso(NOW + timedelta(minutes=30)))],
                                   check_human=True, platform='claude-work')
-        with mock.patch.object(presence, 'human_claude_active', return_value=False):
+        with mock.patch.object(presence, 'human_claude_groups', return_value=set()):
             lines = usage.compute_burst(self.ctx, [])
         self.assertIn('claude', lines)
         self.assertNotIn('claude@work', lines)

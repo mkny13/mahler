@@ -279,7 +279,8 @@ class Ledger:
                              ("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
                              ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
                              ("cost_usd", "REAL"), ("cost_source", "TEXT"),
-                             ("credits", "REAL"), ("quota_used", "TEXT")):
+                             ("credits", "REAL"), ("quota_used", "TEXT"),
+                             ("burst_lines", "TEXT")):
                 if col not in run_cols:
                     self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
             if "nudged" not in run_cols:

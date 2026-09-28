@@ -31,6 +31,28 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_burst_lines_migrate_and_survive_reopen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA)
+            con.execute("INSERT INTO runs(project,number,role,platform,epoch,status,started_at) "
+                        "VALUES ('p',1,'build','claude',1,'running','2026-09-12')")
+            con.commit()
+            con.close()
+            with_lines = json.dumps({"5h": [90, 97], "weekly": [90, 97]})
+            led = Ledger(path)
+            self.assertIsNone(led.run(1)["burst_lines"])
+            led.update_run(1, burst_lines=with_lines)
+            led.close()
+            led = Ledger(path)
+            try:
+                self.assertEqual(led.run(1)["burst_lines"], with_lines)
+                rid = led.create_run(project="p", number=2, role="build", platform="claude", epoch=1)
+                self.assertIsNone(led.run(rid)["burst_lines"])
+            finally:
+                led.close()
+
     def test_exploration_flag_defaults_and_migrates(self):
         run = self.led.create_run(project="p", number=1, role="build",
                                   platform="kilo", epoch=1)

@@ -6,13 +6,14 @@ platform — starts from there.
 """
 
 import os
+import json
 import re
 import shlex
 import shutil
 import signal
 import subprocess
 
-from . import config, platforms, redact
+from . import config, platforms, redact, router
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
               "post-rewrite", "pre-applypatch", "pre-commit", "pre-merge-commit",
@@ -233,7 +234,9 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
     # Keep the run record aligned with the exact validated setting passed to
     # the adapter, including the explicit default for unconfigured runs.
     if hasattr(ctx, "led"):
-        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default")
+        lines = router.platform_burst(platform, pconf, getattr(ctx, "burst_lines", None))
+        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default",
+                           burst_lines=json.dumps(lines) if lines else None)
 
     env = run_env(ctx, project, item["number"], platform, run_id, epoch)
     log_path = os.path.join(run_dir, "agent.log")

@@ -71,3 +71,16 @@ def human_claude_active(projects, minutes=20, root=CLAUDE_PROJECTS):
         if last and now - last < window:
             return True
     return False
+
+
+def human_claude_groups(cfg, projects, minutes=20):
+    """Quota groups with recent human transcripts, attributed to their login."""
+    projects = list(projects)
+    roots = {"claude": CLAUDE_PROJECTS}
+    for account, settings in cfg.get("accounts", {}).items():
+        home = (settings.get("env") or {}).get("CLAUDE_CONFIG_DIR")
+        if home:
+            group = "claude" if account == "personal" else f"claude@{account}"
+            roots[group] = os.path.join(os.path.expanduser(home), "projects")
+    return {group for group, root in roots.items()
+            if human_claude_active(projects, minutes, root)}
