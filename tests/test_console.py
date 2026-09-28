@@ -307,7 +307,8 @@ class QuotaTests(unittest.TestCase):
                        routing={"build": ["codex", "cline-free", "kilo"]})
         rows = self.rows(cfg, make_led())
         self.assertEqual(rows["codex"]["model"], "free tier")
-        self.assertEqual(rows["cline-free"]["model"], "free tier · size s only")
+        self.assertEqual(rows["cline-free"]["model"],
+                         "z-ai/glm-5.3-flash · free tier · size s only")
         self.assertEqual(rows["kilo"]["model"], "kilo-auto/free · size s only")
         # a plan belongs to a login: another account doesn't inherit codex's
         self.assertEqual(rows["codex-work"]["model"], "work account")
@@ -1090,9 +1091,39 @@ class ActionTests(unittest.TestCase):
         ev = led.q1("SELECT * FROM events WHERE kind='backoff_cleared'")
         self.assertIn("kilo", ev["detail"])
 
+    def test_unhold_action_uses_platform_scoped_clear(self):
+        cfg, led = make_cfg(), make_led()
+        until = iso(led.now() + timedelta(hours=24))
+        for window in (router.HOLD, "5h", "weekly"):
+            led.record_usage("cline-free", window, 100, until)
+        led.record_usage("kilo", router.HOLD, 100, until)
+        led.set_kv("hold_reason:cline-free", "model_unavailable")
+        led.set_kv("credit_state:cline-free", '{"failures": 1}')
+
+        actions.run(cfg, led, "unhold", {"platform": "cline-free"})
+
+        self.assertEqual(led.usage("cline-free"), {})
+        self.assertIn(router.HOLD, led.usage("kilo"))
+        event = led.q1("SELECT detail FROM events WHERE kind='hold_cleared'")
+        self.assertEqual(json.loads(event["detail"])["by"], "console")
+
+    def test_held_platform_cards_offer_unhold(self):
+        cfg, led = make_cfg(), make_led()
+        until = iso(led.now() + timedelta(hours=24))
+        led.record_usage("cline-free", router.HOLD, 100, until)
+        led.set_kv("hold_reason:cline-free", "model_unavailable")
+        snapshot = state.build(cfg, led)
+
+        desktop = page._d_capacity(snapshot)
+        phone = page._p_browse(snapshot)
+        button = 'data-act="unhold" data-platform="cline-free">Unhold</button>'
+        self.assertIn(button, desktop)
+        self.assertIn(button, phone)
+
     def test_bad_input_is_refused(self):
         cfg, led = make_cfg(), make_led()
         for name, body in (("clear_backoff", {}), ("clear_backoff", {"platforms": ["nope"]}),
+                           ("unhold", {}), ("unhold", {"platform": "nope"}),
                            ("digest_seen", {"upto": "7"}), ("digest_seen", {"upto": True}),
                            ("pause", [])):
             with self.assertRaises(actions.ActionError, msg=(name, body)):
@@ -1627,7 +1658,7 @@ class RecordedIdleTests(unittest.TestCase):
                 {"text": "kilo is backing off after quota errors.", "countdown": "kilo 5m",
                  "action": "Clear backoff", "act": "clear_backoff", "platforms": ["kilo"]},
                 {"text": "codex is on hold after a run never started.", "countdown": "codex 2m",
-                 "action": "Clear backoff", "act": "clear_backoff", "platforms": ["codex"]},
+                 "action": "Unhold", "act": "unhold", "platforms": ["codex"]},
                 {"text": "You have been working in mahler, so new builds there wait "
                          "until 20 minutes after you stop.", "countdown": "3m left",
                  "act": "end_session", "action": "End session", "project": "mahler"},

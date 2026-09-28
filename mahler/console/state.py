@@ -503,6 +503,8 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
                       for x in windows]
     row["peak_held"] = bool(claude and peak and peak["active"])
     row["available"] = row["state"] == "ok" and not row["peak_held"]
+    row["unhold_platform"] = (name if len(members) == 1
+                              and row["state"] in ("hold", "no_credit") else None)
     return row
 
 
@@ -1668,14 +1670,17 @@ def _quota_idle_reasons(quota, now):
             "text": f"{_join(q['name'] for q in no_credit)} "
                     f"{'is' if len(no_credit) == 1 else 'are'} out of credits.",
             "countdown": " · ".join(f"{q['name']} next try {_dur(q['until'] - now)}"
-                                    for q in no_credit if q["until"]) or None})
+                                    for q in no_credit if q["until"]) or None,
+            "action": "Unhold", "act": "unhold",
+            "platforms": [q["unhold_platform"] for q in no_credit
+                          if q.get("unhold_platform")]})
     holds = [q for q in quota if q["state"] == "hold"]
     if holds:
         reasons.append({
             "text": f"{_join(q['name'] for q in holds)} "
                     f"{'is' if len(holds) == 1 else 'are'} on hold after a run never started.",
             "countdown": " · ".join(f"{q['name']} {_dur(q['until'] - now)}" for q in holds),
-            "action": "Clear backoff", "act": "clear_backoff",
+            "action": "Unhold", "act": "unhold",
             "platforms": [q["name"] for q in holds]})
     return reasons
 

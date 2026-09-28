@@ -5,7 +5,7 @@ import os
 import tempfile
 import unittest
 
-from mahler import platforms
+from mahler import config, platforms
 
 
 class NetworkErrorDetectionTests(unittest.TestCase):
@@ -277,6 +277,19 @@ class ResumeArgvTests(unittest.TestCase):
                          platforms.kilo_resume_argv(kilo_conf, "p", "/wt", "build", 60, session_id="s1"))
         with self.assertRaises(ValueError):
             platforms.resume_argv_for({"kind": "claude"}, "p", "/wt", "build", 60)
+
+
+class ClineModelPinTests(unittest.TestCase):
+    def test_default_argv_pins_the_free_model(self):
+        argv = platforms.cline_argv(config.DEFAULTS["platforms"]["cline-free"],
+                                    "prompt", "/wt", "build")
+        self.assertEqual(argv[argv.index("-m") + 1], "z-ai/glm-5.3-flash")
+
+    def test_config_override_wins(self):
+        pconf = config._merge(config.DEFAULTS["platforms"]["cline-free"],
+                              {"model": "configured/model"})
+        argv = platforms.cline_argv(pconf, "prompt", "/wt", "build")
+        self.assertEqual(argv[argv.index("-m") + 1], "configured/model")
 
 
 if __name__ == "__main__":

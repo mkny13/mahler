@@ -325,9 +325,11 @@ DEFAULTS["platforms"]["codex-high"] = {
 
 # Cline's free models report no quota at all (verified 2026-09-12): it is
 # "unmetered" — available until a rate-limit/quota error, then backed off.
-# Its free models are weaker, so it only takes small items.
+# Pin the free model explicitly: Cline's saved provider default is mutable and
+# may point at a missing or paid model. Its free models are weaker, so it only
+# takes small items.
 DEFAULTS["platforms"]["cline-free"] = {
-    "enabled": True, "kind": "cline", "model": "", "plan": "free tier",
+    "enabled": True, "kind": "cline", "model": "z-ai/glm-5.3-flash", "plan": "free tier",
     "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,

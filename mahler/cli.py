@@ -15,7 +15,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-from . import config, notify, platforms, router, scheduler, usage as usage_mod
+from . import config, holds, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import GH, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -701,6 +701,25 @@ def cmd_resume(a, cfg, led):
     return 0
 
 
+def cmd_unhold(a, cfg, led):
+    """Preview or clear one platform's explicit scheduler hold."""
+    try:
+        found = holds.inspect(cfg, led, a.platform)
+    except ValueError as exc:
+        print(f"mahler: {exc}", file=sys.stderr)
+        return 2
+    windows = ", ".join(found["windows"]) or "no usage rows"
+    reason = found["hold_reason"] or "unspecified"
+    until = f" until {found['until']}" if found["until"] else ""
+    if a.dry_run:
+        print(f"{a.platform}: would clear {windows}; reason {reason}{until}; "
+              "reset hold_reason and credit_state")
+        return 0
+    holds.clear(cfg, led, a.platform, by="cli")
+    print(f"{a.platform}: cleared {windows}; reset hold_reason and credit_state")
+    return 0
+
+
 def cmd_add(a, cfg, led):
     pol = config.project_policy(cfg, a.project)
     if not pol.get("repo"):
@@ -1027,6 +1046,12 @@ def main(argv=None):
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
     sub.add_parser("resume").set_defaults(fn=cmd_resume)
+
+    s = sub.add_parser("unhold", help="clear an explicit platform hold")
+    s.add_argument("platform")
+    s.add_argument("--dry-run", action="store_true",
+                   help="show the hold rows and keys without changing them")
+    s.set_defaults(fn=cmd_unhold)
 
     s = sub.add_parser("add", help="file an issue")
     s.add_argument("project")
