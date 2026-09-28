@@ -348,8 +348,11 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("carry on with everything that does not depend on the owner's answer",
                       self.text)
         self.assertIn("The wanted stops are the recipe's final STATUS lines", self.text)
-        self.assertIn("`NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in "
-                      "rules 5–6, where nothing can move without the owner", self.text)
+        self.assertIn("`NEEDS-YOU` remains reserved for owner decisions under rule 5",
+                      self.text)
+        self.assertIn("`BLOCKED` remains available for unrelated runner, network, or "
+                      "infrastructure failures under rule 1 so the conductor can retry, "
+                      "and for owner-dependent blockers under rule 6", self.text)
         self.assertIn("does not override the destructive-action cautions in rule 7",
                       self.text)
 

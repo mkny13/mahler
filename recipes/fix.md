@@ -33,9 +33,10 @@ result is obtained, the better. Never trade verification for speed.
    milestone that merely feels like a good place to report. Put status notes and
    recommendations in the same message as your next action, then carry on with everything
    that does not depend on the owner's answer. The wanted stops are the recipe's final
-   STATUS lines. `NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in rules
-   5–6, where nothing can move without the owner. This rule does not override the
-   destructive-action cautions in rule 7.
+   STATUS lines. `NEEDS-YOU` remains reserved for owner decisions under rule 5; `BLOCKED`
+   remains available for unrelated runner, network, or infrastructure failures under
+   rule 1 so the conductor can retry, and for owner-dependent blockers under rule 6.
+   This rule does not override the destructive-action cautions in rule 7.
 4. **Your job ends at the push.** When the failure is fixed and `$verify` passes, commit,
    push, and end with `STATUS: DONE <one-line summary of what you fixed>`. Do not open a
    PR, watch CI, merge, or comment on the issue — Mahler's conductor re-runs CI on the new
