@@ -117,7 +117,7 @@ def build(cfg, led, stats_range="week", section=None):
         "dep_graph": dep_graph,
         "quota": quota,
         "capability_sections": _capability_sections(quota),
-        "weekly_quota": (_weekly_quota_view(cfg, led, quota, now)
+        "weekly_quota": (week_calendar(cfg, led, now)
                          if section in (None, "capacity", "browse") else None),
         "capacity": _capacity_line(quota),
         "models": models(led, cfg, measurement_rows) if measured else None,
@@ -539,64 +539,113 @@ def _quota(cfg, led, peak, active_by_platform=None):
     return out
 
 
-def _weekly_quota_view(cfg, led, quota, now):
-    """Seven elapsed 24-hour ranges; never extrapolate a missing/past reset.
+def week_calendar(cfg, led, now):
+    """Current local Sun–Sat week, one route per quota group, read-only.
 
-    Use the consolidated quota snapshot so shared routing slots appear once.
-    Localize each endpoint separately to preserve host timezone/DST conventions.
+    Weekly cycles repeat every seven elapsed days from the latest reset anchor.
+    Hour cells sample their start; local wall times are localized individually
+    so a DST boundary does not freeze the whole week at today's UTC offset.
+    Monthly resets are actual dates, never extrapolated as weekly cycles.
     """
-    days = []
-    for i in range(7):
-        start, end = now + timedelta(days=i), now + timedelta(days=i + 1)
-        days.append({"label": start.astimezone().strftime("%a %d %b"),
-                     "range": (f"{start.astimezone():%a %d %b %H:%M %Z} → "
-                               f"{end.astimezone():%a %d %b %H:%M %Z}"), "rows": []})
-    rows = []
-    for q in quota:
-        windows = {w["window"]: w for w in q["windows"]}
+    local = now.astimezone()
+    sunday = local.date() - timedelta(days=(local.weekday() + 1) % 7)
+    start = datetime.combine(sunday, time())
+    end = start + timedelta(days=7)
+    groups = {}
+    for name in _routed(cfg):
+        pc = cfg["platforms"][name]
+        groups.setdefault(pc.get("quota_group", name), []).append(name)
+    routes, unknown, unmetered, outside = [], [], [], []
+    for group, members in groups.items():
+        pc = cfg["platforms"][members[0]]
+        name = _quota_display_name(members)
+        if not any(router.is_metered(led, m, cfg["platforms"][m]) for m in members):
+            unmetered.append(name)
+            continue
+        windows = {w for m in members for w in
+                   cfg["platforms"][m].get("windows", router.WINDOWS)}
         window = next((w for w in ("weekly", "monthly") if w in windows), None)
         if window is None:
-            # Configured accounts without a reading still belong on the schedule.
-            configured = {w for m in q["members"]
-                          for w in cfg["platforms"][m].get("windows", router.WINDOWS)}
-            window = next((w for w in ("weekly", "monthly") if w in configured), None)
-        if window is None:
+            unmetered.append(name)
             continue
-        w = windows.get(window, {})
-        reset = w.get("resets")
-        seconds = (reset - now).total_seconds() if reset else None
-        day = int(seconds // 86400) if seconds is not None and 0 <= seconds < 604800 else None
-        reset_text = (f"{reset.astimezone():%a %d %b %H:%M %Z}" if reset else "unknown")
-        if seconds is not None and seconds < 0:
-            reset_text += " · awaiting updated reset"
-        elif seconds is not None and seconds >= 604800:
-            reset_text += " · beyond this week"
-        pct = w.get("pct")
-        soft = w.get("soft")
-        row = {"name": q["name"], "model": q["model"], "window": window,
-               "used_pct": pct, "soft": soft, "resets_at": reset,
-               "reset_text": reset_text, "day": day,
-               "position": seconds / 6048 if day is not None else None,
-               "usage_text": (f"{window} · {pct:.0f}% used · soft line {soft:.0f}%"
-                              if pct is not None else f"{window} · usage unknown"),
-               "stale": q["state"] == "stale", "stale_text": "Stale reading", "overlay": None}
-        short = windows.get("5h")
-        if q["claude"] and short and short.get("resets"):
-            delta = (short["resets"] - now).total_seconds()
-            if 0 <= delta < 86400:
-                row["overlay"] = {"position": delta / 6048,
-                                  "text": f"5h resets {short['resets'].astimezone():%a %H:%M %Z}"}
-        rows.append(row)
-        if day is not None:
-            days[day]["rows"].append(row)
-    for day in days:
-        day["rows"].sort(key=lambda r: r["resets_at"])
-    return {"title": "Weekly resets", "days": days, "rows": rows,
-            "unscheduled": [r for r in rows if r["day"] is None],
-            "note": "Next 7 days · each column starts at the current time. Times use the server’s local timezone. Shading shows current usage, not time remaining.",
-            "now_label": f"Now · {now.astimezone():%H:%M %Z}",
-            "empty": "No weekly or monthly quota windows.",
-            "no_resets": "No resets in this range.", "other_label": "Unknown or outside this week"}
+        # Include non-routed aliases too: a probe may have sampled another slot.
+        peers = [m for m, conf in cfg["platforms"].items()
+                 if conf.get("quota_group", m) == group]
+        readings = [u for m in peers if (u := led.usage(m).get(window))]
+        latest = max(readings, key=lambda u: u.get("sampled_at") or "", default={})
+        reset = router._ts(latest.get("resets_at"))
+        if reset is None:
+            unknown.append(name)
+            continue
+        route = {"name": name, "account": config.account_of(pc), "window": window,
+                 "reset": reset.timestamp()}
+        routes.append(route)
+        if window == "monthly" and not start <= reset.astimezone().replace(tzinfo=None) < end:
+            outside.append(f"{name} · monthly · {reset.astimezone():%a %d %b %H:%M}")
+    weekly = [r for r in routes if r["window"] == "weekly"]
+    days = []
+    for d in range(7):
+        day_start = start + timedelta(days=d)
+        hours, markers = [], []
+        for hour in range(24):
+            wall = day_start + timedelta(hours=hour)
+            stamp = wall.astimezone().timestamp()
+            fresh = [r["name"] for r in weekly if (stamp - r["reset"]) % 604800 < 172800]
+            count = len(fresh)
+            label = f"{wall:%a %H:%M} · {count} routes early in their week"
+            hours.append({"hour": hour, "count": count, "routes": fresh,
+                          "shade": round(35 * count / len(weekly)) if weekly else 0,
+                          "text": label + (": " + ", ".join(fresh) if fresh else ""),
+                          "label": f"{hour:02}:00"})
+        for route in routes:
+            stamp = route["reset"]
+            if route["window"] == "weekly":
+                first = start.astimezone().timestamp()
+                stamp += ((first - stamp) // 604800) * 604800
+                if stamp < first:
+                    stamp += 604800
+            # A DST fall-back week can contain two occurrences at its edges.
+            while True:
+                reset_local = datetime.fromtimestamp(stamp).astimezone()
+                wall = reset_local.replace(tzinfo=None)
+                if day_start <= wall < day_start + timedelta(days=1):
+                    text = (f"{reset_local:%H:%M} · {route['name']} · "
+                            f"{route['account']} · {route['window']}")
+                    markers.append({"name": route["name"], "account": route["account"],
+                                    "hour": wall.hour, "minute": wall.minute, "text": text})
+                if route["window"] != "weekly" or wall >= end:
+                    break
+                stamp += 604800
+        markers.sort(key=lambda m: (m["hour"], m["minute"], m["name"]))
+        days.append({"label": f"{day_start:%a %d %b}", "hours": hours, "markers": markers,
+                     "now_hour": local.hour if local.date() == day_start.date() else None,
+                     "now_minute": local.minute,
+                     "freshness": f"{min(h['count'] for h in hours)}–{max(h['count'] for h in hours)} routes early in their week"})
+    counts = [h["count"] for d in days for h in d["hours"]]
+
+    def stretch(value):
+        spans, begin = [], None
+        for i, count in enumerate(counts + [None]):
+            if count == value and begin is None:
+                begin = i
+            elif count != value and begin is not None:
+                spans.append((begin, i))
+                begin = None
+        lo, hi = max(spans, key=lambda span: span[1] - span[0])
+        return f"{start + timedelta(hours=lo):%a %H:%M} – {start + timedelta(hours=hi):%a %H:%M}"
+
+    summary = (f"Freshest: {stretch(max(counts))} ({max(counts)} routes early in their week). "
+               f"Leanest: {stretch(min(counts))} ({min(counts)})." if weekly else
+               "No known weekly resets to calculate freshness.")
+    return {"title": "Weekly reset calendar", "days": days, "summary": summary,
+            "note": (f"Sun–Sat · local time ({local:%Z}). Darker = more routes in the first 48 hours "
+                     "of their week, sampled on the hour. Weekly timing repeats from the latest known reset; "
+                     "monthly routes do not affect shading. Tap an hour for route names."),
+            "now_label": f"Now · {local:%a %H:%M %Z}",
+            "legend": "Reset colours: personal / work. Shading counts shared quota groups once.",
+            "unknown": unknown, "unmetered": unmetered, "outside": outside,
+            "unknown_label": "Reset unknown", "unmetered_label": "No weekly cycle",
+            "outside_label": "Monthly resets outside this week", "no_resets": "No resets today."}
 
 
 def _capability_sections(quota):
