@@ -23,38 +23,56 @@ result is obtained, the better. Never trade verification for speed.
    and give a concise diagnostic reason so the conductor can retry. Do not make
    speculative changes to unrelated code or shotgun-fix the failure.
 2. **Verify before every push:** `$verify`. Fix what fails.
-3. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
+   Run a check that exercises the change, such as the project's tests, type-checker,
+   build, or changed command. Neither a syntax-only check nor a command that failed
+   to start counts as verification. If declared dependencies are missing, install them
+   using the project's own package manager and lockfile (for example, `npm install`
+   or `pip install -r requirements.txt`); never use `sudo` or the system package manager
+   unless explicitly instructed otherwise. Do not report `STATUS: DONE` when no real
+   check exercised the change. If no real check can run, name the missing check and
+   why it could not run in your final message; do not claim the change is verified.
+   Use the existing owner-dependent blocker ending in rule 7 only when that rule
+   applies; inability to run a check alone is not a new `BLOCKED` case.
+3. **Finish the requested scope, then report.** Once the issue's work is complete and
+   its checks pass, checkpoint, push, and report without adding unrequested features,
+   tests, files, documentation, or refactors. Tests required by the issue's "Done when"
+   checks or the repo's `AGENTS.md` are requested work. Do not initiate extra review
+   or hardening rounds, or spawn reviewer sub-agents unless the issue asks for a review.
+   Mahler's conductor owns independent review through `recipes/review.md`. Mention
+   useful additions or a deeper review in the final message before the STATUS line
+   instead of undertaking them.
+4. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
    $branch` (the branch already exists — you are pushing the PR forward) at least every
    ~10 minutes — you can be stopped at any moment, and unpushed work is lost.
-3a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
+4a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
    reporting points while work is still possible: a summary that announces the next step
    without taking it; an offer to continue unless the owner prefers otherwise; a list of
    owner decisions when none blocks the remaining work; or a long turn or completed
    milestone that merely feels like a good place to report. Put status notes and
    recommendations in the same message as your next action, then carry on with everything
    that does not depend on the owner's answer. The wanted stops are the recipe's final
-   STATUS lines. `NEEDS-YOU` remains reserved for owner decisions under rule 5; `BLOCKED`
+   STATUS lines. `NEEDS-YOU` remains reserved for owner decisions under rule 6; `BLOCKED`
    remains available for unrelated runner, network, or infrastructure failures under
-   rule 1 so the conductor can retry, and for owner-dependent blockers under rule 6.
-   This rule does not override the destructive-action cautions in rule 7.
-4. **Your job ends at the push.** When the failure is fixed and `$verify` passes, commit,
+   rule 1 so the conductor can retry, and for owner-dependent blockers under rule 7.
+   This rule does not override the destructive-action cautions in rule 8.
+5. **Your job ends at the push.** When the failure is fixed and `$verify` passes, commit,
    push, and end with `STATUS: DONE <one-line summary of what you fixed>`. Do not open a
    PR, watch CI, merge, or comment on the issue — Mahler's conductor re-runs CI on the new
    SHA and merges when it's green.
-5. Stop only for a decision genuinely only the owner can make (product intent, credentials,
+6. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data). Post it as an issue comment and end with
    `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
-6. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
+7. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
    push what you have and end with `STATUS: BLOCKED <reason>`.
-7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
+8. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
-8. **No macOS UI automation** — the Mac mini screen is locked.
-9. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
-10. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
+9. **No macOS UI automation** — the Mac mini screen is locked.
+10. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
+11. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
     <prefix>` to avoid collisions.
-11. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
+12. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
     avoid wiping other sessions' work.
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.

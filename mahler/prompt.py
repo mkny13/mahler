@@ -18,7 +18,7 @@ RECIPES = os.path.join(config.REPO_ROOT, "recipes")
 # build prompt only when the issue itself asks for that work (mahler#569).
 # Most builds never touch a release feed; keeping the ~170-word block out of
 # unrelated prompts saves input tokens without weakening the contract.
-WHATS_NEW_GUIDANCE = """11. **In-app What's New contract:** When (and only when) the issue explicitly asks for an
+WHATS_NEW_GUIDANCE = """12. **In-app What's New contract:** When (and only when) the issue explicitly asks for an
     in-app What's New surface or release feed:
     - Follow DESIGN D31's schema v1 JSON contract (`schema_version`, `project`, `releases`
       with `version`, `checkpoint_sha`, `published_at`, `remote_url`, `sections`, `maintenance`).
