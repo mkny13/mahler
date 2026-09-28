@@ -340,9 +340,11 @@ DEFAULTS["platforms"]["cline-free"] = {
 # OpenAI-compatible provider. Opt-in: disabled until live config sets
 # `[platforms.jetstream] enabled = true` and adds it to a build group. The API
 # key lives only in Cline's own credential store (`cline auth`), never here.
+# muse-glimmer, not gpt-oss-120b: gpt-oss ends real runs with empty output
+# through Jetstream's tool-call parsing (0/7, mahler#581); muse-glimmer completes.
 DEFAULTS["platforms"]["jetstream"] = {
     "enabled": False, "kind": "cline", "provider": "openai-compatible",
-    "model": "gpt-oss-120b", "plan": "Jetstream2 inference service",
+    "model": "muse-glimmer", "plan": "Jetstream2 inference service",
     "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,

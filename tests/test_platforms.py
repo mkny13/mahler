@@ -299,7 +299,7 @@ class ClineProviderTests(unittest.TestCase):
         for build in (platforms.cline_argv, platforms.cline_resume_argv):
             argv = build(pconf, "prompt", "/wt", "build")
             self.assertEqual(argv[argv.index("-P") + 1], "openai-compatible")
-            self.assertEqual(argv[argv.index("-m") + 1], "gpt-oss-120b")
+            self.assertEqual(argv[argv.index("-m") + 1], "muse-glimmer")
 
     def test_no_provider_flag_without_provider(self):
         argv = platforms.cline_argv(config.DEFAULTS["platforms"]["cline-free"],

@@ -112,16 +112,16 @@ and the commented examples in `config.example.toml`.
 
 ### Optional: Jetstream2 through Cline
 
-`jetstream` is an opt-in, unmetered platform that runs `gpt-oss-120b` on
+`jetstream` is an opt-in, unmetered platform that runs `muse-glimmer` on
 Jetstream2's inference service through Cline's OpenAI-compatible provider. It
 ships disabled and is in no default routing list. Mahler passes Cline
-`-P openai-compatible -m gpt-oss-120b`; the API key never appears in Mahler
+`-P openai-compatible -m muse-glimmer`; the API key never appears in Mahler
 config, git or logs.
 
 1. Install or update the Cline CLI (`npm install -g cline`).
 2. Run `cline auth` interactively and choose "Bring your own provider (API key or local server)", then
    "OpenAI Compatible". Set base URL `https://llm.jetstream-cloud.org/api/` and
-   model `gpt-oss-120b`, and paste the Jetstream key when Cline asks. Cline
+   model `muse-glimmer`, and paste the Jetstream key when Cline asks. Cline
    stores it in its own credential storage; don't put it in TOML or an env
    var you type into a shell.
 3. Enable it in `~/.mahler/config.toml` and add it to a build group, for example
@@ -138,6 +138,9 @@ config, git or logs.
 
 4. Check it with `mahler usage --probe`, then run one small item pinned to
    `jetstream`.
+
+`gpt-oss-120b` is also served but currently fails tool calls through Jetstream,
+so builds end empty; use `muse-glimmer` unless that is fixed.
 
 The direct tokenless Jetstream URLs work only from Jetstream or IU networks, or
 through a tunnel. The authenticated API proxy above is the right choice for a
