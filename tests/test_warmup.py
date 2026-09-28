@@ -1,14 +1,17 @@
 from contextlib import closing
 import copy
+import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, Mock
 
-from mahler import config, platforms, warmup
+from mahler import config, platforms, usage, warmup
 from mahler.ledger import Ledger, iso
 from mahler.scheduler import Ctx
+
+from local_timezone import local_timezone
 
 
 class WarmupTests(unittest.TestCase):
@@ -180,6 +183,272 @@ class WarmupTests(unittest.TestCase):
         self.cfg['accounts']['work']['env'] = {}
         with self.assertRaises(ValueError):
             warmup.environment(self.cfg, t)
+
+
+class LearnTimeTests(unittest.TestCase):
+    """Every branch of the pure learned-warm-up rule (mahler#536)."""
+
+    def test_exhaustion_rule(self):
+        # W = F + E − 5h, inside the clamps: 600 + 120 − 300 = 420 (07:00)
+        self.assertEqual(warmup.learn_time([(600, 120)] * 5, False), 420)
+
+    def test_lower_clamp(self):
+        # 300 + 10 − 300 = 10 < F − 4h30 → clamped up to 30 (00:30)
+        self.assertEqual(warmup.learn_time([(300, 10)] * 5, False), 30)
+
+    def test_upper_clamp(self):
+        # 900 + 300 − 300 = 900 > F − 30min → clamped down to 870 (14:30)
+        self.assertEqual(warmup.learn_time([(900, 300)] * 5, False), 870)
+
+    def test_no_exhaustion_fallback(self):
+        # W = F − 3h: 600 − 180 = 420
+        self.assertEqual(warmup.learn_time([(600, None)] * 5, False), 420)
+
+    def test_too_few_days_keeps_configured(self):
+        self.assertIsNone(warmup.learn_time([(600, 120)] * 4, False))
+        self.assertIsNone(warmup.learn_time([], False))
+
+    def test_weekend_with_no_use_is_off(self):
+        self.assertEqual(warmup.learn_time([], True), 'off')
+
+    def test_rounding_to_15_minutes(self):
+        # median candidate 422 → 420
+        days = [(600, e) for e in (122, 124, 121, 122, 123)]
+        self.assertEqual(warmup.learn_time(days, False), 420)
+
+    def test_median_combines_days(self):
+        # candidates 360, 420, 480, 420, 420 → median 420
+        days = [(540, 120), (600, 120), (660, 120), (600, 120), (600, 120)]
+        self.assertEqual(warmup.learn_time(days, False), 420)
+
+    def test_days_without_use_are_ignored(self):
+        self.assertEqual(warmup.learn_time([(600, 120)] * 5 + [(None, None)], False), 420)
+
+    def test_hhmm(self):
+        self.assertEqual(warmup.hhmm(370), '06:10')
+        self.assertEqual(warmup.hhmm(0), '00:00')
+        self.assertEqual(warmup.hhmm('off'), 'off')
+
+
+class HumanRiseTests(unittest.TestCase):
+    """Rise detection is per quota group, never our own nudges (D25, #536)."""
+
+    def setUp(self):
+        self.now = datetime(2026, 9, 28, 6, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['platforms']['codex-work'] = dict(kind='codex', account='work',
+                                                   quota_group='codex@work', model='m')
+        self.cfg['accounts']['work'] = {'env': {'CODEX_HOME': '/work/codex'}}
+        self.cfg['warmup']['targets'] = [dict(name='codexw', kind='codex', account='work',
+                                              platform='codex-work', start='05:00',
+                                              end='24:00', days='weekdays')]
+
+    def events(self):
+        return [(r['kind'], r['detail']) for r in self.led.q(
+            "SELECT kind, detail FROM events WHERE project IS NULL AND "
+            "kind IN ('human-use', 'human-out')")]
+
+    def test_rise_sets_flag_and_event_per_group(self):
+        usage.note_human_rise(self.cfg, self.led, 'codex-work', 15)
+        self.assertTrue(self.led.get_kv('human:codex@work'))
+        self.assertIn(('human-use', 'codex@work'), self.events())
+        self.assertNotIn(('human-out', 'codex@work'), self.events())
+
+    def test_exhaustion_event_at_90_pct(self):
+        usage.note_human_rise(self.cfg, self.led, 'codex-work', 95)
+        self.assertIn(('human-out', 'codex@work'), self.events())
+
+    def test_suppressed_while_a_run_is_live(self):
+        with patch.object(self.led, 'active_runs',
+                          return_value=[{'platform': 'codex-work'}]):
+            usage.note_human_rise(self.cfg, self.led, 'codex-work', 95)
+        self.assertIsNone(self.led.get_kv('human:codex@work'))
+        self.assertEqual(self.events(), [])
+
+    def test_suppressed_after_our_own_warmup_nudge(self):
+        self.led.set_kv('warmup:codexw:last', iso(self.now - timedelta(minutes=30)))
+        usage.note_human_rise(self.cfg, self.led, 'codex-work', 15)
+        self.assertIsNone(self.led.get_kv('human:codex@work'))
+        self.assertEqual(self.events(), [])
+
+    def test_no_cross_group_contamination(self):
+        self.cfg['platforms']['claude-low'] = dict(kind='claude', account='personal',
+                                                   quota_group='claude')
+        usage.note_human_rise(self.cfg, self.led, 'claude-low', 15)
+        self.assertTrue(self.led.get_kv('human:claude'))
+        self.assertIsNone(self.led.get_kv('human:codex@work'))
+        self.assertEqual([d for _, d in self.events()], ['claude'])
+
+    def test_refresh_codex_detects_a_rise(self):
+        self.led.record_usage('codex-work', '5h', 10, iso(self.now + timedelta(hours=5)))
+        samples = platforms.CodexUsage(
+            [('5h', 30, iso(self.now + timedelta(hours=5)))], {'blocked': False})
+        with patch('mahler.platforms.probe_codex', return_value=samples), \
+             patch('mahler.usage.codex_env', return_value={}):
+            usage.refresh_codex(self.cfg, self.led, 'codex-work')
+        self.assertTrue(self.led.get_kv('human:codex@work'))
+        self.assertIn(('human-use', 'codex@work'), self.events())
+
+    def test_agy_refresh_detects_a_rise(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['platforms']['agy-gemini'] = dict(kind='agy', account='personal',
+                                              quota_group='agy-gemini', pool='gemini')
+        led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(led.close)
+        led.record_usage('agy-gemini', '5h', 10, iso(self.now + timedelta(hours=5)))
+        # first active_runs call puts the platform in `wanted` (as a live run
+        # would); the second is note_human_rise's own suppression check
+        runs = Mock(side_effect=[[{'platform': 'agy-gemini'}], []])
+        with patch('mahler.platforms.probe_agy',
+                   return_value={'gemini': [('5h', 40, iso(self.now + timedelta(hours=5)))]}), \
+             patch.object(config, 'DEFAULT_ACCOUNT', 'personal'), \
+             patch('mahler.usage.router.usage_state', return_value=('stale', None)), \
+             patch.object(led, 'active_runs', runs):
+            usage.refresh_usage(Ctx(cfg, led), [])
+        self.assertTrue(led.get_kv('human:agy-gemini'))
+        self.assertIn(('human-use', 'agy-gemini'),
+                      [(r['kind'], r['detail']) for r in led.q(
+                          "SELECT kind, detail FROM events WHERE project IS NULL")])
+
+
+class TranscriptTests(unittest.TestCase):
+    """Transcript scanning is read-only, per day, and never counts Mahler's
+    own worktrees or nudge temp dirs."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.root = os.path.join(self.td.name, 'projects')
+        os.makedirs(self.root)
+        self.now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+        self.since = self.now - timedelta(days=10)
+        self.excluded = ('/Users/mike/.mahler/worktrees', '/tmp/mahler-warmup')
+
+    def write(self, name, lines):
+        d = os.path.join(self.root, name)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, 's.jsonl')
+        with open(path, 'w') as f:
+            f.writelines(line + '\n' for line in lines)
+        stamp = self.since.timestamp() + 3600
+        os.utime(path, (stamp, stamp))
+
+    def test_first_use_per_day(self):
+        self.write('Users-mike-Mahler', [
+            '{"type":"user","cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T09:10:00Z"}',
+            '{"type":"user","cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T15:00:00Z"}'])
+        with local_timezone('UTC'):
+            out = warmup.transcript_first_use(self.root, self.since, self.now,
+                                              excluded=self.excluded)
+        self.assertEqual(out, {date(2026, 9, 25): datetime(2026, 9, 25, 9, 10,
+                                                           tzinfo=timezone.utc)})
+
+    def test_mahler_worktree_and_tempdir_lines_are_excluded(self):
+        self.write('Users-mike-.mahler-worktrees-mahler-536-run10059', [
+            '{"cwd":"/Users/mike/.mahler/worktrees/mahler/536-run10059",'
+            '"timestamp":"2026-09-25T07:00:00Z"}'])
+        self.write('private-tmp-xyz', [
+            '{"cwd":"/tmp/mahler-warmup-abc","timestamp":"2026-09-25T07:30:00Z"}'])
+        self.write('Users-mike-Mahler', [
+            '{"cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T09:10:00Z"}'])
+        with local_timezone('UTC'):
+            out = warmup.transcript_first_use(self.root, self.since, self.now,
+                                              excluded=self.excluded)
+        self.assertEqual(list(out), [date(2026, 9, 25)])
+        self.assertEqual(out[date(2026, 9, 25)].hour, 9)
+
+    def test_stale_files_are_skipped(self):
+        d = os.path.join(self.root, 'Users-mike-Mahler')
+        os.makedirs(d)
+        path = os.path.join(d, 'old.jsonl')
+        with open(path, 'w') as f:
+            f.write('{"timestamp":"2026-09-20T09:00:00Z"}\n')
+        stamp = (self.since - timedelta(days=1)).timestamp()
+        os.utime(path, (stamp, stamp))
+        self.assertEqual(warmup.transcript_first_use(
+            self.root, self.since, self.now, excluded=self.excluded), {})
+
+
+class LearnCollectTests(unittest.TestCase):
+    """collect_days merges transcript and usage signals into (F, E) days; the
+    relearn pass persists report-only kv and gates itself to once per day."""
+
+    def setUp(self):
+        self.now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['platforms']['claude-low'] = dict(kind='claude', account='personal',
+                                                   quota_group='claude')
+        self.target = dict(name='claude', kind='claude', account='personal',
+                           platform='claude-low', start='05:00', end='24:00',
+                           days='weekdays')
+        self.cfg['warmup']['targets'] = [self.target]
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+
+    def test_collect_days_merges_transcript_and_events(self):
+        root = os.path.join(self.td.name, 'projects')
+        os.makedirs(root)
+        path = os.path.join(root, 's.jsonl')
+        with open(path, 'w') as f:
+            f.write('{"cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T09:10:00Z"}\n')
+        os.utime(path, (self.now.timestamp() - 3600,) * 2)
+        self.now = datetime(2026, 9, 25, 11, 10, tzinfo=timezone.utc)
+        self.led.event('human-out', detail='claude')
+        with patch('mahler.warmup.transcript_roots', return_value=[root]), \
+             local_timezone('UTC'):
+            days = warmup.collect_days(self.cfg, self.led, self.target,
+                                       self.now - timedelta(days=10), self.now)
+        self.assertEqual(days, {date(2026, 9, 25): (550, 120)})
+
+    def test_relearn_persists_kv_and_gates_daily(self):
+        days = {date(2026, 9, 25): (550, 120), date(2026, 9, 24): (560, 130),
+                date(2026, 9, 23): (545, 110), date(2026, 9, 22): (555, None),
+                date(2026, 9, 21): (550, None)}
+        self.now = datetime(2026, 9, 28, 4, tzinfo=timezone.utc)
+        ctx = Ctx(self.cfg, self.led)
+        with patch('mahler.warmup.collect_days', return_value=days), \
+             local_timezone('UTC'):
+            self.assertTrue(warmup.relearn_due(self.led))
+            warmup.relearn(ctx)
+            payload = json.loads(self.led.get_kv('warmup:learned:claude:weekday'))
+            # exhaustion median E=120, F median 550 → 550+120-300 = 370 → 375 (06:15)
+            self.assertEqual(payload['learned'], 375)
+            self.assertEqual(payload['n'], 5)
+            self.assertEqual(self.led.get_kv('warmup:learned:at'), '2026-09-28')
+            self.assertFalse(warmup.relearn_due(self.led))
+
+    def test_relearn_dry_run_writes_nothing(self):
+        self.now = datetime(2026, 9, 28, 4, tzinfo=timezone.utc)
+        ctx = Ctx(self.cfg, self.led, dry_run=True)
+        with patch('mahler.warmup.collect_days', return_value={}), \
+             local_timezone('UTC'):
+            warmup.relearn(ctx)
+        self.assertIsNone(self.led.get_kv('warmup:learned:at'))
+        self.assertIsNone(self.led.get_kv('warmup:learned:claude:weekday'))
+
+    def test_relearn_waits_for_03_00_local(self):
+        self.now = datetime(2026, 9, 28, 2, tzinfo=timezone.utc)
+        with local_timezone('UTC'):
+            self.assertFalse(warmup.relearn_due(self.led))
+
+    def test_learned_lines_fallback_and_learned(self):
+        self.now = datetime(2026, 9, 28, 4, tzinfo=timezone.utc)
+        with patch('mahler.warmup.collect_days', return_value={}), \
+             local_timezone('UTC'):
+            lines = warmup.learned_lines(self.cfg, self.led)
+        self.assertEqual(lines, [
+            'claude weekdays: not enough data yet (0 of 5 days with use) — keeping 05:00',
+            'claude weekends: no use seen — warm-up would be off'])
+        self.led.set_kv('warmup:learned:claude:weekday',
+                        json.dumps({'learned': 370, 'F': 550, 'E': 120, 'n': 5}))
+        lines = warmup.console_lines(self.cfg, self.led)
+        self.assertIn('claude weekdays: learned warm-up 06:10', lines[0])
+        self.assertIn('(5 days)', lines[0])
+        self.assertIn('no learned warm-up yet', lines[1])
 
 
 class WarmupConfigTests(unittest.TestCase):

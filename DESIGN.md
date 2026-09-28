@@ -1634,3 +1634,40 @@ consumes a banked credit through the app-server RPC
   humanized countdown to the next expiry.
 - The pass is silent-safe: one broken login or failed call never blocks the
   others or the tick; nothing is spent on stale readings (fail closed).
+
+### D36 — Learn each login's best warm-up time, data only (mahler#536)
+
+Decided 2026-09-28 (mahler#536). The warm-up nudges (D34) fire at a fixed
+clock offset, but Mike's real first use of each login varies. Mahler should
+learn each warm-up target's best warm-up time from data and report it — never
+change any schedule on its own. Mike decides later, after a month of data,
+whether to act on the report.
+
+- **Report only.** The learned time is persisted under
+  `warmup:learned:<target>:<weekday|weekend>` and read by the CLI (`mahler
+  warmup` prints the learned report above the live pass) and the console
+  Capacity view. No scheduling code reads it; the learned value never changes
+  a window, a fire time, or a guard.
+- **The rule** (pure, tested in isolation): for days with a first-use time F
+  and an exhaustion-driven end E, the candidate warm-up is W = F + E − 5h,
+  clamped to [F − 4h30, F − 30min]; days without exhaustion fall back to
+  W = F − 3h; the learned time is the 15-minute-rounded median of the
+  candidates over a 30-day window, needing at least 5 days with use — below
+  that the report says so and keeps the configured time. Weekends with no use
+  report "off". Relearn runs once a day, first tick at/after 03:00 local.
+- **Signals are read-only.** First use per day comes from Claude Code
+  transcript timestamps only (the `cwd` and `timestamp` fields — never
+  message content), plus the ledger's `human-use`/`human-out` events. Lines
+  whose cwd sits under Mahler's own worktrees (`config.WORKTREES`) or a temp
+  dir are excluded: a Mahler session is never human use. Files untouched
+  since the window start are skipped by mtime before parsing.
+- **`human-use` events are per quota group (D25).** A 5-hour usage rise (or a
+  reading at/above 90%) on a login with no live Mahler run means Mike is
+  using the account elsewhere; the detection lives in `usage
+  .note_human_rise` and is shared by the Claude, Codex and Antigravity probe
+  paths. A rise while one of the group's platforms has a live run is never
+  human (it is Mahler's own turn), and a rise within 2h of a warm-up nudge
+  on the same group is never human either (the nudge's own small turn).
+- **Fresh vs stored.** The CLI computes the learned lines fresh from the
+  signals; the console reads only the persisted kv (state is rebuilt per
+  request and must never rescan transcripts).
