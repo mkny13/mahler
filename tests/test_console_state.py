@@ -185,103 +185,110 @@ class ScorecardCacheTests(unittest.TestCase):
 
 class WeeklyQuotaTests(unittest.TestCase):
     def setUp(self):
-        from test_console import make_cfg
-        self.now = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        from local_timezone import local_timezone
+        self.tz = local_timezone('America/New_York')
+        self.tz.__enter__()
+        self.addCleanup(self.tz.__exit__, None, None, None)
+        self.now = datetime(2026, 9, 23, 16, tzinfo=timezone.utc)
         self.led = Ledger(':memory:', clock=lambda: self.now)
         self.addCleanup(self.led.close)
-        self.cfg = make_cfg()
+        self.cfg = {'platforms': {}, 'routing': {'build': []}}
 
-    def pool(self, name, days=None, window='weekly', claude=False, pct=42):
-        from datetime import timedelta
-        self.cfg['platforms'][name] = {'windows': [window]}
-        return {'name': name, 'model': 'Model <test>', 'members': [name],
-                'claude': claude, 'state': 'ok', 'windows': [
-                    {'window': window, 'pct': pct, 'soft': 80,
-                     'resets': self.now + timedelta(days=days) if days is not None else None}]}
+    def pool(self, name, reset=None, window='weekly', **conf):
+        self.cfg['platforms'][name] = {'windows': [window], **conf}
+        self.cfg['routing']['build'].append(name)
+        if reset is not None:
+            self.led.record_usage(name, window, 42, reset)
 
-    def view(self, *pools):
-        return state._weekly_quota_view(self.cfg, self.led, pools, self.now)
+    def view(self):
+        return state.week_calendar(self.cfg, self.led, self.now)
 
-    def test_positions_monthly_unknown_and_boundaries(self):
-        pools = [self.pool('now', 0), self.pool('tomorrow', 1),
-                 self.pool('monthly', 6.5, 'monthly'), self.pool('unknown'),
-                 self.pool('past', -1), self.pool('later', 7, 'monthly')]
-        v = self.view(*pools)
-        self.assertEqual(len(v['days']), 7)
-        self.assertEqual([r['day'] for r in v['rows']], [0, 1, 6, None, None, None])
-        self.assertEqual(v['rows'][0]['position'], 0)
-        self.assertAlmostEqual(v['rows'][2]['position'], 100 * 6.5 / 7)
-        self.assertEqual(v['rows'][3]['reset_text'], 'unknown')
-        self.assertIn('awaiting updated reset', v['rows'][4]['reset_text'])
-        self.assertIn('beyond this week', v['rows'][5]['reset_text'])
-        self.assertEqual(len(v['unscheduled']), 3)
-        self.assertEqual(v['rows'][2]['used_pct'], 42)
-        self.assertEqual(v['rows'][2]['soft'], 80)
+    def test_week_boundary_and_exact_48_hour_cutoff(self):
+        # Saturday 20:00 EDT: Sunday and most of Monday are still fresh.
+        self.pool('sat', '2026-09-27T00:00:00Z')
+        v = self.view()
+        self.assertEqual(v['days'][0]['label'], 'Sun 20 Sep')
+        self.assertEqual(v['days'][6]['label'], 'Sat 26 Sep')
+        self.assertEqual([len(d['hours']) for d in v['days']], [24] * 7)
+        self.assertEqual(v['days'][0]['hours'][0]['routes'], ['sat'])
+        self.assertEqual(v['days'][1]['hours'][19]['count'], 1)
+        self.assertEqual(v['days'][1]['hours'][20]['count'], 0)
+        self.assertEqual(v['days'][6]['hours'][19]['count'], 0)
+        self.assertEqual(v['days'][6]['hours'][20]['count'], 1)
+        self.assertIn('Freshest: Sun 00:00 – Mon 20:00 (1 routes', v['summary'])
+        self.assertIn('Leanest: Mon 20:00 – Sat 20:00 (0)', v['summary'])
 
-    def test_missing_reading_and_no_long_window(self):
-        missing = self.pool('missing')
-        missing['windows'] = []
-        missing['state'] = 'stale'
-        v = self.view(missing, self.pool('short', .1, '5h'))
-        self.assertEqual(len(v['rows']), 1)
-        self.assertIsNone(v['rows'][0]['used_pct'])
-        self.assertEqual(v['rows'][0]['reset_text'], 'unknown')
-        self.assertTrue(v['rows'][0]['stale'])
+    def test_markers_use_local_day_and_minute_and_account(self):
+        self.pool('work-route', '2026-09-24T01:30:00Z', account='work')
+        v = self.view()
+        marker = v['days'][3]['markers'][0]
+        self.assertEqual((marker['hour'], marker['minute']), (21, 30))
+        self.assertEqual(marker['account'], 'work')
+        self.assertEqual(v['days'][3]['now_hour'], 12)
+        self.assertIsNone(v['days'][0]['now_hour'])
 
-    def test_claude_overlay_only_next_24_hours(self):
-        from datetime import timedelta
-        for hours, expected in [(-1, False), (0, True), (5, True), (24, False)]:
-            with self.subTest(hours=hours):
-                pool = self.pool('claude', 3, claude=True)
-                pool['windows'].append({'window': '5h', 'pct': 20, 'soft': 75,
-                                       'resets': self.now + timedelta(hours=hours)})
-                self.assertEqual(bool(self.view(pool)['rows'][0]['overlay']), expected)
-                pool['claude'] = False
-                self.assertIsNone(self.view(pool)['rows'][0]['overlay'])
+    def test_unknown_unmetered_and_monthly_excluded_from_freshness(self):
+        self.pool('unknown')
+        self.pool('malformed', 'bad timestamp')
+        self.pool('free', metered=False)
+        self.pool('monthly', '2026-09-24T01:30:00Z', 'monthly')
+        self.pool('next-month', '2026-10-01T00:00:00Z', 'monthly')
+        v = self.view()
+        self.assertEqual(v['unknown'], ['unknown', 'malformed'])
+        self.assertEqual(v['unmetered'], ['free'])
+        self.assertIn('monthly', v['days'][3]['markers'][0]['text'])
+        self.assertIn('next-month', v['outside'][0])
+        self.assertTrue(all(h['count'] == 0 for d in v['days'] for h in d['hours']))
+        self.assertEqual(v['summary'], 'No known weekly resets to calculate freshness.')
 
-    def test_shared_groups_and_latest_ledger_reading(self):
-        from datetime import timedelta
-        from test_console import fresh
-        # The consolidated snapshot is the same input used by existing Capacity.
-        fresh(self.led, 'claude', 'weekly', 20, timedelta(days=2))
-        fresh(self.led, 'claude', 'weekly', 60, timedelta(days=4))
-        snapshot = state.build(self.cfg, self.led, section='capacity')
-        quota = snapshot['quota']
-        weekly = snapshot['weekly_quota']['rows']
-        self.assertEqual(len({r['name'] for r in weekly}), len(weekly))
-        claude = next(q for q in quota if 'claude' in q['members'])
-        row = next(r for r in weekly if r['name'] == claude['name'])
-        self.assertEqual(row['used_pct'], 60)
-        self.assertEqual(row['day'], 4)
+    def test_latest_alias_reading_counts_shared_group_once(self):
+        self.pool('work-low', '2026-09-21T00:00:00Z', quota_group='work')
+        self.pool('work-medium', '2026-09-24T01:30:00Z', quota_group='work')
+        self.led.con.execute("UPDATE usage SET sampled_at='2026-09-22T00:00:00Z' WHERE platform='work-low'")
+        v = self.view()
+        self.assertEqual(sum(len(d['markers']) for d in v['days']), 1)
+        self.assertEqual(v['days'][3]['markers'][0]['hour'], 21)
+        self.assertEqual(max(h['count'] for d in v['days'] for h in d['hours']), 1)
+        self.assertEqual(v['days'][4]['hours'][0]['routes'], ['work'])
 
-    def test_render_both_layouts_and_only_active_sections(self):
+    def test_empty_and_multiple_routes_summary(self):
+        self.assertEqual(len(self.view()['days']), 7)
+        self.pool('one', '2026-09-22T04:00:00Z')
+        self.pool('two', '2026-09-23T04:00:00Z')
+        v = self.view()
+        self.assertIn('Freshest: Wed 00:00 – Thu 00:00 (2 routes', v['summary'])
+        self.assertIn('Leanest: Sun 00:00 – Tue 00:00 (0)', v['summary'])
+        self.assertEqual(v['days'][3]['hours'][0]['routes'], ['one', 'two'])
+
+    def test_render_layouts_escape_names_and_scope_computation(self):
         from mahler.console import page
-        snapshot = state.build(self.cfg, self.led)
-        snapshot['weekly_quota'] = self.view(self.pool('Account <one>', 2),
-                                           self.pool('unknown'))
+        from test_console import make_cfg
+        self.pool('Account <one>', '2026-09-24T01:30:00Z')
+        self.pool('unknown')
+        snapshot = state.build(make_cfg(), self.led)
+        snapshot['weekly_quota'] = self.view()
         desktop = page.app(snapshot, view='capacity')
         phone = page.app(snapshot, layout='phone', tab='browse')
         self.assertIn('data-capacity-mode="weekly"', desktop)
-        self.assertIn('weekly-grid', desktop)
-        self.assertIn('weekly-reset', desktop)
+        self.assertEqual(desktop.count('class="weekly-cell"'), 168)
         self.assertIn('weekly-now', desktop)
-        self.assertIn('width:42.00%', desktop)
-        self.assertEqual(phone.count('<details class="weekly-day">'), 7)
+        self.assertEqual(phone.count('class="weekly-day"'), 7)
+        self.assertEqual(phone.count('class="weekly-bar"'), 7)
         for html in (desktop, phone):
             self.assertIn('Account &lt;one&gt;', html)
-            self.assertIn('Model &lt;test&gt;', html)
-            self.assertIn('unknown', html)
-        self.assertNotIn('Weekly resets', page.app(snapshot, view='now'))
-        self.assertIsNone(state.build(self.cfg, self.led, section='now')['weekly_quota'])
+            self.assertIn('Reset unknown', html)
+            self.assertIn('aria-label="Sun 00:00', html)
+        self.assertNotIn('Weekly reset calendar', page.app(snapshot, view='now'))
+        from unittest.mock import patch
+        with patch.object(state, 'week_calendar', side_effect=AssertionError('inactive')):
+            self.assertIsNone(state.build(make_cfg(), self.led, section='now')['weekly_quota'])
 
-    def test_local_ranges_across_dst(self):
-        from datetime import timedelta
-        from local_timezone import local_timezone
-        with local_timezone('America/New_York'):
-            self.now = datetime(2026, 10, 31, 16, tzinfo=timezone.utc)
-            row = self.pool('dst', 1)
-            v = self.view(row)
-            self.assertIn('12:00 EDT', v['days'][0]['range'])
-            self.assertIn('11:00 EST', v['days'][0]['range'])
-            self.assertEqual(v['rows'][0]['day'], 1)
-            self.assertEqual(row['windows'][0]['resets'] - self.now, timedelta(hours=24))
+    def test_dst_week_uses_each_days_local_offset(self):
+        self.now = datetime(2026, 11, 4, 16, tzinfo=timezone.utc)
+        self.pool('dst', '2026-11-01T04:00:00Z')  # Sunday 00:00 EDT
+        v = self.view()
+        self.assertEqual(v['days'][0]['markers'][0]['hour'], 0)
+        # Forty-eight elapsed hours ends Monday 23:00 EST after fall-back.
+        self.assertEqual(v['days'][1]['hours'][22]['count'], 1)
+        self.assertEqual(v['days'][1]['hours'][23]['count'], 0)
+        self.assertEqual(v['days'][6]['markers'][0]['hour'], 23)
