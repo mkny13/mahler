@@ -1,0 +1,447 @@
+......................................................................................................................................................................................................................................................................................................................................................................................serve: 2026-09-28T02:18:53.084+00:00 method="GET" path="/fragment?layout=phone&tab=models" status=200 size=1743 duration_ms=6.225 event="end"
+serve: 2026-09-28T02:18:53.088+00:00 method="GET" path="/" status=200 size=127043 duration_ms=3.349 event="end"
+.serve: 2026-09-28T02:18:53.113+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.126 event="start"
+serve: 2026-09-28T02:18:53.113+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.487 event="end"
+serve: 2026-09-28T02:18:53.114+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.189 event="start"
+serve: 2026-09-28T02:18:53.114+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.382 event="end"
+serve: 2026-09-28T02:18:53.114+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.087 event="start"
+serve: 2026-09-28T02:18:53.115+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.322 event="end"
+serve: 2026-09-28T02:18:53.115+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.112 event="start"
+serve: 2026-09-28T02:18:53.116+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.513 event="end"
+serve: 2026-09-28T02:18:53.116+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.097 event="start"
+serve: 2026-09-28T02:18:53.116+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.422 event="end"
+...................................................................................................................................................................................................................................................Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmphii3yns_/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpyj7s4jc7/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpv6373uww/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpkuumr679/.claude
+.....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................serve: 2026-09-28T02:20:29.671+00:00 method="POST" path="/api/answer" status=- size=0 duration_ms=0.192 event="start"
+serve: 2026-09-28T02:20:29.672+00:00 method="POST" path="/api/answer" status=200 size=40 duration_ms=0.647 event="end"
+serve: 2026-09-28T02:20:29.672+00:00 method="POST" path="/api/answer_undo" status=- size=0 duration_ms=0.056 event="start"
+serve: 2026-09-28T02:20:29.672+00:00 method="POST" path="/api/answer_undo" status=200 size=12 duration_ms=0.230 event="end"
+serve: 2026-09-28T02:20:29.673+00:00 method="POST" path="/api/answer_undo" status=- size=0 duration_ms=0.059 event="start"
+serve: 2026-09-28T02:20:29.673+00:00 method="POST" path="/api/answer_undo" status=400 size=38 duration_ms=0.226 event="end"
+.serve: 2026-09-28T02:20:29.699+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.081 event="start"
+serve: 2026-09-28T02:20:29.700+00:00 method="POST" path="/api/attach" status=200 size=78 duration_ms=1.482 event="end"
+serve: 2026-09-28T02:20:29.702+00:00 method="GET" path="/attachments/5368d2a156fb4567979147f1c47ab4cb.png" status=200 size=17 duration_ms=0.750 event="end"
+.serve: 2026-09-28T02:20:29.744+00:00 method="GET" path="/attachments/../config.toml" status=- size=0 duration_ms=1.808 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:29.744+00:00 method="GET" path="/attachments/../config.toml" status=404 size=455 duration_ms=2.175 event="end"
+.serve: 2026-09-28T02:20:29.785+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.167 event="start"
+serve: 2026-09-28T02:20:29.790+00:00 method="POST" path="/api/attach" status=200 size=78 duration_ms=5.642 event="end"
+.serve: 2026-09-28T02:20:29.855+00:00 method="POST" path="/api/attach" status=- size=0 duration_ms=0.183 event="start"
+serve: 2026-09-28T02:20:29.859+00:00 method="POST" path="/api/attach" status=400 size=60 duration_ms=4.739 event="end"
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: code updated abc123 -> def456, restarting
+/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/unittest/case.py:615: ResourceWarning: unclosed <socket.socket fd=4, family=2, type=1, proto=0, laddr=('127.0.0.1', 51587)>
+  result = method()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...serve: 2026-09-28T02:20:30.564+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.223 event="start"
+serve: 2026-09-28T02:20:30.564+00:00 method="POST" path="/api/client_log" status=403 size=57 duration_ms=0.505 event="end"
+serve: 2026-09-28T02:20:30.565+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.190 event="start"
+serve: 2026-09-28T02:20:30.566+00:00 method="POST" path="/api/client_log" status=415 size=47 duration_ms=0.485 event="end"
+serve: 2026-09-28T02:20:30.567+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.092 event="start"
+serve: 2026-09-28T02:20:30.567+00:00 method="POST" path="/api/client_log" status=403 size=52 duration_ms=0.234 event="end"
+serve: 2026-09-28T02:20:30.568+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.053 event="start"
+serve: 2026-09-28T02:20:30.568+00:00 method="POST" path="/api/client_log" status=403 size=83 duration_ms=0.160 event="end"
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:30.889+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.184 event="start"
+serve: 2026-09-28T02:20:30.889+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.499 event="end"
+serve: cannot read HEAD, will retry
+..serve: 2026-09-28T02:20:30.938+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.098 event="start"
+serve: 2026-09-28T02:20:30.939+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.297 event="end"
+serve: 2026-09-28T02:20:30.939+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.059 event="start"
+serve: 2026-09-28T02:20:30.939+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.131 event="end"
+serve: 2026-09-28T02:20:30.940+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.048 event="start"
+serve: 2026-09-28T02:20:30.940+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.106 event="end"
+serve: 2026-09-28T02:20:30.940+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.044 event="start"
+serve: 2026-09-28T02:20:30.940+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.107 event="end"
+serve: 2026-09-28T02:20:30.940+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.043 event="start"
+serve: 2026-09-28T02:20:30.941+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.098 event="end"
+serve: 2026-09-28T02:20:30.941+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.045 event="start"
+serve: 2026-09-28T02:20:30.941+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.127 event="end"
+serve: 2026-09-28T02:20:30.941+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.041 event="start"
+serve: 2026-09-28T02:20:30.942+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.099 event="end"
+serve: 2026-09-28T02:20:30.942+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.040 event="start"
+serve: 2026-09-28T02:20:30.942+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.093 event="end"
+serve: 2026-09-28T02:20:30.942+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.038 event="start"
+serve: 2026-09-28T02:20:30.943+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.091 event="end"
+serve: 2026-09-28T02:20:30.943+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.043 event="start"
+serve: 2026-09-28T02:20:30.943+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.111 event="end"
+serve: 2026-09-28T02:20:30.943+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.040 event="start"
+serve: 2026-09-28T02:20:30.943+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.098 event="end"
+serve: 2026-09-28T02:20:30.944+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.039 event="start"
+serve: 2026-09-28T02:20:30.944+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.093 event="end"
+serve: 2026-09-28T02:20:30.944+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.039 event="start"
+serve: 2026-09-28T02:20:30.944+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.091 event="end"
+.serve: 2026-09-28T02:20:30.970+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.970+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.970+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.970+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.971+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.971+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.971+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.971+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.972+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.972+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.972+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.973+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.973+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.973+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.973+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.973+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.974+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.974+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.974+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.974+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.975+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.975+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.975+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.975+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.976+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.977+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.977+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.977+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.977+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.978+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.978+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.978+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.978+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.978+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.979+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.979+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.979+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.979+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.979+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.980+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.980+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.980+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.980+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.981+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.981+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.981+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.982+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.982+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.982+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.982+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.983+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.983+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.983+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: cannot read HEAD, will retry
+serve: 2026-09-28T02:20:30.984+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.984+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.984+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.984+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.984+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.985+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.985+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.985+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.985+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.985+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.986+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.986+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.986+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.986+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.987+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.987+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.987+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.987+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.988+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.988+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.988+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.988+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.989+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.989+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.989+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.989+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.990+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.990+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.990+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.990+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.990+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.991+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.991+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.991+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.991+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.991+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.992+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.992+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.992+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.992+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.993+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.993+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.993+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.993+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.994+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.994+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.994+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.994+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.995+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.995+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.995+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.995+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.995+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.996+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.996+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.996+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.996+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.997+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.997+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.997+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.997+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.998+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.998+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.998+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.998+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:30.999+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+serve: 2026-09-28T02:20:30.999+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.000 event="start"
+serve: 2026-09-28T02:20:31.000+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.000 event="end"
+.serve: 2026-09-28T02:20:31.025+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.085 event="start"
+serve: 2026-09-28T02:20:31.025+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.296 event="end"
+.serve: 2026-09-28T02:20:31.051+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.218 event="start"
+serve: 2026-09-28T02:20:31.051+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.682 event="end"
+.serve: 2026-09-28T02:20:31.080+00:00 method="GET" path="/?view=backlog" status=200 size=98789 duration_ms=2.896 event="end"
+serve: 2026-09-28T02:20:31.083+00:00 method="GET" path="/?view=backlog" status=200 size=99449 duration_ms=2.254 event="end"
+.serve: cannot read HEAD, will retry
+serve: 2026-09-28T02:20:31.109+00:00 method="GET" path="/api/settings" status=200 size=3493 duration_ms=0.565 event="end"
+serve: 2026-09-28T02:20:31.110+00:00 method="POST" path="/api/settings" status=- size=0 duration_ms=0.050 event="start"
+serve: 2026-09-28T02:20:31.113+00:00 method="POST" path="/api/settings" status=200 size=3519 duration_ms=3.823 event="end"
+serve: 2026-09-28T02:20:31.116+00:00 method="GET" path="/api/settings" status=200 size=3493 duration_ms=0.998 event="end"
+.serve: 2026-09-28T02:20:31.142+00:00 method="GET" path="/api/settings" status=200 size=3493 duration_ms=0.555 event="end"
+serve: 2026-09-28T02:20:31.142+00:00 method="POST" path="/api/settings" status=- size=0 duration_ms=0.081 event="start"
+serve: 2026-09-28T02:20:31.143+00:00 method="POST" path="/api/settings" status=400 size=79 duration_ms=1.109 event="end"
+..serve: 2026-09-28T02:20:31.194+00:00 method="GET" path="/fragment" status=200 size=3824 duration_ms=1.614 event="end"
+serve: 2026-09-28T02:20:31.198+00:00 method="GET" path="/api/state" status=200 size=41870 duration_ms=3.499 event="end"
+.serve: 2026-09-28T02:20:31.220+00:00 method="PUT" path="/" status=- size=0 duration_ms=0.084 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-09-28T02:20:31.220+00:00 method="PUT" path="/" status=405 size=503 duration_ms=0.159 event="end"
+serve: 2026-09-28T02:20:31.221+00:00 method="DELETE" path="/" status=- size=0 duration_ms=0.047 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-09-28T02:20:31.221+00:00 method="DELETE" path="/" status=405 size=503 duration_ms=0.098 event="end"
+serve: 2026-09-28T02:20:31.221+00:00 method="PATCH" path="/" status=- size=0 duration_ms=0.047 event="code 405, message only GET, and POST to /api/<action>"
+serve: 2026-09-28T02:20:31.221+00:00 method="PATCH" path="/" status=405 size=503 duration_ms=0.094 event="end"
+serve: 2026-09-28T02:20:31.221+00:00 method="POST" path="/" status=- size=0 duration_ms=0.054 event="start"
+serve: 2026-09-28T02:20:31.221+00:00 method="POST" path="/" status=- size=0 duration_ms=0.075 event="code 405, message Method Not Allowed"
+serve: 2026-09-28T02:20:31.221+00:00 method="POST" path="/" status=405 size=480 duration_ms=0.123 event="end"
+serve: 2026-09-28T02:20:31.222+00:00 method="POST" path="/api/drop_tables" status=- size=0 duration_ms=0.042 event="start"
+serve: 2026-09-28T02:20:31.222+00:00 method="POST" path="/api/drop_tables" status=- size=0 duration_ms=0.064 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.222+00:00 method="POST" path="/api/drop_tables" status=404 size=455 duration_ms=0.221 event="end"
+.serve: cannot read HEAD, will retry
+serve: 2026-09-28T02:20:31.227+00:00 method="GET" path="/" status=200 size=96699 duration_ms=1.757 event="end"
+.serve: 2026-09-28T02:20:31.258+00:00 method="GET" path="/api/state?range=last7" status=200 size=41871 duration_ms=7.022 event="end"
+serve: 2026-09-28T02:20:31.263+00:00 method="GET" path="/api/state?range=custom&start=2026-09-01&end=2026-09-12" status=200 size=41894 duration_ms=3.469 event="end"
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:31.285+00:00 method="GET" path="/status" status=- size=0 duration_ms=0.089 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.285+00:00 method="GET" path="/status" status=404 size=455 duration_ms=0.183 event="end"
+.serve: 2026-09-28T02:20:31.310+00:00 method="GET" path="/api/releases/phish-in%2Fcouch-tour.json" status=200 size=118 duration_ms=0.384 event="end"
+.serve: 2026-09-28T02:20:31.335+00:00 method="GET" path="/api/releases/mahler" status=200 size=105 duration_ms=0.294 event="end"
+.serve: 2026-09-28T02:20:31.360+00:00 method="GET" path="/api/releases/mahler?limit=0" status=- size=0 duration_ms=0.120 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-09-28T02:20:31.360+00:00 method="GET" path="/api/releases/mahler?limit=0" status=400 size=498 duration_ms=0.194 event="end"
+serve: 2026-09-28T02:20:31.361+00:00 method="GET" path="/api/releases/mahler?limit=-5" status=- size=0 duration_ms=0.081 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-09-28T02:20:31.361+00:00 method="GET" path="/api/releases/mahler?limit=-5" status=400 size=498 duration_ms=0.154 event="end"
+serve: 2026-09-28T02:20:31.361+00:00 method="GET" path="/api/releases/mahler?limit=abc" status=- size=0 duration_ms=0.075 event="code 400, message invalid limit: must be a positive integer"
+serve: 2026-09-28T02:20:31.361+00:00 method="GET" path="/api/releases/mahler?limit=abc" status=400 size=498 duration_ms=0.118 event="end"
+.serve: 2026-09-28T02:20:31.386+00:00 method="GET" path="/api/releases/mahler?limit=5" status=200 size=424 duration_ms=0.279 event="end"
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:31.412+00:00 method="GET" path="/api/releases/nonexistent" status=- size=0 duration_ms=0.120 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.413+00:00 method="GET" path="/api/releases/nonexistent" status=404 size=455 duration_ms=0.201 event="end"
+serve: 2026-09-28T02:20:31.413+00:00 method="GET" path="/api/releases/mahler" status=- size=0 duration_ms=0.132 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.413+00:00 method="GET" path="/api/releases/mahler" status=404 size=455 duration_ms=0.192 event="end"
+.serve: 2026-09-28T02:20:31.443+00:00 method="GET" path="/api/releases/mahler" status=200 size=105 duration_ms=0.310 event="end"
+serve: 2026-09-28T02:20:31.443+00:00 method="GET" path="/api/releases/mahler.json" status=200 size=105 duration_ms=0.186 event="end"
+serve: 2026-09-28T02:20:31.444+00:00 method="GET" path="/api/projects/mahler/releases.json" status=200 size=105 duration_ms=0.115 event="end"
+serve: cannot read HEAD, will retry
+....serve: 2026-09-28T02:20:31.709+00:00 method="GET" path="/api/run/abc/log" status=- size=0 duration_ms=2.252 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.710+00:00 method="GET" path="/api/run/abc/log" status=404 size=455 duration_ms=3.072 event="end"
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:31.754+00:00 method="GET" path="/api/run/9997/log" status=- size=0 duration_ms=0.429 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.754+00:00 method="GET" path="/api/run/9997/log" status=404 size=455 duration_ms=0.605 event="end"
+.serve: 2026-09-28T02:20:31.785+00:00 method="GET" path="/api/run/9998/log" status=- size=0 duration_ms=0.231 event="code 404, message Not Found"
+serve: 2026-09-28T02:20:31.785+00:00 method="GET" path="/api/run/9998/log" status=404 size=455 duration_ms=0.361 event="end"
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:31.819+00:00 method="GET" path="/api/run/9999/log" status=200 size=60 duration_ms=0.737 event="end"
+.serve: 2026-09-28T02:20:31.845+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.080 event="start"
+serve: cannot read HEAD, will retry
+serve: 2026-09-28T02:20:31.963+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=117.813 event="end"
+.serve: 2026-09-28T02:20:31.977+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.115 event="start"
+serve: 2026-09-28T02:20:31.977+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.515 event="end"
+serve: cannot read HEAD, will retry
+.serve: 2026-09-28T02:20:32.003+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.089 event="start"
+serve: cannot read HEAD, will retry
+serve: 2026-09-28T02:20:32.118+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=115.387 event="end"
+.serve: 2026-09-28T02:20:32.132+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.102 event="start"
+serve: 2026-09-28T02:20:32.133+00:00 method="POST" path="/api/pause" status=400 size=52 duration_ms=0.328 event="end"
+serve: 2026-09-28T02:20:32.133+00:00 method="POST" path="/api/clear_backoff" status=- size=0 duration_ms=0.061 event="start"
+serve: 2026-09-28T02:20:32.134+00:00 method="POST" path="/api/clear_backoff" status=400 size=53 duration_ms=0.371 event="end"
+.serve: 2026-09-28T02:20:32.163+00:00 method="GET" path="/api/state" status=200 size=42789 duration_ms=4.181 event="end"
+serve: 2026-09-28T02:20:32.164+00:00 method="POST" path="/api/end_session" status=- size=0 duration_ms=0.187 event="start"
+serve: 2026-09-28T02:20:32.164+00:00 method="POST" path="/api/end_session" status=200 size=12 duration_ms=0.436 event="end"
+serve: 2026-09-28T02:20:32.169+00:00 method="GET" path="/api/state" status=200 size=42819 duration_ms=4.108 event="end"
+serve: 2026-09-28T02:20:32.172+00:00 method="GET" path="/fragment" status=200 size=3820 duration_ms=1.572 event="end"
+serve: 2026-09-28T02:20:32.174+00:00 method="GET" path="/fragment" status=200 size=4184 duration_ms=1.480 event="end"
+serve: 2026-09-28T02:20:32.174+00:00 method="POST" path="/api/end_session" status=- size=0 duration_ms=0.049 event="start"
+serve: 2026-09-28T02:20:32.174+00:00 method="POST" path="/api/end_session" status=400 size=49 duration_ms=0.160 event="end"
+.serve: 2026-09-28T02:20:32.205+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.106 event="start"
+serve: 2026-09-28T02:20:32.205+00:00 method="POST" path="/api/pause" status=403 size=57 duration_ms=0.417 event="end"
+serve: 2026-09-28T02:20:32.206+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.117 event="start"
+serve: 2026-09-28T02:20:32.207+00:00 method="POST" path="/api/pause" status=403 size=52 duration_ms=0.284 event="end"
+serve: 2026-09-28T02:20:32.207+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.065 event="start"
+serve: 2026-09-28T02:20:32.207+00:00 method="POST" path="/api/pause" status=415 size=47 duration_ms=0.194 event="end"
+serve: cannot read HEAD, will retry
+..serve: 2026-09-28T02:20:32.257+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.069 event="start"
+serve: 2026-09-28T02:20:32.257+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.238 event="end"
+serve: 2026-09-28T02:20:32.258+00:00 method="POST" path="/api/resume" status=- size=0 duration_ms=0.047 event="start"
+serve: 2026-09-28T02:20:32.258+00:00 method="POST" path="/api/resume" status=200 size=12 duration_ms=0.152 event="end"
+.serve: 2026-09-28T02:20:32.283+00:00 method="POST" path="/api/brief_seen" status=- size=0 duration_ms=0.159 event="start"
+serve: 2026-09-28T02:20:32.283+00:00 method="POST" path="/api/brief_seen" status=200 size=23 duration_ms=0.372 event="end"
+serve: 2026-09-28T02:20:32.287+00:00 method="GET" path="/api/state" status=200 size=43055 duration_ms=3.910 event="end"
+.serve: 2026-09-28T02:20:32.309+00:00 method="POST" path="/api/pause" status=- size=0 duration_ms=0.079 event="start"
+serve: 2026-09-28T02:20:32.310+00:00 method="POST" path="/api/pause" status=200 size=12 duration_ms=0.244 event="end"
+.serve: cannot read HEAD, will retry
+.....serve: cannot read HEAD, will retry
+......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.......serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+....serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+..............serve: cannot read HEAD, will retry
+.....................................serve: cannot read HEAD, will retry
+...............serve: cannot read HEAD, will retry
+.....serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.........serve: cannot read HEAD, will retry
+...................  claude-low   stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude       stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  claude-opus  stale  5h 25%, weekly: no sample  [5h in 4h 0m]
+  agy-claude   stale  5h: no sample, weekly: no sample
+  agy-gemini   stale  5h: no sample, weekly: no sample
+  codex-low    stale  5h: no sample, weekly: no sample
+  codex        stale  5h: no sample, weekly: no sample
+  codex-high   stale  5h: no sample, weekly: no sample
+  cline-free   ok     unknown limit (platform reports no quota signal)
+  kilo         ok     unknown limit (platform reports no quota signal)
+  copilot      stale  monthly: no sample
+  copilot-high stale  monthly: no sample
+peak override on — Claude runs allowed until 14:00 ET (in 4h 0m)
+.............................serve: cannot read HEAD, will retry
+...........................................serve: cannot read HEAD, will retry
+...........serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+.........................serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+serve: cannot read HEAD, will retry
+...............
+----------------------------------------------------------------------
+Ran 1519 tests in 119.904s
+
+OK
