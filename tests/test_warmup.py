@@ -352,12 +352,49 @@ class TranscriptTests(unittest.TestCase):
         self.write('private-tmp-xyz', [
             '{"cwd":"/tmp/mahler-warmup-abc","timestamp":"2026-09-25T07:30:00Z"}'])
         self.write('Users-mike-Mahler', [
-            '{"cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T09:10:00Z"}'])
+            '{"type":"user","cwd":"/Users/mike/Mahler",'
+            '"timestamp":"2026-09-25T09:10:00Z"}'])
         with local_timezone('UTC'):
             out = warmup.transcript_first_use(self.root, self.since, self.now,
                                               excluded=self.excluded)
         self.assertEqual(list(out), [date(2026, 9, 25)])
         self.assertEqual(out[date(2026, 9, 25)].hour, 9)
+
+    def test_worktree_transcript_excluded_whole(self):
+        # A worktree transcript's queue-operation records carry no cwd, so the
+        # file must be dropped as a whole, not line by line.
+        self.write('Users-mike-.mahler-worktrees-mahler-536-run10061', [
+            '{"cwd":"/Users/mike/.mahler/worktrees/mahler/536-run10061",'
+            '"timestamp":"2026-09-25T07:00:00Z"}',
+            '{"timestamp":"2026-09-25T06:00:00Z"}'])
+        self.write('Users-mike-Mahler', [
+            '{"type":"user","cwd":"/Users/mike/Mahler",'
+            '"timestamp":"2026-09-25T09:10:00Z"}'])
+        with local_timezone('UTC'):
+            out = warmup.transcript_first_use(self.root, self.since, self.now,
+                                              excluded=self.excluded)
+        self.assertEqual(out, {date(2026, 9, 25): datetime(2026, 9, 25, 9, 10,
+                                                           tzinfo=timezone.utc)})
+
+    def test_only_user_message_timestamps_count(self):
+        # Outside worktrees, non-user records without cwd (queue operations)
+        # must not count either: only user messages say when Mike started.
+        self.write('Users-mike-Mahler', [
+            '{"timestamp":"2026-09-25T06:00:00Z"}',
+            '{"type":"assistant","cwd":"/Users/mike/Mahler",'
+            '"timestamp":"2026-09-25T08:00:00Z"}',
+            '{"type":"user","cwd":"/Users/mike/Mahler",'
+            '"timestamp":"2026-09-25T09:10:00Z"}'])
+        self.write('Users-mike-.codex-sessions', [
+            '{"timestamp":"2026-09-25T07:00:00Z","type":"response_item",'
+            '"payload":{"type":"message","role":"assistant","content":[]}}',
+            '{"timestamp":"2026-09-25T07:30:00Z","type":"response_item",'
+            '"payload":{"type":"message","role":"user","content":[]}}'])
+        with local_timezone('UTC'):
+            out = warmup.transcript_first_use(self.root, self.since, self.now,
+                                              excluded=self.excluded)
+        self.assertEqual(out, {date(2026, 9, 25): datetime(2026, 9, 25, 7, 30,
+                                                           tzinfo=timezone.utc)})
 
     def test_stale_files_are_skipped(self):
         d = os.path.join(self.root, 'Users-mike-Mahler')
@@ -394,7 +431,8 @@ class LearnCollectTests(unittest.TestCase):
         os.makedirs(root)
         path = os.path.join(root, 's.jsonl')
         with open(path, 'w') as f:
-            f.write('{"cwd":"/Users/mike/Mahler","timestamp":"2026-09-25T09:10:00Z"}\n')
+            f.write('{"type":"user","cwd":"/Users/mike/Mahler",'
+                    '"timestamp":"2026-09-25T09:10:00Z"}\n')
         os.utime(path, (self.now.timestamp() - 3600,) * 2)
         self.now = datetime(2026, 9, 25, 11, 10, tzinfo=timezone.utc)
         self.led.event('human-out', detail='claude')
@@ -403,6 +441,25 @@ class LearnCollectTests(unittest.TestCase):
             days = warmup.collect_days(self.cfg, self.led, self.target,
                                        self.now - timedelta(days=10), self.now)
         self.assertEqual(days, {date(2026, 9, 25): (550, 120)})
+
+    def test_collect_days_ignores_events_outside_window(self):
+        # Ledger events outside the 30-day window must age out of the report:
+        # an old human-use stays out, and so does one after `now`.
+        root = os.path.join(self.td.name, 'projects')
+        os.makedirs(root)
+        self.now = datetime(2026, 9, 25, 11, 10, tzinfo=timezone.utc)
+        self.led.event('human-use', detail='claude')            # inside the window
+        self.now = datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc)
+        self.led.event('human-use', detail='claude')            # older than the window
+        self.now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+        self.led.event('human-use', detail='claude')            # after the report's now
+        with patch('mahler.warmup.transcript_roots', return_value=[root]), \
+             local_timezone('UTC'):
+            days = warmup.collect_days(self.cfg, self.led, self.target,
+                                       datetime(2026, 9, 15, tzinfo=timezone.utc),
+                                       datetime(2026, 9, 26, tzinfo=timezone.utc))
+        self.assertEqual(list(days), [date(2026, 9, 25)])
+        self.assertEqual(days[date(2026, 9, 25)], (670, None))
 
     def test_relearn_persists_kv_and_gates_daily(self):
         days = {date(2026, 9, 25): (550, 120), date(2026, 9, 24): (560, 130),

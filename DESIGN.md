@@ -1656,11 +1656,16 @@ whether to act on the report.
   that the report says so and keeps the configured time. Weekends with no use
   report "off". Relearn runs once a day, first tick at/after 03:00 local.
 - **Signals are read-only.** First use per day comes from Claude Code
-  transcript timestamps only (the `cwd` and `timestamp` fields — never
-  message content), plus the ledger's `human-use`/`human-out` events. Lines
-  whose cwd sits under Mahler's own worktrees (`config.WORKTREES`) or a temp
-  dir are excluded: a Mahler session is never human use. Files untouched
-  since the window start are skipped by mtime before parsing.
+  user-message timestamps only (the `type`/`role` marker and the `timestamp`
+  and `cwd` fields — never message content), plus the ledger's
+  `human-use`/`human-out` events. A transcript that mentions Mahler's own
+  worktrees (`config.WORKTREES`) or a temp dir anywhere is excluded whole:
+  worktree transcripts carry timestamped queue-operation records with no
+  `cwd`, so per-line checks would let an autonomous run count as human use.
+  Non-user records (queue operations, tool traffic) are ignored too, for the
+  same reason. Ledger events are bounded by the same 30-day window as the
+  transcripts, so stale signals age out of the report. Files untouched since
+  the window start are skipped by mtime before parsing.
 - **`human-use` events are per quota group (D25).** A 5-hour usage rise (or a
   reading at/above 90%) on a login with no live Mahler run means Mike is
   using the account elsewhere; the detection lives in `usage

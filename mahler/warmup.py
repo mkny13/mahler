@@ -278,12 +278,19 @@ def _excluded_cwds():
     return (os.path.abspath(config.WORKTREES), os.path.abspath(tempfile.gettempdir()))
 
 
+USER_MSG_RE = re.compile(r'"(?:type|role)"\s*:\s*"user"')
+
+
 def transcript_first_use(root, since, now, excluded=None):
-    """Per local date, the earliest transcript timestamp in `root` (a Claude
+    """Per local date, the earliest user-message timestamp in `root` (a Claude
     `projects/` or Codex `sessions/` tree), read-only: timestamps and cwd
     mentions only, never message content. Files untouched since `since` are
-    skipped; lines whose cwd sits under an excluded prefix (Mahler worktrees,
-    nudge temp dirs) never count as human use."""
+    skipped by mtime. A transcript that mentions an excluded prefix (Mahler
+    worktrees, nudge temp dirs) anywhere is excluded whole: its queue-operation
+    records carry timestamps but no cwd, so per-line checks would let one of
+    Mahler's autonomous runs count as human use. And only user-message lines
+    count — other timestamped records (queue operations, tool traffic) say
+    nothing about when Mike himself started."""
     excluded = _excluded_cwds() if excluded is None else excluded
     out = {}
     for path in glob.glob(os.path.join(os.path.expanduser(str(root)), '**', '*.jsonl'),
@@ -291,18 +298,27 @@ def transcript_first_use(root, since, now, excluded=None):
         try:
             if datetime.fromtimestamp(os.path.getmtime(path), timezone.utc) < since:
                 continue
+            per_file, excluded_file = {}, False
             with open(path, encoding='utf-8', errors='replace') as fh:
                 for line in fh:
+                    if any(x in line for x in excluded):
+                        excluded_file = True
+                        break
                     m = TS_RE.search(line)
-                    if not m or any(x in line for x in excluded):
+                    if not m or not USER_MSG_RE.search(line):
                         continue
                     ts = datetime.fromisoformat(m.group(1).replace('Z', '+00:00'))
                     if not (since <= ts <= now):
                         continue
                     local = ts.astimezone()
                     day = local.date()
-                    if day not in out or local < out[day]:
-                        out[day] = local
+                    if day not in per_file or local < per_file[day]:
+                        per_file[day] = local
+            if excluded_file:
+                continue
+            for day, ts in per_file.items():
+                if day not in out or ts < out[day]:
+                    out[day] = ts
         except OSError:
             continue
     return out
@@ -334,8 +350,13 @@ def collect_days(cfg, led, target, since, now):
             if day not in first or ts < first[day]:
                 first[day] = ts
     group = group_of(cfg, target)
+    # The same bounds as the transcript signals: an event older than the
+    # window must stop biasing the learned times (and let an unused weekend
+    # return to off) once the month rolls on.
     for row in led.q("SELECT at, kind FROM events WHERE project IS NULL AND detail=? "
-                     "AND kind IN ('human-use', 'human-out') ORDER BY at", (group,)):
+                     "AND kind IN ('human-use', 'human-out') "
+                     "AND at >= ? AND at <= ? ORDER BY at",
+                     (group, iso(since), iso(now))):
         ts = parse(row['at']).astimezone()
         day = ts.date()
         if row['kind'] == 'human-use' and (day not in first or ts < first[day]):
