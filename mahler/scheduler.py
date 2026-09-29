@@ -51,7 +51,7 @@ class Ctx:
         pol = self.policy(project)
         repo = pol["repo"]
         if repo not in self._gh:
-            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.gh_account_of(pol)))
+            self._gh[repo] = GH(repo, env=config.gh_env(self.cfg, pol))
         return self._gh[repo]
 
     def say(self, msg):

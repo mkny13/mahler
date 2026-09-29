@@ -1692,3 +1692,30 @@ whether to act on the report.
 - **Fresh vs stored.** The CLI computes the learned lines fresh from the
   signals; the console reads only the persisted kv (state is rebuilt per
   request and must never rescan transcripts).
+
+### D38 — The conductor writes to GitHub as a GitHub App (mahler#607)
+
+**Decision.** With a `[github_app]` table in `~/.mahler/config.toml`, every call made
+through the `GH` client uses an installation token for the app as `GH_TOKEN`, so label
+changes, comments, PRs and merges show as `<app>[bot]` instead of the owner's login.
+The CLI and MCP server use the same token as the daemon, so `mahler add/claim/ship`
+also show as the bot.
+
+```toml
+[github_app]
+app_id = 5127048
+installation_id = 166283054
+private_key = "~/.mahler/secrets/github-app.pem"
+```
+
+- **Where.** `mahler/ghapp.py` mints the token (RS256 JWT signed by `openssl`, stdlib
+  `urllib` for the exchange) and caches it until 5 minutes before expiry.
+  `config.gh_env` applies it; every `GH(...)` construction goes through that.
+- **Falls back.** No `[github_app]`, a failed mint, or a pinned `GH_TOKEN` on the
+  personal account means the old behaviour: whatever `gh auth` holds. A failed mint is
+  retried after 60 seconds, so an outage never stalls a tick.
+- **Personal account only.** Projects with a work `gh_account` keep their own identity (D25).
+- **Not covered.** Git pushes and agent runs still use the login's git credentials
+  (`runner.py`, `janitor.py`), and actions you take by hand on github.com show as you.
+- **Side effect.** PRs are now authored by the bot, so the owner can approve them, which
+  GitHub blocks on one's own PRs.

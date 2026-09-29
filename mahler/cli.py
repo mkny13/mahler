@@ -539,7 +539,7 @@ def cmd_ship(a, cfg, led):
     if item and item["state"] == "done":
         print(f"{project}#{n} is already done")
         return 1
-    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    gh = GH(pol["repo"], env=config.gh_env(cfg, pol))
     pr, branch, title = a.pr, a.branch, (item["title"] if item else None)
     try:
         if pr is None:
@@ -613,7 +613,7 @@ def cmd_release(a, cfg, led):
         return 1
 
     base_branch = pol.get("base", "main")
-    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    gh = GH(pol["repo"], env=config.gh_env(cfg, pol))
     draft = releases.get_draft(led, project)
 
     version_arg = getattr(a, "version", None)
@@ -749,7 +749,7 @@ def cmd_add(a, cfg, led):
     if not pol.get("repo"):
         print(f"unknown project {a.project!r}")
         return 1
-    print(GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).create_issue(a.title, a.body or ""))
+    print(GH(pol["repo"], env=config.gh_env(cfg, pol)).create_issue(a.title, a.body or ""))
     return 0
 
 
@@ -761,7 +761,7 @@ def cmd_notify(a, cfg, led):
 
 def cmd_labels(a, cfg, led):
     pol = config.project_policy(cfg, a.project)
-    GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).ensure_labels()
+    GH(pol["repo"], env=config.gh_env(cfg, pol)).ensure_labels()
     print(f"labels ensured on {pol['repo']}")
     return 0
 

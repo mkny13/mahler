@@ -1087,6 +1087,28 @@ def run_env(cfg, account, base=None):
     return env
 
 
+def gh_env(cfg, pol):
+    """The environment for the conductor's and the CLI's GitHub API calls.
+
+    Same as run_env for the project's gh_account, plus the GitHub App's
+    installation token as GH_TOKEN when `[github_app]` is configured and the
+    project uses the personal login (mahler#607). Work accounts keep their own
+    identity (D25), and a failed mint leaves the env as run_env built it."""
+    account = gh_account_of(pol)
+    env = run_env(cfg, account)
+    app = cfg.get("github_app")
+    pinned = ((cfg.get("accounts", {}).get(account) or {}).get("env") or {})
+    if not app or account != DEFAULT_ACCOUNT or "GH_TOKEN" in pinned:
+        return env
+    from . import ghapp
+    token = ghapp.installation_token(app)
+    if not token:
+        return env
+    env = dict(os.environ if env is None else env)
+    env["GH_TOKEN"] = token
+    return env
+
+
 def project_policy(cfg, name):
     """Defaults overlaid with one project's own entry."""
     pol = {**_merge(cfg["defaults"], cfg["projects"].get(name, {})), "name": name}
