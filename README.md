@@ -29,9 +29,10 @@ separate optional console process.
 - Scheduled backups, digests, cleanup, calibration, and recurring maintenance
   reviews.
 
-The longer-term design contains additional planned capabilities. See the
-current-state section of [ROADMAP.md](ROADMAP.md) before treating a design
-statement as shipped behavior.
+[ARCHITECTURE.md](ARCHITECTURE.md) maps the system as shipped. The longer-term
+design in [DESIGN.md](DESIGN.md) is a decision record and also contains planned
+capabilities. See the current-state section of [ROADMAP.md](ROADMAP.md) before
+treating a design statement as shipped behavior.
 
 ## Requirements
 
@@ -67,7 +68,8 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.mahler.plist
 
 The service follows `origin/main` of the repository you cloned. It advances
 only after GitHub checks and its local unit suite pass, records a known-good
-commit, and rolls back after two failed ticks. Files under `launcher/` are
+commit, and rolls back after two crashed ticks or when a launch-failure breaker
+opens (DESIGN D17). Files under `launcher/` are
 hand-installed; after changing them, rerun `launcher/install.sh`.
 
 To stop the daemon:
@@ -267,8 +269,9 @@ python3 tests/run_random.py
 
 Python 3.12+ and the standard library are the supported runtime. Tests must not
 touch live `~/.mahler` state. Contributor and agent rules live in
-[AGENTS.md](AGENTS.md); design decisions in [DESIGN.md](DESIGN.md); current and
-planned work in [ROADMAP.md](ROADMAP.md).
+[AGENTS.md](AGENTS.md); the system map in [ARCHITECTURE.md](ARCHITECTURE.md); design
+decisions in [DESIGN.md](DESIGN.md); current and planned work in
+[ROADMAP.md](ROADMAP.md).
 
 ### Historical run accounting
 

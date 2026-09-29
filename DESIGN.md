@@ -2,8 +2,8 @@
 
 Status: design agreed 2026-09-12; the system is built and running. This is the
 decision record, so older sections sometimes describe a target that later decisions
-amend. Shipped status lives in [ROADMAP.md](ROADMAP.md), and setup/operation lives in
-[README.md](README.md).
+amend. [ARCHITECTURE.md](ARCHITECTURE.md) maps the system as shipped, shipped status lives
+in [ROADMAP.md](ROADMAP.md), and setup/operation lives in [README.md](README.md).
 Gustav Mahler was a conductor. This tool conducts: it decides who plays which part, and when.
 
 ---
@@ -56,7 +56,10 @@ agents that will build it.
 
 ---
 
-## What exists today, and the gap
+## What existed at design time, and the gap
+
+This section is the 2026-09-12 starting point, kept as history. The legacy tools in the
+table are retired (D2); the system as built is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | Thing | Where | Role today | Fate under Mahler |
 |---|---|---|---|
@@ -603,7 +606,10 @@ doesn't rely on that and stops on its own thresholds regardless.
     worktree builds can silently compile the wrong checkout (phish-in-app D206/D207)
 - **Trust but verify** (made concrete by D18). An agent's "done" is a claim. Mahler moves an item to `shipped` only
   after independent signals agree: CI green on the PR, `verify.full` green, the deploy
-  succeeded, and smoke green. On failure, Mahler feeds the failing log tail (generalised from
+  succeeded, and smoke green. As shipped, the conductor's gates are green CI and, for
+  qualifying items, the independent review below; `verify.full`, `preview`, `smoke` and
+  deploy confirmation are declared in `project.toml` but not yet enforced by the
+  conductor. On failure, Mahler feeds the failing log tail (generalised from
   `ci-wait.sh`) back to the live run. If the run has ended, it starts a fix run from the
   handoff. Attempts are capped.
 - **Local first, CI second.** The Mac mini runs Xcode, Gradle and emulator checks locally.
@@ -617,7 +623,8 @@ doesn't rely on that and stops on its own thresholds regardless.
   (package tests, plus offscreen SwiftUI snapshot rendering if a spike shows it works while
   the screen is locked) and by your UAT. That's what phish-in-app already learned the hard way
   (D208).
-- **Review by a different platform.** Before merge, a short review run on a *different*
+- **Review by a different platform** (shipped, mahler#395; `recipes/review.md`). Before merge,
+  a short review run on a *different*
   platform than the builder. Free tiers are preferred; Claude is used when an item touches
   data or migrations, or the free tiers are exhausted. This is where the BACKLOG's
   **adversarial cross-product review** plugs in (ROADMAP Phase 7). It's agent review, not a
@@ -762,18 +769,21 @@ doesn't rely on that and stops on its own thresholds regardless.
   within that tick. The optional console runs as a separate `launchd` service. Backups,
   cleanup, and the digest are cadence-gated from ticks.
 
-  One **runner** subprocess per run: it wraps the CLI, logs `stream-json`, heartbeats, enforces
-  the time limit, and delivers yields.
+  One detached agent process per run, started by `runner.launch` (its output goes to
+  `runs/<id>/`). It does not supervise itself: the tick's watchdog heartbeats it, enforces the
+  idle and wall-clock limits, and delivers yields.
 - **Paths:**
   - code: `~/Mahler`
   - state: `~/.mahler/` (db, `runs/<id>/`, usage sidecars, logs)
-  - worktrees: `/Volumes/ExtSSD160/.mahler-worktrees/<project>/<issue>-<run>` (same volume as
-    the repos; excluded from Backblaze)
+  - worktrees: `~/.mahler/worktrees/<project>/<issue>-run<id>` by default, or the project's
+    `worktree_root`. The original plan put them at
+    `/Volumes/ExtSSD160/.mahler-worktrees/<project>/<issue>-<run>` (same volume as the
+    repos, excluded from Backblaze); use `worktree_root` for that layout.
   - config: `~/.mahler/config.toml` (platforms, thresholds, caps) and per-repo
     `.mahler/project.toml` (verify, data, release), checked in so agents can read it
-- **Recipes** (after Gas City's formulas): the shipped agent roles are `sort`, `build`, and
-  `fix`, plus the manually triggered `console_walkthrough`. Review, release, and UAT-author
-  roles remain planned.
+- **Recipes** (after Gas City's formulas): the shipped agent roles are `sort`, `build`,
+  `fix` and `review`, plus the manually triggered `console_walkthrough`. Releases are
+  conductor code (D31), not a recipe. A UAT-author role remains planned.
 
 ### D16 — Environments: testing never touches your real data
 
@@ -847,7 +857,7 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   - **build:** implement, run `verify`, commit and push, then end with `STATUS: DONE <one-line
     summary>`. `NEEDS-YOU` and `BLOCKED` stay.
   - **fix:** CI failed on the PR; the run gets the failing log tail and starts from the branch.
-  - **review:** D11's review by a different platform, when it lands.
+  - **review:** D11's independent review by a different platform (shipped, mahler#395).
 - **Mahler does the mechanical steps in code** (Principle 7). It pushes the branch, then opens
   the PR with `Fixes #N`, the agent's summary and the issue's "Needs a human to check" list.
   It watches CI across ticks, checks the lease, squash-merges, deletes the branch and comments
