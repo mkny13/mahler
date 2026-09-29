@@ -97,6 +97,9 @@ def backup_postgres(project, spec, root=ROOT, now=None):
         raise BackupError(f"{spec.get('url_var', 'DATABASE_URL')} not set in {spec['env_file']}")
     dest = os.path.join(root, project)
     os.makedirs(dest, mode=0o700, exist_ok=True)
+    # makedirs won't tighten a directory that already exists too loose (D12:
+    # dumps are 0600 in 0700 directories).
+    os.chmod(dest, 0o700)
     final = os.path.join(dest, f"{spec['name']}-{now.strftime(STAMP)}.dump")
     tmp = final + ".partial"
     run_env = dict(os.environ, PGCONNECT_TIMEOUT="20", **libpq_env(url))
@@ -237,6 +240,8 @@ def backup_ledger(led_path, root=None, now=None):
     now = now or datetime.now()
     root = root or LEDGER_ROOT
     os.makedirs(root, mode=0o700, exist_ok=True)
+    # makedirs won't tighten a directory that already exists too loose (D12).
+    os.chmod(root, 0o700)
     final = os.path.join(root, f"mahler-{now.strftime(STAMP)}.db")
     tmp = final + ".partial"
     old_umask = os.umask(0o077)

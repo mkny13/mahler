@@ -7,17 +7,28 @@ from typing import Dict, List, Any
 from mahler import config
 from mahler import redact
 
+def _state_log(log_path):
+    """The run log's realpath, but only if it is a file inside the state
+    directory. The prefix test is boundary-aware: `<state>-evil/run.log`
+    must not pass a check against `<state>`."""
+    try:
+        real_state = os.path.realpath(config.STATE)
+        real_path = os.path.realpath(log_path)
+        if real_path != real_state and not real_path.startswith(real_state + os.sep):
+            return None
+        if not os.path.isfile(real_path):
+            return None
+        return real_path
+    except Exception:
+        return None
+
 def tail(run: Dict[str, Any], max_bytes: int = 65536, lines: int = 40) -> List[Dict[str, str]]:
     log_path = run.get("log_path")
     if not log_path:
         return []
-    
-    try:
-        real_state = os.path.realpath(config.STATE)
-        real_path = os.path.realpath(log_path)
-        if not real_path.startswith(real_state) or not os.path.isfile(real_path):
-            return []
-    except Exception:
+
+    real_path = _state_log(log_path)
+    if real_path is None:
         return []
 
     try:
@@ -43,8 +54,7 @@ def tail(run: Dict[str, Any], max_bytes: int = 65536, lines: int = 40) -> List[D
 
     results = []
     for line in reversed(decoded):
-        redacted_line = line
-        parsed = _parse_line(redacted_line, kind)
+        parsed = _parse_line(line, kind)
         if parsed:
             parsed["text"] = redact.redact(parsed["text"])
             results.append(parsed)
@@ -189,12 +199,10 @@ def live_status(run: Dict[str, Any]) -> Dict[str, str]:
         return {"text": "starting", "tone": "mut"}
         
     try:
-        real_state = os.path.realpath(config.STATE)
-        real_path = os.path.realpath(log_path)
-        if not real_path.startswith(real_state) or not os.path.isfile(real_path):
+        if _state_log(log_path) is None:
             return {"text": "starting", "tone": "mut"}
-            
-        st = os.stat(real_path)
+
+        st = os.stat(os.path.realpath(log_path))
         mtime = st.st_mtime
         
         now = time.time()

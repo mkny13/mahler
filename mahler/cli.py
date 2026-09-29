@@ -15,7 +15,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-from . import config, holds, notify, platforms, router, scheduler, usage as usage_mod
+from . import config, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import GH, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -1114,7 +1114,7 @@ def main(argv=None):
     s.set_defaults(fn=cmd_log)
 
     s = sub.add_parser("mcp", help="run MCP server over stdio")
-    s.set_defaults(fn=lambda a, cfg, led: __import__('mahler.mcp', fromlist=['']).serve(cfg, led) or 0)
+    s.set_defaults(fn=lambda a, cfg, led: mcp.serve(cfg, led) or 0)
 
     s = sub.add_parser("peak", help="override Claude's peak window (D22)")
     grp = s.add_mutually_exclusive_group(required=True)
