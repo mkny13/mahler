@@ -7,7 +7,7 @@ import unittest
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch, Mock
 
-from mahler import config, platforms, usage, warmup
+from mahler import config, platforms, scheduler, usage, warmup
 from mahler.ledger import Ledger, iso
 from mahler.scheduler import Ctx
 
@@ -43,6 +43,31 @@ class WarmupTests(unittest.TestCase):
         self.now += timedelta(minutes=1)
         self.run_pass()
         self.assertEqual(self.nudge.call_count, 2)
+
+    def test_tick_relearn_uses_context_ledger(self):
+        ctx = Ctx(self.cfg, self.led, dry_run=True)
+        with patch('mahler.scheduler.config.enabled_projects', return_value=[]), \
+                patch('mahler.scheduler.outbox.drain'), \
+                patch('mahler.scheduler.compute_burst'), \
+                patch('mahler.scheduler.watchdog'), \
+                patch('mahler.scheduler.expire'), \
+                patch('mahler.scheduler.close_finished_parents'), \
+                patch('mahler.scheduler.refresh_usage'), \
+                patch('mahler.scheduler.resets.spend_banked'), \
+                patch('mahler.scheduler.warmup_pass'), \
+                patch('mahler.scheduler.queue_maintenance'), \
+                patch('mahler.scheduler.platform_audit.queue'), \
+                patch('mahler.scheduler.schedule'), \
+                patch('mahler.scheduler.ship'), \
+                patch('mahler.scheduler.digest.maybe_send'), \
+                patch('mahler.scheduler.janitor.maybe_run'), \
+                patch('mahler.scheduler.relearn_due', return_value=True) as due, \
+                patch('mahler.scheduler.relearn') as relearn, \
+                patch.object(self.led, 'paused', return_value=False):
+            scheduler.tick(ctx)
+
+        due.assert_called_once_with(ctx.led)
+        relearn.assert_called_once_with(ctx)
 
     def test_hours_weekends_and_off(self):
         for day, hour in [(28, 4), (27, 10), (29, 0)]:
