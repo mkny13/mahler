@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, platforms, presence, router, scheduler, ship, tick, usage
-from mahler.ledger import Ledger, RoutedLedger, iso
+from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from mahler.gh import depends_of
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -101,7 +101,7 @@ class DependencyTests(unittest.TestCase):
         item(led, "a", 125, state="done")
         item(led, "a", 258, state="done")
         item(led, "ground", 125, state="parked")
-        item(led, "tour", 258, state="shipped")
+        item(led, "tour", 258, state="verifying")
         self.assertEqual(plan(ctx, led), [])
         self.assertEqual(ctx.holds[0]["on"], [
             {"repo": "mkny13/groundwork", "number": 125},
@@ -504,6 +504,25 @@ class QuotaGroupTests(unittest.TestCase):
                             for line in ctx.lines))
         self.assertTrue(any("orphan lease by stale:holder2 on done item released" in line
                             for line in ctx.lines))
+
+    def test_canonical_orphan_sweep_preserves_remote_claim_on_inbox_item(self):
+        ctx, led = mk_ctx({"a": proj(max_parallel=1)})
+        result = remote_lease_operation({
+            "version": 1, "operation": "claim", "project": "a", "number": 30,
+            "holder": "work-laptop/run:7", "kind": "auto", "ttl_minutes": 10,
+        }, ctx.cfg, led)
+        lease = result["lease"]
+        self.assertEqual(led.item("a", 30)["state"], "inbox")
+        self.assertEqual(lease["external"], 1)
+
+        tick.expire(ctx)
+
+        self.assertEqual(led.lease("a", 30)["epoch"], lease["epoch"])
+        self.assertTrue(remote_lease_operation({
+            "version": 1, "operation": "heartbeat", "project": "a", "number": 30,
+            "holder": "work-laptop/run:7", "epoch": lease["epoch"],
+            "ttl_minutes": 10,
+        }, ctx.cfg, led))
 
 
 class VariantQuotaGroupTests(unittest.TestCase):

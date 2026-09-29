@@ -76,6 +76,29 @@ class LeaseTests(unittest.TestCase):
             finally:
                 migrated.close()
 
+    def test_external_lease_marker_migrates_existing_remote_holders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA.replace(
+                "    external     INTEGER NOT NULL DEFAULT 0, -- owned by a D24 remote client\n",
+                ""))
+            con.execute(
+                "INSERT INTO items(project,number,state) VALUES ('p',1,'inbox')")
+            con.execute(
+                "INSERT INTO leases(project,number,holder,kind,epoch,acquired_at,heartbeat_at,"
+                "expires_at) VALUES ('p',1,'laptop/run:7','auto',1,'2026-09-12',"
+                "'2026-09-12','2026-09-13')")
+            con.commit()
+            con.close()
+
+            migrated = Ledger(path)
+            try:
+                self.assertEqual(migrated.lease("p", 1, live_only=False)["external"], 1)
+                self.assertEqual(migrated.orphan_lease_rows(), [])
+            finally:
+                migrated.close()
+
     def test_configured_model_migrates_without_rewriting_runtime_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "legacy.db")
@@ -540,6 +563,55 @@ class RemoteLedgerTests(unittest.TestCase):
         # Verify lease_check fails with wrong epoch
         self.assertFalse(self.routed.lease_check("mahler", 2, lease2["epoch"] + 1))
 
+    def test_remote_release_updates_only_the_callers_item_state(self):
+        self.local.upsert_item("mahler", 1, state="working")
+        self.canonical.upsert_item("mahler", 1, state="working")
+        lease, _ = self.routed.claim("mahler", 1, "interactive:chat", "interactive", 30)
+
+        self.assertTrue(self.routed.release(
+            "mahler", 1, holder="interactive:chat", epoch=lease["epoch"],
+            why="session finished"))
+
+        self.assertEqual(self.local.item("mahler", 1)["state"], "ready")
+        self.assertEqual(self.canonical.item("mahler", 1)["state"], "working")
+        releases = self.local.q(
+            "SELECT * FROM events WHERE kind='release' AND project='mahler' AND number=1")
+        self.assertEqual(len(releases), 1)
+        self.assertTrue(self.requests[-1][1]["caller_owns_state"])
+
+    def test_remote_release_keeps_protocol_v1_state_compatibility(self):
+        self.canonical.upsert_item("mahler", 1, state="working")
+        lease, _ = self.canonical.claim(
+            "mahler", 1, "old-client/interactive:chat", "interactive", 30)
+        released = remote_lease_operation({
+            "version": 1, "operation": "release", "project": "mahler", "number": 1,
+            "holder": "old-client/interactive:chat", "epoch": lease["epoch"],
+            "why": "old client finished",
+        }, self.canonical_cfg, self.canonical)
+
+        self.assertTrue(released)
+        self.assertEqual(self.canonical.item("mahler", 1)["state"], "ready")
+
+    def test_remote_working_item_is_not_orphaned_while_canonical_lease_is_live(self):
+        self.local.upsert_item("mahler", 1, state="working")
+        self.routed.claim("mahler", 1, "interactive:chat", "interactive", 30)
+
+        self.assertEqual(self.routed.orphan_working_items(), [])
+
+        self.clock.advance(minutes=31)
+        self.assertEqual(
+            [row["number"] for row in self.routed.orphan_working_items()], [1])
+
+    def test_remote_orphan_recovery_fails_closed_when_host_is_unavailable(self):
+        self.local.upsert_item("mahler", 1, state="working")
+
+        def failed(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 255, "", "host unreachable")
+
+        routed = RoutedLedger(self.local, self.cfg, run=failed)
+        self.assertEqual(routed.orphan_working_items(), [])
+        self.assertIn("host unreachable", routed.remote_error("mahler"))
+
     def test_status_rows_include_remote_working_lease(self):
         self.routed.claim("mahler", 1, "interactive:chat", "interactive", 30)
         self.local.upsert_item("mahler", 1, state="working")
@@ -594,6 +666,14 @@ class StateTests(unittest.TestCase):
         self.assertEqual(led.item("p", 3)["state"], "ready")
         ev = led.q("SELECT * FROM events WHERE kind='state'")[-1]
         self.assertIn("inbox -> ready", ev["detail"])
+
+    def test_item_writes_reject_retired_or_unknown_states(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        for state in ("shipped", "tracking", "bogus"):
+            with self.subTest(state=state), self.assertRaisesRegex(
+                    ValueError, "invalid item state"):
+                led.upsert_item("p", 3, state=state)
 
 
 class ClearUsageTests(unittest.TestCase):
@@ -911,18 +991,23 @@ class InvariantAndOrphanTests(unittest.TestCase):
         self.led.upsert_item("p", 4, state="done")
         self.led.claim("p", 4, "stale:holder2", "auto", 10)
 
-        # 5. lease on ready item WITH an active run -> not orphan lease (watchdog owns)
+        # 5. every other idle state is also an orphan lease
+        for n, state in enumerate(("inbox", "needs_you", "failed", "parked", "parent"), 10):
+            self.led.upsert_item("p", n, state=state)
+            self.led.claim("p", n, f"stale:{state}", "auto", 10)
+
+        # 6. lease on ready item WITH an active run -> not orphan lease (watchdog owns)
         self.led.upsert_item("p", 5, state="ready")
         self.led.claim("p", 5, "run:5", "auto", 10)
         self.led.create_run(project="p", number=5, role="build", platform="claude", epoch=1, status="running")
 
-        # 6. lease on ready item WITH a stopping run -> not orphan lease
+        # 7. lease on ready item WITH a stopping run -> not orphan lease
         self.led.upsert_item("p", 6, state="ready")
         self.led.claim("p", 6, "run:6", "auto", 10)
         self.led.create_run(project="p", number=6, role="build", platform="claude", epoch=1, status="stopping")
 
         orphans = self.led.orphan_lease_rows()
-        self.assertEqual(sorted(o["number"] for o in orphans), [3, 4])
+        self.assertEqual(sorted(o["number"] for o in orphans), [3, 4, 10, 11, 12, 13, 14])
 
     def test_orphan_lease_rows_excludes_stopping_run(self):
         # Verify that stopping runs also prevent orphan classification
