@@ -116,7 +116,7 @@ def tick(ctx):
         refresh_usage(ctx, projects)
         resets.spend_banked(ctx, projects)
         try:
-            if relearn_due(led):
+            if relearn_due(ctx.led):
                 relearn(ctx)          # mahler#536: daily learned-warm-up data pass
         except Exception as e:
             ctx.say(f"warmup relearn failed — {e}")
