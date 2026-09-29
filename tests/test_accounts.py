@@ -80,6 +80,33 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config.run_env(work_cfg(), "wrok")
 
+    def test_config_rejects_undefined_accounts_and_github_identity(self):
+        for section in (
+            {"platforms": {"builder": {"account": "wrok"}}},
+            {"projects": {"p": {"account": "wrok"}}},
+            {"projects": {"p": {"accounts": ["personal", "wrok"]}}},
+            {"projects": {"p": {"gh_account": "wrok"}}},
+        ):
+            with self.subTest(section=section):
+                cfg = config.resolve_platforms(config._merge(config.DEFAULTS, section))
+                with self.assertRaisesRegex(ValueError, "not defined"):
+                    config.validate_accounts(cfg)
+
+    def test_config_rejects_duplicate_project_accounts(self):
+        cfg = work_cfg(p={"accounts": ["personal", "work", "personal"]})
+        with self.assertRaisesRegex(ValueError, "must not contain duplicates"):
+            config.validate_accounts(cfg)
+
+    def test_quota_groups_cannot_cross_account_boundaries(self):
+        cfg = work_cfg()
+        cfg["platforms"]["claude-work"]["quota_group"] = "claude"
+        with self.assertRaisesRegex(ValueError, "quota_group 'claude' is shared"):
+            config.validate_accounts(cfg)
+        # Runtime callers also fail closed for partial/in-memory configs that
+        # have not passed load-time validation.
+        self.assertNotIn("claude-work", usage.quota_peers(cfg, "claude"))
+        self.assertNotIn("claude", usage.quota_peers(cfg, "claude-work"))
+
     def test_account_mode_defaults_to_order(self):
         self.assertEqual(config.account_mode_of(config.project_policy(work_cfg(), "home")),
                          "order")
@@ -117,6 +144,19 @@ class ConfigTests(unittest.TestCase):
                              "routing": {"build": ["codex-work"]}})
         with self.assertRaisesRegex(ValueError, "spends undeclared account 'work'"):
             config.validate_accounts(cfg)
+
+    def test_priority_route_omitted_role_has_no_candidates(self):
+        cfg = work_cfg(both={"accounts": ["personal", "work"],
+                             "account_mode": "priority",
+                             "routing": {"build": ["agy-claude", "codex-work"]}})
+        route = cfg["projects"]["both"]["routing"]
+        self.assertEqual(router.candidates_for_priority(
+            cfg, "sort", ["personal", "work"], route), [])
+        self.assertEqual(router.candidates_for_priority(
+            cfg, "plan", ["personal", "work"], route), [])
+        self.assertEqual(router.candidates_for_priority(
+            cfg, "fix", ["personal", "work"], route),
+            ["agy-claude", "codex-work"])
 
     def test_work_env_drops_inherited_logins_and_sets_its_own(self):
         base = {"PATH": "/bin", "GH_TOKEN": "personal", "ANTHROPIC_API_KEY": "personal",
