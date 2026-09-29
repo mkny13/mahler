@@ -377,7 +377,10 @@ def _start_review_run(ctx, project, item, pr, view, sha):
                 "the review waits for the next tick")
         return
     busy = busy_platforms(cfg, active)
-    last = led.last_run(project, n)
+    # A failed/inconclusive review remains the latest run, but it did not
+    # produce the PR head. Always fence against the latest builder/fixer so a
+    # retry can never let the builder grade its own work (DESIGN D11).
+    last = led.last_run(project, n, roles=("build", "fix"))
     builder_platform = last["platform"] if last else None
     builder_slot = router.platform_slot(cfg, builder_platform) if builder_platform else None
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))

@@ -107,5 +107,27 @@ class TestNotifyRedacted(unittest.TestCase):
         self.assertIn(b"<redacted>", req.data)
 
 
+class TestErrorRedactionOrder(unittest.TestCase):
+    def test_git_errors_redact_a_token_crossing_the_output_limit(self):
+        from mahler import runner
+        secret = "ghp_" + "a" * 30
+        stderr = "x" * 389 + " " + secret
+        completed = mock.Mock(returncode=1, stderr=stderr, stdout="")
+        with mock.patch.object(runner.subprocess, "run", return_value=completed):
+            with self.assertRaises(runner.GitError) as raised:
+                runner.git("/repo", "fetch")
+        self.assertNotIn("ghp_", str(raised.exception))
+
+    def test_github_errors_redact_a_token_crossing_the_output_limit(self):
+        from mahler import gh
+        secret = "github_pat_" + "a" * 35
+        stderr = "x" * 479 + " " + secret
+        completed = mock.Mock(returncode=1, stderr=stderr, stdout="")
+        with mock.patch.object(gh.subprocess, "run", return_value=completed):
+            with self.assertRaises(gh.GHError) as raised:
+                gh._gh("pr", "view", "1")
+        self.assertNotIn("github_pat_", str(raised.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

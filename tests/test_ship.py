@@ -738,6 +738,22 @@ class ShipTests(unittest.TestCase):
         _, platform, _ = calls[0]
         self.assertNotEqual(platform, "agy-claude")
 
+    def test_review_retry_still_excludes_the_builder_not_the_failed_reviewer(self):
+        """A prior review did not produce the PR head and cannot replace the
+        builder as the platform that DESIGN D11 requires us to exclude."""
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        build = self.led.create_run(project="x", number=5, role="build",
+                                    platform="agy-claude", epoch=1, status="running")
+        self.led.update_run(build, status="ended")
+        review = self.led.create_run(project="x", number=5, role="review",
+                                     platform="agy-gemini", epoch=2, status="running")
+        self.led.update_run(review, status="ended")
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(calls[0][1], "agy-claude")
+
     def test_data_touching_item_pins_claude_for_review(self):
         self.led.upsert_item("x", 5, pr=88, title="database migration for users",
                              labels="[]")

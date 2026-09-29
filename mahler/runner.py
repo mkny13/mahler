@@ -29,7 +29,7 @@ def git(repo, *args, env=None, check=True):
                        env=env, timeout=300)
     if check and r.returncode != 0:
         raise GitError(f"git {' '.join(args[:3])}: "
-                       f"{redact.redact((r.stderr or r.stdout).strip()[:400])}")
+                       f"{redact.redact((r.stderr or r.stdout).strip())[:400]}")
     return r.stdout.strip()
 
 
@@ -97,9 +97,10 @@ def fence_hooks(repo, run_dir):
     for name in HOOK_NAMES:
         body = "#!/bin/sh\n"
         if name == "pre-push":
-            body += (f'"{config.MAHLER_BIN}" lease-check || {{ echo "mahler: this run no longer holds '
+            body += (f'{shlex.quote(config.MAHLER_BIN)} lease-check || {{ echo "mahler: this run no longer holds '
                      f'the lease on #$MAHLER_ISSUE — push refused" >&2; exit 1; }}\n')
-        body += f'[ -x "{orig}/{name}" ] && exec "{orig}/{name}" "$@"\nexit 0\n'
+        original_hook = shlex.quote(os.path.join(orig, name))
+        body += f'[ -x {original_hook} ] && exec {original_hook} "$@"\nexit 0\n'
         path = os.path.join(hooks, name)
         with open(path, "w") as fh:
             fh.write(body)
@@ -341,11 +342,13 @@ def worktree_root(pol):
 
 def remove_worktree(repo, wt, branch=None, root=None):
     """`wt` must be *inside* `root` (DESIGN D12: rm -rf never strays outside the
-    worktree) — a bare `startswith` would also match a sibling directory that
-    merely shares the prefix, e.g. root `.../worktrees` and wt
-    `.../worktrees-evil/x`, so the comparison is anchored on a path boundary."""
-    base = os.path.abspath(root or config.WORKTREES)
-    if wt and os.path.isdir(wt) and os.path.abspath(wt).startswith(base + os.sep):
+    worktree). Resolve both paths first so neither a sibling sharing the same
+    string prefix nor a symlinked ancestor can escape the cleanup boundary."""
+    base = os.path.realpath(root or config.WORKTREES)
+    candidate = os.path.realpath(wt) if wt else None
+    inside = bool(candidate and candidate != base
+                  and os.path.commonpath((base, candidate)) == base)
+    if wt and os.path.isdir(wt) and inside:
         git(repo, "worktree", "remove", "--force", wt, check=False)
         shutil.rmtree(wt, ignore_errors=True)
     git(repo, "worktree", "prune", check=False)

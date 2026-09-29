@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from mahler import config, launch_health, runner, scheduler, tick
 from mahler.console.state import _idle
 from mahler.ledger import Ledger
-from test_schedule import NOW, item, mk_cfg, proj
+from tests.test_schedule import NOW, item, mk_cfg, proj
 
 
 class LaunchHealthTests(unittest.TestCase):

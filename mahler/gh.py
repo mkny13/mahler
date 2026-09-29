@@ -73,7 +73,7 @@ def _gh(*args, input=None, timeout=90, env=None):
         raise GHError(f"gh {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
         raise GHError(f"gh {' '.join(args[:3])}: "
-                      f"{redact.redact((r.stderr or r.stdout).strip()[:500])}")
+                      f"{redact.redact((r.stderr or r.stdout).strip())[:500]}")
     return r.stdout
 
 
@@ -87,7 +87,7 @@ def _git(path, *args, env=None):
         raise GHError(f"git {' '.join(args[:3])}: {e}") from e
     if r.returncode != 0:
         raise GHError(f"git {' '.join(args[:3])}: "
-                      f"{redact.redact((r.stderr or r.stdout).strip()[:400])}")
+                      f"{redact.redact((r.stderr or r.stdout).strip())[:400]}")
     return r.stdout.strip()
 
 
@@ -317,7 +317,7 @@ class GH:
             raise GHError(f"freshness: ancestry check failed: {e}") from e
         if result.returncode not in (0, 1):
             raise GHError("freshness: ancestry check failed: " +
-                          redact.redact(result.stderr.strip()[:400]))
+                          redact.redact(result.stderr.strip())[:400])
         return result.returncode == 0
 
     def pr_merge(self, number, head):
