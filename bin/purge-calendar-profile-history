@@ -1,0 +1,538 @@
+#!/usr/bin/env python3
+"""Operator-safe purge of .calendar-chrome3/ from this repository's history.
+
+One-off incident tooling (mahler#589) for the Chromium profile committed in
+d943be9. Standard library only: git-filter-repo is an operator prerequisite,
+never a Mahler runtime dependency.
+
+Fail-closed by design:
+
+  * The prohibited path is a constant; the tool cannot target anything else.
+  * The default mode never mutates a remote. It creates a fresh disposable
+    bare mirror of exactly the requested source, backs it up as a bundle
+    outside the mirror, rewrites the mirror, and verifies locally. Remote
+    writes happen only in an explicit --push step that also demands
+    --confirmed and carries per-ref force-with-lease values recorded before
+    the rewrite, so a remote that moved since the mirror was taken rejects
+    the push atomically instead of being overwritten blindly.
+  * It refuses an existing work directory (freshness), an ordinary checkout
+    (must be a bare mirror), and any network remote other than mkny13/mahler
+    (rehearse against a local synthetic copy instead).
+  * Output carries ref names, counts and paths only - never blob contents -
+    and credential-bearing URLs are redacted on sight.
+
+Rehearse first: point --from at a synthetic local copy for a full dress
+rehearsal before touching anything real. See
+docs/security/browser-profile-incident.md for the incident runbook.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+
+PROG = "purge-calendar-profile-history"
+CANONICAL_URL = "https://github.com/mkny13/mahler.git"
+PROHIBITED_PATH = ".calendar-chrome3/"
+BUNDLE_SUFFIX = ".purge-backup.bundle"
+STATE_NAME = "purge-state.json"
+
+LOG_PATH = None
+
+
+def redact_url(url):
+    """A URL safe to print: userinfo (tokens) stripped, host and path kept."""
+    if not url:
+        return url
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return re.sub(r"//[^/\s@]+@", "//", url)
+    if parts.username is None and parts.password is None:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urllib.parse.urlunsplit(parts._replace(netloc=host))
+
+
+def scrub(text, urls=()):
+    """Redact known URLs and any userinfo-bearing URL fragment from text."""
+    for url in urls:
+        if url:
+            text = text.replace(url, redact_url(url))
+    return re.sub(r"//[^/\s@]+@", "//", text)
+
+
+def _log(text):
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as fh:
+                fh.write(scrub(text) + "\n")
+        except OSError:
+            pass
+
+
+def run_git(args, cwd=None):
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return subprocess.run(args, cwd=cwd, env=env, capture_output=True)
+
+
+def git(args, cwd=None):
+    p = run_git(["git"] + args, cwd=cwd)
+    _log(
+        "$ git " + " ".join(args) + "\n"
+        + p.stdout.decode(errors="replace")
+        + p.stderr.decode(errors="replace")
+    )
+    return p
+
+
+def die(msg, code=1):
+    print(f"{PROG}: {msg}", file=sys.stderr)
+    if LOG_PATH:
+        print(f"{PROG}: full command log (URLs redacted): {LOG_PATH}", file=sys.stderr)
+    sys.exit(code)
+
+
+def filter_repo_identity():
+    """Return git-filter-repo's printable build identity, or None.
+
+    Upstream releases normally print the source commit hash here rather than a
+    dotted package version.  Treating that hash as a semantic version rejects
+    healthy installations, and there is no sound ordering between the two
+    formats.  Successful discovery plus the real rewrite invocation is the
+    compatibility check.
+    """
+    p = run_git(["git", "filter-repo", "--version"])
+    if p.returncode != 0:
+        return None
+    identity = p.stdout.decode(errors="replace").strip()
+    if not identity or "\n" in identity or "\r" in identity:
+        return None
+    return identity
+
+
+def check_filter_repo(required=True):
+    found = filter_repo_identity()
+    ok = found is not None
+    if ok:
+        print(f"purge: git-filter-repo {found}: ok")
+    elif required:
+        die(
+            "git-filter-repo is required and `git filter-repo --version` must "
+            "succeed (one-off operator prerequisite: pip install git-filter-repo)"
+        )
+    else:
+        print(
+            "purge: note: git-filter-repo is missing or unusable; the rewrite "
+            "step will refuse until `git filter-repo --version` succeeds"
+        )
+    return ok
+
+
+_SCP_LIKE = re.compile(r"^[^/@]+@[^/:]+:")
+
+
+def is_network(url):
+    try:
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+    except ValueError:
+        return True
+    if scheme in ("http", "https", "git", "ssh"):
+        return True
+    return bool(_SCP_LIKE.match(url))
+
+
+def check_source(url, verb="accepts"):
+    """Refuse unexpected network remotes; the canonical repo or a local path only."""
+    if not is_network(url) or url.rstrip("/") == CANONICAL_URL.rstrip("/"):
+        return None
+    return (
+        f"refusing unexpected remote {redact_url(url)}: this tool only {verb} "
+        f"{CANONICAL_URL} or a local path (rehearse against a local synthetic copy)"
+    )
+
+
+def preflight_work(mirror, creating):
+    if creating and os.path.exists(mirror):
+        die(
+            f"refusing to use existing path {mirror}: --work must name a path "
+            "that does not exist yet, so the mirror is guaranteed fresh"
+        )
+    if not creating and not os.path.isdir(mirror):
+        die(
+            f"no mirror at {mirror}: run this tool without --push first to "
+            "clone, rewrite and verify a fresh disposable mirror"
+        )
+
+
+def fresh_mirror(from_url, mirror):
+    p = git(["clone", "--mirror", "--quiet", "--", from_url, mirror])
+    if p.returncode != 0:
+        die(f"mirroring {redact_url(from_url)} failed; nothing was rewritten")
+    problems = []
+    if not is_bare(mirror):
+        problems.append("the result is not a bare mirror")
+    url = origin_url(mirror)
+    if url != from_url:
+        problems.append(
+            f"mirror origin is {redact_url(url or '?')}, expected "
+            f"{redact_url(from_url)}"
+        )
+    if problems:
+        die("; ".join(problems) + " - refusing to rewrite an unexpected clone")
+    print(f"purge: fresh bare mirror cloned at {mirror}")
+
+
+def is_bare(mirror):
+    p = git(["rev-parse", "--is-bare-repository"], cwd=mirror)
+    return p.returncode == 0 and p.stdout.decode().strip() == "true"
+
+
+def origin_url(mirror):
+    p = git(["config", "--get", "remote.origin.url"], cwd=mirror)
+    return p.stdout.decode().strip() if p.returncode == 0 else None
+
+
+def list_refs(mirror):
+    """Local branches and tags of the mirror as {refname: object sha}."""
+    p = git(
+        ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"],
+        cwd=mirror,
+    )
+    refs = {}
+    for line in p.stdout.decode(errors="replace").splitlines():
+        if line.strip():
+            name, sha = line.split()
+            refs[name] = sha
+    return refs
+
+
+def count(mirror, spec, path=None):
+    args = ["rev-list", "--count"] + spec
+    if path:
+        args += ["--", path]
+    p = git(args, cwd=mirror)
+    if p.returncode != 0:
+        die(f"git {' '.join(args[:2])} failed inside the mirror")
+    return int(p.stdout.decode().strip())
+
+
+def print_table(mirror, refs, label):
+    print(f"purge: {label}")
+    for name in sorted(refs):
+        total = count(mirror, [name])
+        hits = count(mirror, [name], PROHIBITED_PATH)
+        flag = "  <- affected" if hits else ""
+        print(
+            f"purge:   {name}  commits={total}  touching={PROHIBITED_PATH}={hits}{flag}"
+        )
+
+
+def make_bundle(mirror, bundle_path):
+    old_umask = os.umask(0o077)
+    try:
+        result = git(["bundle", "create", bundle_path, "--all"], cwd=mirror)
+    finally:
+        os.umask(old_umask)
+    if result.returncode != 0:
+        die("backup bundle failed - refusing to rewrite without a backup")
+    try:
+        os.chmod(bundle_path, 0o600)
+    except OSError:
+        die("could not restrict recovery bundle to mode 0600 - refusing to rewrite")
+    if git(["bundle", "verify", bundle_path], cwd=mirror).returncode != 0:
+        die("backup bundle failed verification - refusing to rewrite")
+    print(
+        f"purge: recovery bundle at {bundle_path} "
+        f"({os.path.getsize(bundle_path)} bytes, outside the mirror)"
+    )
+
+
+def state_path(mirror):
+    return os.path.join(mirror, STATE_NAME)
+
+
+def load_state(mirror):
+    try:
+        with open(state_path(mirror), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def save_state(mirror, state):
+    tmp = state_path(mirror) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2, sort_keys=True)
+    os.replace(tmp, state_path(mirror))
+
+
+def rewrite(mirror):
+    p = git(
+        ["filter-repo", "--path", PROHIBITED_PATH, "--invert-paths", "--force"],
+        cwd=mirror,
+    )
+    if p.returncode != 0:
+        die(
+            "git filter-repo failed; the mirror is untouched or partially "
+            "rewritten - inspect the log; the original history is safe in the "
+            "recovery bundle"
+        )
+    print(f"purge: rewrote history: {PROHIBITED_PATH} inverted out of every ref")
+
+
+def verify_mirror(mirror, expect_refs=None, totals=None):
+    """Problems list; empty means every ref is clean of the prohibited path."""
+    problems = []
+    refs = list_refs(mirror)
+    for name in sorted(expect_refs or ()):  # refs must survive the rewrite
+        if name not in refs:
+            problems.append(f"{name} vanished during the rewrite")
+    all_hits = count(mirror, ["--all"], PROHIBITED_PATH)
+    if all_hits:
+        problems.append(
+            f"{all_hits} commits across all refs still touch {PROHIBITED_PATH}"
+        )
+    for name in sorted(refs):
+        hits = count(mirror, [name], PROHIBITED_PATH)
+        if hits:
+            problems.append(f"{name}: {hits} commits still touch {PROHIBITED_PATH}")
+        if totals and name in totals:
+            before, affected = totals[name][0], totals[name][1]
+            after = count(mirror, [name])
+            if after > before:
+                problems.append(f"{name}: grew from {before} to {after} commits")
+            if affected == 0 and after != before:
+                problems.append(
+                    f"{name}: unrelated history changed ({before} -> {after} commits)"
+                )
+    return problems
+
+
+def do_purge(opts):
+    mirror = os.path.abspath(opts.work)
+    err = check_source(opts.from_url)
+    if err:
+        die(err, code=2)
+    preflight_work(mirror, creating=True)
+    print(f"purge: source {redact_url(opts.from_url)}")
+    if opts.dry_run:
+        check_filter_repo(required=False)
+    else:
+        check_filter_repo(required=True)
+    fresh_mirror(opts.from_url, mirror)
+    refs = list_refs(mirror)
+    if not refs:
+        die("mirror has no branches or tags; refusing an empty mirror")
+    print_table(mirror, refs, "refs before the rewrite (names and counts only)")
+    totals = {
+        name: [count(mirror, [name]), count(mirror, [name], PROHIBITED_PATH)]
+        for name in sorted(refs)
+    }
+    if opts.dry_run:
+        print(
+            "purge: dry run: nothing rewritten, no bundle, no state recorded; "
+            "re-run without --dry-run to perform the local rewrite"
+        )
+        return
+    bundle = mirror + BUNDLE_SUFFIX
+    make_bundle(mirror, bundle)
+    state = {
+        "tool": PROG,
+        "state_version": 1,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "source": redact_url(opts.from_url),
+        "prohibited_path": PROHIBITED_PATH,
+        "bundle": bundle,
+        "lease": dict(refs),
+        "totals": totals,
+        "verified": False,
+    }
+    save_state(mirror, state)
+    rewrite(mirror)
+    problems = verify_mirror(mirror, expect_refs=set(refs), totals=totals)
+    if problems:
+        for line in problems:
+            print(f"purge: VERIFY FAILED: {line}", file=sys.stderr)
+        die(
+            "verification failed: the mirror is NOT clean - do not push; "
+            "the pre-rewrite history is safe in the recovery bundle"
+        )
+    state["verified"] = True
+    state["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    save_state(mirror, state)
+    print(
+        f"purge: verified: no commit reachable from any local branch or tag "
+        f"contains {PROHIBITED_PATH}"
+    )
+    print(f"purge: rewritten mirror: {mirror}")
+    print("purge: to publish this rewrite (privileged, explicit):")
+    print(
+        f"purge:   {PROG} --push --work {mirror} --to {CANONICAL_URL} --confirmed"
+    )
+
+
+def do_push(opts):
+    mirror = os.path.abspath(opts.work)
+    if not opts.confirmed:
+        die(
+            "--push needs --confirmed: force-pushing rewritten refs is a "
+            "privileged, explicit action (docs/security/browser-profile-incident.md)",
+            code=2,
+        )
+    err = check_source(opts.to_url, verb="pushes to")
+    if err:
+        die(err, code=2)
+    preflight_work(mirror, creating=False)
+    if not is_bare(mirror):
+        die(
+            f"refusing ordinary checkout {mirror}: --push requires the verified "
+            "bare mirror created by this tool"
+        )
+    state = load_state(mirror)
+    if (
+        not state
+        or state.get("tool") != PROG
+        or state.get("prohibited_path") != PROHIBITED_PATH
+        or not state.get("verified")
+    ):
+        die(
+            "this mirror has no successful verification on record; run the tool "
+            "without --push to clone, rewrite and verify a fresh mirror first"
+        )
+    lease = state.get("lease", {})
+    problems = verify_mirror(
+        mirror, expect_refs=set(lease), totals=state.get("totals")
+    )
+    if problems:
+        for line in problems:
+            print(f"purge: RE-VERIFY FAILED: {line}", file=sys.stderr)
+        die(
+            f"refusing to push a mirror that still reaches {PROHIBITED_PATH}; "
+            "take a fresh mirror instead"
+        )
+    refs = list_refs(mirror)
+    missing = [r for r in sorted(refs) if r not in lease]
+    if missing:
+        die(
+            "no recorded pre-rewrite value for " + ", ".join(missing)
+            + "; refusing to push without a force-with-lease guard"
+        )
+    ordered = sorted(refs)
+    cmd = (
+        ["push", "--atomic"]
+        + [f"--force-with-lease={r}:{lease[r]}" for r in ordered]
+        + ["--", opts.to_url]
+        + [f"{r}:{r}" for r in ordered]
+    )
+    print(
+        f"purge: force-pushing {len(ordered)} refs to "
+        f"{redact_url(opts.to_url)} under per-ref force-with-lease guards"
+    )
+    p = git(cmd, cwd=mirror)
+    if p.returncode != 0:
+        print(
+            "purge: PUSH REJECTED - stopping; because the push was atomic, "
+            "every remote ref is unchanged",
+            file=sys.stderr,
+        )
+        print(
+            "purge: likely a protected or hidden ref, or the remote moved since "
+            "the mirror was taken (lease guard)",
+            file=sys.stderr,
+        )
+        print(
+            "purge: do NOT weaken branch protection; check git ls-remote, "
+            "take a fresh mirror, and retry or resolve with the repository owner",
+            file=sys.stderr,
+        )
+        print("purge: raw rejection (URLs redacted):", file=sys.stderr)
+        text = scrub(p.stderr.decode(errors="replace"), [opts.to_url, opts.from_url])
+        for line in [l for l in text.strip().splitlines() if l.strip()][-15:]:
+            print("purge:   " + line, file=sys.stderr)
+        sys.exit(1)
+    state["pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    state["pushed_to"] = redact_url(opts.to_url)
+    save_state(mirror, state)
+    for r in ordered:
+        print(f"purge:   {r} -> {refs[r]}")
+    print("purge: pushed. Remote all-ref verification from a fresh clone:")
+    print(
+        f"purge:   git clone --mirror {opts.to_url} verify.git"
+        f' && git -C verify.git rev-list --count --all -- "{PROHIBITED_PATH}"'
+        "  # expect 0"
+    )
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog=PROG,
+        description=(
+            f"Purge {PROHIBITED_PATH} from mkny13/mahler history in a fresh "
+            "disposable mirror; the remote is only touched by an explicit "
+            "--push step. See docs/security/browser-profile-incident.md."
+        ),
+    )
+    ap.add_argument(
+        "--work",
+        required=True,
+        metavar="DIR",
+        help="path for the fresh bare mirror (must not exist), or the verified "
+        "mirror to push with --push",
+    )
+    ap.add_argument(
+        "--from",
+        dest="from_url",
+        default=CANONICAL_URL,
+        metavar="URL",
+        help="source to mirror (default: the canonical GitHub URL; use a local "
+        "synthetic copy for rehearsals)",
+    )
+    ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="clone and enumerate only: no bundle, no rewrite, no remote access "
+        "beyond the read-only mirror fetch",
+    )
+    ap.add_argument(
+        "--push",
+        action="store_true",
+        help="publish a previously verified mirror: force-push its branches and "
+        "tags with per-ref lease guards; refuses protected/hidden-ref errors",
+    )
+    ap.add_argument(
+        "--to",
+        dest="to_url",
+        default=CANONICAL_URL,
+        metavar="URL",
+        help="push target (default: the canonical GitHub URL)",
+    )
+    ap.add_argument(
+        "--confirmed",
+        action="store_true",
+        help="required by --push: the operator's explicit confirmation to "
+        "force-push rewritten refs",
+    )
+    opts = ap.parse_args(argv)
+    if opts.confirmed and not opts.push:
+        ap.error("--confirmed only makes sense together with --push")
+    if opts.push and opts.dry_run:
+        ap.error("--push and --dry-run are mutually exclusive")
+    global LOG_PATH
+    LOG_PATH = os.path.abspath(opts.work) + ".purge-log.txt"
+    if opts.push:
+        do_push(opts)
+    else:
+        do_purge(opts)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
