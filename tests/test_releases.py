@@ -15,7 +15,6 @@ from mahler.releases import (
     get_draft,
     get_release,
     get_release_items,
-    list_releases,
     normalize_semver,
     parse_semver,
     propose_next_version,

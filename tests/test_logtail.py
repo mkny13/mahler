@@ -27,6 +27,28 @@ class TestLogtail(unittest.TestCase):
         run = {"log_path": outside}
         self.assertEqual(logtail.tail(run), [])
 
+    def test_sibling_directory_sharing_prefix(self):
+        # <state>-evil/run.log starts with realpath(<state>) as a plain string
+        # prefix, but it is not inside the state directory (mahler#596).
+        evil = os.path.join(self.tmp.name, "state-evil")
+        os.makedirs(evil)
+        outside = os.path.join(evil, "run.log")
+        with open(outside, "w") as f:
+            f.write("foo")
+        run = {"log_path": outside}
+        self.assertEqual(logtail.tail(run), [])
+        self.assertEqual(logtail.live_status(run), {"text": "starting", "tone": "mut"})
+
+    def test_nested_inside_state(self):
+        sub = os.path.join(self.state, "runs", "deep")
+        os.makedirs(sub)
+        log = os.path.join(sub, "run.log")
+        with open(log, "w") as f:
+            f.write('{"type":"result","result":"done","is_error":false}\n')
+        lines = logtail.tail({"platform": "claude", "log_path": log})
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["text"], "result: done")
+
     def test_claude_stream_json(self):
         log = os.path.join(self.state, "claude.log")
         with open(log, "w") as f:
