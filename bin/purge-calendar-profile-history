@@ -38,7 +38,6 @@ import urllib.parse
 PROG = "purge-calendar-profile-history"
 CANONICAL_URL = "https://github.com/mkny13/mahler.git"
 PROHIBITED_PATH = ".calendar-chrome3/"
-MIN_FILTER_REPO = (2, 27)
 BUNDLE_SUFFIX = ".purge-backup.bundle"
 STATE_NAME = "purge-state.json"
 
@@ -101,39 +100,38 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def _ver_tuple(text):
-    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text)
-    if not m:
-        return None
-    return tuple(int(x or 0) for x in m.groups())
+def filter_repo_identity():
+    """Return git-filter-repo's printable build identity, or None.
 
-
-def filter_repo_version():
+    Upstream releases normally print the source commit hash here rather than a
+    dotted package version.  Treating that hash as a semantic version rejects
+    healthy installations, and there is no sound ordering between the two
+    formats.  Successful discovery plus the real rewrite invocation is the
+    compatibility check.
+    """
     p = run_git(["git", "filter-repo", "--version"])
     if p.returncode != 0:
         return None
-    return _ver_tuple(p.stdout.decode(errors="replace"))
-
-
-def version_str(v):
-    return ".".join(str(x) for x in v) if v else "none"
+    identity = p.stdout.decode(errors="replace").strip()
+    if not identity or "\n" in identity or "\r" in identity:
+        return None
+    return identity
 
 
 def check_filter_repo(required=True):
-    found = filter_repo_version()
-    ok = found is not None and found >= MIN_FILTER_REPO
+    found = filter_repo_identity()
+    ok = found is not None
     if ok:
-        print(f"purge: git-filter-repo {version_str(found)}: ok")
+        print(f"purge: git-filter-repo {found}: ok")
     elif required:
         die(
-            f"git-filter-repo >= {version_str(MIN_FILTER_REPO)} is required "
-            f"(one-off operator prerequisite: pip install git-filter-repo); "
-            f"found {version_str(found)}"
+            "git-filter-repo is required and `git filter-repo --version` must "
+            "succeed (one-off operator prerequisite: pip install git-filter-repo)"
         )
     else:
         print(
-            f"purge: note: git-filter-repo {version_str(found)} is missing or "
-            "too old; the rewrite step will refuse until it is installed"
+            "purge: note: git-filter-repo is missing or unusable; the rewrite "
+            "step will refuse until `git filter-repo --version` succeeds"
         )
     return ok
 
@@ -175,7 +173,7 @@ def preflight_work(mirror, creating):
 
 
 def fresh_mirror(from_url, mirror):
-    p = git(["clone", "--mirror", "--quiet", from_url, mirror])
+    p = git(["clone", "--mirror", "--quiet", "--", from_url, mirror])
     if p.returncode != 0:
         die(f"mirroring {redact_url(from_url)} failed; nothing was rewritten")
     problems = []
@@ -238,8 +236,17 @@ def print_table(mirror, refs, label):
 
 
 def make_bundle(mirror, bundle_path):
-    if git(["bundle", "create", bundle_path, "--all"], cwd=mirror).returncode != 0:
+    old_umask = os.umask(0o077)
+    try:
+        result = git(["bundle", "create", bundle_path, "--all"], cwd=mirror)
+    finally:
+        os.umask(old_umask)
+    if result.returncode != 0:
         die("backup bundle failed - refusing to rewrite without a backup")
+    try:
+        os.chmod(bundle_path, 0o600)
+    except OSError:
+        die("could not restrict recovery bundle to mode 0600 - refusing to rewrite")
     if git(["bundle", "verify", bundle_path], cwd=mirror).returncode != 0:
         die("backup bundle failed verification - refusing to rewrite")
     print(
@@ -384,13 +391,26 @@ def do_push(opts):
     if err:
         die(err, code=2)
     preflight_work(mirror, creating=False)
+    if not is_bare(mirror):
+        die(
+            f"refusing ordinary checkout {mirror}: --push requires the verified "
+            "bare mirror created by this tool"
+        )
     state = load_state(mirror)
-    if not state or not state.get("verified"):
+    if (
+        not state
+        or state.get("tool") != PROG
+        or state.get("prohibited_path") != PROHIBITED_PATH
+        or not state.get("verified")
+    ):
         die(
             "this mirror has no successful verification on record; run the tool "
             "without --push to clone, rewrite and verify a fresh mirror first"
         )
-    problems = verify_mirror(mirror, totals=state.get("totals"))
+    lease = state.get("lease", {})
+    problems = verify_mirror(
+        mirror, expect_refs=set(lease), totals=state.get("totals")
+    )
     if problems:
         for line in problems:
             print(f"purge: RE-VERIFY FAILED: {line}", file=sys.stderr)
@@ -399,7 +419,6 @@ def do_push(opts):
             "take a fresh mirror instead"
         )
     refs = list_refs(mirror)
-    lease = state.get("lease", {})
     missing = [r for r in sorted(refs) if r not in lease]
     if missing:
         die(
@@ -408,9 +427,9 @@ def do_push(opts):
         )
     ordered = sorted(refs)
     cmd = (
-        ["push", "--atomic", "--force"]
+        ["push", "--atomic"]
         + [f"--force-with-lease={r}:{lease[r]}" for r in ordered]
-        + [opts.to_url]
+        + ["--", opts.to_url]
         + [f"{r}:{r}" for r in ordered]
     )
     print(
