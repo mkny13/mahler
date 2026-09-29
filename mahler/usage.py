@@ -15,8 +15,11 @@ from .ledger import iso, parse
 
 def quota_peers(cfg, platform):
     """Platforms that draw on the same login and quota as `platform` (D21, D25)."""
-    group = cfg["platforms"].get(platform, {}).get("quota_group", platform)
-    return [p for p, pc in cfg["platforms"].items() if pc.get("quota_group", p) == group]
+    source = cfg["platforms"].get(platform, {})
+    group = source.get("quota_group", platform)
+    account = config.account_of(source)
+    return [p for p, pc in cfg["platforms"].items()
+            if pc.get("quota_group", p) == group and config.account_of(pc) == account]
 
 
 def _recent_warmup_fire(cfg, led, group, within=timedelta(hours=2)):

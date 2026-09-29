@@ -470,7 +470,11 @@ def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=
     if pin:
         order = [pin]
     else:
-        order = expand_route(cfg, routing.get(role) or routing.get("build") or [])
+        # D26 priority routes are exact and role-independent: an omitted role
+        # has no candidates. Fix is the one deliberate alias because fixes use
+        # the project's builder route (D18).
+        route = routing.get("build") if role == "fix" else routing.get(role)
+        order = expand_route(cfg, route or [])
     if not pin and burst_lines and role == "build":
         bursting = [n for n in order
                     if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]

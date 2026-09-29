@@ -947,14 +947,52 @@ def account_mode_of(conf):
 
 
 def validate_accounts(cfg):
-    """A project sets `account` or `accounts`, never both (D26)."""
+    """Validate routing/account policy before the scheduler can spend quota."""
+    def finite_number(value):
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value))
+
+    defined = {DEFAULT_ACCOUNT, *cfg.get("accounts", {})}
     for scope, conf in [("global", cfg), ("defaults", cfg.get("defaults", {})),
                         *cfg.get("projects", {}).items()]:
         if conf.get("routing_mode", "list") not in ("list", "measured"):
             raise ValueError(f"{scope}: routing_mode must be list or measured")
+    group_accounts = {}
     for name, pconf in cfg.get("platforms", {}).items():
         if pconf.get("cost_class", "free") not in ("free", "paid"):
             raise ValueError(f"platform {name!r}: cost_class must be free or paid")
+        tier = pconf.get("tier", 1)
+        if not isinstance(tier, int) or isinstance(tier, bool) or tier < 1:
+            raise ValueError(f"platform {name!r}: tier must be a positive integer")
+        max_runs = pconf.get("max_runs", 1)
+        if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 1:
+            raise ValueError(f"platform {name!r}: max_runs must be a positive integer")
+        minimum, maximum = pconf.get("min_size"), pconf.get("max_size")
+        for label, value in (("min_size", minimum), ("max_size", maximum)):
+            if value not in (None, "", "s", "m", "l"):
+                raise ValueError(f"platform {name!r}: {label} must be s, m, or l")
+        if minimum and maximum and "sml".index(minimum) > "sml".index(maximum):
+            raise ValueError(f"platform {name!r}: min_size must not exceed max_size")
+        soft, hard = pconf.get("soft", {}), pconf.get("hard", {})
+        if not isinstance(soft, dict) or not isinstance(hard, dict):
+            raise ValueError(f"platform {name!r}: soft and hard must be quota tables")
+        for window in set(soft) | set(hard):
+            values = [("soft", soft.get(window)), ("hard", hard.get(window))]
+            for label, value in values:
+                if value is not None and (not finite_number(value) or not 0 <= value <= 100):
+                    raise ValueError(f"platform {name!r}: {label}.{window} must be 0..100")
+            if soft.get(window) is not None and hard.get(window) is not None \
+                    and soft[window] > hard[window]:
+                raise ValueError(f"platform {name!r}: soft.{window} must not exceed "
+                                 f"hard.{window}")
+        account = account_of(pconf)
+        if account not in defined:
+            raise ValueError(f"platform {name!r}: account {account!r} is not defined")
+        group = pconf.get("quota_group", name)
+        owner = group_accounts.setdefault(group, account)
+        if owner != account:
+            raise ValueError(f"quota_group {group!r} is shared by accounts {owner!r} "
+                             f"and {account!r} (DESIGN D25)")
     for name, proj in cfg.get("projects", {}).items():
         if "account" in proj and "accounts" in proj:
             raise ValueError(f"project {name!r} sets both 'account' and "
@@ -965,6 +1003,16 @@ def validate_accounts(cfg):
                     and all(isinstance(a, str) and a for a in accts)):
                 raise ValueError(f"project {name!r}: 'accounts' must be a "
                                  "non-empty list of account names (DESIGN D26)")
+            if len(set(accts)) != len(accts):
+                raise ValueError(f"project {name!r}: 'accounts' must not contain duplicates")
+        unknown = [account for account in accounts_of(proj) if account not in defined]
+        if unknown:
+            raise ValueError(f"project {name!r}: account {unknown[0]!r} is not defined")
+        gh_account = gh_account_of(proj)
+        if gh_account not in defined:
+            raise ValueError(f"project {name!r}: gh_account {gh_account!r} is not defined")
+        if proj.get("size_target") not in (None, "", "s"):
+            raise ValueError(f"project {name!r}: size_target must be empty or s")
         if "account_mode" in proj and proj["account_mode"] not in ACCOUNT_MODES:
             raise ValueError(f"project {name!r}: account_mode must be one of "
                              f"{ACCOUNT_MODES} (DESIGN D26)")
@@ -994,6 +1042,31 @@ def validate_accounts(cfg):
                         raise ValueError(f"project {name!r}: priority routing platform "
                                          f"{platform!r} spends undeclared account "
                                          f"{account_of(pconf)!r}")
+
+    burst = cfg.get("burst") or {}
+    burst_soft, burst_hard = burst.get("soft", 90), burst.get("hard", 97)
+    if (not finite_number(burst_soft) or not finite_number(burst_hard)
+            or not 0 <= burst_soft <= burst_hard < 100):
+        raise ValueError("burst soft/hard must satisfy 0 <= soft <= hard < 100 "
+                         "(DESIGN D23 never spends paid overage)")
+
+    measure = _merge(DEFAULT_MEASURE, cfg.get("measure") or {})
+    if (not isinstance(measure["min_attempts"], int)
+            or isinstance(measure["min_attempts"], bool) or measure["min_attempts"] < 1):
+        raise ValueError("measure.min_attempts must be a positive integer")
+    if (not isinstance(measure["window_days"], int)
+            or isinstance(measure["window_days"], bool) or measure["window_days"] < 1):
+        raise ValueError("measure.window_days must be a positive integer")
+    for table in ("bars", "explore_share"):
+        values = measure.get(table)
+        if not isinstance(values, dict) or any(
+                not finite_number(value) or not 0 <= value <= 1
+                for value in values.values()):
+            raise ValueError(f"measure.{table} values must be between 0 and 1")
+    for group, qconf in (cfg.get("quota_groups") or {}).items():
+        weight = (qconf or {}).get("cost_weight", 1.0) if isinstance(qconf, dict) else None
+        if not finite_number(weight) or weight < 0:
+            raise ValueError(f"quota_group {group!r}: cost_weight must be non-negative")
 
 
 def run_env(cfg, account, base=None):
