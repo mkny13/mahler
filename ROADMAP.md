@@ -1,6 +1,8 @@
 # Mahler — Roadmap
 
-The build plan for [DESIGN.md](DESIGN.md). Each phase ships something usable on its own and
+The build plan for [DESIGN.md](DESIGN.md); [ARCHITECTURE.md](ARCHITECTURE.md) maps what is
+built. This file separates done, in progress and planned work: the "Current state" section
+is the authority on status, and the phase list below it is the detailed record. Each phase ships something usable on its own and
 has a concrete "done when." Later phases are planned in full but will be refined with what
 the earlier ones teach. The POC is deliberately rough. Polish comes after it proves the hard
 parts.
@@ -384,9 +386,11 @@ external scanner or dispatcher acts on Mahler refs or worktrees.
 
 ## Phase 7 — Adversarial cross-product review
 
-The second BACKLOG idea: "product" = platform. The trigger is the default for `m`/`l` items
-and anything touching data. Findings feed back as a fix round. Keep it only where it pays for
-itself.
+**Status: shipped in substance (mahler#395, DESIGN D11).** The second BACKLOG idea:
+"product" = platform. Between green CI and merge, `size:m`, `size:l` and risk-keyword items
+get one review run on a different platform (`recipes/review.md`). Findings feed back as a
+fix round, with a blocking bar (mahler#499) and a convergence check (mahler#474). What is
+still open is tuning: keep it only where it pays for itself.
 
 ---
 
