@@ -101,7 +101,7 @@ class DependencyTests(unittest.TestCase):
         item(led, "a", 125, state="done")
         item(led, "a", 258, state="done")
         item(led, "ground", 125, state="parked")
-        item(led, "tour", 258, state="shipped")
+        item(led, "tour", 258, state="verifying")
         self.assertEqual(plan(ctx, led), [])
         self.assertEqual(ctx.holds[0]["on"], [
             {"repo": "mkny13/groundwork", "number": 125},

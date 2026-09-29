@@ -335,8 +335,11 @@ class Ledger:
                              ("bug", "INTEGER"), ("note", "TEXT")):
                 if col not in uat_cols:
                     self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
-            # migrate legacy 'tracking' state to 'parent'
+            # Retired lifecycle names must not strand rows outside STATES.  `tracking`
+            # became `parent`; the old post-merge `shipped` state was collapsed into
+            # `done` when UAT became a separate queue.
             self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
+            self.con.execute("UPDATE items SET state = 'done' WHERE state = 'shipped'")
             if path != ":memory:":
                 # 0600 on the database and its WAL/SHM sidecars (issue #75): the
                 # file is created umask-masked, so chmod explicitly — same pattern
@@ -613,6 +616,8 @@ class Ledger:
         return self.q(sql + " ORDER BY priority, number", args)
 
     def upsert_item(self, project, number, **fields):
+        if "state" in fields and fields["state"] not in STATES:
+            raise ValueError(f"invalid item state: {fields['state']}")
         cur = self.item(project, number)
         if cur is None:
             fields.setdefault("state", "inbox")
@@ -628,7 +633,8 @@ class Ledger:
         return self.item(project, number)
 
     def set_state(self, project, number, state, why=None, **extra):
-        assert state in STATES, state
+        if state not in STATES:
+            raise ValueError(f"invalid item state: {state}")
         cur = self.item(project, number)
         if cur is not None and cur["state"] == state and not extra:
             return cur
@@ -742,7 +748,8 @@ class Ledger:
             (iso(now), iso(now + timedelta(minutes=ttl_minutes)), project, number, holder, epoch))
         return cur.rowcount == 1
 
-    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None):
+    def release(self, project, number, holder=None, epoch=None, to_state="ready", why=None,
+                lease_only=False):
         with self._tx():
             sql, args = "DELETE FROM leases WHERE project=? AND number=?", [project, number]
             if holder is not None:
@@ -752,7 +759,7 @@ class Ledger:
                 sql += " AND epoch=?"
                 args.append(epoch)
             n = self.con.execute(sql, args).rowcount
-            if n:
+            if n and not lease_only:
                 self.event("release", project, number, {"holder": holder, "epoch": epoch})
                 if to_state is not None:
                     item = self.item(project, number)
@@ -793,11 +800,16 @@ class Ledger:
         return self.q(sql, args)
 
     def orphan_lease_rows(self, project=None):
-        """Lease rows held on items that are in 'ready' or 'done' with no active run."""
+        """Lease rows on states that cannot own an idle lease.
+
+        A live run may briefly retain a lease while finalization changes the item
+        state, so active/stopping runs remain watchdog-owned.  Without one, only
+        ``working`` (a session) and ``verifying`` (the conductor) may keep a lease.
+        """
         sql = """
             SELECT l.*, i.state AS item_state FROM leases l
             JOIN items i ON l.project = i.project AND l.number = i.number
-            WHERE i.state IN ('ready', 'done')
+            WHERE i.state NOT IN ('working', 'verifying')
               AND NOT EXISTS (
                   SELECT 1 FROM runs r
                   WHERE r.project = l.project AND r.number = l.number
@@ -1313,6 +1325,26 @@ class RoutedLedger:
         return [row for row in self.local.expired_leases()
                 if row["project"] not in remote_projects]
 
+    def orphan_working_items(self, project=None):
+        """Return local working rows only when the canonical lease is absent.
+
+        Remote-project leases deliberately have no row in the caller's SQLite
+        database (D24). Treating that absence as an orphan resets actively held
+        interactive work to ``ready``. A failed canonical lookup is also not
+        proof of absence, so recovery fails closed until the host is reachable.
+        """
+        candidates = self.local.orphan_working_items(project)
+        out = []
+        for item in candidates:
+            name = item["project"]
+            if not self._remote(name):
+                out.append(item)
+                continue
+            lease = self.lease(name, item["number"])
+            if lease is None and self.remote_error(name) is None:
+                out.append(item)
+        return out
+
     def claim(self, project, number, holder, kind, ttl_minutes, platform=None,
               run_id=None, steal=False, max_parallel=None, capacity=True,
               handoff_from=None):
@@ -1351,12 +1383,21 @@ class RoutedLedger:
             return self.local.release(project, number, holder=holder, epoch=epoch,
                                       to_state=to_state, why=why)
         try:
-            kwargs = {"number": number, "holder": self._holder(project, holder), "epoch": epoch}
-            if to_state != "ready":
-                kwargs["to_state"] = to_state
-            if why is not None:
-                kwargs["why"] = why
-            return bool(self._call(project, "release", **kwargs))
+            kwargs = {"number": number, "holder": self._holder(project, holder), "epoch": epoch,
+                      "caller_owns_state": True}
+            released = bool(self._call(project, "release", **kwargs))
+            if released:
+                # D24 relays lease ownership only. Item state and audit events
+                # belong to the caller's local ledger.
+                self.local.event("release", project, number,
+                                 {"holder": holder, "epoch": epoch})
+                if to_state is not None:
+                    item = self.local.item(project, number)
+                    if item and item["state"] == "working":
+                        self.local.set_state(
+                            project, number, to_state,
+                            why=why or (f"released by {holder}" if holder else "lease released"))
+            return released
         except RemoteLedgerError as exc:
             self._remember(project, exc)
             return False
@@ -1438,10 +1479,18 @@ def remote_lease_operation(request, cfg, led):
         if to_state is not None and to_state not in STATES:
             raise ValueError("invalid to_state")
         why = request.get("why")
-        if why is not None and (not isinstance(why, str) or len(why) > 500):
-            raise ValueError("invalid why")
-        return led.release(project, number, holder=holder, epoch=epoch,
-                           to_state=to_state, why=why)
+        caller_owns_state = request.get("caller_owns_state", False)
+        if (why is not None and (not isinstance(why, str) or len(why) > 500)
+                or not isinstance(caller_owns_state, bool)):
+            raise ValueError("invalid release arguments")
+        # The endpoint owns only canonical lease coordination (D24). The
+        # caller applies item state and records its local release event after a
+        # successful response. The opt-in flag keeps protocol-v1 compatibility:
+        # an older caller still gets the former canonical state transition.
+        return led.release(
+            project, number, holder=holder, epoch=epoch,
+            to_state=None if caller_owns_state else to_state, why=why,
+            lease_only=caller_owns_state)
     epoch = request.get("epoch")
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
         raise ValueError("invalid lease_check arguments")

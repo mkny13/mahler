@@ -65,3 +65,22 @@ class ParentStateTests(unittest.TestCase):
                 self.assertEqual(led.item("testproj", 10)["state"], "parent")
             finally:
                 led.close()
+
+    def test_db_migration_from_shipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "mahler.db")
+            con = sqlite3.connect(path)
+            try:
+                con.executescript(SCHEMA)
+                con.execute(
+                    "INSERT INTO items (project, number, state) VALUES (?, ?, ?)",
+                    ("testproj", 1, "shipped"))
+                con.commit()
+            finally:
+                con.close()
+
+            led = Ledger(path)
+            try:
+                self.assertEqual(led.item("testproj", 1)["state"], "done")
+            finally:
+                led.close()
