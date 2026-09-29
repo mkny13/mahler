@@ -305,6 +305,23 @@ class RemoveWorktreeTests(unittest.TestCase):
                 git.call_args_list)
             git.assert_any_call("/repo", "worktree", "prune", check=False)
 
+    def test_refuses_a_path_that_escapes_through_a_symlinked_ancestor(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "worktrees")
+            outside = os.path.join(d, "outside")
+            escaped = os.path.join(outside, "1-run1")
+            os.makedirs(root)
+            os.makedirs(escaped)
+            os.symlink(outside, os.path.join(root, "project"))
+            apparent = os.path.join(root, "project", "1-run1")
+            with mock.patch.object(runner, "git") as git:
+                runner.remove_worktree("/repo", apparent, root=root)
+            self.assertTrue(os.path.isdir(escaped))
+            self.assertNotIn(
+                mock.call("/repo", "worktree", "remove", "--force", apparent,
+                          check=False), git.call_args_list)
+            git.assert_called_once_with("/repo", "worktree", "prune", check=False)
+
     def test_missing_worktree_is_a_noop_but_still_prunes(self):
         with mock.patch.object(runner, "git") as git:
             runner.remove_worktree("/repo", None, root="/tmp/nonexistent-mahler-root")
@@ -369,6 +386,19 @@ class PlatformLaunchTests(unittest.TestCase):
             env = popen.call_args.kwargs["env"]
             self.assertEqual(env["MAHLER_EPOCH"], "4")
             self.assertEqual(env["GIT_CONFIG_VALUE_0"], hooks_dir)
+
+
+class FenceHookTests(unittest.TestCase):
+    def test_repository_hooks_path_is_shell_quoted(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "injected")
+            configured = f"hooks-$(touch {marker})"
+            with mock.patch.object(runner, "git", return_value=configured), \
+                    mock.patch.object(config, "MAHLER_BIN", "/usr/bin/true"):
+                hooks = runner.fence_hooks("/repo", os.path.join(d, "run"))
+            subprocess.run(["/bin/sh", os.path.join(hooks, "pre-push")],
+                           env={**os.environ, "MAHLER_ISSUE": "594"}, check=True)
+            self.assertFalse(os.path.exists(marker))
 
 
 class PrepareAccountEnvTests(unittest.TestCase):

@@ -269,7 +269,7 @@ class ResumeArgvTests(unittest.TestCase):
         self.assertIn("--format", argv)
         self.assertEqual(argv[argv.index("--format") + 1], "json")
 
-    def test_resume_argv_for_dispatch(self):
+    def test_resume_argv_for_supported_platforms(self):
         cline_conf = {"kind": "cline"}
         kilo_conf = {"kind": "kilo"}
         self.assertEqual(platforms.resume_argv_for(cline_conf, "p", "/wt", "build", 60),
