@@ -37,3 +37,24 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("--verbose", launched)
         prompt = argv_for.call_args.args[1]
         self.assertIn("http://127.0.0.1:", prompt)
+
+    def test_launch_uses_platform_account_environment(self):
+        cfg = make_cfg()
+        cfg.setdefault("accounts", {})["work"] = {
+            "env": {"CODEX_HOME": "/isolated/work-codex"},
+        }
+        cfg.setdefault("platforms", {})["work-codex"] = {
+            "kind": "codex", "account": "work",
+        }
+        with mock.patch.dict(console_walkthrough.config.os.environ, {
+                "CODEX_HOME": "/personal/codex",
+                "CLAUDE_CONFIG_DIR": "/personal/claude",
+        }), mock.patch("mahler.console_walkthrough.platforms.argv_for",
+                       return_value=["fake-agent"]), \
+             mock.patch("mahler.console_walkthrough.subprocess.run") as run:
+            rc = console_walkthrough.run(cfg, "work-codex")
+
+        self.assertEqual(rc, 0)
+        env = run.call_args.kwargs["env"]
+        self.assertEqual(env["CODEX_HOME"], "/isolated/work-codex")
+        self.assertNotIn("CLAUDE_CONFIG_DIR", env)

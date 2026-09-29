@@ -55,7 +55,8 @@ def run(cfg, platform_name):
             argv.remove("--json")
             
         print(f"Launching agent on {platform_name}...\n")
-        subprocess.run(argv)
+        env = config.run_env(cfg, config.account_of(pconf))
+        subprocess.run(argv, env=env)
         return 0
     finally:
         httpd.shutdown()
