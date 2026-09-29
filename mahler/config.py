@@ -969,7 +969,7 @@ def validate_accounts(cfg):
             raise ValueError(f"platform {name!r}: max_runs must be a positive integer")
         minimum, maximum = pconf.get("min_size"), pconf.get("max_size")
         for label, value in (("min_size", minimum), ("max_size", maximum)):
-            if value is not None and value not in ("s", "m", "l"):
+            if value not in (None, "", "s", "m", "l"):
                 raise ValueError(f"platform {name!r}: {label} must be s, m, or l")
         if minimum and maximum and "sml".index(minimum) > "sml".index(maximum):
             raise ValueError(f"platform {name!r}: min_size must not exceed max_size")

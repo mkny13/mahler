@@ -92,6 +92,14 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "not defined"):
                     config.validate_accounts(cfg)
 
+    def test_empty_size_bound_means_uncapped_and_bad_sizes_are_rejected(self):
+        cfg = work_cfg()
+        cfg["platforms"]["claude-work"].update({"min_size": "l", "max_size": ""})
+        config.validate_accounts(cfg)
+        cfg["platforms"]["claude-work"]["max_size"] = "xl"
+        with self.assertRaisesRegex(ValueError, "max_size must be s, m, or l"):
+            config.validate_accounts(cfg)
+
     def test_config_rejects_duplicate_project_accounts(self):
         cfg = work_cfg(p={"accounts": ["personal", "work", "personal"]})
         with self.assertRaisesRegex(ValueError, "must not contain duplicates"):
