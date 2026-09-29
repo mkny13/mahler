@@ -11,7 +11,8 @@ things behind. Once a day the tick sweeps, per project:
   * remote `mahler/snapshot/*` and `mahler/abandoned/*` branches older than
     `retention_days` (D12) whose item is `done` in the ledger;
   * up to 100 remote fix branches ending in `-r<run_id>` whose run ended
-    and whose commits are contained in main or the item's current PR head.
+    and whose commits are contained in main, the item's current PR head,
+    or the item's current branch head when it has no PR.
 
 The same daily pass also copy-and-truncates the host-wide console stderr log
 when it exceeds its configured cap.  The live file is never renamed because

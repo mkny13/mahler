@@ -399,13 +399,10 @@ def create_release(led: Any, project: str, version: Optional[str] = None,
 
 
 def get_release(led: Any, project: str, version_or_id: Any):
+    """Look a release up by id (int) or version string."""
     if isinstance(version_or_id, int):
         return led.get_release(project, release_id=version_or_id)
     return led.get_release(project, version=str(version_or_id))
-
-
-def list_releases(led: Any, project: str) -> List[Any]:
-    return led.list_releases(project)
 
 
 def get_release_items(led: Any, project: str, version_or_id: Any) -> List[ReleaseItem]:

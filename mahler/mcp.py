@@ -145,9 +145,18 @@ def serve(cfg, led):
                     try:
                         n = int(num_str)
                     except ValueError:
-                        n = 0
+                        content = [{"type": "text",
+                                    "text": f"Created issue {url}, but could not read its number "
+                                            f"from {num_str!r}; not claiming.",
+                                    "isError": True}]
+                        send({
+                            "jsonrpc": "2.0",
+                            "id": req.get("id"),
+                            "result": {"content": content}
+                        })
+                        continue
                     msg = f"Created issue {url}"
-                    if args.get("claim") and n > 0:
+                    if args.get("claim"):
                         holder = "interactive:mcp"
                         lease, info = led.claim(args["project"], n, holder, "interactive", pol["interactive_lease_minutes"])
                         if lease:

@@ -48,6 +48,8 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(res["path"]))
         self.assertEqual(res["entries"], 1)
         self.assertEqual(stat.S_IMODE(os.stat(res["path"]).st_mode), 0o600)
+        # D12: dumps are 0600 in 0700 directories.
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.root, "gw")).st_mode), 0o700)
         argv = os.path.join(self.tmp.name, "argv.seen")
         env = os.path.join(self.tmp.name, "env.seen")
         with open(argv) as fh:
@@ -64,6 +66,14 @@ class BackupTests(unittest.TestCase):
         with self.assertRaises(backup.BackupError) as cm:
             backup.backup_postgres("gw", self.spec, root=self.root)
         self.assertNotIn("s3cret", str(cm.exception))
+
+    def test_pre_existing_loose_directory_is_tightened(self):
+        dest = os.path.join(self.root, "gw")
+        os.makedirs(dest, mode=0o755)
+        os.chmod(dest, 0o755)
+        res = backup.backup_postgres("gw", self.spec, root=self.root)
+        self.assertEqual(stat.S_IMODE(os.stat(dest).st_mode), 0o700)
+        self.assertTrue(os.path.exists(res["path"]))
 
     def test_retention(self):
         now = datetime(2026, 9, 12, 3, 0)
@@ -193,12 +203,20 @@ class LedgerBackupTests(unittest.TestCase):
         self.assertTrue(os.path.exists(res["path"]))
         self.assertEqual(res["bytes"], os.path.getsize(res["path"]))
         self.assertEqual(stat.S_IMODE(os.stat(res["path"]).st_mode), 0o600)
+        # D12: 0600 in 0700 directories.
+        self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
         self.assertEqual(backup.integrity_check(res["path"]), "ok")
         copy = Ledger(res["path"])
         try:
             self.assertEqual(copy.get_kv("hello"), "world")
         finally:
             copy.close()
+
+    def test_pre_existing_loose_root_is_tightened(self):
+        os.makedirs(self.root, mode=0o755)
+        os.chmod(self.root, 0o755)
+        backup.backup_ledger(self.led_path, root=self.root)
+        self.assertEqual(stat.S_IMODE(os.stat(self.root).st_mode), 0o700)
 
     def test_missing_source_raises(self):
         with self.assertRaises(backup.BackupError):
