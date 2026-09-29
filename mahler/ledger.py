@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS leases (
     heartbeat_at TEXT NOT NULL,
     expires_at   TEXT NOT NULL,
     capacity     INTEGER NOT NULL DEFAULT 1,
+    external     INTEGER NOT NULL DEFAULT 0, -- owned by a D24 remote client
     PRIMARY KEY (project, number)
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -315,6 +316,11 @@ class Ledger:
             lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
             if "capacity" not in lease_cols:
                 self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
+            if "external" not in lease_cols:
+                self.con.execute("ALTER TABLE leases ADD COLUMN external INTEGER NOT NULL DEFAULT 0")
+                # D24 has always namespaced remote holders as client/holder.
+                # Preserve leases created before the explicit ownership marker.
+                self.con.execute("UPDATE leases SET external=1 WHERE instr(holder, '/') > 0")
             rel_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(releases)")}
             for col, ddl in (("checkpoint_sha", "TEXT"), ("state", "TEXT NOT NULL DEFAULT 'published'"),
                              ("created_at", "TEXT"), ("published_at", "TEXT"),
@@ -675,7 +681,7 @@ class Ledger:
 
     def claim(self, project, number, holder, kind, ttl_minutes, platform=None,
               run_id=None, steal=False, max_parallel=None, capacity=True,
-              handoff_from=None):
+              handoff_from=None, external=False):
         """Atomically take (or renew) the lease on an item.
 
         Returns (lease_row, info) on success, (None, info) when refused.
@@ -730,10 +736,10 @@ class Ledger:
                              (epoch, project, number))
             self.con.execute(
                 "INSERT OR REPLACE INTO leases (project, number, holder, kind, platform, epoch,"
-                " run_id, acquired_at, heartbeat_at, expires_at, capacity) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " run_id, acquired_at, heartbeat_at, expires_at, capacity, external) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (project, number, holder, kind, platform, epoch, run_id, iso(now), iso(now),
-                 iso(now + timedelta(minutes=ttl_minutes)), int(capacity)))
+                 iso(now + timedelta(minutes=ttl_minutes)), int(capacity), int(external)))
             self.event("lease", project, number,
                        {"holder": holder, "kind": kind, "platform": platform, "epoch": epoch,
                         **({"preempted": info["preempted"]["holder"]} if "preempted" in info else {})})
@@ -803,13 +809,16 @@ class Ledger:
         """Lease rows on states that cannot own an idle lease.
 
         A live run may briefly retain a lease while finalization changes the item
-        state, so active/stopping runs remain watchdog-owned.  Without one, only
-        ``working`` (a session) and ``verifying`` (the conductor) may keep a lease.
+        state, so active/stopping runs remain watchdog-owned.  D24 remote clients
+        own their item and run state locally, so their canonical lease is never an
+        orphan based on this host's state.  Otherwise only ``working`` (a session)
+        and ``verifying`` (the conductor) may keep a lease.
         """
         sql = """
             SELECT l.*, i.state AS item_state FROM leases l
             JOIN items i ON l.project = i.project AND l.number = i.number
             WHERE i.state NOT IN ('working', 'verifying')
+              AND l.external = 0
               AND NOT EXISTS (
                   SELECT 1 FROM runs r
                   WHERE r.project = l.project AND r.number = l.number
@@ -1459,7 +1468,7 @@ def remote_lease_operation(request, cfg, led):
         lease, info = led.claim(
             project, number, holder, kind, ttl, platform=platform, steal=steal,
             max_parallel=config_project(cfg, project).get("max_parallel") if capacity else None,
-            capacity=capacity, handoff_from=handoff)
+            capacity=capacity, handoff_from=handoff, external=True)
         return {"lease": dict(lease) if lease else None, "info": info}
     if operation == "heartbeat":
         holder, epoch, ttl = (request.get("holder"), request.get("epoch"),

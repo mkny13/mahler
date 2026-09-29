@@ -76,6 +76,29 @@ class LeaseTests(unittest.TestCase):
             finally:
                 migrated.close()
 
+    def test_external_lease_marker_migrates_existing_remote_holders(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript(SCHEMA.replace(
+                "    external     INTEGER NOT NULL DEFAULT 0, -- owned by a D24 remote client\n",
+                ""))
+            con.execute(
+                "INSERT INTO items(project,number,state) VALUES ('p',1,'inbox')")
+            con.execute(
+                "INSERT INTO leases(project,number,holder,kind,epoch,acquired_at,heartbeat_at,"
+                "expires_at) VALUES ('p',1,'laptop/run:7','auto',1,'2026-09-12',"
+                "'2026-09-12','2026-09-13')")
+            con.commit()
+            con.close()
+
+            migrated = Ledger(path)
+            try:
+                self.assertEqual(migrated.lease("p", 1, live_only=False)["external"], 1)
+                self.assertEqual(migrated.orphan_lease_rows(), [])
+            finally:
+                migrated.close()
+
     def test_configured_model_migrates_without_rewriting_runtime_history(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "legacy.db")
