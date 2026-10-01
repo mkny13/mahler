@@ -18,6 +18,7 @@ HOME = os.path.expanduser("~")
 STATE = os.environ.get("MAHLER_HOME", os.path.join(HOME, ".mahler"))
 CONFIG_PATH = os.path.join(STATE, "config.toml")
 DB_PATH = os.path.join(STATE, "mahler.db")
+GITHUB_APP_CACHE_DIR = os.path.join(STATE, "github-app-tokens")
 RUNS_DIR = os.path.join(STATE, "runs")
 WORKTREES = os.path.join(STATE, "worktrees")
 ATTACHMENTS_DIR = os.path.join(STATE, "attachments")
@@ -1101,7 +1102,11 @@ def gh_env(cfg, pol):
     if not app or account != DEFAULT_ACCOUNT or "GH_TOKEN" in pinned:
         return env
     from . import ghapp
-    token = ghapp.installation_token(app)
+    selected = ghapp.select_installation(
+        app, pol.get("repo", ""), pol.get("github_app_installation_id"))
+    if not selected:
+        return env
+    token = ghapp.installation_token(selected, cache_dir=GITHUB_APP_CACHE_DIR)
     if not token:
         return env
     env = dict(os.environ if env is None else env)

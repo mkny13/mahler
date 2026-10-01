@@ -1704,13 +1704,20 @@ also show as the bot.
 ```toml
 [github_app]
 app_id = 5127048
-installation_id = 166283054
 private_key = "~/.mahler/secrets/github-app.pem"
+[github_app.installations]
+mkny13 = 166283054
 ```
 
 - **Where.** `mahler/ghapp.py` mints the token (RS256 JWT signed by `openssl`, stdlib
-  `urllib` for the exchange) and caches it until 5 minutes before expiry.
+  `urllib` for the exchange) and caches it in a locked, user-only file until 5 minutes
+  before expiry, so the minute-by-minute launcher processes share one token.
   `config.gh_env` applies it; every `GH(...)` construction goes through that.
+- **Installation selection.** `github_app.installations` maps repository owners to
+  installation ids; an unmapped owner uses its existing `gh auth` identity. A project
+  can override the mapping with `github_app_installation_id`. For the simple case where
+  every managed repository shares one installation, singular `installation_id` in
+  `[github_app]` remains supported instead of the owner map.
 - **Falls back.** No `[github_app]`, a failed mint, or a pinned `GH_TOKEN` on the
   personal account means the old behaviour: whatever `gh auth` holds. A failed mint is
   retried after 60 seconds, so an outage never stalls a tick.

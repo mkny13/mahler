@@ -2,6 +2,10 @@
 
 import base64
 import json
+import os
+import pathlib
+import stat
+import tempfile
 import unittest
 from unittest import mock
 
@@ -24,8 +28,14 @@ class Clock:
 
 class TokenTests(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         ghapp.reset()
         self.addCleanup(ghapp.reset)
+
+    def token(self, app=APP, now=Clock(), sign=sign, fetch=lambda j, i: ("t", 9e9)):
+        return ghapp.installation_token(
+            app, now, sign, fetch, cache_dir=self.tmp.name)
 
     def test_mint_and_cache(self):
         clock, calls = Clock(), []
@@ -33,10 +43,29 @@ class TokenTests(unittest.TestCase):
         def fetch(jwt, inst):
             calls.append((jwt, inst))
             return "tok1", clock() + 3600
-        self.assertEqual(ghapp.installation_token(APP, clock, sign, fetch), "tok1")
+        self.assertEqual(self.token(now=clock, fetch=fetch), "tok1")
         clock.t += 1000
-        self.assertEqual(ghapp.installation_token(APP, clock, sign, fetch), "tok1")
+        self.assertEqual(self.token(now=clock, fetch=fetch), "tok1")
         self.assertEqual(calls, [("jwt", "166283054")])
+
+    def test_cache_survives_process_memory(self):
+        clock, calls = Clock(), []
+
+        def fetch(jwt, inst):
+            calls.append(inst)
+            return "shared", clock() + 3600
+        self.assertEqual(self.token(now=clock, fetch=fetch), "shared")
+        ghapp.reset()  # a new launcher process starts with this empty
+        self.assertEqual(self.token(now=clock, fetch=fetch), "shared")
+        self.assertEqual(calls, ["166283054"])
+
+    def test_cache_files_are_user_only(self):
+        self.assertEqual(self.token(), "t")
+        files = list(pathlib.Path(self.tmp.name).iterdir())
+        self.assertEqual(len(files), 2)
+        self.assertEqual(stat.S_IMODE(os.stat(self.tmp.name).st_mode), 0o700)
+        self.assertTrue(all(stat.S_IMODE(path.stat().st_mode) == 0o600
+                            for path in files))
 
     def test_refreshes_before_expiry(self):
         clock, n = Clock(), [0]
@@ -44,9 +73,9 @@ class TokenTests(unittest.TestCase):
         def fetch(jwt, inst):
             n[0] += 1
             return f"tok{n[0]}", clock() + 3600
-        ghapp.installation_token(APP, clock, sign, fetch)
+        self.token(now=clock, fetch=fetch)
         clock.t += 3600 - ghapp.REFRESH_BEFORE + 1
-        self.assertEqual(ghapp.installation_token(APP, clock, sign, fetch), "tok2")
+        self.assertEqual(self.token(now=clock, fetch=fetch), "tok2")
 
     def test_failure_returns_none_and_backs_off(self):
         clock, n = Clock(), [0]
@@ -54,20 +83,21 @@ class TokenTests(unittest.TestCase):
         def fetch(jwt, inst):
             n[0] += 1
             raise OSError("down")
-        self.assertIsNone(ghapp.installation_token(APP, clock, sign, fetch))
-        self.assertIsNone(ghapp.installation_token(APP, clock, sign, fetch))
+        self.assertIsNone(self.token(now=clock, fetch=fetch))
+        ghapp.reset()
+        self.assertIsNone(self.token(now=clock, fetch=fetch))
         self.assertEqual(n[0], 1)
         clock.t += ghapp.RETRY_AFTER + 1
-        self.assertIsNone(ghapp.installation_token(APP, clock, sign, fetch))
+        self.assertIsNone(self.token(now=clock, fetch=fetch))
         self.assertEqual(n[0], 2)
 
     def test_bad_config_returns_none(self):
-        self.assertIsNone(ghapp.installation_token({"app_id": 1}))
+        self.assertIsNone(self.token({"app_id": 1}))
 
     def test_sign_failure_returns_none(self):
         def bad_sign(*a):
             raise RuntimeError("no openssl")
-        self.assertIsNone(ghapp.installation_token(APP, Clock(), bad_sign, lambda j, i: ("t", 9e9)))
+        self.assertIsNone(self.token(sign=bad_sign))
 
     def test_jwt_shape(self):
         seen = {}
@@ -85,6 +115,27 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(seen["argv"][-1], "/k.pem")
 
 
+class InstallationSelectionTests(unittest.TestCase):
+    def test_owner_mapping_selects_each_installation(self):
+        app = {"app_id": 1, "private_key": "/k",
+               "installations": {"one": 11, "two": 22}}
+        self.assertEqual(ghapp.select_installation(app, "one/repo")["installation_id"], 11)
+        self.assertEqual(ghapp.select_installation(app, "two/repo")["installation_id"], 22)
+
+    def test_unmapped_owner_falls_back(self):
+        app = {"app_id": 1, "private_key": "/k", "installation_id": 99,
+               "installations": {"one": 11}}
+        self.assertIsNone(ghapp.select_installation(app, "other/repo"))
+
+    def test_project_override_wins(self):
+        app = {"app_id": 1, "private_key": "/k", "installations": {"one": 11}}
+        self.assertEqual(
+            ghapp.select_installation(app, "one/repo", 44)["installation_id"], 44)
+
+    def test_singular_global_installation_remains_supported(self):
+        self.assertEqual(ghapp.select_installation(APP, "one/repo"), APP)
+
+
 class GhEnvTests(unittest.TestCase):
     def setUp(self):
         ghapp.reset()
@@ -98,9 +149,27 @@ class GhEnvTests(unittest.TestCase):
 
     def test_personal_project_gets_bot_token(self):
         with mock.patch.object(ghapp, "installation_token", return_value="bot") as m:
-            env = config.gh_env(self.cfg(github_app=APP), {"name": "p"})
+            env = config.gh_env(
+                self.cfg(github_app=APP), {"name": "p", "repo": "one/repo"})
         self.assertEqual(env["GH_TOKEN"], "bot")
-        m.assert_called_once_with(APP)
+        m.assert_called_once_with(APP, cache_dir=config.GITHUB_APP_CACHE_DIR)
+
+    def test_owner_mapping_selects_token_for_project(self):
+        app = {"app_id": 1, "private_key": "/k", "installations": {"one": 11}}
+        with mock.patch.object(ghapp, "installation_token", return_value="bot") as m:
+            env = config.gh_env(
+                self.cfg(github_app=app), {"name": "p", "repo": "one/repo"})
+        self.assertEqual(env["GH_TOKEN"], "bot")
+        selected = {"app_id": 1, "private_key": "/k", "installation_id": 11}
+        m.assert_called_once_with(selected, cache_dir=config.GITHUB_APP_CACHE_DIR)
+
+    def test_unmapped_owner_keeps_existing_identity(self):
+        app = {"app_id": 1, "private_key": "/k", "installations": {"one": 11}}
+        with mock.patch.object(ghapp, "installation_token", return_value="bot") as m:
+            env = config.gh_env(
+                self.cfg(github_app=app), {"name": "p", "repo": "other/repo"})
+        self.assertIsNone(env)
+        m.assert_not_called()
 
     def test_work_project_keeps_its_own_identity(self):
         with mock.patch.object(ghapp, "installation_token", return_value="bot") as m:

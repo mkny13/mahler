@@ -11,9 +11,20 @@ routing_mode = "list"
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
 
+# Optional GitHub App identity for Mahler-owned GitHub actions (DESIGN D38).
+# Keep the PEM outside the repo. Owners absent from this map safely retain the
+# project's existing gh auth identity. A project may instead set
+# github_app_installation_id below to override its owner's mapping.
+# [github_app]
+# app_id = 5127048
+# private_key = "~/.mahler/secrets/github-app.pem"
+# [github_app.installations]
+# mkny13 = 166283054
+
 [projects.example]
 enabled = false                 # opt in only after repo, path and verify are correct
 repo = "your-org/your-repo"
+# github_app_installation_id = 123456789
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
