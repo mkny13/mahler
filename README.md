@@ -6,7 +6,7 @@ an isolated git worktree, preserves handoffs, and lets a deterministic conductor
 open, verify, and merge the resulting pull request.
 
 Supported runners currently include Claude Code, Antigravity (`agy`), Cline,
-GitHub Copilot CLI, Codex CLI, and Kilo. A project chooses which authenticated
+GitHub Copilot CLI, Codex CLI, Kilo, and (opt-in) Kiro CLI. A project chooses which authenticated
 accounts and runners it may spend; unavailable CLIs are skipped.
 
 Mahler is currently a macOS, single-operator service. Its control plane uses
@@ -147,6 +147,33 @@ so builds end empty; use `muse-glimmer` unless that is fixed.
 The direct tokenless Jetstream URLs work only from Jetstream or IU networks, or
 through a tunnel. The authenticated API proxy above is the right choice for a
 Mac mini elsewhere. Like `cline-free`, it takes size `s` items only.
+
+### Optional: Kiro CLI
+
+`kiro` is an opt-in platform that runs `kiro-cli chat`. It ships disabled
+(`enabled = false`) and is in no default routing list. Kiro bills in monthly
+credits (KIRO FREE = 50/month); the `/usage` probe parses its credit line
+automatically. Kiro has no deny-list flag — runs use
+`--trust-tools read,write,glob,grep` (no `shell`), so Mahler's DENY_STEMS are
+unreachable.
+
+1. Install Kiro CLI (`brew install kiro` or the app bundle; the `kiro-cli`
+   binary must be on PATH or in `~/.local/bin` or `/opt/homebrew/bin`).
+2. Run `kiro-cli login` once interactively.
+3. Enable and route it in your config:
+
+   ```toml
+   [platforms.kiro]
+   enabled = true
+
+   [routing]
+   build = ["agy-claude", "agy-gemini", "kilo", "kiro", "claude"]
+   ```
+
+4. Check it with `mahler usage --probe`, then run one small item pinned to
+   `kiro`.
+
+Like `copilot` and `kilo`, it takes size `s` items only.
 
 ## Operate Mahler
 

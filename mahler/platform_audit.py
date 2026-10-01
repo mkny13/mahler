@@ -38,6 +38,7 @@ PLATFORM_ALIASES = {
     "agy-gemini": ["antigravity: gemini", "agy-gemini"],
     "cline-free": ["cline"],
     "kilo": ["kilo"],
+    "kiro": ["kiro cli", "kiro"],
     "copilot": ["copilot cli", "copilot"],
     "copilot-high": ["copilot-high"],
     "codex-low": ["codex cli", "codex-low", "gpt-5.6-luna"],

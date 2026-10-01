@@ -255,6 +255,32 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "codex", custom["platforms"]["codex"])[0],
                          "stale")
 
+    def test_kiro_is_opt_in_and_disabled_by_default(self):
+        self.assertNotIn("kiro", self.cfg["routing"]["build"])
+        self.assertFalse(self.cfg["platforms"]["kiro"]["enabled"])
+        # Even when explicitly routed, a disabled platform is not a candidate.
+        custom = copy.deepcopy(self.cfg)
+        custom["routing"]["build"] = ["kiro", "copilot"]
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        self.assertEqual(router.candidates(custom, "build"), ["copilot"])
+        # Enabling and routing makes it a candidate.
+        custom["platforms"]["kiro"]["enabled"] = True
+        self.assertEqual(router.candidates(custom, "build"), ["kiro", "copilot"])
+
+    def test_kiro_argv_uses_chat_with_stream_json_and_tool_allowlist(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"):
+            argv = platforms.kiro_argv(
+                self.cfg["platforms"]["kiro"], "do it", "/tmp/wt", "build")
+        self.assertEqual(argv[:2], ["/app/kiro-cli", "chat"])
+        self.assertIn("do it", argv)
+        self.assertIn("--output-format", argv)
+        self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
+        self.assertIn("--no-interactive", argv)
+        self.assertNotIn("--trust-all-tools", argv)
+        self.assertNotIn("--dangerously-skip-permissions", argv)
+        self.assertNotIn("-a", argv)
+
     def test_codex_argv_is_ephemeral_unattended_jsonl_in_worktree(self):
         with mock.patch.object(platforms, "codex_exe", return_value="/app/codex"):
             argv = platforms.codex_argv(
@@ -274,6 +300,7 @@ class RouterTests(unittest.TestCase):
             "agy": ("medium", ["--effort", "medium"]),
             "cline": ("xhigh", ["--thinking", "xhigh"]),
             "kilo": ("provider/variant", ["--variant", "provider/variant"]),
+            "kiro": ("high", ["--effort", "high"]),
         }
         for kind, (effort, expected) in cases.items():
             with self.subTest(kind=kind):

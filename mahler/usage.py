@@ -267,6 +267,23 @@ def refresh_usage(ctx, projects):
                 if samples:
                     led.set_kv(f"probe:{peer}", iso(led.now()))
             continue
+        if pconf.get("kind") == "kiro":
+            # kiro-cli reads its own login from the macOS keychain, so only
+            # this machine's own account can be probed (D25).
+            if name not in own:
+                continue
+            last = parse(led.get_kv(f"probe:{name}"))
+            if last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 15)):
+                continue
+            samples = platforms.probe_kiro(env=config.run_env(cfg, account))
+            for peer in quota_peers(cfg, name):
+                if not cfg["platforms"][peer].get("metered", True):
+                    continue
+                for w, pct, resets in samples:
+                    led.record_usage(peer, w, pct, resets)
+                if samples:
+                    led.set_kv(f"probe:{peer}", iso(led.now()))
+            continue
         if pconf.get("kind") != "claude":
             continue
         # D22: during the peak window, keep the zero-token OAuth reading and skip

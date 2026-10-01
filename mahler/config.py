@@ -33,7 +33,7 @@ SETTING_TIMERS = (
     "yield_grace_seconds",
 )
 SETTING_ROLES = ("sort", "plan", "build")
-PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo")
+PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro")
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -414,6 +414,26 @@ DEFAULTS["platforms"]["copilot-high"] = {
     "soft": {"monthly": 80}, "hard": {"monthly": 95},
     "stale_minutes": 360,
     "quota_group": "copilot",
+}
+
+
+# Kiro CLI (kiro.ai, model `auto` for adaptive selection; verified 2026-10-01,
+# mahler#622). Disabled by default: a user must explicitly enable it in their
+# config to spend Kiro credits. Metered through a zero-cost /usage probe that
+# sends "/usage" to `kiro-cli chat --output-format stream-json` and parses
+# Kiro's credit-line text (KIRO FREE = 50 credits/month, resets monthly).
+# The CLI has no deny-list flag; runs use --trust-tools=read,write,glob,grep
+# (no shell tool) as the guardrail (mahler#77). Kiro runs in its cwd (the
+# worktree, set by runner.spawn) — no --cwd flag exists. Opt-in only — absent
+# from default routes so Mahler never spends Kiro credits implicitly.
+DEFAULTS["platforms"]["kiro"] = {
+    "enabled": False, "kind": "kiro", "model": "auto",
+    "metered": True, "windows": ["monthly"],
+    "monthly_cap_credits": 50,
+    "backoff_minutes": 60, "max_size": "s", "tier": 2,
+    "soft": {"monthly": 80}, "hard": {"monthly": 95},
+    "stale_minutes": 360,
+    "quota_group": "kiro",
 }
 
 
