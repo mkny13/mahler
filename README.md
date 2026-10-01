@@ -129,12 +129,13 @@ config, git or logs.
    only through work groups, never through a personal one:
 
    ```toml
-   [platforms.jetstream]
+   [platforms.work-jetstream]
+   from = "jetstream"
    enabled = true
    account = "work"
 
    [groups]
-   work-tail = ["work-copilot", "jetstream", "work-codex-gpt1-astra"]
+   work-tail = ["work-copilot", "work-jetstream", "work-codex-gpt1-astra"]
    ```
 
 4. Check it with `mahler usage --probe`, then run one small item pinned to
