@@ -2283,6 +2283,38 @@ class UatOutboxTests(unittest.TestCase):
         self.gh.create_issue.assert_called_once()
         self.assertEqual(self.uat()['bug'], 42)
 
+    def test_pass_retry_after_stale_comment_read(self):
+        self.check_pass_retry_after_comment_read_failure([])
+
+    def test_pass_retry_after_unavailable_comment_read(self):
+        from mahler.gh import GHError
+        self.check_pass_retry_after_comment_read_failure(GHError('temporarily unavailable'))
+
+    def check_pass_retry_after_comment_read_failure(self, followup):
+        self.gh.issue_comments.side_effect = [[], followup]
+        action = self.queue('uat_pass')
+        self.drain()
+        self.assertEqual(self.row(action)['status'], 'failed')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
+
+        self.gh.issue_comments.side_effect = [[], []]
+        for _ in range(2):
+            action = self.queue('uat_pass')
+            self.drain()
+            self.assertEqual(self.row(action)['status'], 'failed')
+        self.gh.comment.assert_called_once()
+
+        self.gh.issue_comments.side_effect = None
+        self.gh.issue_comments.return_value = [dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))]
+        action = self.queue('uat_pass')
+        self.drain()
+        self.gh.comment.assert_called_once()
+        self.assertEqual(self.row(action)['status'], 'done')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
     def test_fail_files_a_p1_bug_and_routs_it(self):
         self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
         id = self.queue('uat_fail', note='the ping never arrived')

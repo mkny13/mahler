@@ -124,11 +124,15 @@ def uat_pass(ctx, row, payload):
     from ..sync import mirror_done
 
     gh = ctx.gh(project)
+    posted_key = f"uat-pass-posted:{project}:{number}:{r['shipped_at']}"
     # Recover a successful post after a crash/timeout before local persistence.
     evidence = next((e for c in gh.issue_comments(number)
                      if (e := completion_evidence(c, r["shipped_at"]))), None)
-    if evidence is None:
+    if evidence is None and not ctx.led.get_kv(posted_key):
         gh.comment(number, UAT_PASS_COMMENT, agent=False)
+        # The outbox commits this marker even if the read below fails. Scope it
+        # to the shipment, since retrying Pass creates a new console action.
+        ctx.led.set_kv(posted_key, "1")
         evidence = next((e for c in gh.issue_comments(number)
                          if (e := completion_evidence(c, r["shipped_at"]))), None)
     if evidence is None:
