@@ -574,10 +574,39 @@ def load(path=None):
             user = tomllib.load(fh)
     cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
+    validate_github_app(cfg)
     configure_warmup(cfg, user)
     for name, project in cfg["projects"].items():
         project["maintenance"] = maintenance_policy(cfg, name)
     return cfg
+
+
+def github_app_settings(cfg, pol):
+    """Resolve only conductor configuration; never export it through run_env."""
+    app = cfg.get("github_app", {})
+    if not isinstance(app, dict):
+        raise ValueError("github_app must be a table")
+    installation = pol.get("github_app_installation_id", app.get("installation_id"))
+    if not app and installation is None:
+        return None
+    for key, value in (("app_id", app.get("app_id")), ("installation_id", installation)):
+        text = str(value or "")
+        if isinstance(value, bool) or not text.isascii() or not text.isdigit() or int(value) <= 0:
+            raise ValueError(f"github_app requires a positive {key}; "
+                             "set it globally or override the project's installation id")
+    key_path = app.get("private_key_path")
+    if not isinstance(key_path, str) or not key_path.strip() or "\x00" in key_path:
+        raise ValueError("github_app requires private_key_path")
+    return str(app["app_id"]), str(installation), key_path
+
+
+def validate_github_app(cfg):
+    projects = list(cfg.get("projects", {}).values())
+    app = cfg.get("github_app", {})
+    if not projects or not isinstance(app, dict) or app.get("installation_id") is not None:
+        github_app_settings(cfg, {})
+    for project in projects:
+        github_app_settings(cfg, project)
 
 
 def settings(cfg):

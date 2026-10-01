@@ -23,7 +23,7 @@ from .tick import expire, queue_maintenance, schedule
 from .usage import compute_burst, refresh_usage
 from .watchdog import watchdog
 from .warmup import relearn, relearn_due, warmup_pass
-from . import resets
+from . import resets, github_app
 
 
 class Ctx:
@@ -51,7 +51,11 @@ class Ctx:
         pol = self.policy(project)
         repo = pol["repo"]
         if repo not in self._gh:
-            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.gh_account_of(pol)))
+            settings = config.github_app_settings(self.cfg, pol)
+            app = (github_app.Installation(*settings,
+                   cache_dir=os.path.join(config.STATE, "github-app-tokens")) if settings else None)
+            self._gh[repo] = GH(repo, env=config.run_env(self.cfg, config.gh_account_of(pol)),
+                                app=app)
         return self._gh[repo]
 
     def say(self, msg):

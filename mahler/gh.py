@@ -1,10 +1,11 @@
 """Thin wrapper over the `gh` CLI — GitHub is the item store (DESIGN D4).
 
-Every call goes through `gh`, so auth is whatever `gh auth` already has
-(keyring, https + gh as git credential helper — works under launchd).
+Conductor clients optionally resolve GitHub App tokens for every command;
+other clients preserve their configured `gh auth` identity.
 """
 
 import json
+import os
 import re
 import subprocess
 
@@ -65,15 +66,22 @@ class GHError(RuntimeError):
     pass
 
 
+def _safe_error(message, env):
+    token = (env or {}).get("GH_TOKEN")
+    if token:
+        message = message.replace(token, redact.MARK)
+    return redact.redact(message)
+
+
 def _gh(*args, input=None, timeout=90, env=None):
     try:
         r = subprocess.run(["gh", *args], capture_output=True, text=True,
                            input=input, timeout=timeout, env=env)
     except (subprocess.SubprocessError, OSError) as e:
-        raise GHError(f"gh {' '.join(args[:3])}: {e}") from e
+        raise GHError(f"gh {' '.join(args[:3])}: {_safe_error(str(e), env)}") from None
     if r.returncode != 0:
         raise GHError(f"gh {' '.join(args[:3])}: "
-                      f"{redact.redact((r.stderr or r.stdout).strip())[:500]}")
+                      f"{_safe_error((r.stderr or r.stdout).strip(), env)[:500]}")
     return r.stdout
 
 
@@ -84,24 +92,54 @@ def _git(path, *args, env=None):
         r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True,
                            timeout=300, env=env)
     except (subprocess.SubprocessError, OSError) as e:
-        raise GHError(f"git {' '.join(args[:3])}: {e}") from e
+        raise GHError(f"git {' '.join(args[:3])}: {_safe_error(str(e), env)}") from None
     if r.returncode != 0:
         raise GHError(f"git {' '.join(args[:3])}: "
-                      f"{redact.redact((r.stderr or r.stdout).strip())[:400]}")
+                      f"{_safe_error((r.stderr or r.stdout).strip(), env)[:400]}")
     return r.stdout.strip()
 
 
 class GH:
-    def __init__(self, repo, env=None):
+    def __init__(self, repo, env=None, app=None):
+        self.app = app
         self.repo = repo
         self.env = env      # the project's account env (DESIGN D25); None = inherit
         self._relationships = {}
 
+    def _env(self, git=False):
+        if self.app is None:
+            return self.env
+        env = dict(os.environ if self.env is None else self.env)
+        env.pop("GITHUB_TOKEN", None)
+        env["GH_HOST"] = "github.com"
+        env["GH_TOKEN"] = self.app.token()
+        if git:
+            # Pin origin to HTTPS and clear saved helpers: SSH and keychains
+            # otherwise bypass GH_TOKEN. Nothing persists in the checkout.
+            entries = [
+                ("credential.helper", ""),
+                ("credential.https://github.com.helper", ""),
+                ("credential.https://github.com.helper", "!gh auth git-credential"),
+            ]
+            start = int(env.get("GIT_CONFIG_COUNT", "0"))
+            for i, (key, value) in enumerate(entries, start):
+                env[f"GIT_CONFIG_KEY_{i}"] = key
+                env[f"GIT_CONFIG_VALUE_{i}"] = value
+            env["GIT_CONFIG_COUNT"] = str(start + len(entries))
+            env["GIT_TERMINAL_PROMPT"] = "0"
+        return env
+
     def _gh(self, *args, **kw):
-        return _gh(*args, env=self.env, **kw)
+        return _gh(*args, env=self._env(), **kw)
+
+    def _git_args(self, args):
+        if self.app and args and args[0] in ("fetch", "push", "ls-remote"):
+            return tuple(f"https://github.com/{self.repo}.git" if arg == "origin" else arg
+                         for arg in args)
+        return args
 
     def _git(self, path, *args):
-        return _git(path, *args, env=self.env)
+        return _git(path, *self._git_args(args), env=self._env(git=True))
 
     def open_issues(self):
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
@@ -249,9 +287,9 @@ class GH:
         else:
             self._git(path, "fetch", "--quiet", "--force", "origin", f"refs/heads/{ref}")
             sha = self._git(path, "rev-parse", "FETCH_HEAD")
-        out = subprocess.run(["git", "-C", path, "ls-remote", "origin",
-                              f"refs/heads/{branch}"], capture_output=True, text=True,
-                             timeout=90, env=self.env)
+        out = subprocess.run(["git", "-C", path, *self._git_args(("ls-remote", "origin",
+                              f"refs/heads/{branch}"))], capture_output=True, text=True,
+                             timeout=90, env=self._env(git=True))
         if out.returncode == 0 and out.stdout.strip().startswith(sha):
             return sha
         self._git(path, "push", "--quiet", "--no-verify", "--force", "origin",
@@ -312,9 +350,9 @@ class GH:
         try:
             result = subprocess.run(
                 ["git", "-C", path, "merge-base", "--is-ancestor", tip, head],
-                capture_output=True, text=True, timeout=90, env=self.env)
+                capture_output=True, text=True, timeout=90, env=self._env(git=True))
         except (subprocess.SubprocessError, OSError) as e:
-            raise GHError(f"freshness: ancestry check failed: {e}") from e
+            raise GHError("freshness: ancestry check failed") from None
         if result.returncode not in (0, 1):
             raise GHError("freshness: ancestry check failed: " +
                           redact.redact(result.stderr.strip())[:400])
