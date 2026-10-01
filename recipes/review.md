@@ -37,6 +37,12 @@ Rules:
    contrived edge cases, hardening, a heuristic that misses unusual inputs, missing tests for
    paths that already work, follow-up ideas — is a **note**, not a blocker. Notes ride along
    on a pass; they do not start a fix round.
+4a. **`******` is usually output masking, not file content.** Some CLIs (Copilot's among
+   them) mask token-looking strings — `Bearer …`, JWTs, keys — as `******` in the tool output
+   they show you. If a file or diff appears to contain a literal `******` where a value or
+   f-string should be, do not fail on it. Corroborate first by other means: `grep -c` for the
+   literal asterisks in the file, hash or measure the line (`sed -n 'Np' file | wc -c`,
+   `shasum`), or run the relevant tests. Only a literal confirmed that way is a finding.
 5. **Heuristics are allowed to be imperfect.** When the issue asks for a heuristic (parsing
    free text, guessing, scoring, thresholds), judge it on the cases it will actually see. A
    miss on unusual input is a note unless the miss is common or its failure is costly and

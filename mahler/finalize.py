@@ -170,7 +170,8 @@ def _review_failed(e):
     if not any(round_["run_id"] == e.run["id"] for round_ in history):
         review = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
         history.append({"sha": review.get("sha"), "findings": e.rest or "",
-                        "at": iso(e.led.now()), "run_id": e.run["id"]})
+                        "at": iso(e.led.now()), "run_id": e.run["id"],
+                        "platform": e.run["platform"]})
         e.led.set_kv(key, json.dumps(history))
     _post_review_comment(e, passed=False, findings=e.rest)
     _update_review_kv(e, verdict="fail", findings=e.rest or "")

@@ -386,6 +386,21 @@ class FixRecipeTests(unittest.TestCase):
                       self.text)
 
 
+class ReviewRecipeMaskingTests(unittest.TestCase):
+    def test_review_recipe_warns_about_masked_tool_output(self):
+        text = " ".join(prompt.render(
+            "review", number=628, repo="example/project", title="t", platform="copilot",
+            pr=1, branch="b", worktree="/tmp/w", handoff="", rules="").split())
+        for fragment in (
+            "`******` is usually output masking, not file content",
+            "do not fail on it",
+            "`grep -c` for the literal asterisks",
+            "run the relevant tests",
+            "Only a literal confirmed that way is a finding",
+        ):
+            self.assertIn(fragment, text)
+
+
 class CodingScopeRecipeTests(unittest.TestCase):
     def test_verification_scope_and_review_in_both_rendered_prompts(self):
         for role, blocker in (("build", 6), ("fix", 7)):

@@ -386,6 +386,20 @@ class GH:
                           redact.redact(result.stderr.strip())[:400])
         return result.returncode == 0
 
+    def source_line(self, path, sha, file, line):
+        """The text of `file` line `line` at commit `sha`, or None if it can't
+        be read (unknown object, missing file, line out of range)."""
+        try:
+            self._git(path, "fetch", "--quiet", "--no-tags", "origin", sha)
+        except GHError:
+            pass                      # the object may already be local
+        try:
+            text = self._git(path, "show", f"{sha}:{file}")
+        except GHError:
+            return None
+        lines = text.splitlines()
+        return lines[line - 1] if 0 < line <= len(lines) else None
+
     def pr_merge(self, number, head):
         self._gh("pr", "merge", str(number), "-R", self.repo, "--squash", "--delete-branch",
                  "--match-head-commit", head)

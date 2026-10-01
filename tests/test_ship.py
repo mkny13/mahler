@@ -82,6 +82,13 @@ class FakeGH:
         if not self.queue:                # a real merge (no queue) is synchronous
             self.view_state = "MERGED"
 
+    sources = None    # {(sha, file, line): text}; None = every line reads the same
+
+    def source_line(self, path, sha, file, line):
+        if self.sources is None:
+            return "x = f'{token}'"
+        return self.sources.get((sha, file, line))
+
     def comment(self, number, body):
         if not body.startswith(gh_module.AGENT_MARK):
             body = gh_module.AGENT_NOTE + "\n" + body
@@ -1007,6 +1014,7 @@ class ShipTests(unittest.TestCase):
             "findings": "auth.py: missing null check | db.py: unindexed query",
             "at": iso(NOW),
             "run_id": run["id"],
+            "platform": run["platform"],
         }])
         self.assertIn("missing null check", info["findings"])
         body = self.gh.comments[-1]
@@ -1621,9 +1629,90 @@ class TestReviewConvergence(unittest.TestCase):
             recorded = json.loads(self.led.get_kv("reviewfindings:x#5"))
             self.assertEqual(recorded, history + [{
                 "sha": "head-3", "findings": ending.rest,
-                "at": iso(NOW), "run_id": 20}])
+                "at": iso(NOW), "run_id": 20, "platform": "agy-gemini"}])
             finalize._review_passed(ending)
         self.assertEqual(self.led.get_kv("reviewconvergence:x#5"), "3")
+
+
+class TestRepeatReviewFinding(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+    patch_review_start = ShipTests.patch_review_start
+
+    FINDING = "mahler/ghapp.py:52 sends the literal ****** instead of the JWT"
+
+    def failed_rounds(self, findings, reviewers=("copilot", "copilot")):
+        self.led.upsert_item("x", 5, state="verifying", pr=88, attempts=0,
+                             labels='["size:m"]')
+        build = self.led.create_run(project="x", number=5, role="build",
+                                    platform="agy-claude", epoch=1, status="running")
+        self.led.update_run(build, status="ended")
+        history = [{"sha": f"head-{i}", "findings": f, "at": iso(NOW), "run_id": i,
+                    "platform": r}
+                   for i, (f, r) in enumerate(zip(findings, reviewers), 1)]
+        self.gh.head_sha = history[-1]["sha"]
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+
+    def test_repeat_on_unchanged_line_asks_another_platform_without_a_fix(self):
+        self.failed_rounds([self.FINDING, self.FINDING])
+        calls = []
+        self.patch_review_start(calls)
+        ping = self.ship()
+        self.assertEqual(calls, [])
+        ping.assert_not_called()
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual(self.item()["esc_fails"], 0)
+        self.assertIsNone(self.led.get_kv("review:x#5"))
+        self.ship()
+        self.assertEqual([c[0] for c in calls], ["review"])
+        self.assertNotIn(calls[0][1], ("copilot", "agy-claude"))
+
+    def test_alternate_reviewer_confirming_the_finding_starts_the_fix(self):
+        self.failed_rounds([self.FINDING, self.FINDING])
+        self.patch_review_start([])
+        self.ship()
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        history.append({"sha": self.gh.head_sha, "findings": self.FINDING, "at": iso(NOW),
+                        "run_id": 3, "platform": "agy-gemini"})
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": self.FINDING}))
+        for run in self.led.active_runs():
+            self.led.update_run(run["id"], status="ended")
+        self.led.release("x", 5)
+        calls = []
+        self.patch_review_start(calls)
+        ping = self.ship()
+        self.assertEqual([c[0] for c in calls], ["fix"])
+        ping.assert_called_once()
+
+    def test_changed_source_line_or_new_finding_follows_the_fix_flow(self):
+        cases = {
+            "changed line": ([self.FINDING, self.FINDING],
+                             {("head-1", "mahler/ghapp.py", 52): "a", ("head-2", "mahler/ghapp.py", 52): "b"}),
+            "unreadable line": ([self.FINDING, self.FINDING], {}),
+            "new file:line": ([self.FINDING, "mahler/ghapp.py:90 other bug"], None),
+            "no location": ([self.FINDING, "something is wrong"], None),
+            "extra finding": ([self.FINDING, f"{self.FINDING} | mahler/x.py:3 more"], None),
+        }
+        for name, (findings, sources) in cases.items():
+            with self.subTest(name):
+                self.gh.sources = sources
+                self.failed_rounds(findings)
+                calls = []
+                self.patch_review_start(calls)
+                self.ship()
+                self.assertEqual([c[0] for c in calls], ["fix"])
+                for run in self.led.active_runs():
+                    self.led.update_run(run["id"], status="ended")
+                self.led.release("x", 5)
+                self.led.set_kv("reviewfix:x#5:88:" + self.gh.head_sha, None)
+                self.led.set_kv("reviewdup:x#5", None)
+                mock.patch.stopall()
+                self.setUp()
 
 
 class HelpersTests(unittest.TestCase):
