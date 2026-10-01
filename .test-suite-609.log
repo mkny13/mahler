@@ -1,0 +1,24 @@
+....................................................................................................................................................................................................................................................................................................................................................................................................................serve: 2026-10-01T17:25:10.270+00:00 method="GET" path="/fragment?layout=phone&tab=models" status=200 size=1743 duration_ms=3.618 event="end"
+serve: 2026-10-01T17:25:10.273+00:00 method="GET" path="/" status=200 size=128675 duration_ms=2.038 event="end"
+.serve: 2026-10-01T17:25:10.296+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.083 event="start"
+serve: 2026-10-01T17:25:10.296+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.364 event="end"
+serve: 2026-10-01T17:25:10.297+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.051 event="start"
+serve: 2026-10-01T17:25:10.297+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.184 event="end"
+serve: 2026-10-01T17:25:10.297+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.060 event="start"
+serve: 2026-10-01T17:25:10.298+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.190 event="end"
+serve: 2026-10-01T17:25:10.298+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.047 event="start"
+serve: 2026-10-01T17:25:10.298+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.107 event="end"
+serve: 2026-10-01T17:25:10.298+00:00 method="POST" path="/api/client_log" status=- size=0 duration_ms=0.050 event="start"
+serve: 2026-10-01T17:25:10.299+00:00 method="POST" path="/api/client_log" status=204 size=0 duration_ms=0.342 event="end"
+........................................................................................................................................................................................................................................................................Test console running at http://127.0.0.1:64062
+Launching agent on claude...
+
+Test console running at http://127.0.0.1:64063
+Launching agent on work-codex...
+
+unknown platform nope
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpa8c0tnl1/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpqapw4qdz/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmpxkbqqbus/repo/.claude
+Hooks installed in /var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp_c5nfw2v/.claude
+.....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
