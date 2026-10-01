@@ -115,7 +115,8 @@ class DependencyTests(unittest.TestCase):
         ctx, led = self.setup_dependencies("Depends on: #125")
         item(led, "a", 125, state="shipped")
         self.assertEqual(plan(ctx, led), [])
-        led.upsert_item("a", 292, depends="[]")
+        led.accept_evidence("a", 125, dict(source="comment:1", author="owner",
+                            created_at=iso(NOW), kind="owner", body="Verified: works"))
         self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
 
     def test_unknown_disabled_and_ambiguous_refs_remain_blocked(self):

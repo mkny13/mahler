@@ -2227,7 +2227,11 @@ class UatOutboxTests(unittest.TestCase):
         self.gh = mock.Mock()
         self.ctx._gh['mkny13/mahler'] = self.gh
         self.led.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter',
-                         '- the new ping arrives')
+                         '- the new ping arrives', shipped_at=iso(self.led.now() - timedelta(minutes=1)))
+        self.led.upsert_item('mahler', 9, state='shipped', mirror='mahler:shipped')
+        self.gh.issue_comments.side_effect = lambda n: ([dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))] if self.gh.comment.called else [])
 
     def row(self, id):
         return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
@@ -2249,6 +2253,7 @@ class UatOutboxTests(unittest.TestCase):
             9, "✅ **UAT passed** (from the console).", agent=False)
         row = self.uat()
         self.assertEqual(row['verdict'], 'pass')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
         self.assertEqual(row['verdict_at'], iso(self.led.now()))
         self.assertEqual(self.row(id)['status'], 'done')
         ev = self.led.q1("SELECT * FROM events WHERE kind='uat_verdict'")

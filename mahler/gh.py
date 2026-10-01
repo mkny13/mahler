@@ -225,6 +225,16 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def issue_comments(self, number):
+        """Fetch every comment, retaining GitHub attribution and durable identity."""
+        pages = json.loads(self._gh(
+            "api", f"repos/{self.repo}/issues/{number}/comments?per_page=100",
+            "--paginate", "--slurp"))
+        return [{"body": c.get("body", ""), "createdAt": c.get("created_at"),
+                 "author": c.get("user"), "authorAssociation": c.get("author_association"),
+                 "id": c.get("id"), "url": c.get("html_url")}
+                for page in pages for c in page]
+
     def comment(self, number, body, *, agent=True):
         """Console answers are human replies; all conductor comments stay marked."""
         if agent:
@@ -692,3 +702,36 @@ def checks_state(rollup):
            for s in states):
         return "pending"
     return "green"
+
+
+UAT_PASS_COMMENT = "✅ **UAT passed** (from the console)."
+
+
+def completion_evidence(comment, shipped_at):
+    """D10's explicit, attributable evidence grammar; ordinary prose is inert."""
+    from .ledger import parse
+
+    author = (comment.get("author") or {}).get("login")
+    source = comment.get("url") or comment.get("id")
+    try:
+        created = parse(comment.get("createdAt"))
+        merged = parse(shipped_at)
+        if not created or not merged or created <= merged:
+            return None
+    except (ValueError, TypeError):
+        return None
+    if not author or not source:
+        return None
+    body = (comment.get("body") or "").strip()
+    if body == UAT_PASS_COMMENT:
+        kind = "console"
+    elif (comment.get("authorAssociation") == "OWNER"
+          and re.fullmatch(r"Verified:\s*\S[^\n]*", body)):
+        kind = "owner"
+    elif re.fullmatch(
+            r"Smoke: PASS[ \t]+(?:https?://\S+|(?:report|tag|artifact)[=:][ \t]*\S+)", body):
+        kind = "smoke"
+    else:
+        return None
+    return dict(source=str(source), author=author, created_at=comment["createdAt"],
+                kind=kind, body=body)

@@ -110,7 +110,7 @@ def uat_pending_row(ctx, project, number):
     if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
         return None, "the project is disabled"
     r = ctx.led.uat(project, number)
-    if r is None or r["verdict"]:
+    if r is None or r["verdict"] == "pass":
         return None, "the verdict is already recorded"
     return r, None
 
@@ -120,9 +120,21 @@ def uat_pass(ctx, row, payload):
     r, skip = uat_pending_row(ctx, project, number)
     if r is None:
         return "skipped", skip
-    ctx.gh(project).comment(number, "✅ **UAT passed** (from the console).", agent=False)
-    ctx.led.set_uat_verdict(project, number, "pass")
-    ctx.led.event("uat_verdict", project, number, {"verdict": "pass", "via": "console"})
+    from ..gh import UAT_PASS_COMMENT, completion_evidence
+    from ..sync import mirror_done
+
+    gh = ctx.gh(project)
+    # Recover a successful post after a crash/timeout before local persistence.
+    evidence = next((e for c in gh.issue_comments(number)
+                     if (e := completion_evidence(c, r["shipped_at"]))), None)
+    if evidence is None:
+        gh.comment(number, UAT_PASS_COMMENT, agent=False)
+        evidence = next((e for c in gh.issue_comments(number)
+                         if (e := completion_evidence(c, r["shipped_at"]))), None)
+    if evidence is None:
+        raise ValueError("UAT comment not yet visible with post-merge attribution")
+    if ctx.led.accept_evidence(project, number, evidence):
+        mirror_done(ctx, project, number)
     return "done", "UAT passed"
 
 
@@ -131,6 +143,8 @@ def uat_fail(ctx, row, payload):
     r, skip = uat_pending_row(ctx, project, number)
     if r is None:
         return "skipped", skip
+    if r["verdict"] == "fail":
+        return "skipped", "the failure is already recorded"
     pol = config.project_policy(ctx.cfg, project)
     labels = ["type:bug", "p1"]
     if pol.get("scope") == "label":

@@ -62,9 +62,21 @@ class SessionsTests(unittest.TestCase):
         self.assertIn("Failed — p1 bug", html)
         self.assertIn(' disabled>Pass all 0', html)
         # A stale browser cannot overwrite either a queued or a recorded failure.
-        for number in (1, 2, 3):
+        for number in (2, 3):
             with self.assertRaises(actions.ActionError):
                 actions.run(self.cfg, self.led, "uat_pass", {"project": "mahler", "number": number})
+
+    def test_shipped_failure_stays_visible_with_age_until_pass(self):
+        self.add(1)
+        self.led.upsert_item("mahler", 1, state="shipped")
+        self.led.con.execute("UPDATE uat SET shipped_at='2026-09-01T00:00:00Z'")
+        self.led.set_uat_verdict("mahler", 1, "fail", bug=99)
+        row = self.snapshot()["uat"][0]
+        self.assertIn("d ago", row["meta"])
+        self.assertIn("PR #101", row["meta"])
+        self.assertIn("sha abc123", row["meta"])
+        self.assertIn("awaiting passing evidence", row["meta"])
+        actions.run(self.cfg, self.led, "uat_pass", {"project": "mahler", "number": 1})
 
     def test_shared_link_and_both_layouts(self):
         self.cfg = make_cfg(projects={"mahler": {"uat_url": "https://staging.example/", "uat_url_label": "Try app"}})

@@ -797,15 +797,15 @@ def pr_merged(view):
 
 
 def record_uat_if_needed(ctx, project, n, pr, item, view):
-    """UAT queue (D10): a merged PR whose body carries a 'Needs a human to
-    check' list lands in Ready to test until you pass or fail it. Used both
-    by the conductor's own merge (_shipped, below) and by sync.py's fallback
-    for issues closed outside the conductor — by hand, per CLAUDE.md's merge
-    protocol, or a merge sync notices before ship.py's own watch does
-    (mahler#285). Bookkeeping — a failure here never stops the ship."""
+    """Register every confirmed merge, preserving custom checks when supplied.
+
+    Used by the conductor and by sync's recovery of externally merged PRs.
+    A temporary write failure is retried by the closed-shipment evidence poll.
+    """
     needs = needs_human_of(view.get("body"))
-    if not needs or not pr_merged(view):
+    if not pr_merged(view):
         return needs
+    needs = needs or "- Verify the shipped change and record passing evidence."
     sha = (view.get("mergeCommit") or {}).get("oid") or ""
     try:
         ctx.led.add_uat(project, n, pr, sha, row_get(item, "title", ""), needs,
