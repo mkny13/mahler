@@ -678,7 +678,7 @@ a { color: var(--acc); text-decoration: none; }
 /* a view switch still in flight after 150 ms (mahler#532): dim the old section */
 #app[aria-busy="true"] .dbody, #app[aria-busy="true"] .pbody { opacity: .5; pointer-events: none; }
 
-/* Weekly reset schedule: quota amounts and the time axis are separate scales. */
+/* Compact weekly reset list, shared by desktop and phone. */
 .cap-weekly { display: none; }
 :root[data-capacity-mode="weekly"] .cap-weekly { display: block; }
 :root[data-capacity-mode="weekly"] .cap-quota-pools,
@@ -687,28 +687,6 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-capacity-mode="weekly"] .cap-toggle [data-capacity-mode="weekly"] { background: var(--ink); color: var(--bg); }
 .weekly-quota { min-inline-size: 0; }
 .weekly-quota h2 { font-size: 14px; margin-block: 12px; }
-.weekly-grid { display: grid; grid-template-columns: 42px repeat(7, minmax(0, 1fr)); font-size: 11px; }
-.weekly-grid > strong { padding: 8px 4px; overflow-wrap: anywhere; }
-.weekly-time { padding-block-start: 4px; color: var(--mut); }
-.weekly-cell { position: relative; min-block-size: 36px; min-inline-size: 0; border: 1px solid var(--line); }
-.weekly-hour { background: color-mix(in srgb, var(--acc) var(--fresh), var(--bg)); }
-.weekly-cell > .weekly-hour { min-block-size: 100%; }
-.weekly-hour summary { cursor: pointer; padding: 4px; font-size: 10px; list-style: none; }
-.weekly-hour summary::-webkit-details-marker { display: none; }
-.weekly-hour summary:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; }
-.weekly-tip { display: block; padding: 6px; background: var(--bg); color: var(--ink); overflow-wrap: anywhere; }
-.weekly-reset { display: block; position: relative; border-inline-start: 3px solid currentColor; background: var(--bg); padding: 3px; margin: 2px; overflow-wrap: anywhere; line-height: 1.4; }
-.weekly-cell > .weekly-reset { margin-block-start: -1px; }
-.weekly-cell:has(.weekly-reset) > .weekly-hour { min-block-size: 24px; }
-.weekly-personal { color: var(--acc); }
-.weekly-work { color: var(--good); }
-.weekly-now { position: absolute; inset-inline: 0; border-block-start: 2px solid var(--ink); pointer-events: none; z-index: 1; }
-.weekly-now::before { content: ""; position: absolute; inset-inline-start: -3px; inset-block-start: -4px; inline-size: 6px; block-size: 6px; border-radius: 50%; background: var(--ink); }
-.weekly-day { border-block-end: 1px solid var(--line); padding-block: 10px; }
-.weekly-day h3 { font-size: 14px; }
-.weekly-bar { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); }
-.weekly-bar .weekly-hour { min-block-size: 44px; }
-.weekly-bar summary { padding: 12px 0; text-align: center; }
-.weekly-bar .weekly-tip { position: absolute; inset-inline: 0; z-index: 2; border: 1px solid var(--line); }
-.weekly-bar { position: relative; }
-.weekly-bar-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--mut); margin-block-end: 8px; }
+.weekly-list { list-style: none; padding: 0; margin-block: 8px; color: var(--mut); font-size: 13px; }
+.weekly-list li { padding-block: 3px; line-height: 1.5; overflow-wrap: anywhere; }
+.weekly-list .mono { white-space: nowrap; }

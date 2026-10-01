@@ -544,8 +544,8 @@ def week_calendar(cfg, led, now):
     """Current local Sun–Sat week, one route per quota group, read-only.
 
     Weekly cycles repeat every seven elapsed days from the latest reset anchor.
-    Hour cells sample their start; local wall times are localized individually
-    so a DST boundary does not freeze the whole week at today's UTC offset.
+    Localize each reset individually so a DST boundary does not freeze the
+    whole week at today's UTC offset. Roll weekly cycles in 604800-second steps.
     Monthly resets are actual dates, never extrapolated as weekly cycles.
     """
     local = now.astimezone()
@@ -583,70 +583,29 @@ def week_calendar(cfg, led, now):
         routes.append(route)
         if window == "monthly" and not start <= reset.astimezone().replace(tzinfo=None) < end:
             outside.append(f"{name} · monthly · {reset.astimezone():%a %d %b %H:%M}")
-    weekly = [r for r in routes if r["window"] == "weekly"]
-    days = []
-    for d in range(7):
-        day_start = start + timedelta(days=d)
-        hours, markers = [], []
-        for hour in range(24):
-            wall = day_start + timedelta(hours=hour)
-            stamp = wall.astimezone().timestamp()
-            fresh = [r["name"] for r in weekly if (stamp - r["reset"]) % 604800 < 172800]
-            count = len(fresh)
-            label = f"{wall:%a %H:%M} · {count} routes early in their week"
-            hours.append({"hour": hour, "count": count, "routes": fresh,
-                          "shade": round(35 * count / len(weekly)) if weekly else 0,
-                          "text": label + (": " + ", ".join(fresh) if fresh else ""),
-                          "label": f"{hour:02}:00"})
-        for route in routes:
-            stamp = route["reset"]
-            if route["window"] == "weekly":
-                first = start.astimezone().timestamp()
-                stamp += ((first - stamp) // 604800) * 604800
-                if stamp < first:
-                    stamp += 604800
-            # A DST fall-back week can contain two occurrences at its edges.
-            while True:
-                reset_local = datetime.fromtimestamp(stamp).astimezone()
-                wall = reset_local.replace(tzinfo=None)
-                if day_start <= wall < day_start + timedelta(days=1):
-                    text = (f"{reset_local:%H:%M} · {route['name']} · "
-                            f"{route['account']} · {route['window']}")
-                    markers.append({"name": route["name"], "account": route["account"],
-                                    "hour": wall.hour, "minute": wall.minute, "text": text})
-                if route["window"] != "weekly" or wall >= end:
-                    break
+    grouped = {}
+    for route in routes:
+        stamp = route["reset"]
+        if route["window"] == "weekly":
+            # Select the next occurrence, including when the stored anchor is old.
+            stamp += ((now.timestamp() - stamp) // 604800) * 604800
+            if stamp < now.timestamp():
                 stamp += 604800
-        markers.sort(key=lambda m: (m["hour"], m["minute"], m["name"]))
-        days.append({"label": f"{day_start:%a %d %b}", "hours": hours, "markers": markers,
-                     "now_hour": local.hour if local.date() == day_start.date() else None,
-                     "now_minute": local.minute,
-                     "freshness": f"{min(h['count'] for h in hours)}–{max(h['count'] for h in hours)} routes early in their week"})
-    counts = [h["count"] for d in days for h in d["hours"]]
-
-    def stretch(value):
-        spans, begin = [], None
-        for i, count in enumerate(counts + [None]):
-            if count == value and begin is None:
-                begin = i
-            elif count != value and begin is not None:
-                spans.append((begin, i))
-                begin = None
-        lo, hi = max(spans, key=lambda span: span[1] - span[0])
-        return f"{start + timedelta(hours=lo):%a %H:%M} – {start + timedelta(hours=hi):%a %H:%M}"
-
-    summary = (f"Freshest: {stretch(max(counts))} ({max(counts)} routes early in their week). "
-               f"Leanest: {stretch(min(counts))} ({min(counts)})." if weekly else
-               "No known weekly resets to calculate freshness.")
-    return {"title": "Weekly reset calendar", "days": days, "summary": summary,
-            "note": (f"Sun–Sat · local time ({local:%Z}). Darker = more routes in the first 48 hours "
-                     "of their week, sampled on the hour. Weekly timing repeats from the latest known reset; "
-                     "monthly routes do not affect shading. Tap an hour for route names."),
+        reset_local = datetime.fromtimestamp(stamp).astimezone()
+        wall = reset_local.replace(tzinfo=None)
+        if route["window"] == "monthly" and not (start <= wall < end and stamp >= now.timestamp()):
+            continue
+        key = (reset_local.date(), reset_local.strftime("%H:%M"))
+        grouped.setdefault(key, []).append(route["name"])
+    lines = [{"day": day.strftime("%a"), "time": clock, "names": names}
+             for (day, clock), names in sorted(
+                 grouped.items(), key=lambda item: ((item[0][0].weekday() + 1) % 7, item[0][1]))]
+    return {"title": "Weekly resets", "lines": lines,
+            "note": f"Next resets · Sun–Sat · local time ({local:%Z}).",
             "now_label": f"Now · {local:%a %H:%M %Z}",
-            "legend": "Reset colours: personal / work. Shading counts shared quota groups once.",
             "unknown": unknown, "unmetered": unmetered, "outside": outside,
             "unknown_label": "Reset unknown", "unmetered_label": "No weekly cycle",
-            "outside_label": "Monthly resets outside this week", "no_resets": "No resets today."}
+            "outside_label": "Monthly resets outside this week"}
 
 
 def _capability_sections(quota):
