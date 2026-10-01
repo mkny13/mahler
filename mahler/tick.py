@@ -19,7 +19,32 @@ MAINTENANCE_TEXT = {
     "security": ("Security & Surface Area Audit", "Security & Surface Area Audit — credential boundaries (`.env` leaks, unpooled URLs), subshell executions (`subprocess.run` argument sanitization), permission boundaries, denial list checks, dependency scans."),
     "health": ("Codebase Health & Refactoring Pass", "Codebase Health & Refactoring Pass — unclosed resource leaks (DB connections, file descriptors), dead code / orphaned helpers, cyclomatic complexity hotspots."),
     "drift": ("Architecture & Specification Drift Audit", "Architecture & Specification Drift Audit — comparing implementation against `DESIGN.md` / `ARCHITECTURE.md` / `ROADMAP.md`, cleaning up zombie abstractions."),
-    "tests": ("Test Suite Health & Flakiness Audit", "Test Suite Health & Flakiness Audit — test isolation, false-green tests, execution time creep, `ResourceWarning` checks."),
+    "tests": ("Test Suite Health & Flakiness Audit", "Test Suite Health & Flakiness Audit — test isolation, false-green tests, execution time creep, `ResourceWarning` checks; fixtures hand-written to match the decoder rather than recorded from the real upstream service; no scheduled check that upstream API shapes still match (couch-tour#405)."),
+    "gate-coverage": ("Shipped-Artifact Gate Coverage Audit", """Inventory every artifact/target the project ships from release workflows, build scripts,
+package manifests and release documentation. Inspect the effective project `verify`
+command supplied to the run, the repository verify contract, and PR CI workflows
+(including called scripts, target selection, triggers, path filters and conditions).
+Distinguish PR checks from checks run only at release; testing a shared library does
+not prove its app target compiles (couch-tour#402).
+
+Report an evidence-backed artifacts × gates table with columns:
+| Artifact/target | verify | PR CI | release-only |
+For each cell cite the exact command and file/workflow path that builds or exercises
+that artifact, or mark it uncovered, unknown, or not applicable with the reason.
+Do not infer coverage from a green badge or a workflow name. Identify release-only
+coverage explicitly; compilation first attempted at release is too late to gate PRs.
+If the effective verify command or other evidence is unavailable, report that
+uncertainty rather than guessing coverage.
+
+For each uncovered artifact/gate gap, search existing issues and file one deduplicated
+issue (reuse and link an existing issue for the same gap), linked back to this audit.
+Include the artifact, missing gate, evidence, recommended command/workflow change,
+and acceptance check. Link the resulting issues in the report; explain any project
+non-applicability. This is an audit and recommendation pass: do not automatically
+change workflows, build scripts, or verify commands, or run release-only jobs.
+Never edit `~/.mahler/config.toml`. Changing the operator's `verify` is an owner
+decision; propose the exact change for the owner. Repository fixes go through normal
+issues and PRs."""),
     "token-economy": ("Token Economy/Quota & Performance Hygiene", "Token Economy/Quota & Performance Hygiene — prompt context bloat in recipes/rules, run duration outliers, excessive polling overhead, DB query efficiency."),
     "guidance": ("Agent Guidance & Rule Calibration", "Agent Guidance & Rule Calibration — reviewing `AGENTS.md` / `CLAUDE.md` / `recipes` against observed failure modes, pruning obsolete instructions."),
     "backlog": ("Issue Backlog Pruning Pass", "Issue Backlog Pruning Pass — parent/goal issues whose sub-issues are all closed but the parent itself wasn't, issues superseded by a later split or refactor (check against current module boundaries, not the description text), duplicate or overlapping issues covering the same ground, and stale mahler:parked items worth reviving or closing."),

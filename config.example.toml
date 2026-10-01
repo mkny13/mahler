@@ -73,7 +73,9 @@ verify = "python3 -m unittest discover -s tests"
 # cadence_days = 30
 # merged_threshold = 20
 # cooldown_days = 14
-# passes = ["security", "health", "drift", "tests", "token-economy", "guidance", "backlog", "bugs", "docs"]
+# gate-coverage audits shipped targets against verify, PR CI and release-only checks;
+# recommends fixes without editing private config. Omit it from passes to opt out.
+# passes = ["security", "health", "drift", "tests", "token-economy", "guidance", "backlog", "bugs", "docs", "gate-coverage"]
 
 # Periodic self-audit of platform tier/capability assumptions (DESIGN D20,
 # mahler#206) — global, not per-project: it's about mahler/config.py's own
