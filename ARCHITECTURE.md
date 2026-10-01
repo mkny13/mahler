@@ -78,22 +78,32 @@ passes in order, each exception-safe per project:
 
 Exit code 3 tells the launcher a global launch breaker is open (D17).
 
-## Run and build flow
+## Run flow
 
 1. `tick.start` takes a lease on the item and picks a platform and account (D8, D25, D26).
 2. `runner.prepare` creates the worktree on `mahler/<issue>-<slug>`, starting from the
    handoff branch or base. It installs a pre-push epoch fence through `GIT_CONFIG_*` that
    chains to the repo's own hooks. `runner.launch` spawns the agent CLI detached, with a
    `MAHLER_*` environment and the run's own account credentials.
-3. The agent works from a recipe (`recipes/sort.md`, `build.md`, `fix.md`, `review.md`),
-   verifies, commits, pushes, and ends with a `STATUS:` line. It does not open PRs.
-4. The watchdog supervises the process across ticks. **Every exit is a handoff** (D9):
-   `finalize` reads the log and STATUS line, snapshots unsaved work to a pushed ref,
-   comments on the issue, and moves the item: retry, `needs_you`, `parked`, `failed`,
-   or on to shipping. A missing STATUS line on a branch that passes `verify` still counts
-   as done (D18).
-5. Work is capped by `max_parallel`, attempts (`max_attempts`) and escalation tiers.
-   Launch failures feed a persistent circuit breaker (D17).
+3. The recipe determines what the agent may change and what its `STATUS:` line means:
+   - **Sort** is repository-read-only. It edits the issue and labels through GitHub, then
+     reports `READY`, `SPLIT`, or `NEEDS-YOU`; it does not edit files, verify, commit, or push.
+   - **Review** is repository-read-only. It inspects the PR and reports `REVIEW-PASS`,
+     `REVIEW-FAIL`, or `NEEDS-YOU`; it does not edit files, verify, commit, or push.
+   - **Build and fix** edit the worktree, run the repository's verify contract, commit and
+     push the branch, and report `DONE`, `NEEDS-YOU`, `BLOCKED`, or `YIELDED`. They do not
+     open or merge PRs.
+4. The watchdog supervises every process across ticks, and `finalize` reads its log and
+   status. Sort outcomes move the item to `ready`, `parent`, or `needs_you` (or retry).
+   Review outcomes are posted to the PR and recorded for the shipping gate; the item stays
+   `verifying`, ready either to merge or to start a fix, and an inconclusive review is retried.
+5. Only build and fix use the code-work handoff path (D9): `finalize` snapshots work to a
+   pushed ref, posts the issue handoff, and dispatches the result to retry, `needs_you`,
+   `parked`, `failed`, or shipping. Only this path has D18's fallback that accepts a missing
+   `STATUS:` line when the branch has changes and Mahler's verify command passes.
+6. Build, fix, and review take run capacity; sort does not (D19). Work is bounded by project
+   and platform caps, attempts, and escalation tiers. Launch failures feed a persistent
+   circuit breaker (D17).
 
 ## Shipping flow
 
