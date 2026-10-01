@@ -34,6 +34,8 @@ class LeaseTests(unittest.TestCase):
 
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
+        with self.assertRaisesRegex(ValueError, "requires verification evidence"):
+            self.led.set_state("p", 1, "done")
         self.led.add_uat("p", 1, 2, "abc", "change", "check")
         self.led.set_uat_verdict("p", 1, "fail", bug=3, note="broken")
         evidence = dict(source="comment:4", author="owner", created_at=iso(self.clock()),

@@ -671,6 +671,10 @@ class Ledger:
         if state not in STATES:
             raise ValueError(f"invalid item state: {state}")
         cur = self.item(project, number)
+        if (state == "done" and cur is not None and cur["state"] == "shipped"
+                and not self.q1("SELECT 1 FROM completion_evidence WHERE project=? AND number=?",
+                                (project, number))):
+            raise ValueError("shipped work requires verification evidence before done")
         if cur is not None and cur["state"] == state and not extra:
             return cur
         self.upsert_item(project, number, state=state,

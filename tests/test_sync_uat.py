@@ -12,6 +12,7 @@ empty no matter how many shipped issues carried a checklist.
 """
 
 import copy
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -177,6 +178,18 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
 
 
 class EvidenceGrammarTests(unittest.TestCase):
+    def test_comment_fetch_preserves_attribution_across_pages(self):
+        gh = gh_module.GH("owner/repo")
+        comment = dict(body="Verified: works", user={"login": "owner"},
+                       author_association="OWNER", id=123,
+                       created_at="2026-09-15T12:01:00Z", html_url="https://example/123")
+        with mock.patch.object(gh, "_gh", return_value=json.dumps([[], [comment]])) as call:
+            comments = gh.issue_comments(5)
+        self.assertIn("--paginate", call.call_args.args)
+        evidence = gh_module.completion_evidence(comments[0], iso(NOW))
+        self.assertEqual(evidence["author"], "owner")
+        self.assertEqual(evidence["source"], "https://example/123")
+
     def test_accepted_and_rejected_forms_and_metadata(self):
         base = dict(author={"login": "mike"}, authorAssociation="OWNER", id=123,
                     createdAt="2026-09-15T12:01:00Z")

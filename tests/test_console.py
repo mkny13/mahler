@@ -2260,6 +2260,29 @@ class UatOutboxTests(unittest.TestCase):
         self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
                          ('mahler', 9, 'pass'))
 
+    def test_pass_recovers_existing_comment_without_reposting(self):
+        self.gh.issue_comments.side_effect = None
+        self.gh.issue_comments.return_value = [dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))]
+        self.queue('uat_pass')
+        self.drain()
+        self.drain()
+        self.gh.comment.assert_not_called()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
+    def test_failure_can_later_pass_without_another_bug(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
+        self.queue('uat_fail', note='broken')
+        self.drain()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
+        self.queue('uat_pass')
+        self.drain()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.gh.create_issue.assert_called_once()
+        self.assertEqual(self.uat()['bug'], 42)
+
     def test_fail_files_a_p1_bug_and_routs_it(self):
         self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
         id = self.queue('uat_fail', note='the ping never arrived')
