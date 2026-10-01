@@ -147,10 +147,10 @@ class GH:
     def _git_env(self):
         if self.app is None:
             return self.env
-        env = dict(os.environ if self.env is None else self.env)
-        env.pop("GH_TOKEN", None)
-        env.pop("GITHUB_TOKEN", None)
-        return env
+        # Keep the configured account identity for git fetch/push (including
+        # account-scoped GH_TOKEN/GITHUB_TOKEN) while still avoiding App-token
+        # minting here: only _env() resolves self.app.token().
+        return dict(os.environ if self.env is None else self.env)
 
     def open_issues(self):
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",

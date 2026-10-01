@@ -167,12 +167,13 @@ class ClientTests(unittest.TestCase):
             client._git("/repo", "push", "origin", "branch")
             client._git("/repo", "fetch", "origin", "main")
         self.assertEqual(run.call_args_list[0].kwargs["env"]["GH_TOKEN"], "one")
+        self.assertNotIn("GITHUB_TOKEN", run.call_args_list[0].kwargs["env"])
         for call in run.call_args_list[1:]:
-            self.assertNotIn("GH_TOKEN", call.kwargs["env"])
-        for call in run.call_args_list:
-            self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
+            self.assertEqual(call.kwargs["env"]["GH_TOKEN"], "human")
+            self.assertEqual(call.kwargs["env"]["GITHUB_TOKEN"], "other")
         self.assertIn("https://github.com/org/repo.git", run.call_args_list[1].args[0])
         self.assertEqual(base["GH_TOKEN"], "human")
+        self.assertEqual(base["GITHUB_TOKEN"], "other")
         self.assertNotIn("GIT_CONFIG_COUNT", base)
         self.assertEqual(app.token.call_count, 1)
 
