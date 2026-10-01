@@ -146,6 +146,9 @@ The direct tokenless Jetstream URLs work only from Jetstream or IU networks, or
 through a tunnel. The authenticated API proxy above is the right choice for a
 Mac mini elsewhere. Like `cline-free`, it takes size `s` items only.
 
+Disk use from per-worktree build caches (Xcode DerivedData) is governed by
+[docs/build-caches.md](docs/build-caches.md).
+
 ## Operate Mahler
 
 Useful local CLI commands:
