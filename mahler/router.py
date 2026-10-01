@@ -471,9 +471,10 @@ def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=
         order = [pin]
     else:
         # D26 priority routes are exact and role-independent: an omitted role
-        # has no candidates. Fix is the one deliberate alias because fixes use
-        # the project's builder route (D18).
-        route = routing.get("build") if role == "fix" else routing.get(role)
+        # has no candidates. Fix (D18) and review are the deliberate aliases:
+        # both fall back to the project's builder route, as in equal mode.
+        route = (routing.get("build") if role == "fix" else
+                 routing.get(role) or (routing.get("build") if role == "review" else None))
         order = expand_route(cfg, route or [])
     if not pin and burst_lines and role == "build":
         bursting = [n for n in order
@@ -640,8 +641,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
                 reasons.append(f"{name}: tier {t} below escalation tier {min_tier}")
                 continue
         # Size limits (max_size/min_size) are builder limits — they don't apply
-        # to sort or plan roles (DESIGN D21).
-        if role not in ("sort", "plan"):
+        # to sort, plan or review roles (DESIGN D21): a review reads a diff and
+        # writes nothing, so a size:l PR needs a reviewer that can't build one.
+        if role not in ("sort", "plan", "review"):
             limit = pconf.get("max_size")
             if (limit and not pin and SIZES.get(size or "m", 2) >
                     SIZES[limit] + (1 if explore and not is_metered(led, name, pconf) else 0)):

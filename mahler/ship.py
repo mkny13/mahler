@@ -395,10 +395,23 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+    wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
     if not platform:
-        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — "
-                f"{'; '.join(reasons)}")
+        detail = "; ".join(reasons) or "no eligible platform for review"
+        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — {detail}")
+        since = parse(led.get_kv(wait_key))
+        if not since:
+            led.set_kv(wait_key, iso(led.now()))
+            return
+        minutes = pol.get("verify_timeout_minutes", 120)
+        if led.now() - since > timedelta(minutes=minutes) and not led.get_kv(ping_key):
+            led.set_kv(ping_key, iso(led.now()))
+            ctx.ping(f"Review waiting — {project} #{n}",
+                     f"PR #{pr} is CI-green but no review could start for over {minutes} "
+                     f"minutes: {detail}", project, n, priority="high", tags="warning")
         return
+    led.set_kv(wait_key, "")
+    led.set_kv(ping_key, "")
     conductor = led.lease(project, n)
     handoff_from = ((CONDUCTOR, conductor["epoch"])
                     if conductor and (conductor["holder"] == CONDUCTOR
