@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, platforms, router, runner
+from . import config, failures, platforms, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
@@ -75,7 +75,7 @@ def _retry(e):
     """No usable outcome: another attempt, or `failed` once they run out."""
     retry_or_fail(e.ctx, e.project, e.number, e.item, e.reason, e.outcome,
                   platform=e.run["platform"], duration_mins=e.duration_mins,
-                  explore=bool(row_get(e.run, "explore", 0)))
+                  explore=bool(row_get(e.run, "explore", 0)), run=e.run)
     return True
 
 
@@ -256,6 +256,8 @@ def _ended_unconfirmed(e):
         return True                             # handled — state set to verifying
     if e.reason is None and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol):
         return False                            # alive again — finalized when it ends
+    if e.ctx.led.get_kv(f"verify_failed:{e.run['id']}"):
+        e.reason = "verify_failed"
     return _retry(e)
 
 
@@ -568,8 +570,10 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
         return False
     ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — running verify")
     ok = runner.verify_in_worktree(run["worktree"], verify_cmd,
-                                   timeout=pol.get("verify_timeout", 120))
+                                   timeout=pol.get("verify_timeout", 120),
+                                   output_path=os.path.join(os.path.dirname(run["log_path"]), "verify.log"))
     if not ok:
+        led.set_kv(f"verify_failed:{run['id']}", "1")
         ctx.say(f"{project}#{n}: verify failed in worktree — failed attempt")
         return False
     # The branch is done: the conductor ships it, with an honest note.
@@ -712,13 +716,14 @@ def _setup_failure(ctx, run, item):
     attempt, and after SETUP_FAIL_CAP in a row hand the item to the owner."""
     led, project, n = ctx.led, run["project"], run["number"]
     pol = ctx.policy(project)
-    tail = runner.setup_tail(run)
+    tail = runner.setup_tail(run, lines=30)
     fails = led.bump_setup_fails(project, n)
     stuck = fails >= SETUP_FAIL_CAP
     _setup_failed_comment(ctx, run, fails, tail, stuck)
     if stuck:
         reason = f"setup failed {fails} times in a row — the environment, not the task"
         led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
+        failures.report(ctx, project, n, "setup_failed", run=run, output=tail)
         ctx.ping(f"Mahler needs you — {project} #{n}",
                  f"setup failed {fails} times in a row (setup.log tail is in the handoff comment).",
                  project, n, priority="high", tags="warning")
@@ -744,7 +749,7 @@ def _setup_failed_comment(ctx, run, fails, tail, stuck):
              f"**Setup failed** — run {run['id']} stopped during the project's setup step, "
              f"before the agent started (exit 97). {fails} in a row: {why}", ""]
     if tail:
-        lines += ["Last 20 lines of setup.log:", "", "```", tail, "```"]
+        lines += ["Last 30 lines of setup.log:", "", "```", tail, "```"]
     else:
         lines.append("(setup.log was empty or missing)")
     try:
@@ -753,7 +758,7 @@ def _setup_failed_comment(ctx, run, fails, tail, stuck):
         ctx.say(f"#{run['number']}: couldn't post setup-failure comment — {e}")
 
 
-def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None, explore=False):
+def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None, explore=False, run=None):
     led = ctx.led
     if explore:
         led.set_state(project, n, "ready" if item["sorted_at"] else "inbox",
@@ -797,6 +802,7 @@ def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duratio
     if attempts >= ctx.policy(project)["max_attempts"]:
         led.set_state(project, n, "failed", f"{attempts} failed attempts — last: {outcome}",
                       attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+        failures.report(ctx, project, n, reason or outcome, run=run)
         ctx.ping(f"Stuck — {project} #{n}",
                  f"{attempts} attempts failed ({outcome}). Comment `/mahler go` to retry.",
                  project, n, priority="high", tags="warning")

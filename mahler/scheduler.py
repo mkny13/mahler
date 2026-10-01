@@ -13,7 +13,7 @@ import fcntl
 import os
 import sys
 
-from . import backup, config, digest, janitor, notify, platform_audit
+from . import backup, config, digest, failures, janitor, notify, platform_audit
 from .console import outbox
 from .gh import project_client, GHError
 from .ledger import iso
@@ -107,6 +107,7 @@ def tick(ctx):
             sync(ctx, p["name"])
         except GHError as e:
             ctx.say(f"{p['name']}: GitHub sync failed — {e}")
+    failures.backfill(ctx, projects)
     expire(ctx)
     close_finished_parents(ctx, projects)
     if ctx.led.paused():

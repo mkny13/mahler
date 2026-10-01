@@ -70,6 +70,9 @@ class FakeGH:
                 "baseRefName": "main",
                 "mergeCommit": {"oid": "4c1f0abfeed5"}}
 
+    def failed_run_log(self, branch, tail=150):
+        return 123, "CI assertion failed"
+
     def issue_state(self, number):
         return "OPEN"
 
@@ -238,7 +241,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.led.unreleased_items("x"), [])
         self.assertIsNone(self.led.uat("x", 5))
         self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipped'"), [])
-        self.assertEqual(self.gh.comments, [])
+        self.assertFalse(any("**Shipped**" in c for c in self.gh.comments))
         self.assertFalse(any(c.args[0].startswith("Shipped") for c in ping.call_args_list))
 
     def test_closed_unmerged_pr_returns_to_ready(self):
@@ -252,6 +255,7 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.item()["pr"])
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("PR #88 was closed without merging", self.last_event())
+        self.assertEqual(self.gh.comments, [])
         self.assert_nothing_shipped(ping)
         self.ship()  # Not counted again once it leaves verifying.
         self.assertEqual(self.item()["attempts"], 1)
@@ -311,6 +315,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["attempts"], limit)
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("PR #88 was closed without merging", self.last_event())
+        self.assertIn("class=pr_closed", self.gh.comments[-1])
         ping.assert_called_once()
         self.assertIn("Stuck", ping.call_args.args[0])
         self.assert_nothing_shipped(ping)
@@ -670,12 +675,27 @@ class ShipTests(unittest.TestCase):
         item = self.item()
         self.assertEqual((item["esc_fails"], item["esc_tier"]), (0, 2))
 
+    def test_review_limit_comments_findings_once(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                      self.gh.pr_view(88), "app.py: broken authorization")
+            from mahler.failures import backfill
+            backfill(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("class=review_rejected", self.gh.comments[0])
+        self.assertIn("app.py: broken authorization", self.gh.comments[0])
+        self.assertIn("mahler/5-x", self.gh.comments[0])
+
     def test_red_ci_gives_up_after_max_attempts(self):
         self.led.upsert_item("x", 5, pr=88, attempts=2)
         self.gh.rollup = [{"state": "FAILURE"}]
         start = self.patch_start()
         ping = self.ship()
         start.assert_not_called()
+        self.assertIn("class=ci_failed", self.gh.comments[-1])
+        self.assertIn("CI assertion failed", self.gh.comments[-1])
         self.assertEqual(self.item()["state"], "failed")
         self.assertIsNone(self.led.lease("x", 5))               # the slot is given back
         ping.assert_called_once()

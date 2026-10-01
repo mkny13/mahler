@@ -369,7 +369,7 @@ def commits_ahead(wt, base):
         return 0
 
 
-def verify_in_worktree(wt, verify_cmd, timeout=120):
+def verify_in_worktree(wt, verify_cmd, timeout=120, output_path=None):
     """Run the project's verify command in the worktree.
     Returns True if it exits 0 within the timeout, False otherwise."""
     if not verify_cmd or not wt or not os.path.isdir(wt):
@@ -377,6 +377,14 @@ def verify_in_worktree(wt, verify_cmd, timeout=120):
     try:
         r = subprocess.run(verify_cmd, shell=True, cwd=wt,
                            capture_output=True, text=True, timeout=timeout)
-        return r.returncode == 0
-    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
-        return False
+        output = (r.stdout or "") + (r.stderr or "")
+        ok = r.returncode == 0
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as err:
+        output, ok = str(err), False
+    if output_path:
+        try:
+            with open(output_path, "w") as stream:
+                stream.write(output[-16384:])
+        except OSError:
+            pass
+    return ok
