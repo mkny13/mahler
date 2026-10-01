@@ -50,7 +50,10 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(calls, [("jwt", "166283054")])
 
     def test_mint_sends_signed_jwt_in_token_request(self):
-        signed_jwt = "test-header.test-payload.test-signature"
+        # Keep the fake visibly synthetic: log scrubbers redact three-segment
+        # JWT-shaped fixtures and can make this assertion look like it expects
+        # a literal redaction marker.
+        signed_jwt = "signed-app-jwt-from-openssl"
         signer = mock.Mock(return_value=signed_jwt)
         requests = []
 

@@ -46,10 +46,11 @@ def make_jwt(app_id, key_path, now, run=subprocess.run):
     return (signing_input + b"." + _b64(r.stdout)).decode()
 
 
-def _request_token(jwt, installation_id, urlopen=urllib.request.urlopen):
+def _request_token(signed_jwt, installation_id, urlopen=urllib.request.urlopen):
     req = urllib.request.Request(
         f"{API}/app/installations/{installation_id}/access_tokens", method="POST",
-        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json",
+        headers={"Authorization": f"Bearer {signed_jwt}",
+                 "Accept": "application/vnd.github+json",
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mahler"})
     with urlopen(req, timeout=20) as resp:
         body = json.load(resp)
