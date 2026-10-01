@@ -176,6 +176,26 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.sync()
         self.assertNotIn("mahler:shipped", self.gh.labels)
 
+    def test_done_label_retries_when_shipped_write_succeeded_ambiguously(self):
+        real_set_state_label = self.gh.set_state_label
+
+        def set_then_fail(*args):
+            real_set_state_label(*args)
+            raise gh_module.GHError("response lost")
+
+        with mock.patch.object(self.gh, "set_state_label", side_effect=set_then_fail):
+            self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertIn("mahler:shipped", self.gh.labels)
+
+        self.gh.comments = [dict(body="Smoke: PASS tag=v1.2", author={"login": "bot"},
+                                 id=11, createdAt="2026-09-15T12:01:00Z")]
+        self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertNotIn("mahler:shipped", self.gh.labels)
+
 
 class EvidenceGrammarTests(unittest.TestCase):
     def test_comment_fetch_preserves_attribution_across_pages(self):

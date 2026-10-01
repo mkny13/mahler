@@ -43,6 +43,7 @@ class LeaseTests(unittest.TestCase):
         self.assertTrue(self.led.accept_evidence("p", 1, evidence))
         self.assertFalse(self.led.accept_evidence("p", 1, evidence))
         self.assertEqual(self.led.item("p", 1)["state"], "done")
+        self.assertEqual(self.led.item("p", 1)["mirror"], "mahler:shipped")
         self.assertEqual(self.led.uat("p", 1)["bug"], 3)
         self.assertEqual(self.led.uat("p", 1)["note"], "broken")
         self.assertEqual(self.led.pending_uat(), [])

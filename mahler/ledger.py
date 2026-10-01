@@ -455,6 +455,12 @@ class Ledger:
             self.con.execute("UPDATE uat SET verdict='pass',verdict_at=? "
                              "WHERE project=? AND number=?",
                              (evidence["created_at"], project, number))
+            # Completion must clear the shipped label even when the earlier
+            # shipped-label write took effect remotely but failed locally
+            # before its mirror cursor could be recorded.  Keep the retry
+            # cursor atomic with the evidence-backed state transition.
+            self.con.execute("UPDATE items SET mirror='mahler:shipped' "
+                             "WHERE project=? AND number=?", (project, number))
             self.set_state(project, number, "done", "verification evidence accepted")
             self.event("uat_verdict", project, number,
                        {"verdict": "pass", "via": evidence["kind"],
