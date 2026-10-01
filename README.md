@@ -124,16 +124,18 @@ config, git or logs.
    model `muse-glimmer`, and paste the Jetstream key when Cline asks. Cline
    stores it in its own credential storage; don't put it in TOML or an env
    var you type into a shell.
-3. Enable it in `~/.mahler/config.toml` and add it to a build group, for example
-   after `cline-free`:
+3. Jetstream is a **work** resource (mahler#625). Put it on a work account so
+   personal projects can never spend it (DESIGN D25), enable it, and route it
+   only through work groups, never through a personal one:
 
    ```toml
-   [platforms.jetstream]
+   [platforms.work-jetstream]
+   from = "jetstream"
    enabled = true
+   account = "work"
 
-   [routing]
-   build = ["agy-claude", "agy-gemini", "cline-free", "jetstream", "copilot",
-            "copilot-high", "kilo", "claude-opus", "claude"]
+   [groups]
+   work-tail = ["work-copilot", "work-jetstream", "work-codex-gpt1-astra"]
    ```
 
 4. Check it with `mahler usage --probe`, then run one small item pinned to

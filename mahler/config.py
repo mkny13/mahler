@@ -339,8 +339,11 @@ DEFAULTS["platforms"]["cline-free"] = {
 
 # Jetstream2 (Indiana University's public inference service) through Cline's
 # OpenAI-compatible provider. Opt-in: disabled until live config sets
-# `[platforms.jetstream] enabled = true` and adds it to a build group. The API
-# key lives only in Cline's own credential store (`cline auth`), never here.
+# `[platforms.jetstream] enabled = true` and adds it to a build group. It is a
+# work resource: live config defines `work-jetstream` (`from = "jetstream"`,
+# `account = "work"`, DESIGN D25) so no personal-only project can route to it
+# (mahler#625). The API key lives only in
+# Cline's own credential store (`cline auth`), never here.
 # muse-glimmer, not gpt-oss-120b: gpt-oss ends real runs with empty output
 # through Jetstream's tool-call parsing (0/7, mahler#581); muse-glimmer completes.
 DEFAULTS["platforms"]["jetstream"] = {
