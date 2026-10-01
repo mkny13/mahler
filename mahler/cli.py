@@ -745,11 +745,20 @@ def cmd_unhold(a, cfg, led):
 
 
 def cmd_add(a, cfg, led):
+    requested_labels = a.label or []
+    for label in requested_labels:
+        if label.startswith("mahler:"):
+            print(f"mahler: label {label!r} is reserved for Mahler-managed state",
+                  file=sys.stderr)
+            return 1
     pol = config.project_policy(cfg, a.project)
     if not pol.get("repo"):
         print(f"unknown project {a.project!r}")
         return 1
-    print(GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).create_issue(a.title, a.body or ""))
+    labels = [pol["scope_label"]] if pol.get("scope") == "label" else []
+    labels.extend(requested_labels)
+    print(GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).create_issue(
+        a.title, a.body or "", labels))
     return 0
 
 
@@ -1086,6 +1095,7 @@ def main(argv=None):
     s.add_argument("project")
     s.add_argument("title")
     s.add_argument("--body")
+    s.add_argument("--label", action="append", help="issue label (repeatable; mahler:* is reserved)")
     s.set_defaults(fn=cmd_add)
 
     s = sub.add_parser("notify", help="send a ntfy ping")
