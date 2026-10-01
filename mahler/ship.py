@@ -834,11 +834,11 @@ def record_release_item_if_needed(ctx, project, n, pr, item, view):
 
 def _shipped(ctx, project, n, pr, item, view, merged=True):
     """Close the loop: comment the summary plus the issue's 'Needs a human to
-    check' list, ping, and mark the item done."""
-    if view.get("state") != "MERGED":
+    check' list, ping, and mark the item shipped."""
+    if not pr_merged(view):
         raise ValueError(f"PR #{pr} has not been confirmed merged")
     led = ctx.led
-    how = "squash-merged" if merged else view["state"].lower()
+    how = "squash-merged" if merged else "merged"
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
              item["summary"] or pr_summary_of(view.get("body")) or ""]
     needs = record_uat_if_needed(ctx, project, n, pr, item, view)
@@ -850,7 +850,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     except GHError as e:
         ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
     ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
-    led.set_state(project, n, "done", f"shipped via PR #{pr}")
+    led.set_state(project, n, "shipped", f"shipped via PR #{pr}")
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
     led.event("shipped", project, n, {"pr": pr, "merged": pr_merged(view)}, passes=passes)
@@ -861,3 +861,19 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     if audit_pol["enabled"] and project == audit_pol["project"]:
         led.increment_maintenance_merged(project, config.PLATFORM_AUDIT_PASS)
     led.release(project, n, holder=CONDUCTOR)
+    mirror_shipped(ctx, project, led.item(project, n))
+
+
+def mirror_shipped(ctx, project, item):
+    """Close and label a shipment, retryable even after it leaves the open poll."""
+    n = item["number"]
+    try:
+        gh = ctx.gh(project)
+        if gh.issue_state(n) != "CLOSED":
+            gh.close_issue(n)
+        current = gh.issue_labels(n)
+        gh.set_state_label(n, "shipped", current)
+        ctx.led.upsert_item(project, n, mirror="mahler:shipped")
+        ctx._labels.pop((project, n), None)
+    except GHError as e:
+        ctx.say(f"{project}#{n}: shipped label update failed — {e}")

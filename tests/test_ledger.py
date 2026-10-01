@@ -667,10 +667,17 @@ class StateTests(unittest.TestCase):
         ev = led.q("SELECT * FROM events WHERE kind='state'")[-1]
         self.assertIn("inbox -> ready", ev["detail"])
 
+    def test_shipped_is_a_supported_state(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.upsert_item("p", 3, state="verifying")
+        led.set_state("p", 3, "shipped", "merged")
+        self.assertEqual(led.item("p", 3)["state"], "shipped")
+
     def test_item_writes_reject_retired_or_unknown_states(self):
         led = Ledger(":memory:")
         self.addCleanup(led.close)
-        for state in ("shipped", "tracking", "bogus"):
+        for state in ("tracking", "bogus"):
             with self.subTest(state=state), self.assertRaisesRegex(
                     ValueError, "invalid item state"):
                 led.upsert_item("p", 3, state=state)

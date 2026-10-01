@@ -370,7 +370,12 @@ parked (you said "not now")
 ```
 
 On GitHub, `shipped` and `done` are closed issues. Everything else is open, with a
-`mahler:<state>` label.
+`mahler:<state>` label. Confirmed merges retain `mahler:shipped` on the closed
+issue, replacing `mahler:verifying`. Shipped items release leases and capacity,
+but do not satisfy parent/dependency completion until `done`. Release snapshots,
+UAT entries and shipped events are recorded at merge time. Startup preserves both
+shipped rows and historical done rows; evidence-driven promotion to done is a
+separate follow-up to mahler#615.
 
 ### D7 — Staleness: activity clocks, not a calendar
 

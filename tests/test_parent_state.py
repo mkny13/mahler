@@ -66,7 +66,7 @@ class ParentStateTests(unittest.TestCase):
             finally:
                 led.close()
 
-    def test_db_migration_from_shipped(self):
+    def test_restart_preserves_shipped_and_done(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "mahler.db")
             con = sqlite3.connect(path)
@@ -75,12 +75,15 @@ class ParentStateTests(unittest.TestCase):
                 con.execute(
                     "INSERT INTO items (project, number, state) VALUES (?, ?, ?)",
                     ("testproj", 1, "shipped"))
+                con.execute("INSERT INTO items (project, number, state) VALUES (?, ?, ?)",
+                            ("testproj", 2, "done"))
                 con.commit()
             finally:
                 con.close()
 
             led = Ledger(path)
             try:
-                self.assertEqual(led.item("testproj", 1)["state"], "done")
+                self.assertEqual(led.item("testproj", 1)["state"], "shipped")
+                self.assertEqual(led.item("testproj", 2)["state"], "done")
             finally:
                 led.close()

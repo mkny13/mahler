@@ -13,7 +13,7 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of)
 from .ledger import iso, parse
-from .ship import record_release_item_if_needed, record_uat_if_needed
+from .ship import _shipped, mirror_shipped, pr_merged
 from .watchdog import request_stop
 
 
@@ -111,7 +111,7 @@ def sync(ctx, project):
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
 
     for item in led.items(project):
-        if item["number"] in open_nums or item["state"] == "done":
+        if item["number"] in open_nums or item["state"] in ("done", "shipped"):
             continue
         try:
             state = gh.issue_state(item["number"])
@@ -135,10 +135,14 @@ def sync(ctx, project):
                     try:
                         view = gh.pr_view(item["pr"])
                     except (GHError, ValueError):
-                        pass
+                        led.set_kv(etag_key, "")
+                        poll_etag = None
+                        continue  # Retry rather than lose a possible shipment.
                     else:
-                        record_uat_if_needed(ctx, project, item["number"], item["pr"], item, view)
-                        record_release_item_if_needed(ctx, project, item["number"], item["pr"], item, view)
+                        if pr_merged(view):
+                            _shipped(ctx, project, item["number"], item["pr"], item, view, merged=False)
+                            led.release(project, item["number"])
+                            continue
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
 
@@ -394,6 +398,10 @@ def mirror_labels(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     for item in led.items(project):
         if item["state"] == "done":
+            continue
+        if item["state"] == "shipped":
+            if item["mirror"] != "mahler:shipped":
+                mirror_shipped(ctx, project, item)
             continue
         want = STATE_LABELS.get(item["state"])
         current = ctx._labels.get((project, item["number"]))
