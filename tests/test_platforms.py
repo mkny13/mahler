@@ -313,6 +313,18 @@ class ClineProviderTests(unittest.TestCase):
             self.assertNotIn("jetstream", router.candidates(cfg, role))
         self.assertNotIn("jetstream", str(config.DEFAULTS["routing"]))
 
+    def test_work_jetstream_never_routes_to_a_personal_project(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["accounts"] = {"work": {"env": {}}}
+        cfg["platforms"]["jetstream"].update(enabled=True, account="work")
+        cfg["routing"] = {"build": ["jetstream", "cline-free"]}
+        cfg["accounts"]["work"]["routing"] = {"build": ["jetstream"]}
+        cfg = config.resolve_platforms(cfg)
+        config.validate_accounts(cfg)
+        self.assertNotIn("jetstream", router.candidates(cfg, "build"))
+        self.assertEqual(router.candidates(cfg, "build", account="work"), ["jetstream"])
+        self.assertEqual(router.candidates(cfg, "build", pin="jetstream"), [])
+
 
 if __name__ == "__main__":
     unittest.main()
