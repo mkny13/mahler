@@ -364,6 +364,14 @@ def _review_gate(ctx, project, item, pr, view):
     _start_review_run(ctx, project, item, pr, view, sha)
 
 
+def _kv_json(led, key):
+    try:
+        value = json.loads(led.get_kv(key) or "{}")
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _start_review_run(ctx, project, item, pr, view, sha):
     """Start DESIGN D11's review run: a different platform from whichever
     one produced this PR's last build/fix run, so the review is a genuine
@@ -395,9 +403,24 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+    # Wait/ping state is scoped to the PR head: a new push restarts the clock and
+    # re-arms the alert, so an updated PR can never sit silent behind an old ping.
+    wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
     if not platform:
-        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — "
-                f"{'; '.join(reasons)}")
+        detail = "; ".join(reasons) or "no eligible platform for review"
+        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — {detail}")
+        wait = _kv_json(led, wait_key)
+        if wait.get("sha") != sha or not parse(wait.get("at")):
+            led.set_kv(wait_key, json.dumps({"sha": sha, "at": iso(led.now())}))
+            led.set_kv(ping_key, "")
+            return
+        minutes = pol.get("verify_timeout_minutes", 120)
+        if (led.now() - parse(wait["at"]) > timedelta(minutes=minutes)
+                and led.get_kv(ping_key) != sha):
+            led.set_kv(ping_key, sha)
+            ctx.ping(f"Review waiting — {project} #{n}",
+                     f"PR #{pr} is CI-green but no review could start for over {minutes} "
+                     f"minutes: {detail}", project, n, priority="high", tags="warning")
         return
     conductor = led.lease(project, n)
     handoff_from = ((CONDUCTOR, conductor["epoch"])
@@ -406,6 +429,8 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     if start(ctx, project, {**item, "branch": head}, "review", platform,
              handoff_from=handoff_from, size=size):
         led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
+        led.set_kv(wait_key, "")
+        led.set_kv(ping_key, "")
 
 
 def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):

@@ -214,10 +214,10 @@ def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     wanted = set()
     for p in projects:
-        if led.items(p["name"], ["inbox", "ready"]):
+        if led.items(p["name"], ["inbox", "ready", "verifying"]):
             for account in config.accounts_of(p):
                 routing = router.routing_for(cfg, account)
-                wanted |= {n for role in ("sort", "build", "plan") for n in routing.get(role, [])}
+                wanted |= {n for role in ("sort", "build", "plan", "review") for n in routing.get(role, [])}
     wanted |= {r["platform"] for r in led.active_runs()}
     wanted = {n for n in wanted if n in cfg["platforms"]}
     # probe_agy and a copilot probe without an account's own GitHub login read

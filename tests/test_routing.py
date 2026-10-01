@@ -129,6 +129,25 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(name, "copilot-high")
         self.assertTrue(any("agy-claude: only takes size:m" in r for r in reasons))
 
+    def test_size_l_built_by_copilot_high_still_gets_a_reviewer(self):
+        # D11 excludes the builder; review isn't bound by builder size caps (#620)
+        led = led_with(**{"agy-claude": (10, 10), "agy-gemini": (10, 10), "claude": (5, 5)})
+        led.record_usage("copilot-high", "monthly", 5.0, iso(NOW + timedelta(hours=6)))
+        name, reasons = router.pick(self.cfg, led, "review", size="l",
+                                    exclude={"copilot-high"})
+        self.assertIsNotNone(name, reasons)
+        self.assertNotEqual(name, "copilot-high")
+
+    def test_priority_review_falls_back_to_the_build_route(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        routing = {"build": ["agy-claude", "claude"]}
+        self.assertEqual(
+            router.candidates_for_priority(cfg, "review", ["personal"], routing),
+            ["agy-claude", "claude"])
+        routing["review"] = ["claude"]
+        self.assertEqual(
+            router.candidates_for_priority(cfg, "review", ["personal"], routing), ["claude"])
+
     def test_hard_line(self):
         led = led_with(**{"agy-gemini": (91, 10)})
         self.assertEqual(router.usage_state(led, "agy-gemini",

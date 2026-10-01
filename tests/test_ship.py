@@ -473,6 +473,39 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
         self.assertIsNone(self.led.lease("x", 5))
 
+    def test_unstartable_review_records_wait_and_pings_once_after_timeout(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
+        now = [NOW]
+        self.led.now = lambda: now[0]
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
+            ping = self.ship()
+            self.assertTrue(self.led.get_kv("review-wait:x#5"))
+            ping.assert_not_called()
+            now[0] = NOW + timedelta(minutes=121)
+            ping = self.ship()
+            self.assertEqual(ping.call_count, 1)
+            self.assertIn("no eligible platform for review", ping.call_args.args[1])
+            ping = self.ship()
+            ping.assert_not_called()                      # once per PR head
+            # a new push re-arms the alert and restarts the clock
+            self.gh.head_sha = "def456"
+            ping = self.ship()
+            ping.assert_not_called()
+            now[0] += timedelta(minutes=121)
+            ping = self.ship()
+            self.assertEqual(ping.call_count, 1)
+
+    def test_failed_review_launch_keeps_the_wait_clock(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
+            self.ship()
+        before = self.led.get_kv("review-wait:x#5")
+        self.assertTrue(before)
+        with mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
+                mock.patch.object(ship, "start", return_value=False):
+            self.ship()
+        self.assertEqual(self.led.get_kv("review-wait:x#5"), before)
+
     def test_failed_review_releases_capacity_for_another_green_pr(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
         self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
