@@ -6,7 +6,7 @@ an isolated git worktree, preserves handoffs, and lets a deterministic conductor
 open, verify, and merge the resulting pull request.
 
 Supported runners currently include Claude Code, Antigravity (`agy`), Cline,
-GitHub Copilot CLI, Codex CLI, Kilo, and (opt-in) Kiro CLI. A project chooses which authenticated
+GitHub Copilot CLI, Codex CLI, Kilo, and (opt-in) Kiro CLI and Mistral Vibe CLI. A project chooses which authenticated
 accounts and runners it may spend; unavailable CLIs are skipped.
 
 Mahler is currently a macOS, single-operator service. Its control plane uses

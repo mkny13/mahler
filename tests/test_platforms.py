@@ -375,7 +375,7 @@ if __name__ == "__main__":
 
 
 class ReadLogContractTests(unittest.TestCase):
-    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy', 'kiro')
+    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy', 'kiro', 'vibe')
 
     def read(self, kind, lines):
         with tempfile.TemporaryDirectory() as directory:
@@ -417,6 +417,8 @@ class ReadLogContractTests(unittest.TestCase):
             ('kilo', [{'type': 'text', 'part': {'text': final}}], None, None),
             ('agy', [{'event': 'step_update', 'step_update': {'text_delta': 'earlier'}},
                  {'event': 'result', 'result': {'status': 'SUCCESS', 'response': final}}], True, None),
+            ('vibe', [{'type': 'message', 'role': 'assistant', 'sessionId': 'v1',
+                'content': [{'type': 'text', 'text': final}]}], None, 'v1'),
             ('kiro', [{'type': 'metadata', 'data': {'sessionId': 'sess-abc'}},
                 {'type': 'sessionUpdate', 'data': {'sessionId': 'sess-abc',
                  'update': {'sessionUpdate': 'agent_message_chunk',
@@ -427,7 +429,7 @@ class ReadLogContractTests(unittest.TestCase):
         for kind, events, ok, session_id in cases:
             with self.subTest(kind=kind):
                 expected = self.empty_result()
-                expected.update(final=None if kind == 'kilo' else final, ok=ok,
+                expected.update(final=None if kind in ('kilo', 'vibe') else final, ok=ok,
                                last_text=final, session_id=session_id)
                 result = self.read(kind, events)
                 self.assertEqual(result, expected)
@@ -462,6 +464,7 @@ class ReadLogContractTests(unittest.TestCase):
             ('kilo', {'type': 'error', 'error': {'data': {'message': message}}}, None, message),
             ('agy', {'event': 'result', 'result': {'status': 'FAILED',
                  'response': message}}, False, None),
+            ('vibe', {'type': 'error', 'sessionId': 'v1', 'message': message}, None, message),
             ('kiro', {'type': 'runError', 'data': {'sessionId': 's1',
                  'stage': 'prompt', 'message': message}}, False, message),
         )
@@ -473,6 +476,45 @@ class ReadLogContractTests(unittest.TestCase):
                 self.assertEqual(result['retry_after'], 120)
                 self.assertEqual(result['ok'], ok)
                 self.assertEqual(result['last_error'], last_error)
+
+
+class VibeTests(unittest.TestCase):
+    def test_argv(self):
+        with mock.patch.object(platforms, "vibe_exe", return_value="/app/vibe"):
+            argv = platforms.vibe_argv({"kind": "vibe"}, "do it", "/wt", "build", 60)
+            resumed = platforms.vibe_resume_argv({"kind": "vibe"}, "go", "/wt", "build", 60,
+                                                 session_id="s9")
+            fresh = platforms.vibe_resume_argv({"kind": "vibe"}, "go", "/wt", "build", 60)
+        self.assertEqual(argv[:5], ["/app/vibe", "--prompt", "do it", "--workdir", "/wt"])
+        for flag in ("--trust", "--auto-approve"):
+            self.assertIn(flag, argv)
+        self.assertEqual(argv[argv.index("--max-price") + 1], "0")
+        self.assertEqual(argv[argv.index("--output") + 1], "streaming")
+        self.assertEqual(resumed[-2:], ["--resume", "s9"])
+        self.assertNotIn("--resume", fresh)
+
+    def test_env_isolates_home_and_pins_model(self):
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(platforms, "HOME", d):
+            os.makedirs(os.path.join(d, ".vibe"))
+            with open(os.path.join(d, ".vibe", ".env"), "w") as fh:
+                fh.write("MISTRAL_API_KEY=secret-key\n")
+            run = os.path.join(d, "run")
+            env = platforms.vibe_env({"kind": "vibe", "model": "codestral-latest"}, run, {})
+            self.assertEqual(env["VIBE_HOME"], os.path.join(run, "vibe_home"))
+            self.assertEqual(env["MISTRAL_API_KEY"], "secret-key")
+            cfg = open(os.path.join(env["VIBE_HOME"], "config.toml")).read()
+            self.assertIn('active_model = "codestral-latest"', cfg)
+            self.assertNotIn("secret-key", cfg)
+            env = platforms.vibe_env({"kind": "vibe"}, run, {"MISTRAL_API_KEY": "x"})
+            self.assertNotIn("MISTRAL_API_KEY", env)
+
+    def test_429_is_quota_hit(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l")
+            with open(path, "w") as fh:
+                fh.write(json.dumps({"type": "error", "message": "HTTP 429 Rate limit exceeded"}) + "\n")
+            self.assertTrue(platforms.read_log(path, "vibe")["quota_hit"])
 
 
 class KiroUsageProbeTests(unittest.TestCase):

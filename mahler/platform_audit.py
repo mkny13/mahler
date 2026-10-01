@@ -39,6 +39,7 @@ PLATFORM_ALIASES = {
     "cline-free": ["cline"],
     "kilo": ["kilo"],
     "kiro": ["kiro cli", "kiro"],
+    "vibe": ["mistral vibe", "vibe cli", "mistral-vibe"],
     "copilot": ["copilot cli", "copilot"],
     "copilot-high": ["copilot-high"],
     "codex-low": ["codex cli", "codex-low", "gpt-5.6-luna"],

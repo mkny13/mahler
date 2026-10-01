@@ -219,6 +219,8 @@ def run_env(ctx, project, number, platform, run_id, epoch):
                MAHLER_HOME=config.STATE,
                GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",
                GIT_CONFIG_VALUE_0=hooks)
+    if pconf["kind"] == "vibe":
+        env.update(platforms.vibe_env(pconf, run_dir, env))
     return env
 
 

@@ -217,6 +217,11 @@ def kilo_exe():
     return which("kilo", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
 
 
+def vibe_exe():
+    # The launchd daemon's PATH may lack ~/.local/bin, where `uv tool install` puts vibe.
+    return which("vibe", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"])
+
+
 def kiro_exe():
     return which("kiro-cli", ["/opt/homebrew/bin", os.path.join(HOME, ".local/bin")])
 
@@ -235,6 +240,7 @@ EFFORTS = {
     "cline": {"none", "low", "medium", "high", "xhigh"},
     "kilo": None,                 # provider-specific free-form variants
     "kiro": {"low", "medium", "high", "xhigh", "max"},
+    "vibe": set(),                # no effort flag: thinking is per-model in config.toml
 }
 
 
@@ -257,7 +263,7 @@ def effort_args(pconf, role):
         return []
     flag = {"claude": "--effort", "codex": "-c", "copilot": "--reasoning-effort",
             "agy": "--effort", "cline": "--thinking", "kilo": "--variant",
-            "kiro": "--effort"}[pconf["kind"]]
+            "kiro": "--effort", "vibe": "--effort"}[pconf["kind"]]
     if pconf["kind"] == "codex":
         return [flag, f'model_reasoning_effort="{value}"']
     return [flag, value]
@@ -374,6 +380,53 @@ def kiro_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv
 
 
+def vibe_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Verified 2026-10-01 (mahler#623): vibe 2.25.8, headless streaming JSON.
+    # --max-price 0 refuses any paid spend (D8). The model has no flag: it is
+    # pinned in the per-run VIBE_HOME config.toml (vibe_env). Known guardrail
+    # gap (accepted, like agy/cline/codex, mahler#77): vibe's bash tool has no
+    # command deny-list under --auto-approve.
+    max_turns = max(10, min(int(timeout_minutes), 200))
+    return [vibe_exe(), "--prompt", prompt, "--workdir", worktree,
+            "--output", "streaming", "--trust", "--auto-approve",
+            "--max-price", "0", "--max-turns", str(max_turns)]
+
+
+def vibe_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
+    # `--resume <session_id>` continues a session (verified 2026-10-01); with no
+    # id it falls back to a fresh run in the same worktree.
+    argv = vibe_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if session_id:
+        argv += ["--resume", session_id]
+    return argv
+
+
+def vibe_env(pconf, run_dir, base_env=None):
+    """Env additions for a vibe run: a run-isolated VIBE_HOME whose config.toml
+    pins the configured free model (vibe's default alias is pay-gated), plus
+    MISTRAL_API_KEY read from ~/.vibe/.env when not already in the environment.
+    The key is passed through the env only, never written to the run dir."""
+    base_env = os.environ if base_env is None else base_env
+    model = pconf.get("model") or "codestral-latest"
+    home = os.path.join(run_dir, "vibe_home")
+    os.makedirs(home, exist_ok=True)
+    with open(os.path.join(home, "config.toml"), "w") as fh:
+        fh.write(f'active_model = {json.dumps(model)}\n\n[[models]]\n'
+                 f'name = {json.dumps(model)}\nprovider = "mistral"\n'
+                 f'alias = {json.dumps(model)}\n')
+    out = {"VIBE_HOME": home}
+    if not base_env.get("MISTRAL_API_KEY"):
+        try:
+            with open(os.path.join(HOME, ".vibe", ".env"), encoding="utf-8") as fh:
+                for line in fh:
+                    k, sep, v = line.strip().partition("=")
+                    if sep and k.strip() == "MISTRAL_API_KEY" and v.strip():
+                        out["MISTRAL_API_KEY"] = v.strip().strip("'\"")
+        except OSError:
+            pass
+    return out
+
+
 def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
@@ -389,6 +442,8 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
         return kilo_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "kiro":
         return kiro_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "vibe":
+        return vibe_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
 
 
@@ -436,13 +491,15 @@ def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=N
         return cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
     if pconf["kind"] == "kilo":
         return kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
+    if pconf["kind"] == "vibe":
+        return vibe_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
     raise ValueError(f"resume not supported for platform kind {pconf['kind']!r}")
 
 
 def available(pconf):
     exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
            "copilot": copilot_exe, "codex": codex_exe,
-           "kilo": kilo_exe, "kiro": kiro_exe}[pconf["kind"]]()
+           "kilo": kilo_exe, "kiro": kiro_exe, "vibe": vibe_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -1062,6 +1119,34 @@ def _read_kiro_event(res, ev, texts, first_quota):
         _note_log_error(res, ev)
 
 
+def _vibe_text(content):
+    if isinstance(content, str):
+        return [content] if content.strip() else []
+    out = []
+    if isinstance(content, list):
+        for b in content:
+            if isinstance(b, str) and b.strip():
+                out.append(b)
+            elif isinstance(b, dict) and b.get("type", "text") == "text" and b.get("text"):
+                out.append(b["text"])
+    return out
+
+
+def _read_vibe_event(res, ev, texts, first_quota):
+    # `--output streaming` is newline-delimited JSON; every record carries
+    # sessionId (verified 2026-10-01, mahler#623). Tool "effect" records are
+    # not text and are ignored. Exit codes are undocumented, so success is
+    # left to the exit file rather than inferred here.
+    if ev.get("sessionId"):
+        res["session_id"] = ev["sessionId"]
+    t = ev.get("type")
+    if t == "message" and ev.get("role") == "assistant":
+        texts.extend(_vibe_text(ev.get("content")))
+    elif t == "error":
+        _note_log_error(res, ev)
+        res["last_error"] = _extract_error_message(ev)
+
+
 def _finish_log(res, texts, kind):
     joined = "".join(texts) if kind == "agy" else "\n".join(texts)
     # The last_text feeds handoff comments (GitHub) and the final text can land
@@ -1080,6 +1165,7 @@ _LOG_HANDLERS = {
     "kilo": _read_kilo_event,
     "agy": _read_agy_event,
     "kiro": _read_kiro_event,
+    "vibe": _read_vibe_event,
 }
 
 
