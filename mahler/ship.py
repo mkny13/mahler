@@ -521,7 +521,7 @@ def _repeat_finding(ctx, project, n, view):
                 return None
     except GHError:
         return None
-    return prev
+    return cur
 
 
 def _review_not_converging(ctx, project, item, pr, view):
@@ -594,16 +594,18 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     sha = view.get("headRefOid") or ""
     dup_key = f"reviewdup:{project}#{n}"
     if _kv_json(led, dup_key).get("sha") != sha:
-        prev = _repeat_finding(ctx, project, n, view)
-        if prev:
+        repeated = _repeat_finding(ctx, project, n, view)
+        if repeated:
             # Same finding on the same unchanged line: a second opinion, not
             # another fix run, ping or tier escalation. If the alternate
             # reviewer fails it too, the record above lets the normal fix flow run.
-            led.set_kv(dup_key, json.dumps({"sha": sha, "reviewer": prev.get("platform")}))
+            led.set_kv(dup_key, json.dumps({
+                "sha": sha, "reviewer": repeated.get("platform")}))
             led.set_kv(f"review:{project}#{n}", None)
             ctx.say(f"{project}#{n}: PR #{pr} — review repeats its previous finding on an "
                     "unchanged line; asking a reviewer on another platform")
-            led.event("review_repeat", project, n, {"sha": sha, "reviewer": prev.get("platform")})
+            led.event("review_repeat", project, n,
+                      {"sha": sha, "reviewer": repeated.get("platform")})
             return
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]

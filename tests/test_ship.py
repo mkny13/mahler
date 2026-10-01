@@ -1657,7 +1657,8 @@ class TestRepeatReviewFinding(unittest.TestCase):
             "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
 
     def test_repeat_on_unchanged_line_asks_another_platform_without_a_fix(self):
-        self.failed_rounds([self.FINDING, self.FINDING])
+        self.failed_rounds([self.FINDING, self.FINDING],
+                           reviewers=("copilot", "agy-gemini"))
         calls = []
         self.patch_review_start(calls)
         ping = self.ship()
@@ -1668,7 +1669,7 @@ class TestRepeatReviewFinding(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("review:x#5"))
         self.ship()
         self.assertEqual([c[0] for c in calls], ["review"])
-        self.assertNotIn(calls[0][1], ("copilot", "agy-claude"))
+        self.assertNotIn(calls[0][1], ("agy-gemini", "agy-claude"))
 
     def test_alternate_reviewer_confirming_the_finding_starts_the_fix(self):
         self.failed_rounds([self.FINDING, self.FINDING])
