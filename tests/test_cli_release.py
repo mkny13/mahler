@@ -52,7 +52,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = False
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_remote_sha_999"
 
@@ -92,7 +92,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = False
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "sha_remote"
 
@@ -118,7 +118,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH"):
+        with patch("mahler.gh.GH"):
             with contextlib.redirect_stdout(out):
                 ret = cli.cmd_release(Args(), self.cfg, self.led)
 
@@ -134,7 +134,7 @@ class TestCLIRelease(unittest.TestCase):
                     publish = True
 
                 out = io.StringIO()
-                with patch("mahler.cli.GH"):
+                with patch("mahler.gh.GH"):
                     with contextlib.redirect_stdout(out):
                         ret = cli.cmd_release(Args(), self.cfg, self.led)
 
@@ -150,7 +150,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH"):
+        with patch("mahler.gh.GH"):
             with contextlib.redirect_stdout(out):
                 ret = cli.cmd_release(Args(), self.cfg, self.led)
 
@@ -171,7 +171,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
             mock_gh.get_release.return_value = None
@@ -216,7 +216,7 @@ class TestCLIRelease(unittest.TestCase):
             version = None
             publish = False
 
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
 
@@ -243,7 +243,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
             mock_gh.get_release.return_value = {
@@ -276,7 +276,7 @@ class TestCLIRelease(unittest.TestCase):
             version = "0.1.0"
             publish = True
 
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
             mock_gh.get_release.return_value = None
@@ -321,7 +321,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
             mock_gh.get_release.return_value = {
@@ -354,7 +354,7 @@ class TestCLIRelease(unittest.TestCase):
             publish = True
 
         out = io.StringIO()
-        with patch("mahler.cli.GH") as MockGH:
+        with patch("mahler.gh.GH") as MockGH:
             mock_gh = MockGH.return_value
             mock_gh.branch_sha.return_value = "main_tip_sha"
             mock_gh.get_release.return_value = {
@@ -408,7 +408,7 @@ class TestCLIRelease(unittest.TestCase):
 
             with patch("mahler.config.load", return_value=self.cfg), \
                  patch("mahler.cli.Ledger", side_effect=lambda *a, **kw: Ledger(tmp.name)), \
-                 patch("mahler.cli.GH") as MockGH:
+                 patch("mahler.gh.GH") as MockGH:
                 mock_gh = MockGH.return_value
                 mock_gh.branch_sha.return_value = "main_tip_sha"
                 mock_gh.get_release.return_value = None

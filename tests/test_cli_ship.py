@@ -11,6 +11,7 @@ from unittest import mock
 
 from mahler import cli, config
 from mahler.ledger import Ledger
+from mahler.gh import GHError
 
 
 def view(state="OPEN", body="Fixes #7\n\nthe summary", head="review-gate"):
@@ -26,7 +27,7 @@ class ShipCommandTests(unittest.TestCase):
         self.led.upsert_item("x", 7, title="Wire the review gate")
         self.led.claim("x", 7, "interactive:me", "interactive", 30)
         self.led.set_state("x", 7, "working", "claimed by me")
-        p = mock.patch("mahler.cli.GH")
+        p = mock.patch("mahler.gh.GH")
         self.gh = p.start().return_value
         self.addCleanup(p.stop)
         self.gh.pr_view.return_value = view()
@@ -66,9 +67,9 @@ class ShipCommandTests(unittest.TestCase):
 
     def test_pushed_branch_without_pr_is_left_for_the_conductor_to_open(self):
         self.gh.pr_for_head.return_value = None
-        with mock.patch.object(cli.subprocess, "run",
-                               return_value=SimpleNamespace(returncode=0, stdout="", stderr="")):
-            rc, out = self.run_ship(branch="my-work")
+        rc, out = self.run_ship(branch="my-work")
+        self.gh._git.assert_called_once_with(
+            "/nonexistent", "ls-remote", "--exit-code", "origin", "refs/heads/my-work")
         self.assertEqual(rc, 0, out)
         item = self.led.item("x", 7)
         self.assertEqual((item["state"], item["pr"], item["branch"]),
@@ -76,8 +77,7 @@ class ShipCommandTests(unittest.TestCase):
 
     def test_unpushed_branch_is_refused(self):
         self.gh.pr_for_head.return_value = None
-        with mock.patch.object(cli.subprocess, "run",
-                               return_value=SimpleNamespace(returncode=2, stdout="", stderr="")):
+        with mock.patch.object(self.gh, "_git", side_effect=GHError("missing branch")):
             rc, out = self.run_ship(branch="my-work")
         self.assertEqual(rc, 1)
         self.assertIn("push it first", out)

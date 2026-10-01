@@ -13,7 +13,7 @@ class AddCommandTests(unittest.TestCase):
     def setUp(self):
         self.cfg = copy.deepcopy(config.DEFAULTS)
         self.cfg["projects"]["x"] = {"repo": "owner/repo", "scope": "all"}
-        patcher = mock.patch("mahler.cli.GH")
+        patcher = mock.patch("mahler.gh.GH")
         self.gh_class = patcher.start()
         self.addCleanup(patcher.stop)
         self.gh = self.gh_class.return_value

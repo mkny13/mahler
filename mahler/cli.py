@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timedelta
 
 from . import config, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
-from .gh import GH, GHError
+from .gh import project_client, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
 
@@ -539,7 +539,7 @@ def cmd_ship(a, cfg, led):
     if item and item["state"] == "done":
         print(f"{project}#{n} is already done")
         return 1
-    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    gh = project_client(cfg, pol)
     pr, branch, title = a.pr, a.branch, (item["title"] if item else None)
     try:
         if pr is None:
@@ -560,10 +560,10 @@ def cmd_ship(a, cfg, led):
             branch = view.get("headRefName") or branch
             title = title or view.get("title")
         else:
-            r = subprocess.run(["git", "-C", pol["path"], "ls-remote", "--exit-code",
-                                "origin", f"refs/heads/{branch}"],
-                               capture_output=True, text=True, timeout=90)
-            if r.returncode != 0:
+            try:
+                gh._git(pol["path"], "ls-remote", "--exit-code",
+                        "origin", f"refs/heads/{branch}")
+            except GHError:
                 print(f"branch {branch!r} isn't on origin — push it first")
                 return 1
     except (GHError, ValueError, subprocess.SubprocessError, OSError) as e:
@@ -613,7 +613,7 @@ def cmd_release(a, cfg, led):
         return 1
 
     base_branch = pol.get("base", "main")
-    gh = GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)))
+    gh = project_client(cfg, pol)
     draft = releases.get_draft(led, project)
 
     version_arg = getattr(a, "version", None)
@@ -757,7 +757,7 @@ def cmd_add(a, cfg, led):
         return 1
     labels = [pol["scope_label"]] if pol.get("scope") == "label" else []
     labels.extend(requested_labels)
-    print(GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).create_issue(
+    print(project_client(cfg, pol).create_issue(
         a.title, a.body or "", labels))
     return 0
 
@@ -770,7 +770,7 @@ def cmd_notify(a, cfg, led):
 
 def cmd_labels(a, cfg, led):
     pol = config.project_policy(cfg, a.project)
-    GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol))).ensure_labels()
+    project_client(cfg, pol).ensure_labels()
     print(f"labels ensured on {pol['repo']}")
     return 0
 

@@ -55,7 +55,7 @@ class TestMCP(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["number"], 4)
 
-    @patch("mahler.mcp.GH")
+    @patch("mahler.gh.GH")
     def test_add_item(self, mock_gh):
         instance = mock_gh.return_value
         instance.create_issue.return_value = "https://github.com/mkny13/mahler/issues/5"
@@ -66,7 +66,7 @@ class TestMCP(unittest.TestCase):
         text = out[0]["result"]["content"][0]["text"]
         self.assertIn("Created issue", text)
         self.assertIn("Claimed as", text)
-        mock_gh.assert_called_once_with("mkny13/mahler", env=None)
+        mock_gh.assert_called_once_with("mkny13/mahler", env=None, app=None)
         instance.create_issue.assert_called_once_with("New", "")
         lease = self.led.lease("mahler", 5)
         self.assertIsNotNone(lease)
@@ -92,7 +92,7 @@ class TestMCP(unittest.TestCase):
         self.assertIn("Released successfully", out2[0]["result"]["content"][0]["text"])
         self.assertIsNone(self.led.lease("mahler", 6))
 
-    @patch("mahler.mcp.GH")
+    @patch("mahler.gh.GH")
     def test_handoff(self, mock_gh):
         instance = mock_gh.return_value
         out = self.run_mcp([{
@@ -100,7 +100,7 @@ class TestMCP(unittest.TestCase):
             "params": {"name": "handoff", "arguments": {"project": "mahler", "number": 6, "comment": "Notes"}}
         }])
         self.assertIn("Handoff comment posted", out[0]["result"]["content"][0]["text"])
-        mock_gh.assert_called_once_with("mkny13/mahler", env=None)
+        mock_gh.assert_called_once_with("mkny13/mahler", env=None, app=None)
         instance.comment.assert_called_with(6, "<!-- mahler:agent handoff -->\nNotes")
 
 if __name__ == '__main__':

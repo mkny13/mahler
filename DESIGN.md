@@ -1368,10 +1368,19 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
 - Builder-fairness accounting ("a sort must not eat the last builder", D25) stays per account. A
   multi-account project counts toward every account bucket it can draw from, competing in each
   pool it's eligible for, same as a single-account project competes in its one.
-- GitHub identity is a separate axis from compute account and stays singular: `gh_account`
-  (default personal) says which login the conductor uses for that project's sync, PRs, merges
-  and comments. Mahler's own repo is already reachable from Mike's personal GitHub, so it needs
-  no override even though it spends two compute accounts.
+- **GitHub identity is separate from compute accounts** (owner decision, mahler#609).
+  When a GitHub App is configured, the conductor, interactive CLI (`add`, `labels`,
+  `ship`, software `release`) and local MCP (`add_item`, `handoff`) all use the
+  project's App installation and shared token cache. Interactive claim and lease
+  release remain ledger operations; the next daemon sync writes their state labels
+  as the App. Compute routing and agent credentials remain governed by D25.
+  Without App configuration, the existing `gh_account` selection and human `gh auth`
+  login remain the fallback. Invalid App configuration fails instead of silently
+  switching to the human. Ordinary user-run `gh` commands and Git pushes are unchanged.
+- **Bot-authored PRs can be reviewed and approved by the owner** without GitHub's
+  self-approval restriction: the App is the author, while the owner reviews under
+  their human login. The owner can also merge, subject to repository rules; D18's
+  conductor shipping workflow remains the default.
 - Mahler is the deliberate multi-account project; it may list every compute login it is allowed
   to spend. Nothing else changes: a project that still names a single `account` keeps D25's
   exact behaviour, unchanged.
