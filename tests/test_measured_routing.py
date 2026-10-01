@@ -131,6 +131,41 @@ class MeasuredRoutingTests(unittest.TestCase):
         self.assertEqual(platform, "expensive")
         self.assertIn(f"{sibling}: excluded (same platform as the builder)", reasons)
 
+    def test_priority_review_falls_back_to_measured_build_route(self):
+        builder = "cheap/model-a/medium"
+        sibling = "cheap/model-b/medium"
+        base = self.cfg["platforms"]["cheap"]
+        self.cfg["platforms"][builder] = dict(base, slot="cheap", model="model-a")
+        self.cfg["platforms"][sibling] = dict(base, slot="cheap", model="model-b")
+        self.cfg["platforms"]["expensive"]["account"] = "work"
+        route = [builder, sibling, "expensive"]
+        self.pol.update(
+            accounts=["personal", "work"],
+            account_mode="priority",
+            routing={"build": route},
+        )
+        rows = [
+            dict(role="review", size="m", platform=name, model=self.cfg["platforms"][name]["model"],
+                 effort="medium", status="good", cost_per_success=.05, n=10, successes=9)
+            for name in route
+        ]
+
+        platform, reasons = router.pick_for_project(
+            self.cfg, self.led, self.pol, "review", exclude={builder},
+            scorecard_rows=rows)
+
+        self.assertEqual(platform, "expensive")
+        self.assertIn(f"{builder}: excluded (same platform as the builder)", reasons)
+        self.assertIn(f"{sibling}: excluded (same platform as the builder)", reasons)
+
+        platform, reasons = router.pick_for_project(
+            self.cfg, self.led, self.pol, "review", busy={"expensive"},
+            exclude={builder}, scorecard_rows=rows)
+
+        self.assertIsNone(platform)
+        self.assertTrue(reasons)
+        self.assertIn("expensive: busy", reasons)
+
     def test_burst_is_stable_after_measurement(self):
         for name in ("cheap", "expensive"):
             self.cfg["platforms"][name]["kind"] = "claude"
