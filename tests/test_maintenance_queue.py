@@ -297,5 +297,75 @@ class MaintenanceQueueTests(unittest.TestCase):
         tick.queue_maintenance(self.ctx, [proj()])
         self.gh_mock.create_issue.assert_not_called()
 
+
+class CustomMaintenanceQueueTests(unittest.TestCase):
+    """Custom definitions share the built-in D20 queue contract."""
+    def setUp(self):
+        MaintenanceQueueTests.setUp(self)
+        # Replace the fixture's due security pass with a custom equivalent.
+        self.cfg["projects"]["mahler"]["maintenance"] = {
+            "passes": [], "custom": {"parity": {
+                "title": "macOS/Android parity scan", "text": "Compare features.\nFile gaps."}}}
+
+    def test_custom_issue_content_scope_and_checkpoint_reset(self):
+        self.cfg["projects"]["mahler"].update(scope="label", scope_label="couch-tour")
+        self.led.set_maintenance_checkpoint("mahler", "parity",
+                                           last_filed_at=NOW - timedelta(days=31), merged_since=7)
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.ensure_pass_label.assert_called_once_with("parity")
+        self.gh_mock.create_issue.assert_called_once_with(
+            "macOS/Android parity scan", "Compare features.\nFile gaps.",
+            ["type:chore", "size:l", "p2", "pass:parity", "couch-tour"])
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "parity"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_custom_throughput_trigger_uses_effective_passes(self):
+        self.led.set_maintenance_checkpoint("mahler", "parity",
+                                           last_filed_at=NOW - timedelta(days=15), merged_since=19)
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        pol = config.maintenance_policy(self.cfg, "mahler")
+        self.led.event("shipped", "mahler", 1, passes=pol["passes"])
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_custom_title_dedupe_and_completion_cooldown(self):
+        self.led.upsert_item("mahler", 99, title="  MACOS/ANDROID PARITY SCAN  ", state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.set_state("mahler", 99, "done")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=15)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_builtin_in_flight_blocks_custom(self):
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:security"]), state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_custom_title_in_flight_blocks_builtin(self):
+        self.cfg["projects"]["mahler"]["maintenance"]["passes"] = ["security"]
+        self.led.upsert_item("mahler", 99, title="macOS/Android parity scan", state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_invalid_project_entry_does_not_block_other_project(self):
+        self.cfg["projects"]["mahler"]["maintenance"]["custom"] = {"broken": {"title": 2}}
+        other = proj(name="other", repo="mkny13/other", maintenance={
+            "passes": [], "custom": {"parity": {"title": "Other scan", "text": "Other text"}}})
+        self.cfg["projects"]["other"] = other
+        other_gh = mock.Mock()
+        self.ctx._gh["mkny13/other"] = other_gh
+        with self.assertLogs("mahler.config", level="WARNING"):
+            tick.queue_maintenance(self.ctx, [proj(), other])
+        self.gh_mock.create_issue.assert_not_called()
+        other_gh.create_issue.assert_called_once_with(
+            "Other scan", "Other text", ["type:chore", "size:l", "p2", "pass:parity"])
+
+
 if __name__ == "__main__":
     unittest.main()

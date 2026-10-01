@@ -35,6 +35,10 @@ def queue_maintenance(ctx, projects):
         pol = config.maintenance_policy(ctx.cfg, p["name"])
         if not pol["enabled"] or p["name"] in ctx.passes_filed:
             continue
+        definitions = {**MAINTENANCE_TEXT, **{
+            key: (entry["title"], entry["text"])
+            for key, entry in pol["custom"].items()
+        }}
         passes = pol["passes"]
         if not passes:
             continue
@@ -49,12 +53,12 @@ def queue_maintenance(ctx, projects):
         # skip all passes for now (issue #204).
         #
         # Note on scope matching (issue #204): we match explicit pass:* labels
-        # and exact/normalized MAINTENANCE_TEXT titles. Free-form manual audit
+        # and exact/normalized configured pass titles. Free-form manual audit
         # titles with different wording (e.g. #57 vs #81) are intentionally not
         # heuristically guessed here to avoid false positives against unrelated
         # type:goal / feature items; manual audits should use the canonical pass
         # title or carry a pass:<name> label.
-        pass_titles = {text[0].strip().lower() for text in MAINTENANCE_TEXT.values()}
+        pass_titles = {text[0].strip().lower() for text in definitions.values()}
         has_open_pass = False
         for it in items:
             if it["state"] == "done":
@@ -69,7 +73,7 @@ def queue_maintenance(ctx, projects):
         
         for pass_name in passes:
             label = f"pass:{pass_name}"
-            pass_title = MAINTENANCE_TEXT[pass_name][0].strip().lower()
+            pass_title = definitions[pass_name][0].strip().lower()
             skip = False
             for it in items:
                 labels = json.loads(it["labels"] or "[]")
@@ -98,7 +102,7 @@ def queue_maintenance(ctx, projects):
             if not led.maintenance_due(p["name"], pass_name, policy=pol):
                 continue
             
-            title, body = MAINTENANCE_TEXT[pass_name]
+            title, body = definitions[pass_name]
             issue_labels = ["type:chore", "size:l", "p2", label]
             if scope_label is not None:
                 issue_labels.append(scope_label)
