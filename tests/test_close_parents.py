@@ -59,6 +59,13 @@ class CloseFinishedParentsTests(unittest.TestCase):
         parent = self.led.item("mahler", 10)
         self.assertEqual(parent["state"], "parent")
 
+    def test_shipped_child_does_not_complete_parent(self):
+        self.led.upsert_item("mahler", 10, state="parent")
+        self.led.upsert_item("mahler", 11, parent=10, state="shipped")
+        sync.close_finished_parents(self.ctx, [proj()])
+        self.gh_mock.close_issue.assert_not_called()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+
     def test_does_not_close_when_no_children(self):
         """With no children, nothing happens."""
         self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")

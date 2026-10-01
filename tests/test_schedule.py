@@ -111,6 +111,13 @@ class DependencyTests(unittest.TestCase):
         led.set_state("tour", 258, "done", "test")
         self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
 
+    def test_shipped_dependency_blocks_but_does_not_take_capacity(self):
+        ctx, led = self.setup_dependencies("Depends on: #125")
+        item(led, "a", 125, state="shipped")
+        self.assertEqual(plan(ctx, led), [])
+        led.upsert_item("a", 292, depends="[]")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
+
     def test_unknown_disabled_and_ambiguous_refs_remain_blocked(self):
         for ref, extra in [
             ("unknown/groundwork#125", {}),

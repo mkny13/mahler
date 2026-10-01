@@ -34,9 +34,21 @@ class FakeGH:
 
     def __init__(self):
         self.state = "CLOSED"
+        self.labels = ["mahler:verifying", "type:feature"]
+        self.pr_state = "MERGED"
         self.pr_body = NEEDS_BODY
         self.merge_sha = "4c1f0abfeed5"
         self.fail_pr_view = False
+
+    def comment(self, number, body):
+        pass
+
+    def issue_labels(self, number):
+        return self.labels
+
+    def set_state_label(self, number, state, current):
+        self.labels = [x for x in current if x not in gh_module.LABEL_STATES]
+        self.labels.append(gh_module.STATE_LABELS[state])
 
     def open_issues(self):
         return []
@@ -50,7 +62,7 @@ class FakeGH:
     def pr_view(self, number):
         if self.fail_pr_view:
             raise gh_module.GHError("github down")
-        return {"state": "MERGED", "body": self.pr_body,
+        return {"state": self.pr_state, "body": self.pr_body,
                 "mergeCommit": {"oid": self.merge_sha}}
 
 
@@ -67,12 +79,16 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.gh = FakeGH()
 
     def sync(self):
-        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), mock.patch.object(self.ctx, "ping"):
             sync.sync(self.ctx, "x")
 
     def test_hand_merged_pr_with_needs_human_lands_in_uat_queue(self):
         self.sync()
-        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
+        self.assertEqual(self.gh.labels, ["type:feature", "mahler:shipped"])
+        self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipped'")), 1)
         row = self.led.uat("x", 5)
         self.assertIsNotNone(row)
         self.assertEqual((row["pr"], row["sha"], row["title"]),
@@ -83,8 +99,20 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
     def test_hand_merged_pr_without_needs_human_skips_the_uat_queue(self):
         self.gh.pr_body = PLAIN_BODY
         self.sync()
-        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
         self.assertIsNone(self.led.uat("x", 5))
+
+    def test_unmerged_manual_closure_is_not_shipped(self):
+        for state in ("OPEN", "CLOSED"):
+            with self.subTest(state=state):
+                self.led.set_state("x", 5, "verifying")
+                self.gh.pr_state = state
+                self.sync()
+                self.assertEqual(self.led.item("x", 5)["state"], "done")
+                self.assertNotIn("mahler:shipped", self.gh.labels)
+                self.assertIsNone(self.led.uat("x", 5))
+                self.assertEqual(self.led.unreleased_items("x"), [])
+                self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipped'"), [])
 
     def test_closed_without_a_pr_never_looks_one_up(self):
         self.led.upsert_item("x", 5, pr=None)
@@ -94,10 +122,10 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "done")
         self.assertIsNone(self.led.uat("x", 5))
 
-    def test_pr_lookup_failure_still_marks_the_item_done(self):
+    def test_pr_lookup_failure_retries_without_losing_shipment(self):
         self.gh.fail_pr_view = True
         self.sync()   # must not raise
-        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.assertIsNone(self.led.uat("x", 5))
 
 

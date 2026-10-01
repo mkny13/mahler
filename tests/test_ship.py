@@ -15,7 +15,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship
+from mahler import config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -36,6 +36,16 @@ class FakeGH:
         self.pushed, self.created, self.merged, self.comments = [], [], [], []
         self.fail_view = set()
         self.queue = False    # simulate a merge queue: pr_merge only enqueues
+
+    def issue_labels(self, number):
+        return getattr(self, "labels", ["mahler:verifying", "type:feature"])
+
+    def close_issue(self, number):
+        self.closed = number
+
+    def set_state_label(self, number, state, current):
+        self.labels = [x for x in current if x not in gh_module.LABEL_STATES]
+        self.labels.append(gh_module.STATE_LABELS[state])
 
     def issue_body(self, number):
         return ISSUE_BODY
@@ -157,7 +167,9 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88)
         ping = self.ship()
         self.assertEqual(self.gh.merged, [88])
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.gh.closed, 5)
+        self.assertEqual(self.gh.labels, ["type:feature", "mahler:shipped"])
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIsNone(self.led.lease("x", 5))       # conductor lease released
         body = self.gh.comments[-1]
         self.assertTrue(body.startswith("<!-- mahler:agent -->"))
@@ -167,13 +179,26 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
 
+    def test_shipped_label_failure_retries_after_issue_leaves_open_poll(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("down")):
+            self.ship()
+        self.assertEqual(self.item()["state"], "shipped")
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertNotEqual(self.item()["mirror"], "mahler:shipped")
+        self.ctx._labels.clear()
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.mirror_labels(self.ctx, "x")
+        self.assertEqual(self.gh.labels, ["type:feature", "mahler:shipped"])
+        self.assertEqual(self.item()["mirror"], "mahler:shipped")
+
     def test_shipped_comment_failure_still_closes_the_loop(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "comment",
                                side_effect=gh_module.GHError("rate limited")):
             ping = self.ship()   # must not raise
         self.assertEqual(self.gh.merged, [88])
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIsNone(self.led.lease("x", 5))
         ping.assert_called_once()
         self.assertIn("couldn't post the shipped comment", " ".join(self.ctx.lines))
@@ -264,7 +289,7 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
         self.gh.view_state = "MERGED"
         self.ship()
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertEqual(self.gh.pushed, [])
         self.assertEqual(self.gh.created, [])
         self.assertIsNotNone(self.led.uat("x", 5))
@@ -378,7 +403,7 @@ class ShipTests(unittest.TestCase):
         with mock.patch.object(self.led, "add_uat",
                                side_effect=sqlite3.OperationalError("db locked")):
             self.ship()   # must not raise
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIn("couldn't record the UAT item", " ".join(self.ctx.lines))
 
     def test_shipped_event_tracks_enabled_maintenance_passes(self):
@@ -1199,7 +1224,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])
         self.gh.rollup = [{"state": "SUCCESS"}]
         self.ship()
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
 
     def test_non_main_target_is_used(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -1316,7 +1341,7 @@ class ShipTests(unittest.TestCase):
         self.gh.view_state = "MERGED"                      # the queue landed it
         ping = self.ship()
         self.assertEqual(self.gh.merged, [88])              # not requested again
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIsNone(self.led.lease("x", 5))
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
@@ -1356,7 +1381,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [88])
         self.gh.view_state = "MERGED"
         self.ship()
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
 
     def test_merge_queue_stuck_times_out_to_needs_you(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -1379,12 +1404,12 @@ class ShipTests(unittest.TestCase):
         self.assertIn("90 min", self.item()["question"])
         self.assertEqual(self.item()["options"], "[]")
 
-    def test_pr_resolved_outside_mahler_is_just_done(self):
+    def test_pr_merged_outside_mahler_is_shipped(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.view_state = "MERGED"
         ping = self.ship()
         self.assertEqual(self.gh.merged, [])
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIn("**Shipped**", self.gh.comments[-1])
         self.assertIsNotNone(self.led.uat("x", 5))
         self.assertEqual(self.led.unreleased_items("x")[0]["pr"], 88)
@@ -1421,7 +1446,7 @@ class ShipTests(unittest.TestCase):
                 mock.patch.object(self.ctx, "ping"):
             ship.ship(self.ctx, [{"name": "x"}])
         self.assertEqual(self.item()["state"], "verifying")     # 5: retried next tick
-        self.assertEqual(self.item(6)["state"], "done")         # 6: still shipped
+        self.assertEqual(self.item(6)["state"], "shipped")         # 6: still shipped
         self.assertIn("PR lookup failed", " ".join(self.ctx.lines))
 
     # ---------- open PRs no item tracks (mahler#407) ----------
@@ -1458,7 +1483,7 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "open_prs", side_effect=gh_module.GHError("down")):
             self.ship()
-        self.assertEqual(self.item()["state"], "done")
+        self.assertEqual(self.item()["state"], "shipped")
         self.assertIn("unowned-PR check failed", " ".join(self.ctx.lines))
 
 

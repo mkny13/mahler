@@ -8,6 +8,18 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_shipped_label_replaces_closed_issue_state_and_exists_on_old_repos(self):
+        self.gh._gh.return_value = json.dumps({"labels": [
+            {"name": "mahler:verifying"}, {"name": "type:feature"}]})
+        labels = self.gh.issue_labels(123)
+        self.gh.set_state_label(123, "shipped", labels)
+        self.assertEqual(labels, ["mahler:verifying", "type:feature"])
+        self.gh._gh.assert_any_call("label", "create", "mahler:shipped", "-R",
+                                  "mkny13/mahler", "--color", "0e8a16", "--force")
+        self.gh._gh.assert_called_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                      "--remove-label", "mahler:verifying",
+                                      "--add-label", "mahler:shipped")
+
     def test_comment_appends_footer_for_agent(self):
         self.gh.comment(123, "Test body")
         expected_body = f"{AGENT_NOTE}\nTest body{HELP_FOOTER}"

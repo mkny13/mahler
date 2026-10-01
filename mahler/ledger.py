@@ -225,7 +225,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_estimate_samples
 """
 
 STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
-          "parent", "done")
+          "parent", "shipped", "done")
 
 CONDUCTOR = "conductor"          # the lease holder that ships (DESIGN D18)
 
@@ -341,11 +341,8 @@ class Ledger:
                              ("bug", "INTEGER"), ("note", "TEXT")):
                 if col not in uat_cols:
                     self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
-            # Retired lifecycle names must not strand rows outside STATES.  `tracking`
-            # became `parent`; the old post-merge `shipped` state was collapsed into
-            # `done` when UAT became a separate queue.
+            # Preserve shipped and historical done rows; only tracking is retired.
             self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
-            self.con.execute("UPDATE items SET state = 'done' WHERE state = 'shipped'")
             if path != ":memory:":
                 # 0600 on the database and its WAL/SHM sidecars (issue #75): the
                 # file is created umask-masked, so chmod explicitly — same pattern

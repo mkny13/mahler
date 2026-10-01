@@ -13,7 +13,7 @@ from . import redact
 
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
-    "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
+    "shipped": "mahler:shipped", "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
     "parked": "mahler:parked", "failed": "mahler:failed", "parent": "mahler:parent",
 }
 LABEL_STATES = {v: k for k, v in STATE_LABELS.items()}
@@ -21,7 +21,7 @@ LABEL_STATES["mahler:tracking"] = "parent"  # backward compatibility
 LABEL_COLORS = {
     "mahler:inbox": "ededed", "mahler:ready": "0e8a16", "mahler:working": "1d76db",
     "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5",
-    "mahler:failed": "b60205", "mahler:parent": "5319e7",
+    "mahler:shipped": "0e8a16", "mahler:failed": "b60205", "mahler:parent": "5319e7",
     "type:bug": "d73a4a", "type:feature": "a2eeef", "type:chore": "fef2c0",
     "type:goal": "7057ff", "type:uat": "fbca04", "type:anomaly": "e99695",
     "size:s": "c2e0c6", "size:m": "bfd4f2", "size:l": "f9d0c4",
@@ -217,6 +217,10 @@ class GH:
             raise
         return True, _etag_of(out)
 
+    def issue_labels(self, number):
+        out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "labels")
+        return label_names(json.loads(out))
+
     def issue_state(self, number):
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
@@ -237,6 +241,9 @@ class GH:
         for l in drop:
             args += ["--remove-label", l]
         if want and want not in current_labels:
+            if state == "shipped":  # Existing projects predate this lifecycle label.
+                self._gh("label", "create", want, "-R", self.repo,
+                         "--color", LABEL_COLORS[want], "--force")
             args += ["--add-label", want]
         if len(args) > 5:
             self._gh(*args)
