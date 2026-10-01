@@ -62,6 +62,8 @@ the safe choice; the cost is a cold first build in each new worktree.
 `/Volumes/ExtSSD160/scripts/cache-cleanup/weekly-cache-cleanup.sh` (symlinked from
 `~/bin/weekly-cache-cleanup.sh`, run by launchd Sundays 03:00 with `--apply`) now also:
 
+- removes legacy `~/Library/Developer/Xcode/DerivedData` folders left by builds from before
+  the relative-path policy, reclaiming the accumulated cache from the internal disk,
 - removes `DerivedData` and `macos/build` in worktrees idle more than 3 days,
 - clears the npm cache and `_npx`, and Gradle's `build-cache-1`,
 - truncates `claude-remote-control.out.log` and cline's `hub-daemon.log` above 100 MB.
