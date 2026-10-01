@@ -1,7 +1,13 @@
 # Mahler — Backlog / Future Work
 
-Ideas captured before implementation exists. Mahler is the working name for the
-dispatch/threads orchestration tool.
+**Historical context, not a live backlog or an architecture reference.** This file records
+ideas captured on 2026-09-12 and 2026-09-21, before Mahler was built. The live backlog is
+GitHub Issues, decisions are in [DESIGN.md](DESIGN.md), the shipped system is mapped in
+[ARCHITECTURE.md](ARCHITECTURE.md), and status is in [ROADMAP.md](ROADMAP.md). The
+`dispatch` and `thread` tools discussed below are retired (DESIGN D2); nothing here
+describes a running component.
+
+Mahler was the working name for the orchestration tool that replaced them.
 
 ## Adversarial cross-product review
 
@@ -57,12 +63,13 @@ Best-practice notes from research (2026-09-21), to apply when this is designed:
   Claude reserved for data/migration items) — frontier/paid models are worth
   reserving for calibration or high-risk items, not every routine review.
 
-Status: not started — logged 2026-09-12. Slotted as ROADMAP Phase 7; its hook point is
-the different-platform review step in DESIGN.md D11.
+Status: shipped in substance (mahler#395) — logged 2026-09-12, built as ROADMAP Phase 7 at
+the different-platform review step in DESIGN.md D11. The notes above are the original
+research, kept for context.
 
 ## Proactive backlog execution (this is Mahler's actual reason to exist)
 
-`thread`/`dispatch` (in `~/ai-tools`) only ever react to anomalies — a dead
+*(Historical: describes the retired `~/ai-tools` tools as of 2026-09-12.)* `thread`/`dispatch` (in `~/ai-tools`) only ever react to anomalies — a dead
 session, a stale unmerged branch, forgotten WIP commits. They have no concept
 of "here's planned work, go do it." An open `TASKS.md` Now item with matching
 dirty files is the *expected*, healthy shape of in-progress work, so every
@@ -93,7 +100,7 @@ design, not a bolt-on flag:
   purely reactive. If Mahler does what dispatch's name implies, it should be
   named for that.
 
-Status: designed 2026-09-12 — see [DESIGN.md](DESIGN.md) (D2 supersede/absorb, D6
-ownership/locking, D7 staleness clocks; the name "Mahler" is kept — a conductor, which is
-what it now does) and
-[ROADMAP.md](ROADMAP.md) for the build order.
+Status: built. Designed 2026-09-12 and now shipped — see [DESIGN.md](DESIGN.md) (D2
+retired dispatch and absorbed its ideas, D6 ownership/locking, D7 staleness clocks; the name
+"Mahler" is kept — a conductor, which is what it now does) and
+[ROADMAP.md](ROADMAP.md) for status.
