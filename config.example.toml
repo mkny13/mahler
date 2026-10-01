@@ -122,6 +122,18 @@ verify = "python3 -m unittest discover -s tests"
 # # effort = "medium"         # low | medium | high | xhigh | max
 # # max_size = "s"           # Kiro's default plan caps to small items
 
+# Opt-in to Mistral Vibe CLI (`uv tool install mistral-vibe`). Disabled by
+# default and in no default route. Needs MISTRAL_API_KEY in ~/.vibe/.env
+# (mode 600) from a La Plateforme Free-mode workspace. NEVER enable
+# pay-as-you-go on that workspace: Mahler never spends real money (D8).
+# Only codestral-latest and open models work on the free plan; Mahler pins the
+# model in a per-run VIBE_HOME. Unmetered, with a 60-minute backoff on 429.
+# [platforms.vibe]
+# enabled = true
+# # model = "codestral-latest"
+# [routing]
+# build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "vibe", "claude"]
+
 # Optional per-platform reasoning effort. Supported values depend on the CLI;
 # invalid values are ignored and reported by `mahler status`.
 # [platforms.work-codex-gpt1-low]

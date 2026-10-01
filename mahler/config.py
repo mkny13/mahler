@@ -33,7 +33,7 @@ SETTING_TIMERS = (
     "yield_grace_seconds",
 )
 SETTING_ROLES = ("sort", "plan", "build")
-PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro")
+PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro", "vibe")
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -434,6 +434,22 @@ DEFAULTS["platforms"]["kiro"] = {
     "soft": {"monthly": 80}, "hard": {"monthly": 95},
     "stale_minutes": 360,
     "quota_group": "kiro",
+}
+
+
+# Mistral Vibe CLI (`vibe`, La Plateforme Free mode; verified 2026-10-01,
+# mahler#623). Disabled by default and in no default route: opt in per machine
+# with MISTRAL_API_KEY in ~/.vibe/.env. Never enable pay-as-you-go on that
+# workspace (D8). Only `codestral-latest` and open models work on the free plan
+# (mistral-medium-3.5, the CLI's default alias, 429s with a 0 req/min limit), so
+# the model is pinned in a per-run VIBE_HOME config. Chat responses carry only
+# per-minute rate-limit headers, so it is unmetered with backoff on 429.
+DEFAULTS["platforms"]["vibe"] = {
+    "enabled": False, "kind": "vibe", "model": "codestral-latest",
+    "plan": "free tier", "metered": False, "backoff_minutes": 60,
+    "max_size": "s", "tier": 1, "cost_class": "free", "quota_group": "vibe",
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
 }
 
 

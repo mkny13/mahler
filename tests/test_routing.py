@@ -255,6 +255,14 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(router.usage_state(led, "codex", custom["platforms"]["codex"])[0],
                          "stale")
 
+    def test_vibe_is_opt_in_and_disabled_by_default(self):
+        self.assertFalse(self.cfg["platforms"]["vibe"]["enabled"])
+        self.assertEqual(self.cfg["platforms"]["vibe"]["model"], "codestral-latest")
+        self.assertEqual(self.cfg["platforms"]["vibe"]["max_size"], "s")
+        self.assertFalse(self.cfg["platforms"]["vibe"]["metered"])
+        for routes in self.cfg["routing"].values():
+            self.assertNotIn("vibe", routes)
+
     def test_kiro_is_opt_in_and_disabled_by_default(self):
         self.assertNotIn("kiro", self.cfg["routing"]["build"])
         self.assertFalse(self.cfg["platforms"]["kiro"]["enabled"])
