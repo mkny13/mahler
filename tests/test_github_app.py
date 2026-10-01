@@ -166,15 +166,15 @@ class ClientTests(unittest.TestCase):
             client.comment(1, "test")
             client._git("/repo", "push", "origin", "branch")
             client._git("/repo", "fetch", "origin", "main")
-        self.assertEqual([c.kwargs["env"]["GH_TOKEN"] for c in run.call_args_list], ["one", "two", "three"])
+        self.assertEqual(run.call_args_list[0].kwargs["env"]["GH_TOKEN"], "one")
+        for call in run.call_args_list[1:]:
+            self.assertNotIn("GH_TOKEN", call.kwargs["env"])
         for call in run.call_args_list:
             self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
-            self.assertEqual(call.kwargs["env"]["GH_HOST"], "github.com")
         self.assertIn("https://github.com/org/repo.git", run.call_args_list[1].args[0])
-        env = run.call_args_list[1].kwargs["env"]
-        self.assertEqual(env["GIT_CONFIG_VALUE_2"], "!gh auth git-credential")
         self.assertEqual(base["GH_TOKEN"], "human")
         self.assertNotIn("GIT_CONFIG_COUNT", base)
+        self.assertEqual(app.token.call_count, 1)
 
     def test_git_credential_resolution_uses_app_instead_of_saved_helper(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -199,7 +199,7 @@ class ClientTests(unittest.TestCase):
             self.assertIn("username=x-access-token", result.stdout)
             self.assertNotIn("human", result.stdout)
 
-    def test_push_direct_subprocess_also_uses_app(self):
+    def test_push_direct_subprocess_uses_git_credentials_without_app_token(self):
         app = mock.Mock()
         app.token.return_value = TOKEN
         client = GH("org/repo", env={}, app=app)
@@ -210,9 +210,9 @@ class ClientTests(unittest.TestCase):
             subprocess.CompletedProcess([], 0, "", ""),
         ]) as run:
             self.assertEqual(client.push_branch("/repo", "branch", "snapshot"), "abc")
-        self.assertEqual(app.token.call_count, 4)
+        self.assertEqual(app.token.call_count, 0)
         for call in run.call_args_list:
-            self.assertEqual(call.kwargs["env"]["GH_TOKEN"], TOKEN)
+            self.assertNotIn("GH_TOKEN", call.kwargs["env"])
         self.assertIn("https://github.com/org/repo.git", run.call_args_list[2].args[0])
 
     def test_inherit_fallback_and_app_failure(self):
@@ -235,8 +235,8 @@ class ClientTests(unittest.TestCase):
         app.token.return_value = "arbitrary-token-value"
         with mock.patch("mahler.gh.subprocess.run", return_value=
                         subprocess.CompletedProcess([], 1, "", "arbitrary-token-value")):
-            for action in (lambda: GH("o/r", app=app).comment(1, "test"),
-                           lambda: GH("o/r", app=app)._git("/repo", "push", "origin", "main")):
-                with self.assertRaises(GHError) as caught:
-                    action()
-                self.assertNotIn("arbitrary-token-value", str(caught.exception))
+            with self.assertRaises(GHError) as caught:
+                GH("o/r", app=app).comment(1, "test")
+            self.assertNotIn("arbitrary-token-value", str(caught.exception))
+            with self.assertRaises(GHError):
+                GH("o/r", app=app)._git("/repo", "push", "origin", "main")

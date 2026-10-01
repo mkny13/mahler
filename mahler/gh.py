@@ -110,6 +110,7 @@ class GH:
         if self.app is None:
             return self.env
         env = dict(os.environ if self.env is None else self.env)
+        env.pop("GH_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
         env["GH_HOST"] = "github.com"
         env["GH_TOKEN"] = self.app.token()
@@ -139,7 +140,17 @@ class GH:
         return args
 
     def _git(self, path, *args):
-        return _git(path, *self._git_args(args), env=self._env(git=True))
+        # D38: git fetch/push use the account's own git credentials, not the
+        # GitHub App token used for API writes.
+        return _git(path, *self._git_args(args), env=self._git_env())
+
+    def _git_env(self):
+        if self.app is None:
+            return self.env
+        env = dict(os.environ if self.env is None else self.env)
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
+        return env
 
     def open_issues(self):
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
@@ -289,7 +300,7 @@ class GH:
             sha = self._git(path, "rev-parse", "FETCH_HEAD")
         out = subprocess.run(["git", "-C", path, *self._git_args(("ls-remote", "origin",
                               f"refs/heads/{branch}"))], capture_output=True, text=True,
-                             timeout=90, env=self._env(git=True))
+                             timeout=90, env=self._git_env())
         if out.returncode == 0 and out.stdout.strip().startswith(sha):
             return sha
         self._git(path, "push", "--quiet", "--no-verify", "--force", "origin",
@@ -350,7 +361,7 @@ class GH:
         try:
             result = subprocess.run(
                 ["git", "-C", path, "merge-base", "--is-ancestor", tip, head],
-                capture_output=True, text=True, timeout=90, env=self._env(git=True))
+                capture_output=True, text=True, timeout=90, env=self._git_env())
         except (subprocess.SubprocessError, OSError) as e:
             raise GHError("freshness: ancestry check failed") from None
         if result.returncode not in (0, 1):
