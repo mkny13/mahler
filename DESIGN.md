@@ -374,8 +374,8 @@ On GitHub, `shipped` and `done` are closed issues. Everything else is open, with
 issue, replacing `mahler:verifying`. Shipped items release leases and capacity,
 but do not satisfy parent/dependency completion until `done`. Release snapshots,
 UAT entries and shipped events are recorded at merge time. Startup preserves both
-shipped rows and historical done rows; evidence-driven promotion to done is a
-separate follow-up to mahler#615.
+shipped rows and historical done rows. Only accepted D10 evidence promotes a
+shipment to done, removes its lifecycle label, and unblocks parents/dependents.
 
 ### D7 — Staleness: activity clocks, not a calendar
 
@@ -575,12 +575,39 @@ doesn't rely on that and stops on its own thresholds regardless.
   - `/mahler go` · `/mahler park` · `/mahler platform <name|auto>`
   - Any reply on a `needs-you` item is taken as the answer.
 
+#### Shipment evidence (mahler#616)
+
+Every confirmed merge enters Ready to test, with its PR, merge SHA and elapsed
+age. A custom human checklist is preserved; otherwise the console asks for
+verification evidence. Closed shipped issues are polled independently of the
+open-issue ETag, without reopening them. Historical done issues are not backfilled.
+
+Accepted comments must have a GitHub author login, comment ID or URL, and a
+creation timestamp strictly newer than the merge (or its first confirmed observation
+when GitHub omits the timestamp). The complete trimmed comment must be one of:
+
+- The console-generated `✅ **UAT passed** (from the console).`
+- `Smoke: PASS <reference>`, where reference is an HTTP(S) report URL, or
+  `report=<path/id>`, `tag=<tag>`, or `artifact=<path/id>` (`:` also separates the
+  reference kind from its value). The reference is required and contains no spaces.
+- `Verified: <affirmative note>` on one line, with GitHub `authorAssociation=OWNER`.
+  The explicit prefix is the owner's affirmation; unmarked discussion is not evidence.
+
+The first accepted comment is stored once with its author, timestamp, kind, body
+and durable source. Recording evidence, the passing verdict and the transition to
+`done` is atomic; label removal retries separately. Ordinary discussion, agent
+summaries, malformed smoke lines, failures and pre-merge comments cannot complete
+work. Console Pass uses this same fetched-comment path, recovering an existing
+comment before posting another. A UAT failure files a linked p1 bug and leaves the
+source shipped and visible until later passing evidence; its bug and note survive
+completion. Repeated polls and double taps do not repeat the completion event.
+
 #### The in-app UAT panel
 
 - Every deploy or release **registers a build** with Mahler: project, version, SHA, channel,
   URL or APK link, and the UAT items it contains.
-- UAT items come from the "Needs a human to check" section of each shipped issue. They are
-  written by the agent that did the work, so you're only asked to check what automation can't.
+- Every shipment is a UAT item. Its "Needs a human to check" section supplies the
+  checklist when present; otherwise the default evidence request applies.
 - **Web apps:** a drop-in `mahler-uat.js` panel, loaded only in preview builds or when a UAT
   cookie is set, so your normal use stays clean. It shows "what's new in this build", with
   pass / fail / note per item, plus "report a problem here". A report captures the URL,
@@ -1324,8 +1351,8 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
 - **An answer is a GitHub comment.** The tick posts it on the issue after a 60-second grace,
   which is what Undo cancels, and the existing reply-means-answer path re-sorts the item.
   No second state machine.
-- **Ready to test** lists shipped issues whose PR carried a "Needs a human to check" list
-  and that have no verdict yet (D10). Pass records the verdict. Fail files a linked
+- **Ready to test** lists every shipment awaiting passing evidence (D10), including
+  failed checks. Pass records evidence and completes the item. Fail files a linked
   `type:bug p1` with your note and the SHA, which routes like any other bug.
 - Ready-to-test changes are shown in bounded, expanded **test sessions**, not as one
   unstructured queue. Mahler groups them by project and then by the first alphabetically

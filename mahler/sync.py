@@ -11,15 +11,17 @@ from datetime import timedelta
 from . import config, releases
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
-                 label_names, parse_command, part_of, pin_of, priority_of)
+                 label_names, parse_command, part_of, pin_of, priority_of,
+                 completion_evidence)
 from .ledger import iso, parse
-from .ship import _shipped, mirror_shipped, pr_merged
+from .ship import _shipped, mirror_shipped, pr_merged, record_uat_if_needed
 from .watchdog import request_stop
 
 
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
+    reconcile_shipped(ctx, project)
     _bootstrap_release_baseline(ctx, project, gh)
     # Conditional poll (mahler#90): a 304 means the open-issue collection is
     # byte-identical to the last full sync — no new issues, no edits, no
@@ -149,6 +151,44 @@ def sync(ctx, project):
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
     led.set_kv(depends_key, "4")
+
+
+def reconcile_shipped(ctx, project):
+    """Closed shipments need their own poll, independent of the open-list ETag."""
+    if ctx.dry_run:
+        return
+    for item in ctx.led.items(project, ["shipped"]):
+        n = item["number"]
+        try:
+            row = ctx.led.uat(project, n)
+            if row is None and item["pr"]:
+                record_uat_if_needed(ctx, project, n, item["pr"], item,
+                                     ctx.gh(project).pr_view(item["pr"]))
+                row = ctx.led.uat(project, n)
+            if row is None:
+                continue
+            for comment in ctx.gh(project).issue_comments(n):
+                evidence = completion_evidence(comment, row["shipped_at"])
+                if evidence:
+                    ctx.led.accept_evidence(project, n, evidence)
+                    break
+        except (GHError, ValueError) as exc:
+            ctx.say(f"{project}#{n}: evidence lookup failed — {exc}")
+    # Retry the outward mirror after a transient failure, even though the
+    # atomic local transition has already completed.
+    for item in ctx.led.items(project, ["done"]):
+        if item["mirror"] == "mahler:shipped":
+            mirror_done(ctx, project, item["number"])
+
+
+def mirror_done(ctx, project, number):
+    try:
+        gh = ctx.gh(project)
+        gh.set_state_label(number, "done", gh.issue_labels(number))
+        ctx.led.upsert_item(project, number, mirror=None)
+        ctx._labels.pop((project, number), None)
+    except GHError as exc:
+        ctx.say(f"{project}#{number}: completion label update failed — {exc}")
 
 
 def _bootstrap_release_baseline(ctx, project, gh):

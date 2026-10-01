@@ -2227,7 +2227,11 @@ class UatOutboxTests(unittest.TestCase):
         self.gh = mock.Mock()
         self.ctx._gh['mkny13/mahler'] = self.gh
         self.led.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter',
-                         '- the new ping arrives')
+                         '- the new ping arrives', shipped_at=iso(self.led.now() - timedelta(minutes=1)))
+        self.led.upsert_item('mahler', 9, state='shipped', mirror='mahler:shipped')
+        self.gh.issue_comments.side_effect = lambda n: ([dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))] if self.gh.comment.called else [])
 
     def row(self, id):
         return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
@@ -2249,11 +2253,67 @@ class UatOutboxTests(unittest.TestCase):
             9, "✅ **UAT passed** (from the console).", agent=False)
         row = self.uat()
         self.assertEqual(row['verdict'], 'pass')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
         self.assertEqual(row['verdict_at'], iso(self.led.now()))
         self.assertEqual(self.row(id)['status'], 'done')
         ev = self.led.q1("SELECT * FROM events WHERE kind='uat_verdict'")
         self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
                          ('mahler', 9, 'pass'))
+
+    def test_pass_recovers_existing_comment_without_reposting(self):
+        self.gh.issue_comments.side_effect = None
+        self.gh.issue_comments.return_value = [dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))]
+        self.queue('uat_pass')
+        self.drain()
+        self.drain()
+        self.gh.comment.assert_not_called()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
+    def test_failure_can_later_pass_without_another_bug(self):
+        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
+        self.queue('uat_fail', note='broken')
+        self.drain()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
+        self.queue('uat_pass')
+        self.drain()
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.gh.create_issue.assert_called_once()
+        self.assertEqual(self.uat()['bug'], 42)
+
+    def test_pass_retry_after_stale_comment_read(self):
+        self.check_pass_retry_after_comment_read_failure([])
+
+    def test_pass_retry_after_unavailable_comment_read(self):
+        from mahler.gh import GHError
+        self.check_pass_retry_after_comment_read_failure(GHError('temporarily unavailable'))
+
+    def check_pass_retry_after_comment_read_failure(self, followup):
+        self.gh.issue_comments.side_effect = [[], followup]
+        action = self.queue('uat_pass')
+        self.drain()
+        self.assertEqual(self.row(action)['status'], 'failed')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
+
+        self.gh.issue_comments.side_effect = [[], []]
+        for _ in range(2):
+            action = self.queue('uat_pass')
+            self.drain()
+            self.assertEqual(self.row(action)['status'], 'failed')
+        self.gh.comment.assert_called_once()
+
+        self.gh.issue_comments.side_effect = None
+        self.gh.issue_comments.return_value = [dict(
+            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
+            id=123, createdAt=iso(self.led.now()))]
+        action = self.queue('uat_pass')
+        self.drain()
+        self.gh.comment.assert_called_once()
+        self.assertEqual(self.row(action)['status'], 'done')
+        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
 
     def test_fail_files_a_p1_bug_and_routs_it(self):
         self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'

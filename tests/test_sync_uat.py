@@ -12,6 +12,7 @@ empty no matter how many shipped issues carried a checklist.
 """
 
 import copy
+import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -39,6 +40,10 @@ class FakeGH:
         self.pr_body = NEEDS_BODY
         self.merge_sha = "4c1f0abfeed5"
         self.fail_pr_view = False
+        self.comments = []
+
+    def issue_comments(self, number):
+        return self.comments
 
     def comment(self, number, body):
         pass
@@ -48,7 +53,8 @@ class FakeGH:
 
     def set_state_label(self, number, state, current):
         self.labels = [x for x in current if x not in gh_module.LABEL_STATES]
-        self.labels.append(gh_module.STATE_LABELS[state])
+        if state in gh_module.STATE_LABELS:
+            self.labels.append(gh_module.STATE_LABELS[state])
 
     def open_issues(self):
         return []
@@ -96,11 +102,11 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.assertEqual(row["needs"], "- the new ping arrives")
         self.assertIsNone(row["verdict"])
 
-    def test_hand_merged_pr_without_needs_human_skips_the_uat_queue(self):
+    def test_hand_merged_pr_without_needs_human_gets_default_check(self):
         self.gh.pr_body = PLAIN_BODY
         self.sync()
         self.assertEqual(self.led.item("x", 5)["state"], "shipped")
-        self.assertIsNone(self.led.uat("x", 5))
+        self.assertIn("passing evidence", self.led.uat("x", 5)["needs"])
 
     def test_unmerged_manual_closure_is_not_shipped(self):
         for state in ("OPEN", "CLOSED"):
@@ -127,6 +133,101 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.sync()   # must not raise
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.assertIsNone(self.led.uat("x", 5))
+
+
+    def test_evidence_closed_poll_even_on_304_is_idempotent(self):
+        self.sync()
+        self.gh.comments = [dict(body="Verified: exporter works", author={"login": "owner"},
+                                 authorAssociation="OWNER", id=10, url="https://example/comment/10",
+                                 createdAt="2026-09-15T12:01:00Z")]
+        self.gh.issues_changed = lambda etag: (False, None)
+        self.sync()
+        self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertEqual(self.gh.labels, ["type:feature"])
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+        self.assertEqual(self.gh.state, "CLOSED")
+
+    def test_parent_and_dependent_unblock_only_after_evidence(self):
+        self.sync()
+        self.led.upsert_item("x", 10, state="parent")
+        self.led.upsert_item("x", 5, parent=10)
+        self.gh.close_issue = mock.Mock()
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.close_finished_parents(self.ctx, [self.ctx.policy("x")])
+        self.assertEqual(self.led.item("x", 10)["state"], "parent")
+        self.gh.comments = [dict(body="Verified: works", author={"login": "owner"},
+                                 authorAssociation="OWNER", id=12,
+                                 createdAt="2026-09-15T12:01:00Z")]
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.reconcile_shipped(self.ctx, "x")
+            sync.close_finished_parents(self.ctx, [self.ctx.policy("x")])
+        self.assertEqual(self.led.item("x", 10)["state"], "done")
+
+    def test_label_failure_retries_after_local_completion(self):
+        self.sync()
+        self.gh.comments = [dict(body="Smoke: PASS tag=v1.2", author={"login": "bot"},
+                                 id=11, createdAt="2026-09-15T12:01:00Z")]
+        with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("offline")):
+            self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertIn("mahler:shipped", self.gh.labels)
+        self.sync()
+        self.assertNotIn("mahler:shipped", self.gh.labels)
+
+    def test_done_label_retries_when_shipped_write_succeeded_ambiguously(self):
+        real_set_state_label = self.gh.set_state_label
+
+        def set_then_fail(*args):
+            real_set_state_label(*args)
+            raise gh_module.GHError("response lost")
+
+        with mock.patch.object(self.gh, "set_state_label", side_effect=set_then_fail):
+            self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertIn("mahler:shipped", self.gh.labels)
+
+        self.gh.comments = [dict(body="Smoke: PASS tag=v1.2", author={"login": "bot"},
+                                 id=11, createdAt="2026-09-15T12:01:00Z")]
+        self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertNotIn("mahler:shipped", self.gh.labels)
+
+
+class EvidenceGrammarTests(unittest.TestCase):
+    def test_comment_fetch_preserves_attribution_across_pages(self):
+        gh = gh_module.GH("owner/repo")
+        comment = dict(body="Verified: works", user={"login": "owner"},
+                       author_association="OWNER", id=123,
+                       created_at="2026-09-15T12:01:00Z", html_url="https://example/123")
+        with mock.patch.object(gh, "_gh", return_value=json.dumps([[], [comment]])) as call:
+            comments = gh.issue_comments(5)
+        self.assertIn("--paginate", call.call_args.args)
+        evidence = gh_module.completion_evidence(comments[0], iso(NOW))
+        self.assertEqual(evidence["author"], "owner")
+        self.assertEqual(evidence["source"], "https://example/123")
+
+    def test_accepted_and_rejected_forms_and_metadata(self):
+        base = dict(author={"login": "mike"}, authorAssociation="OWNER", id=123,
+                    createdAt="2026-09-15T12:01:00Z")
+        for body in (gh_module.UAT_PASS_COMMENT, "Verified: works on my phone",
+                     "Smoke: PASS https://example/report", "Smoke: PASS tag=v1.2",
+                     "Smoke: PASS artifact=build-123", "Smoke: PASS report=smoke.txt"):
+            with self.subTest(body=body):
+                self.assertIsNotNone(gh_module.completion_evidence(dict(base, body=body), iso(NOW)))
+        for body in ("looks good", "Verified:", "Smoke: PASS", "Smoke: PASS looks good",
+                     "Smoke: FAIL report=smoke.txt", "STATUS: DONE all passed",
+                     "❌ **UAT failed** — filed #42.", "<!-- mahler:agent -->\nVerified: works"):
+            with self.subTest(body=body):
+                self.assertIsNone(gh_module.completion_evidence(dict(base, body=body), iso(NOW)))
+        for change in (dict(author={}), dict(id=None), dict(createdAt=iso(NOW)),
+                       dict(createdAt="2026-09-14T00:00:00Z"), dict(createdAt="bad"),
+                       dict(authorAssociation="MEMBER")):
+            self.assertIsNone(gh_module.completion_evidence(
+                dict(base, body="Verified: works", **change), iso(NOW)))
 
 
 if __name__ == "__main__":

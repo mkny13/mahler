@@ -392,11 +392,11 @@ class ShipTests(unittest.TestCase):
         ship._shipped(self.ctx, "x", 5, 88, self.led.item("x", 5), view, merged=True)
         self.assertEqual(len(self.led.unreleased_items("x")), 1)
 
-    def test_shipped_without_a_needs_human_list_skips_the_uat_queue(self):
+    def test_shipped_without_a_needs_human_list_gets_default_check(self):
         self.gh.view_body = "plain ship, nothing to check."
         self.led.upsert_item("x", 5, pr=88)
         self.ship()
-        self.assertIsNone(self.led.uat("x", 5))
+        self.assertIn("passing evidence", self.led.uat("x", 5)["needs"])
 
     def test_a_failing_uat_write_does_not_stop_the_ship(self):
         self.led.upsert_item("x", 5, pr=88)

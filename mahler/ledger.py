@@ -163,6 +163,16 @@ CREATE TABLE IF NOT EXISTS uat (
     note        TEXT,                   -- the fail's note
     PRIMARY KEY (project, number)
 );
+CREATE TABLE IF NOT EXISTS completion_evidence (
+    project TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    author TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    PRIMARY KEY (project, number)
+);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS releases (
     id             INTEGER PRIMARY KEY,
@@ -425,9 +435,37 @@ class Ledger:
         return self.q1("SELECT * FROM uat WHERE project=? AND number=?", (project, number))
 
     def pending_uat(self):
-        """Rows with no verdict yet, newest shipment first."""
-        return self.q("SELECT * FROM uat WHERE verdict IS NULL "
+        """Unverified shipments (including failed checks), newest first."""
+        return self.q("SELECT * FROM uat WHERE verdict IS NULL OR ("
+                      "verdict='fail' AND EXISTS (SELECT 1 FROM items i "
+                      "WHERE i.project=uat.project AND i.number=uat.number "
+                      "AND i.state='shipped')) "
                       "ORDER BY shipped_at DESC, number DESC")
+
+    def accept_evidence(self, project, number, evidence):
+        """Atomically complete a shipment once, retaining any failed UAT history."""
+        with self._tx():
+            item = self.item(project, number)
+            if item is None or item["state"] != "shipped":
+                return False
+            self.con.execute(
+                "INSERT OR IGNORE INTO completion_evidence VALUES(?,?,?,?,?,?,?)",
+                (project, number, evidence["source"], evidence["author"],
+                 evidence["created_at"], evidence["kind"], evidence["body"]))
+            self.con.execute("UPDATE uat SET verdict='pass',verdict_at=? "
+                             "WHERE project=? AND number=?",
+                             (evidence["created_at"], project, number))
+            # Completion must clear the shipped label even when the earlier
+            # shipped-label write took effect remotely but failed locally
+            # before its mirror cursor could be recorded.  Keep the retry
+            # cursor atomic with the evidence-backed state transition.
+            self.con.execute("UPDATE items SET mirror='mahler:shipped' "
+                             "WHERE project=? AND number=?", (project, number))
+            self.set_state(project, number, "done", "verification evidence accepted")
+            self.event("uat_verdict", project, number,
+                       {"verdict": "pass", "via": evidence["kind"],
+                        "source": evidence["source"]})
+            return True
 
     def set_uat_verdict(self, project, number, verdict, bug=None, note=None):
         """Record pass or fail exactly once: a row that already has a verdict
@@ -639,6 +677,10 @@ class Ledger:
         if state not in STATES:
             raise ValueError(f"invalid item state: {state}")
         cur = self.item(project, number)
+        if (state == "done" and cur is not None and cur["state"] == "shipped"
+                and not self.q1("SELECT 1 FROM completion_evidence WHERE project=? AND number=?",
+                                (project, number))):
+            raise ValueError("shipped work requires verification evidence before done")
         if cur is not None and cur["state"] == state and not extra:
             return cur
         self.upsert_item(project, number, state=state,

@@ -329,7 +329,7 @@ def _verdict_pending(led, project, number):
 def _queue_verdict(cfg, led, kind, body, payload, verdict):
     with led._tx():
         row = _uat_target(cfg, led, body)
-        if row["verdict"] or _verdict_pending(led, row["project"], row["number"]):
+        if (row["verdict"] == "pass" or (row["verdict"] == "fail" and kind != "uat_pass")) or _verdict_pending(led, row["project"], row["number"]):
             raise ActionError("the verdict is already recorded or queued")
         id = led.queue_action(kind, row["project"], row["number"], payload,
                               delay_seconds=0)

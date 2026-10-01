@@ -32,6 +32,24 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
+        self.led.upsert_item("p", 1, state="shipped")
+        with self.assertRaisesRegex(ValueError, "requires verification evidence"):
+            self.led.set_state("p", 1, "done")
+        self.led.add_uat("p", 1, 2, "abc", "change", "check")
+        self.led.set_uat_verdict("p", 1, "fail", bug=3, note="broken")
+        evidence = dict(source="comment:4", author="owner", created_at=iso(self.clock()),
+                        kind="owner", body="Verified: fixed")
+        self.assertTrue(self.led.accept_evidence("p", 1, evidence))
+        self.assertFalse(self.led.accept_evidence("p", 1, evidence))
+        self.assertEqual(self.led.item("p", 1)["state"], "done")
+        self.assertEqual(self.led.item("p", 1)["mirror"], "mahler:shipped")
+        self.assertEqual(self.led.uat("p", 1)["bug"], 3)
+        self.assertEqual(self.led.uat("p", 1)["note"], "broken")
+        self.assertEqual(self.led.pending_uat(), [])
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+
     def test_burst_lines_migrate_and_survive_reopen(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "legacy.db")

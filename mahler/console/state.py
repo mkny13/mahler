@@ -841,9 +841,8 @@ def _needs(cfg, led, projects, now):
 
 
 def _uat(cfg, led, projects):
-    """The Ready-to-test queue (D10): what shipped with a needs-human check,
-    until you pass or fail it. A verdict queued but not yet run (the tick
-    applies it) still shows, as the copy it will become."""
+    """Every shipment awaiting passing evidence, including failed checks.
+    Queued verdicts remain visible until the tick applies them."""
     pols = {p["name"]: p for p in projects}
     queued = {}
     for kind in ("uat_pass", "uat_fail"):
@@ -855,7 +854,14 @@ def _uat(cfg, led, projects):
         if project not in pols:
             continue
         shipped = parse(row["shipped_at"])
-        meta = [f"merged {_hhmm(shipped)}" if shipped else "merged"]
+        minutes = max(0, int((led.now() - shipped).total_seconds() // 60)) if shipped else 0
+        age = (f"{minutes // 1440}d" if minutes >= 1440 else
+               f"{minutes // 60}h" if minutes >= 60 else f"{minutes}m")
+        meta = [f"merged {age} ago" if shipped else "merged"]
+        if row["pr"]:
+            meta.append(f"PR #{row['pr']}")
+        if row["verdict"] == "fail":
+            meta.append("UAT failed; awaiting passing evidence")
         if row["sha"]:
             meta.append(f"sha {row['sha'][:7]}")
         needs = []
