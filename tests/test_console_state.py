@@ -1,7 +1,7 @@
 import console_snapshot
 """Models state from synthetic run history."""
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from mahler.console import state
 from mahler.ledger import Ledger, iso
@@ -203,92 +203,85 @@ class WeeklyQuotaTests(unittest.TestCase):
     def view(self):
         return state.week_calendar(self.cfg, self.led, self.now)
 
-    def test_week_boundary_and_exact_48_hour_cutoff(self):
-        # Saturday 20:00 EDT: Sunday and most of Monday are still fresh.
+    def test_week_boundary_grouping_and_routing_order(self):
         self.pool('sat', '2026-09-27T00:00:00Z')
+        self.pool('z-first', '2026-09-27T17:40:00Z')
+        self.pool('a-second', '2026-09-27T17:40:00Z')
+        self.pool('earlier', '2026-09-27T16:00:00Z')
         v = self.view()
-        self.assertEqual(v['days'][0]['label'], 'Sun 20 Sep')
-        self.assertEqual(v['days'][6]['label'], 'Sat 26 Sep')
-        self.assertEqual([len(d['hours']) for d in v['days']], [24] * 7)
-        self.assertEqual(v['days'][0]['hours'][0]['routes'], ['sat'])
-        self.assertEqual(v['days'][1]['hours'][19]['count'], 1)
-        self.assertEqual(v['days'][1]['hours'][20]['count'], 0)
-        self.assertEqual(v['days'][6]['hours'][19]['count'], 0)
-        self.assertEqual(v['days'][6]['hours'][20]['count'], 1)
-        self.assertIn('Freshest: Sun 00:00 – Mon 20:00 (1 routes', v['summary'])
-        self.assertIn('Leanest: Mon 20:00 – Sat 20:00 (0)', v['summary'])
+        self.assertEqual(v['lines'], [
+            {'day': 'Sun', 'time': '12:00', 'names': ['earlier']},
+            {'day': 'Sun', 'time': '13:40', 'names': ['z-first', 'a-second']},
+            {'day': 'Sat', 'time': '20:00', 'names': ['sat']}])
+        for key in ('days', 'hours', 'markers', 'summary', 'legend'):
+            self.assertNotIn(key, v)
 
-    def test_markers_use_local_day_and_minute_and_account(self):
-        self.pool('work-route', '2026-09-24T01:30:00Z', account='work')
-        v = self.view()
-        marker = v['days'][3]['markers'][0]
-        self.assertEqual((marker['hour'], marker['minute']), (21, 30))
-        self.assertEqual(marker['account'], 'work')
-        self.assertEqual(v['days'][3]['now_hour'], 12)
-        self.assertIsNone(v['days'][0]['now_hour'])
+    def test_past_weekly_reset_rolls_to_next_occurrence(self):
+        self.pool('past-sunday', '2026-09-20T17:40:00Z')
+        past = self.view()['lines']
+        self.led.record_usage('past-sunday', 'weekly', 42, '2026-09-27T17:40:00Z')
+        self.assertEqual(past, self.view()['lines'])
+        self.assertEqual(past, [{'day': 'Sun', 'time': '13:40', 'names': ['past-sunday']}])
 
-    def test_unknown_unmetered_and_monthly_excluded_from_freshness(self):
+    def test_unknown_unmetered_and_monthly(self):
         self.pool('unknown')
         self.pool('malformed', 'bad timestamp')
         self.pool('free', metered=False)
+        self.pool('short-window', window='5h')
         self.pool('monthly', '2026-09-24T01:30:00Z', 'monthly')
         self.pool('next-month', '2026-10-01T00:00:00Z', 'monthly')
+        self.pool('past-monthly', '2026-09-21T00:00:00Z', 'monthly')
         v = self.view()
         self.assertEqual(v['unknown'], ['unknown', 'malformed'])
-        self.assertEqual(v['unmetered'], ['free'])
-        self.assertIn('monthly', v['days'][3]['markers'][0]['text'])
-        self.assertIn('next-month', v['outside'][0])
-        self.assertTrue(all(h['count'] == 0 for d in v['days'] for h in d['hours']))
-        self.assertEqual(v['summary'], 'No known weekly resets to calculate freshness.')
+        self.assertEqual(v['unmetered'], ['free', 'short-window'])
+        self.assertEqual(v['lines'], [{'day': 'Wed', 'time': '21:30', 'names': ['monthly']}])
+        self.assertEqual(v['outside'], ['next-month · monthly · Wed 30 Sep 20:00'])
 
-    def test_latest_alias_reading_counts_shared_group_once(self):
+    def test_latest_non_routed_alias_reading_counts_shared_group_once(self):
         self.pool('work-low', '2026-09-21T00:00:00Z', quota_group='work')
-        self.pool('work-medium', '2026-09-24T01:30:00Z', quota_group='work')
-        self.led.con.execute("UPDATE usage SET sampled_at='2026-09-22T00:00:00Z' WHERE platform='work-low'")
-        v = self.view()
-        self.assertEqual(sum(len(d['markers']) for d in v['days']), 1)
-        self.assertEqual(v['days'][3]['markers'][0]['hour'], 21)
-        self.assertEqual(max(h['count'] for d in v['days'] for h in d['hours']), 1)
-        self.assertEqual(v['days'][4]['hours'][0]['routes'], ['work'])
+        self.pool('work-medium', quota_group='work')
+        self.cfg['platforms']['work-alias'] = {'quota_group': 'work'}
+        self.now += timedelta(seconds=1)
+        self.led.record_usage('work-alias', 'weekly', 42, '2026-09-24T01:30:00Z')
+        self.assertEqual(self.view()['lines'], [
+            {'day': 'Wed', 'time': '21:30', 'names': ['work']}])
 
-    def test_empty_and_multiple_routes_summary(self):
-        self.assertEqual(len(self.view()['days']), 7)
-        self.pool('one', '2026-09-22T04:00:00Z')
-        self.pool('two', '2026-09-23T04:00:00Z')
-        v = self.view()
-        self.assertIn('Freshest: Wed 00:00 – Thu 00:00 (2 routes', v['summary'])
-        self.assertIn('Leanest: Sun 00:00 – Tue 00:00 (0)', v['summary'])
-        self.assertEqual(v['days'][3]['hours'][0]['routes'], ['one', 'two'])
+    def test_empty(self):
+        self.assertEqual(self.view()['lines'], [])
 
     def test_render_layouts_escape_names_and_scope_computation(self):
         from mahler.console import page
         from test_console import make_cfg
         self.pool('Account <one>', '2026-09-24T01:30:00Z')
         self.pool('unknown')
+        self.pool('free', metered=False)
+        self.pool('later', '2026-10-01T00:00:00Z', 'monthly')
         snapshot = state.build(make_cfg(), self.led)
         snapshot['weekly_quota'] = self.view()
         desktop = page.app(snapshot, view='capacity')
         phone = page.app(snapshot, layout='phone', tab='browse')
+        rendered = page._weekly_quota(snapshot)
         self.assertIn('data-capacity-mode="weekly"', desktop)
-        self.assertEqual(desktop.count('class="weekly-cell"'), 168)
-        self.assertIn('weekly-now', desktop)
-        self.assertEqual(phone.count('class="weekly-day"'), 7)
-        self.assertEqual(phone.count('class="weekly-bar"'), 7)
         for html in (desktop, phone):
-            self.assertIn('Account &lt;one&gt;', html)
-            self.assertIn('Reset unknown', html)
-            self.assertIn('aria-label="Sun 00:00', html)
-        self.assertNotIn('Weekly reset calendar', page.app(snapshot, view='now'))
+            self.assertIn(rendered, html)
+            self.assertIn('Wed 21:30</span> · Account &lt;one&gt;', html)
+            self.assertNotIn('Account <one>', html)
+            for label in ('Reset unknown', 'No weekly cycle', 'Monthly resets outside this week'):
+                self.assertIn(label, html)
+            for removed in ('weekly-cell', 'weekly-hour', 'weekly-now', 'weekly-grid',
+                            'weekly-bar', 'weekly-legend', 'Freshest:', 'Leanest:'):
+                self.assertNotIn(removed, html)
+        self.assertNotIn('Weekly resets', page.app(snapshot, view='now'))
         from unittest.mock import patch
         with patch.object(state, 'week_calendar', side_effect=AssertionError('inactive')):
             self.assertIsNone(state.build(make_cfg(), self.led, section='now')['weekly_quota'])
 
-    def test_dst_week_uses_each_days_local_offset(self):
+    def test_dst_week_localizes_next_reset_individually(self):
         self.now = datetime(2026, 11, 4, 16, tzinfo=timezone.utc)
         self.pool('dst', '2026-11-01T04:00:00Z')  # Sunday 00:00 EDT
-        v = self.view()
-        self.assertEqual(v['days'][0]['markers'][0]['hour'], 0)
-        # Forty-eight elapsed hours ends Monday 23:00 EST after fall-back.
-        self.assertEqual(v['days'][1]['hours'][22]['count'], 1)
-        self.assertEqual(v['days'][1]['hours'][23]['count'], 0)
-        self.assertEqual(v['days'][6]['markers'][0]['hour'], 23)
+        self.assertEqual(self.view()['lines'], [
+            {'day': 'Sat', 'time': '23:00', 'names': ['dst']}])
+        self.now = datetime(2026, 3, 11, 16, tzinfo=timezone.utc)
+        self.led.record_usage('dst', 'weekly', 42, '2026-03-08T05:00:00Z')
+        self.assertEqual(self.view()['lines'], [
+            {'day': 'Sun', 'time': '01:00', 'names': ['dst']}])

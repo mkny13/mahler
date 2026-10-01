@@ -862,55 +862,20 @@ def _cap_card(q, kind):
         + active_meta + unhold + '</div></div>')
 
 
-def _weekly_marker(marker):
-    account = "work" if marker["account"] == "work" else "personal"
-    return f'<span class="weekly-reset weekly-{account}">{e(marker["text"])}</span>'
-
-
-def _weekly_hour(hour):
-    return (f'<details class="weekly-hour" style="--fresh:{hour["shade"]}%">'
-            f'<summary title="{e(hour["text"])}" aria-label="{e(hour["text"])}">'
-            f'{hour["count"]}</summary><span class="weekly-tip">{e(hour["text"])}</span></details>')
-
-
-def _weekly_quota(s, phone=False):
+def _weekly_quota(s):
     v = s.get("weekly_quota")
     if v is None:
         return ""
     out = [f'<div class="weekly-quota"><h2>{e(v["title"])}</h2>'
-           f'<p>{e(v["summary"])}</p><p class="foot-note">{e(v["note"])}</p>'
-           f'<p class="weekly-legend"><span class="weekly-personal">Personal</span> / '
-           f'<span class="weekly-work">Work</span> · {e(v["legend"])}</p>'
-           f'<p class="mono">{e(v["now_label"])}</p>']
-    if phone:
-        for day in v["days"]:
-            out.append(f'<section class="weekly-day"><h3>{e(day["label"])}</h3>'
-                       f'<p>{e(day["freshness"])}</p><div class="weekly-bar">')
-            out.extend(_weekly_hour(h) for h in day["hours"])
-            out.append('</div><div class="weekly-bar-labels"><span>00:00</span>'
-                       '<span>12:00</span><span>24:00</span></div>')
-            out.extend(_weekly_marker(m) for m in day["markers"])
-            if not day["markers"]:
-                out.append(f'<p class="t-mut">{e(v["no_resets"])}</p>')
-            out.append('</section>')
-    else:
-        out.append('<div class="weekly-grid"><span></span>')
-        out.extend(f'<strong>{e(day["label"])}</strong>' for day in v["days"])
-        for hour in range(24):
-            out.append(f'<span class="weekly-time">{e(v["days"][0]["hours"][hour]["label"])}</span>')
-            for day in v["days"]:
-                out.append('<div class="weekly-cell">' + _weekly_hour(day["hours"][hour]))
-                out.extend(_weekly_marker(m) for m in day["markers"] if m["hour"] == hour)
-                if day["now_hour"] == hour:
-                    out.append(f'<span class="weekly-now" style="top:{day["now_minute"] / 60 * 100:.2f}%" '
-                               f'title="{e(v["now_label"])}" aria-label="{e(v["now_label"])}"></span>')
-                out.append('</div>')
-        out.append('</div>')
+           '<ol class="weekly-list" role="list">']
+    for line in v["lines"]:
+        out.append(f'<li><span class="mono">{e(line["day"])} {e(line["time"])}</span>'
+                   f' · {e(", ".join(line["names"]))}</li>')
+    out.append(f'</ol><p class="foot-note">{e(v["note"])}</p>')
     for key in ("unknown", "unmetered", "outside"):
         if v[key]:
-            out.append(f'<aside><h3>{e(v[key + "_label"])}</h3><ul>')
-            out.extend(f'<li>{e(name)}</li>' for name in v[key])
-            out.append('</ul></aside>')
+            out.append(f'<p class="foot-note">{e(v[key + "_label"])}: '
+                       f'{e(", ".join(v[key]))}</p>')
     return "".join(out) + '</div>'
 
 
@@ -1237,7 +1202,7 @@ def _p_browse(s):
                    f'</span>{tick}</span>{details}</div>')
     out.append('<div class="foot-note">Tick marks the soft line — Mahler stops starting runs there. '
                'Hard line yields work in flight.</div></div>')
-    out.append(_weekly_quota(s, phone=True))
+    out.append(_weekly_quota(s))
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Backlog</span>'
                f'{_backlog_groups(s, phone=True)}</div>')
     out.append(f'<div class="psect" style="gap:10px"><span class="lbl">Releases</span>'

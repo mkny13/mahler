@@ -657,21 +657,20 @@ GitHub post and the local commit; the queue does not automatically retry recorde
 failures. Console replies explicitly bypass the GitHub wrapper's agent marker so
 the existing comment sync handles answers and `/mahler` commands.
 
-### Weekly quota resets (mahler#534)
+### Weekly quota resets (mahler#603)
 
 Capacity has a third mode, **Weekly**, alongside By quota and By capability.
-The seven columns are elapsed 24-hour ranges starting now, not midnight-aligned
-calendar days. The header names each range's starting day; its tooltip gives both
-endpoints. Reset rules share a time axis, with Now at the left edge. Each account
-has a separate current-usage bar and soft-line tick, so usage cannot be confused
-with elapsed time. Shared quota groups appear once. Weekly windows take precedence
-when a group reports both weekly and monthly usage.
+Desktop and phone Browse show the same compact list: `Sun 13:40 · Claude Personal`.
+Each line groups quota pools with the same local reset date and minute, with names
+in routing order. Days run Sun–Sat; times within a day run earliest first. Shared
+quota groups appear once, and weekly windows take precedence over monthly windows.
 
-Phone Browse includes the same schedule as seven expandable ranges, retaining
-empty days so gaps remain visible. Unknown, past, and later resets stay listed
-separately. Missing readings say usage unknown; stale readings are labelled.
-A known Claude 5h reset within the first 24 hours adds a thin band and a text label.
-All dates use the server's local timezone, shown explicitly; each endpoint is
-localized separately across daylight-saving changes. Neither layout predicts a
-missing reset or rolls a past reset forward. The schedule is built only for
-Capacity, phone Browse, and the full state API; other page fragments omit it.
+Weekly cycles roll forward in whole elapsed 604800-second steps to their next
+occurrence, including when this week's reset has passed. No past reset is listed.
+Monthly resets are actual dates, never extrapolated. Unknown resets, routes with
+no weekly/monthly cycle, and monthly resets outside the current local week each
+have a short muted footer. The server's local timezone is named once; each reset
+is localized separately across daylight-saving changes.
+
+The schedule is built only for Capacity, phone Browse, and the full state API;
+other page fragments omit it. The existing Weekly mode toggle is unchanged.
