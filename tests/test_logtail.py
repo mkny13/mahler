@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 from mahler.console import logtail
 from mahler import config
 
@@ -9,6 +10,9 @@ class TestLogtail(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.state)
+        patcher = mock.patch.object(config, "CONFIG_PATH", os.path.join(self.tmp.name, "config.toml"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.old_state = config.STATE
         config.STATE = self.state
 

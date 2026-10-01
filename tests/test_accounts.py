@@ -617,6 +617,25 @@ class LaunchAndGitHubTests(unittest.TestCase):
             GH("acme/app", env={"GH_CONFIG_DIR": "/w"}).issue_state(3)
         self.assertEqual(run.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/w"})
 
+    def test_scheduler_app_selection_does_not_change_agent_identity(self):
+        cfg = work_cfg()
+        cfg["github_app"] = {"app_id": 123, "installation_id": 456,
+                             "private_key_path": "/private/key.pem"}
+        cfg["projects"]["acme"]["github_app_installation_id"] = 789
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(config, "STATE", tmp):
+            ctx = scheduler.Ctx(cfg, Ledger(":memory:", clock=lambda: NOW))
+            acme, home = ctx.gh("acme"), ctx.gh("home")
+            self.assertEqual(acme.app.installation_id, "789")
+            self.assertEqual(home.app.installation_id, "456")
+            self.assertIs(acme, ctx.gh("acme"))
+            before = config.run_env(cfg, "work", base={"PATH": "/bin"})
+            with mock.patch.object(acme.app, "token", return_value="app-token"):
+                self.assertEqual(acme._env()["GH_TOKEN"], "app-token")
+            self.assertEqual(config.run_env(cfg, "work", base={"PATH": "/bin"}), before)
+            self.assertNotIn("GH_TOKEN", before)
+            self.assertNotIn("GH_TOKEN", acme.env)
+            self.assertIsNone(config.gh_identity_env(cfg, config.project_policy(cfg, "home")))
+
     @mock.patch.dict(os.environ, {"GH_TOKEN": "system-token", "GH_CONFIG_DIR": "/sys/gh"})
     def test_run_environment_github_identity_overlay(self):
         cfg = work_cfg(both={"enabled": True, "repo": "b/oth", "path": "/tmp/both",

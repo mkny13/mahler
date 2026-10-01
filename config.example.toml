@@ -7,6 +7,16 @@ routing_mode = "list"
 # ~/.mahler/config.toml — only what differs from the defaults in mahler/config.py.
 # Nothing is managed until a project here says enabled = true.
 
+# Optional daemon-only GitHub App identity. Omit the whole table to keep gh auth.
+# Requires openssl and an installed App with repository permissions for the
+# conductor's operations (contents, issues, pull requests, checks/actions reads).
+# Store the private key securely; neither it nor tokens belong in account env.
+# Tokens are cached privately under MAHLER_HOME/github-app-tokens (0700/0600).
+# [github_app]
+# app_id = 12345
+# installation_id = 67890
+# private_key_path = "/absolute/path/to/private-key.pem"
+
 [ntfy]
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
@@ -16,6 +26,7 @@ enabled = false                 # opt in only after repo, path and verify are co
 repo = "your-org/your-repo"
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
+# github_app_installation_id = 98765  # override for another GitHub owner
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
 # Defaults to true with a personal account, false for work-only projects.
 # explore = false
