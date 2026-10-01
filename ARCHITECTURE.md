@@ -39,10 +39,10 @@ Item content lives in GitHub: issue text, discussion, handoff notes, labels, PRs
 state lives in the ledger. Neither duplicates the other (DESIGN D4, D5).
 
 - **`~/.mahler/mahler.db`** (SQLite). Tables: `items` (state machine: `inbox`, `ready`,
-  `working`, `verifying`, `needs_you`, `parked`, `failed`, `parent`, `done`), `leases`
+  `working`, `verifying`, `needs_you`, `parked`, `failed`, `parent`, `shipped`, `done`), `leases`
   (compare-and-set, with epochs), `runs`, `usage`, `events`, `counters`, `console_actions`,
-  `uat`, `releases`, `release_items`, and a `kv` table for small flags and caches (pause,
-  holds, breakers, review evidence).
+  `uat`, `completion_evidence`, `releases`, `release_items`, and a `kv` table for small flags
+  and caches (pause, holds, breakers, review evidence).
 - **`~/.mahler/config.toml`**: machine policy (projects, accounts, platforms, routing,
   caps). Per-repo `.mahler/project.toml` declares verify, release and data contracts and
   is checked in so agents can read it.
@@ -118,8 +118,9 @@ carries an item while it verifies, and watching takes no run capacity.
    convergence check that escalates to `needs_you`.
 4. Recheck the base and lease, then squash-merge, wait for GitHub to confirm the merge, and
    comment. A moved base sends the item back for a rebuild.
-5. Record the shipped change: the console UAT queue when a human check is listed, and the
-   release ledger (D31).
+5. Record the merged item as `shipped`, along with its release-ledger snapshot (D31) and any
+   console UAT entry. It remains `shipped` until an attributable owner, console, or smoke-test
+   comment is stored in `completion_evidence`; accepting that evidence moves it to `done`.
 
 Interactive sessions hand over with `mahler ship <project>#N` (D18). An open PR that no
 item tracks draws a "PR nobody is shipping" ping.
