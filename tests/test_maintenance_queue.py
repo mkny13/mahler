@@ -298,6 +298,114 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.gh_mock.create_issue.assert_not_called()
 
 
+class EscapesQueueTests(unittest.TestCase):
+    def setUp(self):
+        MaintenanceQueueTests.setUp(self)
+        self.led.set_maintenance_checkpoint("mahler", "security", last_filed_at=NOW)
+        self.previous = NOW - timedelta(days=40)
+        self.led.set_maintenance_checkpoint(
+            "mahler", "escapes", last_filed_at=self.previous, merged_since=25)
+
+    def test_slow_filing_keeps_consecutive_review_intervals_contiguous(self):
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["escapes"]}
+        clock = mock.Mock(return_value=NOW)
+        self.led.clock = clock
+
+        def finish_request(*args):
+            clock.return_value = NOW + timedelta(seconds=10)
+
+        self.gh_mock.create_issue.side_effect = finish_request
+        tick.queue_maintenance(self.ctx, [proj()])
+        first_body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn(f"< closedAt <= {iso(NOW)}", first_body)
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "escapes"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+
+        clock.return_value = NOW + timedelta(days=31)
+        self.ctx.passes_filed.clear()
+        self.gh_mock.create_issue.side_effect = None
+        tick.queue_maintenance(self.ctx, [proj()])
+        next_body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn(
+            f"{iso(NOW)} < closedAt <= {iso(clock.return_value)}", next_body)
+
+    def test_default_brief_interval_and_reset(self):
+        policy = config.maintenance_policy(self.cfg, "mahler")
+        self.assertTrue(policy["enabled"])
+        self.assertIn("escapes", policy["passes"])
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.ensure_pass_label.assert_called_once_with("escapes")
+        title, body, labels = self.gh_mock.create_issue.call_args.args
+        self.assertEqual(title, "Escaped-Bug Gate Improvement Review")
+        self.assertEqual(labels, ["type:chore", "size:l", "p2", "pass:escapes"])
+        for fragment in (
+            "Inspect only `type:bug` issues closed", "paginate results",
+            "Group source bugs", "escape cause / failure class",
+            "existing open and closed", "Reuse and link existing adequate work",
+            "one proposed mechanical-check issue per uncovered class",
+            "linking every source bug", "acceptance check", "no feasible mechanical check",
+            f"{iso(self.previous)} < closedAt <= {iso(NOW)}",
+            "previous escapes pass filing checkpoint",
+        ):
+            self.assertIn(fragment, body)
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "escapes"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_first_pass_has_bounded_history(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        self.ctx.led = led
+        for name in config.MAINTENANCE_PASSES:
+            if name != "escapes":
+                led.set_maintenance_checkpoint("mahler", name, last_filed_at=NOW)
+        tick.queue_maintenance(self.ctx, [proj()])
+        body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn("First pass: no prior checkpoint", body)
+        self.assertIn(f"{iso(NOW - timedelta(days=30))} < closedAt <= {iso(NOW)}", body)
+
+    def test_explicit_pass_list_opts_out(self):
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["tests"]}
+        self.assertNotIn("escapes", config.maintenance_policy(self.cfg, "mahler")["passes"])
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_cadence_and_volume(self):
+        for days, merged, expected in ((29, 0, False), (30, 0, True),
+                                       (13, 19, False), (13, 20, True)):
+            with self.subTest(days=days, merged=merged):
+                self.ctx.passes_filed.clear()
+                self.gh_mock.reset_mock()
+                self.led.set_maintenance_checkpoint(
+                    "mahler", "escapes", last_filed_at=NOW - timedelta(days=days),
+                    merged_since=merged)
+                tick.queue_maintenance(self.ctx, [proj()])
+                self.assertEqual(self.gh_mock.create_issue.called, expected)
+                if expected:
+                    self.assertEqual(self.led.maintenance_checkpoint("mahler", "escapes"),
+                                     {"last_filed_at": iso(NOW), "merged_since": 0})
+
+    def test_failure_preserves_interval_for_retry(self):
+        before = self.led.maintenance_checkpoint("mahler", "escapes")
+        self.gh_mock.create_issue.side_effect = GHError("unavailable")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.assertEqual(before, self.led.maintenance_checkpoint("mahler", "escapes"))
+
+    def test_cooldown_and_in_flight(self):
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:escapes"]),
+                             state="working")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.upsert_item("mahler", 99, state="done",
+                             state_changed_at=iso(NOW - timedelta(days=13)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=14)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+
 class GateCoverageQueueTests(unittest.TestCase):
     def setUp(self):
         MaintenanceQueueTests.setUp(self)

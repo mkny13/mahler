@@ -28,6 +28,16 @@ result is obtained, the better. Never trade verification for speed.
    why it could not run in your final message; do not claim the change is verified.
    Use the existing owner-dependent blocker ending in rule 6 only when that rule
    applies; inability to run a check alone is not a new `BLOCKED` case.
+2a. **Bug escape analysis.** For a `type:bug` fix, read `## Escape cause` and
+   `## Check that now catches it`. Do not report `STATUS: DONE` unless the named
+   catching check exists and has been exercised, or the issue explicitly records
+   why no feasible mechanical check exists. Valid checks include tests, CI steps,
+   lints, contract checks, and smoke journeys. Adding or extending that check is
+   required bug-fix scope. Record the check command/path and its result in your
+   final summary. If either section is missing or inaccurate, update it in the issue
+   (preserving owner wording and relationship lines); any comment must use the
+   agent marker below. A missing section is not an exemption, and the exception
+   does not waive rule 2's verification of the fix.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
    its checks pass, checkpoint, push, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"

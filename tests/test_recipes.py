@@ -22,6 +22,21 @@ class SortRecipeTests(unittest.TestCase):
         self.assertIn("if the body already has this shape, edit its sections in place",
                       self.text)
 
+    def test_bug_only_escape_sections(self):
+        for fragment in (
+            "For `type:bug` issues only (including bug sub-issues)",
+            "between `## Plan` and `## Done when`",
+            "## Escape cause", "Why existing gates missed this bug",
+            "## Check that now catches it", "how to exercise it",
+            "If no feasible mechanical check exists, explicitly explain why here",
+            "Non-bug issues keep the standard shape above unchanged",
+        ):
+            self.assertIn(fragment, self.text)
+        standard = self.rendered.split("exactly this shape", 1)[1].split(
+            "For `type:bug`", 1)[0]
+        self.assertNotIn("## Escape cause", standard)
+        self.assertNotIn("## Check that now catches it", standard)
+
     def test_sub_issues_require_something_to_ship(self):
         self.assertIn("Every sub-issue must end in a commit", self.text)
         self.assertIn("DONE with nothing to push counts as a failed attempt", self.text)
@@ -119,6 +134,19 @@ class BuildRecipeTests(unittest.TestCase):
         )
         self.rendered = prompt.render("build", **self.values)
         self.text = " ".join(self.rendered.split())
+
+    def test_bug_completion_requires_exercised_check_or_documented_exception(self):
+        for fragment in (
+            "For a `type:bug` fix", "## Escape cause", "## Check that now catches it",
+            "Do not report `STATUS: DONE` unless the named catching check exists "
+            "and has been exercised, or the issue explicitly records why no feasible "
+            "mechanical check exists",
+            "tests, CI steps, lints, contract checks, and smoke journeys",
+            "required bug-fix scope", "check command/path and its result",
+            "A missing section is not an exemption",
+            "does not waive rule 2's verification of the fix",
+        ):
+            self.assertIn(fragment, self.text)
 
     def test_whats_new_contract_guidance_present(self):
         # Explicit trigger and scoping rule

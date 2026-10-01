@@ -57,7 +57,7 @@ def ensure_private_dir(path, mode=0o700):
         p = os.path.dirname(p)
 
 MAINTENANCE_PASSES = ("security", "health", "drift", "tests", "token-economy", "guidance",
-                      "backlog", "bugs", "docs", "gate-coverage")
+                      "backlog", "bugs", "docs", "gate-coverage", "escapes")
 DEFAULT_MAINTENANCE = {
     "enabled": True,
     "cadence_days": 30,

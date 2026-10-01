@@ -625,6 +625,16 @@ completion. Repeated polls and double taps do not repeat the completion event.
 
 ### D11 — The agents' feedback loop
 
+**Gates, not guidance** (mahler#613): the couch-tour 0.83 review's escapes
+([couch-tour#403](https://github.com/mkny13/couch-tour/issues/403)) showed why
+fixing symptoms and adding instructions alone do not close the loop. Every sorted
+`type:bug` includes `## Escape cause` (why existing gates missed it) and
+`## Check that now catches it`. The builder may report DONE only after the named
+test, CI step, lint, contract check or smoke journey exists and has been exercised,
+or the issue explicitly explains why no feasible mechanical check exists. That
+exception does not waive verification of the fix. Non-bug body shapes stay unchanged.
+D20 periodically turns recurring escape classes into mechanical-gate proposals.
+
 - **Verify contract.** Each repo carries `.mahler/project.toml`, which declares:
   - `verify.fast`: lint + unit tests, under ~2 minutes, run in the worktree before every push
   - `verify.full`: build + e2e
@@ -962,11 +972,11 @@ Throughput counts merged changes, not finished runs. So:
 ### D20 — Maintenance passes are triggered by time and shipped volume
 
 Each managed project may enable periodic reviews for security, code health, architecture drift,
-test health, shipped-artifact gate coverage, token/quota hygiene, agent guidance, issue backlog pruning, correctness bugs, and
+test health, shipped-artifact gate coverage, token/quota hygiene, agent guidance, issue backlog pruning, correctness bugs, escaped-bug analysis, and
 documentation accuracy/onboarding (`mahler/tick.py`'s `MAINTENANCE_TEXT`; the first six were the
 original set). They default to a 30-day cadence and an early trigger after 20 merged PRs since
 that pass was last filed, with a 14-day cooldown after filing. A project can disable maintenance
-or select a subset of the ten passes. The documentation pass compares README, commands,
+or select a subset of the eleven passes. The documentation pass compares README, commands,
 examples, design/roadmap status, and operator/agent guidance with current code and CLI help,
 then updates them through the normal issue → agent → conductor pipeline.
 
@@ -988,12 +998,22 @@ issues and PRs. With no checkpoint this pass is immediately due, subject to the
 existing one-pass-in-flight rule; an explicit project `maintenance.passes` list can
 omit it. Reports explain project non-applicability.
 
+The default-on `escapes` pass (mahler#613) reviews only bugs closed since the
+previous escapes filing checkpoint through the current filing time. Its generated
+brief fixes both UTC bounds before resetting the checkpoint; the first pass uses
+one cadence window of history. It groups bugs by escape cause, assesses checks
+already added, and files one mechanical-check proposal per uncovered class, citing
+all source bugs. Existing adequate gate issues are linked instead of re-filed.
+No qualifying bugs or gaps means a report without new issues. It shares the normal
+D20 cadence, shipped-volume trigger, cooldown and one-pass-in-flight rule, and can
+be omitted from `maintenance.passes`. Project-specific checks ship separately.
+
 The broader `tests` pass also looks for fixtures hand-written to match the decoder
 rather than recorded from the real upstream service, and for no scheduled check
 that upstream API shapes still match (the couch-tour#405 contract-test gap).
 
 Projects can also define their own recurring passes in the operator's configuration
-(mahler#606), without modifying the ten built-ins:
+(mahler#606), without modifying the eleven built-ins:
 
 ```toml
 [projects.couch-tour.maintenance.custom.feature-parity]
@@ -1035,13 +1055,13 @@ no `pass:*` item of that project is open); and a goal closes once all its sub-is
 (mahler#206). Time estimates already self-calibrate (`ledger.calibrate_estimates()`, mahler#59),
 but `config.py`'s per-platform `tier`/`max_size`/`min_size` are point-in-time judgment calls, and
 nothing re-checks them as a provider's model quietly changes under the same CLI/account. This
-isn't an entry in the ten passes above — it's not about a managed project's codebase at
+isn't an entry in the eleven passes above — it's not about a managed project's codebase at
 all, it's about Mahler's own config — so it lives in `platform_audit.py` and anchors its
 checkpoint on one configured project's (default: `mahler`, since Mahler manages itself) merged-PR
 throughput instead of every project's. It reuses the exact same checkpoint shape
 (`last_filed_at`/`merged_since`, `Ledger.maintenance_due`) and the same at-most-one-pass-in-flight
 discipline (a `pass:platform-audit` label sorts into the same `pass:*` check), so it can't crowd
-the queue independently of the other ten. Each tick it: greps `DESIGN.md` for a "verified
+the queue independently of the other eleven. Each tick it: greps `DESIGN.md` for a "verified
 <date>" mention near each platform's name and flags any older than `stale_verified_days` (default
 90) or missing entirely; and cross-checks `runs`/`events` for each platform's done-rate,
 needs-you-rate, and how often the *item* it was working escalated a tier away from it
