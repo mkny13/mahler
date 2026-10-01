@@ -31,6 +31,11 @@ max_parallel = 1
 # Defaults to true with a personal account, false for work-only projects.
 # explore = false
 verify = "python3 -m unittest discover -s tests"
+# Optional smoke command against the latest preview/beta artifact after release.
+# Empty disables it. Schema only for now: Mahler does not execute or post reports yet.
+# See DESIGN D11 for release context, report grammar and evidence requirements.
+smoke = ""
+# smoke = "./scripts/smoke/run-smoke.sh"  # illustrative; runner interface is deferred
 # A project may span more than one account (DESIGN D26): by default it tries
 # each of its accounts in declared order and spends the first with headroom.
 # Set one of account/accounts, never both:
