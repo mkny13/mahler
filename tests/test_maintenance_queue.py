@@ -298,6 +298,86 @@ class MaintenanceQueueTests(unittest.TestCase):
         self.gh_mock.create_issue.assert_not_called()
 
 
+class GateCoverageQueueTests(unittest.TestCase):
+    def setUp(self):
+        MaintenanceQueueTests.setUp(self)
+        # Simulate an existing project when this new default pass first arrives.
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx.led = self.led
+        for name in config.MAINTENANCE_PASSES:
+            if name != "gate-coverage":
+                self.led.set_maintenance_checkpoint("mahler", name, last_filed_at=NOW)
+
+    def test_default_first_run_brief_scope_and_checkpoint(self):
+        policy = config.maintenance_policy(self.cfg, "mahler")
+        self.assertTrue(policy["enabled"])
+        self.assertIn("gate-coverage", policy["passes"])
+        self.assertTrue(self.led.maintenance_due("mahler", "gate-coverage", policy=policy))
+        self.cfg["projects"]["mahler"].update(scope="label", scope_label="project-scope")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.ensure_pass_label.assert_called_once_with("gate-coverage")
+        title, body, labels = self.gh_mock.create_issue.call_args.args
+        self.assertEqual(title, "Shipped-Artifact Gate Coverage Audit")
+        for instruction in (
+            "Inventory every artifact/target", "effective project `verify`",
+            "| Artifact/target | verify | PR CI | release-only |",
+            "exact command and file/workflow path", "path filters and conditions",
+            "unknown", "one deduplicated", "reuse and link an existing issue",
+            "linked back to this audit", "acceptance check",
+            "Never edit `~/.mahler/config.toml`", "owner\ndecision",
+            "do not automatically\nchange workflows", "non-applicability",
+        ):
+            with self.subTest(instruction=instruction):
+                self.assertIn(instruction, body)
+        self.assertEqual(labels, ["type:chore", "size:l", "p2",
+                                  "pass:gate-coverage", "project-scope"])
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "gate-coverage"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_explicit_pass_list_opts_out(self):
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["tests"]}
+        self.assertNotIn("gate-coverage", config.maintenance_policy(self.cfg, "mahler")["passes"])
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_cadence_and_throughput(self):
+        for days, merged, expected in ((29, 0, False), (30, 0, True),
+                                       (13, 19, False), (13, 20, True)):
+            with self.subTest(days=days, merged=merged):
+                self.ctx.passes_filed.clear()
+                self.gh_mock.reset_mock()
+                self.led.set_maintenance_checkpoint(
+                    "mahler", "gate-coverage", last_filed_at=NOW - timedelta(days=days),
+                    merged_since=merged)
+                tick.queue_maintenance(self.ctx, [proj()])
+                self.assertEqual(self.gh_mock.create_issue.called, expected)
+
+    def test_completed_audit_cooldown(self):
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:gate-coverage"]),
+                             state="done", state_changed_at=iso(NOW - timedelta(days=13)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+        self.led.upsert_item("mahler", 99, state_changed_at=iso(NOW - timedelta(days=14)))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_called_once()
+
+    def test_open_audit_blocks_first_run(self):
+        self.led.upsert_item("mahler", 99, labels=json.dumps(["pass:tests"]), state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_tests_brief_checks_upstream_contracts(self):
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["tests"]}
+        self.led.set_maintenance_checkpoint("mahler", "tests", last_filed_at=NOW - timedelta(days=30))
+        tick.queue_maintenance(self.ctx, [proj()])
+        body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn("fixtures hand-written to match the decoder rather than recorded from the real upstream service", body)
+        self.assertIn("no scheduled check that upstream API shapes still match", body)
+
+
 class CustomMaintenanceQueueTests(unittest.TestCase):
     """Custom definitions share the built-in D20 queue contract."""
     def setUp(self):

@@ -962,16 +962,38 @@ Throughput counts merged changes, not finished runs. So:
 ### D20 — Maintenance passes are triggered by time and shipped volume
 
 Each managed project may enable periodic reviews for security, code health, architecture drift,
-test health, token/quota hygiene, agent guidance, issue backlog pruning, correctness bugs, and
+test health, shipped-artifact gate coverage, token/quota hygiene, agent guidance, issue backlog pruning, correctness bugs, and
 documentation accuracy/onboarding (`mahler/tick.py`'s `MAINTENANCE_TEXT`; the first six were the
 original set). They default to a 30-day cadence and an early trigger after 20 merged PRs since
 that pass was last filed, with a 14-day cooldown after filing. A project can disable maintenance
-or select a subset of the nine passes. The documentation pass compares README, commands,
+or select a subset of the ten passes. The documentation pass compares README, commands,
 examples, design/roadmap status, and operator/agent guidance with current code and CLI help,
 then updates them through the normal issue → agent → conductor pipeline.
 
+The default-on `gate-coverage` pass (mahler#614) inventories every shipped artifact
+and target, then reports an evidence-backed artifacts × (`verify`, PR CI,
+release-only) table. It inspects the effective operator verify command alongside
+the repo contract, workflow triggers/conditions and called build scripts; each cell
+cites commands and file/workflow paths or explains missing, unknown or inapplicable
+coverage. Green library tests do not prove an app target compiles: couch-tour#402
+missed the macOS app in both verify and PR CI. Compiling it only at release finds
+failures too late to prevent merging them.
+
+Each uncovered artifact/gate gap gets one deduplicated issue linked back to the audit
+(reuse existing matching issues), with evidence, a proposed fix and an acceptance
+check. The audit recommends changes; it does not modify workflows, build scripts or
+verify commands, run release-only jobs, or edit `~/.mahler/config.toml`. Changing the
+operator's verify command remains an owner decision. Repository fixes follow normal
+issues and PRs. With no checkpoint this pass is immediately due, subject to the
+existing one-pass-in-flight rule; an explicit project `maintenance.passes` list can
+omit it. Reports explain project non-applicability.
+
+The broader `tests` pass also looks for fixtures hand-written to match the decoder
+rather than recorded from the real upstream service, and for no scheduled check
+that upstream API shapes still match (the couch-tour#405 contract-test gap).
+
 Projects can also define their own recurring passes in the operator's configuration
-(mahler#606), without modifying the nine built-ins:
+(mahler#606), without modifying the ten built-ins:
 
 ```toml
 [projects.couch-tour.maintenance.custom.feature-parity]
@@ -1013,13 +1035,13 @@ no `pass:*` item of that project is open); and a goal closes once all its sub-is
 (mahler#206). Time estimates already self-calibrate (`ledger.calibrate_estimates()`, mahler#59),
 but `config.py`'s per-platform `tier`/`max_size`/`min_size` are point-in-time judgment calls, and
 nothing re-checks them as a provider's model quietly changes under the same CLI/account. This
-isn't an entry in the nine passes above — it's not about a managed project's codebase at
+isn't an entry in the ten passes above — it's not about a managed project's codebase at
 all, it's about Mahler's own config — so it lives in `platform_audit.py` and anchors its
 checkpoint on one configured project's (default: `mahler`, since Mahler manages itself) merged-PR
 throughput instead of every project's. It reuses the exact same checkpoint shape
 (`last_filed_at`/`merged_since`, `Ledger.maintenance_due`) and the same at-most-one-pass-in-flight
 discipline (a `pass:platform-audit` label sorts into the same `pass:*` check), so it can't crowd
-the queue independently of the other nine. Each tick it: greps `DESIGN.md` for a "verified
+the queue independently of the other ten. Each tick it: greps `DESIGN.md` for a "verified
 <date>" mention near each platform's name and flags any older than `stale_verified_days` (default
 90) or missing entirely; and cross-checks `runs`/`events` for each platform's done-rate,
 needs-you-rate, and how often the *item* it was working escalated a tier away from it
