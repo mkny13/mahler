@@ -398,11 +398,17 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     # its own reviewer — if it also built this, fall back to ordinary routing
     # order (still excluding the builder below) rather than deadlocking on a
     # pin that `exclude` would immediately rule back out.
+    exclude = {builder_platform} if builder_platform else set()
+    dup = _kv_json(led, f"reviewdup:{project}#{n}")
+    if dup.get("sha") == sha and dup.get("reviewer"):
+        exclude.add(dup["reviewer"])     # a repeat finding needs a different reviewer
     pin = ("claude" if router.risk_min_tier(row_get(item, "title", "")) > 0
            and builder_slot != "claude" else None)
+    if pin and any(router.platform_slot(cfg, p) == pin for p in exclude):
+        pin = None
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
-        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude={builder_platform} if builder_platform else set())
+        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude=exclude)
     # Wait/ping state is scoped to the PR head: a new push restarts the clock and
     # re-arms the alert, so an updated PR can never sit silent behind an old ping.
     wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
@@ -475,6 +481,49 @@ def _finding_files(findings):
     return locations
 
 
+def _finding_locations(findings):
+    """Every finding's leading ``file:line`` as a set of (file, line), or None
+    when any finding lacks one — such a review can't be judged a repeat."""
+    locations = set()
+    for finding in re.split(r"\s+\|\s+", findings or ""):
+        if not finding.strip():
+            continue
+        match = re.match(r"\s*(?:[-*]\s+)?`?(?P<path>[\w@+./-]+?):(?P<line>\d+)`?\b",
+                         finding)
+        if not match:
+            return None
+        locations.add((match.group("path"), int(match.group("line"))))
+    return locations or None
+
+
+def _repeat_finding(ctx, project, n, view):
+    """Whether this failed review repeats the previous round's finding: every
+    finding names a file:line the previous round also named, on a different
+    PR head, and the cited source line reads the same at both heads. A
+    reviewer misreading masked tool output (`******`, mahler#628) re-fails the
+    same unchanged line every round; a real regression or a changed line is
+    never a repeat. Anything unreadable counts as not a repeat."""
+    led, sha = ctx.led, view.get("headRefOid")
+    history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+    if len(history) < 2 or history[-1]["sha"] != sha:
+        return None
+    prev, cur = history[-2], history[-1]
+    if not prev.get("sha") or prev["sha"] == sha:
+        return None
+    now, before = _finding_locations(cur["findings"]), _finding_locations(prev["findings"])
+    if not now or not before or not now <= before:
+        return None
+    gh, path = ctx.gh(project), ctx.policy(project)["path"]
+    try:
+        for file, line in now:
+            old = gh.source_line(path, prev["sha"], file, line)
+            if old is None or old != gh.source_line(path, sha, file, line):
+                return None
+    except GHError:
+        return None
+    return cur
+
+
 def _review_not_converging(ctx, project, item, pr, view):
     """Pause after two consecutive reviews move to previously untouched files."""
     led, n = ctx.led, item["number"]
@@ -542,6 +591,22 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     if _review_not_converging(ctx, project, item, pr, view):
         return
+    sha = view.get("headRefOid") or ""
+    dup_key = f"reviewdup:{project}#{n}"
+    if _kv_json(led, dup_key).get("sha") != sha:
+        repeated = _repeat_finding(ctx, project, n, view)
+        if repeated:
+            # Same finding on the same unchanged line: a second opinion, not
+            # another fix run, ping or tier escalation. If the alternate
+            # reviewer fails it too, the record above lets the normal fix flow run.
+            led.set_kv(dup_key, json.dumps({
+                "sha": sha, "reviewer": repeated.get("platform")}))
+            led.set_kv(f"review:{project}#{n}", None)
+            ctx.say(f"{project}#{n}: PR #{pr} — review repeats its previous finding on an "
+                    "unchanged line; asking a reviewer on another platform")
+            led.event("review_repeat", project, n,
+                      {"sha": sha, "reviewer": repeated.get("platform")})
+            return
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     last = led.last_run(project, n, roles=("build", "fix"))
