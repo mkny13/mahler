@@ -1156,7 +1156,12 @@ never run.
 - **Planning is a route, not a side effect.** Goals (`type:goal`), maintenance passes (`pass:*`)
   and `size:l` items are sorted only by `routing.plan` (default: `claude-opus`). With no headroom
   (the weekly reserve, or the peak window, D22) they wait; they never fall back to a free tier.
-  `max_size`/`min_size` are builder limits and don't apply to sorting.
+  Plan-role runs remain exempt from `max_size`/`min_size`. Ordinary sort runs respect
+  `max_size` when the item already has a size label, including during exploration;
+  unlabelled items remain open to every sorter. `min_size` remains builder-only,
+  and explicit pins still override size limits (mahler#604). Manually filed audits
+  should carry `type:goal` or `pass:*` when Opus planning is intended: planning is
+  selected by those labels (or `size:l`), never inferred from the title.
   Amended by D33: planning candidates are measured too; Opus stays the incumbent until another
   planner proves good enough at lower cost.
 - **The plan is the product.** A planning run writes into each sub-issue a `## Plan` (the files,
