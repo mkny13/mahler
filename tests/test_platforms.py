@@ -453,6 +453,22 @@ class ReadLogContractTests(unittest.TestCase):
                 self.assertTrue(result['quota_hit'])
                 self.assertEqual(result['retry_after'], 120)
 
+    def test_plaintext_rate_limit_errors(self):
+        for kind in self.kinds:
+            for message in ('Error: Rate limit exceeded (HTTP 429)',
+                            'error: rate_limited (HTTP 429). Try again in 2h'):
+                with self.subTest(kind=kind, message=message):
+                    result = self.read(kind, [message])
+                    self.assertTrue(result['quota_hit'])
+                    self.assertFalse(result['credit_exhausted'])
+                    self.assertEqual(result['last_error'], message)
+                    self.assertEqual(result['retry_after'],
+                                     120 if '2h' in message else None)
+            for message in ('Error: Invalid API key (from env var MISTRAL_API_KEY)',
+                            'Document HTTP 429 rate limit handling'):
+                with self.subTest(kind=kind, message=message):
+                    self.assertFalse(self.read(kind, [message])['quota_hit'])
+
     def test_structured_error_classification_preserves_protocol_differences(self):
         message = '429 rate limit exceeded. Try again in 2h'
         cases = (

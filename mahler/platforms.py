@@ -992,8 +992,8 @@ def _read_plaintext(res, line, texts):
             _note_credit_exhausted(res, line_str)
         if is_network_error(line_str) or line_str.lower().startswith("error:"):
             res["last_error"] = line_str
-        if line_str.lower().startswith("error:") and is_model_unavailable(line_str):
-            res["model_unavailable"] = True
+        if line_str.lower().startswith("error:"):
+            _note_log_error(res, line_str)
 
 
 def _read_claude_event(res, ev, texts, first_quota):
