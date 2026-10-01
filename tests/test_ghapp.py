@@ -192,6 +192,16 @@ class GhEnvTests(unittest.TestCase):
     def test_no_app_is_run_env(self):
         self.assertIsNone(config.gh_env(self.cfg(), {"name": "p"}))
 
+    def test_git_env_excludes_bot_token(self):
+        from mahler.gh import GH
+        with mock.patch.object(ghapp, "installation_token", return_value="bot"):
+            env = config.gh_env(self.cfg(github_app=APP), {"name": "p", "repo": "one/repo"})
+        self.assertEqual(env["GH_TOKEN"], "bot")
+        self.assertNotIn("GH_TOKEN", env.git_env or {})
+        with mock.patch("mahler.gh._git") as g:
+            GH("one/repo", env=env)._git("/x", "status")
+        self.assertNotIn("GH_TOKEN", g.call_args.kwargs["env"] or {})
+
     def test_personal_project_gets_bot_token(self):
         with mock.patch.object(ghapp, "installation_token", return_value="bot") as m:
             env = config.gh_env(

@@ -1088,6 +1088,12 @@ def run_env(cfg, account, base=None):
     return env
 
 
+class GhEnv(dict):
+    """gh_env's result when the App token is applied. ``git_env`` is the env
+    without it, because git pushes stay on the login's credentials (D38)."""
+    git_env = None
+
+
 def gh_env(cfg, pol):
     """The environment for the conductor's and the CLI's GitHub API calls.
 
@@ -1109,7 +1115,9 @@ def gh_env(cfg, pol):
     token = ghapp.installation_token(selected, cache_dir=GITHUB_APP_CACHE_DIR)
     if not token:
         return env
-    env = dict(os.environ if env is None else env)
+    base = env
+    env = GhEnv(os.environ if env is None else env)
+    env.git_env = base
     env["GH_TOKEN"] = token
     return env
 

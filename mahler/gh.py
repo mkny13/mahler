@@ -101,7 +101,8 @@ class GH:
         return _gh(*args, env=self.env, **kw)
 
     def _git(self, path, *args):
-        return _git(path, *args, env=self.env)
+        # Pushes stay on the login's credentials, not the App token (D38).
+        return _git(path, *args, env=getattr(self.env, "git_env", self.env))
 
     def open_issues(self):
         out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
