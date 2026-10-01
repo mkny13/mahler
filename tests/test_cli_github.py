@@ -31,8 +31,8 @@ class InteractiveIdentityTests(unittest.TestCase):
         led.upsert_item('x', 7, title='Test')
         calls = []
 
-        def github(*args, env=None, **kwargs):
-            calls.append((args, env))
+        def github(*args, env=None, transport="api", **kwargs):
+            calls.append((args, env, transport))
             if args[:2] == ('pr', 'view'):
                 return json.dumps({'state': 'OPEN', 'body': '', 'headRefName': 'branch'})
             if args[:2] == ('pr', 'list'):
@@ -49,7 +49,8 @@ class InteractiveIdentityTests(unittest.TestCase):
                 mock.patch.object(github_app.Installation, 'token', autospec=True,
                                   return_value='fake-app-token') as token, \
                 mock.patch('mahler.gh._gh', side_effect=github), \
-                mock.patch('mahler.gh._git', side_effect=github), \
+                mock.patch('mahler.gh._git', side_effect=lambda *args, **kwargs:
+                           github(*args, transport='git', **kwargs)), \
                 contextlib.redirect_stdout(io.StringIO()):
             if operation == 'add':
                 rc = cli.cmd_add(SimpleNamespace(project='x', title='New', body='', label=[]), cfg, led)
@@ -60,7 +61,7 @@ class InteractiveIdentityTests(unittest.TestCase):
                     pr=9 if operation == 'ship' else None, branch='branch', summary=None), cfg, led)
             elif operation == 'release':
                 rc = cli.cmd_release(SimpleNamespace(target='x', version='0.1.0', publish=True), cfg, led)
-                self.assertTrue(any(args[:2] == ('release', 'create') for args, _ in calls))
+                self.assertTrue(any(args[:2] == ('release', 'create') for args, _, _ in calls))
             elif operation in ('claim', 'lease_release'):
                 self.assertEqual(cli.cmd_claim(SimpleNamespace(
                     item=('x', 7), holder='me', steal=False), cfg, led), 0)
@@ -82,11 +83,11 @@ class InteractiveIdentityTests(unittest.TestCase):
                 rc = 0
             self.assertEqual(rc, 0)
             self.assertTrue(calls)
-            for _, env in calls:
+            for _, env, transport in calls:
                 if identity == 'personal':
                     self.assertIsNone(env)
                 else:
-                    self.assertEqual(env['GH_TOKEN'], 'fake-app-token' if identity == 'app'
+                    self.assertEqual(env['GH_TOKEN'], 'fake-app-token' if identity == 'app' and transport == 'api'
                                      else 'fake-human-token')
             if identity == 'app':
                 self.assertTrue(token.called)
