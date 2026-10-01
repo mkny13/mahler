@@ -1,6 +1,6 @@
 """Thin wrapper over the `gh` CLI — GitHub is the item store (DESIGN D4).
 
-Conductor clients optionally resolve GitHub App tokens for every command;
+Mahler clients optionally resolve GitHub App tokens for every command;
 other clients preserve their configured `gh auth` identity.
 """
 
@@ -9,7 +9,7 @@ import os
 import re
 import subprocess
 
-from . import redact
+from . import config, redact
 
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
@@ -97,6 +97,16 @@ def _git(path, *args, env=None):
         raise GHError(f"git {' '.join(args[:3])}: "
                       f"{_safe_error((r.stderr or r.stdout).strip(), env)[:400]}")
     return r.stdout.strip()
+
+
+def project_client(cfg, pol):
+    """Use one project identity for conductor, interactive CLI and MCP calls."""
+    from . import github_app
+
+    settings = config.github_app_settings(cfg, pol)
+    app = (github_app.Installation(*settings,
+           cache_dir=os.path.join(config.STATE, "github-app-tokens")) if settings else None)
+    return GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)), app=app)
 
 
 class GH:
