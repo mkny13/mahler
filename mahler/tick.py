@@ -159,7 +159,13 @@ def queue_maintenance(ctx, projects):
                 try:
                     ctx.gh(p["name"]).ensure_pass_label(pass_name)
                     ctx.gh(p["name"]).create_issue(title, body, issue_labels)
-                    led.reset_maintenance(p["name"], pass_name)
+                    if pass_name == "escapes":
+                        # Keep successive review intervals contiguous even when
+                        # filing requests or earlier projects take time.
+                        led.set_maintenance_checkpoint(p["name"], pass_name,
+                                                       last_filed_at=now)
+                    else:
+                        led.reset_maintenance(p["name"], pass_name)
                 except GHError as e:
                     ctx.say(f"{p['name']}: failed to file {pass_name} pass — {e}")
                     continue

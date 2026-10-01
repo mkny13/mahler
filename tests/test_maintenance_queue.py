@@ -306,6 +306,29 @@ class EscapesQueueTests(unittest.TestCase):
         self.led.set_maintenance_checkpoint(
             "mahler", "escapes", last_filed_at=self.previous, merged_since=25)
 
+    def test_slow_filing_keeps_consecutive_review_intervals_contiguous(self):
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["escapes"]}
+        clock = mock.Mock(return_value=NOW)
+        self.led.clock = clock
+
+        def finish_request(*args):
+            clock.return_value = NOW + timedelta(seconds=10)
+
+        self.gh_mock.create_issue.side_effect = finish_request
+        tick.queue_maintenance(self.ctx, [proj()])
+        first_body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn(f"< closedAt <= {iso(NOW)}", first_body)
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "escapes"),
+                         {"last_filed_at": iso(NOW), "merged_since": 0})
+
+        clock.return_value = NOW + timedelta(days=31)
+        self.ctx.passes_filed.clear()
+        self.gh_mock.create_issue.side_effect = None
+        tick.queue_maintenance(self.ctx, [proj()])
+        next_body = self.gh_mock.create_issue.call_args.args[1]
+        self.assertIn(
+            f"{iso(NOW)} < closedAt <= {iso(clock.return_value)}", next_body)
+
     def test_default_brief_interval_and_reset(self):
         policy = config.maintenance_policy(self.cfg, "mahler")
         self.assertTrue(policy["enabled"])
