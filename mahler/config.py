@@ -7,6 +7,7 @@ dispatch (DESIGN D2).
 """
 
 import copy
+import logging
 import math
 import os
 import re
@@ -574,6 +575,8 @@ def load(path=None):
     cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
     configure_warmup(cfg, user)
+    for name, project in cfg["projects"].items():
+        project["maintenance"] = maintenance_policy(cfg, name)
     return cfg
 
 
@@ -1098,7 +1101,33 @@ def project_policy(cfg, name):
 
 
 def maintenance_policy(cfg, name):
-    return project_policy(cfg, name).get("maintenance", DEFAULT_MAINTENANCE)
+    """Effective D20 policy, including validated project-defined passes."""
+    pol = _merge(DEFAULT_MAINTENANCE,
+                 project_policy(cfg, name).get("maintenance", {}))
+    custom = pol.get("custom", {})
+    valid = {}
+    logger = logging.getLogger(__name__)
+    if not isinstance(custom, dict):
+        logger.warning("project %r: skipping maintenance.custom: expected a table", name)
+        custom = {}
+    for key, definition in custom.items():
+        if key in MAINTENANCE_PASSES:
+            logger.warning("project %r: skipping custom maintenance pass %r: "
+                           "shadows a built-in pass", name, key)
+        elif (not isinstance(key, str) or not key.strip()
+              or not isinstance(definition, dict)
+              or any(not isinstance(definition.get(field), str)
+                     or not definition[field].strip() for field in ("title", "text"))):
+            logger.warning("project %r: skipping custom maintenance pass %r: "
+                           "expected non-empty string title and text", name, key)
+        else:
+            valid[key] = dict(definition)
+    pol["custom"] = valid
+    # Invalid custom names must also be removed from an explicit passes list.
+    pol["passes"] = list(dict.fromkeys(
+        key for key in [*pol["passes"], *valid]
+        if key in MAINTENANCE_PASSES or key in valid))
+    return pol
 
 
 def platform_audit_policy(cfg):

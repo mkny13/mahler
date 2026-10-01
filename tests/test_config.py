@@ -13,6 +13,53 @@ from mahler.console import actions, page, state
 from mahler.ledger import Ledger
 
 
+class CustomMaintenanceTests(unittest.TestCase):
+    def load(self, maintenance):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(config.dumps_toml({"projects": {
+                "app": {"maintenance": maintenance}, "other": {"maintenance": {
+                    "custom": {"parity": {"title": "Other parity", "text": "Other text"}}}}
+            }}))
+            return config.load(path)
+
+    def test_custom_passes_append_in_order_without_duplicates(self):
+        cfg = self.load({"passes": ["health", "parity", "health", "security"],
+                         "custom": {"parity": {"title": "Parity", "text": "Scan"},
+                                    "extra": {"title": "Extra", "text": "More"}}})
+        pol = config.maintenance_policy(cfg, "app")
+        self.assertEqual(pol["passes"], ["health", "parity", "security", "extra"])
+        self.assertEqual(cfg["projects"]["app"]["maintenance"], pol)
+        self.assertEqual(config.maintenance_policy(cfg, "other")["passes"],
+                         [*config.MAINTENANCE_PASSES, "parity"])
+        self.assertEqual(config.DEFAULT_MAINTENANCE["passes"], list(config.MAINTENANCE_PASSES))
+
+    def test_bad_entries_are_logged_and_skipped_individually(self):
+        bad = {"security": {"title": "Override", "text": "Override"},
+               "missing-title": {"text": "Scan"}, "missing-text": {"title": "Scan"},
+               "bad-title": {"title": 42, "text": "Scan"},
+               "bad-text": {"title": "Scan", "text": False},
+               "empty-title": {"title": "  ", "text": "Scan"},
+               "empty-text": {"title": "Scan", "text": ""}, "scalar": "bad"}
+        with self.assertLogs("mahler.config", level="WARNING") as logs:
+            cfg = self.load({"passes": ["health", *bad], "custom": {
+                **bad, "valid": {"title": "Good", "text": "Scan"}}})
+        self.assertEqual(len(logs.output), len(bad))
+        for key in bad:
+            self.assertTrue(any(repr(key) in line for line in logs.output))
+        pol = config.maintenance_policy(cfg, "app")
+        self.assertEqual(pol["passes"], ["health", "security", "valid"])
+        self.assertEqual(list(pol["custom"]), ["valid"])
+        self.assertEqual(config.maintenance_policy(cfg, "other")["custom"]["parity"]["title"],
+                         "Other parity")
+
+    def test_malformed_custom_table_does_not_break_loading(self):
+        with self.assertLogs("mahler.config", level="WARNING"):
+            cfg = self.load({"custom": "bad"})
+        self.assertEqual(config.maintenance_policy(cfg, "app")["passes"],
+                         list(config.MAINTENANCE_PASSES))
+
+
 class RoutingGroupsTests(unittest.TestCase):
     def cfg(self):
         cfg = copy.deepcopy(config.DEFAULTS)

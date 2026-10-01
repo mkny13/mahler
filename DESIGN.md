@@ -937,6 +937,30 @@ or select a subset of the nine passes. The documentation pass compares README, c
 examples, design/roadmap status, and operator/agent guidance with current code and CLI help,
 then updates them through the normal issue → agent → conductor pipeline.
 
+Projects can also define their own recurring passes in the operator's configuration
+(mahler#606), without modifying the nine built-ins:
+
+```toml
+[projects.couch-tour.maintenance.custom.feature-parity]
+title = "macOS/Android Feature-Parity Scan"
+text = "Compare macOS and Android features and file actionable parity gaps."
+```
+
+Each custom entry requires non-empty string `title` and `text` fields. A key that
+shadows a built-in, or an entry with missing, blank or wrongly typed fields, is
+logged and skipped individually; valid entries and other projects remain usable.
+A non-table `custom` value is likewise logged and skipped. Valid custom keys are
+automatically appended to the effective `maintenance.passes`, with duplicates
+removed and configured/built-in order preserved. `passes = []` selects only custom
+passes; `enabled = false` disables all maintenance for the project.
+
+Custom passes use the same project/pass checkpoints, cadence, merged-PR threshold,
+cooldown, checkpoint reset, normalized exact-title deduplication and one-pass-in-flight
+gate as built-ins. Issues contain the configured title and plain text body and carry
+`type:chore`, `size:l`, `p2`, `pass:<key>` and any project scope label. Normal planning
+and building, including D21 routing, still apply. Adding the project-specific entry
+to the live configuration is an operator action; builds never edit daemon state.
+
 The ledger owns one checkpoint per project and pass: `last_filed_at` plus `merged_since`. Every
 conductor-confirmed shipped PR increments `merged_since` for the project's enabled passes. A pass
 is due immediately before its first checkpoint, then when either the cadence has elapsed or its
