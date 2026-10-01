@@ -178,6 +178,10 @@ CLAUDE_DENY = [f"Bash({stem}:*)" for stem in DENY_STEMS]
 # (verified 2026-09-13): "Denial rules always take precedence over allow rules,
 # even --allow-all-tools."
 COPILOT_DENY = [f"shell({stem}:*)" for stem in DENY_STEMS]
+# Kiro: --trust-tools is an allow-list, not a deny-list (verified 2026-10-01,
+# `kiro-cli chat --help`). Kiro is built with --trust-tools=read,write,glob,grep,
+# which never includes the `shell` tool — DENY_STEMS are unreachable by the agent.
+KIRO_TRUST_TOOLS = "read,write,glob,grep"
 
 
 def which(binary, fallbacks=()):
@@ -213,6 +217,10 @@ def kilo_exe():
     return which("kilo", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
 
 
+def kiro_exe():
+    return which("kiro-cli", ["/opt/homebrew/bin", os.path.join(HOME, ".local/bin")])
+
+
 def _epoch_iso(secs):
     return datetime.fromtimestamp(int(secs), timezone.utc).isoformat() if secs else None
 
@@ -226,6 +234,7 @@ EFFORTS = {
     "agy": {"low", "medium", "high"},
     "cline": {"none", "low", "medium", "high", "xhigh"},
     "kilo": None,                 # provider-specific free-form variants
+    "kiro": {"low", "medium", "high", "xhigh", "max"},
 }
 
 
@@ -247,7 +256,8 @@ def effort_args(pconf, role):
     if value is None:
         return []
     flag = {"claude": "--effort", "codex": "-c", "copilot": "--reasoning-effort",
-            "agy": "--effort", "cline": "--thinking", "kilo": "--variant"}[pconf["kind"]]
+            "agy": "--effort", "cline": "--thinking", "kilo": "--variant",
+            "kiro": "--effort"}[pconf["kind"]]
     if pconf["kind"] == "codex":
         return [flag, f'model_reasoning_effort="{value}"']
     return [flag, value]
@@ -347,6 +357,23 @@ def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv
 
 
+def kiro_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Verified 2026-10-01 (mahler#622): kiro-cli 2.26.1, `kiro-cli chat <prompt>
+    # --output-format stream-json --no-interactive`. The CLI runs in its cwd —
+    # the worktree is set by runner.spawn(cwd=worktree) — so no --cwd flag is
+    # needed. --trust-tools is an allow-list (per `kiro-cli chat --help`):
+    # limiting to read,write,glob,grep stops the agent from running arbitrary
+    # shell commands or calling out over the network. --no-interactive +
+    # stream-json implies no prompt is needed. Kiro has no deny-list flag
+    # (mahler#77, accepted: the tool allow-list is the guardrail).
+    argv = [kiro_exe(), "chat", prompt, "--output-format", "stream-json",
+            "--no-interactive", "--trust-tools", KIRO_TRUST_TOOLS]
+    if pconf.get("model"):
+        argv += ["--model", pconf["model"]]
+    argv += effort_args(pconf, role)
+    return argv
+
+
 def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
@@ -360,6 +387,8 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
         return codex_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "kilo":
         return kilo_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "kiro":
+        return kiro_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
 
 
@@ -413,7 +442,7 @@ def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=N
 def available(pconf):
     exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
            "copilot": copilot_exe, "codex": codex_exe,
-           "kilo": kilo_exe}[pconf["kind"]]()
+           "kilo": kilo_exe, "kiro": kiro_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -737,6 +766,83 @@ def probe_copilot(monthly_cap_credits, env=None):
     return [("monthly", pct, resets)]
 
 
+# Kiro's `/usage` probe response text (verified 2026-10-01 against kiro-cli 2.26.1,
+# signed in with Google on the KIRO FREE plan):
+#   "Estimated Usage | resets on 2026-11-01 | KIRO FREE\nCredits (0.23 of 50 covered
+#    in plan), 0.5%\nManage your plan at https://app.kiro.dev/account/usage\n"
+# The first line has the reset date; the second has used/total credits and percentage.
+_KIRO_USAGE_RE = re.compile(
+    r"resets on\s+(\d{4}-\d{2}-\d{2})", re.IGNORECASE)
+_KIRO_CREDITS_RE = re.compile(
+    r"credits?\s*\(([\d.]+)\s*of\s*(\d+)\s+covered", re.IGNORECASE)
+
+
+def parse_kiro_usage(text):
+    """Parse a Kiro /usage probe's text response -> [("monthly", pct, resets_iso)].
+
+    Kiro reports a monthly credit plan (KIRO FREE = 50 credits/month). The
+    percentage is extracted from the text rather than computed, so it matches
+    Kiro's own rounding. Returns [] if the text doesn't contain a credit line.
+    """
+    if not text:
+        return []
+    m = _KIRO_USAGE_RE.search(text)
+    resets = m.group(1) if m else None
+    if resets:
+        resets_iso = f"{resets}T00:00:00+00:00"
+    else:
+        resets_iso = _next_month_start(datetime.now(timezone.utc)).isoformat()
+    m = _KIRO_CREDITS_RE.search(text)
+    if not m:
+        return []
+    used, total = float(m.group(1)), float(m.group(2))
+    if total <= 0:
+        return []
+    pct = round(100 * used / total, 1)
+    return [("monthly", pct, resets_iso)]
+
+
+def probe_kiro(env=None, timeout=30):
+    """Read Kiro's monthly credit usage without spending a build turn (mahler#622).
+
+    Sends the prompt "/usage" to `kiro-cli chat --output-format stream-json` and
+    parses the ACP JSONL events (runStarted, metadata, sessionUpdate, runFinished).
+    -> [("monthly", pct, resets_iso)] or [] if unavailable.
+    """
+    exe = kiro_exe()
+    if not exe:
+        return []
+    try:
+        r = subprocess.run(
+            [exe, "chat", "/usage", "--output-format", "stream-json",
+             "--no-interactive", "--trust-tools", ""],
+            capture_output=True, text=True, timeout=timeout, cwd=HOME, env=env)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if r.returncode != 0:
+        return []
+    text_parts = []
+    for line in r.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        t = ev.get("type")
+        if t == "runFinished":
+            ft = (ev.get("data") or {}).get("finalText")
+            if ft:
+                text_parts.append(ft)
+        elif t == "sessionUpdate":
+            update = (ev.get("data") or {}).get("update") or {}
+            if update.get("sessionUpdate") == "agent_message_chunk":
+                content = update.get("content") or {}
+                if content.get("text"):
+                    text_parts.append(content["text"])
+    return parse_kiro_usage("".join(text_parts))
+
+
 # ---------- run logs ----------
 
 def _collect_text(obj, keys=("text", "content", "message", "delta", "deltaContent")):
@@ -929,6 +1035,33 @@ def _read_agy_event(res, ev, texts, first_quota):
             texts.append(su["text_delta"])
 
 
+def _read_kiro_event(res, ev, texts, first_quota):
+    # ACP v2 events (verified 2026-10-01): runStarted, metadata,
+    # sessionUpdate (agent_message_chunk), runError, runFinished.
+    data = ev.get("data") or {}
+    if data.get("sessionId"):
+        res["session_id"] = data["sessionId"]
+    t = ev.get("type")
+    if t == "sessionUpdate":
+        update = data.get("update") or {}
+        if update.get("sessionUpdate") == "agent_message_chunk":
+            content = update.get("content") or {}
+            if content.get("type") == "text" and content.get("text"):
+                texts.append(content["text"])
+    elif t == "runFinished":
+        res["final"] = data.get("finalText")
+        res["ok"] = data.get("status") == "success"
+        if data.get("stopReason") == "error" or data.get("status") != "success":
+            msg = data.get("stopReason") or data.get("message")
+            if msg:
+                res["last_error"] = msg
+    elif t == "runError":
+        res["ok"] = False
+        msg = data.get("message") or json.dumps(data)
+        res["last_error"] = msg
+        _note_log_error(res, ev)
+
+
 def _finish_log(res, texts, kind):
     joined = "".join(texts) if kind == "agy" else "\n".join(texts)
     # The last_text feeds handoff comments (GitHub) and the final text can land
@@ -946,6 +1079,7 @@ _LOG_HANDLERS = {
     "codex": _read_codex_event,
     "kilo": _read_kilo_event,
     "agy": _read_agy_event,
+    "kiro": _read_kiro_event,
 }
 
 

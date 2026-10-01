@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from mahler import config, platforms, router
 
@@ -293,6 +294,50 @@ class ClineModelPinTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-m") + 1], "configured/model")
 
 
+class KiroArgvTests(unittest.TestCase):
+    def test_argv_basic(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"):
+            argv = platforms.kiro_argv(
+                {"kind": "kiro", "model": ""}, "do it", "/tmp/wt", "build")
+        self.assertEqual(argv[:2], ["/app/kiro-cli", "chat"])
+        self.assertIn("do it", argv)
+        self.assertIn("--output-format", argv)
+        self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
+        self.assertIn("--no-interactive", argv)
+        self.assertIn("--trust-tools", argv)
+        self.assertEqual(argv[argv.index("--trust-tools") + 1],
+                         platforms.KIRO_TRUST_TOOLS)
+
+    def test_argv_no_trust_tools_no_shell(self):
+        # The allow-list must not include 'shell' (mahler#77 guardrail).
+        self.assertNotIn("shell", platforms.KIRO_TRUST_TOOLS)
+
+    def test_argv_with_model(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"):
+            argv = platforms.kiro_argv(
+                {"kind": "kiro", "model": "claude-sonnet-4.5"}, "prompt", "/wt", "build")
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-sonnet-4.5")
+
+    def test_argv_with_effort(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"):
+            argv = platforms.kiro_argv(
+                {"kind": "kiro", "effort": "high"}, "prompt", "/wt", "build")
+        idx = argv.index("--effort")
+        self.assertEqual(argv[idx + 1], "high")
+
+    def test_argv_no_effort_flag_when_unset(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"):
+            argv = platforms.kiro_argv({"kind": "kiro"}, "prompt", "/wt", "build")
+        self.assertNotIn("--effort", argv)
+
+    def test_argv_disables_unwanted_tools(self):
+        pconf = {"kind": "kiro", "model": "auto"}
+        argv = platforms.kiro_argv(pconf, "prompt", "/wt", "build")
+        # Should not allow all tools.
+        self.assertNotIn("--trust-all-tools", argv)
+        self.assertNotIn("-a", argv)
+
+
 class ClineProviderTests(unittest.TestCase):
     def test_provider_is_passed_to_cline(self):
         pconf = config.DEFAULTS["platforms"]["jetstream"]
@@ -330,7 +375,7 @@ if __name__ == "__main__":
 
 
 class ReadLogContractTests(unittest.TestCase):
-    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy')
+    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy', 'kiro')
 
     def read(self, kind, lines):
         with tempfile.TemporaryDirectory() as directory:
@@ -362,21 +407,28 @@ class ReadLogContractTests(unittest.TestCase):
         cases = (
             ('claude', [{'type': 'assistant', 'message': {'content': [
                 {'type': 'text', 'text': 'earlier'}]}},
-                {'type': 'result', 'subtype': 'success', 'result': final}], True),
-            ('cline', [{'type': 'run_result', 'finishReason': 'completed', 'text': final}], True),
+                {'type': 'result', 'subtype': 'success', 'result': final}], True, None),
+            ('cline', [{'type': 'run_result', 'finishReason': 'completed', 'text': final}], True, None),
             ('copilot', [{'type': 'assistant.message', 'data': {'content': 'earlier'}},
                 {'type': 'assistant.message', 'data': {'content': final}},
-                {'type': 'result', 'exitCode': 0}], True),
+                {'type': 'result', 'exitCode': 0}], True, None),
             ('codex', [{'type': 'item.completed', 'item': {'type': 'agent_message', 'text': final}},
-                {'type': 'turn.completed'}], True),
-            ('kilo', [{'type': 'text', 'part': {'text': final}}], None),
+                {'type': 'turn.completed'}], True, None),
+            ('kilo', [{'type': 'text', 'part': {'text': final}}], None, None),
             ('agy', [{'event': 'step_update', 'step_update': {'text_delta': 'earlier'}},
-                {'event': 'result', 'result': {'status': 'SUCCESS', 'response': final}}], True),
+                 {'event': 'result', 'result': {'status': 'SUCCESS', 'response': final}}], True, None),
+            ('kiro', [{'type': 'metadata', 'data': {'sessionId': 'sess-abc'}},
+                {'type': 'sessionUpdate', 'data': {'sessionId': 'sess-abc',
+                 'update': {'sessionUpdate': 'agent_message_chunk',
+                  'content': {'type': 'text', 'text': 'earlier'}}}},
+                {'type': 'runFinished', 'data': {'sessionId': 'sess-abc',
+                 'status': 'success', 'finalText': final}}], True, 'sess-abc'),
         )
-        for kind, events, ok in cases:
+        for kind, events, ok, session_id in cases:
             with self.subTest(kind=kind):
                 expected = self.empty_result()
-                expected.update(final=None if kind == 'kilo' else final, ok=ok, last_text=final)
+                expected.update(final=None if kind == 'kilo' else final, ok=ok,
+                               last_text=final, session_id=session_id)
                 result = self.read(kind, events)
                 self.assertEqual(result, expected)
                 self.assertEqual(platforms.status_line(result['last_text']), ('DONE', 'complete'))
@@ -409,7 +461,9 @@ class ReadLogContractTests(unittest.TestCase):
             ('codex', {'type': 'turn.failed', 'error': {'message': message}}, False, None),
             ('kilo', {'type': 'error', 'error': {'data': {'message': message}}}, None, message),
             ('agy', {'event': 'result', 'result': {'status': 'FAILED',
-                'response': message}}, False, None),
+                 'response': message}}, False, None),
+            ('kiro', {'type': 'runError', 'data': {'sessionId': 's1',
+                 'stage': 'prompt', 'message': message}}, False, message),
         )
         for kind, event, ok, last_error in cases:
             with self.subTest(kind=kind):
@@ -419,3 +473,122 @@ class ReadLogContractTests(unittest.TestCase):
                 self.assertEqual(result['retry_after'], 120)
                 self.assertEqual(result['ok'], ok)
                 self.assertEqual(result['last_error'], last_error)
+
+
+class KiroUsageProbeTests(unittest.TestCase):
+    def test_parse_kiro_usage_real_output(self):
+        text = ("Estimated Usage | resets on 2026-11-01 | KIRO FREE\n"
+                "Credits (0.23 of 50 covered in plan), 0.5%\n"
+                "Manage your plan at https://app.kiro.dev/account/usage\n")
+        samples = platforms.parse_kiro_usage(text)
+        self.assertEqual(len(samples), 1)
+        window, pct, resets = samples[0]
+        self.assertEqual(window, "monthly")
+        self.assertAlmostEqual(pct, 0.5, places=1)
+        self.assertTrue(resets.startswith("2026-11-01"))
+
+    def test_parse_kiro_usage_half_credit(self):
+        text = "Credits (1.50 of 50 covered in plan), 3.0%"
+        samples = platforms.parse_kiro_usage(text)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0][0], "monthly")
+        self.assertAlmostEqual(samples[0][1], 3.0, places=1)
+
+    def test_parse_kiro_usage_no_credit_line(self):
+        samples = platforms.parse_kiro_usage("No credit info here")
+        self.assertEqual(samples, [])
+
+    def test_parse_kiro_usage_empty(self):
+        self.assertEqual(platforms.parse_kiro_usage(""), [])
+        self.assertEqual(platforms.parse_kiro_usage(None), [])
+
+    def test_parse_kiro_usage_uses_reset_date(self):
+        text = "Estimated Usage | resets on 2026-12-15 | KIRO FREE\nCredits (25 of 50 covered in plan), 50.0%"
+        samples = platforms.parse_kiro_usage(text)
+        self.assertTrue(samples[0][2].startswith("2026-12-15"))
+
+    def test_probe_kiro_not_installed(self):
+        with mock.patch.object(platforms, "kiro_exe", return_value=None):
+            self.assertEqual(platforms.probe_kiro(), [])
+
+    def test_probe_kiro_parses_acp_jsonl(self):
+        stdout = "\n".join([
+            json.dumps({"type": "runStarted", "data": {"payloadSchema": "acp",
+                "acpProtocolVersion": 1, "engine": "v2"}}),
+            json.dumps({"type": "metadata", "data": {"sessionId": "s1",
+                "contextUsagePercentage": 5.9}}),
+            json.dumps({"type": "sessionUpdate", "data": {"sessionId": "s1",
+                "update": {"sessionUpdate": "agent_message_chunk",
+                 "content": {"type": "text",
+                  "text": "Estimated Usage | resets on 2026-11-01 | KIRO FREE\n"}}}}),
+            json.dumps({"type": "sessionUpdate", "data": {"sessionId": "s1",
+                "update": {"sessionUpdate": "agent_message_chunk",
+                 "content": {"type": "text",
+                  "text": "Credits (0.23 of 50 covered in plan), 0.5%\n"}}}}),
+            json.dumps({"type": "runFinished", "data": {"sessionId": "s1",
+                "status": "success", "finalText": "Credits (0.23 of 50 covered in plan), 0.5%"}}),
+        ])
+        result = mock.Mock(returncode=0, stdout=stdout, stderr="")
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"), \
+             mock.patch.object(platforms.subprocess, "run", return_value=result):
+            samples = platforms.probe_kiro()
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0][0], "monthly")
+        self.assertAlmostEqual(samples[0][1], 0.5, places=1)
+
+    def test_probe_kiro_failed_run(self):
+        result = mock.Mock(returncode=1, stdout="", stderr="error: keychain failure")
+        with mock.patch.object(platforms, "kiro_exe", return_value="/app/kiro-cli"), \
+             mock.patch.object(platforms.subprocess, "run", return_value=result):
+            self.assertEqual(platforms.probe_kiro(), [])
+
+
+class KiroReadLogTests(unittest.TestCase):
+    def test_kiro_run_finished_extracts_final_and_session(self):
+        text = "STATUS: DONE finished"
+        events = [
+            {"type": "metadata", "data": {"sessionId": "sess-123"}},
+            {"type": "sessionUpdate", "data": {"sessionId": "sess-123",
+             "update": {"sessionUpdate": "agent_message_chunk",
+              "content": {"type": "text", "text": "Starting work"}}}},
+            {"type": "sessionUpdate", "data": {"sessionId": "sess-123",
+             "update": {"sessionUpdate": "agent_message_chunk",
+              "content": {"type": "text", "text": text}}}},
+            {"type": "runFinished", "data": {"sessionId": "sess-123",
+             "status": "success", "finalText": text, "stopReason": "end_turn"}},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "agent.log")
+            with open(path, "w") as fh:
+                for ev in events:
+                    fh.write(json.dumps(ev) + "\n")
+            res = platforms.read_log(path, "kiro")
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["final"], text)
+        self.assertEqual(res["session_id"], "sess-123")
+        self.assertEqual(platforms.status_line(res["last_text"]), ("DONE", "finished"))
+
+    def test_kiro_run_error_extracts_model_unavailable(self):
+        events = [
+            {"type": "runError", "data": {"sessionId": "s1", "stage": "prompt",
+             "message": "Internal error (code -32603): Encountered an error in the response stream: The model 'nonexistent' is not available. Please use '/model' to select a different model and try again."}},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "agent.log")
+            with open(path, "w") as fh:
+                for ev in events:
+                    fh.write(json.dumps(ev) + "\n")
+            res = platforms.read_log(path, "kiro")
+        self.assertFalse(res["ok"])
+        self.assertTrue(res["model_unavailable"])
+
+    def test_kiro_plaintext_error_captured(self):
+        # Auth failures print "error: ..." to stderr (captured by 2>&1 in the log).
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "agent.log")
+            with open(path, "w") as fh:
+                fh.write("error: Security error: SecKeychainItemCreateFromContent\n")
+            res = platforms.read_log(path, "kiro")
+        self.assertEqual(res["last_error"],
+                         "error: Security error: SecKeychainItemCreateFromContent")
+        self.assertFalse(res["model_unavailable"])

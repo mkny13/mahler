@@ -108,6 +108,16 @@ verify = "python3 -m unittest discover -s tests"
 # sort = ["codex", "claude", "agy-gemini", "agy-claude"]
 # build = ["codex", "@free"]
 
+# Opt-in to Kiro CLI (kiro.ai). Disabled by default; enable it per machine.
+# Kiro bills in monthly credits (KIRO FREE = 50/month). The /usage probe is
+# sent automatically once stale_minutes have passed (default 360).
+# [platforms.kiro]
+# enabled = true
+# # model = "auto"          # adaptive selection (default)
+# # Or pin a specific model from `kiro-cli chat --list-models`.
+# # effort = "medium"         # low | medium | high | xhigh | max
+# # max_size = "s"           # Kiro's default plan caps to small items
+
 # Optional per-platform reasoning effort. Supported values depend on the CLI;
 # invalid values are ignored and reported by `mahler status`.
 # [platforms.work-codex-gpt1-low]
