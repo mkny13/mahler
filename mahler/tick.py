@@ -49,6 +49,21 @@ issues and PRs."""),
     "guidance": ("Agent Guidance & Rule Calibration", "Agent Guidance & Rule Calibration — reviewing `AGENTS.md` / `CLAUDE.md` / `recipes` against observed failure modes, pruning obsolete instructions."),
     "backlog": ("Issue Backlog Pruning Pass", "Issue Backlog Pruning Pass — parent/goal issues whose sub-issues are all closed but the parent itself wasn't, issues superseded by a later split or refactor (check against current module boundaries, not the description text), duplicate or overlapping issues covering the same ground, and stale mahler:parked items worth reviving or closing."),
     "bugs": ("Correctness Bug Scan", "Correctness Bug Scan — logic errors, off-by-one and boundary conditions, incorrect error handling or silently-swallowed exceptions, race conditions between concurrent runs, and edge cases (None/empty/malformed input) found by close reading or targeted tests. Not style, structure or refactoring — that's the health pass."),
+    "escapes": ("Escaped-Bug Gate Improvement Review", """Inspect only `type:bug` issues closed in the review interval below, using their
+closedAt timestamps (paginate results), bodies, comments and linked fixes. Respect
+this project's scope label when applicable. Read `Escape cause` and `Check that now
+catches it`; missing analysis is unknown, not proof of coverage. Group source bugs
+by escape cause / failure class, and assess the mechanical checks now in place.
+
+For each uncovered class, search existing open and closed gate-improvement issues
+and links from the source bugs. Reuse and link existing adequate work instead of
+re-filing it. File one proposed mechanical-check issue per uncovered class, citing
+and linking every source bug in that class and this audit. Specify the missing
+gate, proposed test, CI step, lint, contract check or smoke journey, and a concrete
+acceptance check. Propose gates, not guidance. If no feasible mechanical check
+exists, explain why. Report classes, source links, existing coverage and reused or
+new issue links; if no bugs or gaps qualify, say so without filing filler work.
+This pass proposes checks; implementing them belongs to separate project issues."""),
     "docs": ("Documentation Accuracy & Onboarding Review", "Documentation Accuracy & Onboarding Review — verify README setup and safety guidance from a fresh-user perspective; compare commands, examples, architecture, roadmap status, and operator/agent documentation with the current code and CLI help; fix stale claims, broken links, machine-specific examples, and undocumented configuration or behavior. Preserve historical decisions as history, but clearly distinguish shipped behavior from plans."),
 }
 
@@ -128,6 +143,13 @@ def queue_maintenance(ctx, projects):
                 continue
             
             title, body = definitions[pass_name]
+            if pass_name == "escapes":
+                previous = led.maintenance_checkpoint(p["name"], pass_name)["last_filed_at"]
+                start = previous or iso(now - timedelta(days=pol["cadence_days"]))
+                body += (f"\n\nReview interval: {start} < closedAt <= {iso(now)} (UTC). "
+                         + ("Start is the previous escapes pass filing checkpoint."
+                            if previous else
+                            "First pass: no prior checkpoint; review one cadence window."))
             issue_labels = ["type:chore", "size:l", "p2", label]
             if scope_label is not None:
                 issue_labels.append(scope_label)

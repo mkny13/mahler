@@ -32,6 +32,17 @@ become the console's answer buttons.
        ## Context
        ## Out of scope
 
+   For `type:bug` issues only (including bug sub-issues), insert these two sections
+   between `## Plan` and `## Done when`:
+
+       ## Escape cause
+       Why existing gates missed this bug; cite evidence or record what is unknown.
+       ## Check that now catches it
+       Name the mechanical check to add or extend and how to exercise it: a test,
+       CI step, lint, contract check, or smoke journey. If no feasible mechanical
+       check exists, explicitly explain why here. Include this in Done when.
+
+   Non-bug issues keep the standard shape above unchanged; do not add these sections.
    Keep existing `Part of #N` and `Depends on: #N` lines, each on its own unquoted line,
    never inside the original-request quote: Mahler parses them line by line. Quote only the
    owner's free-form words; if the body already has this shape, edit its sections in place.
