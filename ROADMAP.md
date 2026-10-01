@@ -394,6 +394,12 @@ itself.
 
 - Claude cloud sessions / claude-code-action as extra workers.
 - More backends: OpenCode. (Copilot CLI and Kilo landed in mahler#25.)
+  - Kiro CLI (mahler#622) and Mistral Vibe (mahler#623): opt-in free-tier builders, size `s`,
+    disabled by default and absent from default routes until each is verified end to end.
+    Both are installed and signed in on the mini (2026-10-01). Kiro's `KIRO_API_KEY` is paid-only,
+    so the free tier runs on a stored `kiro-cli login`.
+  - Meta Muse Code was evaluated on 2026-10-01 and not pursued: it has a headless `muse exec` and
+    API-key auth, but no bundled free quota was found, and D8 never spends real money.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.
