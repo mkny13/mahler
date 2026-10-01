@@ -1,6 +1,7 @@
 """GitHub App identity for conductor writes (mahler#607). No network, no real key."""
 
 import base64
+import io
 import json
 import os
 import pathlib
@@ -47,6 +48,29 @@ class TokenTests(unittest.TestCase):
         clock.t += 1000
         self.assertEqual(self.token(now=clock, fetch=fetch), "tok1")
         self.assertEqual(calls, [("jwt", "166283054")])
+
+    def test_mint_sends_signed_jwt_in_token_request(self):
+        signed_jwt = "test-header.test-payload.test-signature"
+        signer = mock.Mock(return_value=signed_jwt)
+        requests = []
+
+        def urlopen(req, timeout):
+            requests.append(req)
+            self.assertEqual(req.get_header("Authorization"), f"Bearer {signed_jwt}")
+            self.assertEqual(req.full_url,
+                             f"{ghapp.API}/app/installations/166283054/access_tokens")
+            self.assertEqual(req.get_method(), "POST")
+            self.assertEqual(timeout, 20)
+            return io.StringIO(json.dumps({
+                "token": "test-installation-token", "expires_at": "2030-01-01T00:00:00Z",
+            }))
+
+        def fetch(jwt, installation_id):
+            return ghapp._request_token(jwt, installation_id, urlopen=urlopen)
+
+        self.assertEqual(self.token(sign=signer, fetch=fetch), "test-installation-token")
+        signer.assert_called_once_with("5127048", APP["private_key"], 1000.0)
+        self.assertEqual(len(requests), 1)
 
     def test_cache_survives_process_memory(self):
         clock, calls = Clock(), []
