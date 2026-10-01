@@ -9,6 +9,7 @@ whatever `gh auth` holds, so a bad key or a GitHub outage never stops the tick.
 """
 
 import base64
+import calendar
 import contextlib
 import fcntl
 import hashlib
@@ -54,7 +55,7 @@ def _request_token(signed_jwt, installation_id, urlopen=urllib.request.urlopen):
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "mahler"})
     with urlopen(req, timeout=20) as resp:
         body = json.load(resp)
-    expires = time.mktime(time.strptime(body["expires_at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+    expires = calendar.timegm(time.strptime(body["expires_at"], "%Y-%m-%dT%H:%M:%SZ"))
     return body["token"], expires
 
 

@@ -7,6 +7,7 @@ import os
 import pathlib
 import stat
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -74,6 +75,23 @@ class TokenTests(unittest.TestCase):
         self.assertEqual(self.token(sign=signer, fetch=fetch), "test-installation-token")
         signer.assert_called_once_with("5127048", APP["private_key"], 1000.0)
         self.assertEqual(len(requests), 1)
+
+    def test_request_token_expiry_is_utc_in_any_timezone(self):
+        body = json.dumps({"token": "t", "expires_at": "2026-10-01T17:00:00Z"})
+        old = os.environ.get("TZ")
+        try:
+            for tz in ("America/New_York", "UTC", "Australia/Sydney"):
+                os.environ["TZ"] = tz
+                time.tzset()
+                _, expires = ghapp._request_token(
+                    "jwt", 1, urlopen=lambda req, timeout: io.StringIO(body))
+                self.assertEqual(expires, 1790874000.0, tz)
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
 
     def test_cache_survives_process_memory(self):
         clock, calls = Clock(), []
