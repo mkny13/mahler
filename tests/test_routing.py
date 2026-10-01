@@ -109,6 +109,51 @@ class RouterTests(unittest.TestCase):
             self.assertTrue(any(f"{small}: only takes size:s" in r for r in reasons),
                             f"{small} should be size-capped, reasons: {reasons}")
 
+    def test_sort_respects_explicit_max_size(self):
+        led = led_with()
+        self.addCleanup(led.close)
+        for size in ("m", "l"):
+            for explore in (False, True):
+                with self.subTest(size=size, explore=explore):
+                    name, reasons = router.pick(
+                        self.cfg, led, "sort", size=size, explore=explore,
+                        candidate_order=["kilo"])
+                    self.assertIsNone(name)
+                    self.assertIn("kilo: only takes size:s", reasons)
+
+    def test_sort_small_and_unlabelled_items_remain_eligible(self):
+        led = led_with()
+        self.addCleanup(led.close)
+        for size in ("s", None):
+            with self.subTest(size=size):
+                self.assertEqual(router.pick(
+                    self.cfg, led, "sort", size=size,
+                    candidate_order=["kilo"])[0], "kilo")
+
+    def test_sort_ignores_min_size(self):
+        led = led_with(**{"claude-opus": (5, 5)})
+        self.addCleanup(led.close)
+        self.assertEqual(router.pick(
+            self.cfg, led, "sort", size="s",
+            candidate_order=["claude-opus"])[0], "claude-opus")
+
+    def test_plan_ignores_max_size(self):
+        led = led_with()
+        self.addCleanup(led.close)
+        for size in ("m", "l"):
+            with self.subTest(size=size):
+                self.assertEqual(router.pick(
+                    self.cfg, led, "plan", size=size,
+                    candidate_order=["kilo"])[0], "kilo")
+
+    def test_sort_pin_overrides_max_size(self):
+        led = led_with()
+        self.addCleanup(led.close)
+        for size in ("m", "l"):
+            with self.subTest(size=size):
+                self.assertEqual(router.pick(
+                    self.cfg, led, "sort", size=size, pin="kilo")[0], "kilo")
+
     def test_size_m_build_skips_claude_opus(self):
         # claude-opus is min_size l (D21); a size:m build lands on plain
         # claude, not Opus — Opus builds only by escalation or on size:l.
