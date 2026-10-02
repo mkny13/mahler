@@ -55,6 +55,23 @@ def _already_delivered(ctx, project, number, marker):
                for comment in comments)
 
 
+def _retry_pending(ctx, project, number, key, pending):
+    """Deliver a saved diagnostic even if the item's state or attempt has changed."""
+    payload = json.loads(pending)
+    body = payload["body"]
+    marker = payload.get("marker") or _marker_from(body)
+    delivered = _already_delivered(ctx, project, number, marker)
+    if delivered is None:
+        return
+    if not delivered:
+        try:
+            ctx.gh(project).comment(number, body)
+        except GHError as err:
+            ctx.say(f"{project}#{number}: couldn't post failure comment — {err}")
+            return
+    ctx.led.set_kv(key, "sent")
+
+
 def report(ctx, project, number, reason=None, *, run=None, output=None, branch=None):
     """Persist the diagnostic before posting; failed deliveries retry on ticks."""
     if ctx.dry_run:
@@ -71,15 +88,8 @@ def report(ctx, project, number, reason=None, *, run=None, output=None, branch=N
         return
     pending = led.get_kv(key)
     if pending:
-        payload = json.loads(pending)
-        body = payload["body"]
-        marker = payload.get("marker") or _marker_from(body)
-        delivered = _already_delivered(ctx, project, number, marker)
-        if delivered is None:
-            return
-        if delivered:
-            led.set_kv(key, "sent")
-            return
+        _retry_pending(ctx, project, number, key, pending)
+        return
     else:
         if not reason:
             event = led.q1("SELECT detail FROM events WHERE project=? AND number=? "
@@ -137,14 +147,20 @@ def backfill(ctx, projects):
         return
     for project in projects:
         name = project["name"]
+        prefix = f"failed_comment:{name}#"
+        pending = ctx.led.q(
+            "SELECT key,value FROM kv WHERE substr(key, 1, ?)=? "
+            "AND value IS NOT NULL AND value != 'sent' ORDER BY key",
+            (len(prefix), prefix))
+        for saved in pending:
+            try:
+                number = int(saved["key"][len(prefix):].split(":", 1)[0])
+                _retry_pending(ctx, name, number, saved["key"], saved["value"])
+            except Exception as err:
+                ctx.say(f"{name}: failure delivery backfill failed — {err}")
         for item in ctx.led.items(name, states=("failed", "needs_you")):
             try:
-                prefix = f"failed_comment:{name}#{item['number']}:"
-                pending = ctx.led.q1(
-                    "SELECT 1 FROM kv WHERE substr(key, 1, ?)=? "
-                    "AND value IS NOT NULL AND value != 'sent' LIMIT 1",
-                    (len(prefix), prefix))
-                if (pending or item["state"] == "failed" or
+                if (item["state"] == "failed" or
                         item["attempts"] >= ctx.policy(name)["max_attempts"] or
                         row_get(item, "setup_fails", 0) >= 2):
                     report(ctx, name, item["number"])

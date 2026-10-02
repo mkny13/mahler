@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, failures, finalize, router, runner, scheduler, tick
+from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
 
@@ -131,6 +131,21 @@ class RunTests(unittest.TestCase):
             failures.report(self.ctx, "x", 5, "hung", run=self.run)
 
         self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(self.led.q1(
+            "SELECT value FROM kv WHERE key LIKE 'failed_comment:x#5:%'")["value"], "sent")
+
+    def test_pending_delivery_survives_owner_retry(self):
+        self.led.upsert_item("x", 5, state="failed", attempts=3)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            with mock.patch.object(self.gh, "comment", side_effect=gh_module.GHError("offline")):
+                failures.report(self.ctx, "x", 5, "hung", run=self.run)
+            sync.resume_item(self.led, "x", 5)
+            failures.backfill(self.ctx, [{"name": "x"}])
+            failures.backfill(self.ctx, [{"name": "x"}])
+
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("attempt 3 of 3", self.gh.comments[0])
         self.assertEqual(self.led.q1(
             "SELECT value FROM kv WHERE key LIKE 'failed_comment:x#5:%'")["value"], "sent")
 
