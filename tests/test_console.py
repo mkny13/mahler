@@ -357,7 +357,7 @@ class QuotaTests(unittest.TestCase):
         for w in ("5h", "weekly"):
             led.record_usage("kilo", w, 100.0, iso(led.now() + timedelta(minutes=18)))
         line = state.build(cfg, led)["capacity"]
-        self.assertTrue(line.startswith("2 of 3 platforms available — claude, agy-claude."), line)
+        self.assertTrue(line.startswith("2 of 3 platforms available — claude, agy-claude."), f"{line}")
         self.assertIn("kilo is backing off until", line)
 
     def test_composite_estimate_mixed_windows_and_shared_pool(self):
@@ -2047,8 +2047,11 @@ class CaptureActionTests(unittest.TestCase):
                 actions.run(self.cfg, self.led, 'capture', body)
 
     def test_accepts_the_full_range(self):
-        self.capture(text='x')                  # 1 char
-        self.capture(text='x' * 8000)            # 8000 chars
+        for text in ('x', 'x' * 8000):
+            with self.subTest(length=len(text)):
+                action_id = self.capture(text=text)
+                row = self.led.q1('SELECT payload FROM console_actions WHERE id=?', (action_id,))
+                self.assertEqual(json.loads(row['payload'])['text'], text)
 
     def test_queues_with_no_delay_and_strips_the_text(self):
         id = self.capture(text='  Buy milk  ')
