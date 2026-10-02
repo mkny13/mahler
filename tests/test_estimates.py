@@ -26,16 +26,27 @@ class EstimateTrackingTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
 
     def test_schema_migration_adds_est_and_actual_mins(self):
-        # Create an in-memory DB with older schema missing est_mins and actual_mins
-        con = sqlite3.connect(":memory:")
-        con.execute("""
-            CREATE TABLE runs (
-                id INTEGER PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
-                role TEXT NOT NULL, platform TEXT NOT NULL, epoch INTEGER NOT NULL,
-                status TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT
-            )
-        """)
-        con.close()
+        import os
+        import tempfile
+        from mahler.ledger import SCHEMA
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "legacy.db")
+            con = sqlite3.connect(path)
+            con.executescript("\n".join(
+                line for line in SCHEMA.splitlines()
+                if not line.strip().startswith(("est_mins ", "actual_mins "))))
+            con.execute(
+                "INSERT INTO runs (project, number, role, platform, epoch, status, started_at) "
+                "VALUES ('p', 1, 'build', 'claude', 0, 'ended', '2026-09-12T12:00:00+00:00')")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            try:
+                row = led.q1("SELECT est_mins, actual_mins FROM runs WHERE number=1")
+                self.assertIsNone(row['est_mins'])
+                self.assertIsNone(row['actual_mins'])
+            finally:
+                led.close()
 
     def test_size_column_is_added_to_legacy_databases(self):
         # A database predating mahler#207 has no `size` column on runs.
