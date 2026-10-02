@@ -17,6 +17,8 @@ from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import record_claude_usage
 
+CAPACITY_STOPS = ("quota", "no_credit", "model_unavailable")
+
 NO_ATTEMPT = ("quota", "no_credit", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
               "model_unavailable")
 
@@ -235,11 +237,13 @@ def _ended_preempted(e):
 def _ended_out_of_reach(e):
     """Quota or a lost lease: the item goes back in the queue for whichever
     platform can afford it next (D9)."""
-    e.set_state("ready", f"handoff ({e.reason})")
+    state = ("verifying" if e.reason in CAPACITY_STOPS
+             and e.run["role"] == "fix" and e.item["pr"] else "ready")
+    e.set_state(state, f"handoff ({e.reason})")
     # Credit exhaustion is deliberately quiet until it lasts a day. The
     # platform-level alert is emitted by _record_credit_failure, not once per
     # item that happened to be leased when the outage was discovered.
-    if e.reason != "no_credit":
+    if e.reason not in ("no_credit", "model_unavailable"):
         e.ping(f"Handoff — {e.project} #{e.number}",
                f"{e.run['platform']} stopped ({e.reason}); next platform picks it up",
                priority="low")
@@ -271,7 +275,7 @@ ENDINGS = (
     (lambda e: e.verb == "YIELDED", _ended_preempted),
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
-    (lambda e: e.reason in ("quota", "no_credit", "lost-lease", "handoff"), _ended_out_of_reach),
+    (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),
