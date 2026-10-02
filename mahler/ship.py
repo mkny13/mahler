@@ -67,6 +67,8 @@ def _unowned_prs(ctx, project):
 
 
 def _ship_project(ctx, project):
+    migrate_capacity_waits(ctx, project)
+    recover_capacity_waits(ctx, project)
     ctx.merge_requested = False
     for item in ctx.led.items(project, ["verifying"]):
         try:
@@ -372,15 +374,106 @@ def _kv_json(led, key):
     return value if isinstance(value, dict) else {}
 
 
-def _start_review_run(ctx, project, item, pr, view, sha):
-    """Start DESIGN D11's review run: a different platform from whichever
-    one produced this PR's last build/fix run, so the review is a genuine
-    second opinion rather than the builder grading its own work."""
-    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+def _mark_capacity_wait(led, project, item, role):
+    # Tie the marker to this particular pause, so a later owner decision cannot
+    # inherit it. Question wording is deliberately not part of recovery.
+    led.set_kv(f"capacity-stranded:{project}#{item['number']}", json.dumps({
+        "role": role, "pr": item["pr"], "at": item["state_changed_at"],
+    }))
+
+
+def migrate_capacity_waits(ctx, project):
+    """Recognize the old conductor messages once per project, never heuristically."""
+    led = ctx.led
+    key = f"capacity-stranded-migrated:{project}"
+    if ctx.dry_run or led.get_kv(key):
+        return
+    for item in led.items(project, ["needs_you"]):
+        if not item["pr"]:
+            continue
+        marker = f"capacity-stranded:{project}#{item['number']}"
+        if led.get_kv(marker):
+            continue
+        pr = item["pr"]
+        question = item["question"] or ""
+        role = None
+        if re.fullmatch(rf"No fix run could start for PR #{pr} after \d+ minutes: .+",
+                        question):
+            role = "fix"
+        elif re.fullmatch(rf"(?:Review waiting[ —:]+)?PR #{pr} is CI-green but no review "
+                          rf"could start for over \d+ minutes: .+", question):
+            role = "review"
+        # #654 already persisted structured escalations before this migration.
+        for candidate, prefix in (("fix", "reviewfix-status"), ("review", "review-wait")):
+            status = _kv_json(led, f"{prefix}:{project}#{item['number']}")
+            if status.get("state") in ("missing_tier", "capacity_wait_expired"):
+                # These records predate an explicit pause marker: only adopt
+                # the exact question the conductor generated for that role.
+                if (question.startswith(f"No configured eligible platform for {candidate} ")
+                        or question.startswith(f"{candidate.capitalize()} capacity wait exceeded ")):
+                    role = candidate
+        if role:
+            _mark_capacity_wait(led, project, item, role)
+    led.set_kv(key, "1")
+
+
+def recover_capacity_waits(ctx, project):
+    """Requeue marked pauses only after normal routing finds a suitable platform."""
+    if ctx.dry_run:
+        return
+    led, cfg = ctx.led, ctx.cfg
     pol = ctx.policy(project)
-    head = view.get("headRefName") or item["branch"]
-    active = led.active_runs()
-    busy = busy_platforms(cfg, active)
+    for item in led.items(project, ["needs_you"]):
+        n = item["number"]
+        key = f"capacity-stranded:{project}#{n}"
+        marker = _kv_json(led, key)
+        if marker.get("role") not in ("fix", "review"):
+            continue
+        if marker.get("at") != item["state_changed_at"] or marker.get("pr") != item["pr"]:
+            led.set_kv(key, "")
+            continue
+        try:
+            active = led.active_runs()
+            if (len(active) >= cfg["concurrency"]["total"]
+                    or any(r["project"] == project and r["number"] == n for r in active)):
+                continue
+            lease = led.lease(project, n)
+            if lease and not (lease["holder"] == CONDUCTOR
+                              or lease["holder"].endswith("/conductor")):
+                continue
+            busy = busy_platforms(cfg, active)
+            role = marker["role"]
+            if role == "review":
+                view = ctx.gh(project).pr_view(item["pr"])
+                pin, size, exclude = _review_route(ctx, project, item, view.get("headRefOid") or "")
+                route = dict(pin=pin, size=size, exclude=exclude)
+            else:
+                size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
+                             if l.startswith("size:")), None)
+                tier = max(router.cap_escalation(cfg, pol, item["esc_tier"], size,
+                                                 pin=item["pin"]),
+                           router.risk_min_tier(item["title"]))
+                if size == "l" or (tier >= 2 and size == "s"):
+                    size = "m"
+                route = dict(pin=item["pin"], size=size, min_tier=tier)
+            platform, _ = router.pick_for_project(
+                cfg, led, pol, role, busy=busy, burst_lines=ctx.burst_lines,
+                scorecard_rows=getattr(ctx, "scorecard_rows", None), **route)
+            if not platform:
+                continue
+            led.set_state(project, n, "verifying", f"{role} capacity returned",
+                          question=None, options="[]")
+            led.set_kv(key, "")
+            for prefix in ("review-wait", "review-pinged", "reviewfix-status"):
+                led.set_kv(f"{prefix}:{project}#{n}", "")
+            ctx.say(f"{project}#{n}: {role} capacity returned — verifying again")
+        except Exception as exc:  # one unavailable route must not stop other items
+            ctx.say(f"{project}#{n}: capacity recovery skipped — {exc}")
+
+
+def _review_route(ctx, project, item, sha):
+    """Share reviewer independence and risk routing with capacity recovery."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
     # A failed/inconclusive review remains the latest run, but it did not
     # produce the PR head. Always fence against the latest builder/fixer so a
     # retry can never let the builder grade its own work (DESIGN D11).
@@ -402,6 +495,19 @@ def _start_review_run(ctx, project, item, pr, view, sha):
            and builder_slot != "claude" else None)
     if pin and any(router.platform_slot(cfg, p) == pin for p in exclude):
         pin = None
+    return pin, size, exclude
+
+
+def _start_review_run(ctx, project, item, pr, view, sha):
+    """Start DESIGN D11's review run: a different platform from whichever
+    one produced this PR's last build/fix run, so the review is a genuine
+    second opinion rather than the builder grading its own work."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    head = view.get("headRefName") or item["branch"]
+    active = led.active_runs()
+    busy = busy_platforms(cfg, active)
+    pin, size, exclude = _review_route(ctx, project, item, sha)
     wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
     capacity = router.capacity_recovery(
         cfg, led, pol, "review", pin, busy, size=size,
@@ -458,6 +564,7 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
                 f"{role.capitalize()} capacity wait exceeded {hours} hours with no known recovery "
                 f"for PR #{item['pr']}: {reason}")
     led.set_state(project, n, "needs_you", question, question=question, options="[]")
+    _mark_capacity_wait(led, project, led.item(project, n), role)
     ctx.ping(f"{role.capitalize()} {state.replace('_', ' ')} — {project} #{n}", question,
              project, n, priority="high", tags="warning")
 
