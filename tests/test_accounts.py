@@ -190,7 +190,7 @@ class RouterTests(unittest.TestCase):
             names = router.candidates(self.cfg, role, account="work")
             self.assertTrue(names)
             self.assertTrue(all(self.cfg["platforms"][n]["account"] == "work" for n in names),
-                            (role, names))
+                            f"{role}: {names}")
         self.assertEqual(router.pick(self.cfg, self.led, "sort", account="work")[0],
                          "claude-work")
         self.assertEqual(router.pick(self.cfg, self.led, "plan", account="work")[0],
