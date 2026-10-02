@@ -133,6 +133,7 @@ DEFAULTS = {
         "hot_hold_minutes": 20,
         "yield_grace_seconds": 120,
         "verify": "",
+        "smoke": "",                  # optional post-release command; schema only (D11)
         # which open issues Mahler manages: "all", or "label" = only those
         # carrying scope_label (for repos with a big pre-Mahler backlog)
         "scope": "all",
