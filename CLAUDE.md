@@ -39,11 +39,16 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 ## Verify
 
 ```bash
+python3 -m mahler.repo_guard
 python3 -m unittest discover -s tests
+python3 -X dev tests/run_strict.py
 ```
 
 Python 3.12+, standard library only. The lease rules (`tests/test_ledger.py`) are the
 part that must stay right. Extend those tests whenever you touch `ledger.py`.
+
+CI runs all three commands. The repository guard rejects tracked browser-profile state;
+the strict runner turns resource leaks and unraisable exceptions into failures.
 
 Tests must be fully isolated (mahler#93): no test may leak env vars, module globals,
 files, or SQLite state that another test depends on, and no test may touch the real
