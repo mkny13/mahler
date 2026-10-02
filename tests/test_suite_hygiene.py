@@ -85,15 +85,17 @@ class SuiteHygieneTests(unittest.TestCase):
 
     def test_detector_rejects_false_greens(self):
         samples = [
-            'pass',
-            'def hidden():\n        assert False',
-            'mock.called_once_with(1)',
-            'mock.assert_called_once_with',
-            'self.assertTrue(actual, expected)',
+            ('pass', 'no assertion'),
+            ('def hidden():\n        assert False', 'no assertion'),
+            ('mock.called_once_with(1)', 'mock assertion missing assert_ prefix'),
+            ('mock.assert_called_once_with', 'mock assertion referenced without calling it'),
+            ('self.assertTrue(actual, expected)', 'assertTrue second argument is not a message literal'),
         ]
-        for body in samples:
+        for body, expected_problem in samples:
             with self.subTest(body=body):
-                self.assertTrue(problems('def test_example(self):\n    ' + body, 'sample.py'))
+                findings = problems('def test_example(self):\n    ' + body, 'sample.py')
+                self.assertTrue(any(expected_problem in finding for finding in findings),
+                                f'Expected {expected_problem!r} in {findings!r}')
 
     def test_detector_accepts_assertions(self):
         samples = [
@@ -111,4 +113,3 @@ class SuiteHygieneTests(unittest.TestCase):
                 source = ('def check_result(): pass\ndef _assert_result(): pass\n'
                           'def test_example(self):\n    ' + body)
                 self.assertEqual([], problems(source, 'sample.py'))
-
