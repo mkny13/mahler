@@ -37,6 +37,24 @@ def failure_class(reason):
     return "unknown"
 
 
+def _marker_from(body):
+    return next((line for line in body.splitlines()
+                 if line.startswith("<!-- mahler:failed ") and line.endswith(" -->")), "")
+
+
+def _already_delivered(ctx, project, number, marker):
+    if not marker:
+        ctx.say(f"{project}#{number}: couldn't reconcile failure comment — marker missing")
+        return None
+    try:
+        comments = ctx.gh(project).issue_comments(number)
+    except GHError as err:
+        ctx.say(f"{project}#{number}: couldn't reconcile failure comment — {err}")
+        return None
+    return any(marker in ((comment.get("body") or "") if isinstance(comment, dict) else comment)
+               for comment in comments)
+
+
 def report(ctx, project, number, reason=None, *, run=None, output=None, branch=None):
     """Persist the diagnostic before posting; failed deliveries retry on ticks."""
     if ctx.dry_run:
@@ -53,7 +71,15 @@ def report(ctx, project, number, reason=None, *, run=None, output=None, branch=N
         return
     pending = led.get_kv(key)
     if pending:
-        body = json.loads(pending)["body"]
+        payload = json.loads(pending)
+        body = payload["body"]
+        marker = payload.get("marker") or _marker_from(body)
+        delivered = _already_delivered(ctx, project, number, marker)
+        if delivered is None:
+            return
+        if delivered:
+            led.set_kv(key, "sent")
+            return
     else:
         if not reason:
             event = led.q1("SELECT detail FROM events WHERE project=? AND number=? "
@@ -96,7 +122,7 @@ def report(ctx, project, number, reason=None, *, run=None, output=None, branch=N
                 "Last output (up to 30 lines):\n\n" +
                 "\n".join("> " + line for line in tail.splitlines()))
         body = redact(body)
-        led.set_kv(key, json.dumps({"body": body}))
+        led.set_kv(key, json.dumps({"body": body, "marker": _marker_from(body)}))
     try:
         ctx.gh(project).comment(number, body)
     except GHError as err:

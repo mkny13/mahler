@@ -27,6 +27,9 @@ class FakeGH:
     def issue_state(self, number):
         return self.state
 
+    def issue_comments(self, number):
+        return [{"body": body} for body in self.comments]
+
     def comment(self, number, body):
         self.comments.append(body)
 
@@ -114,6 +117,22 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(self.gh.comments), 1)
         self.assertIn("reason not recorded", self.gh.comments[0])
         self.assertIn("none recorded", self.gh.comments[0])
+
+    def test_ambiguous_delivery_reconciles_marker_before_retry(self):
+        self.led.upsert_item("x", 5, state="failed", attempts=3)
+
+        def accepted_then_errored(number, body):
+            self.gh.comments.append(body)
+            raise gh_module.GHError("connection dropped after response")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            with mock.patch.object(self.gh, "comment", side_effect=accepted_then_errored):
+                failures.report(self.ctx, "x", 5, "hung", run=self.run)
+            failures.report(self.ctx, "x", 5, "hung", run=self.run)
+
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(self.led.q1(
+            "SELECT value FROM kv WHERE key LIKE 'failed_comment:x#5:%'")["value"], "sent")
 
     def test_backfill_surviving_run_and_dry_run(self):
         with open(self.log, "w") as stream:
