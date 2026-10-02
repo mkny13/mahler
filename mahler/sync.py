@@ -14,13 +14,15 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  label_names, parse_command, part_of, pin_of, priority_of,
                  completion_evidence)
 from .ledger import iso, parse
-from .ship import _shipped, mirror_shipped, pr_merged, record_uat_if_needed
+from .ship import (_shipped, mirror_shipped, pr_merged, record_uat_if_needed,
+                   migrate_capacity_waits)
 from .watchdog import request_stop
 
 
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
+    migrate_capacity_waits(ctx, project)
     reconcile_shipped(ctx, project)
     _bootstrap_release_baseline(ctx, project, gh)
     # Conditional poll (mahler#90): a 304 means the open-issue collection is

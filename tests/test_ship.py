@@ -510,6 +510,94 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
         self.assertIsNone(self.led.lease("x", 5))
 
+    def test_legacy_capacity_pauses_recover_only_when_route_returns(self):
+        for role, question in (
+            ("fix", "No fix run could start for PR #88 after 120 minutes: no platform"),
+            ("review", "Review waiting — PR #88 is CI-green but no review could start "
+                       "for over 120 minutes: no platform"),
+        ):
+            with self.subTest(role=role):
+                self.led.set_kv("capacity-stranded-migrated:x", "")
+                self.led.set_state("x", 5, "needs_you", pr=88, question=question)
+                with mock.patch.object(platforms, "available", return_value=False):
+                    self.ship()
+                self.assertEqual(self.item()["state"], "needs_you")
+                marker = json.loads(self.led.get_kv("capacity-stranded:x#5"))
+                self.assertEqual(marker["role"], role)
+                # Recovery does not parse the user-facing text again.
+                self.led.upsert_item("x", 5, question="Translated capacity explanation")
+                with mock.patch.object(ship, "_ship_item") as ordinary:
+                    self.ship()
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertIsNone(self.item()["question"])
+                self.assertEqual(self.item()["options"], "[]")
+                self.assertFalse(self.led.get_kv("capacity-stranded:x#5"))
+                ordinary.assert_called_once()
+
+    def test_new_capacity_escalation_persists_recoverable_marker(self):
+        self.led.upsert_item("x", 5, pr=88)
+        ship.migrate_capacity_waits(self.ctx, "x")
+        with mock.patch.object(self.ctx, "ping"):
+            ship._capacity_wait(self.ctx, "x", self.item(), "reviewfix-status:x#5",
+                                "cycle", "no route", "fix", ([], None, None), 2)
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(json.loads(self.led.get_kv("capacity-stranded:x#5"))["role"], "fix")
+        with mock.patch.object(ship, "_ship_item"):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.led.get_kv("reviewfix-status:x#5"))
+
+    def test_capacity_recovery_preserves_decisions_and_later_pauses(self):
+        self.led.set_state("x", 5, "needs_you", pr=88, question="Which product should we build?")
+        with mock.patch.object(ship, "_ship_item") as ordinary:
+            self.ship()
+        ordinary.assert_not_called()
+        self.assertEqual(self.item()["question"], "Which product should we build?")
+        ship._mark_capacity_wait(self.led, "x", self.item(), "fix")
+        self.led.now = lambda: NOW + timedelta(seconds=1)
+        self.led.set_state("x", 5, "needs_you", question="Please supply credentials")
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["question"], "Please supply credentials")
+        self.assertFalse(self.led.get_kv("capacity-stranded:x#5"))
+
+    def test_capacity_recovery_respects_review_independence(self):
+        self.led.set_state("x", 5, "needs_you", pr=88, labels='["size:m"]')
+        ship._mark_capacity_wait(self.led, "x", self.item(), "review")
+        self.cfg["routing"]["review"] = ["agy-gemini"]
+        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}):
+            self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.cfg["routing"]["review"].append("agy-claude")
+        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}), \
+                mock.patch.object(ship, "_ship_item"):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+
+    def test_capacity_recovery_waits_for_quota_and_required_fix_tier(self):
+        self.cfg["routing"]["build"] = ["agy-gemini"]
+        self.led.set_state("x", 5, "needs_you", pr=88, labels='["size:s"]',
+                           title="Fix authentication", esc_tier=2)
+        ship._mark_capacity_wait(self.led, "x", self.item(), "fix")
+        self.led.record_usage("agy-gemini", "weekly", 100, iso(NOW + timedelta(hours=2)))
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.led.record_usage("agy-gemini", "weekly", 10, iso(NOW + timedelta(hours=2)))
+        with mock.patch.object(ship, "_ship_item"):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+
+    def test_capacity_recovery_leaves_session_and_dry_run_alone(self):
+        self.led.set_state("x", 5, "needs_you", pr=88)
+        ship._mark_capacity_wait(self.led, "x", self.item(), "fix")
+        self.ctx.dry_run = True
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.ctx.dry_run = False
+        self.led.claim("x", 5, "human", "session", 30)
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+
     def test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
         now = [NOW]
