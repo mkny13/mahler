@@ -16,7 +16,18 @@ M="${MAHLER_HOME:-$HOME/.mahler}"
 APP="$M/app"
 LOG="$M/logs"
 mkdir -p "$LOG"
-cd "$APP" || exit 1
+head=unknown
+new=unknown
+# Fixed tokens and Git object IDs only: never log command output or credentials.
+decision() {
+  printf '%s head=%s candidate=%s outcome=%s reason=%s\n' \
+    "$(date -u +%FT%TZ)" "$head" "$new" "$1" "$2" >> "$LOG/update.log"
+}
+stop_update() {
+  decision "$1" "$2"
+  exit 0
+}
+cd "$APP" 2>/dev/null || { decision blocked app_unavailable; exit 1; }
 
 # keep the tick log from growing forever
 if [ -f "$LOG/tick.log" ] && [ "$(wc -c < "$LOG/tick.log")" -gt 5000000 ]; then
@@ -25,7 +36,7 @@ fi
 
 { echo "--- $(date '+%F %T')"; "$APP/bin/mahler" tick; } >> "$LOG/tick.log" 2>&1
 rc=$?
-head=$(git -C "$APP" rev-parse HEAD)
+head=$(git -C "$APP" rev-parse --verify HEAD 2>/dev/null) || { head=unknown; stop_update blocked head_lookup_failed; }
 
 if [ "$rc" -eq 0 ]; then
   echo "$head" > "$M/known_good"
@@ -39,10 +50,10 @@ else
     n=2
   fi
   if [ "$n" -ge 2 ] && [ -n "$good" ] && [ "$head" != "$good" ]; then
-    git -C "$APP" checkout -q --detach "$good" || exit 0
+    git -C "$APP" checkout -q --detach "$good" 2>/dev/null || stop_update blocked rollback_checkout_failed
     echo "$head" > "$M/bad_sha"
     echo 0 > "$M/tick_failures"
-    echo "$(date -u +%FT%TZ) rolled back $head -> $good" >> "$LOG/update.log"
+    decision rolled_back tick_failed
     if [ "$rc" -eq 3 ]; then
       "$APP/bin/mahler" notify "Mahler rolled back: launches were failing on $head" \
         "Back on $good." >/dev/null 2>&1
@@ -51,27 +62,37 @@ else
         "Two ticks failed on $(echo "$head" | cut -c1-7); back on $(echo "$good" | cut -c1-7)." \
         >/dev/null 2>&1
     fi
+  else
+    decision blocked tick_failed
   fi
   exit 0
 fi
 
-# self-update
-git -C "$APP" fetch -q origin main 2>/dev/null || exit 0
-new=$(git -C "$APP" rev-parse origin/main)
-[ "$new" = "$head" ] && exit 0
-[ "$new" = "$(cat "$M/bad_sha" 2>/dev/null || true)" ] && exit 0
-repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || exit 0
+# Explicit destination avoids a stale origin/main when remote.origin.fetch is
+# missing or maps only another branch.
+git -C "$APP" fetch -q origin +refs/heads/main:refs/remotes/origin/main 2>/dev/null || stop_update blocked fetch_failed
+new=$(git -C "$APP" rev-parse --verify refs/remotes/origin/main^{commit} 2>/dev/null) || { new=unknown; stop_update blocked candidate_lookup_failed; }
+[ "$new" = "$head" ] && stop_update unchanged already_current
+[ "$new" = "$(cat "$M/bad_sha" 2>/dev/null || true)" ] && stop_update blocked rollback_excluded
+repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || stop_update blocked repository_lookup_failed
+[ -n "$repo" ] || stop_update blocked repository_lookup_empty
 ci=$(gh api "repos/$repo/commits/$new/check-runs" --jq '
   [.check_runs[].conclusion] |
   if length == 0 then "none"
   elif all(. == "success" or . == "skipped" or . == "neutral") then "green"
-  else "wait" end' 2>/dev/null)
-[ "$ci" = "green" ] || exit 0
-git -C "$APP" checkout -q --detach "$new" || exit 0
-if python3 -m unittest discover -s "$APP/tests" >> "$LOG/update.log" 2>&1; then
-  echo "$(date -u +%FT%TZ) updated $head -> $new" >> "$LOG/update.log"
+  else "wait" end' 2>/dev/null) || stop_update blocked checks_lookup_failed
+case "$ci" in
+  green) ;;
+  none) stop_update blocked checks_missing ;;
+  wait) stop_update blocked checks_not_green ;;
+  *) stop_update blocked checks_result_invalid ;;
+esac
+git -C "$APP" checkout -q --detach "$new" 2>/dev/null || stop_update blocked candidate_checkout_failed
+# Do not mix arbitrary test output (which may contain credentials) into decisions.
+if python3 -m unittest discover -s "$APP/tests" >/dev/null 2>&1; then
+  decision updated ci_and_tests_passed
 else
-  git -C "$APP" checkout -q --detach "$head"
-  echo "$(date -u +%FT%TZ) tests failed on $new; stayed on $head" >> "$LOG/update.log"
+  git -C "$APP" checkout -q --detach "$head" 2>/dev/null || stop_update blocked tests_failed_restore_failed
+  decision rejected tests_failed
 fi
 exit 0

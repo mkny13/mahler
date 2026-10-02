@@ -41,8 +41,8 @@ esac
         self.git('remote', 'add', 'origin', str(self.remote))
         self.script(self.stubs / 'gh', '''echo "$*" >> "$MAHLER_HOME/gh_calls"
 case "$1" in
-  repo) echo test/launcher ;;
-  api) echo "${CI_RESULT:-green}" ;;
+  repo) echo "${REPO_RESULT-test/launcher}"; exit "${REPO_RC:-0}" ;;
+  api) echo "${CI_RESULT-green}"; exit "${CI_RC:-0}" ;;
 esac
 ''')
         self.script(self.stubs / 'python3', 'exit "${TEST_RC:-0}"\n')
@@ -80,7 +80,7 @@ esac
         self.assertEqual(self.read('known_good'), self.bad)
         self.assertEqual(self.read('bad_sha'), self.bad)
         self.assertEqual(self.read('tick_failures'), '0')
-        self.assertIn(f'rolled back {self.bad} -> {self.good}', self.read('logs/update.log'))
+        self.assert_decision('rolled_back', 'tick_failed', self.bad, 'unknown')
         self.assertIn(f'launches were failing on {self.bad}', self.read('notifications'))
         for _ in range(2):
             self.run_launcher()
@@ -93,7 +93,7 @@ esac
         self.git('checkout', '-q', '--detach', self.good)
         self.run_launcher()
         self.assertEqual(self.git('rev-parse', 'HEAD'), fixed)
-        self.assertIn(f'updated {self.good} -> {fixed}', self.read('logs/update.log'))
+        self.assert_decision('updated', 'ci_and_tests_passed', self.good, fixed)
 
     def test_two_crashes_record_bad_sha_and_prevent_reupdate(self):
         self.run_launcher(1)
@@ -123,3 +123,53 @@ esac
                 self.assertEqual(self.git('rev-parse', 'HEAD'), self.bad)
                 self.assertFalse((self.home / 'bad_sha').exists())
                 self.assertFalse((self.home / 'notifications').exists())
+
+    def assert_decision(self, outcome, reason, head=None, candidate=None):
+        line = self.read('logs/update.log').splitlines()[-1]
+        fields = line.split()
+        self.assertRegex(fields[0], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
+        self.assertEqual(dict(field.split('=', 1) for field in fields[1:]), {
+            'head': head or self.good, 'candidate': candidate or self.bad,
+            'outcome': outcome, 'reason': reason})
+
+    def test_update_decisions(self):
+        self.run_launcher()
+        self.assert_decision('unchanged', 'already_current', self.bad)
+        self.git('checkout', '-q', '--detach', self.good)
+        for env, reason in [
+            ({'REPO_RC': '1'}, 'repository_lookup_failed'),
+            ({'REPO_RESULT': ''}, 'repository_lookup_empty'),
+            ({'CI_RC': '1'}, 'checks_lookup_failed'),
+            ({'CI_RESULT': 'none'}, 'checks_missing'),
+            ({'CI_RESULT': 'wait'}, 'checks_not_green'),
+            ({'CI_RESULT': 'secret-token'}, 'checks_result_invalid'),
+            ({'TEST_RC': '1'}, 'tests_failed'),
+        ]:
+            with self.subTest(reason=reason):
+                self.run_launcher(**env)
+                self.assert_decision('rejected' if reason == 'tests_failed' else 'blocked', reason)
+                self.assertEqual(self.git('rev-parse', 'HEAD'), self.good)
+        self.assertNotIn('secret-token', self.read('logs/update.log'))
+        (self.home / 'bad_sha').write_text(self.bad)
+        self.run_launcher()
+        self.assert_decision('blocked', 'rollback_excluded')
+
+    def test_fetch_failure(self):
+        self.git('remote', 'set-url', 'origin', str(self.home / 'missing'))
+        self.run_launcher()
+        self.assert_decision('blocked', 'fetch_failed', self.bad, 'unknown')
+
+    def test_explicit_fetch_updates_stale_ref_without_fetch_mapping(self):
+        self.git('update-ref', 'refs/remotes/origin/main', self.good)
+        self.git('config', '--unset-all', 'remote.origin.fetch')
+        self.git('checkout', '-q', '--detach', self.good)
+        self.run_launcher()
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.bad)
+        self.assert_decision('updated', 'ci_and_tests_passed')
+
+    def test_dirty_checkout_blocks_candidate(self):
+        self.git('checkout', '-q', '--detach', self.good)
+        (self.app / 'version').write_text('local changes')
+        self.run_launcher()
+        self.assert_decision('blocked', 'candidate_checkout_failed')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.good)
