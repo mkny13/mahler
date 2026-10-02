@@ -465,7 +465,7 @@ class TestWrites(_Served):
 
     def test_only_this_machine_and_the_tailnet_may_write(self):
         for addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "100.101.2.3", "fd7a:115c:a1e0::1"):
-            self.assertTrue(serve.write_allowed_from(addr), addr)
+            self.assertTrue(serve.write_allowed_from(addr), f"{addr}")
         for addr in ("192.168.1.20", "10.0.0.2", "8.8.8.8", "not an ip"):
             self.assertFalse(serve.write_allowed_from(addr), addr)
 
