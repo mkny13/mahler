@@ -154,6 +154,36 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "installation_id"):
                 config.load(path)
 
+    def test_private_key_typo_has_secret_safe_hint(self):
+        for value in ("/secret/key.pem", "-----BEGIN PRIVATE KEY-----\nsecret-material",
+                      "", None):
+            with self.subTest(value=value):
+                cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                                      "private_key": value}}
+                with self.assertRaises(ValueError) as caught:
+                    config.validate_github_app(cfg)
+                self.assertEqual(str(caught.exception),
+                                 "github_app: private_key is unsupported; use private_key_path "
+                                 "with the path to the private key file")
+                rendered = ''.join(traceback.format_exception(caught.exception))
+                for secret in ("/secret/key.pem", "-----BEGIN PRIVATE KEY-----", "secret-material"):
+                    self.assertNotIn(secret, rendered)
+
+    def test_canonical_private_key_path_takes_precedence(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/secret/key.pem", "private_key": "ignored"}}
+        config.validate_github_app(cfg)
+        self.assertEqual(config.github_app_settings(cfg, {}), ("123", "456", "/secret/key.pem"))
+
+    def test_invalid_canonical_private_key_path_keeps_existing_error(self):
+        for value in (None, "", " ", 123, "/secret/key.pem\x00"):
+            with self.subTest(value=value):
+                cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                                      "private_key_path": value}}
+                with self.assertRaises(ValueError) as caught:
+                    config.validate_github_app(cfg)
+                self.assertEqual(str(caught.exception), "github_app requires private_key_path")
+
 
 class ClientTests(unittest.TestCase):
     def test_every_call_resolves_fresh_token_without_mutating_base(self):
