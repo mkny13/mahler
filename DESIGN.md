@@ -643,17 +643,51 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   - `verify.fast`: lint + unit tests, under ~2 minutes, run in the worktree before every push
   - `verify.full`: build + e2e
   - `preview`: how to get a preview URL or artifact
-  - `smoke`: a post-deploy check
+  - `smoke`: a post-deploy check (optional command policy below)
   - `release`: how a build reaches your devices
   - `data`: stores and backup/restore commands (D12)
   - `canary`: an optional "break a file, confirm the build fails" check, for stacks where
     worktree builds can silently compile the wrong checkout (phish-in-app D206/D207)
-- **Trust but verify** (made concrete by D18). An agent's "done" is a claim. Mahler moves an item to `shipped` only
-  after independent signals agree: CI green on the PR, `verify.full` green, the deploy
-  succeeded, and smoke green. As shipped, the conductor's gates are green CI and, for
-  qualifying items, the independent review below; `verify.full`, `preview`, `smoke` and
-  deploy confirmation are declared in `project.toml` but not yet enforced by the
-  conductor. On failure, Mahler feeds the failing log tail (generalised from
+- **Optional project smoke contract (mahler#617).** The operator config's
+  `[projects.<name>] smoke` is a command string alongside `verify`, inheriting
+  `[defaults]` through normal project-policy merging. The built-in default is
+  `""` (disabled); a project can also set `""` to disable an inherited command.
+  This is distinct from the repo's descriptive `.mahler/project.toml` contract.
+  - **Timing and inputs:** after a release, target the latest preview/beta artifact
+    for that release, not an unreleased worktree or production by default. Mahler
+    must supply the project identity, released version/tag, commit SHA, and
+    artifact/preview reference when known. The report must remain attributable to
+    that release even if a newer beta appears. Exact argument/environment transport
+    is deferred to the runner implementation.
+  - **Minimum report:** following couch-tour#357, a report (for example,
+    `smoke-reports/<tag>.md`) contains exactly one `Tag: <tag>` line matching the
+    supplied release/tag and exactly one standalone `Smoke: PASS` or `Smoke: FAIL`
+    line. Per-journey details and `Waived: <journey-id> - <reason>` lines may accompany
+    it. Skipped journeys are not passes; any waiver must be explicit.
+  - **Result:** success requires both exit status zero and a valid, matching PASS
+    report. A nonzero exit, FAIL, missing/malformed report, duplicate verdict or
+    mismatched tag is never evidence for done, even if some journeys passed.
+  - **Evidence handoff:** a future runner may cite a successful report on the
+    relevant shipped issue using D10's single evidence path (mahler#616), for
+    example the complete comment `Smoke: PASS report=smoke-reports/v1.2-beta.md`.
+    The report's bare verdict is not itself an evidence comment: the comment needs
+    a reference and must satisfy D10's author, source and post-merge timestamp rules.
+    Only covered shipments may receive that evidence; do not invent a second done
+    transition or treat an unrun/disabled command as a pass.
+  - **Privacy:** reports and posted references must not expose credentials,
+    personal screenshots or personal fixture data. Keep sensitive captures local
+    and out of Mahler and committed/public evidence; sanitize journey details.
+  - **Schema/design only:** this setting does not execute commands, post reports,
+    or change release/merge behavior. Runtime integration waits for the Couch Tour
+    prototype to land and needs a separate implementation issue unless later work
+    already supplies it. No live project or private operator config is changed.
+- **Trust but verify** (made concrete by D18 and D10). An agent's "done" is a claim.
+  Confirmed merges enter `shipped`; accepted post-merge evidence moves them to `done`.
+  As shipped, the conductor's gates are green CI and, for qualifying items, the
+  independent review below; `verify.full`, `preview`, `smoke` and deploy confirmation
+  are declared in `project.toml` but not yet enforced by the conductor. The eventual
+  feedback loop combines those signals with optional smoke results.
+  On failure, Mahler feeds the failing log tail (generalised from
   `ci-wait.sh`) back to the live run. If the run has ended, it starts a fix run from the
   handoff. Attempts are capped.
 - **Local first, CI second.** The Mac mini runs Xcode, Gradle and emulator checks locally.

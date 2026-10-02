@@ -13,6 +13,49 @@ from mahler.console import actions, page, state
 from mahler.ledger import Ledger
 
 
+class SmokePolicyTests(unittest.TestCase):
+    def load(self, user):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(config.dumps_toml(user))
+            return config.load(path)
+
+    def test_smoke_defaults_to_disabled_without_changing_verify(self):
+        cfg = self.load({"projects": {"app": {"verify": "python3 -m unittest"}}})
+        policy = config.project_policy(cfg, "app")
+        self.assertEqual(policy["smoke"], "")
+        self.assertEqual(policy["verify"], "python3 -m unittest")
+        self.assertEqual(config.project_policy(cfg, "unconfigured")["verify"], "")
+
+    def test_project_can_set_smoke_without_a_global_command(self):
+        cfg = self.load({"projects": {"app": {"smoke": "./scripts/smoke.sh"}}})
+        policy = config.project_policy(cfg, "app")
+        self.assertEqual(policy["smoke"], "./scripts/smoke.sh")
+        self.assertEqual(policy["verify"], "")
+        self.assertEqual(cfg["defaults"]["smoke"], "")
+
+    def test_merging_inherits_overrides_and_disables_smoke_per_project(self):
+        cfg = self.load({
+            "defaults": {"smoke": "./default-smoke.sh", "verify": "./verify.sh"},
+            "projects": {
+                "inherited": {},
+                "override": {"smoke": "./project-smoke.sh", "verify": "./check.sh"},
+                "disabled": {"smoke": ""},
+            },
+        })
+        for name, smoke, verify in (
+            ("inherited", "./default-smoke.sh", "./verify.sh"),
+            ("override", "./project-smoke.sh", "./check.sh"),
+            ("disabled", "", "./verify.sh"),
+        ):
+            with self.subTest(project=name):
+                policy = config.project_policy(cfg, name)
+                self.assertEqual(policy["smoke"], smoke)
+                self.assertEqual(policy["verify"], verify)
+        self.assertEqual(cfg["defaults"]["smoke"], "./default-smoke.sh")
+        self.assertEqual(config.DEFAULTS["defaults"]["smoke"], "")
+
+
 class CustomMaintenanceTests(unittest.TestCase):
     def load(self, maintenance):
         with tempfile.TemporaryDirectory() as tmp:
