@@ -11,7 +11,7 @@ import re
 from datetime import timedelta
 
 from . import config, failures, router, runner
-from .finalize import retry_or_fail
+from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .tick import busy_platforms, start
@@ -379,11 +379,13 @@ def _clear_charged_if_fix_completed(led, project, number, key):
     cycle_ts = led.get_kv(key)
     if not cycle_ts:
         return
+    # Capacity interruptions resume the charged cycle; they are not failures.
     # Look for a completed fix run that started after this cycle began.
     run = led.q1(
         "SELECT 1 FROM runs WHERE project=? AND number=? AND role='fix' "
-        "AND status='ended' AND started_at > ? LIMIT 1",
-        (project, number, cycle_ts))
+        "AND status='ended' AND started_at > ? "
+        "AND coalesce(stop_reason, '') NOT IN (?, ?, ?) LIMIT 1",
+        (project, number, cycle_ts, *CAPACITY_STOPS))
     if run:
         led.set_kv(f"{key}:charged", None)
 

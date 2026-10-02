@@ -101,7 +101,12 @@ class TierEscalationTests(unittest.TestCase):
                         attempt("same-head")
                     self.assertEqual(self.led.item("p", number)["attempts"], 1)
                     start.return_value = True
-                    for _ in range(4):
+                    attempt("same-head")
+                    for reason in (*finalize.CAPACITY_STOPS, "quota"):
+                        run_id = self.led.create_run(
+                            project="p", number=number, role="fix",
+                            platform="agy-claude", epoch=1, status="ended")
+                        self.led.update_run(run_id, stop_reason=reason)
                         attempt("same-head")
                     item = self.led.item("p", number)
                     self.assertEqual((item["state"], item["attempts"], item["esc_fails"]),
@@ -111,6 +116,20 @@ class TierEscalationTests(unittest.TestCase):
                         attempt(sha)
                     item = self.led.item("p", number)
                     self.assertEqual((item["state"], item["attempts"]), ("failed", 5))
+
+    def test_completed_genuine_fix_clears_cycle_charge(self):
+        for reason in (None, "timeout"):
+            with self.subTest(reason=reason):
+                key = "red:p#97:10:same-head"
+                self.led.set_kv(key, iso(self.led.now() - timedelta(minutes=1)))
+                self.led.set_kv(f"{key}:charged", "1")
+                run_id = self.led.create_run(
+                    project="p", number=97, role="fix",
+                    platform="agy-claude", epoch=1, status="ended")
+                self.led.update_run(run_id, stop_reason=reason)
+                ship._clear_charged_if_fix_completed(self.led, "p", 97, key)
+                self.assertIsNone(self.led.get_kv(f"{key}:charged"))
+                self.led.con.execute("DELETE FROM runs WHERE id=?", (run_id,))
 
     def test_review_and_ci_escalate_from_builder_not_reviewer(self):
         for failure in ("review", "ci"):
