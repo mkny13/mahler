@@ -632,6 +632,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    # A capacity-interrupted fix retries this same head, not a new failure.
+    if led.get_kv(f"{key}:charged"):
+        attempts = item["attempts"]
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
 
@@ -721,6 +724,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
              **({"explore": True} if explore else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
+        led.set_kv(f"{key}:charged", "1")
 
 
 def _red_ci(ctx, project, item, pr, view):
@@ -752,6 +756,9 @@ def _red_ci(ctx, project, item, pr, view):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    # A capacity-interrupted fix retries this same head, not a new failure.
+    if led.get_kv(f"{key}:charged"):
+        attempts = item["attempts"]
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
 
@@ -836,6 +843,7 @@ def _red_ci(ctx, project, item, pr, view):
              **({"explore": True} if explore else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
+        led.set_kv(f"{key}:charged", "1")
 
 
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):

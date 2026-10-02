@@ -19,6 +19,9 @@ class FakeGH:
     def issue_state(self, n):
         return "OPEN"
 
+    def failed_run_log(self, branch, tail=30):
+        return 1, "CI failed"
+
     def comment(self, n, body):
         self.comments.append(body)
 
@@ -76,6 +79,38 @@ class TierEscalationTests(unittest.TestCase):
             worktree=self.tmp.name)
         self.led.con.execute("UPDATE runs SET started_at=? WHERE id=?", (started, run_id))
         finalize.finalize(self.ctx, self.led.run(run_id))
+
+    def test_capacity_interrupted_fixes_charge_each_head_only_once(self):
+        for trigger, number in (("ci", 95), ("review", 96)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item("p", number, state="verifying", title="fix me",
+                                     labels='["size:s"]', branch="b", pr=10,
+                                     attempts=1, esc_fails=0, esc_tier=0)
+                def attempt(sha):
+                    args = (self.ctx, "p", self.led.item("p", number), 10,
+                            {"headRefName": "b", "headRefOid": sha})
+                    if trigger == "ci":
+                        ship._red_ci(*args)
+                    else:
+                        ship._review_triggered_fix(*args, "blocking findings")
+
+                with mock.patch("mahler.ship.start", return_value=False) as start, \
+                     mock.patch("mahler.router.pick_for_project", return_value=("agy-claude", [])):
+                    # Failed launches do not spend attempts.
+                    for _ in range(3):
+                        attempt("same-head")
+                    self.assertEqual(self.led.item("p", number)["attempts"], 1)
+                    start.return_value = True
+                    for _ in range(4):
+                        attempt("same-head")
+                    item = self.led.item("p", number)
+                    self.assertEqual((item["state"], item["attempts"], item["esc_fails"]),
+                                     ("verifying", 2, 1))
+                    # Actual new failed heads still exhaust the normal budget.
+                    for sha in ("next-head", "third-head", "fourth-head"):
+                        attempt(sha)
+                    item = self.led.item("p", number)
+                    self.assertEqual((item["state"], item["attempts"]), ("failed", 5))
 
     def test_review_and_ci_escalate_from_builder_not_reviewer(self):
         for failure in ("review", "ci"):
