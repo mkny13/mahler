@@ -1620,6 +1620,10 @@ def capacity_wait_text(led, project, item, now):
     number = item["number"]
     ci = read(f"ci:{project}#{number}:{item['pr']}")
     review = read(f"review:{project}#{number}")
+    # Like the ship review gate, ignore a verdict for an older PR head.
+    # A fresh pending verdict is only written once the next review starts.
+    if ci.get("sha") and review.get("sha") != ci["sha"]:
+        review = {}
     if ci.get("state") == "red" or (ci.get("state") == "green"
                                          and review.get("verdict") == "fail"):
         role, key = "fix", "reviewfix-status"
