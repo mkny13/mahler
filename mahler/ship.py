@@ -378,9 +378,9 @@ def _clear_charged_if_fix_completed(led, project, number, key):
     """Reopen a failure cycle after a genuine fix run completed.
 
     The cycle key and its ``:charged`` marker keep capacity-interrupted fixes
-    from spending the attempt budget again. An ended fix that was not a
-    capacity interruption means the unchanged failing head is a new failure
-    cycle and must count normally.
+    from spending the attempt budget again. An ended fix that actually ran
+    and was not a capacity interruption means the unchanged failing head is
+    a new failure cycle and must count normally.
     """
     cycle_ts = led.get_kv(key)
     if not cycle_ts:
@@ -388,6 +388,8 @@ def _clear_charged_if_fix_completed(led, project, number, key):
     run = led.q1(
         "SELECT 1 FROM runs WHERE project=? AND number=? AND role='fix' "
         "AND status='ended' AND started_at > ? "
+        "AND outcome IS NOT NULL AND outcome != 'not claimed' "
+        "AND outcome NOT LIKE 'launch failed:%' "
         "AND coalesce(stop_reason, '') NOT IN (?, ?, ?) LIMIT 1",
         (project, number, cycle_ts, *CAPACITY_STOPS))
     if run:
