@@ -165,7 +165,7 @@ class TierEscalationTests(unittest.TestCase):
                         step()
                     self.assertEqual(self.led.item("p", 92)["state"], "verifying")
                     self.assertEqual(len(self.ctx.pings), count)
-                    with mock.patch.object(self.led, "now", return_value=now + timedelta(hours=2)):
+                    with mock.patch.object(self.led, "now", return_value=now + timedelta(hours=2, seconds=1)):
                         step()
                 item = self.led.item("p", 92)
                 self.assertEqual(item["state"], "needs_you")
