@@ -350,16 +350,18 @@ class FixBranchTests(Base):
         self.assertIn(f"refs/heads/{name}", self.remote_heads())
 
     def test_deletion_cap_and_subsequent_sweep(self):
-        # Seed the temporary bare remote directly to keep 101 fixtures cheap.
+        # Seed the temporary bare remote directly to keep the fixture cheap.
         tip = sh(self.repo, "git", "rev-parse", "main")
-        for _ in range(101):
-            run_id = self.make_run(12, with_wt=False)
-            sh(self.remote, "git", "update-ref", f"refs/heads/mahler/12-slug-r{run_id}", tip)
-        janitor.sweep(self.ctx, self.ctx.policy("t"))
-        self.assertEqual(len(self.remote_heads()), 2)  # main + one deferred fix
-        self.assertTrue(any("cap reached (100)" in line for line in self.ctx.lines))
-        janitor.sweep(self.ctx, self.ctx.policy("t"))
-        self.assertEqual(self.remote_heads(), ["refs/heads/main"])
+        with mock.patch.object(janitor, "MAX_FIX_BRANCH_DELETIONS", 3):
+            for _ in range(4):
+                run_id = self.make_run(12, with_wt=False)
+                sh(self.remote, "git", "update-ref",
+                   f"refs/heads/mahler/12-slug-r{run_id}", tip)
+            janitor.sweep(self.ctx, self.ctx.policy("t"))
+            self.assertEqual(len(self.remote_heads()), 2)  # main + one deferred fix
+            self.assertTrue(any("cap reached (3)" in line for line in self.ctx.lines))
+            janitor.sweep(self.ctx, self.ctx.policy("t"))
+            self.assertEqual(self.remote_heads(), ["refs/heads/main"])
 
     def test_dry_run_keeps_fix_branch(self):
         name, _ = self.fix_branch()
