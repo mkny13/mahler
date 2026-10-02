@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, router, runner
+from . import config, failures, router, runner
 from .finalize import retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -557,6 +557,7 @@ def _review_not_converging(ctx, project, item, pr, view):
                 "with follow-ups, or keep fixing?\n\n" + evidence)
     led.set_state(project, n, "needs_you", question, question=question,
                   options=json.dumps(options))
+    failures.report(ctx, project, n, "review_rejected", output=evidence)
     # Keep the evidence for diagnosis, but an explicit owner retry starts a
     # fresh convergence window rather than escalating the same rounds again.
     led.set_kv(key, str(len(history)))
@@ -639,6 +640,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
             led.set_state(project, n, "failed",
                           f"review still failing on PR #{pr} after {attempts} attempts",
                           attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+            failures.report(ctx, project, n, "review_rejected",
+                            run=led.last_run(project, n, roles=("review",)),
+                            output=findings, branch=head)
             ctx.ping(f"Stuck — {project} #{n}",
                      f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
                      project, n, priority="high", tags="warning")
@@ -749,6 +753,7 @@ def _red_ci(ctx, project, item, pr, view):
             led.set_state(project, n, "failed",
                           f"CI still red on PR #{pr} after {attempts} attempts",
                           attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+            failures.report(ctx, project, n, "ci_failed", run=last, branch=head)
             ctx.ping(f"Stuck — {project} #{n}",
                      f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
                      project, n, priority="high", tags="warning")

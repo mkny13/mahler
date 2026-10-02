@@ -89,7 +89,7 @@ class SetupFailureTests(unittest.TestCase):
         self.assertIn("reason=setup-failed", body)
         self.assertIn("**Setup failed**", body)
         self.assertIn("npm ERR! missing package.json", body)
-        self.assertIn("Last 20 lines of setup.log", body)
+        self.assertIn("Last 30 lines of setup.log", body)
 
     def test_first_setup_failure_on_a_sorted_item_goes_to_ready_not_inbox(self):
         """A setup failure retries an already-sorted item into 'ready', not
@@ -109,6 +109,8 @@ class SetupFailureTests(unittest.TestCase):
         self.assertEqual(item["setup_fails"], 2)
         self.assertEqual(item["attempts"], 0)
         self.assertIn("/mahler go", self.gh.comments[-1])
+        self.assertIn("class=setup_failed", self.gh.comments[-1])
+        self.assertIn("attempt 0 of 3", self.gh.comments[-1])
         self.assertIn("npm ERR! missing package.json", self.gh.comments[-1])
         self.assertEqual([p[2] for p in self.ctx.pings], ["low", "high"])
         # mahler#248: a structured question with no answer options

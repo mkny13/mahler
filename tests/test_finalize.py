@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, finalize, router, runner, scheduler, tick
+from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
 
@@ -26,6 +26,9 @@ class FakeGH:
 
     def issue_state(self, number):
         return self.state
+
+    def issue_comments(self, number):
+        return [{"body": body} for body in self.comments]
 
     def comment(self, number, body):
         self.comments.append(body)
@@ -54,6 +57,114 @@ class RunTests(unittest.TestCase):
                     "worktree": os.path.join(self.tmp, "wt"), "branch": "mahler/5-x",
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
+
+    def test_terminal_run_failure_comments_and_backfill_are_idempotent(self):
+        for role, reason, code, kind in (
+                ("sort", None, 1, "crashed"),
+                ("build", "hung", 1, "hung"),
+                ("build", "timeout", 1, "timeout"),
+                ("build", None, 0, "silent")):
+            with self.subTest(role=role, kind=kind):
+                self.gh.comments.clear()
+                self.led.upsert_item("x", 5, state="working", attempts=2)
+                run_id = self.led.create_run(project="x", number=5, role=role,
+                                            platform="cline-free", epoch=1,
+                                            log_path=self.log, model="test-model")
+                self.run.update(id=run_id, role=role, stop_reason=reason, model="test-model")
+                with open(self.log, "w") as stream:
+                    stream.write("\n".join(f"error line {i}" for i in range(40)))
+                    stream.write("\nGH_TOKEN=hidden-value\n")
+                with mock.patch.object(runner, "exit_code", return_value=code), \
+                        mock.patch.object(finalize, "_try_verify_fallback", return_value=False), \
+                        mock.patch.object(finalize, "_try_cline_nudge", return_value=False):
+                    self.finalize()
+                diagnostic = [c for c in self.gh.comments if "mahler:failed" in c]
+                self.assertEqual(len(diagnostic), 1)
+                body = diagnostic[0]
+                for text in (f"class={kind}", "cline-free / test-model", "attempt 3 of 3",
+                             "error line 39", "<redacted>"):
+                    self.assertIn(text, body)
+                self.assertNotIn("hidden-value", body)
+                self.assertNotIn("> error line 0\n", body)
+                self.assertIn("mahler/5-x" if role == "sort" else "mahler/snapshot/5-run7", body)
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                    failures.backfill(self.ctx, [{"name": "x"}])
+                    failures.backfill(self.ctx, [{"name": "x"}])
+                self.assertEqual(len([c for c in self.gh.comments if "mahler:failed" in c]), 1)
+
+    def test_verify_failure_records_actual_output(self):
+        self.led.upsert_item("x", 5, attempts=2)
+        self.cfg["projects"]["x"]["verify"] = "printf 'verification assertion failed'; exit 1"
+        self.run["worktree"] = self.tmp
+        with open(self.log, "w") as stream:
+            stream.write("agent stopped")
+        with mock.patch.object(runner, "commits_ahead", return_value=1), \
+                mock.patch.object(runner, "exit_code", return_value=1):
+            self.finalize()
+        body = self.gh.comments[-1]
+        self.assertIn("class=verify_failed", body)
+        self.assertIn("verification assertion failed", body)
+
+    def test_backfill_missing_history_and_delivery_retry(self):
+        self.led.upsert_item("other", 9, state="failed", attempts=3)
+        self.cfg["projects"]["other"] = {"path": self.tmp, "repo": "x/other"}
+        projects = [{"name": "x"}, {"name": "other"}]
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            with mock.patch.object(self.gh, "comment", side_effect=gh_module.GHError("offline")):
+                failures.backfill(self.ctx, projects)
+            failures.backfill(self.ctx, projects)
+            failures.backfill(self.ctx, projects)
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("reason not recorded", self.gh.comments[0])
+        self.assertIn("none recorded", self.gh.comments[0])
+
+    def test_ambiguous_delivery_reconciles_marker_before_retry(self):
+        self.led.upsert_item("x", 5, state="failed", attempts=3)
+
+        def accepted_then_errored(number, body):
+            self.gh.comments.append(body)
+            raise gh_module.GHError("connection dropped after response")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            with mock.patch.object(self.gh, "comment", side_effect=accepted_then_errored):
+                failures.report(self.ctx, "x", 5, "hung", run=self.run)
+            failures.report(self.ctx, "x", 5, "hung", run=self.run)
+
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(self.led.q1(
+            "SELECT value FROM kv WHERE key LIKE 'failed_comment:x#5:%'")["value"], "sent")
+
+    def test_pending_delivery_survives_owner_retry(self):
+        self.led.upsert_item("x", 5, state="failed", attempts=3)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            with mock.patch.object(self.gh, "comment", side_effect=gh_module.GHError("offline")):
+                failures.report(self.ctx, "x", 5, "hung", run=self.run)
+            sync.resume_item(self.led, "x", 5)
+            failures.backfill(self.ctx, [{"name": "x"}])
+            failures.backfill(self.ctx, [{"name": "x"}])
+
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("attempt 3 of 3", self.gh.comments[0])
+        self.assertEqual(self.led.q1(
+            "SELECT value FROM kv WHERE key LIKE 'failed_comment:x#5:%'")["value"], "sent")
+
+    def test_backfill_surviving_run_and_dry_run(self):
+        with open(self.log, "w") as stream:
+            stream.write("CLI rejected its model")
+        self.led.update_run(self.run_id, log_path=self.log, model="historical-model",
+                            outcome="exit 1", stop_reason="hung")
+        self.led.set_state("x", 5, "failed", "3 failed attempts — last: exit 1", attempts=3)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            self.ctx.dry_run = True
+            failures.backfill(self.ctx, [{"name": "x"}])
+            self.assertEqual(self.gh.comments, [])
+            self.ctx.dry_run = False
+            failures.backfill(self.ctx, [{"name": "x"}])
+            failures.backfill(self.ctx, [{"name": "x"}])
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("historical-model", self.gh.comments[0])
+        self.assertIn("CLI rejected its model", self.gh.comments[0])
 
     def test_finalization_persists_raw_accounting(self):
         self.cfg["platforms"]["cline-free"]["build_model"] = "gpt-6-sol"
