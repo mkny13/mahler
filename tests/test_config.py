@@ -20,6 +20,11 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_capacity_wait_default_and_project_override(self):
+        cfg = self.load({"projects": {"app": {"capacity_wait_max_hours": 48}}})
+        self.assertEqual(config.project_policy(cfg, "app")["capacity_wait_max_hours"], 48)
+        self.assertEqual(config.project_policy(cfg, "unconfigured")["capacity_wait_max_hours"], 24)
+
     def test_smoke_defaults_to_disabled_without_changing_verify(self):
         cfg = self.load({"projects": {"app": {"verify": "python3 -m unittest"}}})
         policy = config.project_policy(cfg, "app")

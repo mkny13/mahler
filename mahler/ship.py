@@ -380,10 +380,6 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     active = led.active_runs()
-    if len(active) >= cfg["concurrency"]["total"]:
-        ctx.say(f"{project}#{n}: PR #{pr} — CI green, but every run slot is busy; "
-                "the review waits for the next tick")
-        return
     busy = busy_platforms(cfg, active)
     # A failed/inconclusive review remains the latest run, but it did not
     # produce the PR head. Always fence against the latest builder/fixer so a
@@ -406,27 +402,22 @@ def _start_review_run(ctx, project, item, pr, view, sha):
            and builder_slot != "claude" else None)
     if pin and any(router.platform_slot(cfg, p) == pin for p in exclude):
         pin = None
+    wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
+    capacity = router.capacity_recovery(
+        cfg, led, pol, "review", pin, busy, size=size,
+        burst_lines=ctx.burst_lines, exclude=exclude)
+    full = len(active) >= cfg["concurrency"]["total"]
+    if full or not capacity[0] or capacity[2]:
+        _capacity_wait(ctx, project, item, wait_key, sha,
+                       "every run slot is busy" if full else "no eligible platform for review",
+                       "review", (capacity[0], None, None) if full else capacity)
+        return
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude=exclude)
-    # Wait/ping state is scoped to the PR head: a new push restarts the clock and
-    # re-arms the alert, so an updated PR can never sit silent behind an old ping.
-    wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
     if not platform:
         detail = "; ".join(reasons) or "no eligible platform for review"
-        ctx.say(f"{project}#{n}: PR #{pr} — CI green, no platform for the review — {detail}")
-        wait = _kv_json(led, wait_key)
-        if wait.get("sha") != sha or not parse(wait.get("at")):
-            led.set_kv(wait_key, json.dumps({"sha": sha, "at": iso(led.now())}))
-            led.set_kv(ping_key, "")
-            return
-        minutes = pol.get("verify_timeout_minutes", 120)
-        if (led.now() - parse(wait["at"]) > timedelta(minutes=minutes)
-                and led.get_kv(ping_key) != sha):
-            led.set_kv(ping_key, sha)
-            ctx.ping(f"Review waiting — {project} #{n}",
-                     f"PR #{pr} is CI-green but no review could start for over {minutes} "
-                     f"minutes: {detail}", project, n, priority="high", tags="warning")
+        _capacity_wait(ctx, project, item, wait_key, sha, detail, "review", capacity)
         return
     conductor = led.lease(project, n)
     handoff_from = ((CONDUCTOR, conductor["epoch"])
@@ -439,22 +430,43 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         led.set_kv(ping_key, "")
 
 
-def _fix_wait(ctx, project, item, key, reason, *, required_tier=None):
-    """A fix waiting for capacity must not lock out other shippable PRs."""
+def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
+                   capacity, required_tier=None):
+    """Persist a retryable wait; only configuration or unknown backstop escalates."""
     led, n = ctx.led, item["number"]
-    led.release(project, n, holder=CONDUCTOR)
-    led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({
-        "reason": reason,
-        "tier": required_tier if required_tier is not None else row_get(item, "esc_tier", 0),
-        "at": iso(led.now()),
+    if role == "fix":
+        led.release(project, n, holder=CONDUCTOR)
+    previous = _kv_json(led, status_key)
+    at = previous.get("at") if previous.get("sha") == cycle else None
+    at = at if router._ts(at) else iso(led.now())
+    eligible, recovery, retry = capacity
+    state = "capacity_wait" if eligible else "missing_tier"
+    hours = ctx.policy(project).get("capacity_wait_max_hours", 24)
+    if eligible and recovery is None and led.now() - parse(at) >= timedelta(hours=hours):
+        state = "capacity_wait_expired"
+    led.set_kv(status_key, json.dumps({
+        "state": state, "sha": cycle, "at": at, "reason": reason,
+        "tier": required_tier, "retry_at": iso(retry) if retry else None,
+        "recovery_at": iso(recovery) if recovery else None,
     }))
-    minutes = ctx.policy(project).get("verify_timeout_minutes", 120)
-    if led.now() - parse(led.get_kv(key)) <= timedelta(minutes=minutes):
+    ctx.say(f"{project}#{n}: PR #{item['pr']} — {role} waiting: {reason}")
+    if state == "capacity_wait":
         return
-    question = f"No fix run could start for PR #{item['pr']} after {minutes} minutes: {reason}"
+    question = (f"No configured eligible platform for {role}"
+                f" at required tier {required_tier or 0} on PR #{item['pr']}: {reason}"
+                if state == "missing_tier" else
+                f"{role.capitalize()} capacity wait exceeded {hours} hours with no known recovery "
+                f"for PR #{item['pr']}: {reason}")
     led.set_state(project, n, "needs_you", question, question=question, options="[]")
-    ctx.ping(f"Fix waiting — {project} #{n}", question,
+    ctx.ping(f"{role.capitalize()} {state.replace('_', ' ')} — {project} #{n}", question,
              project, n, priority="high", tags="warning")
+
+
+def _fix_wait(ctx, project, item, key, reason, *, required_tier=None, capacity=None):
+    if capacity is None:
+        capacity = (["busy"], None, None)
+    _capacity_wait(ctx, project, item, f"reviewfix-status:{project}#{item['number']}",
+                   key, reason, "fix", capacity, required_tier)
 
 
 def _finding_files(findings):
@@ -669,6 +681,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
+    capacity = router.capacity_recovery(
+        cfg, led, pol, "fix", item["pin"], busy, size=size,
+        min_tier=effective_min_tier, burst_lines=ctx.burst_lines)
     platform = router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
@@ -678,6 +693,10 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         size = real_size
         ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
     else:
+        if not capacity[0] or capacity[2]:
+            _fix_wait(ctx, project, item, key, "no eligible route with capacity",
+                      required_tier=effective_min_tier, capacity=capacity)
+            return
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
             scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
@@ -685,7 +704,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
         _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route",
-                  required_tier=effective_min_tier)
+                  required_tier=effective_min_tier, capacity=capacity)
         return
     led.upsert_item(project, n, branch=head)
     conductor = led.lease(project, n)
@@ -782,6 +801,9 @@ def _red_ci(ctx, project, item, pr, view):
         size = "m"
     # D26: route within the project's declared accounts: fallback order,
     # equal round-robin, or an explicit cross-account priority.
+    capacity = router.capacity_recovery(
+        cfg, led, pol, "fix", item["pin"], busy, size=size,
+        min_tier=effective_min_tier, burst_lines=ctx.burst_lines)
     platform = router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
@@ -791,13 +813,18 @@ def _red_ci(ctx, project, item, pr, view):
         size = real_size
         ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
     else:
+        if not capacity[0] or capacity[2]:
+            _fix_wait(ctx, project, item, key, "no eligible route with capacity",
+                      required_tier=effective_min_tier, capacity=capacity)
+            return
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
             scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
-        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route")
+        _fix_wait(ctx, project, item, key, "; ".join(reasons) or "no eligible route",
+                  required_tier=effective_min_tier, capacity=capacity)
         return
     led.upsert_item(project, n, branch=head)
     conductor = led.lease(project, n)
@@ -807,6 +834,7 @@ def _red_ci(ctx, project, item, pr, view):
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, fix_reason="ci",
              **({"explore": True} if explore else {})):
+        led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
 
 

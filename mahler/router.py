@@ -712,6 +712,65 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     return None, reasons
 
 
+def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
+                      min_tier=0, exclude=(), burst_lines=None):
+    """Return (eligible names, earliest recovery, safe routing retry time).
+
+    Permanent eligibility matches review/fix routing. Unknown candidates must
+    still be probed each tick even if another candidate has a known reset.
+    All blocking windows on one platform must recover before it can run.
+    """
+    accts = accounts_of(pol)
+    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
+             if account_mode_of(pol) == "priority" else
+             candidates_for_accounts(cfg, role, accts, pin))
+    excluded = {platform_slot(cfg, name) for name in exclude}
+    eligible, recoveries = [], []
+    now = led.now()
+    peak, peak_until = peak_state(cfg, led)
+    for name in names:
+        pc = cfg["platforms"][name]
+        rank = SIZES.get(size or "m", 2)
+        if platform_slot(cfg, name) in excluded:
+            continue
+        if not pin and role == "fix" and (tier_of(pc) < min_tier
+                or rank < SIZES.get(pc.get("min_size"), 1)
+                or rank > SIZES.get(pc.get("max_size"), 3)):
+            continue
+        eligible.append(name)
+        if name in busy:
+            recoveries.append(None)
+            continue
+        usage = led.usage(name)
+        hold = _ts(usage.pop(HOLD, {}).get("resets_at"))
+        # Holds (including no-credit retries) are explicit retry promises,
+        # independent of the freshness of quota samples beneath them.
+        if hold and hold > now:
+            recoveries.append(max(hold, peak_until) if peak and pc.get("kind") == "claude"
+                              and not pin else hold)
+            continue
+        state, _ = usage_state(led, name, pc, burst_lines)
+        times = [peak_until] if peak and pc.get("kind") == "claude" and not pin else []
+        if state == "stale" or codex_quota(led, name, pc).get("blocked"):
+            recoveries.append(None)
+            continue
+        unknown = False
+        for window, row in usage.items():
+            soft, _ = effective_lines(led, name, pc, window, burst_lines)
+            if row["used_pct"] < (soft if is_metered(led, name, pc) else 100):
+                continue
+            reset = _ts(row.get("resets_at"))
+            if reset and reset > now:
+                times.append(reset)
+            elif state != "ok":
+                unknown = True
+        recoveries.append(None if unknown or not times else max(times))
+    known = [t for t in recoveries if t is not None]
+    recovery = min(known) if known else None
+    retry = recovery if known and len(known) == len(recoveries) else None
+    return eligible, recovery, retry
+
+
 def reason_groups(reasons):
     """Group router diagnostics by blocker, keeping each platform once."""
     groups = {}

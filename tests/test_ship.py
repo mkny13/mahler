@@ -510,27 +510,74 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")     # unchanged, retried next tick
         self.assertIsNone(self.led.lease("x", 5))
 
-    def test_unstartable_review_records_wait_and_pings_once_after_timeout(self):
+    def test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
         now = [NOW]
         self.led.now = lambda: now[0]
         with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
-            ping = self.ship()
-            self.assertTrue(self.led.get_kv("review-wait:x#5"))
-            ping.assert_not_called()
-            now[0] = NOW + timedelta(minutes=121)
-            ping = self.ship()
-            self.assertEqual(ping.call_count, 1)
-            self.assertIn("no eligible platform for review", ping.call_args.args[1])
-            ping = self.ship()
-            ping.assert_not_called()                      # once per PR head
-            # a new push re-arms the alert and restarts the clock
+            self.ship().assert_not_called()
+            now[0] += timedelta(hours=3)
+            self.ship().assert_not_called()
+            self.assertEqual(self.item()["state"], "verifying")
             self.gh.head_sha = "def456"
+            self.ship().assert_not_called()
+            now[0] += timedelta(hours=23)
+            self.ship().assert_not_called()
+            now[0] += timedelta(hours=1)
             ping = self.ship()
-            ping.assert_not_called()
-            now[0] += timedelta(minutes=121)
-            ping = self.ship()
-            self.assertEqual(ping.call_count, 1)
+            ping.assert_called_once()
+            self.assertIn("no known recovery", ping.call_args.args[1])
+            self.assertEqual(self.item()["state"], "needs_you")
+
+    def test_fix_capacity_waits_retry_and_only_unknown_backstop_escalates(self):
+        for review in (False, True):
+            with self.subTest(review=review):
+                self.led.upsert_item("x", 5, pr=88, state="verifying", labels='["size:m"]')
+                self.gh.rollup = [{"state": "SUCCESS" if review else "FAILURE"}]
+                self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"})
+                                if review else None)
+                self.led.set_kv("reviewfix-status:x#5", None)
+                now = [NOW]
+                self.led.now = lambda: now[0]
+                with mock.patch("mahler.router.pick_for_project", return_value=(None, ["stale usage"])):
+                    self.ship()
+                    now[0] += timedelta(hours=3)
+                    self.ship().assert_not_called()
+                    self.assertEqual(self.item()["state"], "verifying")
+                    now[0] += timedelta(hours=21)
+                    ping = self.ship()
+                    self.assertIn("no known recovery", ping.call_args.args[1])
+                    self.assertEqual(self.item()["state"], "needs_you")
+
+    def test_known_hold_skips_routing_then_recovers(self):
+        self.cfg["routing"]["review"] = ["agy-claude"]
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        now = [NOW]
+        self.led.now = lambda: now[0]
+        reset = NOW + timedelta(hours=30)
+        self.led.record_usage("agy-claude", "hold", 100, iso(reset))
+        with mock.patch("mahler.router.pick_for_project") as pick:
+            self.ship().assert_not_called()
+            now[0] += timedelta(hours=25)
+            self.ship().assert_not_called()
+            pick.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(json.loads(self.led.get_kv("review-wait:x#5"))["retry_at"], iso(reset))
+        now[0] = reset
+        with mock.patch("mahler.router.pick_for_project", return_value=("agy-claude", [])), \
+                mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+            start.assert_called_once()
+        self.assertFalse(self.led.get_kv("review-wait:x#5"))
+
+    def test_missing_required_fix_tier_escalates_distinctly(self):
+        self.cfg["routing"]["build"] = ["kilo"]
+        self.led.upsert_item("x", 5, pr=88, title="credentials fix", labels='["size:s"]')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        ping = self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIn("No configured eligible platform", ping.call_args.args[1])
+        self.assertIn("required tier 2", ping.call_args.args[1])
 
     def test_failed_review_launch_keeps_the_wait_clock(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
