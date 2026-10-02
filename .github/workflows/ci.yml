@@ -14,3 +14,4 @@ jobs:
           python-version: "3.12"
       - run: python -m mahler.repo_guard
       - run: python -m unittest discover -s tests -v
+      - run: python -X dev tests/run_strict.py

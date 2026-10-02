@@ -572,12 +572,13 @@ class TestAutoRestart(unittest.TestCase):
             return values[-1]
         return get_head
 
-    @staticmethod
-    def _make_server():
+    def _make_server(self):
         handler = type("Handler", (serve._Handler,),
                        {"led": None, "lock": threading.Lock(),
                         "load_cfg": staticmethod(lambda: {})})
-        return ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.addCleanup(httpd.server_close)
+        return httpd
 
 
 class TestCliWiring(unittest.TestCase):
