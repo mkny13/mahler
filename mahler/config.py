@@ -633,6 +633,9 @@ def github_app_settings(cfg, pol):
             raise ValueError(f"github_app requires a positive {key}; "
                              "set it globally or override the project's installation id")
     key_path = app.get("private_key_path")
+    if "private_key_path" not in app and "private_key" in app:
+        raise ValueError("github_app: private_key is unsupported; use private_key_path "
+                         "with the path to the private key file")
     if not isinstance(key_path, str) or not key_path.strip() or "\x00" in key_path:
         raise ValueError("github_app requires private_key_path")
     return str(app["app_id"]), str(installation), key_path
