@@ -34,7 +34,7 @@ class StubCtx:
         return {"path": "/nonexistent", "base": "main", "run_timeout_minutes": 30,
                 "progress_timeout_minutes": 15, "auto_lease_minutes": 30,
                 "yield_grace_seconds": 30, "max_attempts": 5,
-                "verify_timeout_minutes": 30}
+                "verify_timeout_minutes": 30, "capacity_wait_max_hours": 2}
 
     def gh(self, project):
         return self._gh
@@ -140,7 +140,7 @@ class TierEscalationTests(unittest.TestCase):
         self.assertEqual(router.cap_escalation(cfg, pol, 8, "s"), 1)
         self.assertEqual(router.cap_escalation(cfg, pol, 8, "m"), 0)
 
-    def test_waiting_fix_releases_lease_then_times_out_without_recounting(self):
+    def test_waiting_fix_uses_capacity_backstop_without_recounting(self):
         for failure in ("review", "ci"):
             with self.subTest(failure=failure):
                 now = self.led.now()
@@ -160,7 +160,12 @@ class TierEscalationTests(unittest.TestCase):
                     self.assertIsNone(self.led.lease("p", 92))
                     self.assertEqual(self.led.item("p", 92)["state"], "verifying")
                     self.assertEqual(self.led.item("p", 92)["esc_tier"], 3)
+                    count = len(self.ctx.pings)
                     with mock.patch.object(self.led, "now", return_value=now + timedelta(minutes=31)):
+                        step()
+                    self.assertEqual(self.led.item("p", 92)["state"], "verifying")
+                    self.assertEqual(len(self.ctx.pings), count)
+                    with mock.patch.object(self.led, "now", return_value=now + timedelta(hours=2, seconds=1)):
                         step()
                 item = self.led.item("p", 92)
                 self.assertEqual(item["state"], "needs_you")
@@ -168,7 +173,7 @@ class TierEscalationTests(unittest.TestCase):
                 self.assertEqual(item["attempts"], 0)
                 self.assertIn("no quota", item["question"])
                 self.assertIsNone(self.led.lease("p", 92))
-                self.assertTrue(self.ctx.pings[-1][0].startswith("Fix waiting"))
+                self.assertTrue(self.ctx.pings[-1][0].startswith("Fix capacity wait expired"))
 
     def test_waiting_review_fix_resumes_when_capacity_returns(self):
         self.led.upsert_item("p", 93, state="verifying", title="fix me",

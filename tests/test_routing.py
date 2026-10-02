@@ -28,6 +28,85 @@ def led_with(**usage):
     return led
 
 
+class CapacityRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["routing"]["build"] = ["agy-claude", "agy-gemini"]
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.pol = config.project_policy(self.cfg, "x")
+        for name in self.cfg["routing"]["build"]:
+            for window in ("5h", "weekly"):
+                self.led.record_usage(name, window, 100, iso(NOW + timedelta(hours=4)))
+
+    def recovery(self, **kwargs):
+        return router.capacity_recovery(self.cfg, self.led, self.pol, "fix", **kwargs)
+
+    def test_earliest_candidate_after_all_its_windows_recover(self):
+        self.led.record_usage("agy-claude", "5h", 100, iso(NOW + timedelta(hours=1)))
+        self.led.record_usage("agy-gemini", "5h", 100, iso(NOW + timedelta(hours=2)))
+        self.led.record_usage("agy-gemini", "weekly", 100, iso(NOW + timedelta(hours=3)))
+        names, recovery, retry = self.recovery()
+        self.assertEqual(names, ["agy-claude", "agy-gemini"])
+        self.assertEqual(recovery, NOW + timedelta(hours=3))
+        self.assertEqual(retry, recovery)
+
+    def test_stale_missing_and_busy_candidates_do_not_delay_probing(self):
+        for kind in ("stale", "missing", "busy"):
+            with self.subTest(kind=kind):
+                if kind != "busy":
+                    self.led.record_usage("agy-claude", "5h", 100,
+                                          iso(NOW + timedelta(days=30)),
+                                          sampled_at=iso(NOW - timedelta(hours=1)))
+                if kind == "missing":
+                    self.led.con.execute("DELETE FROM usage WHERE platform='agy-claude'")
+                names, recovery, retry = self.recovery(busy={"agy-claude"} if kind == "busy" else ())
+                self.assertEqual(len(names), 2)
+                self.assertEqual(recovery, NOW + timedelta(hours=4))
+                self.assertIsNone(retry)
+
+    def test_hold_and_credit_retry_are_known_even_without_quota(self):
+        for reason in ("silent", "no_credit"):
+            self.led.set_kv("hold_reason:agy-claude", reason)
+            self.led.record_usage("agy-claude", "hold", 100, iso(NOW + timedelta(hours=1)))
+            self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=1),) * 2)
+
+    def test_codex_blocked_quota_preserves_known_recovery(self):
+        self.cfg["routing"]["build"] = ["codex", "agy-gemini"]
+        for window in ("weekly", "43200m"):
+            with self.subTest(window=window):
+                self.led.set_kv("codex:quota:codex", json.dumps({
+                    "blocked": True, "sampled_at": iso(NOW),
+                    "windows": [
+                        {"window": "5h", "used_pct": 100,
+                         "resets_at": iso(NOW + timedelta(hours=1))},
+                        {"window": window, "used_pct": 100,
+                         "resets_at": iso(NOW + timedelta(hours=2))},
+                    ],
+                }))
+                self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=2),) * 2)
+
+    def test_codex_blocked_unknown_recovery_keeps_probing(self):
+        self.cfg["routing"]["build"] = ["codex", "agy-gemini"]
+        for case in ("stale", "missing_sample", "missing_reset", "expired", "low_usage"):
+            with self.subTest(case=case):
+                self.led.set_kv("codex:quota:codex", json.dumps({
+                    "blocked": True,
+                    "sampled_at": (None if case == "missing_sample" else
+                                   iso(NOW - timedelta(hours=1) if case == "stale" else NOW)),
+                    "windows": [{"window": "43200m",
+                                 "used_pct": 20 if case == "low_usage" else 100,
+                                 "resets_at": (None if case == "missing_reset" else
+                                               iso(NOW + timedelta(hours=-1 if case == "expired" else 2)))}],
+                }))
+                self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=4), None))
+
+    def test_tier_and_reviewer_exclusion_are_permanent_but_busy_is_not(self):
+        self.assertEqual(self.recovery(min_tier=99), ([], None, None))
+        self.assertEqual(self.recovery(exclude={"agy-claude", "agy-gemini"}), ([], None, None))
+        self.assertEqual(self.recovery(busy={"agy-claude", "agy-gemini"})[1:], (None, None))
+
+
 class RouterTests(unittest.TestCase):
     cfg = config.DEFAULTS
 
