@@ -519,7 +519,8 @@ class VibeTests(unittest.TestCase):
             env = platforms.vibe_env({"kind": "vibe", "model": "codestral-latest"}, run, {})
             self.assertEqual(env["VIBE_HOME"], os.path.join(run, "vibe_home"))
             self.assertEqual(env["MISTRAL_API_KEY"], "secret-key")
-            cfg = open(os.path.join(env["VIBE_HOME"], "config.toml")).read()
+            with open(os.path.join(env["VIBE_HOME"], "config.toml"), encoding="utf-8") as fh:
+                cfg = fh.read()
             self.assertIn('active_model = "codestral-latest"', cfg)
             self.assertNotIn("secret-key", cfg)
             env = platforms.vibe_env({"kind": "vibe"}, run, {"MISTRAL_API_KEY": "x"})
