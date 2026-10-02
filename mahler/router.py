@@ -640,9 +640,14 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             if t < min_tier:
                 reasons.append(f"{name}: tier {t} below escalation tier {min_tier}")
                 continue
-        # Size limits (max_size/min_size) are builder limits — they don't apply
-        # to sort, plan or review roles (DESIGN D21): a review reads a diff and
-        # writes nothing, so a size:l PR needs a reviewer that can't build one.
+        # Sorters respect an explicit size's ceiling, even during exploration
+        # (D21). Unlabelled items stay open; pins still override size limits.
+        limit = pconf.get("max_size")
+        if role == "sort" and size and limit and not pin and SIZES.get(size, 2) > SIZES[limit]:
+            reasons.append(f"{name}: only takes size:{limit}")
+            continue
+        # min_size and the exploration allowance remain builder-only. Plan
+        # and review are exempt: a reviewer need not be able to build the PR.
         if role not in ("sort", "plan", "review"):
             limit = pconf.get("max_size")
             if (limit and not pin and SIZES.get(size or "m", 2) >
