@@ -372,6 +372,22 @@ def _kv_json(led, key):
     return value if isinstance(value, dict) else {}
 
 
+def _clear_charged_if_fix_completed(led, project, number, key):
+    """Clear the :charged flag if a fix run for this item has completed since
+    the cycle key was created. This ensures a failed fix attempt on an
+    unchanged head is counted as a new failure cycle (mahler#657)."""
+    cycle_ts = led.get_kv(key)
+    if not cycle_ts:
+        return
+    # Look for a completed fix run that started after this cycle began.
+    run = led.q1(
+        "SELECT 1 FROM runs WHERE project=? AND number=? AND role='fix' "
+        "AND status='ended' AND started_at > ? LIMIT 1",
+        (project, number, cycle_ts))
+    if run:
+        led.set_kv(f"{key}:charged", None)
+
+
 def _start_review_run(ctx, project, item, pr, view, sha):
     """Start DESIGN D11's review run: a different platform from whichever
     one produced this PR's last build/fix run, so the review is a genuine
@@ -633,6 +649,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     # A capacity-interrupted fix retries this same head, not a new failure.
+    # Clear :charged if a fix run for this head has since completed (mahler#657).
+    _clear_charged_if_fix_completed(led, project, n, key)
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):
@@ -757,6 +775,8 @@ def _red_ci(ctx, project, item, pr, view):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
     # A capacity-interrupted fix retries this same head, not a new failure.
+    # Clear :charged if a fix run for this head has since completed (mahler#657).
+    _clear_charged_if_fix_completed(led, project, n, key)
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):
