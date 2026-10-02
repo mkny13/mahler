@@ -84,6 +84,39 @@ class StatusCliTests(unittest.TestCase):
             self.assertEqual(cli.cmd_claim(args, self.cfg, self.led), 1)
         self.assertIn(f"proj#1 — claude review run {run}", buf.getvalue())
 
+    def test_status_capacity_retries_and_ordinary_items(self):
+        import json
+        from datetime import timedelta
+        from types import SimpleNamespace
+        from mahler.ledger import iso
+        self.led.upsert_item("proj", 1, title="Waiting", state="verifying", pr=123)
+        self.led.upsert_item("proj", 2, title="Ordinary", state="verifying", pr=124)
+        retry = self.led.now() + timedelta(hours=2)
+        for role, key, verdict in (("fix", "reviewfix-status", "fail"),
+                                   ("review", "review-wait", "pending"),
+                                   ("review", "review-wait", "fail")):
+            self.led.set_kv("ci:proj#1:123", json.dumps({"state": "green"}))
+            self.led.set_kv("review:proj#1", json.dumps({"verdict": verdict}))
+            if role == "review" and verdict == "fail":
+                self.led.set_kv("ci:proj#1:123", json.dumps({"state": "green", "sha": "new"}))
+                self.led.set_kv("review:proj#1", json.dumps({"verdict": "fail", "sha": "old"}))
+                self.led.set_kv("reviewfix-status:proj#1", json.dumps({"state": "running"}))
+            for retry_at, expected in (
+                    (iso(retry), f"retry around {retry.astimezone():%b %d %H:%M %Z}"),
+                    (None, "retry time unknown; will re-check")):
+                with self.subTest(role=role, retry_at=retry_at):
+                    self.led.set_kv(f"{key}:proj#1", json.dumps({
+                        "state": "capacity_wait", "retry_at": retry_at}))
+                    buf = io.StringIO()
+                    with patch("sys.stdout", buf):
+                        cli.cmd_status(SimpleNamespace(json=False, project=None), self.cfg, self.led)
+                    output = buf.getvalue()
+                    self.assertIn(f"{role} waiting for capacity; {expected}", output)
+                    ordinary = next(line for line in output.splitlines() if "Ordinary" in line)
+                    self.assertTrue(ordinary.endswith("https://github.com/owner/proj/pull/124"))
+                    self.assertNotIn("capacity", ordinary)
+            self.led.set_kv(f"{key}:proj#1", "")
+
     def test_status_quota_shows_reset_countdown_chips(self):
         # mahler#52: quota lines append `[5h in ...  · wk in ...]` chips
         # when a window has a fresh, still-future reset time.

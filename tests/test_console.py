@@ -772,6 +772,62 @@ class IdleReasonTests(unittest.TestCase):
         self.assertIn("review failed; waiting for a fix run", reason["text"])
         self.assertIn("no platform available at tier 2", reason["text"])
 
+    def test_verifying_capacity_retry_copy(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        led.upsert_item("mahler", 39, title="feature", state="verifying", pr=112,
+                        labels=json.dumps(["size:m"]))
+        led.upsert_item("mahler", 40, title="next", state="ready")
+        retry = led.now() + timedelta(hours=2)
+        for role, ci, verdict, key in (
+                ("review", "green", "pending", "review-wait"),
+                ("fix", "green", "fail", "reviewfix-status"),
+                ("fix", "red", "pass", "reviewfix-status")):
+            led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
+            led.set_kv("review:mahler#39", json.dumps({"verdict": verdict}))
+            for retry_at, expected in (
+                    (iso(retry), f"retry around {retry.astimezone():%b %d %H:%M %Z}"),
+                    (None, "retry time unknown; will re-check"),
+                    ("invalid", "retry time unknown; will re-check"),
+                    (iso(led.now() - timedelta(minutes=1)), "retry due; will re-check")):
+                with self.subTest(role=role, ci=ci, retry_at=retry_at):
+                    led.set_kv(f"{key}:mahler#39", json.dumps({
+                        "state": "capacity_wait", "retry_at": retry_at}))
+                    reason = self.idle(cfg, led)["reasons"][0]
+                    self.assertIn(f"{role} waiting for capacity; {expected}", reason["text"])
+                    self.assertIsNone(reason["countdown"])
+            led.set_kv(f"{key}:mahler#39", "")
+
+    def test_capacity_review_after_fix_ignores_old_failed_verdict(self):
+        cfg, led = make_cfg(), make_led()
+        all_fresh(led)
+        led.upsert_item("mahler", 39, title="feature", state="verifying", pr=112,
+                        labels=json.dumps(["size:m"]))
+        led.upsert_item("mahler", 40, title="next", state="ready")
+        led.set_kv("ci:mahler#39:112", json.dumps({"state": "green", "sha": "new"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "sha": "old"}))
+        led.set_kv("reviewfix-status:mahler#39", json.dumps({"state": "running"}))
+        retry = led.now() + timedelta(hours=2)
+        for retry_at, expected in (
+                (iso(retry), f"retry around {retry.astimezone():%b %d %H:%M %Z}"),
+                (None, "retry time unknown; will re-check")):
+            with self.subTest(retry_at=retry_at):
+                led.set_kv("review-wait:mahler#39", json.dumps({
+                    "state": "capacity_wait", "sha": "new", "retry_at": retry_at}))
+                reason = self.idle(cfg, led)["reasons"][0]
+                self.assertIn(f"review waiting for capacity; {expected}", reason["text"])
+                self.assertIsNone(reason["countdown"])
+
+    def test_active_fix_does_not_show_old_capacity_wait(self):
+        cfg, led = make_cfg(), make_led()
+        led.upsert_item("mahler", 39, state="verifying", pr=112)
+        led.set_kv("ci:mahler#39:112", json.dumps({"state": "green"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+        led.set_kv("reviewfix-status:mahler#39", json.dumps({"state": "capacity_wait"}))
+        led.create_run(project="mahler", number=39, role="fix", platform="claude", epoch=1)
+        text, _ = state._verification_wait(led, "mahler", led.item("mahler", 39), led.now())
+        self.assertEqual(text, " — review failed; waiting for a fix run.")
+
     def test_verifying_item_uses_head_ci_start_time(self):
         cfg, led = make_cfg(), make_led()
         all_fresh(led)

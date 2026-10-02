@@ -100,6 +100,8 @@ def cmd_events(a, cfg, led):
 
 
 def cmd_status(a, cfg, led):
+    from .console.state import capacity_wait_text
+
     now = led.now()
     if not a.json:
         for warning in platforms.effort_warnings(cfg) + config.routing_warnings(cfg):
@@ -171,8 +173,10 @@ def cmd_status(a, cfg, led):
         est = int(led.issue_estimate(ests, i["project"]))
         est_str = f"  ~{est}m"
         url = item_url(i["project"], i["number"], i)
+        capacity = capacity_wait_text(led, i["project"], i, now)
+        wait = f"  — {capacity}" if capacity else ""
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
-              f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}")
+              f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}{wait}")
     print("\nQuota")
     burst_lines = router.all_bursts(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None

@@ -1605,6 +1605,51 @@ def _launch_breaker_reasons(led, projects, now):
     return reasons
 
 
+def capacity_wait_text(led, project, item, now):
+    """Shared console/CLI copy for the current review or fix capacity wait."""
+    if row_get(item, "state") != "verifying" or not row_get(item, "pr"):
+        return ""
+
+    def read(key):
+        try:
+            value = json.loads(led.get_kv(key) or "null")
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    number = item["number"]
+    ci = read(f"ci:{project}#{number}:{item['pr']}")
+    review = read(f"review:{project}#{number}")
+    # Like the ship review gate, ignore a verdict for an older PR head.
+    # A fresh pending verdict is only written once the next review starts.
+    if ci.get("sha") and review.get("sha") != ci["sha"]:
+        review = {}
+    if ci.get("state") == "red" or (ci.get("state") == "green"
+                                         and review.get("verdict") == "fail"):
+        role, key = "fix", "reviewfix-status"
+    elif ci.get("state") == "green" and review.get("verdict") in (None, "pending"):
+        role, key = "review", "review-wait"
+    else:
+        return ""
+    wait = read(f"{key}:{project}#{number}")
+    if wait.get("state") != "capacity_wait":
+        return ""
+    if any(r["project"] == project and r["number"] == number
+           and r["role"] in ("fix", "review") for r in led.active_runs()):
+        return ""
+    try:
+        retry = parse(wait.get("retry_at"))
+    except (AttributeError, TypeError, ValueError):
+        retry = None
+    if retry and retry > now:
+        timing = f"retry around {retry.astimezone():%b %d %H:%M %Z}"
+    elif retry:
+        timing = "retry due; will re-check"
+    else:
+        timing = "retry time unknown; will re-check"
+    return f"{role} waiting for capacity; {timing}"
+
+
 def _verification_wait(led, project, item, now):
     """Describe the conductor's current wait for a verifying item.
 
@@ -1627,6 +1672,9 @@ def _verification_wait(led, project, item, now):
     ci_state = ci.get("state")
     since = parse(ci.get("since")) or parse(row_get(item, "state_changed_at"))
     elapsed = _mins(now - since) if since else 0
+    capacity = capacity_wait_text(led, project, item, now)
+    if capacity:
+        return f" — {capacity}.", None
     if ci_state in (None, "pending"):
         return (f" — CI has been pending {elapsed} minute{'s' if elapsed != 1 else ''}.",
                 elapsed)
@@ -1727,7 +1775,8 @@ def _project_idle_reasons(cfg, led, projects, pending, schedule_holds, now):
             text = f"New builds wait for {_ref(name, v['number'])} to merge"
             wait_text, pending_m = _verification_wait(led, name, v, now)
             text += wait_text if v["pr"] else "."
-            timeout = p.get("verify_timeout_minutes", 60) - pending_m
+            timeout = (p.get("verify_timeout_minutes", 60) - pending_m
+                       if pending_m is not None else 0)
             reason = {"text": text,
                       "countdown": f"verify timeout in {_dur(timedelta(minutes=timeout))}"
                       if v["pr"] and timeout > 0 else None}
