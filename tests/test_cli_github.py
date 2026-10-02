@@ -16,7 +16,7 @@ from mahler.ledger import Ledger
 
 
 class InteractiveIdentityTests(unittest.TestCase):
-    def exercise(self, operation, identity):
+    def check_identity(self, operation, identity):
         cfg = copy.deepcopy(config.DEFAULTS)
         cfg['projects']['x'] = {'repo': 'owner/repo', 'path': '/fake'}
         if identity != 'personal':
@@ -101,4 +101,4 @@ class InteractiveIdentityTests(unittest.TestCase):
                           'add_item', 'handoff', 'claim', 'lease_release'):
             for identity in ('app', 'work', 'personal'):
                 with self.subTest(operation=operation, identity=identity):
-                    self.exercise(operation, identity)
+                    self.check_identity(operation, identity)
