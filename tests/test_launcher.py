@@ -1,6 +1,8 @@
 """Exercise the installed POSIX launcher with isolated Git and command stubs."""
 
 import os
+import shutil
+import shlex
 from pathlib import Path
 import subprocess
 import tempfile
@@ -173,3 +175,37 @@ esac
         self.run_launcher()
         self.assert_decision('blocked', 'candidate_checkout_failed')
         self.assertEqual(self.git('rev-parse', 'HEAD'), self.good)
+
+    def test_git_lookup_and_restore_failures(self):
+        real_git = shutil.which('git')
+        self.script(self.stubs / 'git', """case "$*" in
+  *'rev-parse --verify HEAD') [ "${FAIL_GATE:-}" = head ] && exit 1 ;;
+  *'rev-parse --verify refs/remotes/origin/main^{commit}')
+    [ "${FAIL_GATE:-}" = candidate ] && exit 1 ;;
+  *"checkout -q --detach $RESTORE_SHA")
+    [ "${FAIL_GATE:-}" = restore ] && exit 1 ;;
+esac
+exec """ + shlex.quote(real_git) + ' "$@"\n')
+        self.env['RESTORE_SHA'] = self.good
+        self.git('checkout', '-q', '--detach', self.good)
+        self.run_launcher(FAIL_GATE='head')
+        self.assert_decision('blocked', 'head_lookup_failed', 'unknown', 'unknown')
+        self.run_launcher(FAIL_GATE='candidate')
+        self.assert_decision('blocked', 'candidate_lookup_failed', self.good, 'unknown')
+        self.run_launcher(FAIL_GATE='restore', TEST_RC='1')
+        self.assert_decision('blocked', 'tests_failed_restore_failed')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.bad)
+
+    def test_failed_tick_and_rollback_checkout_are_logged(self):
+        self.run_launcher(1)
+        self.assert_decision('blocked', 'tick_failed', self.bad, 'unknown')
+        (self.home / 'launch_ok').write_text('not-a-commit')
+        self.run_launcher(3)
+        self.assert_decision('blocked', 'rollback_checkout_failed', self.bad, 'unknown')
+
+    def test_missing_app_is_logged(self):
+        self.app.rename(self.home / 'unavailable')
+        result = subprocess.run(['/bin/sh', str(LAUNCHER)], cwd=self.home,
+                                env=self.env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        self.assert_decision('blocked', 'app_unavailable', 'unknown', 'unknown')
