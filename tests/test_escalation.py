@@ -117,7 +117,7 @@ class TierEscalationTests(unittest.TestCase):
                     item = self.led.item("p", number)
                     self.assertEqual((item["state"], item["attempts"]), ("failed", 5))
 
-    def test_completed_genuine_fix_clears_cycle_charge(self):
+    def test_completed_genuine_fix_clears_cycle_dedup(self):
         for reason in (None, "timeout"):
             with self.subTest(reason=reason):
                 key = "red:p#97:10:same-head"
@@ -128,8 +128,58 @@ class TierEscalationTests(unittest.TestCase):
                     platform="agy-claude", epoch=1, status="ended")
                 self.led.update_run(run_id, stop_reason=reason)
                 ship._clear_charged_if_fix_completed(self.led, "p", 97, key)
+                self.assertIsNone(self.led.get_kv(key))
                 self.assertIsNone(self.led.get_kv(f"{key}:charged"))
                 self.led.con.execute("DELETE FROM runs WHERE id=?", (run_id,))
+
+    def test_genuine_fix_failures_on_unchanged_head_keep_escalating(self):
+        for trigger, number in (("ci", 97), ("review", 98)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item("p", number, state="verifying", title="fix me",
+                                     labels='["size:s"]', branch="b", pr=10,
+                                     attempts=1, esc_fails=0, esc_tier=0)
+                now = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
+
+                def attempt():
+                    args = (self.ctx, "p", self.led.item("p", number), 10,
+                            {"headRefName": "b", "headRefOid": "same-head"})
+                    if trigger == "ci":
+                        ship._red_ci(*args)
+                    else:
+                        ship._review_triggered_fix(*args, "blocking findings")
+
+                def complete_fix():
+                    now[0] += timedelta(minutes=1)
+                    self.led.create_run(
+                        project="p", number=number, role="fix", platform="kilo",
+                        epoch=1, status="ended", stop_reason="timeout")
+                    now[0] += timedelta(minutes=1)
+
+                with mock.patch.object(self.led, "now", side_effect=lambda: now[0]), \
+                     mock.patch("mahler.ship.start", return_value=True), \
+                     mock.patch("mahler.router.pick_for_project",
+                                return_value=("agy-claude", [])):
+                    attempt()
+                    self.assertEqual((self.led.item("p", number)["attempts"],
+                                      self.led.item("p", number)["esc_fails"]), (2, 1))
+
+                    complete_fix()
+                    attempt()
+                    item = self.led.item("p", number)
+                    self.assertEqual((item["attempts"], item["esc_fails"], item["esc_tier"]),
+                                     (3, 0, 2))
+
+                    complete_fix()
+                    attempt()
+                    item = self.led.item("p", number)
+                    self.assertEqual((item["attempts"], item["esc_fails"], item["esc_tier"]),
+                                     (4, 1, 2))
+
+                    complete_fix()
+                    attempt()
+                    item = self.led.item("p", number)
+                    self.assertEqual((item["state"], item["attempts"], item["esc_fails"],
+                                      item["esc_tier"]), ("failed", 5, 0, 3))
 
     def test_review_and_ci_escalate_from_builder_not_reviewer(self):
         for failure in ("review", "ci"):

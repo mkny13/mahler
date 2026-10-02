@@ -373,9 +373,12 @@ def _kv_json(led, key):
 
 
 def _clear_charged_if_fix_completed(led, project, number, key):
-    """Clear the :charged flag if a fix run for this item has completed since
-    the cycle key was created. This ensures a failed fix attempt on an
-    unchanged head is counted as a new failure cycle (mahler#657)."""
+    """Reopen the cycle if a genuine fix run completed since it was created.
+
+    Both the base key and ``:charged`` deduplicate a failure while its fix is
+    waiting for capacity.  Once that fix genuinely ends, an unchanged failing
+    head is a new failure cycle and must spend its escalation budget.
+    """
     cycle_ts = led.get_kv(key)
     if not cycle_ts:
         return
@@ -387,6 +390,7 @@ def _clear_charged_if_fix_completed(led, project, number, key):
         "AND coalesce(stop_reason, '') NOT IN (?, ?, ?) LIMIT 1",
         (project, number, cycle_ts, *CAPACITY_STOPS))
     if run:
+        led.set_kv(key, None)
         led.set_kv(f"{key}:charged", None)
 
 
