@@ -751,7 +751,24 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
             continue
         state, _ = usage_state(led, name, pc, burst_lines)
         times = [peak_until] if peak and pc.get("kind") == "claude" and not pin else []
-        if state == "stale" or codex_quota(led, name, pc).get("blocked"):
+        quota = codex_quota(led, name, pc)
+        if quota.get("blocked"):
+            # Blocked accounts can expose nonstandard windows only in the
+            # Codex metadata. Preserve their resets, but never infer recovery
+            # from a stale reading or an unexplained account block.
+            sampled = _ts(quota.get("sampled_at"))
+            exhausted = [w for w in quota.get("windows", []) if w["used_pct"] >= 100]
+            blocking = [w for w in quota.get("windows", [])
+                        if w["used_pct"] >= effective_lines(
+                            led, name, pc, w["window"], burst_lines)[0]]
+            resets = [_ts(w.get("resets_at")) for w in blocking]
+            if (sampled and now - sampled < timedelta(minutes=pc.get("stale_minutes", 15))
+                    and exhausted and resets and all(t and t > now for t in resets)):
+                recoveries.append(max(times + resets))
+            else:
+                recoveries.append(None)
+            continue
+        if state == "stale":
             recoveries.append(None)
             continue
         unknown = False

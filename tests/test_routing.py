@@ -71,6 +71,36 @@ class CapacityRecoveryTests(unittest.TestCase):
             self.led.record_usage("agy-claude", "hold", 100, iso(NOW + timedelta(hours=1)))
             self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=1),) * 2)
 
+    def test_codex_blocked_quota_preserves_known_recovery(self):
+        self.cfg["routing"]["build"] = ["codex", "agy-gemini"]
+        for window in ("weekly", "43200m"):
+            with self.subTest(window=window):
+                self.led.set_kv("codex:quota:codex", json.dumps({
+                    "blocked": True, "sampled_at": iso(NOW),
+                    "windows": [
+                        {"window": "5h", "used_pct": 100,
+                         "resets_at": iso(NOW + timedelta(hours=1))},
+                        {"window": window, "used_pct": 100,
+                         "resets_at": iso(NOW + timedelta(hours=2))},
+                    ],
+                }))
+                self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=2),) * 2)
+
+    def test_codex_blocked_unknown_recovery_keeps_probing(self):
+        self.cfg["routing"]["build"] = ["codex", "agy-gemini"]
+        for case in ("stale", "missing_sample", "missing_reset", "expired", "low_usage"):
+            with self.subTest(case=case):
+                self.led.set_kv("codex:quota:codex", json.dumps({
+                    "blocked": True,
+                    "sampled_at": (None if case == "missing_sample" else
+                                   iso(NOW - timedelta(hours=1) if case == "stale" else NOW)),
+                    "windows": [{"window": "43200m",
+                                 "used_pct": 20 if case == "low_usage" else 100,
+                                 "resets_at": (None if case == "missing_reset" else
+                                               iso(NOW + timedelta(hours=-1 if case == "expired" else 2)))}],
+                }))
+                self.assertEqual(self.recovery()[1:], (NOW + timedelta(hours=4), None))
+
     def test_tier_and_reviewer_exclusion_are_permanent_but_busy_is_not(self):
         self.assertEqual(self.recovery(min_tier=99), ([], None, None))
         self.assertEqual(self.recovery(exclude={"agy-claude", "agy-gemini"}), ([], None, None))
