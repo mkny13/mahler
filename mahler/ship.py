@@ -11,7 +11,7 @@ import re
 from datetime import timedelta
 
 from . import config, failures, router, runner
-from .finalize import retry_or_fail
+from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .tick import busy_platforms, start
@@ -372,6 +372,29 @@ def _kv_json(led, key):
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _clear_charged_if_fix_completed(led, project, number, key):
+    """Reopen a failure cycle after a genuine fix run completed.
+
+    The cycle key and its ``:charged`` marker keep capacity-interrupted fixes
+    from spending the attempt budget again. An ended fix that actually ran
+    and was not a capacity interruption means the unchanged failing head is
+    a new failure cycle and must count normally.
+    """
+    cycle_ts = led.get_kv(key)
+    if not cycle_ts:
+        return
+    run = led.q1(
+        "SELECT 1 FROM runs WHERE project=? AND number=? AND role='fix' "
+        "AND status='ended' AND started_at > ? "
+        "AND outcome IS NOT NULL AND outcome != 'not claimed' "
+        "AND outcome NOT LIKE 'launch failed:%' "
+        "AND coalesce(stop_reason, '') NOT IN (?, ?, ?) LIMIT 1",
+        (project, number, cycle_ts, *CAPACITY_STOPS))
+    if run:
+        led.set_kv(key, None)
+        led.set_kv(f"{key}:charged", None)
 
 
 def _mark_capacity_wait(led, project, item, role):
@@ -739,6 +762,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    _clear_charged_if_fix_completed(led, project, n, key)
+    if led.get_kv(f"{key}:charged"):
+        attempts = item["attempts"]
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
 
@@ -828,6 +854,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
              **({"explore": True} if explore else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
+        led.set_kv(f"{key}:charged", "1")
 
 
 def _red_ci(ctx, project, item, pr, view):
@@ -859,6 +886,9 @@ def _red_ci(ctx, project, item, pr, view):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    _clear_charged_if_fix_completed(led, project, n, key)
+    if led.get_kv(f"{key}:charged"):
+        attempts = item["attempts"]
     if not led.get_kv(key):
         led.set_kv(key, iso(led.now()))
 
@@ -943,6 +973,7 @@ def _red_ci(ctx, project, item, pr, view):
              **({"explore": True} if explore else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
+        led.set_kv(f"{key}:charged", "1")
 
 
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):

@@ -247,6 +247,26 @@ class RunTests(unittest.TestCase):
         self.assertEqual((item["state"], item["attempts"], item["esc_tier"],
                           item["esc_fails"]), ("ready", 2, 1, 1))
 
+    def test_capacity_stops_preserve_fix_shipping_and_failure_budget(self):
+        for reason in finalize.CAPACITY_STOPS:
+            with self.subTest(reason=reason):
+                self.led.upsert_item("x", 5, state="working", pr=88,
+                                     attempts=2, esc_tier=1, esc_fails=1)
+                self.run.update(role="fix", stop_reason=reason)
+                self.led.release("x", 5)
+                lease, _ = self.led.claim("x", 5, f"run:{self.run_id}", "auto", 30)
+                self.run["epoch"] = lease["epoch"]
+                with open(self.log, "w") as fh:
+                    fh.write("provider unavailable\n")
+                with mock.patch.object(self.ctx, "ping") as ping:
+                    self.finalize()
+                item = self.led.item("x", 5)
+                self.assertEqual((item["state"], item["attempts"], item["esc_tier"],
+                                  item["esc_fails"]), ("verifying", 2, 1, 1))
+                self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+                self.assertFalse(any("needs you" in c.args[0].lower()
+                                     for c in ping.call_args_list))
+
     def test_no_status_line_is_still_a_failed_attempt(self):
         with open(self.log, "w") as fh:
             fh.write("Now opening the PR:\n")          # the mahler#8 failure mode
