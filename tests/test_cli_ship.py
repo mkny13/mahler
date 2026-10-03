@@ -102,6 +102,56 @@ class ShipCommandTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(self.led.item("x", 7)["state"], "verifying")
 
+    def test_terminal_reship_resets_only_retry_budget(self):
+        for state in ("failed", "needs_you"):
+            with self.subTest(state=state):
+                self.led.upsert_item("x", 7, state=state, attempts=6,
+                                     setup_fails=2, esc_tier=3, esc_fails=1)
+                preserved = ("review:x#7", "reviewhistory:x#7:395", "followup:x#7",
+                             "failed_comment:x#7:1:0:0", "red:x#70:395:head")
+                cleared = ("reviewfix:x#7:395:head", "reviewfix:x#7:395:head:charged",
+                           "red:x#7:395:head", "red:x#7:395:head:charged")
+                for key in preserved + cleared:
+                    self.led.set_kv(key, "historical evidence")
+                run = self.led.create_run(project="x", number=7, role="review",
+                                          platform="test", epoch=1)
+                before = dict(self.led.run(run))
+                old_cycle = self.led.get_kv("attempt_cycle:x#7")
+                self.assertEqual(self.run_ship(pr=395)[0], 0)
+                item = self.led.item("x", 7)
+                self.assertEqual([item[k] for k in
+                                  ("attempts", "setup_fails", "esc_tier", "esc_fails")],
+                                 [0, 0, 0, 0])
+                self.assertNotEqual(self.led.get_kv("attempt_cycle:x#7"), old_cycle)
+                self.assertEqual(dict(self.led.run(run)), before)
+                for key in preserved:
+                    self.assertEqual(self.led.get_kv(key), "historical evidence")
+                for key in cleared:
+                    self.assertIsNone(self.led.get_kv(key))
+                self.assertIsNotNone(self.led.q1(
+                    "SELECT 1 FROM events WHERE kind='attempt_cycle'"))
+
+    def test_repeated_active_ship_does_not_replenish_budget(self):
+        self.led.upsert_item("x", 7, state="verifying", attempts=2, esc_fails=1)
+        self.led.set_kv("attempt_cycle:x#7", "existing")
+        for _ in range(2):
+            self.assertEqual(self.run_ship(pr=395)[0], 0)
+            self.assertEqual(self.led.item("x", 7)["attempts"], 2)
+            self.assertEqual(self.led.item("x", 7)["esc_fails"], 1)
+            self.assertEqual(self.led.get_kv("attempt_cycle:x#7"), "existing")
+
+    def test_failed_validation_preserves_exhausted_item_and_markers(self):
+        self.led.upsert_item("x", 7, state="failed", attempts=6, esc_fails=2)
+        self.led.set_kv("reviewfix:x#7:395:head:charged", "1")
+        before = dict(self.led.item("x", 7))
+        for failure in (GHError("unavailable"), None):
+            self.gh.pr_view.side_effect = failure
+            self.gh.pr_view.return_value = view(state="CLOSED")
+            self.assertEqual(self.run_ship(pr=395)[0], 1)
+            self.assertEqual(dict(self.led.item("x", 7)), before)
+            self.assertIsNone(self.led.get_kv("attempt_cycle:x#7"))
+            self.assertEqual(self.led.get_kv("reviewfix:x#7:395:head:charged"), "1")
+
     def test_parser_wires_the_command(self):
         with mock.patch.object(cli, "cmd_ship", return_value=0) as fn, \
                 mock.patch.object(cli.config, "load", return_value=self.cfg), \

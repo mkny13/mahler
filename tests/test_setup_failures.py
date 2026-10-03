@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 
-from mahler import finalize, scheduler, sync
+from mahler import failures, finalize, scheduler, sync
 from mahler.gh import GHError
 from mahler.ledger import Ledger
 
@@ -130,6 +130,31 @@ class SetupFailureTests(unittest.TestCase):
         self.assertEqual(item["setup_fails"], 0)
         self.assertEqual(item["attempts"], 1)
         self.assertEqual(item["state"], "inbox")
+
+    def test_legacy_over_limit_diagnostic_reports_actual_exhausted_budget(self):
+        self.led.upsert_item("p", 8, attempts=6)
+        failures.report(self.ctx, "p", 8, "review_rejected", output="blocking finding")
+        self.assertIn("attempt budget exhausted (6 attempts; limit 3)", self.gh.comments[-1])
+        self.assertNotIn("attempt 6 of 3", self.gh.comments[-1])
+
+    def test_diagnostic_deduplication_is_per_cycle_and_keeps_pending_history(self):
+        self.led.upsert_item("p", 8, attempts=1)
+        self.gh.fail_comment = True
+        failures.report(self.ctx, "p", 8, "review_rejected", output="old finding")
+        old = self.led.q1("SELECT key,value FROM kv WHERE key LIKE 'failed_comment:%'")
+        self.led.set_kv("attempt_cycle:p#8", "new-cycle")
+        self.gh.fail_comment = False
+        for _ in range(2):
+            failures.report(self.ctx, "p", 8, "review_rejected", output="new finding")
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn("attempt 1 of 3", self.gh.comments[0])
+        self.assertIn("cycle=new-cycle", self.gh.comments[0])
+        self.assertEqual(self.led.get_kv(old["key"]), old["value"])
+        self.gh.issue_comments = lambda n: [{"body": b} for b in self.gh.comments]
+        failures.backfill(self.ctx, [{"name": "p"}])
+        self.assertEqual(len(self.gh.comments), 2)
+        self.assertIn("old finding", self.gh.comments[-1])
+        self.assertEqual(self.led.get_kv(old["key"]), "sent")
 
     def test_go_clears_the_count(self):
         self.end()
