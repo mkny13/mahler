@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timedelta
 
 from . import config, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
@@ -337,6 +338,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 
 def main():
     my_id = os.environ.get("CLAUDE_CODE_SESSION_ID", "")[:8]
@@ -378,6 +380,7 @@ if __name__ == "__main__":
     with open(os.path.join(hooks_dir, "pre_tool_use.py"), "w") as f:
         f.write(f"""#!/usr/bin/env python3
 import sys
+import uuid
 import os
 import json
 import subprocess
@@ -664,6 +667,19 @@ def cmd_ship(a, cfg, led):
     fields = {"branch": branch, "pr": pr, "title": title or f"{project} #{n}"}
     if a.summary:
         fields["summary"] = a.summary
+    if item and item["state"] in ("failed", "needs_you"):
+        # An explicit, validated retry gets the same counters as /mahler go.
+        # Keep review rounds, follow-ups and diagnostic delivery history intact.
+        fields.update(attempts=0, setup_fails=0, esc_tier=0, esc_fails=0)
+        for prefix in (f"reviewfix:{project}#{n}:", f"red:{project}#{n}:"):
+            for saved in led.q("SELECT key FROM kv WHERE substr(key, 1, ?)=?",
+                               (len(prefix), prefix)):
+                led.set_kv(saved["key"], None)
+        cycle = uuid.uuid4().hex
+        led.set_kv(f"attempt_cycle:{project}#{n}", cycle)
+        led.event("attempt_cycle", project, n,
+                  {"cycle": cycle, "reason": "manual ship", "previous_state": item["state"],
+                   "previous_attempts": item["attempts"], "holder": a.holder})
     led.upsert_item(project, n, **fields)
     led.set_state(project, n, "verifying", f"handed to the conductor by {a.holder}")
     if cur:

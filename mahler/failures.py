@@ -84,6 +84,9 @@ def report(ctx, project, number, reason=None, *, run=None, output=None, branch=N
     identity = latest["id"] if latest else run.get("id", 0)
     key = (f"failed_comment:{project}#{number}:{attempt}:"
            f"{identity}:{row_get(item, 'setup_fails', 0)}")
+    cycle = led.get_kv(f"attempt_cycle:{project}#{number}")
+    if cycle:
+        key += f":cycle={cycle}"
     if led.get_kv(key) == "sent":
         return
     pending = led.get_kv(key)
@@ -119,10 +122,13 @@ def report(ctx, project, number, reason=None, *, run=None, output=None, branch=N
         if output is None:
             output = log_tail(run.get("log_path"))
         tail = "\n".join((output or "reason not recorded — output unavailable").splitlines()[-30:])[-16384:]
+        limit = ctx.policy(project)["max_attempts"]
+        budget = (f"attempt {attempt} of {limit}" if attempt <= limit else
+                  f"attempt budget exhausted ({attempt} attempts; limit {limit})")
+        cycle_marker = f" cycle={cycle}" if cycle else ""
         body = (f"<!-- mahler:agent -->\n"
-                f"<!-- mahler:failed attempt={attempt} run={run.get('id', 0)} class={kind} -->\n"
-                f"**Run failed** — {platform} / {model}; attempt {attempt} of "
-                f"{ctx.policy(project)['max_attempts']}.\n\n"
+                f"<!-- mahler:failed attempt={attempt} run={run.get('id', 0)} class={kind}{cycle_marker} -->\n"
+                f"**Run failed** — {platform} / {model}; {budget}.\n\n"
                 f"Failure class: `{kind}`. {reason or 'reason not recorded'}\n\n"
                 + (f"Consecutive setup failures: {item['setup_fails']}.\n\n"
                    if kind == "setup_failed" else "")

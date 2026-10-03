@@ -13,9 +13,10 @@ import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest import mock
 
-from mahler import config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
+from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -1045,6 +1046,34 @@ class ShipTests(unittest.TestCase):
         self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
         self.ship()
         self.assertEqual(self.gh.merged, [88])
+
+    def test_manual_reship_review_budget_is_fresh_once_and_still_bounded(self):
+        self.led.upsert_item("x", 5, state="failed", pr=88, attempts=6,
+                             labels='["size:m"]')
+        key = "reviewfix:x#5:88:abc123"
+        self.led.set_kv(key, iso(NOW))
+        self.led.set_kv(key + ":charged", "1")
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, summary=None, holder="me")
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        with mock.patch.object(ship, "start", return_value=True) as start, \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            for _ in range(2):
+                ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                           self.gh.pr_view(88), "blocking finding")
+                self.assertEqual(self.item()["attempts"], 1)
+            self.assertEqual(start.call_count, 2)
+            # A new failing head consumes the next attempt; the third exhausts it.
+            for attempt in (2, 3):
+                self.gh.head_sha = f"head-{attempt}"
+                ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                           self.gh.pr_view(88), "blocking finding")
+                self.assertEqual(self.item()["attempts"], attempt)
+            self.assertEqual(start.call_count, 3)
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertIn("attempt 3 of 3", self.gh.comments[-1])
+        self.assertIn("cycle=" + self.led.get_kv("attempt_cycle:x#5"), self.gh.comments[-1])
 
     def test_review_fail_verdict_starts_a_fix_round_with_findings(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
