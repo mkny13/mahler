@@ -157,7 +157,8 @@ def _post_review_comment(e, passed, findings=""):
 
 def _classified_review(e, verdict):
     info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
-    if info.get("run_id") not in (None, e.run["id"]):
+    if (info.get("run_id") not in (None, e.run["id"])
+            or info.get("pr", e.item["pr"]) != e.item["pr"]):
         return False  # A late finalization must not overwrite a newer review.
     try:
         body = e.ctx.gh(e.project).issue_body(e.number) if (e.rest or "").lstrip().startswith("{") else ""
@@ -198,6 +199,9 @@ def _review_failed(e):
         history.append({"sha": review.get("sha"), "findings": blockers or "",
                         "at": iso(e.led.now()), "run_id": e.run["id"],
                         "platform": e.run["platform"]})
+        if review.get("classified") is not None:
+            history[-1]["classified"] = review["classified"]
+        history[-1]["pr"] = e.item["pr"]
         e.led.set_kv(key, json.dumps(history))
     if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
         _post_review_comment(e, passed=False, findings=e.rest)

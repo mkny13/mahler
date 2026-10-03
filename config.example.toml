@@ -17,6 +17,10 @@ routing_mode = "list"
 # installation_id = 67890
 # private_key_path = "/absolute/path/to/private-key.pem"
 
+[defaults]
+# Distinct green heads with usable reviews; inclusive, positive integer.
+review_green_rounds = 2
+
 [ntfy]
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
@@ -26,6 +30,7 @@ enabled = false                 # opt in only after repo, path and verify are co
 repo = "your-org/your-repo"
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
+# review_green_rounds = 3        # optional per-project override
 # github_app_installation_id = 98765  # override for another GitHub owner
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
 # Defaults to true with a personal account, false for work-only projects.

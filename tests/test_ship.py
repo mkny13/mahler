@@ -945,7 +945,7 @@ class ShipTests(unittest.TestCase):
         role, platform, context = calls[0]
         self.assertEqual(role, "review")
         info = json.loads(self.led.get_kv("review:x#5"))
-        self.assertEqual(info, {"sha": "greensha1", "verdict": "pending", "run_id": None})
+        self.assertEqual(info, {"sha": "greensha1", "pr": 88, "verdict": "pending", "run_id": None})
 
     def test_review_excludes_the_builder_platform(self):
         """DESIGN D11: the reviewer must be a different platform than
@@ -1289,7 +1289,7 @@ class ShipTests(unittest.TestCase):
             "findings": "auth.py: missing null check | db.py: unindexed query",
             "at": iso(NOW),
             "run_id": run["id"],
-            "platform": run["platform"],
+            "platform": run["platform"], "pr": 88,
         }])
         self.assertIn("missing null check", info["findings"])
         body = self.gh.comments[-1]
@@ -1962,22 +1962,14 @@ class TestReviewConvergence(unittest.TestCase):
             "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
         return history
 
-    def test_two_divergent_transitions_escalate_before_attempt_limit(self):
+    def test_two_divergent_transitions_keep_blockers_in_bounded_fix_flow(self):
         findings = ["auth.py: null check", "db.py: query", "api.py: unsafe input"]
         self.rounds(findings)
-        self.led.upsert_item("x", 5, attempts=self.ctx.policy("x")["max_attempts"] - 1)
-        with mock.patch.object(ship, "start") as start:
-            ping = self.ship()
+        with mock.patch.object(ship, "start", return_value=True) as start:
             self.ship()
-        start.assert_not_called()
-        self.assertEqual(self.item()["state"], "needs_you")
-        self.assertIsNone(self.led.lease("x", 5))
-        self.assertEqual(json.loads(self.item()["options"]),
-                         ["cut scope", "split the item", "merge with follow-ups", "keep fixing"])
-        for i, finding in enumerate(findings, 1):
-            self.assertIn(f"Round {i}", self.item()["question"])
-            self.assertIn(finding, self.item()["question"])
-        ping.assert_called_once()
+        self.assertEqual(start.call_args.args[3], "fix")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
         self.assertFalse(self.gh.merged)
 
     def test_one_divergence_then_overlap_or_repeat_starts_a_fix(self):
@@ -2038,10 +2030,8 @@ class TestReviewConvergence(unittest.TestCase):
         self.rounds(findings)
         with mock.patch.object(ship, "start") as start:
             self.ship()
-        start.assert_not_called()
-        self.assertEqual(self.item()["state"], "needs_you")
-        for finding in findings:
-            self.assertIn(finding, self.item()["question"])
+        self.assertEqual(start.call_args.args[3], "fix")
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
 
     def test_shared_dotted_expression_does_not_mask_divergent_locations(self):
         findings = ["auth.py:10 missing validation before json.loads",
@@ -2052,12 +2042,13 @@ class TestReviewConvergence(unittest.TestCase):
         self.rounds(findings)
         with mock.patch.object(ship, "start") as start:
             self.ship()
-        start.assert_not_called()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(start.call_args.args[3], "fix")
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
 
     def test_retry_does_not_reescalate_the_same_history(self):
         history = self.rounds(["a.py: bug", "b.py: bug", "c.py: bug"])
-        self.ship()
+        with mock.patch.object(ship, "start", return_value=False):
+            self.ship()
         self.led.upsert_item("x", 5, state="verifying")
         with mock.patch.object(ship, "start", return_value=True) as start:
             self.ship()
@@ -2079,7 +2070,7 @@ class TestReviewConvergence(unittest.TestCase):
             recorded = json.loads(self.led.get_kv("reviewfindings:x#5"))
             self.assertEqual(recorded, history + [{
                 "sha": "head-3", "findings": ending.rest,
-                "at": iso(NOW), "run_id": 20, "platform": "agy-gemini"}])
+                "at": iso(NOW), "run_id": 20, "platform": "agy-gemini", "pr": 88}])
             finalize._review_passed(ending)
         self.assertEqual(self.led.get_kv("reviewconvergence:x#5"), "3")
 
@@ -2489,3 +2480,150 @@ class TestClassifiedReview(unittest.TestCase):
         self.gh.create_issue.return_value = "https://github.com/x/y/issues/99"
         self.gate()[0].assert_called_once()
         self.assertEqual(self.gh.issue_by_marker.call_count, 2)
+
+
+class TestGreenReviewRounds(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    finding = TestClassifiedReview.finding
+    ending = TestClassifiedReview.ending
+    finish = TestClassifiedReview.finish
+    gate = TestClassifiedReview.gate
+
+    def rounds(self):
+        from mahler import review
+        return review.window(self.led, "x", 5, self.item()["pr"])
+
+    def complete_head(self, sha, findings, rid):
+        ending = self.ending(findings, rid=rid)
+        info = json.loads(self.led.get_kv("review:x#5"))
+        info.update(sha=sha, pr=self.item()["pr"])
+        self.led.set_kv("review:x#5", json.dumps(info))
+        self.gh.head_sha = sha
+        self.finish(ending, "fail" if any(f["severity"] == "blocking" for f in findings) else "pass")
+        return ending
+
+    def test_inclusive_threshold_and_different_file_followups_merge(self):
+        from mahler import review
+        for threshold in (2, 3):
+            self.cfg["projects"]["x"]["review_green_rounds"] = threshold
+            self.led.set_kv("reviewrounds:x#5:88", None)
+            self.led.set_kv("reviewresults:x#5", None)
+            self.gh.issue_by_marker = mock.Mock(return_value=None)
+            self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/99")
+            for number in range(1, threshold + 2):
+                with self.subTest(threshold=threshold, number=number):
+                    sha = f"head-{number}"
+                    self.led.upsert_item("x", 5, pr=88)
+                    context = review.start_context(self.ctx, "x", self.item(), 88, sha)
+                    self.assertIn(f"Green review round: {number};", context)
+                    self.assertEqual("Convergence threshold reached" in context, number >= threshold)
+                    finding = {**self.finding(), "location": f"file{number}.py:10"}
+                    self.complete_head(sha, [finding], threshold * 10 + number)
+                    merge, fix, _ = self.gate()
+                    merge.assert_called_once()
+                    fix.assert_not_called()
+                    self.assertEqual(len(self.rounds()), number)
+            self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+            self.assertEqual(self.gh.create_issue.call_count, threshold + 1)
+            self.assertTrue(any("Classified as nonblocking" in c for c in self.gh.comments))
+
+    def test_new_and_unresolved_blockers_remain_blocking_after_threshold(self):
+        for i, category in enumerate(("security", "security", "data-loss", "behavior"), 1):
+            f = {**self.finding("blocking"), "category": category}
+            if i == 4:
+                f.update(location="different.py:20", scenario="A normal save loses the update")
+            self.complete_head(f"head-{i}", [f], i)
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_called_once()
+            self.assertEqual(len(self.rounds()), i)
+        # Same file/line does not establish the same classified defect.
+        from mahler import review
+        a = self.finding("blocking")
+        self.assertTrue(review.same_findings([a], [a]))
+        self.assertFalse(review.same_findings([a], [{**a, "scenario": "New evidence"}]))
+
+    def test_rounds_survive_restart_retries_and_manual_reship(self):
+        ending = self.complete_head("abc123", [], 10)
+        self.gate()
+        self.finish(ending)
+        self.gate()
+        self.complete_head("abc123", [], 11)  # alternate reviewer, same head
+        self.gate()
+        self.assertEqual(len(self.rounds()), 1)
+        self.assertEqual(len(self.rounds()[0]["reviews"]), 2)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.gate()
+        self.assertEqual(len(self.rounds()), 1)
+        self.complete_head("second-head", [], 12)
+        self.gate()
+        self.assertEqual(len(self.rounds()), 2)
+        # Same SHA on a different PR cannot reuse the old verdict or round window.
+        self.led.upsert_item("x", 5, pr=89)
+        with mock.patch.object(ship, "_start_review_run") as start:
+            ship._review_gate(self.ctx, "x", self.item(), 89, self.gh.pr_view(89))
+        start.assert_called_once()
+        self.assertEqual(self.rounds(), [])
+        from mahler import review
+        self.assertIn("Green review round: 1;",
+                      review.start_context(self.ctx, "x", self.item(), 89, "second-head"))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": "second-head", "pr": 89, "verdict": "pass", "run_id": 13,
+            "classified": []}))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_merge_queued") as merge:
+            ship._review_gate(self.ctx, "x", self.item(), 89, self.gh.pr_view(89))
+        merge.assert_called_once()
+        self.assertEqual(len(self.rounds()), 1)
+        self.assertEqual(len(review.window(self.led, "x", 5, 88)), 2)
+
+    def test_red_pending_stale_and_missing_verdicts_never_count(self):
+        self.complete_head("abc123", [], 10)
+        for rollup in ([{"state": "FAILURE"}], [{"state": "PENDING"}]):
+            self.gh.rollup = rollup
+            merge, fix, start = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            start.assert_not_called()
+            self.assertEqual(self.rounds(), [])
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        self.gh.head_sha = "new-head"
+        self.gate()[2].assert_called_once()
+        self.assertEqual(self.rounds(), [])
+        self.gh.head_sha = "abc123"
+        for info in ({}, {"sha": "abc123", "verdict": "pending"}):
+            self.led.set_kv("review:x#5", json.dumps(info))
+            self.gate()[2].assert_called_once()
+            self.assertEqual(self.rounds(), [])
+
+    def test_review_start_receives_prior_classified_evidence(self):
+        f = self.finding("blocking")
+        self.complete_head("old-head", [f], 10)
+        self.gate()
+        self.gh.head_sha = "new-head"
+        self.led.set_kv("review:x#5", None)
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            ship._start_review_run(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), "new-head")
+        context = start.call_args.kwargs["context"]
+        self.assertIn("Green review round: 2; review_green_rounds: 2", context)
+        self.assertIn(f["scenario"], context)
+        self.assertIn("Do not revive fixed findings without new evidence", context)
+
+    def test_same_location_new_classified_evidence_is_not_repeat(self):
+        previous = self.finding("blocking")
+        current = {**previous, "scenario": "A newly demonstrated failure on the same line"}
+        for i, f in enumerate((previous, current), 1):
+            self.complete_head(f"head-{i}", [f], i)
+            self.gate()
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            self.assertIsNone(ship._repeat_finding(self.ctx, "x", 5, self.gh.pr_view(88)))
+        current["scenario"] = previous["scenario"]
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        history[-1]["classified"] = [current]
+        self.led.set_kv("reviewfindings:x#5", json.dumps(history))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            self.assertIsNotNone(ship._repeat_finding(self.ctx, "x", 5, self.gh.pr_view(88)))

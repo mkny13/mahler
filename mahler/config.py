@@ -123,6 +123,7 @@ DEFAULTS = {
         "max_parallel": 1,
         "settle_minutes": 10,          # sorted -> eligible to build (DESIGN D7)
         "max_attempts": 3,             # failed runs before needs-you
+        "review_green_rounds": 2,      # inclusive convergence threshold per PR
         "capacity_wait_max_hours": 24,  # unknown recovery backstop for review/fix capacity
         "verify_timeout_minutes": 60,  # CI pending longer than this -> needs-you (mahler#18)
         "run_timeout_minutes": 60,
@@ -1033,6 +1034,11 @@ def validate_accounts(cfg):
                         *cfg.get("projects", {}).items()]:
         if conf.get("routing_mode", "list") not in ("list", "measured"):
             raise ValueError(f"{scope}: routing_mode must be list or measured")
+    for scope, conf in [("defaults", cfg.get("defaults", {})),
+                        *cfg.get("projects", {}).items()]:
+        value = conf.get("review_green_rounds", 2)
+        if type(value) is not int or value < 1:
+            raise ValueError(f"{scope}: review_green_rounds must be a positive integer")
     group_accounts = {}
     for name, pconf in cfg.get("platforms", {}).items():
         if pconf.get("cost_class", "free") not in ("free", "paid"):
