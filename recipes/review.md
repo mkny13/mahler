@@ -17,7 +17,10 @@ Rules:
 1. **Be adversarial about correctness, not about completeness.** Try to disprove that this
    diff does what the issue asks, safely. A finding needs concrete evidence — a specific input
    or sequence of events, what happens, and what should happen instead. Style, naming, "could
-   be cleaner" and preference are never findings.
+   be cleaner" and preference are never findings. Compare CI/toolchain setup with the base:
+   removal or downgrade of CI/toolchain setup (including workflow toolchain-selection steps,
+   toolchain pins, XcodeGen `project.yml`, Gradle/SDK versions, package engines, and lockfiles)
+   is a blocking finding unless the issue explicitly requested that change.
 2. **Grade against the issue, not your own taste.** The issue's "Done when" list is the
    reference; a diff that satisfies it in a way you would not have chosen passes.
 3. **You cannot run the tests from here** (read-only checkout, no verify step). Trust CI's
