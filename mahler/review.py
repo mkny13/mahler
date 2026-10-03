@@ -37,7 +37,8 @@ def parse(verdict, text, issue_body=""):
         if f["category"] not in {"scope", "spec", "behavior", "security", "data-loss", "hardening", "testing"}:
             raise ValueError("unknown category")
         if f["severity"] == "blocking" and f["category"] in {"scope", "spec"}:
-            if not isinstance(f.get("done_when"), str) or f["done_when"] not in criteria:
+            if (not isinstance(f.get("done_when"), str) or not f["done_when"].strip()
+                    or f["done_when"] not in criteria):
                 raise ValueError("scope/spec blocker needs an exact Done-when line")
     if (verdict == "fail") != any(f["severity"] == "blocking" for f in findings):
         raise ValueError("verdict contradicts findings")

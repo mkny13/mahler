@@ -2335,7 +2335,7 @@ class TestClassifiedReview(unittest.TestCase):
         from mahler import review
         f = {**self.finding("blocking"), "category": "spec"}
         body = "## Done when\n- [ ] Retries preserve requests\n## Context\nOther text"
-        for citation in (None, "Other text", "Retries preserve requests"):
+        for citation in (None, "", "Other text", "Retries preserve requests"):
             f["done_when"] = citation
             with self.assertRaises(ValueError):
                 review.parse("fail", json.dumps({"findings": [f]}), body)
