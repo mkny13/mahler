@@ -150,6 +150,45 @@ def _closed_pr(ctx, project, item, pr, view):
         led.release(project, n, holder=CONDUCTOR)
 
 
+def _mergeability_observation(ctx, project, item, pr, view):
+    """Nudge GitHub across ticks; REST is only a trigger, never merge evidence."""
+    led = ctx.led
+    key = f"mergeability:{project}#{item['number']}:{pr}"
+    info = _kv_json(led, key)
+    identity = {"sha": view.get("headRefOid"), "base": view.get("baseRefName")}
+    if view.get("state") != "OPEN" or view.get("mergeable") != "UNKNOWN":
+        led.set_kv(key, "")
+        return view
+    if any(info.get(k) != v for k, v in identity.items()) or not info:
+        info = dict(identity, observations=0, refreshes=0, since=iso(led.now()))
+    info["observations"] += 1
+    due = (info["observations"] > 2 and
+           (not info.get("last_refresh") or
+            (info["refreshes"] < 3 and not info.get("error")) or
+            led.now() - parse(info["last_refresh"]) >= timedelta(minutes=5)))
+    if due:
+        info["refreshes"] += 1
+        info["last_refresh"] = iso(led.now())
+        # Persist before network work, including failed requests, for restart safety.
+        led.set_kv(key, json.dumps(info))
+        try:
+            ctx.gh(project).pr_refresh_mergeability(pr)
+            fresh = ctx.gh(project).pr_view(pr)
+        except (GHError, ValueError) as exc:
+            info["error"] = f"mergeability refresh failed: {exc}"
+        else:
+            info.pop("error", None)
+            if (fresh.get("state") != "OPEN" or fresh.get("mergeable") != "UNKNOWN"):
+                led.set_kv(key, "")
+                return fresh
+            fresh_identity = {"sha": fresh.get("headRefOid"), "base": fresh.get("baseRefName")}
+            if fresh_identity != identity:
+                info = dict(fresh_identity, observations=1, refreshes=0, since=iso(led.now()))
+            view = fresh
+    led.set_kv(key, json.dumps(info))
+    return view
+
+
 def _watch_pr(ctx, project, item, pr):
     """One step of the open PR's state machine, one step per tick: gone,
     conflicting, CI still running, CI red, or green and (queued to be)
@@ -161,6 +200,9 @@ def _watch_pr(ctx, project, item, pr):
     except (GHError, ValueError) as e:
         _ci_pending(ctx, project, item, pr, {}, reason=f"PR lookup failed: {e}")
         return
+    if not _ship_lease(ctx, project, item):
+        return
+    view = _mergeability_observation(ctx, project, item, pr, view)
     if not _ship_lease(ctx, project, item):
         return
     if view["state"] == "MERGED":
@@ -178,13 +220,14 @@ def _watch_pr(ctx, project, item, pr):
     # The timestamp for a pending head is initialized by _ci_pending; recording
     # the terminal state here prevents an old pending timestamp from being
     # mistaken for the current wait after CI finishes.
-    if state == "pending" or view.get("mergeable") == "UNKNOWN":
+    if state == "pending":
         _ci_pending(ctx, project, item, pr, view)
         return
     ci_key = f"ci:{project}#{item['number']}:{pr}"
     ci_seen = led.get_kv(ci_key)
     ci_info = json.loads(ci_seen) if ci_seen else {}
     ci_info["state"] = state
+    ci_info["base"] = view.get("baseRefName")
     if view.get("headRefOid"):
         ci_info["sha"] = view["headRefOid"]
     led.set_kv(ci_key, json.dumps(ci_info))
@@ -192,6 +235,11 @@ def _watch_pr(ctx, project, item, pr):
         # D18 (mahler#18): red CI starts a fix run from the PR branch, with the
         # failing log in its prompt. The conductor's lease goes to the run.
         _red_ci(ctx, project, item, pr, view)
+        return
+    if view.get("mergeable") == "UNKNOWN":
+        wait = _kv_json(led, f"mergeability:{project}#{n}:{pr}")
+        detail = f"; {wait['error']}" if wait.get("error") else ""
+        ctx.say(f"{project}#{n}: PR #{pr} — mergeability unknown{detail}")
         return
     _review_gate(ctx, project, item, pr, view)
 
@@ -489,6 +537,13 @@ def recover_capacity_waits(ctx, project):
             led.set_kv(key, "")
             for prefix in ("review-wait", "review-pinged", "reviewfix-status"):
                 led.set_kv(f"{prefix}:{project}#{n}", "")
+            for prefix in ("ci", "mergeability"):
+                led.set_kv(f"{prefix}:{project}#{n}:{item['pr']}", "")
+            queue_key = f"queue:{project}#{n}:{item['pr']}"
+            queued = _kv_json(led, queue_key)
+            if queued:
+                queued["since"] = iso(led.now())
+                led.set_kv(queue_key, json.dumps(queued))
             ctx.say(f"{project}#{n}: {role} capacity returned — verifying again")
         except Exception as exc:  # one unavailable route must not stop other items
             ctx.say(f"{project}#{n}: capacity recovery skipped — {exc}")

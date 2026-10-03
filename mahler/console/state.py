@@ -1681,6 +1681,12 @@ def _verification_wait(led, project, item, now):
     if ci_state == "red":
         return " — CI failed; waiting for a fix run.", elapsed
 
+    mergeability = read(f"mergeability:{project}#{number}:{pr}")
+    if (mergeability and mergeability.get("sha") == ci.get("sha")
+            and mergeability.get("base") == ci.get("base")):
+        detail = f"; {mergeability['error']}" if mergeability.get("error") else ""
+        return f" — mergeability unknown; waiting for GitHub{detail}.", None
+
     review = read(f"review:{project}#{number}")
     active = led.active_runs()
     roles = {r["role"] for r in active

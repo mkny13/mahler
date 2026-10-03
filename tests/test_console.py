@@ -828,6 +828,25 @@ class IdleReasonTests(unittest.TestCase):
         text, _ = state._verification_wait(led, "mahler", led.item("mahler", 39), led.now())
         self.assertEqual(text, " — review failed; waiting for a fix run.")
 
+    def test_mergeability_wait_copy_matches_current_checks_and_target(self):
+        led = make_led()
+        led.upsert_item("mahler", 39, state="verifying", pr=112)
+        wait = {"sha": "head", "base": "main"}
+        led.set_kv("mergeability:mahler#39:112", json.dumps(wait))
+        for ci_state, expected in (("green", "mergeability unknown"),
+                                   ("none", "mergeability unknown"),
+                                   ("pending", "CI has been pending"),
+                                   ("red", "CI failed")):
+            led.set_kv("ci:mahler#39:112", json.dumps(dict(wait, state=ci_state)))
+            text, elapsed = state._verification_wait(led, "mahler", led.item("mahler", 39), led.now())
+            self.assertIn(expected, text)
+            if ci_state in ("green", "none"):
+                self.assertIsNone(elapsed)
+        for change in ({"sha": "new"}, {"base": "release"}):
+            led.set_kv("ci:mahler#39:112", json.dumps(dict(wait, state="green", **change)))
+            text, _ = state._verification_wait(led, "mahler", led.item("mahler", 39), led.now())
+            self.assertNotIn("mergeability unknown", text)
+
     def test_verifying_item_uses_head_ci_start_time(self):
         cfg, led = make_cfg(), make_led()
         all_fresh(led)
