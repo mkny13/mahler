@@ -32,6 +32,14 @@ AREA_COLOR = "0052cc"       # area:* labels, created on the fly (mahler#197)
 AGENT_MARK = "<!-- mahler"          # every Mahler/agent comment starts with this
 AGENT_NOTE = "<!-- mahler:agent -->"  # the line Mahler's own comments start with
 HELP_FOOTER = "\n\n<sub>[Mahler commands](https://github.com/mkny13/mahler/blob/main/docs/commands.md)</sub>"
+_CI_TOOLCHAIN_FILES = {
+    ".java-version", ".mise.toml", ".node-version", ".nvmrc", ".python-version",
+    ".ruby-version", ".sdkmanrc", ".swift-version", ".tool-versions", ".xcode-version",
+    "build.gradle", "build.gradle.kts", "global.json", "gradle.properties",
+    "gradle-wrapper.properties", "libs.versions.toml", "mise.toml", "package.json",
+    "package.resolved", "project.yml", "project.yaml", "settings.gradle",
+    "settings.gradle.kts",
+}
 # `(?:>\s*)?` tolerates the line living inside a markdown blockquote (a "Part
 # of #N" written under a quoted "> **Original request:**" preamble) — without
 # it, the reference silently fails to parse and the item never gets linked to
@@ -440,6 +448,23 @@ class GH:
         run_id = runs[0]["databaseId"]
         log = self._gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
         return run_id, "\n".join(log.splitlines()[-tail:])
+
+    def pr_ci_toolchain_files(self, number):
+        """Changed PR paths that can alter CI or its toolchain."""
+        out = self._gh("pr", "diff", str(number), "-R", self.repo, "--name-only")
+        paths = []
+        for path in out.splitlines():
+            path = path.strip()
+            if not path:
+                continue
+            normalized = path.removeprefix("./")
+            name = normalized.rsplit("/", 1)[-1].lower()
+            lockfile = ("lockfile" in name or name.endswith((".lock", ".lockb")) or
+                        "-lock." in name)
+            if (normalized.startswith(".github/workflows/") or
+                    name in _CI_TOOLCHAIN_FILES or lockfile):
+                paths.append(path)
+        return paths
 
     def close_issue(self, number, comment=None):
         """Close an issue, optionally with a comment."""

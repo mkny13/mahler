@@ -64,10 +64,27 @@ def render(recipe, **vars):
         return string.Template(fh.read()).safe_substitute(**vars)
 
 
+def pr_ci_toolchain_handoff(ctx, project, item):
+    """The PR's changed CI/toolchain paths, or an explicit lookup fallback."""
+    gh = ctx.gh(project)
+    try:
+        paths = gh.pr_ci_toolchain_files(item["pr"])
+    except gh_module.GHError as e:
+        ctx.say(f"{project}#{item['number']}: couldn't fetch the PR's changed "
+                f"CI/toolchain paths — {e}")
+        return ("- changed CI/toolchain files in the PR: unavailable; inspect "
+                f"`gh pr diff {item['pr']} -R {gh.repo} --name-only` manually before "
+                "editing")
+    if not paths:
+        return "- changed CI/toolchain files in the PR: none found"
+    return ("- changed CI/toolchain files in the PR:\n" +
+            "\n".join(f"  - `{path}`" for path in paths))
+
+
 def ci_handoff(ctx, project, item, branch, tail=150):
     """The fix prompt's CI context (D18, mahler#18): the failing-log tail of
     the latest failed run on the branch — or the commands to fetch it, when
-    that lookup fails right now."""
+    that lookup fails right now. It also surfaces PR CI/toolchain changes first."""
     gh = ctx.gh(project)
     run_id, log = None, ""
     try:
@@ -75,7 +92,8 @@ def ci_handoff(ctx, project, item, branch, tail=150):
     except gh_module.GHError as e:
         ctx.say(f"{project}#{item['number']}: couldn't fetch the CI log for the fix "
                 f"run — {e}")
-    lines = [f"- the PR (#{item['pr']})'s CI is red, and this branch is the PR's head "
+    lines = [pr_ci_toolchain_handoff(ctx, project, item),
+             f"- the PR (#{item['pr']})'s CI is red, and this branch is the PR's head "
              "branch: push your fixes to it, and each push re-runs CI"]
     if run_id:
         lines.append(f"- run {run_id} is the latest failed one "
@@ -119,9 +137,12 @@ def build(ctx, project, item, role, platform, prep, context=None):
     failed review's findings, rather than red CI (D11)."""
     pol = ctx.policy(project)
     base = pol.get("base", "main")
-    handoff = (context if context is not None else
-               ci_handoff(ctx, project, item, prep["branch"]) if role == "fix"
-               else handoff_text(base, prep["replayed"], prep["kept"]))
+    if role == "fix":
+        handoff = (ci_handoff(ctx, project, item, prep["branch"]) if context is None
+                   else pr_ci_toolchain_handoff(ctx, project, item) + "\n" + context)
+    else:
+        handoff = (context if context is not None else
+                   handoff_text(base, prep["replayed"], prep["kept"]))
 
     sizing = ""
     if role == "sort" and config.size_target_of(pol) == "s":

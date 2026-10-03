@@ -16,12 +16,22 @@ Rules:
 Time matters here: do not spend time that can be avoided; the earlier a correct, verified
 result is obtained, the better. Never trade verification for speed.
 
-1. **Diagnose before changing anything.** Read the failing-log tail above (or fetch it:
-   `gh run view <run-id> -R $repo --log-failed | tail -150`), find the cause, and fix
-   that — not the symptom. If the failure is unrelated to this PR (for example, a
-   runner, network, or infrastructure failure), end with `STATUS: BLOCKED <reason>`
-   and give a concise diagnostic reason so the conductor can retry. Do not make
-   speculative changes to unrelated code or shotgun-fix the failure.
+1. **Diagnose before changing anything.** Start with the changed CI/toolchain file list
+   above. Compare the PR's changes against `$base`, especially `.github/workflows/**`,
+   toolchain pins, `project.yml`/XcodeGen, Gradle/SDK versions, `package.json` engines,
+   and lockfiles. If the list is unavailable, inspect the PR diff yourself; if GitHub
+   cannot provide the diff or the cause remains unclear, end with `STATUS: BLOCKED`
+   and state the evidence needed rather than guessing. Read the failing-log tail above
+   (or fetch it: `gh run view <run-id> -R $repo --log-failed | tail -150`), identify
+   whether the failing source was changed by the PR, and find the cause — not just the
+   symptom. If unchanged code fails, investigate the runner/toolchain first: compare
+   the failing job's toolchain with the latest green run of the same job on `$base`
+   (use `gh run list` and `gh run view <run-id> --json jobs` as needed). Never change
+   production code solely to satisfy a different or older toolchain than base CI uses.
+   Do not loosen tests or timeouts as a guess. If the failure is unrelated to this PR
+   (for example, a runner, network, or infrastructure failure), end with
+   `STATUS: BLOCKED <reason>` and give a concise diagnostic reason so the conductor can
+   retry. Do not make speculative changes to unrelated code or shotgun-fix the failure.
 2. **Verify before every push:** `$verify`. Fix what fails.
    Run a check that exercises the change, such as the project's tests, type-checker,
    build, or changed command. Neither a syntax-only check nor a command that failed

@@ -418,6 +418,24 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("does not override the destructive-action cautions in rule 8",
                       self.text)
 
+    def test_fix_recipe_checks_pr_toolchain_changes_before_editing(self):
+        for fragment in (
+            "Start with the changed CI/toolchain file list above",
+            "Compare the PR's changes against `main`",
+            "`.github/workflows/**`", "`project.yml`/XcodeGen",
+            "Gradle/SDK versions", "`package.json` engines", "lockfiles",
+            "identify whether the failing source was changed by the PR",
+            "latest green run of the same job on `main`",
+            "Never change production code solely to satisfy a different or older "
+            "toolchain than base CI uses",
+            "Do not loosen tests or timeouts as a guess",
+            "if GitHub cannot provide the diff or the cause remains unclear, end with "
+            "`STATUS: BLOCKED`",
+            "state the evidence needed rather than guessing",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, self.text)
+
 
 class ReviewRecipeMaskingTests(unittest.TestCase):
     def test_review_recipe_warns_about_masked_tool_output(self):
@@ -432,6 +450,80 @@ class ReviewRecipeMaskingTests(unittest.TestCase):
             "Only a literal confirmed that way is a finding",
         ):
             self.assertIn(fragment, text)
+
+
+class ReviewRecipeToolchainTests(unittest.TestCase):
+    def test_review_recipe_blocks_unrequested_toolchain_downgrades(self):
+        text = " ".join(prompt.render(
+            "review", number=681, repo="example/project", title="t", platform="copilot",
+            pr=519, branch="b", worktree="/tmp/w", handoff="", rules="").split())
+        for fragment in (
+            "Compare CI/toolchain setup with the base",
+            "removal or downgrade of CI/toolchain setup",
+            "workflow toolchain-selection steps", "XcodeGen `project.yml`",
+            "Gradle/SDK versions", "package engines", "lockfiles",
+            "is a blocking finding unless the issue explicitly requested that change",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+
+class FixPromptToolchainHandoffTests(unittest.TestCase):
+    class Context:
+        def __init__(self, gh):
+            self._gh = gh
+            self.messages = []
+
+        def gh(self, project):
+            return self._gh
+
+        def say(self, message):
+            self.messages.append(message)
+
+    def setUp(self):
+        from unittest.mock import MagicMock
+        self.gh = MagicMock()
+        self.gh.repo = "example/project"
+        self.gh.failed_run_log.return_value = (41, "BUILD FAILED")
+        self.ctx = self.Context(self.gh)
+        self.item = {"number": 681, "pr": 519}
+
+    def test_changed_config_files_appear_before_failed_log(self):
+        self.gh.pr_ci_toolchain_files.return_value = [
+            ".github/workflows/macos-tests.yml", "project.yml"]
+        rendered = prompt.ci_handoff(self.ctx, "p", self.item, "mahler/681-fix")
+        self.assertLess(rendered.index(".github/workflows/macos-tests.yml"),
+                        rendered.index("BUILD FAILED"))
+        self.assertIn("`project.yml`", rendered)
+
+    def test_no_changed_config_files_is_explicit(self):
+        self.gh.pr_ci_toolchain_files.return_value = []
+        rendered = prompt.ci_handoff(self.ctx, "p", self.item, "mahler/681-fix")
+        self.assertIn("changed CI/toolchain files in the PR: none found", rendered)
+
+    def test_unavailable_config_list_is_nonfatal_and_actionable(self):
+        from mahler.gh import GHError
+        self.gh.pr_ci_toolchain_files.side_effect = GHError("offline")
+        rendered = prompt.ci_handoff(self.ctx, "p", self.item, "mahler/681-fix")
+        self.assertIn("changed CI/toolchain files in the PR: unavailable", rendered)
+        self.assertIn("gh pr diff 519 -R example/project --name-only", rendered)
+        self.assertIn("BUILD FAILED", rendered)
+        self.assertEqual(len(self.ctx.messages), 1)
+
+    def test_review_fix_context_also_gets_changed_config_files(self):
+        self.gh.pr_ci_toolchain_files.return_value = [".github/workflows/ci.yml"]
+        prep = {"worktree": "/tmp/w", "branch": "mahler/681-fix",
+                "replayed": False, "kept": None}
+
+        class BuildContext(FixPromptToolchainHandoffTests.Context):
+            def policy(self, project):
+                return {"repo": "example/project", "rules": ""}
+
+        item = dict(self.item, title="CI fix")
+        rendered = prompt.build(BuildContext(self.gh), "p", item, "fix", "claude",
+                                prep, context="Review finding: test failure")
+        self.assertLess(rendered.index(".github/workflows/ci.yml"),
+                        rendered.index("Review finding: test failure"))
 
 
 class CodingScopeRecipeTests(unittest.TestCase):

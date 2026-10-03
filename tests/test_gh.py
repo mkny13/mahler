@@ -97,6 +97,30 @@ class TestGH(unittest.TestCase):
         self.assertEqual(sha, "c0ffee1234567890")
         self.gh._gh.assert_called_once_with("api", "repos/mkny13/mahler/commits/main")
 
+    def test_pr_ci_toolchain_files_filters_changed_paths(self):
+        self.gh._gh.return_value = (
+            ".github/workflows/macos-tests.yml\n"
+            "app/project.yml\n"
+            "android/gradle/wrapper/gradle-wrapper.properties\n"
+            "package.json\n"
+            "ios/Package.resolved\n"
+            ".swift-version\n"
+            "src/Player.swift\n"
+            "docs/locksmith.md\n"
+            "yarn.lock\n"
+        )
+        self.assertEqual(self.gh.pr_ci_toolchain_files(519), [
+            ".github/workflows/macos-tests.yml",
+            "app/project.yml",
+            "android/gradle/wrapper/gradle-wrapper.properties",
+            "package.json",
+            "ios/Package.resolved",
+            ".swift-version",
+            "yarn.lock",
+        ])
+        self.gh._gh.assert_called_once_with(
+            "pr", "diff", "519", "-R", "mkny13/mahler", "--name-only")
+
     def test_get_release_found(self):
         rel_data = {
             "tagName": "v0.1.0",
