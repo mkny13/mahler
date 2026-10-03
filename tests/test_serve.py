@@ -1,6 +1,7 @@
 """`mahler serve`: the console's HTTP surface (DESIGN D10, D27)."""
 
 from datetime import datetime, timedelta
+import io
 import json
 import os
 import queue
@@ -8,6 +9,7 @@ import re
 import tempfile
 import threading
 import time
+import types
 import unittest
 import urllib.error
 import urllib.request
@@ -529,6 +531,10 @@ class TestDynamicConfigReload(_Served):
             self.assertEqual(fh.read(), before)
 
 
+class _EnoughRetries(Exception):
+    """Ends serve's never-shutting-down update loop once it has retried."""
+
+
 class TestAutoRestart(unittest.TestCase):
     """mahler#256: serve restarts itself when its code updates."""
 
@@ -551,15 +557,25 @@ class TestAutoRestart(unittest.TestCase):
         httpd = self._make_server()
         get_head = self._make_get_head([None])
         old_head = [None]
-        with mock.patch.object(httpd, "shutdown") as mock_shutdown:
-            t = threading.Thread(
-                target=serve._check_for_update,
-                args=(httpd, get_head, old_head, 0.05),
-                daemon=True,
-            )
-            t.start()
-            t.join(timeout=0.3)
+        sleeps = []
+        err = io.StringIO()
+
+        def fake_sleep(seconds):
+            # The real loop retries forever, so a thread would outlive the test
+            # and write to whatever sys.stderr a later test redirects to.
+            sleeps.append(seconds)
+            if len(sleeps) > 3:
+                raise _EnoughRetries
+
+        clock = types.SimpleNamespace(sleep=fake_sleep, monotonic=time.monotonic)
+        with (mock.patch.object(httpd, "shutdown") as mock_shutdown,
+              mock.patch.object(serve, "time", clock),
+              mock.patch.object(serve.sys, "stderr", err)):
+            with self.assertRaises(_EnoughRetries):
+                serve._check_for_update(httpd, get_head, old_head, 0.05)
         mock_shutdown.assert_not_called()
+        self.assertEqual(sleeps, [0.05] * 4)
+        self.assertEqual(err.getvalue().count("cannot read HEAD, will retry"), 3)
 
     @staticmethod
     def _make_get_head(values):

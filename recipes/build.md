@@ -64,6 +64,13 @@ result is obtained, the better. Never trade verification for speed.
    `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
+   A material spec contradiction is an owner decision: if the goal or Done-when criteria
+   cannot be met without violating another requirement or explicit constraint, stop the
+   conflicting work. Do not implement one side and silently ignore the other. State the
+   conflicting requirements and why they cannot both hold in the issue comment, then end
+   with a `STATUS: NEEDS-YOU` question and two or three concise `OPTIONS:` (for example,
+   allow source changes | reduce journey target). First check authoritative owner comments
+   for an existing resolution; routine technical choices remain yours to make.
 6. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
    push what you have and end with `STATUS: BLOCKED <reason>`.
 7. Never force-push `$base`, delete repos or releases, run destructive SQL against real

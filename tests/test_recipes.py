@@ -22,6 +22,24 @@ class SortRecipeTests(unittest.TestCase):
         self.assertIn("if the body already has this shape, edit its sections in place",
                       self.text)
 
+    def test_done_when_checklist_bounds_scope_and_checks_feasibility(self):
+        for fragment in (
+            "Done-when checklist — apply to this issue and each sub-issue before marking ready",
+            "- [ ] Bounded and checkable", "a named finite list or a measurable threshold",
+            "a defined scope and verification method",
+            'Never use "every" / "all" over an open-ended set',
+            "- [ ] Feasible and consistent",
+            "the goal, acceptance criteria and constraints can be satisfied together",
+            'identifiers contradicts "no app source changes"',
+            "end NEEDS-YOU with concise options",
+            "- [ ] Prerequisites explicit",
+            "split needed prerequisite work into its own mergeable issue with a test",
+            "add an unquoted `Depends on: #N` line to the dependent issue",
+            "Do not use a dependency to silently override an owner's constraint",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, self.text)
+
     def test_bug_only_escape_sections(self):
         for fragment in (
             "For `type:bug` issues only (including bug sub-issues)",
@@ -147,6 +165,21 @@ class BuildRecipeTests(unittest.TestCase):
             "does not waive rule 2's verification of the fix",
         ):
             self.assertIn(fragment, self.text)
+
+    def test_material_spec_contradiction_requires_owner_resolution(self):
+        owner_rule = self.text.split("5. Stop only", 1)[1].split("6. If", 1)[0]
+        for fragment in (
+            "A material spec contradiction is an owner decision",
+            "cannot be met without violating another requirement or explicit constraint",
+            "stop the conflicting work",
+            "Do not implement one side and silently ignore the other",
+            "State the conflicting requirements and why they cannot both hold in the issue comment",
+            "`STATUS: NEEDS-YOU` question and two or three concise `OPTIONS:`",
+            "First check authoritative owner comments for an existing resolution",
+            "routine technical choices remain yours to make",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, owner_rule)
 
     def test_whats_new_contract_guidance_present(self):
         # Explicit trigger and scoping rule
