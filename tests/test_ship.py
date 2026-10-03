@@ -70,6 +70,9 @@ class FakeGH:
                 "baseRefName": "main",
                 "mergeCommit": {"oid": "4c1f0abfeed5"}}
 
+    def pr_refresh_mergeability(self, number):
+        pass
+
     def failed_run_log(self, branch, tail=150):
         return 123, "CI assertion failed"
 
@@ -1344,6 +1347,181 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.merged, [])
         self.assertEqual(self.item()["state"], "verifying")
+
+    def test_unknown_refresh_dispatches_normal_states(self):
+        for result in ("CONFLICTING", "MERGEABLE", "pending", "red", "CLOSED", "MERGED"):
+            with self.subTest(result=result):
+                self.led.set_state("x", 5, "verifying", pr=88)
+                self.gh.view_state = "OPEN"
+                self.gh.mergeable = "UNKNOWN"
+                self.gh.rollup = [{"state": "SUCCESS"}]
+                self.led.set_kv("mergeability:x#5:88", "")
+                self.ship()
+                self.ship()
+                def refresh(_):
+                    if result in ("pending", "red"):
+                        self.gh.rollup = [{"state": "PENDING" if result == "pending" else "FAILURE"}]
+                    elif result in ("CLOSED", "MERGED"):
+                        self.gh.view_state = result
+                    else:
+                        self.gh.mergeable = result
+                with mock.patch.object(self.gh, "pr_refresh_mergeability", side_effect=refresh) as force, \
+                        mock.patch.object(ship, "_red_ci") as red:
+                    self.ship()
+                force.assert_called_once_with(88)
+                if result == "CONFLICTING":
+                    self.assertEqual(self.item()["state"], "ready")
+                    self.assertEqual(self.item()["attempts"], 0)
+                elif result in ("MERGEABLE", "MERGED"):
+                    self.assertEqual(self.item()["state"], "shipped")
+                elif result == "CLOSED":
+                    self.assertEqual(self.item()["state"], "ready")
+                else:
+                    self.assertEqual(self.item()["state"], "verifying")
+                    self.assertEqual(red.called, result == "red")
+
+    def test_refresh_uses_changed_target_for_conflict_and_keeps_merge_guards(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2)
+        self.gh.mergeable = "UNKNOWN"
+        self.ship()
+        self.ship()
+        original = self.gh.pr_view(88)
+        fresh = dict(original, mergeable="CONFLICTING", baseRefName="release", headRefOid="new")
+        with mock.patch.object(self.gh, "pr_view", side_effect=[original, fresh]):
+            self.ship()
+        self.assertEqual(self.item()["attempts"], 2)
+        self.assertIn("conflicts with release", self.last_event())
+        self.assertFalse(self.led.get_kv("mergeability:x#5:88"))
+        self.led.set_state("x", 5, "verifying", pr=88)
+        self.ship()
+        self.ship()
+        fresh = dict(original, mergeable="MERGEABLE")
+        changed = dict(fresh, headRefOid="changed-again")
+        with mock.patch.object(self.gh, "pr_view", side_effect=[original, fresh, changed]), \
+                mock.patch.object(self.gh, "base_in_head") as ancestry:
+            self.ship()
+        ancestry.assert_not_called()
+        self.assertEqual(self.gh.merged, [])
+
+    def test_refresh_reread_failure_waits_safely(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        self.ship()
+        self.ship()
+        original = self.gh.pr_view(88)
+        with mock.patch.object(self.gh, "pr_view", side_effect=[original, gh_module.GHError("reread")]):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIn("reread", self.led.get_kv("mergeability:x#5:88"))
+        self.assertEqual(self.gh.merged, [])
+
+    def test_unknown_refresh_backoff_survives_context_restart(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        for rollup in ([{"state": "SUCCESS"}], []):
+            with self.subTest(rollup=rollup):
+                self.gh.rollup = rollup
+                self.led.set_kv("mergeability:x#5:88", "")
+                with mock.patch.object(self.gh, "pr_refresh_mergeability") as force, \
+                        mock.patch.object(self.ctx, "say") as say:
+                    for tick in range(10):
+                        self.ship()
+                        self.assertEqual(force.call_count, min(max(tick - 1, 0), 3))
+                    self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+                    with mock.patch.object(self.led, "now", return_value=NOW + timedelta(days=1)):
+                        self.ship()
+                        self.ship()
+                    self.assertEqual(force.call_count, 4)
+                    self.assertNotIn("CI still running", str(say.call_args_list))
+                self.assertEqual(self.item()["state"], "verifying")
+                self.assertEqual(self.gh.merged, [])
+                ci = json.loads(self.led.get_kv("ci:x#5:88"))
+                self.assertEqual(ci["state"], "green" if rollup else "none")
+
+    def test_unknown_changed_identity_restarts_observations(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        with mock.patch.object(self.gh, "pr_refresh_mergeability") as force:
+            self.ship()
+            self.ship()
+            self.gh.head_sha = "new"
+            self.ship()
+            force.assert_not_called()
+            view = dict(self.gh.pr_view(88), baseRefName="release")
+            with mock.patch.object(self.gh, "pr_view", return_value=view):
+                self.ship()
+                self.ship()
+                force.assert_not_called()
+                self.ship()
+                force.assert_called_once()
+        self.assertEqual(self.gh.merged, [])
+
+    def test_unknown_refresh_error_is_rate_limited_and_other_items_continue(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        self.ship()
+        self.ship()
+        self.led.upsert_item("x", 6, state="verifying", pr=89)
+        with mock.patch.object(self.gh, "pr_refresh_mergeability", side_effect=gh_module.GHError("offline")) as force:
+            for _ in range(4):
+                self.ship()
+            self.assertEqual(force.call_count, 2)  # one attempt per item
+            with mock.patch.object(self.led, "now", return_value=NOW + timedelta(minutes=5)):
+                self.ship()
+            self.assertEqual(force.call_count, 4)
+        self.assertIn("offline", self.led.get_kv("mergeability:x#5:88"))
+        self.assertEqual(self.item(6)["state"], "verifying")
+
+    def test_unknown_refresh_rechecks_session_lease(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        self.ship()
+        self.ship()
+        def refresh(_):
+            self.gh.mergeable = "CONFLICTING"
+            self.led.claim("x", 5, "interactive:mike", "interactive", 30)
+        with mock.patch.object(self.gh, "pr_refresh_mergeability", side_effect=refresh):
+            self.ship()
+        self.assertEqual(self.item()["state"], "working")
+        self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_unknown_pending_checks_still_timeout(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.mergeable = "UNKNOWN"
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.ship()
+        with mock.patch.object(self.led, "now", return_value=NOW + timedelta(days=1)):
+            self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertIn("CI still running", self.item()["question"])
+
+    def test_capacity_recovery_resets_waits_before_real_shipping(self):
+        for role in ("fix", "review"):
+            for condition in ("pending", "UNKNOWN", "queued"):
+                with self.subTest(role=role, condition=condition):
+                    self.led.set_state("x", 5, "needs_you", pr=88, question="capacity")
+                    self.led.set_kv("capacity-stranded:x#5", json.dumps({
+                        "role": role, "pr": 88, "at": self.item()["state_changed_at"]}))
+                    old = json.dumps({"sha": "abc123", "since": iso(NOW - timedelta(days=1)),
+                                      "state": "pending"})
+                    for prefix in ("ci", "mergeability", "queue"):
+                        self.led.set_kv(f"{prefix}:x#5:88", old)
+                        self.led.set_kv(f"{prefix}:x#6:89", old)
+                    self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "pass"}))
+                    self.led.set_kv("fix:x#5:88", "evidence")
+                    self.gh.mergeable = "UNKNOWN" if condition == "UNKNOWN" else "MERGEABLE"
+                    self.gh.rollup = [{"state": "PENDING" if condition == "pending" else "SUCCESS"}]
+                    self.ship()
+                    self.assertEqual(self.item()["state"], "verifying")
+                    self.assertEqual(self.gh.merged, [])
+                    queue = json.loads(self.led.get_kv("queue:x#5:88"))
+                    self.assertEqual(queue["sha"], "abc123")
+                    self.assertEqual(queue["since"], iso(NOW))
+                    self.assertEqual(self.led.get_kv("fix:x#5:88"), "evidence")
+                    self.assertEqual(json.loads(self.led.get_kv("review:x#5"))["verdict"], "pass")
+                    for prefix in ("ci", "mergeability", "queue"):
+                        self.assertEqual(self.led.get_kv(f"{prefix}:x#6:89"), old)
 
     def test_no_ci_configured_counts_as_green(self):
         self.led.upsert_item("x", 5, pr=88)

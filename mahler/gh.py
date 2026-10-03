@@ -349,6 +349,10 @@ class GH:
             raise GHError(f"gh pr create: no PR url in {out.strip()[:200]!r}")
         return int(m.group(1))
 
+    def pr_refresh_mergeability(self, number):
+        """Request GitHub's on-demand mergeability computation."""
+        self._gh("api", "--method", "GET", f"repos/{self.repo}/pulls/{number}")
+
     def pr_view(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"

@@ -20,6 +20,14 @@ class TestGH(unittest.TestCase):
                                       "--remove-label", "mahler:verifying",
                                       "--add-label", "mahler:shipped")
 
+    def test_refresh_mergeability_scoped_get_and_errors(self):
+        from mahler.gh import GHError
+        self.gh.pr_refresh_mergeability(88)
+        self.gh._gh.assert_called_once_with("api", "--method", "GET", "repos/mkny13/mahler/pulls/88")
+        self.gh._gh.side_effect = GHError("offline")
+        with self.assertRaises(GHError):
+            self.gh.pr_refresh_mergeability(88)
+
     def test_comment_appends_footer_for_agent(self):
         self.gh.comment(123, "Test body")
         expected_body = f"{AGENT_NOTE}\nTest body{HELP_FOOTER}"
