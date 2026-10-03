@@ -178,3 +178,18 @@ class TestGH(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestReviewMarkerLookup(unittest.TestCase):
+    def test_exact_marker_across_pages_and_closed_issues(self):
+        gh = GH("owner/repo")
+        marker = "<!-- mahler:review-follow-up:abc -->"
+        with patch.object(gh, "_gh", return_value=json.dumps([
+                [{"body": marker, "pull_request": {}, "html_url": "pr"},
+                 {"body": marker[:-4], "html_url": "partial"}],
+                [{"body": marker, "state": "closed", "html_url": "found"}]])) as call:
+            self.assertEqual(gh.issue_by_marker(marker), "found")
+            call.assert_called_once_with("api", "--paginate", "--slurp",
+                "repos/owner/repo/issues?state=all&per_page=100")
+        with patch.object(gh, "_gh", return_value='[[{"body": null}]]'):
+            self.assertIsNone(gh.issue_by_marker(marker))

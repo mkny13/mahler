@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, platforms, router, runner
+from . import config, failures, platforms, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -155,8 +155,29 @@ def _post_review_comment(e, passed, findings=""):
         e.ctx.say(f"{e.project}#{e.number}: couldn't post the review comment — {err}")
 
 
+def _classified_review(e, verdict):
+    info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
+    if info.get("run_id") not in (None, e.run["id"]):
+        return False  # A late finalization must not overwrite a newer review.
+    try:
+        body = e.ctx.gh(e.project).issue_body(e.number) if (e.rest or "").lstrip().startswith("{") else ""
+        findings = review.parse(verdict, e.rest, body)
+    except (ValueError, GHError):
+        _review_inconclusive(e)
+        return False
+    review.remember(e, info, findings)
+    _update_review_kv(e, run_id=e.run["id"], classified=findings)
+    if findings is not None:
+        _post_review_comment(e, passed=verdict == "pass", findings=review.render(findings))
+        e.review_blockers = review.render([f for f in findings if f["severity"] == "blocking"])
+    return True
+
+
 def _review_passed(e):
-    _post_review_comment(e, passed=True, findings=e.rest)
+    if not _classified_review(e, "pass"):
+        return True
+    if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
+        _post_review_comment(e, passed=True, findings=e.rest)
     _update_review_kv(e, verdict="pass")
     history = json.loads(e.led.get_kv(f"reviewfindings:{e.project}#{e.number}") or "[]")
     e.led.set_kv(f"reviewconvergence:{e.project}#{e.number}", str(len(history)))
@@ -165,18 +186,22 @@ def _review_passed(e):
 
 
 def _review_failed(e):
+    if not _classified_review(e, "fail"):
+        return True
+    blockers = getattr(e, "review_blockers", e.rest)
     key = f"reviewfindings:{e.project}#{e.number}"
     history = json.loads(e.led.get_kv(key) or "[]")
     # Finalization can be retried after a partial tick. A run is one review
     # round even if its outcome handler executes more than once.
     if not any(round_["run_id"] == e.run["id"] for round_ in history):
         review = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
-        history.append({"sha": review.get("sha"), "findings": e.rest or "",
+        history.append({"sha": review.get("sha"), "findings": blockers or "",
                         "at": iso(e.led.now()), "run_id": e.run["id"],
                         "platform": e.run["platform"]})
         e.led.set_kv(key, json.dumps(history))
-    _post_review_comment(e, passed=False, findings=e.rest)
-    _update_review_kv(e, verdict="fail", findings=e.rest or "")
+    if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
+        _post_review_comment(e, passed=False, findings=e.rest)
+    _update_review_kv(e, verdict="fail", findings=blockers or "")
     e.set_state("verifying", "review found blocking issues — the conductor starts a fix")
     return True
 
@@ -186,6 +211,9 @@ def _review_inconclusive(e):
     clear any stale kv record so ship.py's gate starts a fresh review run
     next tick, instead of either merging on a verdict never reached or
     waiting forever on one that will never arrive."""
+    info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
+    if info.get("run_id") not in (None, e.run["id"]):
+        return True
     e.led.set_kv(_review_kv_key(e.project, e.number), None)
     e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
     return True
