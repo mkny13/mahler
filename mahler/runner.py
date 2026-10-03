@@ -155,6 +155,9 @@ def prepare(ctx, project, item, role, platform, run_id):
         try:
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
         except GitError:          # branch still checked out by a kept worktree
+            if role == "fix":
+                # A fix must push the existing PR, never silently fork its head.
+                raise
             branch = f"{branch}-r{run_id}"
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
     # git created the worktree under the process umask; keep it user-only —

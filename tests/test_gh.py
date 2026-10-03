@@ -217,3 +217,96 @@ class TestReviewMarkerLookup(unittest.TestCase):
                 "repos/owner/repo/issues?state=all&per_page=100")
         with patch.object(gh, "_gh", return_value='[[{"body": null}]]'):
             self.assertIsNone(gh.issue_by_marker(marker))
+
+
+class ReviewedBranchUpdateTests(unittest.TestCase):
+    """Real git updates against a temporary remote; no GitHub or live state."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        from tests.test_runner import sh, write
+        self.sh, self.write = sh, write
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo, self.remote = os.path.join(tmp.name, 'repo'), os.path.join(tmp.name, 'remote.git')
+        sh(tmp.name, 'git', 'init', '-q', '--bare', self.remote)
+        sh(tmp.name, 'git', 'init', '-q', '-b', 'release', self.repo)
+        self.git('config', 'user.name', 'Test')
+        self.git('config', 'user.email', 'test@example.com')
+        self.git('remote', 'add', 'origin', self.remote)
+        self.file = os.path.join(self.repo, 'work.txt')
+        write(self.file, 'original\n')
+        self.commit('initial')
+        self.base = self.git('rev-parse', 'HEAD')
+        self.git('push', '-q', 'origin', 'release')
+        self.git('checkout', '-qb', 'topic')
+        write(self.file, 'reviewed\n')
+        self.commit('reviewed work')
+        self.head = self.git('rev-parse', 'HEAD')
+        self.git('push', '-q', 'origin', 'topic')
+        self.git('checkout', '-q', 'release')
+        self.client = GH('test/repo')
+
+    def git(self, *args):
+        return self.sh(self.repo, 'git', *args)
+
+    def commit(self, message):
+        self.git('add', '.')
+        self.git('commit', '-qm', message)
+
+    def advance(self, content=None):
+        import os
+        self.write(self.file if content else os.path.join(self.repo, 'base.txt'), content or 'base change\n')
+        self.commit('advance target')
+        self.git('push', '-q', 'origin', 'release')
+
+    def update(self, authorize=lambda: True):
+        return self.client.update_reviewed_branch(self.repo, 'topic', 'release', self.head, authorize)
+
+    def remote_head(self):
+        return self.git('ls-remote', 'origin', 'refs/heads/topic').split()[0]
+
+    def test_clean_update_preserves_exact_patch_and_checkout(self):
+        self.advance()
+        before = self.git('rev-parse', 'HEAD')
+        updated, unchanged = self.update()
+        self.assertTrue(unchanged)
+        self.assertNotEqual(updated, self.head)
+        self.assertEqual(self.remote_head(), updated)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), before)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertTrue(self.client.base_in_head(self.repo, 'release', updated))
+
+    def test_conflict_keeps_remote_head(self):
+        self.advance('conflicting base\n')
+        self.assertIsNone(self.update())
+        self.assertEqual(self.remote_head(), self.head)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_clean_merge_with_changed_patch_does_not_preserve_review(self):
+        self.advance('reviewed\n')
+        updated, unchanged = self.update()
+        self.assertFalse(unchanged)
+        self.assertEqual(self.remote_head(), updated)
+
+    def test_lost_lease_and_concurrent_push_leave_remote_untouched(self):
+        from mahler.gh import GHError
+        self.advance()
+        with self.assertRaises(GHError):
+            self.update(lambda: False)
+        self.assertEqual(self.remote_head(), self.head)
+        def concurrent_push():
+            self.git('push', '-q', '--force', 'origin', 'release:topic')
+            return True
+        with self.assertRaises(GHError):
+            self.update(concurrent_push)
+        self.assertEqual(self.remote_head(), self.git('rev-parse', 'release'))
+
+    def test_missing_target_and_changed_head_fail_closed(self):
+        from mahler.gh import GHError
+        with self.assertRaises(GHError):
+            self.client.update_reviewed_branch(self.repo, 'topic', 'missing', self.head, lambda: True)
+        with self.assertRaises(GHError):
+            self.client.update_reviewed_branch(self.repo, 'topic', 'release', self.base, lambda: True)
+        self.assertEqual(self.remote_head(), self.head)
