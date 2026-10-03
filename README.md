@@ -100,6 +100,18 @@ mahler tick --dry-run
 mahler status
 ```
 
+`mahler status` warns when the installed daemon has been continuously blocked
+from updating for at least 24 hours and is still behind its locally fetched
+`origin/main`. The warning shows commits behind, elapsed blocked time, and the
+latest launcher reason with an action to investigate. It reads
+`$MAHLER_HOME/logs/update.log` (default `~/.mahler/logs/update.log`) and the
+installed app's local Git refs only: it never fetches or changes update gates.
+Recent delays, a caught-up checkout, and missing or unreadable diagnostics
+produce no warning. Structured decisions require the launcher from #666 to
+be hand-installed with `launcher/install.sh`. With `--json`, an active warning
+appears as `daemon_update_stall`, including `commits_behind`, `blocked_since`,
+`blocked_seconds`, `reason`, and `action`; the key is otherwise omitted.
+
 For interactive Claude Code participation, install the repository-local lease
 hooks:
 

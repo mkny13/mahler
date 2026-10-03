@@ -99,13 +99,100 @@ def cmd_events(a, cfg, led):
     return 0
 
 
+_UPDATE_BLOCK_ACTIONS = {
+    "app_unavailable": "check the installed app checkout",
+    "head_lookup_failed": "check the installed app's Git HEAD",
+    "rollback_checkout_failed": "check the app checkout; rollback failed",
+    "tick_failed": "inspect logs/tick.log for failing ticks",
+    "fetch_failed": "check origin access and the launcher's Git credentials",
+    "candidate_lookup_failed": "check the app's locally fetched origin/main ref",
+    "rollback_excluded": "origin/main is the rolled-back bad_sha; a newer commit is needed",
+    "repository_lookup_failed": "check the launcher's gh authentication and repository access",
+    "repository_lookup_empty": "check the app's origin repository",
+    "checks_lookup_failed": "check the launcher's gh access to commit checks",
+    "checks_missing": "check that CI has run on origin/main",
+    "checks_not_green": "inspect failing or pending CI checks on origin/main",
+    "checks_result_invalid": "check the launcher's GitHub checks response",
+    "candidate_checkout_failed": "check the app checkout for local changes or Git errors",
+    "tests_failed_restore_failed": "inspect local unit failures; restoring the old checkout failed",
+    "tests_failed": "investigate unit tests failing in the installed app",
+}
+_UPDATE_DECISION = re.compile(
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) "
+    r"head=(unknown|[0-9a-f]{40}|[0-9a-f]{64}) "
+    r"candidate=(unknown|[0-9a-f]{40}|[0-9a-f]{64}) "
+    r"outcome=(blocked|rejected|updated|unchanged|rolled_back) reason=([a-z_]+)"
+)
+
+
+def _daemon_update_stall(now):
+    """Use only consecutive launcher decisions and locally fetched Git refs."""
+    since = latest = head = reason = None
+    try:
+        with open(os.path.join(config.STATE, "logs", "update.log"), encoding="ascii") as log:
+            for line in log:
+                match = _UPDATE_DECISION.fullmatch(line.rstrip("\n"))
+                if not match:
+                    since = latest = head = reason = None
+                    continue
+                stamp, recorded_head, _, outcome, recorded_reason = match.groups()
+                try:
+                    at = parse(stamp)
+                except ValueError:
+                    since = latest = head = reason = None
+                    continue
+                if (outcome not in ("blocked", "rejected")
+                        or recorded_reason not in _UPDATE_BLOCK_ACTIONS
+                        or recorded_head == "unknown" or at > now
+                        or (latest is not None and at < latest)):
+                    since = latest = head = reason = None
+                    continue
+                if since is None or head != recorded_head:
+                    since = at
+                latest, head, reason = at, recorded_head, recorded_reason
+    except (OSError, UnicodeError):
+        return None
+    if since is None or now - since < timedelta(hours=24):
+        return None
+
+    app = os.path.join(config.STATE, "app")
+    try:
+        installed = subprocess.run(
+            ["git", "-C", app, "rev-parse", "--verify", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip()
+        if installed != head:
+            return None
+        behind = int(subprocess.run(
+            ["git", "-C", app, "rev-list", "--count", "HEAD..refs/remotes/origin/main"],
+            capture_output=True, text=True, timeout=5, check=True,
+        ).stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if behind <= 0:
+        return None
+    return {
+        "commits_behind": behind,
+        "blocked_since": iso(since),
+        "blocked_seconds": int((now - since).total_seconds()),
+        "reason": reason,
+        "action": _UPDATE_BLOCK_ACTIONS[reason],
+    }
+
+
 def cmd_status(a, cfg, led):
     from .console.state import capacity_wait_text
 
     now = led.now()
+    update_stall = _daemon_update_stall(now)
     if not a.json:
         for warning in platforms.effort_warnings(cfg) + config.routing_warnings(cfg):
             print(warning)
+        if update_stall:
+            minutes = update_stall["blocked_seconds"] // 60
+            print(f"WARNING: daemon update stalled — {update_stall['commits_behind']} commits "
+                  f"behind fetched origin/main, blocked for {minutes // 60}h {minutes % 60}m; "
+                  f"{update_stall['reason']}: {update_stall['action']}.")
     if a.json:
         ests = led.estimates()
         runs = [dict(r) for r in led.active_runs()]
@@ -131,6 +218,7 @@ def cmd_status(a, cfg, led):
                 "calibration": led.calibration_stats(),
                 "calibration_factor": led.calibration_factor(),
             },
+            **({"daemon_update_stall": update_stall} if update_stall else {}),
         }, indent=2, default=str))
         return 0
     def item_url(project, number, it=None):

@@ -1,9 +1,14 @@
 """Tests for mahler status output formatting (including item_url on sqlite3.Row)."""
 
 import io
+import json
 import os
+from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mahler import cli
@@ -13,6 +18,9 @@ from mahler.ledger import Ledger
 class StatusCliTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        state = patch.object(cli.config, "STATE", self.tmp.name)
+        state.start()
+        self.addCleanup(state.stop)
         self.db_path = os.path.join(self.tmp.name, "mahler.db")
         self.led = Ledger(self.db_path)
         self.addCleanup(self.led.close)
@@ -171,6 +179,133 @@ class StatusCliTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("D23", output)
         self.assertIn("burst", output)
+
+
+class DaemonUpdateStatusTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name)
+        self.app = self.state / "app"
+        self.app.mkdir()
+        self.log = self.state / "logs" / "update.log"
+        self.log.parent.mkdir()
+        state = patch.object(cli.config, "STATE", self.tmp.name)
+        state.start()
+        self.addCleanup(state.stop)
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+        self.now = datetime(2026, 10, 3, 12, tzinfo=timezone.utc)
+        clock = patch.object(self.led, "now", return_value=self.now)
+        clock.start()
+        self.addCleanup(clock.stop)
+        self.cfg = {"defaults": {}, "platforms": {}, "projects": {}}
+        self.git("init", "-q", "-b", "main")
+        self.git("commit", "-q", "--allow-empty", "-m", "installed")
+        self.head = self.git("rev-parse", "HEAD")
+        for i in range(2):
+            self.git("commit", "-q", "--allow-empty", "-m", f"new {i}")
+        self.candidate = self.git("rev-parse", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", self.candidate)
+        self.git("checkout", "-q", "--detach", self.head)
+
+    def git(self, *args):
+        return subprocess.run(
+            ["git", "-C", str(self.app), "-c", "user.name=Test",
+             "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", *args],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def decision(self, hours, outcome="blocked", reason="checks_not_green",
+                 head=None, candidate=None):
+        at = (self.now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return (f"{at} head={head or self.head} candidate={candidate or self.candidate} "
+                f"outcome={outcome} reason={reason}\n")
+
+    def status(self, json_output=False):
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            result = cli.cmd_status(
+                SimpleNamespace(json=json_output, project=None), self.cfg, self.led)
+        self.assertEqual(result, 0)
+        return buf.getvalue()
+
+    def test_long_stall_reports_count_elapsed_latest_action_offline(self):
+        self.log.write_text(self.decision(26.5, candidate=self.head)
+                            + self.decision(1, reason="rollback_excluded"))
+        before = self.log.read_bytes()
+        with patch.object(cli.subprocess, "run", wraps=subprocess.run) as run:
+            output = self.status()
+        self.assertIn("2 commits behind fetched origin/main", output)
+        self.assertIn("blocked for 26h 30m", output)
+        self.assertIn("rollback_excluded: origin/main is the rolled-back bad_sha", output)
+        self.assertEqual(self.log.read_bytes(), before)
+        self.assertEqual([call.args[0][3] for call in run.call_args_list],
+                         ["rev-parse", "rev-list"])
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.head)
+        data = json.loads(self.status(json_output=True))["daemon_update_stall"]
+        self.assertEqual(data["commits_behind"], 2)
+        self.assertEqual(data["blocked_seconds"], 26 * 3600 + 30 * 60)
+        self.assertEqual(data["blocked_since"], "2026-10-02T09:30:00+00:00")
+        self.assertEqual(data["reason"], "rollback_excluded")
+
+    def test_threshold_and_recent_delay(self):
+        for hours, warns in ((23.999, False), (24, True)):
+            with self.subTest(hours=hours):
+                self.log.write_text(self.decision(hours))
+                self.assertEqual("WARNING: daemon update stalled" in self.status(), warns)
+
+    def test_warning_clears_when_checkout_catches_up(self):
+        self.log.write_text(self.decision(30))
+        self.git("checkout", "-q", "--detach", self.candidate)
+        self.assertNotIn("daemon update stalled", self.status())
+        self.assertNotIn("daemon_update_stall", json.loads(self.status(True)))
+        # Even diagnostics naming the now-current HEAD cannot produce a warning.
+        self.log.write_text(self.decision(30, head=self.candidate))
+        self.assertNotIn("daemon update stalled", self.status())
+
+    def test_nonblocked_and_unproven_entries_break_streak(self):
+        for interruption in (
+                self.decision(25, outcome="updated", reason="ci_and_tests_passed"),
+                self.decision(25, outcome="unchanged", reason="already_current"),
+                self.decision(25, outcome="rolled_back", reason="tick_failed"),
+                self.decision(25, head=self.candidate),
+                self.decision(25, head="unknown"),
+                self.decision(25, reason="unrecognized"),
+                "legacy or malformed diagnostic\n",
+                self.decision(25).replace("2026-10-02", "2026-99-02"),
+                self.decision(-1),
+                self.decision(31),
+        ):
+            with self.subTest(interruption=interruption):
+                self.log.write_text(self.decision(30) + interruption + self.decision(1))
+                self.assertNotIn("daemon update stalled", self.status())
+
+    def test_rejected_tests_and_unknown_candidate_continue_streak(self):
+        self.log.write_text(self.decision(25, outcome="rejected", reason="tests_failed")
+                            + self.decision(1, reason="fetch_failed", candidate="unknown"))
+        output = self.status()
+        self.assertIn("blocked for 25h 0m", output)
+        self.assertIn("fetch_failed: check origin access", output)
+
+    def test_missing_malformed_and_unreadable_diagnostics(self):
+        self.assertNotIn("daemon update stalled", self.status())
+        for content in ("", "malformed\n", self.decision(30) + "partial",
+                        self.decision(30) + "\N{SNOWMAN}\n"):
+            with self.subTest(content=content):
+                self.log.write_text(content)
+                self.assertNotIn("daemon update stalled", self.status())
+        with patch("builtins.open", side_effect=PermissionError("unreadable")):
+            self.assertNotIn("daemon update stalled", self.status())
+
+    def test_unavailable_git_evidence_omits_warning(self):
+        self.log.write_text(self.decision(30))
+        for error in (FileNotFoundError("git"), subprocess.TimeoutExpired("git", 5),
+                      subprocess.CalledProcessError(128, "git")):
+            with self.subTest(error=error), patch.object(cli.subprocess, "run", side_effect=error):
+                self.assertNotIn("daemon update stalled", self.status())
+        self.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.assertNotIn("daemon update stalled", self.status())
 
 
 if __name__ == "__main__":
