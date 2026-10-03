@@ -1689,7 +1689,9 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
    whether hooks can deliver yields or a denylist. dispatch's open `backend_cline()`
    gated/auto question resolves here.
 4. **Worktree build hazards per stack:** `pnpm install` time per worktree (use pnpm's shared
-   store), and Xcode's symlink and package-path traps (canary check).
+   store), and Xcode's symlink and package-path traps (canary check). See the
+   [build-cache policy](docs/build-caches.md) for worktree-relative Xcode DerivedData,
+   per-user setup and verification, and weekly cache cleanup.
 5. **Tailscale reachability from app pages:** can a page served from a `vercel.app` origin POST
    to the tailnet API? That needs CORS, and the phone must be on the tailnet. The fallback is
    the GitHub-issue URL.
