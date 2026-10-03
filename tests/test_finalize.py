@@ -16,6 +16,7 @@ from unittest import mock
 from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, iso
+from tests.test_platforms import provider_error_events
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -266,6 +267,49 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
                 self.assertFalse(any("needs you" in c.args[0].lower()
                                      for c in ping.call_args_list))
+
+    def test_mid_run_provider_errors_preserve_budgets_only_for_capacity(self):
+        for message, capacity in (
+                ('Selected model is at capacity', True),
+                ('HTTP 429: Too Many Requests', True),
+                ('HTTP 529: overloaded_error', True),
+                ('Invalid API key', False)):
+            for kind, event in provider_error_events(message):
+                for role in ('build', 'fix'):
+                    with self.subTest(kind=kind, message=message, role=role):
+                        self.cfg['platforms']['provider-test'] = {
+                            'kind': kind, 'backoff_minutes': 30, 'windows': ['5h']}
+                        self.led.upsert_item('x', 5, state='working', pr=88,
+                                             attempts=1, esc_tier=1, esc_fails=0)
+                        self.led.release('x', 5)
+                        run_id = self.led.create_run(project='x', number=5, role=role,
+                            platform='provider-test', epoch=1, status='running')
+                        lease, _ = self.led.claim('x', 5, f'run:{run_id}', 'auto', 30)
+                        self.run.update(id=run_id, role=role, platform='provider-test',
+                            epoch=lease['epoch'], stop_reason=None,
+                            started_at=iso(NOW - timedelta(minutes=10)))
+                        with open(self.log, 'w') as stream:
+                            stream.write(json.dumps(event) + '\n')
+                        self.write_exit(1)
+                        with mock.patch.object(self.ctx, 'ping') as ping, \
+                                mock.patch.object(finalize, '_try_verify_fallback', return_value=False), \
+                                mock.patch.object(finalize, '_try_cline_nudge', return_value=False):
+                            self.finalize()
+                        item = self.led.item('x', 5)
+                        if capacity:
+                            self.assertEqual((item['attempts'], item['esc_tier'],
+                                              item['esc_fails']), (1, 1, 0))
+                            self.assertEqual(item['state'], 'verifying' if role == 'fix' else 'ready')
+                            self.assertEqual(self.led.run(run_id)['stop_reason'], 'quota')
+                            usage = self.led.usage('provider-test')['5h']
+                            self.assertEqual(usage['used_pct'], 100)
+                            self.assertEqual(datetime.fromisoformat(usage['resets_at']),
+                                             NOW + timedelta(minutes=30))
+                            self.assertFalse(any('needs you' in c.args[0].lower()
+                                                 for c in ping.call_args_list))
+                        else:
+                            self.assertEqual(item['attempts'], 2)
+                            self.assertIsNone(self.led.run(run_id)['stop_reason'])
 
     def test_no_status_line_is_still_a_failed_attempt(self):
         with open(self.log, "w") as fh:
