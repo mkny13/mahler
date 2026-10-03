@@ -185,7 +185,7 @@ All of it is glue between adopted parts.
   `owner/repo#12` names that exact repository. `repo#12` is shorthand only when exactly
   one enabled project has that repository basename. Qualified references retain their
   repository in the existing JSON dependency list and hold diagnostics. Builds wait until
-  every target is `done` in the local ledger. Unknown, disabled, unmanaged or ambiguous
+  every target is merged — `shipped` or `done` — in the local ledger. Unknown, disabled, unmanaged or ambiguous
   repositories remain blocked; the scheduler never falls back to a local issue number or
   queries GitHub to resolve them. Sync drops references to the item itself or its known
   parent/ancestors, logging each correction once: a parent cannot finish until its children
@@ -375,10 +375,12 @@ parked (you said "not now")
 On GitHub, `shipped` and `done` are closed issues. Everything else is open, with a
 `mahler:<state>` label. Confirmed merges retain `mahler:shipped` on the closed
 issue, replacing `mahler:verifying`. Shipped items release leases and capacity,
-but do not satisfy parent/dependency completion until `done`. Release snapshots,
+and satisfy `Depends on:` targets — merged code is enough to build on, and UAT
+catches up after the fact rather than gating the next build (mahler#683). They do
+not satisfy parent completion until `done`. Release snapshots,
 UAT entries and shipped events are recorded at merge time. Startup preserves both
 shipped rows and historical done rows. Only accepted D10 evidence promotes a
-shipment to done, removes its lifecycle label, and unblocks parents/dependents.
+shipment to done, removes its lifecycle label, and lets its parent close.
 
 ### D7 — Staleness: activity clocks, not a calendar
 
