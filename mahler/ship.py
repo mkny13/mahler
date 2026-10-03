@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, router, runner
+from . import config, failures, review, router, runner
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -393,9 +393,11 @@ def _review_gate(ctx, project, item, pr, view):
     key = f"review:{project}#{n}"
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else {}
-    if info.get("sha") == sha:
+    if sha and info.get("sha") == sha:
         verdict = info.get("verdict")
         if verdict == "pass":
+            if not review.file_followups(ctx, project, item):
+                return
             _merge_queued(ctx, project, item, pr, view)
             return
         if verdict == "fail":
@@ -609,7 +611,8 @@ def _start_review_run(ctx, project, item, pr, view, sha):
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "review", platform,
              handoff_from=handoff_from, size=size):
-        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending"}))
+        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending",
+            "run_id": row_get(led.last_run(project, n, roles=("review",)) or {}, "id")}))
         led.set_kv(wait_key, "")
         led.set_kv(ping_key, "")
 

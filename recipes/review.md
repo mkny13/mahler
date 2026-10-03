@@ -55,11 +55,19 @@ Rules:
    why that scenario happens in normal use, and the consequence — specific enough for a fix
    agent to act on without re-deriving your reasoning.
 8. **One reviewer, one verdict — no back-and-forth.** If nothing clears the bar, pass it.
-9. If nothing blocks, end with `STATUS: REVIEW-PASS` followed by "no findings" or your notes,
-   separated by ` | `.
-10. If at least one finding clears the bar, end with `STATUS: REVIEW-FAIL` followed by every
-    blocking finding on the same line, separated by ` | `. Leave notes out of a fail line —
-    the fix round treats everything on it as required work.
+9. **Classify every actionable finding** as `blocking` or `follow-up`. Follow-ups
+   do not fail review: the conductor files linked independent issues before merge.
+   Use category `scope`, `spec`, `behavior`, `security`, `data-loss`, `hardening`, or
+   `testing`. Scope/spec blockers MUST include `done_when`: an exact complete line
+   copied from the issue's Done-when section (including its bullet/checkbox).
+   Never contradict acceptance criteria. Fixed earlier findings are not current
+   findings; include only still-reproducible blockers and actionable follow-ups.
+10. End with one status line and a JSON object, including both classes in mixed
+    reviews. Use REVIEW-FAIL exactly when at least one blocking finding remains;
+    otherwise REVIEW-PASS. Each finding has nonempty `severity`, `category`,
+    `location` (file:line), `scenario` (trigger and evidence), and `consequence`.
+    Example: `STATUS: REVIEW-PASS {"findings":[{"severity":"follow-up","category":"testing","location":"app.py:42","scenario":"The retry path has no regression test","consequence":"A later change could silently remove retries"}]}`
+    No findings: `STATUS: REVIEW-PASS {"findings":[]}`. Keep JSON on one line.
 11. Stop only for a decision genuinely only the owner can make, and end with
     `STATUS: NEEDS-YOU <question>`.
 12. Never force-push, delete repos or releases, run destructive SQL against real data, edit
@@ -71,6 +79,6 @@ Do not comment on the issue or PR yourself — Mahler posts your findings, in co
 end. This keeps them visible on the PR even if you time out mid-review.
 
 End your final message with exactly one of these lines:
-STATUS: REVIEW-PASS <"no findings", or note | note | ...>
-STATUS: REVIEW-FAIL <blocking finding> | <blocking finding> | ...
+STATUS: REVIEW-PASS {"findings": [...]}
+STATUS: REVIEW-FAIL {"findings": [...]}
 STATUS: NEEDS-YOU <the question, on one line>

@@ -301,6 +301,16 @@ class GH:
         label = f"area:{area_name}"
         self._gh("label", "create", label, "-R", self.repo, "--color", AREA_COLOR, "--force")
 
+    def issue_by_marker(self, marker):
+        """Scan all issue bodies, including closed issues, without search-index lag."""
+        pages = json.loads(self._gh("api", "--paginate", "--slurp",
+            f"repos/{self.repo}/issues?state=all&per_page=100"))
+        for page in pages:
+            for issue in page:
+                if "pull_request" not in issue and marker in (issue.get("body") or ""):
+                    return issue["html_url"]
+        return None
+
     def create_issue(self, title, body="", labels=()):
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]
         for l in labels:

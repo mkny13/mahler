@@ -945,7 +945,7 @@ class ShipTests(unittest.TestCase):
         role, platform, context = calls[0]
         self.assertEqual(role, "review")
         info = json.loads(self.led.get_kv("review:x#5"))
-        self.assertEqual(info, {"sha": "greensha1", "verdict": "pending"})
+        self.assertEqual(info, {"sha": "greensha1", "verdict": "pending", "run_id": None})
 
     def test_review_excludes_the_builder_platform(self):
         """DESIGN D11: the reviewer must be a different platform than
@@ -2256,3 +2256,148 @@ class PushBranchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestClassifiedReview(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+
+    def finding(self, severity="follow-up", **fields):
+        return dict(severity=severity, category="behavior", location="app.py:12",
+                    scenario="Retry after an interrupted request", consequence="Request is lost", **fields)
+
+    def ending(self, findings, verdict="pass", rid=10):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "run_id": rid}))
+        return SimpleNamespace(led=self.led, ctx=self.ctx, project="x", number=5,
+            item=self.item(), run={"id": rid, "platform": "agy-gemini"},
+            rest=json.dumps({"findings": findings}), outcome="completed", set_state=mock.Mock())
+
+    def finish(self, ending, verdict="pass"):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            getattr(finalize, "_review_passed" if verdict == "pass" else "_review_failed")(ending)
+
+    def gate(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship, "_review_triggered_fix") as fix, \
+                mock.patch.object(ship, "_start_review_run") as start:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        return merge, fix, start
+
+    def test_followups_merge_without_fix_and_retries_preserve_links(self):
+        ending = self.ending([self.finding()])
+        self.finish(ending)
+        self.finish(ending)
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/99")
+        self.cfg["projects"]["x"].update(scope="label", scope_label="managed")
+        merge, fix, _ = self.gate()
+        merge.assert_called_once()
+        fix.assert_not_called()
+        args = self.gh.create_issue.call_args.args
+        self.assertIn("managed", args[2])
+        self.assertIn("mahler:inbox", args[2])
+        self.assertIn("https://github.com/x/y/issues/5", args[1])
+        self.assertIn("https://github.com/x/y/pull/88", args[1])
+        self.assertNotIn("Part of", args[1])
+        self.assertNotIn("Depends on", args[1])
+        self.finish(ending)
+        self.gate()
+        self.gh.create_issue.assert_called_once()
+        self.assertTrue(any("issues/99" in c for c in self.gh.comments))
+
+    def test_mixed_only_hands_blockers_to_fix_and_retains_followups(self):
+        blocker = self.finding("blocking")
+        follow = {**self.finding(), "location": "extra.py:20"}
+        self.finish(self.ending([blocker, follow]), "fail")
+        merge, fix, _ = self.gate()
+        merge.assert_not_called()
+        self.assertIn("app.py:12", fix.call_args.args[-1])
+        self.assertNotIn("extra.py", fix.call_args.args[-1])
+        self.finish(self.ending([], rid=11))
+        records = json.loads(self.led.get_kv("reviewresults:x#5"))
+        self.assertEqual(len(records["10"]["findings"]), 2)
+        self.assertEqual(records["10"]["sha"], "abc123")
+        self.gh.issue_by_marker = mock.Mock(return_value="https://github.com/x/y/issues/99")
+        self.gh.create_issue = mock.Mock()
+        self.gate()[0].assert_called_once()
+        self.gh.create_issue.assert_not_called()
+
+    def test_malformed_inconsistent_and_missing_citations_never_approve(self):
+        for text in ('{"findings":', '{"findings":{}}', '{"findings":[{}]}', '',
+                     json.dumps({"findings": [self.finding("blocking")]})):
+            with self.subTest(text=text):
+                ending = self.ending([])
+                ending.rest = text
+                self.finish(ending)
+                self.assertIsNone(self.led.get_kv("review:x#5"))
+        from mahler import review
+        f = {**self.finding("blocking"), "category": "spec"}
+        body = "## Done when\n- [ ] Retries preserve requests\n## Context\nOther text"
+        for citation in (None, "", "Other text", "Retries preserve requests"):
+            f["done_when"] = citation
+            with self.assertRaises(ValueError):
+                review.parse("fail", json.dumps({"findings": [f]}), body)
+        f["done_when"] = "- [ ] Retries preserve requests"
+        self.assertEqual(review.parse("fail", json.dumps({"findings": [f]}), body), [f])
+        with self.assertRaises(ValueError):
+            review.parse("fail", '{"findings":[]}', body)
+
+    def test_failure_retry_and_remote_recovery_after_lost_local_write(self):
+        self.finish(self.ending([self.finding()]))
+        self.gh.issue_by_marker = mock.Mock(side_effect=gh_module.GHError("offline"))
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/99")
+        merge, fix, _ = self.gate()
+        merge.assert_not_called()
+        fix.assert_not_called()
+        self.gh.issue_by_marker.side_effect = None
+        self.gh.issue_by_marker.return_value = None
+        before = self.led.get_kv("reviewresults:x#5")
+        original = self.led.set_kv
+        def lose_write(key, value):
+            if key == "reviewresults:x#5":
+                raise RuntimeError("process died")
+            original(key, value)
+        with mock.patch.object(self.led, "set_kv", side_effect=lose_write):
+            with self.assertRaises(RuntimeError):
+                self.gate()
+        self.assertEqual(self.led.get_kv("reviewresults:x#5"), before)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)  # restart, only ledger survives
+        self.gh.issue_by_marker.return_value = "https://github.com/x/y/issues/99"
+        self.gate()[0].assert_called_once()
+        self.gh.create_issue.assert_called_once()
+
+    def test_stale_head_and_dry_run_never_file(self):
+        self.finish(self.ending([self.finding()]))
+        self.gh.create_issue = mock.Mock()
+        self.gh.issue_by_marker = mock.Mock()
+        self.gh.head_sha = "new-head"
+        merge, fix, start = self.gate()
+        merge.assert_not_called()
+        start.assert_called_once()
+        self.gh.head_sha = "abc123"
+        self.ctx.dry_run = True
+        self.gate()[0].assert_not_called()
+        self.gh.issue_by_marker.assert_not_called()
+        self.gh.create_issue.assert_not_called()
+
+    def test_old_finalization_does_not_replace_new_run(self):
+        ending = self.ending([])
+        newer = json.dumps({"sha": "new-head", "run_id": 11, "verdict": "pending"})
+        self.led.set_kv("review:x#5", newer)
+        self.finish(ending)
+        self.assertEqual(self.led.get_kv("review:x#5"), newer)
+
+    def test_create_failure_stays_pending_and_retries_without_fix(self):
+        self.finish(self.ending([self.finding()]))
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(side_effect=gh_module.GHError("unavailable"))
+        merge, fix, _ = self.gate()
+        merge.assert_not_called()
+        fix.assert_not_called()
+        self.assertEqual(json.loads(self.led.get_kv("review:x#5"))["verdict"], "pass")
+        self.gh.create_issue.side_effect = None
+        self.gh.create_issue.return_value = "https://github.com/x/y/issues/99"
+        self.gate()[0].assert_called_once()
+        self.assertEqual(self.gh.issue_by_marker.call_count, 2)

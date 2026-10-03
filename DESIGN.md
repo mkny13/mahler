@@ -727,6 +727,21 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   always construct one more breaking input, so heuristic features never converged (mahler#474
   and #423 each burned three build/fix/review cycles on a fresh edge case every round).
   Raising `max_attempts` would only have spent more quota reaching the same end.
+- **Classified review intake** (mahler#678): REVIEW-PASS/REVIEW-FAIL accept a
+  single-line JSON `findings` object, with each finding's severity (`blocking` or
+  `follow-up`), category, location, scenario/evidence and consequence. Scope/spec
+  blockers must quote an exact Done-when line; reviewers must not contradict it.
+  Only still-reproducible blockers enter fix handoffs. Mixed results retain both
+  classes by review run and head in ledger KV; legacy pass notes and fail text
+  remain supported. Malformed or inconsistent payloads require another review.
+  Once the current head passes review and CI, the conductor files retained
+  actionable follow-ups in the source repository with normal inbox/type/priority
+  and configured scope labels, source issue/PR links and review evidence. These
+  independent issues have no Part-of or Depends-on relationship. Stable finding
+  markers, remote lookup including closed issues, and saved URLs recover retries
+  and restarts, including creation before a lost local write. Filing failures
+  keep merge pending without spending fix attempts; PR comments retain the links.
+  Dry-run never files. Fixed findings and historical legacy notes are not backfilled.
 - **Runtime signals later:** post-deploy error capture (Vercel logs, a tiny error endpoint,
   or Sentry's free tier) becomes issues automatically.
 
