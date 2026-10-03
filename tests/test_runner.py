@@ -432,6 +432,21 @@ class PrepareAccountEnvTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_fix_preserves_pr_branch_without_replaying_saved_work(self):
+        self.git_branch = "mahler/3-reviewed"
+        sh(self.repo, "git", "branch", self.git_branch)
+        sh(self.repo, "git", "push", "-q", "origin", self.git_branch)
+        item = {"number": 3, "title": "t", "branch": self.git_branch}
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")), \
+                mock.patch.object(runner, "catch_up") as replay:
+            prep = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 1)
+            self.assertEqual(prep["branch"], self.git_branch)
+            self.assertFalse(prep["replayed"])
+            replay.assert_not_called()
+            # A second checkout must fail rather than give the fix a new branch.
+            with self.assertRaises(runner.GitError):
+                runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+
     def test_fetch_carries_the_project_s_account_env(self):
         item = {"number": 3, "title": "t", "branch": None}
         with mock.patch.object(runner, "git", wraps=runner.git) as git:
