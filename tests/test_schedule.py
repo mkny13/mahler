@@ -111,12 +111,19 @@ class DependencyTests(unittest.TestCase):
         led.set_state("tour", 258, "done", "test")
         self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
 
-    def test_shipped_dependency_blocks_but_does_not_take_capacity(self):
+    def test_shipped_dependency_unblocks_before_uat(self):
+        """Merged work satisfies dependents; UAT never gates the next build (mahler#683)."""
         ctx, led = self.setup_dependencies("Depends on: #125")
-        item(led, "a", 125, state="shipped")
+        item(led, "a", 125, state="verifying")
         self.assertEqual(plan(ctx, led), [])
-        led.accept_evidence("a", 125, dict(source="comment:1", author="owner",
-                            created_at=iso(NOW), kind="owner", body="Verified: works"))
+        led.set_state("a", 125, "shipped", "test")
+        self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
+
+    def test_qualified_shipped_dependency_unblocks(self):
+        ctx, led = self.setup_dependencies("Depends on: mkny13/groundwork#125")
+        item(led, "ground", 125, state="verifying")
+        self.assertEqual(plan(ctx, led), [])
+        led.set_state("ground", 125, "shipped", "test")
         self.assertEqual(plan(ctx, led), ["a#292: would build on agy-claude"])
 
     def test_unknown_disabled_and_ambiguous_refs_remain_blocked(self):

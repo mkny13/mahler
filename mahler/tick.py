@@ -263,8 +263,9 @@ def _candidates(ctx, projects):
     led = ctx.led
     work = []
     enabled = config.enabled_projects(ctx.cfg)
+    # Merged is enough to build on: UAT catches up after the fact (mahler#683).
     done = {(p["name"], i["number"]) for p in enabled
-            for i in led.items(p["name"], ["done"])}
+            for i in led.items(p["name"], ["shipped", "done"])}
     planning = {(r["project"], r["number"]) for r in led.active_runs()
                 if r["role"] == "sort"}
     for p in projects:
