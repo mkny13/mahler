@@ -52,6 +52,62 @@ def render(findings):
                       for f in findings)
 
 
+def window(led, project, number, pr):
+    """PR-scoped evidence survives re-shipping and process restarts."""
+    return json.loads(led.get_kv(f"reviewrounds:{project}#{number}:{pr}") or "[]")
+
+
+def round_number(rounds, sha):
+    return next((i for i, r in enumerate(rounds, 1) if r["sha"] == sha), len(rounds) + 1)
+
+
+def record_green(ctx, project, item, pr, info):
+    """Called only with a current-head usable verdict and freshly green CI.
+
+    Alternate reviewers update evidence, never the distinct-head round count.
+    Keep all usable verdicts for that head so a retry cannot erase evidence.
+    """
+    rounds = window(ctx.led, project, item["number"], pr)
+    number = round_number(rounds, info["sha"])
+    if number > len(rounds):
+        rounds.append({"sha": info["sha"], "reviews": []})
+    evidence = {k: info.get(k) for k in ("run_id", "verdict", "classified", "findings")}
+    if evidence not in rounds[number - 1]["reviews"]:
+        rounds[number - 1]["reviews"].append(evidence)
+    if not ctx.dry_run:
+        ctx.led.set_kv(f"reviewrounds:{project}#{item['number']}:{pr}", json.dumps(rounds))
+    return number
+
+
+def start_context(ctx, project, item, pr, sha):
+    rounds = window(ctx.led, project, item["number"], pr)
+    number = round_number(rounds, sha)
+    threshold = ctx.policy(project)["review_green_rounds"]
+    return (f"Green review round: {number}; review_green_rounds: {threshold} "
+            "(inclusive; provisional until this head has a usable verdict and green CI).\n"
+            + ("Convergence threshold reached: only new substantiated blockers or still-"
+               "reproducible unresolved blockers may fail review.\n" if number >= threshold else "")
+            + "Verify earlier fixes first. Compare category, scenario and consequence, not just "
+            "file names. Do not revive fixed findings without new evidence. Security, data loss, "
+            "regressions and unsatisfied acceptance checks remain blockers. Other actionable "
+            "findings are follow-ups; explain their nonblocking consequence.\n"
+            + "Prior green review evidence (old findings are not proof of a current defect):\n"
+            + json.dumps(rounds))
+
+
+def same_findings(before, current):
+    """Conservative identity/evidence comparison for alternate-review routing.
+
+    Location alone cannot establish that two classified defects are the same.
+    Text changes are new evidence; uncertainty stays in the normal blocker flow.
+    """
+    def signatures(findings):
+        return {tuple(f.get(k, "") for k in
+                      ("category", "location", "scenario", "consequence", "done_when"))
+                for f in findings if f["severity"] == "blocking"}
+    return bool(signatures(current)) and signatures(current) <= signatures(before)
+
+
 def remember(e, info, findings):
     """Archive by run before updating the current verdict; retries retain URLs."""
     key = f"reviewresults:{e.project}#{e.number}"
@@ -63,7 +119,9 @@ def remember(e, info, findings):
             marker = hashlib.sha256(json.dumps([e.project, e.number, f], sort_keys=True).encode()).hexdigest()
             rows.append({**f, "marker": f"<!-- mahler:review-follow-up:{marker} -->"})
         records[rid] = {"run_id": e.run["id"], "sha": info.get("sha"),
-                        "pr": e.item["pr"], "findings": rows, "text": e.rest}
+                        "pr": e.item["pr"], "findings": rows, "text": e.rest,
+                        "reason": "Classified as nonblocking: no substantiated merge blocker "
+                                  "in this finding; tracked independently to keep review scope bounded."}
         e.led.set_kv(key, json.dumps(records))
 
 
@@ -76,6 +134,8 @@ def file_followups(ctx, project, item):
     gh = ctx.gh(project)
     pol = ctx.policy(project)
     for record in records.values():
+        if record["pr"] != item["pr"]:
+            continue
         for f in record["findings"]:
             if f["severity"] != "follow-up" or f.get("linked"):
                 continue
@@ -96,7 +156,8 @@ def file_followups(ctx, project, item):
                             raise GHError("follow-up creation returned no URL")
                     f["url"] = url
                     ctx.led.set_kv(key, json.dumps(records))
-                gh.comment(record["pr"], f"Review follow-up: {f['url']}\n\n{render([f])}")
+                gh.comment(record["pr"], f"Review follow-up: {f['url']}\n\n{render([f])}\n\n"
+                           + record.get("reason", "Classified as nonblocking by the independent reviewer."))
                 f["linked"] = True
                 ctx.led.set_kv(key, json.dumps(records))
             except GHError as err:

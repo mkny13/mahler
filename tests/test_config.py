@@ -20,6 +20,18 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_green_review_round_policy(self):
+        self.assertEqual(config.project_policy(self.load({}), "app")["review_green_rounds"], 2)
+        cfg = self.load({"defaults": {"review_green_rounds": 3},
+                         "projects": {"app": {"review_green_rounds": 1}}})
+        self.assertEqual(config.project_policy(cfg, "app")["review_green_rounds"], 1)
+        self.assertEqual(config.project_policy(cfg, "other")["review_green_rounds"], 3)
+        for value in (0, -1, True, 1.5, "2"):
+            for user in ({"defaults": {"review_green_rounds": value}},
+                         {"projects": {"app": {"review_green_rounds": value}}}):
+                with self.subTest(user=user), self.assertRaisesRegex(ValueError, "review_green_rounds"):
+                    self.load(user)
+
     def test_capacity_wait_default_and_project_override(self):
         cfg = self.load({"projects": {"app": {"capacity_wait_max_hours": 48}}})
         self.assertEqual(config.project_policy(cfg, "app")["capacity_wait_max_hours"], 48)
