@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 
 from . import config, redact
 
@@ -399,6 +400,50 @@ class GH:
             raise GHError("freshness: ancestry check failed: " +
                           redact.redact(result.stderr.strip())[:400])
         return result.returncode == 0
+
+    def update_reviewed_branch(self, path, branch, base, head, authorize):
+        """Merge current target into the reviewed head in an isolated checkout.
+
+        Return (new SHA, identical patch), or None for a proven conflict.
+        Errors never change the source checkout or discard the remote branch.
+        """
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", head or ""):
+            raise GHError("update: invalid reviewed head")
+        if not branch or not base or branch == base:
+            raise GHError("update: missing or unsafe PR branches")
+        for ref in (branch, base):
+            self._git(path, "check-ref-format", f"refs/heads/{ref}")
+        remote = self._git(path, "remote", "get-url", "origin")
+        with tempfile.TemporaryDirectory(prefix="mahler-pr-update-") as wt:
+            self._git(wt, "init", "--quiet")
+            self._git(wt, "remote", "add", "origin", remote)
+            for ref in (branch, base):
+                self._git(wt, "fetch", "--quiet", "--no-tags", "origin",
+                          f"refs/heads/{ref}:refs/remotes/origin/{ref}")
+            actual = self._git(wt, "rev-parse", f"refs/remotes/origin/{branch}")
+            if actual != head:
+                raise GHError("update: PR head changed")
+            target = self._git(wt, "rev-parse", f"refs/remotes/origin/{base}")
+            old_base = self._git(wt, "merge-base", head, target)
+            self._git(wt, "checkout", "--quiet", "--detach", head)
+            try:
+                self._git(wt, "-c", "user.name=Mahler", "-c", "user.email=mahler@localhost",
+                          "-c", "commit.gpgSign=false", "merge", "--no-edit", "--no-verify", target)
+            except GHError:
+                if self._git(wt, "ls-files", "--unmerged"):
+                    return None
+                raise
+            updated = self._git(wt, "rev-parse", "HEAD")
+            def patch(parent, tip):
+                return self._git(wt, "diff", "--no-ext-diff", "--no-textconv",
+                                 "--binary", "--full-index", parent, tip, "--")
+            unchanged = patch(old_base, head) == patch(target, updated)
+            if not authorize():
+                raise GHError("update: PR or lease changed before push")
+            self._git(wt, "push", "--quiet",
+                      f"--force-with-lease=refs/heads/{branch}:{head}",
+                      "origin", f"{updated}:refs/heads/{branch}")
+            return updated, unchanged
 
     def source_line(self, path, sha, file, line):
         """The text of `file` line `line` at commit `sha`, or None if it can't

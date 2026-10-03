@@ -117,6 +117,49 @@ def _rebuild_on_base(ctx, project, item, pr, base, *, stale=False):
              project, n, priority="low")
 
 
+def _update_reviewed_pr(ctx, project, item, pr, view):
+    """Keep reviewed work on its PR; never turn update uncertainty into a build."""
+    led, n = ctx.led, item["number"]
+    key = f"review:{project}#{n}"
+    info = _kv_json(led, key)
+    passed = (view.get("headRefOid") and info.get("sha") == view["headRefOid"]
+              and info.get("verdict") == "pass")
+    retained_key = f"reviewed-pr:{project}#{n}"
+    if not passed and led.get_kv(retained_key) != str(pr):
+        return False
+    led.set_kv(retained_key, str(pr))
+    gh = ctx.gh(project)
+    def authorize():
+        fresh = gh.pr_view(pr)
+        return (fresh.get("state") == "OPEN"
+                and all(fresh.get(k) == view.get(k) for k in
+                        ("headRefOid", "headRefName", "baseRefName"))
+                and _ship_lease(ctx, project, item))
+    try:
+        result = gh.update_reviewed_branch(
+            ctx.policy(project)["path"], view.get("headRefName"),
+            view.get("baseRefName"), view["headRefOid"], authorize)
+        if not _ship_lease(ctx, project, item):
+            return True
+        if result is None:
+            _review_triggered_fix(ctx, project, item, pr, view,
+                f"Merge origin/{view['baseRefName']} into this PR's existing branch, "
+                "resolve conflicts while preserving the reviewed work, verify and push "
+                "to the same PR. Do not reset to base or open a replacement PR.",
+                base_conflict=True)
+            return True
+        sha, unchanged = result
+        if unchanged and passed:
+            led.set_kv(key, json.dumps({**info, "sha": sha, "updated_from": info["sha"]}))
+        else:
+            led.set_kv(key, json.dumps({"sha": sha, "verdict": "required"}))
+        _ci_pending(ctx, project, item, pr, {**view, "headRefOid": sha},
+                    reason="PR branch updated; waiting for fresh CI and base verification")
+    except (GHError, ValueError) as exc:
+        _ci_pending(ctx, project, item, pr, view, reason=f"PR update failed: {exc}")
+    return True
+
+
 def _closed_pr(ctx, project, item, pr, view):
     """Recover an unmerged closure without recording any shipped evidence."""
     led, n = ctx.led, item["number"]
@@ -213,7 +256,8 @@ def _watch_pr(ctx, project, item, pr):
         return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
-        _rebuild_on_base(ctx, project, item, pr, base)
+        if not _update_reviewed_pr(ctx, project, item, pr, view):
+            _rebuild_on_base(ctx, project, item, pr, base)
         return
     state = checks_state(view.get("statusCheckRollup"))
     # Keep the console's explanation in step with the state this watcher saw.
@@ -339,7 +383,8 @@ def _merge_queued(ctx, project, item, pr, view):
         if not _ship_lease(ctx, project, item):
             return
         if not contains:
-            _rebuild_on_base(ctx, project, item, pr, fresh["baseRefName"], stale=True)
+            if not _update_reviewed_pr(ctx, project, item, pr, fresh):
+                _rebuild_on_base(ctx, project, item, pr, fresh["baseRefName"], stale=True)
             return
         ctx.merge_requested = True  # even an uncertain API failure consumes this tick
         gh.pr_merge(pr, sha)
@@ -386,7 +431,8 @@ def _review_gate(ctx, project, item, pr, view):
     alongside it. Low-risk items (`_review_required` false) skip straight to
     `_merge_queued`, same as before this existed."""
     led, n = ctx.led, item["number"]
-    if not _review_required(item):
+    if (not _review_required(item)
+            and led.get_kv(f"reviewed-pr:{project}#{n}") != str(pr)):
         _merge_queued(ctx, project, item, pr, view)
         return
     sha = view.get("headRefOid") or ""
@@ -777,7 +823,7 @@ def _explored_head(led, project, n):
     return bool(run and run["explore"])
 
 
-def _review_triggered_fix(ctx, project, item, pr, view, findings):
+def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
     fix (`_red_ci`), except the fix prompt carries the review's findings
@@ -787,11 +833,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     (mahler#232's per-cycle dedup fix lives there) so this new path can never
     perturb that already-hardened one."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
-    if _review_not_converging(ctx, project, item, pr, view):
+    if not base_conflict and _review_not_converging(ctx, project, item, pr, view):
         return
     sha = view.get("headRefOid") or ""
     dup_key = f"reviewdup:{project}#{n}"
-    if _kv_json(led, dup_key).get("sha") != sha:
+    if not base_conflict and _kv_json(led, dup_key).get("sha") != sha:
         repeated = _repeat_finding(ctx, project, n, view)
         if repeated:
             # Same finding on the same unchanged line: a second opinion, not
@@ -808,7 +854,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
     pol = ctx.policy(project)
     head = view.get("headRefName") or item["branch"]
     last = led.last_run(project, n, roles=("build", "fix"))
-    explore_failure = _explored_head(led, project, n)
+    explore_failure = base_conflict or _explored_head(led, project, n)
     attempts = item["attempts"] + (0 if explore_failure else 1)
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
@@ -851,8 +897,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
         cur_tier = new_tier
-        ctx.ping(f"Review failed — {project} #{n}",
-                 f"PR #{pr}: the independent review found blocking issues; "
+        ctx.ping(f"{'Base conflict' if base_conflict else 'Review failed'} — {project} #{n}",
+                 (f"PR #{pr}: conflicts with its target; " if base_conflict else
+                  f"PR #{pr}: the independent review found blocking issues; ") +
                  "the conductor starts a fix run on it",
                  project, n, priority="high", tags="warning")
 
@@ -904,6 +951,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings):
                f"STATUS: DONE:\n\n{findings}" if findings else
                "- an independent review of this PR found blocking issues (see the PR "
                "comments); address them, verify, push, and end with STATUS: DONE")
+    if base_conflict:
+        context = findings
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, context=context, fix_reason="review",
              **({"explore": True} if explore else {})):

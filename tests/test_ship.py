@@ -1040,6 +1040,79 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(self.gh.merged, [])
 
+    def reviewed_pr(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
+
+    def test_reviewed_stale_pr_updates_then_waits_for_ci_and_fresh_base(self):
+        self.reviewed_pr()
+        with mock.patch.object(self.gh, "base_in_head", return_value=False), \
+                mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                                  return_value=("updated", True)) as update, \
+                mock.patch("mahler.ship.start") as start:
+            self.ship()
+        self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual(self.gh.merged, [])
+        start.assert_not_called()
+        self.assertEqual(update.call_args.args[1:4], ("mahler/5-x", "main", "abc123"))
+        self.assertEqual(json.loads(self.led.get_kv("review:x#5"))["sha"], "updated")
+        self.gh.head_sha = "updated"
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.ship()
+        self.assertEqual(self.gh.merged, [])
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(self.gh, "base_in_head", return_value=True) as ancestry:
+            self.ship()
+        ancestry.assert_called_once()
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_reviewed_update_changed_patch_requires_review(self):
+        self.reviewed_pr()
+        with mock.patch.object(self.gh, "base_in_head", return_value=False), \
+                mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                                  return_value=("updated", False)):
+            self.ship()
+        self.gh.head_sha = "updated"
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(calls[0][0], "review")
+        self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_reviewed_conflict_fixes_same_pr_and_reviews_resolved_head(self):
+        self.reviewed_pr()
+        self.gh.mergeable = "CONFLICTING"
+        calls = []
+        self.patch_review_start(calls)
+        with mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                               return_value=None):
+            self.ship()
+        self.assertEqual(calls[0][0], "fix")
+        self.assertIn("Merge origin/main", calls[0][2])
+        self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.item()["branch"], "mahler/5-x")
+        self.gh.head_sha = "resolved"
+        self.gh.mergeable = "MERGEABLE"
+        self.led.release("x", 5, holder="run:14")
+        self.led.set_state("x", 5, "verifying", "fix completed")
+        self.ship()
+        self.assertEqual(calls[-1][0], "review")
+        self.assertEqual(self.gh.merged, [])
+
+    def test_reviewed_update_error_preserves_pr_and_pass(self):
+        self.reviewed_pr()
+        with mock.patch.object(self.gh, "base_in_head", return_value=False), \
+                mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                                  side_effect=gh_module.GHError("push refused")):
+            self.ship()
+        self.assertEqual(self.item()["pr"], 88)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(json.loads(self.led.get_kv("review:x#5"))["sha"], "abc123")
+        self.assertEqual(self.gh.merged, [])
+
     def test_review_pass_verdict_merges(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
