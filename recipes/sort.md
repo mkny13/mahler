@@ -53,6 +53,17 @@ become the console's answer buttons.
    So list every file this issue's build will actually touch, one per bullet (or inline,
    comma-separated, for a short list) — that's what makes the check work, not a guess about
    whether some other issue happens to overlap.
+   Done-when checklist — apply to this issue and each sub-issue before marking ready:
+   - [ ] Bounded and checkable: use a named finite list or a measurable threshold with
+     a defined scope and verification method. Never use "every" / "all" over an
+     open-ended set (for example, replace "audit every query" with named queries).
+   - [ ] Feasible and consistent: check that the goal, acceptance criteria and constraints
+     can be satisfied together. A smoke-journey target requiring new app accessibility
+     identifiers contradicts "no app source changes"; do not pass that conflict to a builder.
+     If resolving it requires changing owner intent, end NEEDS-YOU with concise options.
+   - [ ] Prerequisites explicit: split needed prerequisite work into its own mergeable
+     issue with a test, and add an unquoted `Depends on: #N` line to the dependent issue.
+     Do not use a dependency to silently override an owner's constraint.
 4. Labels (`gh issue edit … --add-label`): exactly one of `type:bug` `type:feature`
    `type:chore` `type:goal`; exactly one of `size:s` `size:m` `size:l`; and `p2` unless a
    p-label is already present. Never add or remove `mahler:*` labels — Mahler owns those.
