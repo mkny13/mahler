@@ -99,6 +99,12 @@ def is_credit_exhausted(text):
 QUOTA_WORDS = ("rate limit", "429", "quota", "credit", "usage limit",
                "usage_limit_exceeded")
 
+# Provider overloads use the same backoff/no-attempt path as quota exhaustion.
+# Only inspect error records, never ordinary assistant or tool output.
+CAPACITY_ERROR_PATTERN = re.compile(
+    r"\b(?:model (?:is )?at capacity|overloaded|overloaded_error|529)\b"
+)
+
 # Transient network drops and session errors that free builders can resume from (mahler#426).
 NETWORK_ERRORS = (
     "network connection lost",
@@ -957,7 +963,7 @@ def _classify_error(res, ev):
     blob = json.dumps(ev).lower()
     if is_credit_exhausted(blob):
         _note_credit_exhausted(res, ev)
-    elif any(word in blob for word in QUOTA_WORDS):
+    elif any(word in blob for word in QUOTA_WORDS) or CAPACITY_ERROR_PATTERN.search(blob):
         _note_quota_hit(res, ev)
 
 
@@ -1016,8 +1022,10 @@ def _read_claude_event(res, ev, texts, first_quota):
     elif t == "result":
         res["final"] = ev.get("result")
         res["ok"] = ev.get("subtype") == "success" and not ev.get("is_error")
-        if ev.get("is_error") and is_model_unavailable(ev):
-            res["model_unavailable"] = True
+        if not res["ok"]:
+            _note_log_error(res, ev)
+    elif t == "error":
+        _note_log_error(res, ev)
 
 
 def _read_cline_event(res, ev, texts, first_quota):

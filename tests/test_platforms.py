@@ -10,6 +10,22 @@ from unittest import mock
 from mahler import config, platforms, router
 
 
+def provider_error_events(message):
+    """Synthetic failures in the adapters' established stream event shapes."""
+    return (
+        ('claude', {'type': 'result', 'subtype': 'error_during_execution',
+                    'is_error': True, 'errors': [message]}),
+        ('claude', {'type': 'error', 'error': {'message': message}}),
+        ('cline', {'type': 'run_result', 'finishReason': 'error', 'text': message}),
+        ('copilot', {'type': 'session.error', 'data': {'message': message}}),
+        ('codex', {'type': 'turn.failed', 'error': {'message': message}}),
+        ('kilo', {'type': 'error', 'error': {'data': {'message': message}}}),
+        ('agy', {'event': 'result', 'result': {'status': 'FAILED', 'response': message}}),
+        ('kiro', {'type': 'runError', 'data': {'message': message}}),
+        ('vibe', {'type': 'error', 'message': message}),
+    )
+
+
 class NetworkErrorDetectionTests(unittest.TestCase):
     def test_matches_network_patterns_case_insensitively(self):
         patterns = [
@@ -468,6 +484,35 @@ class ReadLogContractTests(unittest.TestCase):
                             'Document HTTP 429 rate limit handling'):
                 with self.subTest(kind=kind, message=message):
                     self.assertFalse(self.read(kind, [message])['quota_hit'])
+
+    def test_provider_capacity_errors_across_adapters(self):
+        for message in ('Selected model is at capacity', 'Model at capacity',
+                        'HTTP 429: Too Many Requests', 'HTTP 529',
+                        'overloaded_error', 'Provider is overloaded. Try again in 2h'):
+            for kind, event in provider_error_events(message):
+                with self.subTest(kind=kind, event=event):
+                    result = self.read(kind, [event])
+                    self.assertTrue(result['quota_hit'])
+                    self.assertFalse(result['model_unavailable'])
+                    self.assertFalse(result['credit_exhausted'])
+                    self.assertEqual(result['retry_after'], 120 if '2h' in message else None)
+            for kind in self.kinds:
+                with self.subTest(kind=kind, plaintext=message):
+                    self.assertTrue(self.read(kind, ['Error: ' + message])['quota_hit'])
+
+    def test_capacity_classification_excludes_permanent_errors_and_prose(self):
+        for message in ('Invalid API key', 'model not found: bogus',
+                        'AssertionError: expected 5290, got 1'):
+            for kind, event in provider_error_events(message):
+                with self.subTest(kind=kind, message=message):
+                    self.assertFalse(self.read(kind, [event])['quota_hit'])
+        for kind in self.kinds:
+            with self.subTest(kind=kind):
+                self.assertFalse(self.read(kind, [
+                    'Document Selected model is at capacity and HTTP 529 handling'
+                ])['quota_hit'])
+        self.assertFalse(self.read('claude', [{'type': 'result', 'subtype': 'success',
+            'result': 'Implemented overloaded_error handling'}])['quota_hit'])
 
     def test_structured_error_classification_preserves_protocol_differences(self):
         message = '429 rate limit exceeded. Try again in 2h'
