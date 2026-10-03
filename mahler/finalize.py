@@ -15,7 +15,7 @@ from datetime import timedelta
 from . import config, failures, platforms, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
-from .usage import record_claude_usage
+from .usage import quota_peers, record_claude_usage
 
 CAPACITY_STOPS = ("quota", "no_credit", "model_unavailable")
 
@@ -371,8 +371,10 @@ def _record_run_usage(ctx, run, kind, log):
         led.record_usage(run["platform"], router.HOLD, 100.0, until)
         led.set_kv(f"hold_reason:{run['platform']}", "no_credit")
     if until:
-        for w in ctx.cfg["platforms"][run["platform"]].get("windows", router.WINDOWS):
-            led.record_usage(run["platform"], w, 100.0, until)
+        # Variants share the login's quota, even when it has no usage probe.
+        for peer in quota_peers(ctx.cfg, run["platform"]):
+            for w in ctx.cfg["platforms"][peer].get("windows", router.WINDOWS):
+                led.record_usage(peer, w, 100.0, until)
 
 
 def _save_work(e):

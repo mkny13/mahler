@@ -499,6 +499,48 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["state"], "ready")
         self.assertIn("couldn't post handoff comment", "\n".join(self.ctx.lines))
 
+    def kilo_variants(self):
+        self.cfg["platforms"]["kilo"]["variants"] = ["model-a", "model-b"]
+        config.expand_variants(self.cfg)
+        a, b = "kilo/model-a/default", "kilo/model-b/default"
+        self.run["platform"] = a
+        return a, b
+
+    def test_variant_quota_backoff_blocks_siblings_until_expiry(self):
+        a, b = self.kilo_variants()
+        self.cfg["platforms"][b]["windows"] = ["daily"]
+        self.cfg["platforms"]["other-login"] = dict(
+            self.cfg["platforms"][b], account="work")
+        self.cfg["routing"]["build"] = [b]
+        self.assertEqual(router.pick(self.cfg, self.led, "build", size="s")[0], b)
+        with open(self.log, "w") as fh:
+            fh.write("Add credits to continue\n")
+        self.finalize()
+        for name in ("kilo", a, b):
+            pc = self.cfg["platforms"][name]
+            for window in pc.get("windows", router.WINDOWS):
+                sample = self.led.usage(name)[window]
+                self.assertEqual(sample["used_pct"], 100.0)
+                self.assertEqual(sample["resets_at"], iso(NOW + timedelta(hours=1)))
+        self.assertEqual(self.led.usage("other-login"), {})
+        self.assertEqual(self.led.usage("cline-free"), {})
+        with mock.patch.object(self.led, "now", return_value=NOW + timedelta(minutes=59)):
+            self.assertIsNone(router.pick(self.cfg, self.led, "build", size="s")[0])
+        with mock.patch.object(self.led, "now", return_value=NOW + timedelta(hours=1)):
+            self.assertEqual(router.pick(self.cfg, self.led, "build", size="s")[0], b)
+
+    def test_variant_model_rejection_does_not_hold_sibling(self):
+        a, b = self.kilo_variants()
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error", "error": {"message": "model not found: model-a"}}) + "\n")
+        self.write_exit(1)
+        self.finalize()
+        self.assertEqual(self.led.get_kv(f"hold_reason:{a}"), "model_unavailable")
+        self.assertIn(router.HOLD, self.led.usage(a))
+        self.assertEqual(self.led.usage(b), {})
+        self.cfg["routing"]["build"] = [a, b]
+        self.assertEqual(router.pick(self.cfg, self.led, "build", size="s")[0], b)
+
     def test_cline_daily_cap_waits_until_the_named_reset_not_the_flat_backoff(self):
         # mahler#124: Cline's free model names its own reset time in the
         # error text ("Try again in 9h 41m") — honor it instead of always
