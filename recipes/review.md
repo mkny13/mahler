@@ -52,6 +52,12 @@ Rules:
    hard to undo.
 6. **Re-reviews converge.** If earlier review comments exist, first check that each earlier
    blocking finding is fixed — an unfixed one still blocks. Then review what changed since.
+   Use the supplied green round number, inclusive threshold and prior classified evidence.
+   At/after the threshold, only new substantiated blockers or still-reproducible unresolved
+   blockers can fail. Compare the scenario and consequence, not file names alone. A fixed
+   finding cannot be revived without new evidence. File drift alone never justifies either
+   failing review or demoting security, data loss, regressions or acceptance failures.
+   Everything actionable below the blocking bar is a follow-up, with its reason explained.
    A new finding in code the fix didn't touch must clear the bar in rule 4 with room to
    spare; the previous reviewer already read that code. Don't re-raise a note as a blocker.
 7. **Say why it's realistic.** Each blocking finding names the file, the concrete scenario,

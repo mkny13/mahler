@@ -441,8 +441,13 @@ def _review_gate(ctx, project, item, pr, view):
     key = f"review:{project}#{n}"
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else {}
-    if sha and info.get("sha") == sha:
+    if checks_state(view.get("statusCheckRollup")) not in {"green", "none"}:
+        return
+    if sha and info.get("sha") == sha and info.get("pr", pr) == pr:
         verdict = info.get("verdict")
+        if verdict in {"pass", "fail"}:
+            review.record_green(ctx, project, item, pr, info)
+            _review_not_converging(ctx, project, item, pr, view)
         if verdict == "pass":
             if not review.file_followups(ctx, project, item):
                 return
@@ -658,8 +663,9 @@ def _start_review_run(ctx, project, item, pr, view, sha):
                     if conductor and (conductor["holder"] == CONDUCTOR
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "review", platform,
-             handoff_from=handoff_from, size=size):
-        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "verdict": "pending",
+             handoff_from=handoff_from, size=size,
+             context=review.start_context(ctx, project, item, pr, sha)):
+        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "pr": pr, "verdict": "pending",
             "run_id": row_get(led.last_run(project, n, roles=("review",)) or {}, "id")}))
         led.set_kv(wait_key, "")
         led.set_kv(ping_key, "")
@@ -752,12 +758,17 @@ def _repeat_finding(ctx, project, n, view):
     same unchanged line every round; a real regression or a changed line is
     never a repeat. Anything unreadable counts as not a repeat."""
     led, sha = ctx.led, view.get("headRefOid")
-    history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+    history = [r for r in json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+               if r.get("pr", led.item(project, n)["pr"]) == led.item(project, n)["pr"]]
     if len(history) < 2 or history[-1]["sha"] != sha:
         return None
     prev, cur = history[-2], history[-1]
     if not prev.get("sha") or prev["sha"] == sha:
         return None
+    if cur.get("classified") is not None or prev.get("classified") is not None:
+        if (cur.get("classified") is None or prev.get("classified") is None
+                or not review.same_findings(prev["classified"], cur["classified"])):
+            return None
     now, before = _finding_locations(cur["findings"]), _finding_locations(prev["findings"])
     if not now or not before or not now <= before:
         return None
@@ -773,11 +784,17 @@ def _repeat_finding(ctx, project, n, view):
 
 
 def _review_not_converging(ctx, project, item, pr, view):
-    """Pause after two consecutive reviews move to previously untouched files."""
+    """Record two divergent transitions as evidence, without stopping shipping."""
     led, n = ctx.led, item["number"]
-    history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
-    key = f"reviewconvergence:{project}#{n}"
-    rounds = history[int(led.get_kv(key) or 0):]
+    window = review.window(led, project, n, pr)
+    rounds = [{"sha": r["sha"], "findings": review.render(r["reviews"][-1]["classified"])
+               if r["reviews"][-1].get("classified") is not None
+               else r["reviews"][-1].get("findings") or ""} for r in window]
+    # Legacy failed-review evidence remains useful during rollout.
+    if len(rounds) < 3:
+        history = json.loads(led.get_kv(f"reviewfindings:{project}#{n}") or "[]")
+        rounds = [r for r in history[int(led.get_kv(f"reviewconvergence:{project}#{n}") or 0):]
+                  if r.get("pr", pr) == pr]
     if len(rounds) < 3 or rounds[-1]["sha"] != view.get("headRefOid"):
         return False
 
@@ -795,23 +812,12 @@ def _review_not_converging(ctx, project, item, pr, view):
     if divergent < 2:
         return False
 
-    options = ["cut scope", "split the item", "merge with follow-ups", "keep fixing"]
-    evidence = "\n".join(
-        f"Round {i} ({round_['sha'] or 'unknown head'}, run {round_['run_id']}): "
-        f"{round_['findings']}"
-        for i, round_ in enumerate(history, 1))
-    question = (f"Review findings are not converging on PR #{pr}: two consecutive rounds "
-                "moved to different files. Should we cut scope, split the item, merge "
-                "with follow-ups, or keep fixing?\n\n" + evidence)
-    led.set_state(project, n, "needs_you", question, question=question,
-                  options=json.dumps(options))
-    failures.report(ctx, project, n, "review_rejected", output=evidence)
-    # Keep the evidence for diagnosis, but an explicit owner retry starts a
-    # fresh convergence window rather than escalating the same rounds again.
-    led.set_kv(key, str(len(history)))
-    led.release(project, n, holder=CONDUCTOR)
-    ctx.ping(f"Review not converging — {project} #{n}", question,
-             project, n, priority="high", tags="warning")
+    # File drift is diagnostic evidence, never a reason to demote a blocker
+    # or ask the owner to arbitrate review scope.
+    if not ctx.dry_run:
+        led.set_kv(f"reviewdrift:{project}#{n}:{pr}", json.dumps({
+            "sha": view.get("headRefOid"), "rounds": rounds,
+            "reason": "Different files signal scope drift; classified evidence decides blocking."}))
     return True
 
 
@@ -838,8 +844,6 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     (mahler#232's per-cycle dedup fix lives there) so this new path can never
     perturb that already-hardened one."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
-    if not base_conflict and _review_not_converging(ctx, project, item, pr, view):
-        return
     sha = view.get("headRefOid") or ""
     dup_key = f"reviewdup:{project}#{n}"
     if not base_conflict and _kv_json(led, dup_key).get("sha") != sha:
