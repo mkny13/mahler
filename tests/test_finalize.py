@@ -488,6 +488,24 @@ class RunTests(unittest.TestCase):
         self.assertIn(f'"run": {sort_id}', ev[0]["detail"])
         self.assertEqual(self.led.q("SELECT status FROM runs WHERE id=?", (sort_id,))[0]["status"], "ended")
 
+    def test_stale_build_cannot_overwrite_an_interactive_claim_and_ship(self):
+        """The same sequence for a build: its YIELDED/preempted finish must not
+        touch the branch, PR or state the interactive holder shipped."""
+        self.run["stop_reason"] = "preempted"
+        self.led.claim("x", 5, "session:abc", "interactive", 30)
+        self.led.set_state("x", 5, "verifying", "shipped", branch="mahler/5-shipped", pr=77)
+        self.led.release("x", 5, holder="session:abc", epoch=self.led.item("x", 5)["epoch"])
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: YIELDED handoff\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        ev = self.led.q("SELECT 1 FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+
     def test_lost_lease_also_returns_to_ready(self):
         """A run that lost its lease (D6: stolen or reaped elsewhere) hands
         the item back to the queue exactly like a quota stop — reason
@@ -781,18 +799,20 @@ class ResumeNudgeTests(unittest.TestCase):
         self.led.claim("x", 5, f"run:{run_id}", "auto",
                        self.cfg["defaults"]["auto_lease_minutes"],
                        platform=platform, run_id=run_id)
+        epoch = self.led.lease("x", 5)["epoch"]
+        self.led.update_run(run_id, epoch=epoch)
         run_dir = os.path.join(self.runs_dir, str(run_id))
         os.makedirs(run_dir, exist_ok=True)
         log_path = os.path.join(run_dir, "agent.log")
         status_path = os.path.join(run_dir, "exit")
         run = {"id": run_id, "project": "x", "number": 5, "role": "build",
-               "platform": platform, "epoch": 3, "pid": None,
+               "platform": platform, "epoch": epoch, "pid": None,
                "worktree": os.path.join(self.tmp, "wt"), "branch": "mahler/5-x",
                "log_path": log_path, "status_path": status_path,
                "started_at": iso(NOW), "stop_reason": None, "nudged": nudged}
         return run, run_id, log_path, status_path
 
-    def test_resume_env_includes_fence_epoch_and_gh_overlay(self):
+        self.assertEqual(env["MAHLER_EPOCH"], str(run["epoch"]))
         run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
         with open(log_path, "w") as fh:
             fh.write(json.dumps({"type": "run_result", "text": "partial work",

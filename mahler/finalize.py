@@ -465,6 +465,16 @@ def _close_the_books(e, code):
                                runner.worktree_root(e.pol))
 
 
+def _fenced_out(led, run, item):
+    """True when another holder's epoch has superseded this run's epoch."""
+    epoch = int(run["epoch"])
+    cur = led.item(run["project"], run["number"])
+    if cur is not None and int(cur["epoch"] or 0) > epoch:
+        return True
+    lease = led.lease(run["project"], run["number"])
+    return lease is not None and lease["epoch"] != epoch
+
+
 def finalize(ctx, run):
     """A run that ended passes through here exactly once."""
     led = ctx.led
@@ -507,9 +517,10 @@ def finalize(ctx, run):
     led.reset_setup_fails(project, n)
 
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
-    if run["role"] == "sort" and not led.lease_check(project, n, run["epoch"]):
-        # An interactive claim (D6) revoked this run's lease: the holder owns
-        # the item's state now, so the late sort result must not overwrite it.
+    if _fenced_out(led, run, item):
+        # A claim (D6) revoked or replaced this run's lease: the holder owns
+        # the item's state, branch and PR now, so a late result of any role
+        # must not overwrite them. Run bookkeeping and cleanup still happen.
         ending.stale = True
         led.event("stale_transition_dropped", project, n, {
             "run": run["id"], "role": run["role"], "epoch": run["epoch"],
