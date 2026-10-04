@@ -207,7 +207,12 @@ All of it is glue between adopted parts.
 - **Scope**: a project joins Mahler only when it has a GitHub repo and an enabled entry in the
   operator's `~/.mahler/config.toml`; repository visibility is the operator's choice. GitHub
   provides the issue backlog and an off-machine copy of the code, but private visibility is not
-  an onboarding invariant — several enabled personal projects are public. Non-git folders
+  an onboarding invariant — several enabled personal projects are public. A public managed repo
+  is allowed only while credentials, tokens and private personal data are absent from its tracked
+  files and Git history; secret values live outside the repo (Keychain, untracked `.env`, or the
+  hosting service's secret store). Intentionally public client configuration, such as a frontend
+  app key, is not a credential. Mahler adds no secret scanner for this and changes no repository's
+  visibility. Non-git folders
   (`Fantasy Sports`, `MTG`, …) get `git init` plus a repo when onboarded, not before.
   `olympic_hockey` now has a public GitHub repo but remains out of scope because it is not in the
   live config; the separately enabled `hockey` project is `mkny13/hockey-draft-copilot`.
@@ -650,6 +655,9 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   - `data`: stores and backup/restore commands (D12)
   - `canary`: an optional "break a file, confirm the build fails" check, for stacks where
     worktree builds can silently compile the wrong checkout (phish-in-app D206/D207)
+  - `secrets` (required for public repos): an inventory of each secret's name and type and the
+    external place it is stored (Keychain item, Cloudflare Worker secret, untracked `.env`),
+    never the values. Agents must not print, log or commit secret values (D4; the "Secrets" safety rule).
 - **Optional project smoke contract (mahler#617).** The operator config's
   `[projects.<name>] smoke` is a command string alongside `verify`, inheriting
   `[defaults]` through normal project-policy merging. The built-in default is
