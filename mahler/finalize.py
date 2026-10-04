@@ -56,6 +56,7 @@ class Ending:
         self.verb, self.rest, self.reason, self.outcome = verb, rest, reason, outcome
         self.project, self.number = run["project"], run["number"]
         self.saved, self.keep_worktree, self.closed = None, False, False
+        self.stale = False          # lease revoked or replaced: leave the item alone
         self.duration_mins = None
         started_at = row_get(run, "started_at")
         if started_at:
@@ -440,7 +441,9 @@ def _close_the_books(e, code):
     # Keep item ownership and fencing through the handoff, but release run
     # capacity immediately. Watching a PR does not execute a run (D19, D24).
     # On transport failure the old lease is left to expire.
-    if led.item(e.project, e.number)["state"] == "verifying":
+    if e.stale:
+        pass                        # the current holder's lease is not ours to move or release
+    elif led.item(e.project, e.number)["state"] == "verifying":
         transferred, info = led.claim(
             e.project, e.number, CONDUCTOR, "auto", e.pol["auto_lease_minutes"],
             capacity=False, handoff_from=(f"run:{run['id']}", run["epoch"]))
@@ -504,7 +507,14 @@ def finalize(ctx, run):
     led.reset_setup_fails(project, n)
 
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
-    if run["role"] == "sort":
+    if run["role"] == "sort" and not led.lease_check(project, n, run["epoch"]):
+        # An interactive claim (D6) revoked this run's lease: the holder owns
+        # the item's state now, so the late sort result must not overwrite it.
+        ending.stale = True
+        led.event("stale_transition_dropped", project, n, {
+            "run": run["id"], "role": run["role"], "epoch": run["epoch"],
+            "outcome": outcome, "preserved_state": led.item(project, n)["state"]})
+    elif run["role"] == "sort":
         SORT_OUTCOMES.get(verb, _retry)(ending)
     elif run["role"] == "review":
         REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)

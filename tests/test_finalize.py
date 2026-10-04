@@ -462,6 +462,32 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["state"], "ready")
         self.assertIsNone(self.led.lease("x", 5))
 
+    def test_stale_sort_cannot_overwrite_an_interactive_claim_and_ship(self):
+        """phish-in#533: sort in flight -> interactive claim -> ship -> sort
+        finishes READY. The item must stay verifying with the shipped branch."""
+        self.led.release("x", 5, holder=f"run:{self.run_id}", epoch=1, to_state="working")
+        sort_id = self.led.create_run(project="x", number=5, role="sort",
+                                      platform="cline-free", epoch=2, status="running")
+        self.led.claim("x", 5, f"run:{sort_id}", "auto", 30, platform="cline-free", run_id=sort_id)
+        epoch = self.led.item("x", 5)["epoch"]
+        self.led.claim("x", 5, "session:abc", "interactive", 30)       # pre-empts the sort
+        self.led.set_state("x", 5, "verifying", "shipped", branch="mahler/5-shipped", pr=77)
+        self.assertGreater(self.led.item("x", 5)["epoch"], epoch)
+        self.run.update(id=sort_id, role="sort", epoch=epoch)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: READY looks good\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        self.assertEqual(self.led.lease("x", 5)["holder"], "session:abc")
+        ev = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+        self.assertIn(f'"run": {sort_id}', ev[0]["detail"])
+        self.assertEqual(self.led.q("SELECT status FROM runs WHERE id=?", (sort_id,))[0]["status"], "ended")
+
     def test_lost_lease_also_returns_to_ready(self):
         """A run that lost its lease (D6: stolen or reaped elsewhere) hands
         the item back to the queue exactly like a quota stop — reason
