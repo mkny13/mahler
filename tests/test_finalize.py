@@ -490,14 +490,15 @@ class RunTests(unittest.TestCase):
 
     def test_stale_build_cannot_overwrite_an_interactive_claim_and_ship(self):
         """The same sequence for a build: its YIELDED/preempted finish must not
-        touch the branch, PR or state the interactive holder shipped."""
+        touch the branch, PR or state the interactive holder shipped, but its
+        uncommitted work must still be snapshotted before cleanup."""
         self.run["stop_reason"] = "preempted"
         self.led.claim("x", 5, "session:abc", "interactive", 30)
         self.led.set_state("x", 5, "verifying", "shipped", branch="mahler/5-shipped", pr=77)
         self.led.release("x", 5, holder="session:abc", epoch=self.led.item("x", 5)["epoch"])
         with open(self.log, "w") as fh:
             fh.write("STATUS: YIELDED handoff\n")
-        self.finalize()
+        snap, rm = self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "verifying")
         self.assertEqual(item["branch"], "mahler/5-shipped")
@@ -505,6 +506,35 @@ class RunTests(unittest.TestCase):
         ev = self.led.q("SELECT 1 FROM events WHERE project='x' AND number=5 "
                         "AND kind='stale_transition_dropped'")
         self.assertEqual(len(ev), 1)
+        snap.assert_called_once()
+        rm.assert_called_once()
+
+    def test_stale_setup_failure_cannot_overwrite_claim_and_ship(self):
+        """Exit 97 is normal finalization too: a superseded run records its
+        outcome and saves its tree without changing the current handoff."""
+        self.led.upsert_item("x", 5, setup_fails=1)
+        self.led.claim("x", 5, "session:abc", "interactive", 30)
+        self.led.set_state("x", 5, "verifying", "shipped",
+                           branch="mahler/5-shipped", pr=77)
+        self.led.release("x", 5, holder="session:abc",
+                         epoch=self.led.item("x", 5)["epoch"])
+        with open(self.run["status_path"], "w") as fh:
+            fh.write("97\n")
+        snap, rm = self.finalize()
+
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        self.assertEqual(item["setup_fails"], 1)
+        run = self.led.run(self.run_id)
+        self.assertEqual((run["status"], run["outcome"], run["exit_code"]),
+                         ("ended", "setup failed", 97))
+        ev = self.led.q("SELECT 1 FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+        snap.assert_called_once()
+        rm.assert_called_once()
 
     def test_lost_lease_also_returns_to_ready(self):
         """A run that lost its lease (D6: stolen or reaped elsewhere) hands
@@ -812,7 +842,7 @@ class ResumeNudgeTests(unittest.TestCase):
                "started_at": iso(NOW), "stop_reason": None, "nudged": nudged}
         return run, run_id, log_path, status_path
 
-        self.assertEqual(env["MAHLER_EPOCH"], str(run["epoch"]))
+    def test_resume_env_includes_fence_epoch_and_gh_overlay(self):
         run, run_id, log_path, status_path = self._make_run("cline-free", nudged=0)
         with open(log_path, "w") as fh:
             fh.write(json.dumps({"type": "run_result", "text": "partial work",
@@ -830,7 +860,7 @@ class ResumeNudgeTests(unittest.TestCase):
 
         spawn.assert_called_once()
         env = spawn.call_args.kwargs["env"]
-        self.assertEqual(env["MAHLER_EPOCH"], "3")
+        self.assertEqual(env["MAHLER_EPOCH"], str(run["epoch"]))
         self.assertEqual(env["MAHLER_RUN_ID"], str(run_id))
         self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")

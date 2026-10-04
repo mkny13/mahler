@@ -412,17 +412,22 @@ def _record_run_usage(ctx, run, kind, log):
 
 def _save_work(e):
     """Whatever the run left becomes a pushed ref and a handoff comment (D9) —
-    unless its own merge already closed the issue, in which case it is done."""
+    unless its own merge already closed the issue, in which case it is done.
+
+    A stale run still snapshots and reports its work before cleanup, but cannot
+    update the item whose lease epoch superseded it.
+    """
     ctx, led = e.ctx, e.led
-    try:
-        e.closed = ctx.gh(e.project).issue_state(e.number) == "CLOSED"
-    except GHError:
-        pass
-    if e.closed:
-        e.set_state("done", e.outcome)
-        if e.verb == "MERGED":
-            e.ping(f"Shipped — {e.project} #{e.number}", e.item["title"], tags="rocket")
-        return
+    if not e.stale:
+        try:
+            e.closed = ctx.gh(e.project).issue_state(e.number) == "CLOSED"
+        except GHError:
+            pass
+        if e.closed:
+            e.set_state("done", e.outcome)
+            if e.verb == "MERGED":
+                e.ping(f"Shipped — {e.project} #{e.number}", e.item["title"], tags="rocket")
+            return
     try:
         e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
                                   e.pol.get("base", "main"),
@@ -430,7 +435,7 @@ def _save_work(e):
     except runner.GitError as err:
         e.keep_worktree = True
         ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
-    if e.saved:
+    if e.saved and not e.stale:
         led.upsert_item(e.project, e.number, branch=e.saved["ref"])
     _handoff_comment(ctx, e.run, e.item, e.reason, e.outcome, e.saved, e.log, e.keep_worktree)
 
@@ -511,11 +516,6 @@ def finalize(ctx, run):
         _hold_platform(ctx, run)
     elif reason == "model_unavailable":
         _hold_model_unavailable(ctx, run)
-    if setup_failed:
-        _setup_failure(ctx, run, item)
-        return
-    led.reset_setup_fails(project, n)
-
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     if _fenced_out(led, run, item):
         # A claim (D6) revoked or replaced this run's lease: the holder owns
@@ -525,6 +525,20 @@ def finalize(ctx, run):
         led.event("stale_transition_dropped", project, n, {
             "run": run["id"], "role": run["role"], "epoch": run["epoch"],
             "outcome": outcome, "preserved_state": led.item(project, n)["state"]})
+    if setup_failed:
+        if ending.stale:
+            _save_work(ending)
+            _close_the_books(ending, code)
+        else:
+            _setup_failure(ctx, run, item)
+        return
+
+    if not ending.stale:
+        led.reset_setup_fails(project, n)
+
+    if ending.stale:
+        if run["role"] not in ("sort", "review"):
+            _save_work(ending)
     elif run["role"] == "sort":
         SORT_OUTCOMES.get(verb, _retry)(ending)
     elif run["role"] == "review":
