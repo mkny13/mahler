@@ -493,6 +493,19 @@ class RemoteLedgerTests(unittest.TestCase):
         self.assertEqual(request["holder"], "work-laptop/run:7")
         self.assertEqual(kwargs["timeout"], 8)
 
+    def test_remote_claim_remembers_epoch_after_release_without_rewinding(self):
+        first, _ = self.routed.claim("mahler", 151, "run:7", "auto", 10)
+        replacement, _ = self.routed.claim("mahler", 151, "session", "interactive", 10)
+        self.assertGreater(replacement["epoch"], first["epoch"])
+        self.routed.release("mahler", 151, holder="session", epoch=replacement["epoch"])
+        self.assertIsNone(self.routed.lease("mahler", 151))
+        self.assertEqual(self.local.item("mahler", 151)["epoch"], replacement["epoch"])
+        # Simulate the first claim's response arriving after the replacement.
+        from unittest.mock import patch
+        with patch.object(self.routed, "_call", return_value={"lease": first, "info": {}}):
+            self.routed.claim("mahler", 151, "run:7", "auto", 10)
+        self.assertEqual(self.local.item("mahler", 151)["epoch"], replacement["epoch"])
+
     def test_remote_lease_never_uses_colliding_local_run_details(self):
         canonical_run = self.canonical.create_run(
             project="mahler", number=151, role="build", platform="copilot", epoch=1)

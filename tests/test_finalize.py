@@ -15,7 +15,7 @@ from unittest import mock
 
 from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
-from mahler.ledger import Ledger, iso
+from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -487,6 +487,43 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(ev), 1)
         self.assertIn(f'"run": {sort_id}', ev[0]["detail"])
         self.assertEqual(self.led.q("SELECT status FROM runs WHERE id=?", (sort_id,))[0]["status"], "ended")
+
+    def test_remote_claim_and_ship_fences_late_sort_and_build(self):
+        canonical = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(canonical.close)
+        canonical_cfg = copy.deepcopy(self.cfg)
+        canonical_cfg["projects"]["x"]["enabled"] = True
+        self.cfg["projects"]["x"]["remote_ledger"] = {"host": "canonical", "client_id": "secondary"}
+        routed = RoutedLedger(self.led, self.cfg)
+        self.ctx.led = routed
+
+        def call(project, operation, **args):
+            return remote_lease_operation(
+                {"version": 1, "project": project, "operation": operation, **args},
+                canonical_cfg, canonical)
+
+        with mock.patch.object(routed, "_call", side_effect=call):
+            for role, status in (("sort", "READY"), ("build", "YIELDED")):
+                with self.subTest(role=role):
+                    lease, _ = routed.claim("x", 5, f"run:{self.run_id}", "auto", 30)
+                    self.run.update(role=role, epoch=lease["epoch"])
+                    replacement, _ = routed.claim("x", 5, "session:abc", "interactive", 30)
+                    routed.set_state("x", 5, "verifying", "shipped",
+                                     branch="mahler/5-shipped", pr=77)
+                    routed.release("x", 5, holder="session:abc", epoch=replacement["epoch"])
+                    self.assertIsNone(routed.lease("x", 5))
+                    with open(self.log, "w") as fh:
+                        fh.write(f"STATUS: {status} handoff\n")
+                    snap, rm = self.finalize()
+                    item = routed.item("x", 5)
+                    self.assertEqual((item["state"], item["branch"], item["pr"]),
+                                     ("verifying", "mahler/5-shipped", 77))
+                    event = routed.q("SELECT detail FROM events WHERE kind='stale_transition_dropped'")[-1]
+                    self.assertEqual(json.loads(event["detail"])["epoch"], lease["epoch"])
+                    self.assertEqual(routed.run(self.run_id)["status"], "ended")
+                    rm.assert_called_once()
+                    if role == "build":
+                        snap.assert_called_once()
 
     def test_stale_build_cannot_overwrite_an_interactive_claim_and_ship(self):
         """The same sequence for a build: its YIELDED/preempted finish must not
