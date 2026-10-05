@@ -1007,7 +1007,8 @@ class ResumeNudgeTests(unittest.TestCase):
 
         spawn.assert_called_once()
         env = spawn.call_args.kwargs["env"]
-        self.assertEqual(env["MAHLER_EPOCH"], str(run["epoch"]))
+        claimed_epoch = self.led.lease("x", 5)["epoch"]
+        self.assertEqual(env["MAHLER_EPOCH"], str(claimed_epoch))
         self.assertEqual(env["MAHLER_RUN_ID"], str(run_id))
         self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")
