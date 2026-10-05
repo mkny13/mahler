@@ -509,6 +509,48 @@ class RunTests(unittest.TestCase):
         snap.assert_called_once()
         rm.assert_called_once()
 
+    def test_claim_during_snapshot_preserves_shipped_item(self):
+        """A separate CLI connection can preempt while the snapshot pushes."""
+        path = os.path.join(self.tmp, "ledger.db")
+        disk = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(disk.close)
+        self.led.con.backup(disk.con)
+        self.led = disk
+        self.ctx = scheduler.Ctx(self.cfg, disk, dry_run=False)
+        interactive = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(interactive.close)
+        saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
+
+        def claim_and_ship(*args, **kwargs):
+            lease, _ = interactive.claim("x", 5, "session:abc", "interactive", 30)
+            self.assertIsNotNone(lease)
+            interactive.set_state("x", 5, "verifying", "shipped",
+                                  branch="mahler/5-shipped", pr=77, setup_fails=2)
+            return saved
+
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE implemented it\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", side_effect=claim_and_ship) as snap, \
+                mock.patch.object(runner, "remove_worktree") as rm:
+            finalize.finalize(self.ctx, self.run)
+
+        item = disk.item("x", 5)
+        self.assertEqual((item["state"], item["branch"], item["pr"], item["setup_fails"]),
+                         ("verifying", "mahler/5-shipped", 77, 2))
+        self.assertEqual(disk.lease("x", 5)["holder"], "session:abc")
+        events = disk.q("SELECT detail FROM events WHERE kind='stale_transition_dropped'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(json.loads(events[0]["detail"]), {
+            "run": self.run_id, "role": "build", "epoch": 1,
+            "outcome": "DONE", "preserved_state": "verifying"})
+        run = disk.run(self.run_id)
+        self.assertEqual((run["status"], run["outcome"]), ("ended", "DONE"))
+        self.assertIsNotNone(run["ended_at"])
+        self.assertTrue(any(saved["ref"] in comment for comment in self.gh.comments))
+        snap.assert_called_once()
+        rm.assert_called_once()
+
     def test_stale_setup_failure_cannot_overwrite_claim_and_ship(self):
         """Exit 97 is normal finalization too: a superseded run records its
         outcome and saves its tree without changing the current handoff."""
