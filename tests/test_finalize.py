@@ -15,7 +15,7 @@ from unittest import mock
 
 from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
-from mahler.ledger import Ledger, iso
+from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -462,6 +462,159 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["state"], "ready")
         self.assertIsNone(self.led.lease("x", 5))
 
+    def test_stale_sort_cannot_overwrite_an_interactive_claim_and_ship(self):
+        """phish-in#533: sort in flight -> interactive claim -> ship -> sort
+        finishes READY. The item must stay verifying with the shipped branch."""
+        self.led.release("x", 5, holder=f"run:{self.run_id}", epoch=1, to_state="working")
+        sort_id = self.led.create_run(project="x", number=5, role="sort",
+                                      platform="cline-free", epoch=2, status="running")
+        self.led.claim("x", 5, f"run:{sort_id}", "auto", 30, platform="cline-free", run_id=sort_id)
+        epoch = self.led.item("x", 5)["epoch"]
+        self.led.claim("x", 5, "session:abc", "interactive", 30)       # pre-empts the sort
+        self.led.set_state("x", 5, "verifying", "shipped", branch="mahler/5-shipped", pr=77)
+        self.assertGreater(self.led.item("x", 5)["epoch"], epoch)
+        self.run.update(id=sort_id, role="sort", epoch=epoch)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: READY looks good\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        self.assertEqual(self.led.lease("x", 5)["holder"], "session:abc")
+        ev = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+        self.assertIn(f'"run": {sort_id}', ev[0]["detail"])
+        self.assertEqual(self.led.q("SELECT status FROM runs WHERE id=?", (sort_id,))[0]["status"], "ended")
+
+    def test_remote_claim_and_ship_fences_late_sort_and_build(self):
+        canonical = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(canonical.close)
+        canonical_cfg = copy.deepcopy(self.cfg)
+        canonical_cfg["projects"]["x"]["enabled"] = True
+        self.cfg["projects"]["x"]["remote_ledger"] = {"host": "canonical", "client_id": "secondary"}
+        routed = RoutedLedger(self.led, self.cfg)
+        self.ctx.led = routed
+
+        def call(project, operation, **args):
+            return remote_lease_operation(
+                {"version": 1, "project": project, "operation": operation, **args},
+                canonical_cfg, canonical)
+
+        with mock.patch.object(routed, "_call", side_effect=call):
+            for role, status in (("sort", "READY"), ("build", "YIELDED")):
+                with self.subTest(role=role):
+                    lease, _ = routed.claim("x", 5, f"run:{self.run_id}", "auto", 30)
+                    self.run.update(role=role, epoch=lease["epoch"])
+                    replacement, _ = routed.claim("x", 5, "session:abc", "interactive", 30)
+                    routed.set_state("x", 5, "verifying", "shipped",
+                                     branch="mahler/5-shipped", pr=77)
+                    routed.release("x", 5, holder="session:abc", epoch=replacement["epoch"])
+                    self.assertIsNone(routed.lease("x", 5))
+                    with open(self.log, "w") as fh:
+                        fh.write(f"STATUS: {status} handoff\n")
+                    snap, rm = self.finalize()
+                    item = routed.item("x", 5)
+                    self.assertEqual((item["state"], item["branch"], item["pr"]),
+                                     ("verifying", "mahler/5-shipped", 77))
+                    event = routed.q("SELECT detail FROM events WHERE kind='stale_transition_dropped'")[-1]
+                    self.assertEqual(json.loads(event["detail"])["epoch"], lease["epoch"])
+                    self.assertEqual(routed.run(self.run_id)["status"], "ended")
+                    rm.assert_called_once()
+                    if role == "build":
+                        snap.assert_called_once()
+
+    def test_stale_build_cannot_overwrite_an_interactive_claim_and_ship(self):
+        """The same sequence for a build: its YIELDED/preempted finish must not
+        touch the branch, PR or state the interactive holder shipped, but its
+        uncommitted work must still be snapshotted before cleanup."""
+        self.run["stop_reason"] = "preempted"
+        self.led.claim("x", 5, "session:abc", "interactive", 30)
+        self.led.set_state("x", 5, "verifying", "shipped", branch="mahler/5-shipped", pr=77)
+        self.led.release("x", 5, holder="session:abc", epoch=self.led.item("x", 5)["epoch"])
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: YIELDED handoff\n")
+        snap, rm = self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        ev = self.led.q("SELECT 1 FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+        snap.assert_called_once()
+        rm.assert_called_once()
+
+    def test_claim_during_snapshot_preserves_shipped_item(self):
+        """A separate CLI connection can preempt while the snapshot pushes."""
+        path = os.path.join(self.tmp, "ledger.db")
+        disk = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(disk.close)
+        self.led.con.backup(disk.con)
+        self.led = disk
+        self.ctx = scheduler.Ctx(self.cfg, disk, dry_run=False)
+        interactive = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(interactive.close)
+        saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
+
+        def claim_and_ship(*args, **kwargs):
+            lease, _ = interactive.claim("x", 5, "session:abc", "interactive", 30)
+            self.assertIsNotNone(lease)
+            interactive.set_state("x", 5, "verifying", "shipped",
+                                  branch="mahler/5-shipped", pr=77, setup_fails=2)
+            return saved
+
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE implemented it\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", side_effect=claim_and_ship) as snap, \
+                mock.patch.object(runner, "remove_worktree") as rm:
+            finalize.finalize(self.ctx, self.run)
+
+        item = disk.item("x", 5)
+        self.assertEqual((item["state"], item["branch"], item["pr"], item["setup_fails"]),
+                         ("verifying", "mahler/5-shipped", 77, 2))
+        self.assertEqual(disk.lease("x", 5)["holder"], "session:abc")
+        events = disk.q("SELECT detail FROM events WHERE kind='stale_transition_dropped'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(json.loads(events[0]["detail"]), {
+            "run": self.run_id, "role": "build", "epoch": 1,
+            "outcome": "DONE", "preserved_state": "verifying"})
+        run = disk.run(self.run_id)
+        self.assertEqual((run["status"], run["outcome"]), ("ended", "DONE"))
+        self.assertIsNotNone(run["ended_at"])
+        self.assertTrue(any(saved["ref"] in comment for comment in self.gh.comments))
+        snap.assert_called_once()
+        rm.assert_called_once()
+
+    def test_stale_setup_failure_cannot_overwrite_claim_and_ship(self):
+        """Exit 97 is normal finalization too: a superseded run records its
+        outcome and saves its tree without changing the current handoff."""
+        self.led.upsert_item("x", 5, setup_fails=1)
+        self.led.claim("x", 5, "session:abc", "interactive", 30)
+        self.led.set_state("x", 5, "verifying", "shipped",
+                           branch="mahler/5-shipped", pr=77)
+        self.led.release("x", 5, holder="session:abc",
+                         epoch=self.led.item("x", 5)["epoch"])
+        with open(self.run["status_path"], "w") as fh:
+            fh.write("97\n")
+        snap, rm = self.finalize()
+
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/5-shipped")
+        self.assertEqual(item["pr"], 77)
+        self.assertEqual(item["setup_fails"], 1)
+        run = self.led.run(self.run_id)
+        self.assertEqual((run["status"], run["outcome"], run["exit_code"]),
+                         ("ended", "setup failed", 97))
+        ev = self.led.q("SELECT 1 FROM events WHERE project='x' AND number=5 "
+                        "AND kind='stale_transition_dropped'")
+        self.assertEqual(len(ev), 1)
+        snap.assert_called_once()
+        rm.assert_called_once()
+
     def test_lost_lease_also_returns_to_ready(self):
         """A run that lost its lease (D6: stolen or reaped elsewhere) hands
         the item back to the queue exactly like a quota stop — reason
@@ -755,12 +908,14 @@ class ResumeNudgeTests(unittest.TestCase):
         self.led.claim("x", 5, f"run:{run_id}", "auto",
                        self.cfg["defaults"]["auto_lease_minutes"],
                        platform=platform, run_id=run_id)
+        epoch = self.led.lease("x", 5)["epoch"]
+        self.led.update_run(run_id, epoch=epoch)
         run_dir = os.path.join(self.runs_dir, str(run_id))
         os.makedirs(run_dir, exist_ok=True)
         log_path = os.path.join(run_dir, "agent.log")
         status_path = os.path.join(run_dir, "exit")
         run = {"id": run_id, "project": "x", "number": 5, "role": "build",
-               "platform": platform, "epoch": 3, "pid": None,
+               "platform": platform, "epoch": epoch, "pid": None,
                "worktree": os.path.join(self.tmp, "wt"), "branch": "mahler/5-x",
                "log_path": log_path, "status_path": status_path,
                "started_at": iso(NOW), "stop_reason": None, "nudged": nudged}
@@ -784,7 +939,7 @@ class ResumeNudgeTests(unittest.TestCase):
 
         spawn.assert_called_once()
         env = spawn.call_args.kwargs["env"]
-        self.assertEqual(env["MAHLER_EPOCH"], "3")
+        self.assertEqual(env["MAHLER_EPOCH"], str(run["epoch"]))
         self.assertEqual(env["MAHLER_RUN_ID"], str(run_id))
         self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")

@@ -56,6 +56,7 @@ class Ending:
         self.verb, self.rest, self.reason, self.outcome = verb, rest, reason, outcome
         self.project, self.number = run["project"], run["number"]
         self.saved, self.keep_worktree, self.closed = None, False, False
+        self.stale = False          # lease revoked or replaced: leave the item alone
         self.duration_mins = None
         started_at = row_get(run, "started_at")
         if started_at:
@@ -411,17 +412,20 @@ def _record_run_usage(ctx, run, kind, log):
 
 def _save_work(e):
     """Whatever the run left becomes a pushed ref and a handoff comment (D9) —
-    unless its own merge already closed the issue, in which case it is done."""
-    ctx, led = e.ctx, e.led
-    try:
-        e.closed = ctx.gh(e.project).issue_state(e.number) == "CLOSED"
-    except GHError:
-        pass
-    if e.closed:
-        e.set_state("done", e.outcome)
-        if e.verb == "MERGED":
-            e.ping(f"Shipped — {e.project} #{e.number}", e.item["title"], tags="rocket")
-        return
+    unless its own merge already closed the issue, in which case it is done.
+
+    A stale run still snapshots and reports its work before cleanup, but cannot
+    update the item whose lease epoch superseded it.
+    """
+    ctx = e.ctx
+    if not e.stale:
+        try:
+            e.closed = ctx.gh(e.project).issue_state(e.number) == "CLOSED"
+        except GHError:
+            pass
+        _mark_stale(e)
+        if e.closed and not e.stale:
+            return
     try:
         e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
                                   e.pol.get("base", "main"),
@@ -429,8 +433,6 @@ def _save_work(e):
     except runner.GitError as err:
         e.keep_worktree = True
         ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
-    if e.saved:
-        led.upsert_item(e.project, e.number, branch=e.saved["ref"])
     _handoff_comment(ctx, e.run, e.item, e.reason, e.outcome, e.saved, e.log, e.keep_worktree)
 
 
@@ -440,15 +442,19 @@ def _close_the_books(e, code):
     # Keep item ownership and fencing through the handoff, but release run
     # capacity immediately. Watching a PR does not execute a run (D19, D24).
     # On transport failure the old lease is left to expire.
-    if led.item(e.project, e.number)["state"] == "verifying":
-        transferred, info = led.claim(
-            e.project, e.number, CONDUCTOR, "auto", e.pol["auto_lease_minutes"],
-            capacity=False, handoff_from=(f"run:{run['id']}", run["epoch"]))
-        if transferred is None:
-            detail = info.get("unavailable") or "canonical lease transfer refused"
-            ctx.say(f"{e.project}#{e.number}: {detail}; existing lease left to expire safely")
-    else:
-        led.release(e.project, e.number, holder=f"run:{run['id']}", epoch=run["epoch"])
+    with led._tx():
+        _mark_stale(e)
+        if e.stale:
+            pass                        # the current holder's lease is not ours to move or release
+        elif led.item(e.project, e.number)["state"] == "verifying":
+            transferred, info = led.claim(
+                e.project, e.number, CONDUCTOR, "auto", e.pol["auto_lease_minutes"],
+                capacity=False, handoff_from=(f"run:{run['id']}", run["epoch"]))
+            if transferred is None:
+                detail = info.get("unavailable") or "canonical lease transfer refused"
+                ctx.say(f"{e.project}#{e.number}: {detail}; existing lease left to expire safely")
+        else:
+            led.release(e.project, e.number, holder=f"run:{run['id']}", epoch=run["epoch"])
     update_cols = {"status": "ended", "outcome": e.outcome, "exit_code": code,
                    "ended_at": iso(led.now())}
     if not run["stop_reason"] and e.reason:     # mahler#124: record why it stopped
@@ -460,6 +466,26 @@ def _close_the_books(e, code):
     if not e.keep_worktree:
         runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],
                                runner.worktree_root(e.pol))
+
+
+def _fenced_out(led, run, item):
+    """True when another holder's epoch has superseded this run's epoch."""
+    epoch = int(run["epoch"])
+    cur = led.item(run["project"], run["number"])
+    if cur is not None and int(cur["epoch"] or 0) > epoch:
+        return True
+    lease = led.lease(run["project"], run["number"])
+    return lease is not None and lease["epoch"] != epoch
+
+
+def _mark_stale(e):
+    """Remember and report a superseded epoch once, even across slow I/O."""
+    if not e.stale and _fenced_out(e.led, e.run, e.item):
+        e.stale = True
+        e.led.event("stale_transition_dropped", e.project, e.number, {
+            "run": e.run["id"], "role": e.run["role"], "epoch": e.run["epoch"],
+            "outcome": e.outcome,
+            "preserved_state": e.led.item(e.project, e.number)["state"]})
 
 
 def finalize(ctx, run):
@@ -498,20 +524,42 @@ def finalize(ctx, run):
         _hold_platform(ctx, run)
     elif reason == "model_unavailable":
         _hold_model_unavailable(ctx, run)
-    if setup_failed:
-        _setup_failure(ctx, run, item)
-        return
-    led.reset_setup_fails(project, n)
-
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
-    if run["role"] == "sort":
-        SORT_OUTCOMES.get(verb, _retry)(ending)
-    elif run["role"] == "review":
-        REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
-    else:
+    _mark_stale(ending)
+    if setup_failed:
+        with led._tx():
+            _mark_stale(ending)
+            if not ending.stale:
+                _setup_failure(ctx, run, item)
+                return
         _save_work(ending)
-        if not ending.closed and not _dispatch(ending):
-            return                  # a nudge resumed it; it finalizes again when it ends
+        _close_the_books(ending, code)
+        return
+
+    # Snapshot pushes and handoff comments can take long enough for an
+    # interactive claim to replace us. Do them before taking the write lock.
+    if run["role"] not in ("sort", "review"):
+        _save_work(ending)
+
+    # Claim uses BEGIN IMMEDIATE too: checking the epoch and applying the
+    # outcome in one transaction prevents a claim between the check and any
+    # of the handler's item writes (including retry counters and branches).
+    with led._tx():
+        _mark_stale(ending)
+        if not ending.stale:
+            led.reset_setup_fails(project, n)
+            if ending.saved:
+                led.upsert_item(project, n, branch=ending.saved["ref"])
+            if ending.closed:
+                ending.set_state("done", outcome)
+                if verb == "MERGED":
+                    ending.ping(f"Shipped — {project} #{n}", item["title"], tags="rocket")
+            elif run["role"] == "sort":
+                SORT_OUTCOMES.get(verb, _retry)(ending)
+            elif run["role"] == "review":
+                REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
+            elif not _dispatch(ending):
+                return              # resumed; finalizes again when it ends
     _close_the_books(ending, code)
 
 

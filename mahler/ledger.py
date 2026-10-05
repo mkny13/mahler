@@ -1410,7 +1410,17 @@ class RoutedLedger:
                 capacity=capacity,
                 handoff_from=([self._holder(project, handoff_from[0]), handoff_from[1]]
                               if handoff_from else None))
-            return result["lease"], result["info"]
+            lease = result["lease"]
+            if lease is not None:
+                # Keep the canonical fence after ship releases the remote lease.
+                # Responses can arrive out of order across local claimers, so
+                # never let an older response lower the remembered epoch.
+                with self.local._tx():
+                    self.local.upsert_item(project, number)
+                    self.local.con.execute(
+                        "UPDATE items SET epoch=MAX(epoch, ?) WHERE project=? AND number=?",
+                        (int(lease["epoch"]), project, number))
+            return lease, result["info"]
         except RemoteLedgerError as exc:
             self._remember(project, exc)
             return None, {"unavailable": str(exc)}
