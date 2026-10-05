@@ -588,6 +588,74 @@ class RunTests(unittest.TestCase):
         snap.assert_called_once()
         rm.assert_called_once()
 
+    def test_slow_finalization_allows_separate_writer_and_preserves_new_epoch(self):
+        """Write while slow work is still on the stack, before it can return.
+
+        A short test-only busy timeout makes the old lock fail deterministically
+        without sleeping for the production ten seconds or relying on timing.
+        """
+        for phase in ("verify", "review_body", "review_comment", "setup_comment", "setup_tail"):
+            with self.subTest(phase=phase):
+                path = os.path.join(self.tmp, phase + ".db")
+                disk = Ledger(path, clock=lambda: NOW)
+                self.addCleanup(disk.close)
+                self.led.con.backup(disk.con)
+                interactive = Ledger(path, clock=lambda: NOW)
+                self.addCleanup(interactive.close)
+                interactive.con.execute("PRAGMA busy_timeout=50")
+                ctx = scheduler.Ctx(self.cfg, disk, dry_run=False)
+                run = dict(self.run)
+                run["role"] = "review" if phase.startswith("review") else "build"
+                self.cfg["projects"]["x"]["verify"] = "true"
+                disk.upsert_item("x", 5, pr=66)
+                disk.set_kv("review:x#5", json.dumps({"run_id": run["id"], "pr": 66}))
+                with open(self.log, "w") as fh:
+                    fh.write('STATUS: REVIEW-PASS {}\n' if phase.startswith("review") else "no status\n")
+                with open(run["status_path"], "w") as fh:
+                    fh.write("97" if phase.startswith("setup") else "0")
+                saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc", "ahead": 1, "stat": None}
+                calls = []
+
+                def claim_during_slow_work(*args, **kwargs):
+                    lease, _ = interactive.claim("x", 5, "session:new", "interactive", 30)
+                    self.assertIsNotNone(lease)
+                    self.assertFalse(disk.con.in_transaction)
+                    interactive.set_state("x", 5, "verifying", "new handoff",
+                                          branch="mahler/5-new", pr=77, setup_fails=2,
+                                          summary="owner summary", attempts=2)
+                    interactive.set_kv("review:x#5", '{"run_id":999,"verdict":"pass"}')
+                    calls.append(True)
+                    return True if phase == "verify" else ""
+
+                target, name = {
+                    "verify": (runner, "verify_in_worktree"),
+                    "review_body": (self.gh, "issue_body"),
+                    "review_comment": (finalize, "_post_review_comment"),
+                    "setup_comment": (finalize, "_setup_failed_comment"),
+                    "setup_tail": (runner, "setup_tail"),
+                }[phase]
+                with mock.patch.object(ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(ctx, "ping"), \
+                        mock.patch.object(runner, "snapshot", return_value=saved), \
+                        mock.patch.object(runner, "remove_worktree") as remove, \
+                        mock.patch.object(runner, "commits_ahead", return_value=1), \
+                        mock.patch.object(self.gh, "issue_body", return_value="", create=True), \
+                        mock.patch.object(finalize.review, "parse", return_value=[]), \
+                        mock.patch.object(target, name, side_effect=claim_during_slow_work):
+                    finalize.finalize(ctx, run)
+                self.assertEqual(calls, [True])
+                item = disk.item("x", 5)
+                self.assertEqual(tuple(item[k] for k in
+                                       ("state", "branch", "pr", "setup_fails", "summary", "attempts")),
+                                 ("verifying", "mahler/5-new", 77, 2, "owner summary", 2))
+                self.assertEqual(disk.lease("x", 5)["holder"], "session:new")
+                self.assertEqual(disk.get_kv("review:x#5"), '{"run_id":999,"verdict":"pass"}')
+                self.assertIsNone(disk.get_kv("unconfirmed:x#5"))
+                self.assertEqual(disk.run(run["id"])["status"], "ended")
+                remove.assert_called_once()
+                if phase in ("verify", "setup_tail"):
+                    self.assertTrue(any(saved["ref"] in c for c in self.gh.comments))
+
     def test_stale_setup_failure_cannot_overwrite_claim_and_ship(self):
         """Exit 97 is normal finalization too: a superseded run records its
         outcome and saves its tree without changing the current handoff."""

@@ -57,6 +57,8 @@ class Ending:
         self.project, self.number = run["project"], run["number"]
         self.saved, self.keep_worktree, self.closed = None, False, False
         self.stale = False          # lease revoked or replaced: leave the item alone
+        self.after_commit = []
+        self.verify_green = False
         self.duration_mins = None
         started_at = row_get(run, "started_at")
         if started_at:
@@ -69,7 +71,14 @@ class Ending:
         self.led.set_state(self.project, self.number, state, why, **cols)
 
     def ping(self, title, message, **kw):
-        self.ctx.ping(title, message, self.project, self.number, **kw)
+        self.defer(self.ctx.ping, title, message, self.project, self.number, **kw)
+
+    def defer(self, call, *args, **kwargs):
+        self.after_commit.append(lambda: call(*args, **kwargs))
+
+    def notify(self):
+        for call in self.after_commit:
+            call()
 
 
 # ---------- what each ending means ----------
@@ -78,7 +87,7 @@ def _retry(e):
     """No usable outcome: another attempt, or `failed` once they run out."""
     retry_or_fail(e.ctx, e.project, e.number, e.item, e.reason, e.outcome,
                   platform=e.run["platform"], duration_mins=e.duration_mins,
-                  explore=bool(row_get(e.run, "explore", 0)), run=e.run)
+                  explore=bool(row_get(e.run, "explore", 0)), run=e.run, defer=e.defer)
     return True
 
 
@@ -156,30 +165,38 @@ def _post_review_comment(e, passed, findings=""):
         e.ctx.say(f"{e.project}#{e.number}: couldn't post the review comment — {err}")
 
 
-def _classified_review(e, verdict):
+def _prepare_review(e, verdict):
+    """Fetch acceptance criteria and parse the verdict before taking the lock."""
+    try:
+        body = e.ctx.gh(e.project).issue_body(e.number) if (e.rest or "").lstrip().startswith("{") else ""
+        return True, review.parse(verdict, e.rest, body)
+    except (ValueError, GHError):
+        return False, None
+
+
+def _classified_review(e, verdict, prepared, defer):
     info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
     if (info.get("run_id") not in (None, e.run["id"])
             or info.get("pr", e.item["pr"]) != e.item["pr"]):
         return False  # A late finalization must not overwrite a newer review.
-    try:
-        body = e.ctx.gh(e.project).issue_body(e.number) if (e.rest or "").lstrip().startswith("{") else ""
-        findings = review.parse(verdict, e.rest, body)
-    except (ValueError, GHError):
+    valid, findings = prepared if prepared is not None else _prepare_review(e, verdict)
+    if not valid:
         _review_inconclusive(e)
         return False
     review.remember(e, info, findings)
     _update_review_kv(e, run_id=e.run["id"], classified=findings)
     if findings is not None:
-        _post_review_comment(e, passed=verdict == "pass", findings=review.render(findings))
+        defer(_post_review_comment, e, passed=verdict == "pass", findings=review.render(findings))
         e.review_blockers = review.render([f for f in findings if f["severity"] == "blocking"])
     return True
 
 
-def _review_passed(e):
-    if not _classified_review(e, "pass"):
+def _review_passed(e, prepared=None, defer=None):
+    defer = defer or (lambda call, *args, **kwargs: call(*args, **kwargs))
+    if not _classified_review(e, "pass", prepared, defer):
         return True
     if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
-        _post_review_comment(e, passed=True, findings=e.rest)
+        defer(_post_review_comment, e, passed=True, findings=e.rest)
     _update_review_kv(e, verdict="pass")
     history = json.loads(e.led.get_kv(f"reviewfindings:{e.project}#{e.number}") or "[]")
     e.led.set_kv(f"reviewconvergence:{e.project}#{e.number}", str(len(history)))
@@ -187,8 +204,9 @@ def _review_passed(e):
     return True
 
 
-def _review_failed(e):
-    if not _classified_review(e, "fail"):
+def _review_failed(e, prepared=None, defer=None):
+    defer = defer or (lambda call, *args, **kwargs: call(*args, **kwargs))
+    if not _classified_review(e, "fail", prepared, defer):
         return True
     blockers = getattr(e, "review_blockers", e.rest)
     key = f"reviewfindings:{e.project}#{e.number}"
@@ -205,7 +223,7 @@ def _review_failed(e):
         history[-1]["pr"] = e.item["pr"]
         e.led.set_kv(key, json.dumps(history))
     if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
-        _post_review_comment(e, passed=False, findings=e.rest)
+        defer(_post_review_comment, e, passed=False, findings=e.rest)
     _update_review_kv(e, verdict="fail", findings=blockers or "")
     e.set_state("verifying", "review found blocking issues — the conductor starts a fix")
     return True
@@ -289,7 +307,8 @@ def _ended_unconfirmed(e):
     when it timed out with green tests on committed or uncommitted work
     (mahler#145). A Cline run gets one resume before we give up (mahler#17).
     -> False when that nudge restarted it, so finalize leaves it alone."""
-    if _try_verify_fallback(e.ctx, e.run, e.pol, e.saved, e.item):
+    if e.verify_green:
+        _apply_verify_fallback(e)
         return True                             # handled — state set to verifying
     if e.reason is None and _try_cline_nudge(e.ctx, e.run, e.kind, e.log, e.pol):
         return False                            # alive again — finalized when it ends
@@ -527,11 +546,8 @@ def finalize(ctx, run):
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     _mark_stale(ending)
     if setup_failed:
-        with led._tx():
-            _mark_stale(ending)
-            if not ending.stale:
-                _setup_failure(ctx, run, item)
-                return
+        if not ending.stale and _setup_failure(ending):
+            return
         _save_work(ending)
         _close_the_books(ending, code)
         return
@@ -540,6 +556,17 @@ def finalize(ctx, run):
     # interactive claim to replace us. Do them before taking the write lock.
     if run["role"] not in ("sort", "review"):
         _save_work(ending)
+
+    # Prepare slow work without holding SQLite's single writer lock. The
+    # transaction below must recheck the epoch after these calls return.
+    _mark_stale(ending)
+    if not ending.stale and not ending.closed:
+        if run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+            prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
+        elif run["role"] not in ("sort", "review"):
+            handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
+            if handler is _ended_unconfirmed:
+                ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item)
 
     # Claim uses BEGIN IMMEDIATE too: checking the epoch and applying the
     # outcome in one transaction prevents a claim between the check and any
@@ -557,9 +584,13 @@ def finalize(ctx, run):
             elif run["role"] == "sort":
                 SORT_OUTCOMES.get(verb, _retry)(ending)
             elif run["role"] == "review":
-                REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
+                if verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+                    REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)
+                else:
+                    REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
+    ending.notify()
     _close_the_books(ending, code)
 
 
@@ -641,7 +672,7 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
     """D18 verify-green fallback: no STATUS line, but if the branch has commits
     ahead of base (or uncommitted changes in saved snapshot) *and* the project's
     verify command passes in the worktree, treat as DONE. Returns True if the
-    fallback applied."""
+    fallback can be applied after rechecking the epoch."""
     led = ctx.led
     project, n = run["project"], run["number"]
     base = pol.get("base", "main")
@@ -662,20 +693,18 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
         led.set_kv(f"verify_failed:{run['id']}", "1")
         ctx.say(f"{project}#{n}: verify failed in worktree — failed attempt")
         return False
-    # The branch is done: the conductor ships it, with an honest note.
-    ctx.say(f"{project}#{n}: verify green — treating as DONE (agent didn't confirm)")
-    ref = (saved["ref"] if saved else None) or item["branch"]
-    if ref:
-        led.set_state(project, n, "verifying",
-                      "verify-green fallback — agent didn't confirm",
-                      summary=item["title"])
-        led.set_kv(f"unconfirmed:{project}#{n}", "1")
-        ctx.ping(f"Build finished (fallback) — {project} #{n}",
-                 f"{run['platform']} didn't end with STATUS: DONE, but "
-                 f"verify passes; the conductor opens the PR next",
-                 project, n, priority="low")
-        return True
-    return False
+    return bool((saved["ref"] if saved else None) or item["branch"])
+
+
+def _apply_verify_fallback(e):
+    """Apply prepared verification only after the final atomic epoch check."""
+    e.ctx.say(f"{e.project}#{e.number}: verify green — treating as DONE (agent didn't confirm)")
+    e.set_state("verifying", "verify-green fallback — agent didn't confirm",
+                summary=e.item["title"])
+    e.led.set_kv(f"unconfirmed:{e.project}#{e.number}", "1")
+    e.ping(f"Build finished (fallback) — {e.project} #{e.number}",
+           f"{e.run['platform']} didn't end with STATUS: DONE, but "
+           "verify passes; the conductor opens the PR next", priority="low")
 
 
 RESUME_CAP = 2
@@ -796,34 +825,39 @@ def _cline_session_id(worktree):
 SETUP_FAIL_CAP = 2                                   # consecutive setup failures before needs_you
 
 
-def _setup_failure(ctx, run, item):
-    """A build run died in the setup step (exit 97): the environment is broken, not
-    the task (issue #8). Post a handoff with the setup.log tail, don't burn an agent
-    attempt, and after SETUP_FAIL_CAP in a row hand the item to the owner."""
-    led, project, n = ctx.led, run["project"], run["number"]
-    pol = ctx.policy(project)
+def _setup_failure(e):
+    """Record a setup failure atomically, then report and clean up unlocked."""
+    ctx, led, run, item = e.ctx, e.led, e.run, e.item
+    project, n = e.project, e.number
     tail = runner.setup_tail(run, lines=30)
-    fails = led.bump_setup_fails(project, n)
-    stuck = fails >= SETUP_FAIL_CAP
+    with led._tx():
+        _mark_stale(e)
+        if e.stale:
+            return False
+        fails = led.bump_setup_fails(project, n)
+        stuck = fails >= SETUP_FAIL_CAP
+        if stuck:
+            reason = f"setup failed {fails} times in a row — the environment, not the task"
+            e.set_state("needs_you", reason, question=reason, options="[]")
+        else:
+            e.set_state("ready" if item["sorted_at"] else "inbox",
+                        f"setup failed (failure {fails} of {SETUP_FAIL_CAP}) — retrying")
+        led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
+        led.update_run(run["id"], status="ended", outcome="setup failed", exit_code=97,
+                       ended_at=iso(led.now()))
     _setup_failed_comment(ctx, run, fails, tail, stuck)
     if stuck:
-        reason = f"setup failed {fails} times in a row — the environment, not the task"
-        led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
         failures.report(ctx, project, n, "setup_failed", run=run, output=tail)
         ctx.ping(f"Mahler needs you — {project} #{n}",
                  f"setup failed {fails} times in a row (setup.log tail is in the handoff comment).",
                  project, n, priority="high", tags="warning")
     else:
-        led.set_state(project, n, "ready" if item["sorted_at"] else "inbox",
-                      f"setup failed (failure {fails} of {SETUP_FAIL_CAP}) — retrying")
         ctx.ping(f"Setup failed — {project} #{n}",
                  f"run {run['id']}: setup failed ({fails}/{SETUP_FAIL_CAP}); retrying.",
                  project, n, priority="low")
-    led.release(project, n, holder=f"run:{run['id']}", epoch=run["epoch"])
-    led.update_run(run["id"], status="ended", outcome="setup failed", exit_code=97,
-                   ended_at=iso(led.now()))
-    runner.remove_worktree(pol["path"], run["worktree"], run["branch"],
-                           runner.worktree_root(pol))
+    runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],
+                           runner.worktree_root(e.pol))
+    return True
 
 
 def _setup_failed_comment(ctx, run, fails, tail, stuck):
@@ -844,7 +878,7 @@ def _setup_failed_comment(ctx, run, fails, tail, stuck):
         ctx.say(f"#{run['number']}: couldn't post setup-failure comment — {e}")
 
 
-def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None, explore=False, run=None):
+def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duration_mins=None, explore=False, run=None, defer=None):
     led = ctx.led
     if explore:
         led.set_state(project, n, "ready" if item["sorted_at"] else "inbox",
@@ -888,8 +922,9 @@ def retry_or_fail(ctx, project, n, item, reason, outcome, platform=None, duratio
     if attempts >= ctx.policy(project)["max_attempts"]:
         led.set_state(project, n, "failed", f"{attempts} failed attempts — last: {outcome}",
                       attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
-        failures.report(ctx, project, n, reason or outcome, run=run)
-        ctx.ping(f"Stuck — {project} #{n}",
+        send = defer or (lambda call, *args, **kwargs: call(*args, **kwargs))
+        send(failures.report, ctx, project, n, reason or outcome, run=run)
+        send(ctx.ping, f"Stuck — {project} #{n}",
                  f"{attempts} attempts failed ({outcome}). Comment `/mahler go` to retry.",
                  project, n, priority="high", tags="warning")
     else:
