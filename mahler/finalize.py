@@ -165,28 +165,38 @@ def _post_review_comment(e, passed, findings=""):
         e.ctx.say(f"{e.project}#{e.number}: couldn't post the review comment — {err}")
 
 
-def _classified_review(e, verdict):
+def _prepare_review(e, verdict):
+    """Fetch acceptance criteria and parse the verdict before taking the lock."""
+    try:
+        body = e.ctx.gh(e.project).issue_body(e.number) if (e.rest or "").lstrip().startswith("{") else ""
+        return True, review.parse(verdict, e.rest, body)
+    except (ValueError, GHError):
+        return False, None
+
+
+def _classified_review(e, verdict, prepared, defer):
     info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
     if (info.get("run_id") not in (None, e.run["id"])
             or info.get("pr", e.item["pr"]) != e.item["pr"]):
         return False  # A late finalization must not overwrite a newer review.
-    if e.review_invalid:
+    valid, findings = prepared if prepared is not None else _prepare_review(e, verdict)
+    if not valid:
         _review_inconclusive(e)
         return False
-    findings = e.review_findings
     review.remember(e, info, findings)
     _update_review_kv(e, run_id=e.run["id"], classified=findings)
     if findings is not None:
-        e.defer(_post_review_comment, e, passed=verdict == "pass", findings=review.render(findings))
+        defer(_post_review_comment, e, passed=verdict == "pass", findings=review.render(findings))
         e.review_blockers = review.render([f for f in findings if f["severity"] == "blocking"])
     return True
 
 
-def _review_passed(e):
-    if not _classified_review(e, "pass"):
+def _review_passed(e, prepared=None, defer=None):
+    defer = defer or (lambda call, *args, **kwargs: call(*args, **kwargs))
+    if not _classified_review(e, "pass", prepared, defer):
         return True
     if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
-        e.defer(_post_review_comment, e, passed=True, findings=e.rest)
+        defer(_post_review_comment, e, passed=True, findings=e.rest)
     _update_review_kv(e, verdict="pass")
     history = json.loads(e.led.get_kv(f"reviewfindings:{e.project}#{e.number}") or "[]")
     e.led.set_kv(f"reviewconvergence:{e.project}#{e.number}", str(len(history)))
@@ -194,8 +204,9 @@ def _review_passed(e):
     return True
 
 
-def _review_failed(e):
-    if not _classified_review(e, "fail"):
+def _review_failed(e, prepared=None, defer=None):
+    defer = defer or (lambda call, *args, **kwargs: call(*args, **kwargs))
+    if not _classified_review(e, "fail", prepared, defer):
         return True
     blockers = getattr(e, "review_blockers", e.rest)
     key = f"reviewfindings:{e.project}#{e.number}"
@@ -212,7 +223,7 @@ def _review_failed(e):
         history[-1]["pr"] = e.item["pr"]
         e.led.set_kv(key, json.dumps(history))
     if json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}").get("classified") is None:
-        e.defer(_post_review_comment, e, passed=False, findings=e.rest)
+        defer(_post_review_comment, e, passed=False, findings=e.rest)
     _update_review_kv(e, verdict="fail", findings=blockers or "")
     e.set_state("verifying", "review found blocking issues — the conductor starts a fix")
     return True
@@ -551,13 +562,7 @@ def finalize(ctx, run):
     _mark_stale(ending)
     if not ending.stale and not ending.closed:
         if run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL"):
-            ending.review_invalid = False
-            try:
-                body = ctx.gh(project).issue_body(n) if (rest or "").lstrip().startswith("{") else ""
-                ending.review_findings = review.parse(
-                    "pass" if verb == "REVIEW-PASS" else "fail", rest, body)
-            except (ValueError, GHError):
-                ending.review_invalid = True
+            prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed:
@@ -579,7 +584,10 @@ def finalize(ctx, run):
             elif run["role"] == "sort":
                 SORT_OUTCOMES.get(verb, _retry)(ending)
             elif run["role"] == "review":
-                REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
+                if verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+                    REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)
+                else:
+                    REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
     ending.notify()
