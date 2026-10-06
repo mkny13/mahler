@@ -253,3 +253,19 @@ comments. Inspect the file at the sampled SHA, not just the PR’s latest diff;
 then compare the linked fix commit or recorded disposition. The first verdict
 event can differ slightly from the history entry's `at`/run end time; the table
 consistently uses the event timestamp selected above.
+
+Verification performed on 2026-10-06 with Python 3.14.3:
+
+- Executed the Python block above against the read-only live ledger: same 62-row
+  population and same 30 sampled IDs; independently parsed 34 classification rows
+  and obtained the exact blocker/verdict totals shown above.
+- Separately checked sample-table draw order, all 30 reviewed SHAs, and relative links.
+- `python3 -m mahler.repo_guard` — passed.
+- `python3 -m unittest discover -s tests` — 1,920 tests, passed.
+- `python3 -X dev tests/run_strict.py` — 1,920 tests, passed.
+- `python3 tests/run_random.py 732` — 1,920 tests, passed.
+- `git diff --check` — passed.
+
+Only this report is changed; no routing, prompt, scorecard, ledger or runtime code
+is changed. The two unresolved classifications are audit results with named
+missing evidence, not omitted sample entries.
