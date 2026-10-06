@@ -20,6 +20,36 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_screenshot_defaults_inheritance_and_disable(self):
+        defaults = {"screenshot": "", "screenshot_environment": "",
+                    "screenshot_preview_non_personal": False,
+                    "screenshot_timeout_seconds": 45}
+        policy = config.project_policy(self.load({}), "app")
+        self.assertEqual({k: policy[k] for k in defaults}, defaults)
+        enabled = dict(screenshot="./capture.sh", screenshot_environment="staging",
+                       screenshot_preview_non_personal=True, screenshot_timeout_seconds=60)
+        cfg = self.load({"defaults": enabled, "projects": {
+            "disabled": {"screenshot": ""}, "override": {
+                "screenshot": "./other.sh", "screenshot_environment": "preview",
+                "screenshot_preview_non_personal": False, "screenshot_timeout_seconds": 1}}})
+        self.assertEqual(config.project_policy(cfg, "inherited")["screenshot"], "./capture.sh")
+        self.assertEqual(config.project_policy(cfg, "disabled")["screenshot"], "")
+        for key, value in enabled.items():
+            self.assertEqual(config.project_policy(cfg, "inherited")[key], value)
+        self.assertEqual(config.project_policy(cfg, "override")["screenshot_timeout_seconds"], 1)
+        self.assertFalse(config.project_policy(cfg, "override")["screenshot_preview_non_personal"])
+
+    def test_screenshot_invalid_types(self):
+        cases = {"screenshot": [True, 1, [], {}],
+                 "screenshot_environment": [False, 1, [], {}],
+                 "screenshot_preview_non_personal": ["true", 0, 1, [], {}],
+                 "screenshot_timeout_seconds": [True, 0, 61, 1.5, "45", [], {}]}
+        for key, values in cases.items():
+            for value in values:
+                for user in ({"defaults": {key: value}}, {"projects": {"app": {key: value}}}):
+                    with self.subTest(user=user), self.assertRaisesRegex(ValueError, key):
+                        self.load(user)
+
     def test_review_context_default_override_and_clear(self):
         default = config.project_policy(self.load({}), "app")["review_context"]
         self.assertEqual(default, "Personal project: a single user owns and controls all "

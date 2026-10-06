@@ -46,6 +46,29 @@ verify = "python3 -m unittest discover -s tests"
 # See DESIGN D11 for release context, report grammar and evidence requirements.
 smoke = ""
 # smoke = "./scripts/smoke/run-smoke.sh"  # illustrative; runner interface is deferred
+# Optional screenshot contract (schema/storage only; no command runs yet).
+# These settings inherit [defaults]; an empty command explicitly disables capture.
+screenshot = ""
+screenshot_environment = ""       # must explicitly name the preview environment
+screenshot_preview_non_personal = false  # strict boolean; local-only by default
+screenshot_timeout_seconds = 45    # integer 1–60
+# screenshot = "./scripts/screenshots.sh"  # project-owned browser dependencies
+# Run at exact PR head, with headless Chromium and a fresh temporary profile/context.
+# Never use real Chrome, extensions, saved cookies or personal authentication state.
+# Inputs: MAHLER_SCREENSHOT_URL (preview), MAHLER_SCREENSHOT_DIR (output),
+# MAHLER_SCREENSHOT_PROFILE_DIR (fresh profile), MAHLER_SCREENSHOT_SHA (head),
+# MAHLER_SCREENSHOT_PR (number). Repo project.toml describes this; it is not loaded.
+# Output manifest.json:
+# {"version":1,"sha":"<head>","screenshots":[{"route":"/sign-in","file":"sign-in.png"}]}
+# Matching SHA; 1–10 unique relative PNG files; no query/fragment in route labels.
+# Limits: 64 KiB manifest, 2 MiB/file, 20 MiB total; PNG signature required.
+# Reject traversal, absolute paths, symlinks, missing/non-regular files, malformed
+# JSON, duplicate fields/files and invalid versions. See DESIGN D11 for full rules.
+# Private persistent artifacts: MAHLER_HOME/screenshots/<project>/<PR>/<head>/.
+# Capture head stays separate from the later squash-merge SHA in lifecycle KV.
+# Without explicit non-personal=true, PNGs/routes stay local for the console;
+# reviewer/PR receive generic status only. True permits attempted publication.
+# Unavailable/failed captures are advisory: never a UAT pass or merge gate.
 # A project may span more than one account (DESIGN D26): by default it tries
 # each of its accounts in declared order and spends the first with headroom.
 # Set one of account/accounts, never both:
