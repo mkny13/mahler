@@ -695,6 +695,46 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     or change release/merge behavior. Runtime integration waits for the Couch Tour
     prototype to land and needs a separate implementation issue unless later work
     already supplies it. No live project or private operator config is changed.
+- **Optional screenshot contract (mahler#723).** Runtime policy comes only from
+  operator `[projects.<name>]`, inheriting `[defaults]`; no new project.toml
+  loader. The repo may describe `screenshot` beside `preview` in its descriptive
+  `.mahler/project.toml`. `screenshot = ""` disables capture, including an inherited
+  command. `screenshot_environment = ""` has no implicit target: an environment
+  must be explicitly named before a future runner may capture. Never assume prod.
+  `screenshot_preview_non_personal` is a strict boolean, default false.
+  `screenshot_timeout_seconds` is an integer from 1–60, default 45.
+  - **Execution contract:** run the project-owned command at the exact PR-head
+    worktree, using that project's browser dependencies. Mahler remains standard
+    library only. Supply `MAHLER_SCREENSHOT_URL` (preview URL for the named
+    environment), `MAHLER_SCREENSHOT_DIR` (fresh output directory),
+    `MAHLER_SCREENSHOT_PROFILE_DIR` (fresh temporary browser profile directory),
+    `MAHLER_SCREENSHOT_SHA` (full PR-head SHA) and `MAHLER_SCREENSHOT_PR` (PR number).
+    Use headless Chromium with a fresh temporary profile/context. Never use real
+    Chrome, extensions, saved cookies or personal authentication state.
+  - **Output:** write `manifest.json` as
+    `{"version":1,"sha":"<head>","screenshots":[{"route":"/sign-in","file":"sign-in.png"}]}`.
+    Require matching SHA, integer version 1, 1–10 unique relative `.png` filenames
+    (case-insensitively unique), path-only route labels beginning with `/`, no
+    query or fragment, and PNG signatures. Nested relative file paths are allowed.
+    Bound the manifest to 64 KiB, each PNG to 2 MiB and all PNGs to 20 MiB,
+    inclusive. Reject absolute paths, traversal, symlinks, non-regular/missing
+    files, malformed JSON (including duplicate fields), duplicate files, invalid
+    versions and oversized output. Treat all command output as untrusted; copy
+    only validated bytes and retain only defined manifest fields.
+  - **Persistence:** `mahler.screenshots.store` atomically publishes private
+    `MAHLER_HOME/screenshots/<project>/<PR>/<head>/` artifacts (directories 0700,
+    files 0600); `lookup` validates them again. Existing heads are immutable.
+    Files survive source/worktree cleanup. Manifest `sha` always identifies the
+    capture head; the runtime caller records lifecycle metadata and the later
+    squash-merge SHA separately in ledger KV, without a schema migration.
+  - **Privacy and result:** unless non-personal is explicitly true, PNGs and
+    route details remain local for console display only; the reviewer and PR
+    receive generic status only. True permits a publication attempt, not an
+    assurance of safety or delivery. Screenshots are advisory evidence, never a
+    UAT pass or merge gate. Disabled/missing environment or unavailable preview,
+    browser or command means unavailable; timeout, nonzero exit or invalid output
+    means failed. Neither is success, and neither blocks merge. A future runner
+    enforces the finite timeout; capture/delivery/console wiring is separate work.
 - **Trust but verify** (made concrete by D18 and D10). An agent's "done" is a claim.
   Confirmed merges enter `shipped`; accepted post-merge evidence moves them to `done`.
   As shipped, the conductor's gates are green CI and, for qualifying items, the
