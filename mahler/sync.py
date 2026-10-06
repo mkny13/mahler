@@ -244,17 +244,21 @@ def reconcile_shipped(ctx, project):
                 row = led.uat(project, n)
             if row is None:
                 continue
+            found_evidence = False
+            for comment in ctx.gh(project).issue_comments(n):
+                evidence = completion_evidence(comment, row["shipped_at"])
+                if evidence:
+                    led.accept_evidence(project, n, evidence)
+                    found_evidence = True
+                    break
+            if found_evidence:
+                continue
             if (quiet_budget > 0 and parse(row["shipped_at"])
                     and led.now() >= parse(row["shipped_at"]) + timedelta(days=QUIET_DAYS)
                     and adverse_evidence(led, row) is None):
                 if led.complete_quiet(project, n, row["shipped_at"]):
                     quiet_budget -= 1
                 continue
-            for comment in ctx.gh(project).issue_comments(n):
-                evidence = completion_evidence(comment, row["shipped_at"])
-                if evidence:
-                    led.accept_evidence(project, n, evidence)
-                    break
         except (GHError, ValueError) as exc:
             ctx.say(f"{project}#{n}: evidence lookup failed — {exc}")
     # An early automated completion is undone, once, by adverse evidence that
