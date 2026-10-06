@@ -757,17 +757,18 @@ def _observe_wait(ctx, project, item, role, required_tier):
         busy = busy_platforms(cfg, led.active_runs())
         size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                      if l.startswith("size:")), None)
+        effective_size = size
         pin, exclude, tier = item["pin"], (), required_tier or 0
         if role == "review":
-            pin, size, exclude = _review_route(ctx, project, item, "")
+            pin, effective_size, exclude = _review_route(ctx, project, item, "")
             tier = 0
         elif size == "l" or (tier >= 2 and size == "s"):
-            size = "m"
-        diag = router.diagnose(cfg, led, pol, role, pin, busy, size=size,
+            effective_size = "m"
+        diag = router.diagnose(cfg, led, pol, role, pin, busy, size=effective_size,
                                burst_lines=ctx.burst_lines, min_tier=tier, exclude=exclude)
         capacity.of(ctx).observe(project, item["number"], role, blockers=["shipping_wait"],
                                  diag=diag, routing_role=role, size=size,
-                                 effective_size=size, required_tier=tier)
+                                 effective_size=effective_size, required_tier=tier)
     except Exception as e:                      # noqa: BLE001 — telemetry only
         ctx.say(f"{project}#{item['number']}: capacity diagnosis failed — {e}")
 

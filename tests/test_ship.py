@@ -2854,7 +2854,7 @@ class ShipCapacityTests(unittest.TestCase):
         return {(r["role"]): dict(r) for r in self.led.capacity_intervals()}
 
     def test_ci_fix_wait_is_recorded_each_tick_as_one_interval(self):
-        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
         self.gh.rollup = [{"state": "FAILURE"}]
         now = [NOW]
         self.led.now = lambda: now[0]
@@ -2867,16 +2867,18 @@ class ShipCapacityTests(unittest.TestCase):
                 self.ctx.capacity.flush()
         (row,) = [dict(r) for r in self.led.capacity_intervals()]
         self.assertEqual((row["role"], row["required_tier"]), ("fix", 0))
+        self.assertEqual((row["size"], row["effective_size"]), ("l", "m"))
         self.assertEqual(json.loads(row["blockers"]), ["shipping_wait"])
         self.assertEqual(row["last_seen"], iso(NOW + timedelta(seconds=180)))
         self.assertEqual(json.loads(row["platforms"])["agy-claude"]["reasons"], ["unavailable"])
 
     def test_review_triggered_fix_wait_is_recorded(self):
-        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
         self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
         with mock.patch("mahler.router.pick_for_project", return_value=(None, ["x: soft"])):
             self.ship()
         row = self.rows()["fix"]
+        self.assertEqual((row["size"], row["effective_size"]), ("l", "m"))
         self.assertEqual(json.loads(row["blockers"]), ["shipping_wait"])
 
     def test_review_wait_is_recorded_and_retry_delay_stays_observable(self):
