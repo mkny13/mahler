@@ -401,7 +401,7 @@ def _d_now(s):
         out.append(f'<button class="drun" data-open-run="{r["id"]}">'
                    f'<span class="ref mono">{e(r["ref"])}</span>'
                    f'<span class="title">{e(r["title"])}</span>'
-                   f'<span class="plat mono t-mut">{e(r["platform"])}</span>'
+                   f'<span class="plat mono t-mut">{e(r["platform"])} · {e(r["role_label"])}</span>'
                    f'<span class="mono t-{r["status_tone"]}" style="margin-right:auto">{e(r["status"])}</span>'
                    f'<span class="timing mono t-{r["tone"]}">{e(r["timing"])}</span>'
                    f'<span class="bar"><span class="f-{r["tone"]}" style="width:{r["progress"]}%">'

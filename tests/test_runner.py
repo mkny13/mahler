@@ -447,9 +447,12 @@ class PrepareAccountEnvTests(unittest.TestCase):
         policy = {
             "path": self.repo, "repo": "acme/x", "base": "main", "link": [],
             "account": "work", "worktree_root": self.worktrees,
+            "rules": "", "run_timeout_minutes": 60,
         }
         self.ctx = SimpleNamespace(
-            cfg={"platforms": {"claude-work": {"account": "work"}},
+            cfg={"platforms": {"claude-work": {"account": "work", "kind": "claude",
+                                                 "sort_model": "planning-model",
+                                                 "build_model": "builder-model"}},
                  "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}}},
             policy=lambda project: policy,
         )
@@ -508,6 +511,29 @@ class PrepareAccountEnvTests(unittest.TestCase):
             # A second checkout must fail rather than give the fix a new branch.
             with self.assertRaises(runner.GitError):
                 runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+
+    def test_design_checks_out_pr_head_without_replaying_and_uses_planning_model(self):
+        branch = "mahler/3-reviewed"
+        sh(self.repo, "git", "branch", branch)
+        sh(self.repo, "git", "push", "-q", "origin", branch)
+        item = {"number": 3, "title": "t", "branch": branch, "pr": 88}
+        runs = os.path.join(self.tmp.name, "runs")
+        with mock.patch.object(config, "RUNS_DIR", runs), \
+                mock.patch.object(runner, "catch_up") as replay:
+            prep = runner.prepare(self.ctx, "acme", item, "design", "claude-work", 4)
+            self.assertEqual(prep["branch"], branch)
+            self.assertEqual(prep["head_sha"], sh(prep["worktree"], "git", "rev-parse", "HEAD"))
+            self.assertFalse(prep["replayed"])
+            replay.assert_not_called()
+            self.assertEqual(sh(prep["worktree"], "git", "status", "--porcelain"), "")
+            with mock.patch.object(runner.platforms, "argv_for",
+                                   return_value=["/bin/agent"]) as argv_for, \
+                    mock.patch.object(runner, "run_env", return_value={}), \
+                    mock.patch.object(runner, "spawn", return_value=123):
+                runner.launch(self.ctx, "acme", item, "design", "claude-work", 4, 1,
+                              "design prompt", prep)
+        argv_for.assert_called_once_with(self.ctx.cfg["platforms"]["claude-work"],
+                                         mock.ANY, prep["worktree"], "sort", 60)
 
     def test_fetch_carries_the_project_s_account_env(self):
         item = {"number": 3, "title": "t", "branch": None}

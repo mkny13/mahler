@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY,
     project     TEXT NOT NULL,
     number      INTEGER NOT NULL,
-    role        TEXT NOT NULL,           -- sort | build
+    role        TEXT NOT NULL,           -- execution role: sort | build | fix | review | design
     platform    TEXT NOT NULL,
     size        TEXT,                    -- s | m | l at launch, from effective_size (mahler#207)
     epoch       INTEGER NOT NULL,
@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS runs (
     effort      TEXT,
     explore     INTEGER NOT NULL DEFAULT 0,
     configured_model TEXT,              -- routing identity; empty means CLI default
-    routing_role TEXT,                   -- plan uses the sort execution recipe
+    routing_role TEXT,                   -- plan/design route through planning candidates
     tokens_in   INTEGER,
     tokens_cached INTEGER,
     tokens_out  INTEGER,

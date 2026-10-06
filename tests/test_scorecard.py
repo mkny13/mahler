@@ -143,6 +143,11 @@ class AttemptTests(unittest.TestCase):
                 rid = self.run_attempt(outcome=outcome, stop_reason=reason, exit_code=1)
                 self.assert_result(rid, 'excluded', why)
 
+    def test_design_run_is_not_scored_as_a_plan_or_build_attempt(self):
+        rid = self.run_attempt(role='design', outcome='DESIGNED', routing_role='plan')
+        result = self.assert_result(rid, 'excluded', 'design run')
+        self.assertEqual(result['role'], 'plan')
+
     def test_model_unavailable_excluded_from_variant_and_parent_scores(self):
         parent = self.run_attempt(role='plan', outcome='SPLIT')
         self.advance()

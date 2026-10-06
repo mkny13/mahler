@@ -31,6 +31,11 @@ SIZES = {"s": 1, "m": 2, "l": 3}
 COST_CLASS_RANK = {"free": 0, "paid": 1}
 
 
+def route_role(role):
+    """The design execution role uses the higher-tier planning route."""
+    return "plan" if role == "design" else role
+
+
 def cost_class(pconf):
     """Whether a platform spends scarce personal quota (DESIGN D33).
 
@@ -424,6 +429,7 @@ def routing_for(cfg, account):
 
 
 def candidates(cfg, role, pin=None, burst_lines=None, account=DEFAULT_ACCOUNT):
+    role = route_role(role)
     # a fix run routes like a build (DESIGN D18): same platforms, same order
     routing = routing_for(cfg, account)
     if pin:
@@ -473,6 +479,7 @@ def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=
         # D26 priority routes are exact and role-independent: an omitted role
         # has no candidates. Fix (D18) and review are the deliberate aliases:
         # both fall back to the project's builder route, as in equal mode.
+        role = route_role(role)
         route = (routing.get("build") if role == "fix" else
                  routing.get(role) or (routing.get("build") if role == "review" else None))
         order = expand_route(cfg, route or [])
@@ -551,6 +558,7 @@ def measured_rows(cfg, rows, role, size):
     """Match proof to the current model and effort, never an obsolete slot pin."""
     from . import platforms, scorecard
     result = {}
+    role = route_role(role)
     run_role = "sort" if role == "plan" else role
     for row in scorecard.ranked(rows, role, size or "m"):
         pc = cfg["platforms"].get(row["platform"], {})
@@ -612,6 +620,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     builder slot. This applies even to a pinned platform, since a pinned
     reviewer identical to the builder would defeat the point.
     """
+    role = route_role(role)
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
     if pin and pin in cfg["platforms"] and account_of(cfg["platforms"][pin]) not in accts:
@@ -681,6 +690,7 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     account's candidates round-robin. "priority": follows the project's own
     routing table as one exact cross-account order.
     """
+    role = route_role(role)
     accts = accounts_of(pol)
     mode = account_mode_of(pol)
     measured = routing_mode(cfg, pol) == "measured"
@@ -720,6 +730,7 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
     still be probed each tick even if another candidate has a known reset.
     All blocking windows on one platform must recover before it can run.
     """
+    role = route_role(role)
     accts = accounts_of(pol)
     names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
              if account_mode_of(pol) == "priority" else

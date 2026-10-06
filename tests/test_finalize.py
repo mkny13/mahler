@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, failures, finalize, router, runner, scheduler, sync, tick, no_change
+from mahler import config, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -25,6 +25,9 @@ NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 class FakeGH:
     def __init__(self, state="OPEN"):
         self.state, self.comments = state, []
+        self.head = "a" * 40
+        self.pr_state = "OPEN"
+        self.body = "## Done when\n- [ ] all checks pass\n"
 
     def issue_state(self, number):
         return self.state
@@ -34,6 +37,12 @@ class FakeGH:
 
     def comment(self, number, body):
         self.comments.append(body)
+
+    def pr_view(self, number):
+        return {"state": self.pr_state, "headRefOid": self.head}
+
+    def issue_body(self, number):
+        return self.body
 
 
 class RunTests(unittest.TestCase):
@@ -442,6 +451,124 @@ class RunTests(unittest.TestCase):
                     self.assertEqual(self.led.item("x", 5)["state"], "done")
                 self.ctx.dry_run = False
                 self.led.release("x", 5)
+    def _design_run(self, output, current_head=None):
+        head = "a" * 40
+        self.gh.head = current_head or head
+        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x",
+                             attempts=2)
+        run_id = self.run_id
+        self.led.update_run(run_id, role="design", model="test-model")
+        self.run.update(role="design", model="test-model", branch="mahler/5-x")
+        self.led.set_kv(prompt.design_input_key("x", 5, 88, run_id),
+                        json.dumps({"head": head, "evidence": "complete review history"}))
+        with open(self.log, "w") as stream:
+            stream.write(output)
+        return head
+
+    def test_design_result_persists_by_pr_and_head_without_spending_attempts(self):
+        head = "a" * 40
+        payload = {"head": head, "disposition": "fix", "plan": {
+            "summary": "Resolve the shared failure class",
+            "files": ["src/one.py", "tests/test_one.py"],
+            "steps": ["Update validation", "Cover the regression"],
+            "tests": "python3 -m unittest tests.test_one",
+        }}
+        self._design_run(f"STATUS: DESIGNED {json.dumps(payload)}")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "git", return_value=head), \
+                mock.patch.object(runner, "snapshot") as snapshot, \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        key = finalize._design_record_key("x", 5, 88, head)
+        record = json.loads(self.led.get_kv(key))
+        self.assertEqual(record["head"], head)
+        self.assertEqual(record["pr"], 88)
+        self.assertEqual(record["source_review_evidence"], "complete review history")
+        self.assertEqual(record["disposition"], "fix")
+        self.assertEqual(record["plan"], payload["plan"])
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 2)
+        snapshot.assert_not_called()
+
+    def test_stale_or_malformed_design_results_retry_in_verification(self):
+        head = "a" * 40
+        payload = {"head": head, "disposition": "fix", "plan": {
+            "summary": "Plan", "files": ["src/a.py"], "steps": ["Fix it"],
+            "tests": "python3 -m unittest",
+        }}
+        for output, current_head in (
+                (f"STATUS: DESIGNED {json.dumps(payload)}", "b" * 40),
+                ("STATUS: DESIGNED {malformed", head),
+                ("review stopped before producing a result", head)):
+            with self.subTest(current_head=current_head, output=output):
+                self._design_run(output, current_head)
+                self.led.release("x", 5)
+                lease, _ = self.led.claim("x", 5, f"run:{self.run_id}", "auto", 30)
+                self.run["epoch"] = lease["epoch"]
+                self.led.update_run(self.run_id, epoch=lease["epoch"])
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "git", return_value=head), \
+                        mock.patch.object(runner, "snapshot") as snapshot, \
+                        mock.patch.object(runner, "remove_worktree"):
+                    finalize.finalize(self.ctx, self.run)
+                self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+                self.assertEqual(self.led.item("x", 5)["attempts"], 2)
+                self.assertIsNone(self.led.get_kv(
+                    finalize._design_record_key("x", 5, 88, head)))
+                snapshot.assert_not_called()
+
+    def test_followup_disposition_cannot_demote_safety_or_done_when(self):
+        head = "a" * 40
+        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
+        self.led.update_run(self.run_id, role="design")
+        self.run["role"] = "design"
+        for followup in (
+                {"finding": "credential exposure", "category": "behavior",
+                 "reason": "low impact"},
+                {"finding": "security concern", "category": "security",
+                 "reason": "not important"},
+                {"finding": "silent unrecoverable data loss", "category": "behavior",
+                 "reason": "low impact"},
+                {"finding": "unrelated issue", "category": "behavior",
+                 "reason": "The acceptance check is deferred: - [ ] all checks pass"}):
+            with self.subTest(followup=followup):
+                payload = {"head": head, "disposition": "followups",
+                           "rationale": "Not needed in this project",
+                           "followups": [followup]}
+                ending = finalize.Ending(
+                    self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
+                    {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
+                self.gh.head = head
+                self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
+                                json.dumps({"head": head, "evidence": "prior review"}))
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "git", return_value=head):
+                    self.assertIsNone(finalize._prepare_design(ending))
+
+    def test_design_record_write_is_idempotent(self):
+        head = "a" * 40
+        payload = {"head": head, "disposition": "followups",
+                   "rationale": "Small, isolated concern in this project",
+                   "followups": [{"finding": "Minor copy issue", "category": "behavior",
+                                  "reason": "The surface is internal-only."}]}
+        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
+        self.led.update_run(self.run_id, role="design")
+        self.run["role"] = "design"
+        self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
+                        json.dumps({"head": head, "evidence": "prior review"}))
+        ending = finalize.Ending(
+            self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
+            {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
+        self.gh.head = head
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "git", return_value=head):
+            prepared = finalize._prepare_design(ending)
+        finalize._design_result(ending, prepared)
+        key = finalize._design_record_key("x", 5, 88, head)
+        saved = self.led.get_kv(key)
+        finalize._design_result(ending, prepared)
+        self.assertEqual(self.led.get_kv(key), saved)
+        self.assertEqual(json.loads(saved)["rationale"], payload["rationale"])
 
     def last_event(self):
         rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
