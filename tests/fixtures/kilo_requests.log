@@ -1,0 +1,6 @@
+{"type":"step_start","timestamp":1788825590000,"sessionID":"ses_1","part":{"id":"prt_1","type":"step-start"}}
+{"type":"text","timestamp":1788825591000,"sessionID":"ses_1","part":{"type":"text","text":"There are 429 files; the API said \"rate limit exceeded\" in a quoted log."}}
+{"type":"tool_use","timestamp":1788825592000,"sessionID":"ses_1","part":{"type":"tool","tool":"bash"}}
+{"type":"step_finish","timestamp":1788825593000,"sessionID":"ses_1","part":{"type":"step-finish","reason":"tool-calls","model":{"modelID":"kilo-a:free"},"tokens":{"input":10,"output":2,"reasoning":0,"cache":{"read":0}}}}
+{"type":"step_start","timestamp":1788825601000,"sessionID":"ses_1","part":{"id":"prt_2","type":"step-start"}}
+{"type":"step_finish","timestamp":1788825600000,"sessionID":"ses_1","part":{"type":"step-finish","reason":"stop","model":{"modelID":"kilo-b:free"},"tokens":{"input":5,"output":1,"reasoning":0,"cache":{"read":0}}}}

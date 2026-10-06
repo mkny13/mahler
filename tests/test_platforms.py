@@ -407,7 +407,8 @@ class ReadLogContractTests(unittest.TestCase):
                     last_text='', model='configured', session_id=None,
                     last_error=None, model_unavailable=False,
                     tokens=dict.fromkeys(('in', 'cached', 'out', 'reasoning')),
-                    cost_usd=None, credits=None, quota_used={})
+                    cost_usd=None, credits=None, quota_used={}, requests=None, request_buckets=None,
+                    request_coverage=None, rate_limited=None)
 
     def test_empty_missing_and_non_object_logs_have_identical_schema(self):
         for kind in self.kinds:
@@ -447,6 +448,11 @@ class ReadLogContractTests(unittest.TestCase):
                 expected = self.empty_result()
                 expected.update(final=None if kind in ('kilo', 'vibe') else final, ok=ok,
                                last_text=final, session_id=session_id)
+                if kind == 'cline':     # no request event seen: unknown, flags observed
+                    expected.update(rate_limited=False)
+                elif kind == 'kilo':    # real events, no step_start: known zero
+                    expected.update(requests=0, request_buckets={},
+                                    request_coverage='complete', rate_limited=False)
                 result = self.read(kind, events)
                 self.assertEqual(result, expected)
                 self.assertEqual(platforms.status_line(result['last_text']), ('DONE', 'complete'))
