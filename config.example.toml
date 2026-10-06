@@ -128,6 +128,21 @@ screenshot_timeout_seconds = 45    # integer 1–60
 # cooldown_days = 14
 # stale_verified_days = 90       # DESIGN.md "verified" date older than this is flagged
 
+# Cross-project practices audit (DESIGN D39; policy only until scanner/tick
+# integration ships). Proposes issues; never edits audited repos or settings.
+# Scans only enabled projects, using the fixed six PRACTICES_AUDIT_CHECKS.
+# Uncomment this table and set enabled = false to disable the whole pass.
+# [practices_audit]
+# enabled = true
+# project = "mahler"            # enabled anchor project: report + merged-PR count
+# cadence_days = 30             # due after this interval OR merged_threshold
+# merged_threshold = 20         # only conductor-confirmed merges in the anchor
+# cooldown_days = 14            # minimum interval even when volume triggers
+# Override project for installations without an enabled mahler project.
+# Missing/disabled anchors skip the pass. Project maintenance settings do not
+# select its checks. Proposals inherit each affected project's scope_label
+# when scope = "label" (including custom labels; no repository allowlist).
+
 # Define routes once; @references work globally, in accounts, and in projects.
 # Nested groups expand in order; the first occurrence of each platform wins.
 # Unknown/cyclic references are skipped with a `mahler status` warning.

@@ -123,6 +123,50 @@ class SmokePolicyTests(unittest.TestCase):
         self.assertEqual(config.DEFAULTS["defaults"]["smoke"], "")
 
 
+class PracticesAuditPolicyTests(unittest.TestCase):
+    def test_minimal_and_loaded_defaults(self):
+        expected = {"enabled": True, "project": "mahler", "cadence_days": 30,
+                    "merged_threshold": 20, "cooldown_days": 14}
+        self.assertEqual(config.practices_audit_policy({}), expected)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text("")
+            cfg = config.load(path)
+        self.assertEqual(cfg["practices_audit"], expected)
+        self.assertEqual(config.practices_audit_policy(cfg), expected)
+
+    def test_partial_overrides_and_disabled_round_trip(self):
+        for overrides in ({"cadence_days": 7}, {"enabled": False},
+                          {"project": "other", "cadence_days": 60,
+                           "merged_threshold": 40, "cooldown_days": 21}):
+            with self.subTest(overrides=overrides):
+                cfg = {"practices_audit": overrides}
+                before = copy.deepcopy(cfg)
+                expected = {**config.DEFAULT_PRACTICES_AUDIT, **overrides}
+                pol = config.practices_audit_policy(cfg)
+                self.assertEqual(pol, expected)
+                pol["enabled"] = not pol["enabled"]
+                self.assertEqual(cfg, before)
+                self.assertEqual(config.practices_audit_policy({})["enabled"], True)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "config.toml"
+                    path.write_text(config.dumps_toml(cfg))
+                    loaded = config.load(path)
+                self.assertEqual(config.practices_audit_policy(loaded), expected)
+
+    def test_fixed_checklist_is_separate_from_configurable_maintenance(self):
+        expected = ("ci-tests", "agent-instructions", "mahler-guidance",
+                    "verify-command", "tracked-secrets", "branch-protection")
+        self.assertEqual(config.PRACTICES_AUDIT_CHECKS, expected)
+        self.assertEqual(config.PRACTICES_AUDIT_PASS, "practices-audit")
+        self.assertNotIn(config.PRACTICES_AUDIT_PASS, config.MAINTENANCE_PASSES)
+        cfg = {"practices_audit": {"enabled": False},
+               "defaults": {"maintenance": {"passes": []}}}
+        config.practices_audit_policy(cfg)
+        self.assertEqual(config.PRACTICES_AUDIT_CHECKS, expected)
+        self.assertNotIn("checks", config.DEFAULT_PRACTICES_AUDIT)
+
+
 class CustomMaintenanceTests(unittest.TestCase):
     def load(self, maintenance):
         with tempfile.TemporaryDirectory() as tmp:
