@@ -454,8 +454,9 @@ def _review_gate(ctx, project, item, pr, view):
             _merge_queued(ctx, project, item, pr, view)
             return
         if verdict == "fail":
-            _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
-            return
+            if not _unchanged_done_review(ctx, project, item, pr, sha, info):
+                _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
+                return
         # verdict still "pending" for this sha: a review run is (or was) in
         # flight; fall through to the active-run check below rather than
         # trusting a run that may itself have died without finalizing.
@@ -475,6 +476,38 @@ def _kv_json(led, key):
     except ValueError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _unchanged_done_review(ctx, project, item, pr, sha, info):
+    """Consume one durable same-head allowance, before reopening fix accounting.
+
+    Record the exact launched fix and failed verdict, not merely a historical
+    DONE. Writing the allowance before invalidation makes interrupted ticks
+    replayable; a new verdict can never reuse that allowance.
+    """
+    led, n = ctx.led, item["number"]
+    key = f"reviewfix:{project}#{n}:{pr}:{sha}"
+    allowance = f"reviewdone:{project}#{n}:{pr}:{sha}"
+    used = _kv_json(led, allowance)
+    if used:
+        if used.get("verdict") != info:
+            return False
+    else:
+        launched = _kv_json(led, f"{key}:run")
+        if not led.get_kv(key) or launched.get("verdict") != info:
+            return False
+        run = led.last_run(project, n, roles=("build", "fix"))
+        if (not run or run["id"] != launched.get("run_id")
+                or run["role"] != "fix" or run["status"] != "ended"
+                or run["outcome"] != "DONE" or run["stop_reason"]):
+            return False
+        previous = led.last_run(project, n, roles=("review",))
+        led.set_kv(allowance, json.dumps({
+            "fix_run": run["id"], "verdict": info,
+            "reviewer": previous["platform"] if previous else None}))
+    led.set_kv(f"review:{project}#{n}", None)
+    ctx.say(f"{project}#{n}: PR #{pr} — fix DONE without a new head; re-reviewing once")
+    return True
 
 
 def _clear_charged_if_fix_completed(led, project, number, key):
@@ -622,7 +655,8 @@ def _review_route(ctx, project, item, sha):
     # pin that `exclude` would immediately rule back out.
     exclude = {builder_platform} if builder_platform else set()
     dup = _kv_json(led, f"reviewdup:{project}#{n}")
-    if dup.get("sha") == sha and dup.get("reviewer"):
+    if (dup.get("sha") == sha and dup.get("reviewer")
+            and not led.get_kv(f"reviewdone:{project}#{n}:{item['pr']}:{sha}")):
         exclude.add(dup["reviewer"])     # a repeat finding needs a different reviewer
     pin = ("claude" if router.risk_min_tier(row_get(item, "title", "")) > 0
            and builder_slot != "claude" else None)
@@ -651,9 +685,18 @@ def _start_review_run(ctx, project, item, pr, view, sha):
                        "every run slot is busy" if full else "no eligible platform for review",
                        "review", (capacity[0], None, None) if full else capacity)
         return
+    # Prefer another reviewer for a metadata-only fix, but never turn that
+    # preference into a capacity wait or weaken builder/slot independence.
+    previous = _kv_json(led, f"reviewdone:{project}#{n}:{pr}:{sha}").get("reviewer")
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
-        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, exclude=exclude)
+        scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines,
+        exclude=exclude | ({previous} if previous else set()))
+    if not platform and previous:
+        platform, reasons = router.pick_for_project(
+            cfg, led, pol, "review", pin, busy, size=size,
+            scorecard_rows=getattr(ctx, "scorecard_rows", None),
+            burst_lines=ctx.burst_lines, exclude=exclude)
     if not platform:
         detail = "; ".join(reasons) or "no eligible platform for review"
         _capacity_wait(ctx, project, item, wait_key, sha, detail, "review", capacity)
@@ -846,7 +889,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     sha = view.get("headRefOid") or ""
     dup_key = f"reviewdup:{project}#{n}"
-    if not base_conflict and _kv_json(led, dup_key).get("sha") != sha:
+    if (not base_conflict and _kv_json(led, dup_key).get("sha") != sha
+            and not led.get_kv(f"reviewdone:{project}#{n}:{pr}:{sha}")):
         repeated = _repeat_finding(ctx, project, n, view)
         if repeated:
             # Same finding on the same unchanged line: a second opinion, not
@@ -968,6 +1012,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        if not base_conflict:
+            run = led.last_run(project, n, roles=("fix",))
+            led.set_kv(f"{key}:run", json.dumps({
+                "run_id": run["id"] if run else None,
+                "verdict": _kv_json(led, f"review:{project}#{n}")}))
 
 
 def _red_ci(ctx, project, item, pr, view):

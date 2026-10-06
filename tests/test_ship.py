@@ -1203,6 +1203,192 @@ class ShipTests(unittest.TestCase):
         self.assertIn("auth.py: missing null check on session token", context)
         self.assertEqual(self.item()["attempts"], 1)
 
+    def same_head_setup(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.cfg["routing"]["review"] = ["agy-claude", "claude", "agy-gemini"]
+        rid = self.led.create_run(project="x", number=5, role="review",
+                                  platform="agy-claude", epoch=1)
+        self.led.update_run(rid, status="ended", outcome="REVIEW-FAIL")
+        self.led.set_kv("review:x#5", json.dumps({
+            "pr": 88, "sha": "abc123", "run_id": rid, "verdict": "fail",
+            "findings": "app.py:1: missing evidence"}))
+        self.same_head_calls = []
+
+        def start(ctx, project, item, role, platform, **kwargs):
+            self.same_head_calls.append((role, platform, kwargs))
+            rid = self.led.create_run(project=project, number=item["number"],
+                                      role=role, platform=platform, epoch=1)
+            # Fix routing is immaterial here; explicitly model an independent fixer.
+            self.led.update_run(rid, started_at=iso(self.led.now() + timedelta(seconds=1)),
+                                **({"platform": "agy-gemini"} if role == "fix" else {}))
+            return True
+
+        patcher = mock.patch.object(ship, "start", side_effect=start)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][0], "fix")
+        return self.led.last_run("x", 5, roles=("fix",))["id"]
+
+    def same_head_gate(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_gate(self.ctx, "x", self.item(), self.item()["pr"],
+                              self.gh.pr_view(self.item()["pr"]))
+
+    def same_head_counters(self):
+        return tuple(self.item()[k] for k in ("attempts", "esc_fails", "esc_tier"))
+
+    def same_head_verdict(self, verdict):
+        info = json.loads(self.led.get_kv("review:x#5"))
+        self.led.update_run(info["run_id"], status="ended", outcome="REVIEW-" + verdict.upper())
+        info.update(verdict=verdict, findings="app.py:1: missing evidence")
+        self.led.set_kv("review:x#5", json.dumps(info))
+
+    def test_same_head_done_reviews_once_then_passes_normal_merge_gate(self):
+        from mahler import review
+        rid = self.same_head_setup()
+        before = self.same_head_counters()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][:2], ("review", "claude"))
+        self.assertEqual(self.same_head_counters(), before)
+        self.assertEqual(self.gh.merged, [])
+        self.assertIn("missing evidence", self.same_head_calls[-1][2]["context"])
+        self.same_head_gate()
+        self.assertEqual(len(self.same_head_calls), 2)
+        self.same_head_verdict("pass")
+        self.same_head_gate()
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
+
+    def test_same_head_second_done_is_charged_and_exhausts_budget(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.same_head_gate()
+        self.same_head_verdict("fail")
+        # Even a would-be repeat-finding second opinion cannot bypass the allowance.
+        with mock.patch.object(ship, "_repeat_finding", return_value={"platform": "claude"}) as repeat:
+            self.same_head_gate()
+            repeat.assert_not_called()
+        self.assertEqual(self.same_head_calls[-1][0], "fix")
+        self.assertEqual(self.item()["attempts"], 2)
+        rid = self.led.last_run("x", 5, roles=("fix",))["id"]
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.same_head_gate()
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertEqual(self.item()["attempts"], 3)
+        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix"])
+
+    def test_same_head_done_at_last_attempt_still_gets_review(self):
+        rid = self.same_head_setup()
+        self.led.upsert_item("x", 5, attempts=2, esc_fails=1, esc_tier=2)
+        before = self.same_head_counters()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][0], "review")
+        self.assertEqual(self.same_head_counters(), before)
+        self.same_head_verdict("fail")
+        self.same_head_gate()
+        self.assertEqual(self.item()["state"], "failed")
+        self.assertEqual(self.item()["attempts"], 3)
+
+    def test_same_head_pending_survives_restart_capacity_and_failed_launch(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        before = self.same_head_counters()
+        self.cfg["concurrency"]["total"] = 0
+        self.same_head_gate()
+        saved = self.led.get_kv("reviewdone:x#5:88:abc123")
+        self.assertEqual(json.loads(saved)["fix_run"], rid)
+        self.assertIsNone(self.led.get_kv("review:x#5"))
+        # Reopen the persisted database, as a new conductor process would.
+        path = os.path.join(self.tmp, "restarted.db")
+        connection = sqlite3.connect(path)
+        try:
+            self.led.con.backup(connection)
+        finally:
+            connection.close()
+        self.led = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.same_head_gate()
+        self.cfg["concurrency"]["total"] = 4
+        with mock.patch.object(ship, "start", return_value=False):
+            self.same_head_gate()
+        self.assertEqual(self.same_head_counters(), before)
+        self.assertEqual(self.led.get_kv("reviewdone:x#5:88:abc123"), saved)
+        self.same_head_gate()
+        self.same_head_gate()
+        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review"])
+        self.assertEqual(self.same_head_counters(), before)
+
+    def test_same_head_replays_invalidation_after_interrupted_tick(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        original = self.led.set_kv
+
+        def interrupted(key, value):
+            if key == "review:x#5" and value is None:
+                raise RuntimeError("interrupted")
+            original(key, value)
+
+        with mock.patch.object(self.led, "set_kv", side_effect=interrupted):
+            with self.assertRaises(RuntimeError):
+                self.same_head_gate()
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][0], "review")
+        self.assertEqual(self.item()["attempts"], 1)
+
+    def test_same_head_reviewer_fallback_keeps_fixer_slot_excluded(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.cfg["platforms"]["fixer-variant"] = {
+            **self.cfg["platforms"]["agy-gemini"], "slot": "agy-gemini"}
+        self.cfg["routing"]["review"] = ["fixer-variant", "agy-gemini", "agy-claude"]
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][:2], ("review", "agy-claude"))
+
+    def test_same_head_eligibility_requires_exact_completed_review_fix(self):
+        rid = self.same_head_setup()
+        info = json.loads(self.led.get_kv("review:x#5"))
+        for outcome, stop, status in (("BLOCKED failed", None, "ended"),
+                ("DONE", "quota", "ended"), ("DONE", "preempted", "ended"),
+                ("launch failed: no process", None, "ended"),
+                ("not claimed", None, "ended"), ("DONE", None, "running")):
+            with self.subTest(outcome=outcome, stop=stop, status=status):
+                self.led.update_run(rid, status=status, outcome=outcome, stop_reason=stop)
+                self.assertFalse(ship._unchanged_done_review(
+                    self.ctx, "x", self.item(), 88, "abc123", info))
+        self.led.update_run(rid, status="ended", outcome="DONE", stop_reason=None)
+        self.led.set_kv("reviewfix:x#5:88:abc123:run", json.dumps({
+            "run_id": rid - 1, "verdict": info}))
+        self.assertFalse(ship._unchanged_done_review(
+            self.ctx, "x", self.item(), 88, "abc123", info))
+        self.assertIsNone(self.led.get_kv("reviewdone:x#5:88:abc123"))
+
+    def test_same_head_allowance_is_scoped_to_pr_head_and_survives_reship(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="DONE")
+        self.same_head_gate()
+        self.same_head_verdict("fail")
+        info = json.loads(self.led.get_kv("review:x#5"))
+        self.assertFalse(ship._unchanged_done_review(
+            self.ctx, "x", self.item(), 88, "abc123", info))
+        for pr, sha in ((89, "abc123"), (88, "new-head")):
+            with self.subTest(pr=pr, sha=sha):
+                key = f"reviewfix:x#5:{pr}:{sha}"
+                self.led.set_kv(key, iso(NOW))
+                self.led.set_kv(key + ":run", json.dumps({"run_id": rid, "verdict": info}))
+                self.assertTrue(ship._unchanged_done_review(
+                    self.ctx, "x", self.item(), pr, sha, info))
+        # A manual re-ship resets attempt accounting, not the per-head allowance.
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.assertFalse(ship._unchanged_done_review(
+            self.ctx, "x", self.item(), 88, "abc123", info))
+
     def test_fix_announcements_identify_the_trigger(self):
         """Exercise real start() announcements through both shipping paths."""
         for trigger in ("ci", "review"):
