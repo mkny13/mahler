@@ -28,7 +28,7 @@ class ScreenshotTests(unittest.TestCase):
     def write_manifest(self):
         (self.source / 'manifest.json').write_text(json.dumps(self.manifest))
 
-    def reject(self):
+    def assertRejected(self):
         with self.assertRaises((ss.InvalidScreenshot, OSError)):
             ss.store(self.source, 'app', 12, self.sha, root=self.root)
         self.assertFalse(self.root.exists())
@@ -71,7 +71,7 @@ class ScreenshotTests(unittest.TestCase):
                 self.manifest = json.loads(original)
                 self.manifest[key] = value
                 self.write_manifest()
-                self.reject()
+                self.assertRejected()
 
     def test_invalid_paths_and_routes(self):
         for name in ('/tmp/a.png', '../a.png', 'x/../a.png', './a.png', 'x//a.png',
@@ -79,29 +79,29 @@ class ScreenshotTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.manifest['screenshots'][0]['file'] = name
                 self.write_manifest()
-                self.reject()
+                self.assertRejected()
         self.manifest['screenshots'][0]['file'] = 'sign-in.png'
         for route in ('/a?q=secret', '/a#secret', 'https://example.com/a', '//host/a',
                       '', None, '/a\n', '/a\\b'):
             with self.subTest(route=route):
                 self.manifest['screenshots'][0]['route'] = route
                 self.write_manifest()
-                self.reject()
+                self.assertRejected()
 
     def test_malformed_and_oversized_manifest(self):
         for data in (b'{', b'[]', b'\xff', b' ' * (ss.MAX_MANIFEST_BYTES + 1),
                      b'{"version":1,"version":1}', b'[' * 2000):
             with self.subTest(data=data[:30]):
                 (self.source / 'manifest.json').write_bytes(data)
-                self.reject()
+                self.assertRejected()
 
     def test_missing_bad_signature_and_oversized_png(self):
         path = self.source / 'sign-in.png'
         path.unlink()
-        self.reject()
+        self.assertRejected()
         for data in (b'not PNG', ss.PNG_SIGNATURE + b'x' * ss.MAX_FILE_BYTES):
             path.write_bytes(data)
-            self.reject()
+            self.assertRejected()
 
     def test_symlinks_and_non_regular_files(self):
         path = self.source / 'sign-in.png'
@@ -109,21 +109,21 @@ class ScreenshotTests(unittest.TestCase):
         outside.write_bytes(self.png)
         path.unlink()
         path.symlink_to(outside)
-        self.reject()
+        self.assertRejected()
         path.unlink()
         os.mkfifo(path)
-        self.reject()
+        self.assertRejected()
         path.unlink()
         path.mkdir()
-        self.reject()
+        self.assertRejected()
         (self.source / 'nested').symlink_to(self.base, target_is_directory=True)
         self.manifest['screenshots'][0]['file'] = 'nested/outside.png'
         self.write_manifest()
-        self.reject()
+        self.assertRejected()
         manifest = self.source / 'manifest.json'
         manifest.rename(self.base / 'manifest.json')
         manifest.symlink_to(self.base / 'manifest.json')
-        self.reject()
+        self.assertRejected()
 
     def test_total_bound_and_exact_limits(self):
         self.manifest['screenshots'] = []
@@ -135,7 +135,7 @@ class ScreenshotTests(unittest.TestCase):
         # At 10 x 2 MiB both file and aggregate maxima are inclusive.
         self.assertEqual(ss.read_manifest(self.source, self.sha), self.manifest)
         with patch.object(ss, 'MAX_TOTAL_BYTES', ss.MAX_TOTAL_BYTES - 1):
-            self.reject()
+            self.assertRejected()
         raw = (self.source / 'manifest.json').read_bytes()
         (self.source / 'manifest.json').write_bytes(raw + b' ' * (ss.MAX_MANIFEST_BYTES - len(raw)))
         self.assertEqual(ss.read_manifest(self.source, self.sha), self.manifest)
