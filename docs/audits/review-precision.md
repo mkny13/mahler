@@ -654,3 +654,20 @@ print(f"Luna excess: {float(gap):.4f} percentage points; "
       f"two-sided Fisher p={float(p_value):.6f}; clearly worse: {passed}")
 print("classification totals and per-reviewer counts verified")
 ```
+
+Synthesis verification on 2026-10-06:
+
+- Executed the synthesis block above: exact classification/per-reviewer totals,
+  Wilson intervals, 4.2857-point gap and Fisher p = 1 reproduced. This step uses
+  only the frozen report; the earlier live sampling checks belong to #737/#738.
+- Retrieved #767 through `gh issue view --json body,labels`; checked the published
+  body against the submitted text, the six required template sections, finite
+  file list, ordered plan, named mechanical test and seven acceptance checkboxes.
+  Exactly one type (`feature`), one size (`m`) and priority `p2` were present.
+- `python3 -m mahler.repo_guard` — passed.
+- `python3 -m unittest discover -s tests` — 1,920 tests passed.
+- `python3 -X dev tests/run_strict.py` — 1,920 tests passed.
+- `python3 tests/run_random.py 739` — 1,920 tests passed.
+- The three suites ran with `GIT_CONFIG_COUNT=0`, neutralizing inherited injected
+  Git configuration for isolated repository fixtures, as in #738.
+- `git diff --check` — passed. The audit commits change only this report.
