@@ -740,6 +740,18 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   always construct one more breaking input, so heuristic features never converged (mahler#474
   and #423 each burned three build/fix/review cycles on a fresh edge case every round).
   Raising `max_attempts` would only have spent more quota reaching the same end.
+- **Project operating context for review** (mahler#713): `review_context` is a string
+  inherited from `[defaults]`, with `[projects.<name>]` replacing it verbatim. Its
+  built-in value is "Personal project: a single user owns and controls all devices
+  and upgrades them together." An explicit empty string clears inherited assumptions;
+  non-string values fail configuration validation. Set an override for shared or
+  independently upgraded apps; account and repository names imply no topology.
+  Every independent-review start receives the effective context. Under the personal
+  context, loss requiring mixed-version clients, staggered upgrades/rollouts or
+  multiple users is a follow-up unless evidence demonstrates silent, unrecoverable
+  loss in the normal single-user flow. Security defects and demonstrated normal-flow
+  data loss remain blockers. Issue acceptance criteria, classified finding schema,
+  review routing and merge/CI gates are unchanged.
 - **Classified review intake** (mahler#678): REVIEW-PASS/REVIEW-FAIL accept a
   single-line JSON `findings` object, with each finding's severity (`blocking` or
   `follow-up`), category, location, scenario/evidence and consequence. Scope/spec

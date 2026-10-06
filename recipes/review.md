@@ -36,7 +36,8 @@ Rules:
    - **consequential** — it breaks a "Done when" item, breaks behaviour that worked before
      this diff, loses or corrupts data, leaves state that won't recover on its own, or is a
      security issue (injection, auth bypass, secret exposure, unsafe data handling).
-   Security issues and data loss block even when the trigger is unlikely. Everything else —
+   Security defects and demonstrated normal-flow data loss remain **blocking**, even when
+   the trigger is unlikely. Apply rule 4b to loss claims outside that flow. Everything else —
    contrived edge cases, hardening, a heuristic that misses unusual inputs, missing tests for
    paths that already work, follow-up ideas — is a **note**, not a blocker. Notes ride along
    on a pass; they do not start a fix round.
@@ -46,6 +47,17 @@ Rules:
    f-string should be, do not fail on it. Corroborate first by other means: `grep -c` for the
    literal asterisks in the file, hash or measure the line (`sed -n 'Np' file | wc -c`,
    `shasum`), or run the relevant tests. Only a literal confirmed that way is a finding.
+4b. **Calibrate loss claims to the supplied project operating context.** Use the effective
+   `review_context` in the handoff; do not infer it from account or repository names. Under
+   the personal-project context (one owner controls all devices and upgrades them together),
+   loss requiring mixed-version clients, staggered-upgrade/staggered-rollout sequences, or
+   multi-user-only behavior is a **follow-up**, unless you demonstrate silent, unrecoverable
+   loss in the normal single-user flow. State the required precondition and evidence, and
+   explain the nonblocking classification. An override replaces the personal context; an
+   empty context clears it, so do not assume coordinated upgrades or a single user there.
+   Security defects and demonstrated normal-flow data loss remain **blocking**. This
+   calibration does not change the issue's acceptance criteria: an explicit Done-when
+   requirement for mixed-version or multi-user support still applies.
 5. **Heuristics are allowed to be imperfect.** When the issue asks for a heuristic (parsing
    free text, guessing, scoring, thresholds), judge it on the cases it will actually see. A
    miss on unusual input is a note unless the miss is common or its failure is costly and

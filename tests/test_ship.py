@@ -947,6 +947,31 @@ class ShipTests(unittest.TestCase):
         info = json.loads(self.led.get_kv("review:x#5"))
         self.assertEqual(info, {"sha": "greensha1", "pr": 88, "verdict": "pending", "run_id": None})
 
+    def test_review_start_delivers_effective_operating_context_in_prompt(self):
+        from mahler import prompt
+        default = config.DEFAULTS["defaults"]["review_context"]
+        for value in (None, "Multiple users upgrade independently.", ""):
+            with self.subTest(value=value):
+                if value is not None:
+                    self.cfg["projects"]["x"]["review_context"] = value
+                self.led.set_kv("review:x#5", None)
+                with mock.patch.object(ship, "start", return_value=True) as start:
+                    ship._start_review_run(self.ctx, "x", self.item(), 88,
+                                           self.gh.pr_view(88), self.gh.head_sha)
+                context = start.call_args.kwargs["context"]
+                rendered = prompt.build(self.ctx, "x", self.item(), "review", "copilot",
+                                        {"worktree": "/tmp/review", "branch": "b"},
+                                        context=context)
+                if value == "":
+                    self.assertIn("review_context is empty", rendered)
+                    self.assertNotIn(default, rendered)
+                else:
+                    self.assertIn(default if value is None else value, rendered)
+                    if value is not None:
+                        self.assertNotIn(default, rendered)
+                self.assertIn("Green review round: 1", rendered)
+                self.assertIn("Security, normal-flow data loss", rendered)
+
     def test_review_excludes_the_builder_platform(self):
         """DESIGN D11: the reviewer must be a different platform than
         whichever one produced the PR — even when that platform would

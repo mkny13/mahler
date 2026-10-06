@@ -82,13 +82,20 @@ def record_green(ctx, project, item, pr, info):
 def start_context(ctx, project, item, pr, sha):
     rounds = window(ctx.led, project, item["number"], pr)
     number = round_number(rounds, sha)
-    threshold = ctx.policy(project)["review_green_rounds"]
-    return (f"Green review round: {number}; review_green_rounds: {threshold} "
+    policy = ctx.policy(project)
+    threshold = policy["review_green_rounds"]
+    operating_context = policy["review_context"]
+    context = ("Project operating context (review_context):\n" + operating_context + "\n"
+               if operating_context else
+               "Project operating context: unspecified (review_context is empty); "
+               "do not assume the personal-project context.\n")
+    return (context + f"Green review round: {number}; review_green_rounds: {threshold} "
             "(inclusive; provisional until this head has a usable verdict and green CI).\n"
             + ("Convergence threshold reached: only new substantiated blockers or still-"
                "reproducible unresolved blockers may fail review.\n" if number >= threshold else "")
             + "Verify earlier fixes first. Compare category, scenario and consequence, not just "
-            "file names. Do not revive fixed findings without new evidence. Security, data loss, "
+            "file names. Do not revive fixed findings without new evidence. Apply the recipe's "
+            "operating-context calibration to data-loss claims. Security, normal-flow data loss, "
             "regressions and unsatisfied acceptance checks remain blockers. Other actionable "
             "findings are follow-ups; explain their nonblocking consequence.\n"
             + "Prior green review evidence (old findings are not proof of a current defect):\n"

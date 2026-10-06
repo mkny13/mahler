@@ -437,6 +437,24 @@ class FixRecipeTests(unittest.TestCase):
                 self.assertIn(fragment, self.text)
 
 
+class ReviewOperatingContextTests(unittest.TestCase):
+    def test_personal_context_calibrates_loss_without_weakening_blockers(self):
+        text = " ".join(prompt.render("review", handoff="").split())
+        for fragment in (
+            "Use the effective `review_context` in the handoff",
+            "one owner controls all devices and upgrades them together",
+            "loss requiring mixed-version clients, staggered-upgrade/staggered-rollout sequences, "
+            "or multi-user-only behavior is a **follow-up**, unless you demonstrate silent, "
+            "unrecoverable loss in the normal single-user flow",
+            "An override replaces the personal context; an empty context clears it",
+            "Security defects and demonstrated normal-flow data loss remain **blocking**",
+            "does not change the issue's acceptance criteria",
+            "an explicit Done-when requirement for mixed-version or multi-user support still applies",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, text)
+
+
 class ReviewRecipeMaskingTests(unittest.TestCase):
     def test_review_recipe_warns_about_masked_tool_output(self):
         text = " ".join(prompt.render(

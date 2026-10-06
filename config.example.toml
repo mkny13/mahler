@@ -20,6 +20,8 @@ routing_mode = "list"
 [defaults]
 # Distinct green heads with usable reviews; inclusive, positive integer.
 review_green_rounds = 2
+# Operating context for independent reviews; inherited by every project.
+review_context = "Personal project: a single user owns and controls all devices and upgrades them together."
 
 [ntfy]
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
@@ -30,6 +32,8 @@ enabled = false                 # opt in only after repo, path and verify are co
 repo = "your-org/your-repo"
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
+# Override for shared apps, or set review_context = "" to clear inherited assumptions.
+# review_context = "Multiple users upgrade their devices independently."
 # review_green_rounds = 3        # optional per-project override
 # github_app_installation_id = 98765  # override for another GitHub owner
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
