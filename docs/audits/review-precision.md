@@ -222,9 +222,10 @@ assert [r[0] for r in selected] == expected_sample
 assert len(set(expected_sample)) == 30
 
 # Independently read the classification table, not a separate tally file.
+copilot_section = report.split("\n## Non-Copilot comparator:", 1)[0]
 findings = re.findall(
     r"^\| (\d+)\.(\d+) \| (real|false/contrived|unresolved evidence) \|",
-    report, re.M,
+    copilot_section, re.M,
 )
 assert len({(run, finding) for run, finding, _ in findings}) == len(findings)
 blockers = collections.Counter(label for _, _, label in findings)
@@ -269,3 +270,178 @@ Verification performed on 2026-10-06 with Python 3.14.3:
 Only this report is changed; no routing, prompt, scorecard, ledger or runtime code
 is changed. The two unresolved classifications are audit results with named
 missing evidence, not omitted sample entries.
+
+## Non-Copilot comparator: 10 failed verdicts
+
+This comparator applies the same D11 blocking bar and false-fail definition
+above; it does not reclassify the Copilot sample or propose a remedy.
+
+### Frozen sample
+
+Cutoff: 2026-10-01 00:00 America/New_York
+(2026-10-01T04:00:00+00:00). Query time (inclusive upper bound):
+`2026-10-06T20:04:37.743050+00:00`. The read-only live-ledger query selects
+ended review runs with `REVIEW-FAIL` and a first `review_verdict` event of
+`fail` in that interval, recorded model other than `gpt-6-luna`. The stable
+ordering key is ascending unique `runs.id`; the sample is drawn without
+replacement using Python `random.Random(733).sample(population, 10)`.
+
+Eligible population: **25 verdicts**. The five rows with an empty recorded
+model all ran on `work-codex-gpt1-medium`; their exact model was not recorded,
+so they are reported as Codex/model-unspecified rather than assigned a model.
+
+| Recorded reviewer | Eligible verdicts |
+| --- | ---: |
+| Codex (model unspecified; `work-codex-gpt1-medium`) | 5 |
+| `gpt-5.6-luna` | 11 |
+| `gpt-5.6-sol` | 6 |
+| `muse-glimmer` | 1 |
+| `stealth/space-bunny-alpha` | 2 |
+| **Total** | **25** |
+
+Eligible run IDs in stable order:
+
+`[10295, 10302, 10303, 10318, 10319, 10326, 10349, 10351, 10394, 10396, 10490, 10569, 10573, 10575, 10577, 10605, 10715, 10795, 10797, 10799, 10804, 10884, 10908, 10910, 10912]`
+
+Selected run IDs in draw order:
+
+`[10575, 10804, 10577, 10319, 10795, 10884, 10908, 10318, 10351, 10396]`
+
+| Draw | Run | Reviewer | Issue | PR | Reviewed SHA | Verdict time (UTC) |
+| ---: | ---: | --- | --- | --- | --- | --- |
+| 1 | 10575 | `gpt-5.6-luna` | [#657](https://github.com/mkny13/mahler/issues/657) | [#659](https://github.com/mkny13/mahler/pull/659) | [f09ecc41e4e4](https://github.com/mkny13/mahler/commit/f09ecc41e4e4aba691a2b004b9d3428b64e8020f) | 2026-10-02T12:41:40.691687+00:00 |
+| 2 | 10804 | `gpt-5.6-sol` | [#698](https://github.com/mkny13/mahler/issues/698) | [#699](https://github.com/mkny13/mahler/pull/699) | [a23aaa68ff70](https://github.com/mkny13/mahler/commit/a23aaa68ff700193f2b3d22191442f9fa9efad6f) | 2026-10-05T17:30:57.672993+00:00 |
+| 3 | 10577 | `gpt-5.6-luna` | [#657](https://github.com/mkny13/mahler/issues/657) | [#659](https://github.com/mkny13/mahler/pull/659) | [f0b785c55bc8](https://github.com/mkny13/mahler/commit/f0b785c55bc85f1d56eda25595da6df337793614) | 2026-10-02T12:47:36.139367+00:00 |
+| 4 | 10319 | `stealth/space-bunny-alpha` | [mkny13/couch-tour#351](https://github.com/mkny13/couch-tour/issues/351) | [mkny13/couch-tour#439](https://github.com/mkny13/couch-tour/pull/439) | [270bbaef3b2f](https://github.com/mkny13/couch-tour/commit/270bbaef3b2f1d5d827a9abd9d628891b62b2ece) | 2026-10-01T15:52:14.976036+00:00 |
+| 5 | 10795 | Codex (model unspecified; `work-codex-gpt1-medium`) | [#698](https://github.com/mkny13/mahler/issues/698) | [#699](https://github.com/mkny13/mahler/pull/699) | [cf5cf040e93d](https://github.com/mkny13/mahler/commit/cf5cf040e93dfc65b3ab38ed36bba62de7b1e5d5) | 2026-10-04T18:34:02.916987+00:00 |
+| 6 | 10884 | `gpt-5.6-sol` | [#716](https://github.com/mkny13/mahler/issues/716) | [#756](https://github.com/mkny13/mahler/pull/756) | [7c5292ed3b1b](https://github.com/mkny13/mahler/commit/7c5292ed3b1bee527a2441cf7b62bb9b12fcee73) | 2026-10-06T14:54:38.851124+00:00 |
+| 7 | 10908 | `gpt-5.6-sol` | [#734](https://github.com/mkny13/mahler/issues/734) | [#764](https://github.com/mkny13/mahler/pull/764) | [f976367322cc](https://github.com/mkny13/mahler/commit/f976367322cc17d0868a8d5dff6a5ab9c4b72895) | 2026-10-06T19:14:35.135312+00:00 |
+| 8 | 10318 | Codex (model unspecified; `work-codex-gpt1-medium`) | [#618](https://github.com/mkny13/mahler/issues/618) | [#619](https://github.com/mkny13/mahler/pull/619) | [8a1cc566714e](https://github.com/mkny13/mahler/commit/8a1cc566714ef189413d70970751e8f01397d739) | 2026-10-01T15:46:45.234841+00:00 |
+| 9 | 10351 | `gpt-5.6-luna` | [#607](https://github.com/mkny13/mahler/issues/607) | [#610](https://github.com/mkny13/mahler/pull/610) | [33eab75569d6](https://github.com/mkny13/mahler/commit/33eab75569d6b8c834f773d3de01d400ccd9edff) | 2026-10-01T16:26:29.998950+00:00 |
+| 10 | 10396 | `gpt-5.6-luna` | [#616](https://github.com/mkny13/mahler/issues/616) | [#635](https://github.com/mkny13/mahler/pull/635) | [b6e70f779021](https://github.com/mkny13/mahler/commit/b6e70f77902168e516bb5b342fa2fdb1d1dfbdc0) | 2026-10-01T20:51:59.336484+00:00 |
+
+### Blocking findings and dispositions
+
+Each selected verdict had one recorded blocking finding; findings are
+paraphrased below and judged at the immutable reviewed SHA, not from whether a
+later fix was merged.
+
+| Finding | Classification | Reviewed finding and D11 assessment | Subsequent fix or disposition |
+| --- | --- | --- | --- |
+| 10575.1 | real | [#657 / PR #659](https://github.com/mkny13/mahler/pull/659): after a failed review, an ended fix run with quota/no-credit/model-unavailable capacity stop could clear the charged-cycle marker. Repeated ordinary capacity interruptions could therefore spend the genuine-failure budget and strand work, contrary to the issue's transient-capacity acceptance criterion. | [f0b785c5](https://github.com/mkny13/mahler/commit/f0b785c55bc85f1d56eda25595da6df337793614) excludes capacity-interrupted runs from clearing the marker. Later #657 regression coverage also keeps launch failures from consuming the budget. |
+| 10804.1 | real | [#698 / PR #699](https://github.com/mkny13/mahler/pull/699): on a supported D24 secondary machine, an interactive claim-and-ship advances the canonical remote epoch, then releases its lease; the local old run cannot see that epoch and can finalize over the shipped state/branch. This is the reported handoff-loss scenario in a supported workflow. | [0dcf299e](https://github.com/mkny13/mahler/commit/0dcf299e21e6b14e817b5c0f570694866fce6309) retains remote claim epochs for stale-finalization fencing. |
+| 10577.1 | real | [#657 / PR #659](https://github.com/mkny13/mahler/pull/659): after a genuine failed fix on an unchanged head, the per-head dedup key remains set. A later genuine failure on that head skips `esc_fails` and tier escalation, violating the explicit requirement to preserve escalation for repeated implementation failures. | Later #657 regression coverage exercises repeated genuine failures on the same SHA, verifies escalation at failures two and four, and retains the five-attempt stop; see [PR #662](https://github.com/mkny13/mahler/pull/662). |
+| 10319.1 | real | [mkny13/couch-tour#351 / PR #439](https://github.com/mkny13/couch-tour/pull/439): playback's debounced sync called `sync` without the `Favorites` store. It discarded favorite rows returned by the server but advanced the shared sequence cursor, so a normal listening session could permanently miss another device's favorite. | [PR #523](https://github.com/mkny13/couch-tour/pull/523) merged [33ea7879](https://github.com/mkny13/couch-tour/commit/33ea7879b01db49f6f3510d122421fb25505a3d9), which applies pulled favorites on the debounced playback path. |
+| 10795.1 | real | [#698 / PR #699](https://github.com/mkny13/mahler/pull/699): the new epoch fence applied only to sort runs. During a normal interactive takeover of a build, the preempted build could save its stale branch and set the item back to ready after the interactive holder shipped it. The issue explicitly requires all run roles to preserve the current holder's state, branch and PR. | [88bb41ce](https://github.com/mkny13/mahler/commit/88bb41ced5c34ec80b9b862d332b6bb6d68565d0) fences every run role; subsequent #698 rounds covered snapshot and post-snapshot races. |
+| 10884.1 | real | [#716 / PR #756](https://github.com/mkny13/mahler/pull/756): the second identical no-work DONE persisted `surfaced=true` before sending the required GitHub comment and notification. A normal transient comment failure could therefore leave a parked item permanently unsurfaced, violating the one-time delivery requirement. | [6f853242](https://github.com/mkny13/mahler/commit/6f853242c2031317b9ab89bdea9468abb555529f) retries guard delivery after GitHub failures. |
+| 10908.1 | real | [#734 / PR #764](https://github.com/mkny13/mahler/pull/764): while an ordinary size-`l` fix waited for capacity, routing changed it to effective size `m` and persisted `m` as both original and effective size. The required capacity history could no longer distinguish the original size from routing's adjustment. | [9143b149](https://github.com/mkny13/mahler/commit/9143b14954fdef5e978bfb895138bec8c9a12e32) preserves the original size separately from the effective size. |
+| 10318.1 | real | [#618 / PR #619](https://github.com/mkny13/mahler/pull/619): the issue's Done-when requires `DESIGN.md` to link the build-cache policy where worktree isolation/build hazards are described; the reviewed change linked only from README. This is a literal acceptance failure even though the original request also mentioned README as an alternative. | [5c40c369](https://github.com/mkny13/mahler/commit/5c40c369f034f8d623962a846a4756b781814818) adds the required DESIGN link. |
+| 10351.1 | false/contrived | [#607 / PR #610](https://github.com/mkny13/mahler/pull/610): the cited direct subprocesses were `git ls-remote` (read-only) and local `git merge-base` (no network); the actual branch push already went through `GH._git` with the login's `git_env` at this reviewed SHA. D38 requires pushes to use the login credentials, but the review established no broken push, access failure, or other consequential behavior from these read/check subprocesses using the broader environment. Requiring every Git subprocess to use one environment exceeds the demonstrated blocking bar. | Later [541fe716](https://github.com/mkny13/mahler/commit/541fe7169c7ee7b11bd4f945df4a1a5bcb3a077c) routed the direct checks through the account environment. That broader cleanup does not establish a D11 blocker at the reviewed SHA; it already kept the branch push on account credentials. |
+| 10396.1 | real | [#616 / PR #635](https://github.com/mkny13/mahler/pull/635): if mirroring the completed state to GitHub failed, the ledger item was already `done` and no later pass retried the label update. The issue requires evidence-backed completion to clear/replace `mahler:shipped` idempotently, so a transient API error could leave the GitHub issue permanently marked shipped. | [aee45753](https://github.com/mkny13/mahler/commit/aee45753754d97eff696589c248b825f90d9e0d2) retries the done-label mirror for completed items. |
+
+### Comparator totals
+
+One blocker appears in each verdict. There are no mixed or unresolved verdicts
+in this sample, so the false-fail numerator counts verdicts whose only blocker
+is classified `false/contrived`; the denominator is all resolved sampled failed
+verdicts.
+
+| Reviewer | Blockers: real / false / unresolved | False-blocker rate | Verdicts: real / false / unresolved | False-fail rate |
+| --- | ---: | ---: | ---: | ---: |
+| `gpt-5.6-luna` | 3 / 1 / 0 | 1 / 4 = 25.0% | 3 / 1 / 0 | 1 / 4 = 25.0% |
+| `gpt-5.6-sol` | 3 / 0 / 0 | 0 / 3 = 0.0% | 3 / 0 / 0 | 0 / 3 = 0.0% |
+| Codex (model unspecified; `work-codex-gpt1-medium`) | 2 / 0 / 0 | 0 / 2 = 0.0% | 2 / 0 / 0 | 0 / 2 = 0.0% |
+| `stealth/space-bunny-alpha` | 1 / 0 / 0 | 0 / 1 = 0.0% | 1 / 0 / 0 | 0 / 1 = 0.0% |
+| **Pooled comparator** | **9 / 1 / 0** | **1 / 10 = 10.0%** | **9 / 1 / 0** | **1 / 10 = 10.0%** |
+
+`muse-glimmer` had zero selected verdicts, so no rate is reported. The pooled
+point estimate describes only these 10 randomly sampled failed verdicts; the
+per-reviewer estimates with denominators of one to four are especially
+imprecise. It is not overall review accuracy, recall, or a false-positive rate
+among all reviews.
+
+### Comparator reproduction and arithmetic check
+
+Run from the repository root with Python 3.12+ and read access to
+`~/.mahler/mahler.db`. The connection is SQLite `mode=ro`; this does not
+instantiate the application Ledger or mutate runtime state. Keep the recorded
+upper bound to reproduce the frozen population.
+
+```python
+import collections
+import contextlib
+import pathlib
+import random
+import re
+import sqlite3
+
+report = pathlib.Path("docs/audits/review-precision.md").read_text()
+cutoff = "2026-10-01T04:00:00+00:00"
+query_time = "2026-10-06T20:04:37.743050+00:00"
+query = """
+SELECT r.id, r.project, r.number, r.platform, r.model, r.ended_at,
+       MIN(e.at) AS verdict_at
+FROM runs r JOIN events e
+  ON e.kind = 'review_verdict'
+ AND json_extract(e.detail, '$.review_run') = r.id
+ AND json_extract(e.detail, '$.verdict') = 'fail'
+WHERE r.role = 'review' AND r.model <> 'gpt-6-luna'
+  AND r.outcome = 'REVIEW-FAIL'
+GROUP BY r.id
+HAVING julianday(MIN(e.at)) >= julianday(?)
+   AND julianday(MIN(e.at)) <= julianday(?)
+ORDER BY r.id
+"""
+expected_population = [
+    10295, 10302, 10303, 10318, 10319, 10326, 10349, 10351, 10394, 10396,
+    10490, 10569, 10573, 10575, 10577, 10605, 10715, 10795, 10797, 10799,
+    10804, 10884, 10908, 10910, 10912,
+]
+expected_sample = [
+    10575, 10804, 10577, 10319, 10795, 10884, 10908, 10318, 10351, 10396,
+]
+uri = (pathlib.Path.home() / ".mahler/mahler.db").as_uri() + "?mode=ro"
+with contextlib.closing(sqlite3.connect(uri, uri=True)) as con:
+    population = con.execute(query, (cutoff, query_time)).fetchall()
+assert [r[0] for r in population] == expected_population
+reviewer_counts = collections.Counter(
+    r[4] or f"Codex (model unspecified; {r[3]})" for r in population
+)
+assert reviewer_counts == {
+    "Codex (model unspecified; work-codex-gpt1-medium)": 5,
+    "gpt-5.6-luna": 11,
+    "gpt-5.6-sol": 6,
+    "muse-glimmer": 1,
+    "stealth/space-bunny-alpha": 2,
+}
+selected = random.Random(733).sample(population, 10)
+assert [r[0] for r in selected] == expected_sample
+
+# Recompute classifications from the findings table, then independently group
+# them by the recorded reviewer identity.
+section = report.split("\n## Non-Copilot comparator:", 1)[1]
+findings = re.findall(
+    r"^\| (\d+)\.1 \| (real|false/contrived|unresolved evidence) \|",
+    section, re.M,
+)
+assert len(findings) == 10 and {int(run) for run, _ in findings} == set(expected_sample)
+labels = {int(run): label for run, label in findings}
+reviewer_verdicts = collections.defaultdict(collections.Counter)
+for row in selected:
+    reviewer = row[4] or f"Codex (model unspecified; {row[3]})"
+    reviewer_verdicts[reviewer][labels[row[0]]] += 1
+assert reviewer_verdicts == {
+    "gpt-5.6-luna": {"real": 3, "false/contrived": 1},
+    "gpt-5.6-sol": {"real": 3},
+    "Codex (model unspecified; work-codex-gpt1-medium)": {"real": 2},
+    "stealth/space-bunny-alpha": {"real": 1},
+}
+pooled = collections.Counter(labels.values())
+assert pooled == {"real": 9, "false/contrived": 1}
+print("population:", len(population), "reviewer counts:", dict(reviewer_counts))
+print("selected:", [r[0] for r in selected])
+print("blockers/verdicts:", dict(pooled), "by reviewer:", dict(reviewer_verdicts))
+```
+
+The single false/contrived verdict is **10351**. No issue, PR, routing, prompt,
+scorecard, ledger, or runtime behavior was changed for this comparator.
