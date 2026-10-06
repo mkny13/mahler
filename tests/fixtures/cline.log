@@ -1,3 +1,11 @@
+{"type":"agent_event","event":{"type":"iteration_start","iteration":1,"conversationId":"c1","agentId":"a1"}}
 {"type":"agent_event","event":{"type":"content_start","contentType":"reasoning","reasoning":"Let me start by reading"}}
+{"type":"agent_event","event":{"type":"content_start","contentType":"text","text":"chunk"}}
+{"type":"agent_event","event":{"type":"content_start","contentType":"text","text":"chunk2"}}
 {"type":"agent_event","event":{"type":"tool_call","tool":"Bash","command":"ls -la"}}
-{"type":"agent_event","event":{"type":"result","success":true,"output":"Done"}}
+{"type":"agent_event","event":{"type":"iteration_end","iteration":1,"hadToolCalls":true,"toolCallCount":1,"conversationId":"c1","agentId":"a1"}}
+{"type":"agent_event","event":{"type":"iteration_start","iteration":2,"conversationId":"c1","agentId":"a1"}}
+{"type":"agent_event","event":{"type":"iteration_start","iteration":2,"conversationId":"c1","agentId":"a1"}}
+{"type":"agent_event","event":{"type":"tool_call","tool":"Bash","command":"git status"}}
+{"type":"agent_event","event":{"type":"iteration_end","iteration":2,"hadToolCalls":false,"toolCallCount":0}}
+{"type":"run_result","finishReason":"completed","text":"Done","aggregateUsage":{"inputTokens":1200,"outputTokens":300}}

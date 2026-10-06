@@ -1186,7 +1186,12 @@ def read_log(path, kind, model=None):
              'last_text': str, 'model': str|None, 'session_id': str|None,
              'last_error': str|None, 'model_unavailable': bool,
              'tokens': {in, cached, out, reasoning},
-             'cost_usd': float|None, 'credits': float|None, 'quota_used': dict}
+             'cost_usd': float|None, 'credits': float|None, 'quota_used': dict,
+             'requests': int|None, 'request_buckets': {day: {model: n}}|None,
+             'request_coverage': 'complete'|'partial'|None, 'rate_limited': bool|None}
+    Kilo/Cline only: `requests` counts step_start / iteration_start events
+    (None = unknown or unsupported, never a fabricated zero); buckets key by UTC
+    day and observed model, with "unknown" where timestamp/model are absent.
     Missing token usage is represented by None counts, never invented zeros.
     """
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False,
@@ -1195,11 +1200,13 @@ def read_log(path, kind, model=None):
            "last_error": None, "model_unavailable": False,
            "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
            "cost_usd": None, "credits": None, "quota_used": {}}
-    from .run_usage import collect
+    from .run_usage import collect, finish_requests, new_requests, note_request
+    res["_requests"] = new_requests()
     first_quota = {}
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:
+        finish_requests(res, kind, False)
         return res
     handler = _LOG_HANDLERS.get(kind, _read_agy_event)
     texts = []
@@ -1208,12 +1215,16 @@ def read_log(path, kind, model=None):
             try:
                 ev = json.loads(line)
             except ValueError:
+                if line.lstrip().startswith("{"):
+                    res["_requests"]["malformed"] += 1    # truncated JSON event
                 _read_plaintext(res, line, texts)
                 continue
             if not isinstance(ev, dict):
                 continue
             collect(res, ev, kind)
+            note_request(res, ev, kind)
             handler(res, ev, texts, first_quota)
+    finish_requests(res, kind, True)
     return _finish_log(res, texts, kind)
 
 

@@ -115,6 +115,11 @@ CREATE TABLE IF NOT EXISTS runs (
     cost_source TEXT,
     credits     REAL,
     quota_used  TEXT,
+    requests    INTEGER,                 -- kilo/cline model requests; NULL = unknown (mahler#735)
+    request_buckets TEXT,                -- JSON {utc_day: {observed_model: n}}
+    request_coverage TEXT,               -- complete | partial; NULL = unknown
+    rate_limited INTEGER,                -- 1 when an error-path 429 was observed
+    limit_hit   INTEGER,                 -- 1 on a 429, quota or credit limit
     est_mins    REAL,                    -- predicted duration at launch (mahler#59)
     actual_mins REAL,                    -- actual duration on completion (mahler#59)
     started_at  TEXT NOT NULL,
@@ -308,7 +313,9 @@ class Ledger:
                              ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
                              ("cost_usd", "REAL"), ("cost_source", "TEXT"),
                              ("credits", "REAL"), ("quota_used", "TEXT"),
-                             ("burst_lines", "TEXT")):
+                             ("burst_lines", "TEXT"), ("requests", "INTEGER"),
+                             ("request_buckets", "TEXT"), ("request_coverage", "TEXT"),
+                             ("rate_limited", "INTEGER"), ("limit_hit", "INTEGER")):
                 if col not in run_cols:
                     self.con.execute(f"ALTER TABLE runs ADD COLUMN {col} {ddl}")
             if "nudged" not in run_cols:

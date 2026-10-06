@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import tempfile
+from pathlib import Path
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -185,6 +186,20 @@ class RunTests(unittest.TestCase):
         self.assertEqual(row["tokens_reasoning"], 0)
         self.assertAlmostEqual(row["cost_usd"], .0005)
         self.assertEqual(row["cost_source"], "priced")
+
+    def test_finalization_persists_requests_idempotently(self):
+        import shutil
+        shutil.copy(Path(__file__).parent / "fixtures" / "cline.log", self.log)
+        with open(self.log, "a") as fh:
+            fh.write('\n{"type":"error","error":{"statusCode":429,"message":"Too many requests"}}\n')
+        self.finalize()
+        row = self.led.run(self.run_id)
+        self.assertEqual((row["requests"], row["request_coverage"]), (2, "complete"))
+        self.assertEqual((row["rate_limited"], row["limit_hit"]), (1, 1))
+        self.assertEqual(json.loads(row["request_buckets"]), {"unknown": {"unknown": 2}})
+        self.led.update_run(self.run_id, status="running")
+        self.finalize()
+        self.assertEqual(self.led.run(self.run_id)["requests"], 2)
 
     def finalize(self):
         saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
