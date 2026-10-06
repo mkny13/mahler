@@ -496,12 +496,27 @@ class RunTests(unittest.TestCase):
             "summary": "Plan", "files": ["src/a.py"], "steps": ["Fix it"],
             "tests": "python3 -m unittest",
         }}
+        malformed_payloads = [
+            {"head": head, "disposition": "fix", "plan": plan}
+            for plan in (None, 1, "plan", [], [{}])
+        ] + [
+            {"head": head, "disposition": "followups", "rationale": "Internal surface",
+             "followups": [{"finding": "Copy issue", "category": category,
+                            "reason": "Minor concern"}]}
+            for category in ([], {}, None, 1)
+        ]
+        for malformed in malformed_payloads:
+            with self.subTest(payload=malformed):
+                self.assertIsNone(finalize._design_payload(json.dumps(malformed)))
         for output, current_head in (
                 (f"STATUS: DESIGNED {json.dumps(payload)}", "b" * 40),
                 ("STATUS: DESIGNED {malformed", head),
-                ("review stopped before producing a result", head)):
+                ("review stopped before producing a result", head),
+                *((f"STATUS: DESIGNED {json.dumps(value)}", head)
+                  for value in malformed_payloads)):
             with self.subTest(current_head=current_head, output=output):
                 self._design_run(output, current_head)
+                self.led.update_run(self.run_id, ended_at=None)
                 self.led.release("x", 5)
                 lease, _ = self.led.claim("x", 5, f"run:{self.run_id}", "auto", 30)
                 self.run["epoch"] = lease["epoch"]
@@ -515,6 +530,8 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(self.led.item("x", 5)["attempts"], 2)
                 self.assertIsNone(self.led.get_kv(
                     finalize._design_record_key("x", 5, 88, head)))
+                self.assertIsNotNone(self.led.run(self.run_id)["ended_at"])
+                self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
                 snapshot.assert_not_called()
 
     def test_followup_disposition_cannot_demote_safety_or_done_when(self):
