@@ -1960,9 +1960,9 @@ whether to act on the report.
 Decided 2026-10-06 (mahler#743, contract in mahler#753). Mahler sees practices
 across projects, but green CI can mean no tests at all. A global
 `practices-audit` pass will expose these gaps without silently standardizing
-repositories. This decision and configuration are the prerequisite; scanning
-and filing ship in #754, cadence/tick integration and the first baseline in
-#755. They do not change D18 merge behavior in this contract change.
+repositories. The read-only scanner and proposal engine ship in #754;
+cadence/tick integration and the first baseline remain in #755. They do not
+change D18 merge behavior.
 
 **Finite scope and checklist.** The runtime inventory is exactly
 `config.enabled_projects(cfg)`, using each project's configured repository and
@@ -1997,6 +1997,15 @@ candidates, never clean compliance claims. Secret evidence contains only path,
 line, detector ID and redacted context, never candidate values in reports,
 issues, logs or errors. Checks are cheap, deterministic and standard-library;
 model judgments about test quality or spreading practices are deferred.
+
+`mahler.practices_audit.scan` reads that configured inventory;
+`scan_project` provides the six-result mechanical check for one policy and
+GitHub client. Literal PR workflow commands and referenced package/shell
+scripts supply CI evidence. Conditional, dynamic, reusable or otherwise
+unresolved execution is unknown; arbitrary Python runner control flow is not
+inferred. The tracked-text scan skips binary, unreadable and over-2-MB files
+with explicit unknown evidence. Instruction pointers are local, cycle-bounded
+and cannot escape the configured repository.
 
 **Global cadence, one anchor.** `config.practices_audit_policy` supplies complete,
 independent defaults even for a minimal config: `enabled = true`, `project =
@@ -2037,6 +2046,12 @@ and evidence without automatically reopening it. A repeated or recurring gap
 must not create another issue. Multiple evidence locations for one check stay
 in that single proposal. Failed/incomplete issue lookup must not be interpreted
 as absence. GitHub markers preserve reuse across restarts and partial retries.
+
+`file_audit` creates the anchor report before proposals and returns its URL,
+proposal links and filing errors. A caller resuming partial filing supplies
+`report_url`; it must persist that identity and retry errors as part of the
+#755 scheduling work. Closed proposals receive current evidence as a comment
+without reopening. Failed marker lookup never creates a replacement issue.
 
 Reset the D20 checkpoint only after the anchor report is successfully filed;
 failed report creation and dry runs leave it unchanged. Persist the report

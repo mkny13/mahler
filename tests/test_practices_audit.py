@@ -134,6 +134,18 @@ class TestPracticesAudit(unittest.TestCase):
             "python3 -m unittest discover -s tests", "echo pytest"))
         self.assertEqual(self.results()["ci-tests"].state, "gap")
 
+    def test_comments_help_and_setup_are_not_test_evidence(self):
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "pull_request:", "push: # pull_request"))
+        self.assertEqual(self.results()["ci-tests"].state, "gap")
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "- run: python3 -m unittest discover -s tests",
+            "- run: npm ci\n      - run: pytest --help"))
+        self.assertEqual(self.results()["ci-tests"].state, "gap")
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "- run: python3", "- run: npm ci\n      - run: python3"))
+        self.assertEqual(self.results()["ci-tests"].state, "pass")
+
     def test_no_workflow_and_push_only(self):
         (self.root / ".github/workflows/ci.yml").unlink()
         self.assertEqual(self.results()["ci-tests"].state, "gap")
@@ -168,6 +180,10 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
             "python3 -m unittest discover -s tests", "./missing.sh"))
         self.assertEqual(self.results()["ci-tests"].state, "unknown")
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "python3 -m unittest discover -s tests", "python3 fake.py"))
+        self.write("fake.py", "# unittest.main() is not execution evidence\n")
+        self.assertEqual(self.results()["ci-tests"].state, "unknown")
 
     def test_identical_and_pointer_instructions_pass(self):
         for pointer in ("See AGENTS.md\n", "@AGENTS.md\n", "Read [instructions](AGENTS.md).\n"):
@@ -188,6 +204,8 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(self.results()["mahler-guidance"].state, "pass")
         self.write("docs/canonical.md", "See ../AGENTS.md\n")
         self.assertEqual(self.results()["mahler-guidance"].state, "unknown")
+        self.write("AGENTS.md", "See missing.md\n")
+        self.assertEqual(self.results()["agent-instructions"].state, "unknown")
 
     def test_stale_project_guidance_and_conductor_contract_fail(self):
         self.write("AGENTS.md", GUIDANCE.replace("demo#", "old#").replace(
@@ -318,6 +336,19 @@ class TestPracticesAudit(unittest.TestCase):
             audit.file_audit(self.cfg(), (audit.scan_project(self.pol, self.gh),), lambda _: self.gh)
         self.assertFalse(self.gh.comments)
         self.assertFalse(any(call[0] == "lookup" for call in self.gh.calls))
+
+    def test_report_update_failure_retains_identity_for_retry(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        result = audit.scan_project(self.pol, self.gh)
+        with patch.object(self.gh, "edit_issue_body", side_effect=GHError("offline")):
+            first = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        self.assertTrue(first.report_url)
+        self.assertIn("anchor report update failed; retry required", first.errors)
+        second = audit.file_audit(self.cfg(), (result,), lambda _: self.gh,
+                                  report_url=first.report_url)
+        self.assertEqual(second.proposals, first.proposals)
+        self.assertFalse(second.errors)
+        self.assertEqual(len(self.gh.issues), 2)
 
     def test_missing_anchor_and_disabled_inventory(self):
         cfg = self.cfg()

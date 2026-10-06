@@ -107,8 +107,11 @@ def _instructions(tree, project):
         source, agents = _effective(tree, "AGENTS.md")
         evidence.append(f"AGENTS.md resolves to {source}")
     except FileNotFoundError:
-        return (_finding("agent-instructions", "gap", "AGENTS.md is missing.", ["AGENTS.md"]),
-                _finding("mahler-guidance", "gap", "No effective AGENTS.md guidance.", ["AGENTS.md"]))
+        exists = (tree.root / "AGENTS.md").exists()
+        state = "unknown" if exists else "gap"
+        reason = "AGENTS.md pointer target is missing." if exists else "AGENTS.md is missing."
+        return tuple(_finding(check, state, reason, ["AGENTS.md"])
+                     for check in ("agent-instructions", "mahler-guidance"))
     except (OSError, UnicodeError):
         return tuple(_finding(c, "unknown", "Instruction source cannot be read or resolved.",
                               ["AGENTS.md"]) for c in ("agent-instructions", "mahler-guidance"))
@@ -160,6 +163,8 @@ def _is_test(command):
     w = _words(command)
     if not w:
         return False
+    if any(x in w for x in ("--help", "-h", "--version", "--collect-only", "--dry-run", "-n")):
+        return False
     return bool(
         w[0] in ("pytest", "nosetests", "jest", "vitest", "mocha")
         or w[:3] in (["python", "-m", "unittest"], ["python", "-m", "pytest"])
@@ -183,6 +188,8 @@ def _expand(tree, command, seen=()):
     script = None
     nested = None
     if words[0] in ("npm", "pnpm", "yarn"):
+        if words[1:2] in (["ci"], ["install"]):
+            return rows, False
         key = words[2] if len(words) > 2 and words[1] == "run" else (
             words[1] if len(words) > 1 else "")
         try:
@@ -205,10 +212,7 @@ def _expand(tree, command, seen=()):
     except (OSError, UnicodeError):
         return rows, True
     if script.endswith(".py"):
-        # Imports alone do not prove the runner executes tests.
-        if re.search(r"\bunittest\.main\s*\(", text):
-            rows.append(("python -m unittest", f"{script}: unittest.main()"))
-            return rows, False
+        # Arbitrary Python control flow cannot prove a test runner is executed.
         return rows, True
     uncertain = bool(re.search(r"(?m)^\s*(?:if|for|while|case)\b", text))
     for number, line in enumerate(text.splitlines(), 1):
@@ -222,10 +226,29 @@ def _expand(tree, command, seen=()):
     return rows, uncertain
 
 
+def _yaml_line(line):
+    quote = None
+    escaped = False
+    for i, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == "#" and (i == 0 or line[i - 1].isspace()):
+            return line[:i]
+    return line
+
+
 def _workflow(tree, path):
     """Extract literal PR workflow run steps and static job names, not YAML names."""
     text = tree.read(path)
-    lines = text.splitlines()
+    lines = [_yaml_line(line) for line in text.splitlines()]
+    text = "\n".join(lines)
     trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", text)
     if not trigger:
         return [], True, []
