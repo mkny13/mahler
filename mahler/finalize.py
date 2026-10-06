@@ -268,16 +268,31 @@ def _repeated_no_work(e):
                   "Automatic retries paused pending independent verification.")
         e.set_state("parked", reason)
         if not record["surfaced"]:
-            e.defer(e.ctx.gh(e.project).comment, e.number,
-                    "<!-- mahler:agent -->\n**Repeated no-work DONE — parked**\n\n"
-                    + reason + f"\n\nBase: `{e.no_work_base}`. "
-                    + f"Runs: {', '.join(map(str, record['runs']))}."
-                    + f"\n\nExplanation: {signature[1]}")
-            e.ping(f"No-work builds paused — {e.project} #{e.number}", reason,
-                   priority="low")
-            record["surfaced"] = True
+            e.defer(_surface_no_work, e, key, record, reason)
     e.led.set_kv(key, json.dumps(record))
     return repeated
+
+
+def _surface_no_work(e, key, record, reason):
+    """A failed delivery leaves finalization pending; retry only unsent steps."""
+    if not record.get("commented"):
+        gh = e.ctx.gh(e.project)
+        marker = f"<!-- mahler:no-work-done run={record['runs'][1]} -->"
+        # A failed response may still have submitted the comment. Recover its
+        # receipt before posting again, including after a daemon restart.
+        if not any(marker in comment["body"] for comment in gh.issue_comments(e.number)):
+            gh.comment(e.number,
+                       "<!-- mahler:agent -->\n" + marker
+                       + "\n**Repeated no-work DONE — parked**\n\n"
+                       + reason + f"\n\nBase: `{record['signature'][0]}`. "
+                       + f"Runs: {', '.join(map(str, record['runs']))}."
+                       + f"\n\nExplanation: {record['signature'][1]}")
+        record["commented"] = True
+        e.led.set_kv(key, json.dumps(record))
+    e.ctx.ping(f"No-work builds paused — {e.project} #{e.number}", reason,
+               e.project, e.number, priority="low")
+    record["surfaced"] = True
+    e.led.set_kv(key, json.dumps(record))
 
 
 def _ended_done(e):

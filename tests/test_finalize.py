@@ -195,11 +195,11 @@ class RunTests(unittest.TestCase):
         return snap, rm
 
     def no_work_done(self, base="base-sha", explanation="already implemented",
-                     saved=None, snapshot_error=None, probe_error=None):
+                     saved=None, snapshot_error=None, probe_error=None, ping_error=None):
         with open(self.log, "w") as stream:
             stream.write("STATUS: DONE " + explanation + "\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(self.ctx, "ping", side_effect=ping_error) as ping, \
                 mock.patch.object(runner, "snapshot", return_value=saved,
                                   side_effect=snapshot_error), \
                 mock.patch.object(runner, "no_work_base", return_value=base,
@@ -253,6 +253,57 @@ class RunTests(unittest.TestCase):
         ping.assert_not_called()
         self.assertEqual(len([c for c in self.gh.comments
                               if "**Repeated no-work DONE" in c]), 1)
+
+    def test_no_work_guard_retries_failed_comment_without_duplicate_delivery(self):
+        for submitted in (False, True):
+            with self.subTest(submitted=submitted):
+                self.led.set_kv("no_work_done:x#5", None)
+                self.gh.comments.clear()
+                self.no_work_done()
+                self.next_no_work_run()
+                post = self.gh.comment
+
+                def fail_guard(number, body):
+                    if "**Repeated no-work DONE" in body:
+                        if submitted:
+                            post(number, body)
+                        raise gh_module.GHError("temporary GitHub failure")
+                    post(number, body)
+
+                with mock.patch.object(self.gh, "comment", side_effect=fail_guard):
+                    with self.assertRaises(gh_module.GHError):
+                        self.no_work_done()
+                record = json.loads(self.led.get_kv("no_work_done:x#5"))
+                self.assertFalse(record["surfaced"])
+                self.assertEqual(len(record["runs"]), 2)
+                self.assertEqual(self.led.item("x", 5)["state"], "parked")
+                self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("x")]), [])
+                self.assertEqual(self.led.run(self.run["id"])["status"], "running")
+                self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+                ping, _, _ = self.no_work_done()
+                ping.assert_called_once()
+                self.assertTrue(json.loads(self.led.get_kv("no_work_done:x#5"))["surfaced"])
+                self.assertEqual(self.led.run(self.run["id"])["status"], "ended")
+                ping, _, _ = self.no_work_done()
+                ping.assert_not_called()
+                self.assertEqual(len([c for c in self.gh.comments
+                                      if "**Repeated no-work DONE" in c]), 1)
+                self.next_no_work_run()
+
+    def test_no_work_guard_keeps_comment_receipt_when_ping_raises(self):
+        self.no_work_done()
+        self.next_no_work_run()
+        with self.assertRaises(RuntimeError):
+            self.no_work_done(ping_error=RuntimeError("interrupted"))
+        record = json.loads(self.led.get_kv("no_work_done:x#5"))
+        self.assertTrue(record["commented"])
+        self.assertFalse(record["surfaced"])
+        ping, _, _ = self.no_work_done()
+        ping.assert_called_once()
+        self.assertEqual(len([c for c in self.gh.comments
+                              if "**Repeated no-work DONE" in c]), 1)
+        ping, _, _ = self.no_work_done()
+        ping.assert_not_called()
 
     def test_changed_no_work_evidence_starts_new_signature(self):
         self.no_work_done()
