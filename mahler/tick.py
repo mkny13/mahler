@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import config, launch_health, platforms, presence, prompt, router, runner
+from . import capacity, config, launch_health, platforms, presence, prompt, router, runner
 from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
@@ -257,6 +257,19 @@ def expire(ctx):
     sweep_orphans(ctx)
 
 
+def _size_label(it):
+    return next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
+                 if l.startswith("size:")), None)
+
+
+def _observe(ctx, p, role, it, *blockers, **kw):
+    """Record one waiting candidate for the capacity history (mahler#734)."""
+    routing_role = ("plan" if role == "sort" and needs_plan(row_get(it, "labels", "[]"))
+                    else role)
+    capacity.of(ctx).observe(p["name"], it["number"], role, blockers=blockers,
+                             routing_role=routing_role, size=_size_label(it), **kw)
+
+
 def _candidates(ctx, projects):
     """One global candidate list of (pol, role, item) across all enabled
     projects — sorts and settled builds compete for the same slots (mahler#9)."""
@@ -279,11 +292,13 @@ def _candidates(ctx, projects):
             if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):
                 ctx.hold("settling", project=name, number=it["number"],
                          until=iso(sorted_at + timedelta(minutes=p["settle_minutes"])))
+                _observe(ctx, p, "build", it, "settling")
                 continue
             deps = [d for d in json.loads(it["depends"] or "[]")
                     if dependency_target(d, name, enabled) not in done]
             if deps:
                 ctx.hold("deps", project=name, number=it["number"], on=deps)
+                _observe(ctx, p, "build", it, "deps")
                 continue
             work.append((p, "build", it))
     return work
@@ -474,6 +489,7 @@ def _check_eligible(ctx, p, role, it, st):
             ctx.say(f"{name}: at capacity ({detail})")
             ctx.hold("capacity", project=name, max_parallel=p["max_parallel"],
                      holders=holders)
+        _observe(ctx, p, role, it, "project_slots")
         return False, None, []
     if role == "build" and st["in_project"].get(name, 0) + st["in_flight"][name] >= p["max_parallel"]:
         if name not in st["said"]:
@@ -482,6 +498,7 @@ def _check_eligible(ctx, p, role, it, st):
                     "not merged yet")
             ctx.hold("slot", project=name, verifying=[
                 v["number"] for v in led.items(name, ["verifying"])])
+        _observe(ctx, p, role, it, "in_flight")
         return False, None, []
     # Hot hold (D6 layer 2): no new *code-writing* starts while an
     # untracked Claude session is active in the project — running work
@@ -492,11 +509,13 @@ def _check_eligible(ctx, p, role, it, st):
     if role == "build" and st["hot"][name]:
         ctx.say(f"{name}#{n}: hot hold — a Claude session is active in this project")
         ctx.hold("hot_hold", project=name, number=n)
+        _observe(ctx, p, role, it, "hot_hold")
         return False, None, []
     area = area_of(row_get(it, "labels", "[]")) if role in ("build", "fix") else None
     if area and area in st["busy_areas"][name]:
         ctx.say(f"{name}#{n}: waiting — area:{area} already in progress")
         ctx.hold("area", project=name, number=n, area=area)
+        _observe(ctx, p, role, it, "area")
         return False, None, []
     item_files = files_of(row_get(it, "files", "[]")) if role in ("build", "fix") else []
     file_overlap = st["busy_files"][name].intersection(item_files)
@@ -504,6 +523,7 @@ def _check_eligible(ctx, p, role, it, st):
         ctx.say(f"{name}#{n}: waiting — files already in progress: "
                 f"{', '.join(sorted(file_overlap))}")
         ctx.hold("files", project=name, number=n, files=sorted(file_overlap))
+        _observe(ctx, p, role, it, "files")
         return False, None, []
     if led.lease(name, n):
         return False, None, []
@@ -511,26 +531,41 @@ def _check_eligible(ctx, p, role, it, st):
     if remote_error:
         ctx.say(f"{name}: canonical lease host unavailable — project skipped this tick")
         ctx.hold("lease_host", project=name)
+        _observe(ctx, p, role, it, "lease_host")
         return False, None, []
     return True, area, item_files
 
 
-def _route(ctx, p, role, it, st):
-    """Routing decision: returns (platform, explore, effective_size) or
-    (None, False, None) when no platform is available."""
-    cfg, led, name, n = ctx.cfg, ctx.led, p["name"], it["number"]
-    size = next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
-                 if l.startswith("size:")), None)
+def _route_inputs(it, role):
+    """-> (routing_role, pin, effective_min_tier, effective_size) for one candidate."""
+    size = _size_label(it)
     routing_role = "plan" if (role == "sort" and needs_plan(row_get(it, "labels", "[]"))) else role
     pin = it["pin"] if role in ("build", "fix", "sort") else None
-
     effective_min_tier = (max(row_get(it, "esc_tier", 0),
                               router.risk_min_tier(row_get(it, "title", "")))
                           if role in ("build", "fix") else 0)
     effective_size = size
     if role in ("build", "fix") and effective_min_tier >= 2 and effective_size == "s":
         effective_size = "m"
+    return routing_role, pin, effective_min_tier, effective_size
 
+
+def _diagnose(ctx, p, role, it, st):
+    """Read-only per-platform eligibility, or None if the diagnosis itself failed."""
+    routing_role, pin, min_tier, size = _route_inputs(it, role)
+    try:
+        return router.diagnose(ctx.cfg, ctx.led, p, routing_role, pin, st["busy"], size=size,
+                               burst_lines=st["burst_lines"], min_tier=min_tier)
+    except Exception as e:                       # noqa: BLE001 — telemetry only
+        ctx.say(f"{p['name']}#{it['number']}: capacity diagnosis failed — {e}")
+        return None
+
+
+def _route(ctx, p, role, it, st):
+    """Routing decision: returns (platform, explore, effective_size) or
+    (None, False, None) when no platform is available."""
+    cfg, led, name, n = ctx.cfg, ctx.led, p["name"], it["number"]
+    routing_role, pin, effective_min_tier, effective_size = _route_inputs(it, role)
     # D26: route within the project's declared accounts: fallback
     # order, equal round-robin, or an explicit cross-account priority.
     platform = router.explore_for_project(
@@ -546,6 +581,9 @@ def _route(ctx, p, role, it, st):
             cfg, led, p, routing_role, pin, st["busy"], size=effective_size,
             scorecard_rows=getattr(ctx, "scorecard_rows", None),
             burst_lines=st["burst_lines"], min_tier=effective_min_tier)
+    _observe(ctx, p, role, it, *(() if platform else ("no_platform",)),
+             diag=_diagnose(ctx, p, role, it, st), effective_size=effective_size,
+             required_tier=effective_min_tier)
     if not platform:
         ctx.hold("no_platform", project=name, number=n, role=routing_role,
                  size=effective_size or "m", blockers=router.reason_groups(reasons))
@@ -593,12 +631,14 @@ def schedule(ctx, projects):
     _order_candidates(ctx, work, st, projects)
 
     st["said"] = set()       # projects already told they're at capacity
+    candidates = list(work)
     while work and st["total"] < cfg["concurrency"]["total"]:
         started = set()      # projects that took a slot this pass
         for cand in list(work):
             p, role, it = cand
             name, n = p["name"], it["number"]
             if not launch_health.allowed(ctx, name, n):
+                _observe(ctx, p, role, it, "launch_breaker")
                 work.remove(cand)
                 continue
             if name in started:
@@ -617,9 +657,18 @@ def schedule(ctx, projects):
                 ctx.say(f"{name}#{n}: would {role} on {platform}")
             elif not start(ctx, name, it, role, platform, size=effective_size,
                            **({"explore": True} if explore else {})):
+                capacity.of(ctx).add_blocker(name, n, role, "start_failed",
+                                             unknown_platform=platform)
                 continue
             _account_start(cfg, platform, name, area, item_files, st)
             started.add(name)
+    if st["total"] >= cfg["concurrency"]["total"]:
+        # The global ceiling stopped the loop: still record who was waiting on it.
+        for p, role, it in candidates:
+            name, n = p["name"], it["number"]
+            if capacity.of(ctx).seen(name, n, role) or ctx.led.lease(name, n):
+                continue
+            _observe(ctx, p, role, it, "global_slots", diag=_diagnose(ctx, p, role, it, st))
 
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
@@ -689,6 +738,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     led.update_run(run_id, epoch=lease["epoch"], **meta)
     led.event("run_start", project, n, {"run": run_id, "role": role, "platform": platform})
     launch_health.succeeded(ctx, project, run_id)
+    capacity.of(ctx).launched(project, n, role, run_id, platform)
     ctx.say(f"{project}#{n}: started {role} on {platform} (run {run_id})")
     if role == "build":
         led.set_state(project, n, "working", f"{platform} run {run_id}")

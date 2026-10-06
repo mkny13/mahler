@@ -672,6 +672,82 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     return None, reasons
 
 
+def _hold_active(led, name):
+    hold = led.usage(name).get(HOLD)
+    until = _ts(hold.get("resets_at")) if hold else None
+    return bool(until and until > led.now())
+
+
+def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None,
+             min_tier=0, exclude=()):
+    """Read-only per-platform eligibility for one candidate (mahler#734).
+
+    -> {platform: [code, ...]} over every configured platform; ["eligible"]
+    when nothing blocks it, else every blocker that applies (they are not
+    short-circuited like `pick`). Codes: disabled, unavailable, account, pin,
+    route, excluded, slots_busy, tier, size, peak, quota, no_credit, hold,
+    unknown (stale or unreadable usage — never counted as quota). It mirrors
+    `pick`'s gates but never starts exploration, advances routing state or
+    probes a platform.
+    """
+    accts = accounts_of(pol)
+    route = set()
+    if account_mode_of(pol) == "priority":
+        route.update(candidates_for_priority(cfg, role, accts, pol.get("routing") or {}))
+    else:
+        for account in accts:
+            route.update(candidates(cfg, role, account=account))
+    peak_active, _ = peak_state(cfg, led)
+    excluded_slots = {platform_slot(cfg, name) for name in exclude}
+    from . import platforms
+    out = {}
+    for name, pconf in cfg["platforms"].items():
+        why = []
+        if not pconf.get("enabled"):
+            why.append("disabled")
+        else:
+            try:
+                if not platforms.available(pconf):
+                    why.append("unavailable")
+            except Exception:                              # noqa: BLE001 — diagnostic only
+                why.append("unavailable")
+        if account_of(pconf) not in accts:
+            why.append("account")
+        elif pin and name != pin:
+            why.append("pin")
+        elif name not in route and name != pin:
+            why.append("route")
+        if platform_slot(cfg, name) in excluded_slots:
+            why.append("excluded")
+        if name in busy and "unavailable" not in why:
+            why.append("slots_busy")
+        is_pin = pin == name
+        if min_tier and not is_pin and role in ("build", "fix") and tier_of(pconf) < min_tier:
+            why.append("tier")
+        limit = pconf.get("max_size")
+        rank = SIZES.get(size or "m", 2)
+        if not is_pin:
+            if role == "sort":
+                if size and limit and SIZES.get(size, 2) > SIZES[limit]:
+                    why.append("size")
+            elif role not in ("plan", "review"):
+                min_limit = pconf.get("min_size")
+                if (limit and rank > SIZES[limit]) or (min_limit and rank < SIZES[min_limit]):
+                    why.append("size")
+            if peak_active and pconf.get("kind") == "claude":
+                why.append("peak")
+        claude_lines = burst_lines if pconf.get("kind") == "claude" else None
+        state, _ = usage_state(led, name, pconf, burst_lines=claude_lines)
+        if state == "no_credit":
+            why.append("no_credit")
+        elif state in ("soft", "hard"):
+            why.append("hold" if _hold_active(led, name) else "quota")
+        elif state == "stale":
+            why.append("unknown")
+        out[name] = why or ["eligible"]
+    return out
+
+
 def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
                       burst_lines=None, min_tier=0, exclude=(), scorecard_rows=None):
     """Route within a project's declared accounts (DESIGN D26).

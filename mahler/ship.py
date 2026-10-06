@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, review, router, runner
+from . import capacity, config, failures, review, router, runner
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -718,6 +718,7 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
                    capacity, required_tier=None):
     """Persist a retryable wait; only configuration or unknown backstop escalates."""
     led, n = ctx.led, item["number"]
+    _observe_wait(ctx, project, item, role, required_tier)
     if role == "fix":
         led.release(project, n, holder=CONDUCTOR)
     previous = _kv_json(led, status_key)
@@ -745,6 +746,30 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
     _mark_capacity_wait(led, project, led.item(project, n), role)
     ctx.ping(f"{role.capitalize()} {state.replace('_', ' ')} — {project} #{n}", question,
              project, n, priority="high", tags="warning")
+
+
+def _observe_wait(ctx, project, item, role, required_tier):
+    """Record a persisted fix/review wait for the capacity history (mahler#734):
+    read-only, never forces a retry and never blocks the wait itself."""
+    try:
+        cfg, led = ctx.cfg, ctx.led
+        pol = ctx.policy(project)
+        busy = busy_platforms(cfg, led.active_runs())
+        size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                     if l.startswith("size:")), None)
+        pin, exclude, tier = item["pin"], (), required_tier or 0
+        if role == "review":
+            pin, size, exclude = _review_route(ctx, project, item, "")
+            tier = 0
+        elif size == "l" or (tier >= 2 and size == "s"):
+            size = "m"
+        diag = router.diagnose(cfg, led, pol, role, pin, busy, size=size,
+                               burst_lines=ctx.burst_lines, min_tier=tier, exclude=exclude)
+        capacity.of(ctx).observe(project, item["number"], role, blockers=["shipping_wait"],
+                                 diag=diag, routing_role=role, size=size,
+                                 effective_size=size, required_tier=tier)
+    except Exception as e:                      # noqa: BLE001 — telemetry only
+        ctx.say(f"{project}#{item['number']}: capacity diagnosis failed — {e}")
 
 
 def _fix_wait(ctx, project, item, key, reason, *, required_tier=None, capacity=None):
