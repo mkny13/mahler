@@ -139,6 +139,21 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
+    def test_capture_after_acceptable_ci_before_review_even_low_risk(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["type:chore", "size:s"]')
+        for rollup, expected in [([{"state": "SUCCESS"}], ["capture", "review"]),
+                                 ([], ["capture", "review"]),
+                                 ([{"state": "PENDING"}], []),
+                                 ([{"state": "FAILURE"}], [])]:
+            with self.subTest(rollup=rollup):
+                self.gh.rollup = rollup
+                calls = []
+                with mock.patch.object(ship.screenshots, "capture", side_effect=lambda *a: calls.append("capture")), \
+                        mock.patch.object(ship, "_review_gate", side_effect=lambda *a: calls.append("review")), \
+                        mock.patch.object(ship, "_red_ci"):
+                    self.ship()
+                self.assertEqual(calls, expected)
+
     # ---------- opening the PR ----------
 
     def test_pushes_the_branch_and_opens_the_pr(self):

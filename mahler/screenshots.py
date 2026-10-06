@@ -1,4 +1,4 @@
-"""Bounded, local screenshot artifacts (D11). No capture or publication here.
+"""Bounded, local screenshot artifacts (D11). Advisory capture before review; no publication here.
 
 Callers supply the exact PR head, catch InvalidScreenshot/OSError as advisory
 failures, and keep lifecycle state (including any later merge SHA) in ledger KV.
@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import shutil
 import stat
+import signal
+import subprocess
 import tempfile
 
 from . import config
@@ -187,3 +189,95 @@ def lookup(project, pr, sha, *, root=None):
     except FileNotFoundError:
         return None
     return target, manifest
+
+
+def _command(command, cwd, env, timeout):
+    """No output is retained. Kill the entire session, including browser children."""
+    with subprocess.Popen(command, shell=True, cwd=cwd, env=env,
+                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, start_new_session=True) as proc:
+        try:
+            return proc.wait(timeout=timeout)
+        finally:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+
+
+def _worktree(led, project, number, sha):
+    runs = led.con.execute(
+        "SELECT worktree FROM runs WHERE project=? AND number=? "
+        "AND role IN ('build','fix') ORDER BY id DESC", (project, number))
+    for run in runs:
+        path = run["worktree"]
+        if not path or not Path(path).is_dir():
+            continue
+        result = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout.strip() == sha:
+            return path
+    return None
+
+
+def capture(ctx, project, item, pr, view):
+    """At most one advisory attempt per head, including across conductor restarts.
+
+    Persist before any external work. An interrupted attempt is terminal unavailable;
+    errors (including ledger failures) must never bypass the normal shipping gates.
+    Only fixed reason codes leave this boundary, never exception/command/URL text.
+    """
+    policy = ctx.policy(project)
+    if not policy.get("screenshot") or ctx.dry_run:
+        return
+    sha = view.get("headRefOid") or ""
+    key = f"screenshot:{project}:{pr}:{sha}"
+    result = {"sha": sha, "pr": pr, "state": "unavailable", "reason": "interrupted"}
+    try:
+        _key(project, pr, sha)
+        previous = ctx.led.get_kv(key)
+        if previous:
+            return
+        # This is already a terminal unavailable result if the process dies here.
+        ctx.led.set_kv(key, json.dumps(result))
+        environment = policy.get("screenshot_environment", "")
+        result["reason"] = "preview_unavailable"
+        url = ctx.gh(project).screenshot_preview(sha, environment) if environment else None
+        if url:
+            result["reason"] = "checkout_unavailable"
+            cwd = _worktree(ctx.led, project, item["number"], sha)
+            if cwd:
+                with tempfile.TemporaryDirectory(prefix="mahler-screenshot-output-") as output, \
+                        tempfile.TemporaryDirectory(prefix="mahler-screenshot-profile-") as profile:
+                    env = dict(os.environ, MAHLER_SCREENSHOT_URL=url,
+                               MAHLER_SCREENSHOT_DIR=output,
+                               MAHLER_SCREENSHOT_PROFILE_DIR=profile,
+                               MAHLER_SCREENSHOT_SHA=sha, MAHLER_SCREENSHOT_PR=str(pr))
+                    result.update(state="failed", reason="command_failed")
+                    code = _command(policy["screenshot"], cwd, env,
+                                    policy.get("screenshot_timeout_seconds", 45))
+                    if code in (126, 127):
+                        result.update(state="unavailable", reason="command_unavailable")
+                    elif code == 0:
+                        result["reason"] = "invalid_output"
+                        read_manifest(output, sha)
+                        result["reason"] = "head_lookup_failed"
+                        if ctx.gh(project).pr_view(pr).get("headRefOid") != sha:
+                            result.update(state="unavailable", reason="head_changed")
+                        else:
+                            result["reason"] = "storage_failed"
+                            store(output, project, pr, sha)
+                            result.update(state="success", reason="captured")
+        ctx.led.set_kv(key, json.dumps(result))
+    except subprocess.TimeoutExpired:
+        result.update(state="failed", reason="timeout")
+    except Exception:
+        # Advisory boundary: do not leak signed URLs, routes or raw exceptions.
+        pass
+    try:
+        ctx.led.set_kv(key, json.dumps(result))
+        ctx.led.event("screenshot", project, item["number"], result)
+        ctx.say(f"{project} PR #{pr}: screenshots {result['state']} ({result['reason']})")
+    except Exception:
+        pass

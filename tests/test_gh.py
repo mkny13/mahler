@@ -8,6 +8,41 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_screenshot_preview_filters_and_newest_status(self):
+        sha = 'a' * 40
+        deployment = {"id": 1, "sha": sha, "environment": "Preview",
+                      "production_environment": False}
+        for changes in ({"sha": "wrong"}, {"environment": "Production"},
+                        {"production_environment": True}):
+            self.gh._gh.reset_mock()
+            self.gh._gh.return_value = json.dumps([{**deployment, **changes}])
+            self.assertIsNone(self.gh.screenshot_preview(sha, "Preview"))
+            self.assertEqual(self.gh._gh.call_count, 1)
+        for status in ([], [{"state": "pending"}],
+                       [{"state": "success", "log_url": "https://example.com"}],
+                       [{"state": "success", "environment_url": "https://user:pass@example.com"}],
+                       [{"state": "success", "environment_url": "http://example.com"}]):
+            self.gh._gh.side_effect = [json.dumps([deployment]), json.dumps(status)]
+            self.assertIsNone(self.gh.screenshot_preview(sha, "Preview"))
+        self.gh._gh.side_effect = [json.dumps([{**deployment, "id": 2}, deployment]),
+                                 json.dumps([{"state": "pending"}]),
+                                 json.dumps([{"state": "success", "environment_url": "https://preview.example"}])]
+        self.assertEqual(self.gh.screenshot_preview(sha, "Preview"), "https://preview.example")
+        self.assertIn("per_page=1", self.gh._gh.call_args.args[-1])
+        self.gh._gh.reset_mock()
+        self.assertIsNone(self.gh.screenshot_preview(sha, "pRoDuCtIoN"))
+        self.gh._gh.assert_not_called()
+
+    def test_screenshot_discovery_bound_and_exact_query(self):
+        sha = 'a' * 40
+        deployments = [{"id": i, "sha": sha, "environment": "Preview",
+                        "production_environment": False} for i in range(30)]
+        self.gh._gh.side_effect = [json.dumps(deployments)] + ['[]'] * 20
+        self.assertIsNone(self.gh.screenshot_preview(sha, "Preview"))
+        self.assertEqual(self.gh._gh.call_count, 21)
+        query = self.gh._gh.call_args_list[0].args[-1]
+        self.assertIn(f"sha={sha}&environment=Preview&per_page=20", query)
+
     def test_shipped_label_replaces_closed_issue_state_and_exists_on_old_repos(self):
         self.gh._gh.return_value = json.dumps({"labels": [
             {"name": "mahler:verifying"}, {"name": "type:feature"}]})
