@@ -1,5 +1,6 @@
 import copy
 import json
+import shlex
 import subprocess
 import tempfile
 import unittest
@@ -314,6 +315,28 @@ class TestPracticesAudit(unittest.TestCase):
                 self.assertEqual(self.gh.issues[proposal]["state"], state)
                 self.assertIn(first.report_url, self.gh.comments[-1][1])
         self.assertIn(proposal, self.gh.issues[first.report_url]["body"])
+
+    def test_proposal_acceptance_scans_current_worktree(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        result = audit.scan_project(self.pol, self.gh)
+        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        body = self.gh.issues[filing.proposals["demo/agent-instructions"]]["body"]
+        command = body.split("```sh\n", 1)[1].split("\n```", 1)[0]
+        executable, flag, code = shlex.split(command)
+        self.assertEqual((executable, flag), ("python3", "-c"))
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            (root / "AGENTS.md").write_text(GUIDANCE)
+            (root / "CLAUDE.md").write_text("Diverged\n")
+            with patch("pathlib.Path.cwd", return_value=root), \
+                    patch("mahler.gh.GH", return_value=self.gh) as client, \
+                    patch("builtins.print"):
+                with self.assertRaises(AssertionError):
+                    exec(code, {})
+                (root / "CLAUDE.md").write_text("See AGENTS.md\n")
+                exec(code, {})
+                client.assert_called_with(self.pol["repo"])
+        self.assertEqual(self.results()["agent-instructions"].state, "gap")
 
     def test_lookup_failure_never_creates_duplicate_and_other_projects_proceed(self):
         self.write("CLAUDE.md", "Diverged\n")

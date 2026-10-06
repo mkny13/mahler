@@ -524,11 +524,11 @@ def _details(finding):
 
 def _acceptance(pol, check):
     # This invokes the installed scanner only; it never runs repository commands.
-    policy = {k: pol.get(k, "") for k in ("name", "repo", "path", "verify")}
+    policy = {k: pol.get(k, "") for k in ("name", "repo", "verify")}
     code = ("import json; from mahler.practices_audit import scan_project; "
-            "from mahler.gh import GH; "
+            "from mahler.gh import GH; from pathlib import Path; "
             f"p=json.loads({json.dumps(policy)!r}); "
-            "r=scan_project(p, GH(p['repo'])); "
+            "p['path']=str(Path.cwd()); r=scan_project(p, GH(p['repo'])); "
             f"f=next(f for f in r.findings if f.check == {check!r}); "
             "print(f); assert f.state == 'pass', f.reason")
     return "python3 -c " + shlex.quote(code)
@@ -583,7 +583,8 @@ def file_audit(cfg, results, client, *, report_url=None, skips=(), dry_run=False
                 f"{marker}\n\nAudit report: {report_url}\n\n## Evidence\n\n{_details(finding)}"
                 f"\n\n## Recommended repository change\n\n{_CHANGES[finding.check]}"
                 "\n\n## Done when\n\nThe read-only check passes; review heuristic candidates "
-                "locally without publishing credential values.\n\n"
+                "locally without publishing credential values. Run from the root of the "
+                "worktree containing your changes, with Mahler installed.\n\n"
                 f"```sh\n{_acceptance(project, finding.check)}\n```\n")
             try:
                 gh = client(result.project)
