@@ -214,8 +214,14 @@ def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
     wanted = set()
     for p in projects:
-        if led.items(p["name"], ["inbox", "ready", "verifying"]):
-            for account in config.accounts_of(p):
+        queued = led.items(p["name"], ["inbox", "ready", "verifying"])
+        if queued:
+            # a pinned platform may sit in no route (metered opt-in, e.g. kiro);
+            # without a probe its usage stays stale and the router skips it (#708)
+            accounts = config.accounts_of(p)
+            wanted |= {pin for it in queued if (pin := it["pin"]) in cfg["platforms"]
+                       and config.account_of(cfg["platforms"][pin]) in accounts}
+            for account in accounts:
                 routing = router.routing_for(cfg, account)
                 wanted |= {n for role in ("sort", "build", "plan", "review") for n in routing.get(role, [])}
     wanted |= {r["platform"] for r in led.active_runs()}
