@@ -647,6 +647,20 @@ class GH:
             args += ["--comment", comment]
         self._gh(*args)
 
+    def reopen_issue(self, number):
+        self._gh("issue", "reopen", str(number), "-R", self.repo)
+
+    def set_priority_label(self, number, priority, current_labels):
+        want = f"p{priority}"
+        args = ["issue", "edit", str(number), "-R", self.repo]
+        for l in current_labels:
+            if l in ("p1", "p2", "p3") and l != want:
+                args += ["--remove-label", l]
+        if want not in current_labels:
+            args += ["--add-label", want]
+        if len(args) > 5:
+            self._gh(*args)
+
     def branch_sha(self, branch):
         """The current remote commit SHA of `branch`."""
         out = self._gh("api", f"repos/{self.repo}/commits/{branch}")

@@ -15,7 +15,7 @@ import copy
 import json
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, gh as gh_module, scheduler, sync
@@ -194,6 +194,179 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.sync()
         self.assertEqual(self.led.item("x", 5)["state"], "done")
         self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertNotIn("mahler:shipped", self.gh.labels)
+
+
+class QuietWindowTests(unittest.TestCase):
+    """A shipment completes on smoke evidence or 14x24h after its merge."""
+
+    MERGED = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["x"] = {"path": tmp.name, "repo": "x/y"}
+        self.now = self.MERGED
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = FakeGH()
+        self.gh.opened = []
+        self.gh.priorities = []
+        self.gh.reopen_issue = lambda n: (self.gh.opened.append(n), setattr(self.gh, "state", "OPEN"))
+        self.gh.set_priority_label = lambda n, p, cur: self.gh.priorities.append(p)
+        self.gh.comment = mock.Mock()
+        self.gh.pr_merged_at = iso(self.MERGED)
+        self.pr_view = self.gh.pr_view
+        self.gh.pr_view = lambda n: dict(self.pr_view(n), mergedAt=self.gh.pr_merged_at)
+        self.led.upsert_item("x", 5, title="Wired", state="shipped", pr=88,
+                             mirror="mahler:shipped")
+        self.led.add_uat("x", 5, 88, "abc", "Wired", "- check", shipped_at=iso(self.MERGED))
+
+    def reconcile(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.reconcile_shipped(self.ctx, "x")
+
+    def after(self, **delta):
+        self.now = self.MERGED + timedelta(**delta)
+        self.reconcile()
+
+    def state(self):
+        return self.led.item("x", 5)["state"]
+
+    def bug(self, number, created, body="Regression of #5", labels=("type:bug",)):
+        self.led.upsert_item("x", number, state="ready", issue_body=body,
+                             labels=json.dumps(list(labels)), created_at=iso(created))
+
+    def test_boundary_waits_then_completes_once_without_comment(self):
+        self.after(days=13, hours=23, minutes=59)
+        self.assertEqual(self.state(), "shipped")
+        self.after(days=14)
+        self.assertEqual(self.state(), "done")
+        self.after(days=15)
+        self.after(days=16)
+        ev = self.led.q("SELECT * FROM completion_evidence")
+        self.assertEqual((len(ev), ev[0]["kind"], ev[0]["body"]),
+                         (1, "quiet", "quiet period, no defect reported"))
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+        self.gh.comment.assert_not_called()
+        self.assertEqual(self.gh.labels, ["type:feature"])
+
+    def test_uses_merge_time_not_discovery_time(self):
+        self.led.con.execute("UPDATE uat SET shipped_at=?", (iso(self.MERGED - timedelta(days=30)),))
+        self.reconcile()
+        self.assertEqual(self.state(), "done")
+
+    def test_legacy_rows_old_complete_young_wait_in_bounded_batches(self):
+        for n in range(10, 10 + sync.QUIET_BATCH + 3):
+            self.led.upsert_item("x", n, state="shipped", mirror="mahler:shipped")
+            self.led.add_uat("x", n, None, "s", "t", "n",
+                             shipped_at=iso(self.MERGED - timedelta(days=20)))
+        young = 99
+        self.led.upsert_item("x", young, state="shipped", mirror="mahler:shipped")
+        self.led.add_uat("x", young, None, "s", "t", "n", shipped_at=iso(self.MERGED))
+        self.reconcile()
+        done = [i["number"] for i in self.led.items("x", ["done"])]
+        self.assertEqual(len(done), sync.QUIET_BATCH)
+        self.reconcile()
+        self.assertEqual(self.led.item("x", young)["state"], "shipped")
+        self.assertEqual(len(self.led.items("x", ["done"])), sync.QUIET_BATCH + 3)
+        self.assertEqual(self.state(), "shipped")
+
+    def test_adverse_evidence_blocks_quiet_completion(self):
+        inside = self.MERGED + timedelta(days=2)
+        cases = {
+            "issue link": lambda: self.bug(20, inside),
+            "pr link": lambda: self.bug(20, inside, body="Broke by PR #88"),
+            "revert": lambda: self.led.event("revert_requested", "x", 5, {"pr": 88}),
+            "reopen": lambda: self.led.event("source_reopened", "x", 5, {}),
+        }
+        for name, make in cases.items():
+            with self.subTest(name):
+                self.led.con.execute("DELETE FROM events")
+                self.led.con.execute("DELETE FROM items WHERE number=20")
+                if name in ("revert", "reopen"):
+                    self.now = inside
+                make()
+                self.after(days=30)
+                self.assertEqual(self.state(), "shipped")
+
+    def test_unlinked_late_or_non_bug_items_do_not_block(self):
+        self.bug(20, self.MERGED + timedelta(days=1), body="mentions #50 and x#5 and #55")
+        self.bug(21, self.MERGED + timedelta(days=15))
+        self.bug(22, self.MERGED + timedelta(days=1), labels=("type:feature",))
+        self.after(days=16)
+        self.assertEqual(self.state(), "done")
+
+    def test_source_reopen_detected_from_open_issue(self):
+        item = self.led.item("x", 5)
+        self.now = self.MERGED + timedelta(days=1)
+        sync._note_source_reopen(self.ctx, "x", item)
+        sync._note_source_reopen(self.ctx, "x", item)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='source_reopened'")), 1)
+        self.after(days=20)
+        self.assertEqual(self.state(), "shipped")
+
+    def smoke(self, at):
+        self.gh.comments = [dict(body="Smoke: PASS tag=v1", author={"login": "bot"},
+                                 id=1, createdAt=iso(at))]
+
+    def test_smoke_completes_immediately_with_attributable_evidence(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.assertEqual(self.state(), "done")
+        ev = self.led.q("SELECT * FROM completion_evidence")[0]
+        self.assertEqual((ev["kind"], ev["author"]), ("smoke", "bot"))
+
+    def test_defect_inside_window_after_smoke_reopens_once(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.bug(20, self.MERGED + timedelta(days=3))
+        self.after(days=4)
+        self.after(days=4, hours=1)
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["priority"]), ("ready", 1))
+        self.assertEqual(self.gh.priorities, [1])
+        self.assertEqual(self.gh.opened, [5])
+        self.assertEqual(self.led.get_kv("reopen_mirror:x:5"), "done")
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+        self.led.set_state("x", 5, "done", "again")
+        self.after(days=5)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
+
+    def test_defect_after_window_does_not_undo_completions(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.bug(20, self.MERGED + timedelta(days=15))
+        self.after(days=16)
+        self.assertEqual(self.state(), "done")
+
+    def test_defect_after_quiet_completion_never_reopens(self):
+        self.after(days=14)
+        self.bug(20, self.MERGED + timedelta(days=14, hours=1))
+        self.after(days=20)
+        self.assertEqual(self.state(), "done")
+
+    def test_reopen_label_failure_retries(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.bug(20, self.MERGED + timedelta(days=3))
+        with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("x")):
+            self.after(days=4)
+        self.assertEqual(self.state(), "ready")
+        self.assertEqual(self.led.get_kv("reopen_mirror:x:5"), "pending")
+        self.after(days=4, hours=1)
+        self.assertEqual(self.led.get_kv("reopen_mirror:x:5"), "done")
+
+    def test_done_label_retry_after_quiet_completion(self):
+        self.gh.labels = ["mahler:shipped", "type:feature"]
+        with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("x")):
+            self.after(days=14)
+        self.assertEqual(self.state(), "done")
+        self.assertIn("mahler:shipped", self.gh.labels)
+        self.after(days=14, hours=1)
         self.assertNotIn("mahler:shipped", self.gh.labels)
 
 

@@ -738,6 +738,33 @@ class StateTests(unittest.TestCase):
                 led.upsert_item("p", 3, state=state)
 
 
+class QuietCompletionTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:", clock=lambda: datetime(2026, 9, 20, tzinfo=timezone.utc))
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("x", 1, state="shipped", mirror=None)
+
+    def test_complete_quiet_is_atomic_and_once(self):
+        merged = iso(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertTrue(self.led.complete_quiet("x", 1, merged))
+        self.assertFalse(self.led.complete_quiet("x", 1, merged))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["mirror"]), ("done", "mahler:shipped"))
+        ev = self.led.q("SELECT * FROM completion_evidence")
+        self.assertEqual([(e["kind"], e["created_at"][:10]) for e in ev], [("quiet", "2026-09-15")])
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+
+    def test_reopen_only_done_and_once(self):
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
+        self.assertTrue(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.set_state("x", 1, "done", "again")
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["priority"]), ("done", 1))
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
+
 class ClearUsageTests(unittest.TestCase):
     def test_clears_only_named_windows_of_one_platform(self):
         led = Ledger(":memory:")
