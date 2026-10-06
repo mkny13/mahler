@@ -354,6 +354,20 @@ class QuietWindowTests(unittest.TestCase):
         ev = self.led.q("SELECT * FROM completion_evidence")[0]
         self.assertEqual((ev["kind"], ev["author"]), ("smoke", "bot"))
 
+    def test_boundary_smoke_wins_after_transient_comment_fetch_failure(self):
+        self.now = self.MERGED + timedelta(days=13, hours=23, minutes=59)
+        with mock.patch.object(self.gh, "issue_comments",
+                               side_effect=gh_module.GHError("offline")):
+            self.reconcile()
+        self.assertEqual(self.state(), "shipped")
+
+        self.smoke(self.now + timedelta(seconds=30))
+        self.after(days=14)
+
+        ev = self.led.q("SELECT * FROM completion_evidence")[0]
+        self.assertEqual((self.state(), ev["kind"], ev["author"]),
+                         ("done", "smoke", "bot"))
+
     def test_defect_inside_window_after_smoke_reopens_once(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
