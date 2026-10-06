@@ -595,13 +595,16 @@ class Ledger:
                 if obs is None:
                     self._capacity_close(row["id"], "gone")
                     continue
-                if obs.get("launch_run_id") is not None:
-                    self._capacity_close(row["id"], "launched", last_seen=stamp,
-                                         run_id=obs["launch_run_id"],
-                                         platform=obs.get("launched_platform"))
-                    obs["_handled"] = True
-                    continue
                 stale = (now - parse(row["last_seen"])).total_seconds() > gap_seconds
+                if obs.get("launch_run_id") is not None:
+                    if stale:
+                        self._capacity_close(row["id"], "gap")
+                    else:
+                        self._capacity_close(row["id"], "launched", last_seen=stamp,
+                                             run_id=obs["launch_run_id"],
+                                             platform=obs.get("launched_platform"))
+                        obs["_handled"] = True
+                    continue
                 if row["signature"] == obs["signature"] and not stale:
                     self.con.execute("UPDATE capacity_intervals SET last_seen=? WHERE id=?",
                                      (stamp, row["id"]))

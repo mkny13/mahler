@@ -119,6 +119,21 @@ class IntervalTests(unittest.TestCase):
                           row["launched_platform"]), (0, "launched", 77, "kilo"))
         self.assertEqual(row["last_seen"], (T0 + timedelta(seconds=60)).isoformat())
 
+    def test_launch_after_gap_does_not_count_unobserved_time(self):
+        self.tick(("a", 1, "build", ["no_platform"]))
+        self.clock.advance(hours=3)
+        obs = capacity.Observer(self.ctx)
+        obs.launched("a", 1, "build", 77, "kilo")
+        obs.flush()
+        first, launched = self.rows()
+        self.assertEqual((first["open"], first["end_reason"], first["last_seen"]),
+                         (0, "gap", T0.isoformat()))
+        self.assertEqual((launched["open"], launched["end_reason"],
+                          launched["first_seen"], launched["last_seen"],
+                          launched["launch_run_id"], launched["launched_platform"]),
+                         (0, "launched", (T0 + timedelta(hours=3)).isoformat(),
+                          (T0 + timedelta(hours=3)).isoformat(), 77, "kilo"))
+
     def test_launch_on_first_sight_records_a_closed_row(self):
         obs = capacity.Observer(self.ctx)
         obs.launched("a", 1, "fix", 5, "claude")
