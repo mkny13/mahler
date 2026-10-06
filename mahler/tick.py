@@ -668,7 +668,9 @@ def schedule(ctx, projects):
             name, n = p["name"], it["number"]
             if capacity.of(ctx).seen(name, n, role) or ctx.led.lease(name, n):
                 continue
-            _observe(ctx, p, role, it, "global_slots", diag=_diagnose(ctx, p, role, it, st))
+            _routing_role, _pin, required_tier, effective_size = _route_inputs(it, role)
+            _observe(ctx, p, role, it, "global_slots", diag=_diagnose(ctx, p, role, it, st),
+                     effective_size=effective_size, required_tier=required_tier)
 
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,

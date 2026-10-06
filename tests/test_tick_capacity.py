@@ -129,16 +129,27 @@ class CapacityObservationTests(unittest.TestCase):
         self.assertEqual(json.loads(rows[("a", 3, "build")]["blockers"]), ["paused"])
         self.assertEqual(json.loads(rows[("a", 1, "sort")]["blockers"]), ["paused"])
 
-    def test_full_global_slots_still_records_blocked_candidates(self):
+    def test_full_global_slots_preserve_escalated_routing_metadata_through_launch(self):
         ctx = self.ctx(total=1)
         seed(self.led, **{"agy-claude": (10, 10)})
         item(self.led, "a", 3)
+        self.led.upsert_item("a", 3, labels=json.dumps(["size:s"]), esc_tier=2)
         self.led.create_run(project="a", number=9, role="build", platform="agy-gemini",
                             epoch=0, status="running")
         self.schedule(ctx)
         row = self.rows()[("a", 3, "build")]
         self.assertEqual(json.loads(row["blockers"]), ["global_slots"])
         self.assertEqual(json.loads(row["platforms"])["agy-claude"]["reasons"], ["eligible"])
+        self.assertEqual((row["size"], row["effective_size"], row["required_tier"]),
+                         ("s", "m", 2))
+
+        ctx.capacity.launched("a", 3, "build", 42, "agy-claude")
+        ctx.capacity.flush()
+        row = self.rows()[("a", 3, "build")]
+        self.assertEqual((row["open"], row["end_reason"], row["launch_run_id"]),
+                         (0, "launched", 42))
+        self.assertEqual((row["size"], row["effective_size"], row["required_tier"]),
+                         ("s", "m", 2))
 
     def test_item_blockers_are_recorded(self):
         ctx = self.ctx({"a": proj(max_parallel=1), "b": proj(max_parallel=2, settle_minutes=30)})
