@@ -160,7 +160,8 @@ def _design_payload(rest):
     for finding in findings:
         if (not isinstance(finding, dict)
                 or set(finding) != {"finding", "category", "reason"}
-                or finding.get("category") not in allowed
+                or not isinstance(finding.get("category"), str)
+                or finding["category"] not in allowed
                 or any(not isinstance(finding.get(k), str) or not finding[k].strip()
                        for k in ("finding", "reason"))):
             return None
@@ -171,11 +172,11 @@ def _design_payload(rest):
 
 def _prepare_design(e):
     """Accept only a result for the checkout and the current live PR head."""
-    data = _design_payload(e.rest)
-    if data is None or not e.item["pr"]:
-        return None
-    input_key = prompt.design_input_key(e.project, e.number, e.item["pr"], e.run["id"])
     try:
+        data = _design_payload(e.rest)
+        if data is None or not e.item["pr"]:
+            return None
+        input_key = prompt.design_input_key(e.project, e.number, e.item["pr"], e.run["id"])
         source = json.loads(e.led.get_kv(input_key) or "{}")
         expected = source.get("head")
         evidence = source.get("evidence")
