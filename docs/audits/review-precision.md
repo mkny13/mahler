@@ -445,3 +445,212 @@ print("blockers/verdicts:", dict(pooled), "by reviewer:", dict(reviewer_verdicts
 
 The single false/contrived verdict is **10351**. No issue, PR, routing, prompt,
 scorecard, ledger, or runtime behavior was changed for this comparator.
+
+## Final synthesis and follow-up decision (#739)
+
+**Recommendation: retain the current reviewer policy; implement evidence-backed
+D33 attribution correction separately.** The predeclared clearly-worse rule
+fails. One attribution issue was filed:
+[#767 — Correct D33 attribution using durable review adjudications](https://github.com/mkny13/mahler/issues/767).
+No reviewer-remedy issue was filed. This synthesis changes only this report.
+
+### Validated comparison
+
+The classification rows from #737 and #738 were independently regrouped by run,
+using their shared rubric: unresolved evidence excludes the verdict; otherwise
+any real blocker justifies the fail, and only entirely false blockers constitute
+a false fail. This reproduces 30 Luna verdicts from 34 blockers and 10 comparator
+verdicts from 10 blockers. The final samples and evidence remain in the tables
+above; no verdict was replaced or reclassified for this comparison.
+
+The primary 2×2 table contains **resolved failed verdicts**, not blockers:
+
+| Sample | False | Justified | Resolved total | Unresolved outside table | Sample total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Copilot `gpt-6-luna` | 4 | 24 | 28 | 2 | 30 |
+| Pooled comparator | 1 | 9 | 10 | 0 | 10 |
+
+| Sample | False-fail proportion | 95% Wilson interval |
+| --- | ---: | ---: |
+| Copilot `gpt-6-luna` | 4/28 = 14.2857% | 5.6990%–31.4898% |
+| Pooled comparator | 1/10 = 10.0000% | 1.7876%–40.4150% |
+
+Luna minus comparator is **+4.2857 percentage points** (absolute percentage-point
+gap: **4.2857**, not a relative percent increase). The two-sided Fisher exact
+test gives **p = 1.000000**, summing fixed-margin tables with probability no
+greater than the observed table. The rule declared in #739 requires both a
+Luna excess of **at least 15 percentage points** and **p < 0.05**. **Neither
+condition passes.** This is insufficient evidence that Luna is clearly worse;
+it is not evidence of equivalence or absence of false failures.
+
+Failed-verdict precision, conditional on a resolved failed verdict:
+
+| Recorded reviewer | Justified / resolved (precision) | False / resolved | Unresolved / sampled |
+| --- | ---: | ---: | ---: |
+| Copilot `gpt-6-luna` | 24/28 = 85.7% | 4/28 = 14.3% | 2/30 |
+| `gpt-5.6-luna` | 3/4 = 75.0% | 1/4 = 25.0% | 0/4 |
+| `gpt-5.6-sol` | 3/3 = 100.0% | 0/3 = 0.0% | 0/3 |
+| Codex (model unspecified; `work-codex-gpt1-medium`) | 2/2 = 100.0% | 0/2 = 0.0% | 0/2 |
+| `stealth/space-bunny-alpha` | 1/1 = 100.0% | 0/1 = 0.0% | 0/1 |
+| Pooled comparator | 9/10 = 90.0% | 1/10 = 10.0% | 0/10 |
+
+No precision is estimated for unsampled `muse-glimmer`. At blocker level,
+Luna has 28/32 = 87.5% precision and 4/32 = 12.5% false findings, with 2/34
+unresolved; the comparator has 9/10 = 90.0% precision and 1/10 = 10.0% false
+findings, with 0/10 unresolved. A noisy blocker need not invalidate an entire
+verdict when another blocker is real. Neither sample actually contains such a
+mixed verdict; the different Luna denominators come from two three-blocker
+justified verdicts. Do not substitute the blocker table into the verdict test.
+
+Limitations: these are failed reviews after the shared October 1 cutoff, frozen
+at query times 19 minutes apart on October 6, not a sample of all reviews. The
+comparator pools different models and platforms, and its per-reviewer samples
+are only one to four verdicts. Repeated rounds on the same issue (including
+#607 across both samples) introduce dependence; project, task and round mix are
+not controlled. Fisher's calculation is the requested descriptive comparison,
+not a randomized causal test of models. Wilson intervals describe binomial
+sampling uncertainty and do not correct clustering or adjudication uncertainty.
+The two unresolved Luna verdicts remain excluded, not silently treated as true
+or false. Even assigning both false yields 6/30 = 20.0%, only 10 points above
+the comparator; assigning both justified yields 4/30 = 13.3%. Neither sensitivity
+case reaches the effect-size threshold. The source/diff adjudications inherit
+the historical-evidence limitations recorded above.
+
+The classified false causes include description-only evidence demands, scope
+expansion and insufficiently consequential claims. These are useful calibration
+examples, but they do not override the predeclared rule. Accordingly this audit
+files **zero** issues to reroute Luna, calibrate `recipes/review.md`, or require
+independent confirmation before a fix starts or is charged.
+
+### D33 attribution feasibility
+
+**Feasible with a bounded addition; current scores are not already corrected.**
+The inspected repository provides the required identities and recomputation path:
+
+- [`finalize._update_review_kv`](../../mahler/finalize.py) appends
+  `review_verdict` events carrying `review_run` and `reviewed_sha`, scoped to
+  project/issue. Review history also retains findings, run ID, SHA and PR.
+- [`ship._review_triggered_fix`](../../mahler/ship.py) records the launched fix
+  ID and triggering verdict under `reviewfix:<project>#<issue>:<pr>:<sha>:run`.
+  This is useful linkage evidence, but a mutable per-head KV can be overwritten
+  by a later same-head cycle. It is not sufficient as the sole historical record.
+- [`Ledger.event`](../../mahler/ledger.py) can append a versioned adjudication
+  or causal-link event without a schema change or any run-row rewrite.
+- [`scorecard.attempts`](../../mahler/scorecard.py) loads full run/event history
+  before applying the reporting-window filter. Late evidence can therefore
+  recompute old scores. Currently its `defect` helper first reports any later
+  fix as `later fix run`, then checks failed verdict events and the legacy
+  `REVIEW-FAIL` run fallback. Correcting only one path would leave false blame
+  through another. Its review-role result measures lack of later missed-defect
+  evidence, not adjudicated failed-verdict precision.
+- [`tests/test_scorecard.py`](../../tests/test_scorecard.py) exercises these
+  paths in `test_later_fix_including_running_fix`,
+  `test_review_fail_persists_after_kv_overwrite`, and
+  `test_legacy_review_failure`. Its isolated ledger fixtures support a before/
+  after adjudication test and checks that unrelated adverse evidence remains.
+
+A false failed review can thus lower a good builder's measured success, increase
+cost per success, and change measured routing rank. This is a demonstrated
+code-path risk, not a measured count of wrongly ranked builders in this audit.
+
+[#767](https://github.com/mkny13/mahler/issues/767) specifies append-only
+adjudications keyed to the exact review run/SHA and durable review-to-fix causal
+links. The explicit operator CLI, with evidence URL and reason, is the proposed
+adjudication authority; a builder's disagreement or later merge is insufficient.
+There is no existing automatic adjudication authority to rely on. Historical
+fixes require explicit evidence-backed linkage; missing links stay conservative.
+Latest valid adjudications may supersede earlier ones without erasing evidence.
+Scorecard recomputation must suppress both the false failed-review evidence and
+only its linked fix evidence, preserving other failures and the fix's own cost
+and outcome. Separate precision counts expose unresolved/unadjudicated cases.
+Operational attempt charges and escalation are outside this attribution change.
+
+The issue is `type:feature`, `size:m`, `p2`, with a finite file list, ordered
+plan, command/authority contract, mechanical tests and bounded acceptance checks.
+Its named catching test is
+`tests/test_scorecard.py::test_false_review_adjudication_recomputes_builder_without_mutating_runs`.
+No adjudication was written to the live ledger by this audit.
+
+### Recompute the synthesis without production data
+
+Run this Python block from the repository root. It independently reads the
+classification and reviewer rows already published above, validates totals and
+per-reviewer counts, then computes the two proportions, Wilson intervals, gap
+and probability-ordered two-sided Fisher test with exact integer weights.
+
+```python
+from collections import Counter, defaultdict
+from fractions import Fraction
+from math import comb, sqrt
+from pathlib import Path
+import re
+
+report = Path("docs/audits/review-precision.md").read_text()
+luna, rest = report.split("\n## Non-Copilot comparator:", 1)
+comparator = rest.split("\n## Final synthesis", 1)[0]
+
+def tally(section):
+    findings = re.findall(
+        r"^\| (\d+)\.(\d+) \| (real|false/contrived|unresolved evidence) \|",
+        section, re.M)
+    assert len({(run, finding) for run, finding, _ in findings}) == len(findings)
+    by_run = defaultdict(list)
+    for run, _, label in findings:
+        by_run[int(run)].append(label)
+    verdicts = {run: ("unresolved evidence" if "unresolved evidence" in labels
+                     else "real" if "real" in labels else "false/contrived")
+                for run, labels in by_run.items()}
+    return Counter(label for _, _, label in findings), verdicts
+
+lb, lv = tally(luna)
+cb, cv = tally(comparator)
+assert lb == {"real": 28, "false/contrived": 4, "unresolved evidence": 2}
+assert Counter(lv.values()) == {"real": 24, "false/contrived": 4, "unresolved evidence": 2}
+assert cb == Counter(cv.values()) == {"real": 9, "false/contrived": 1}
+assert len(lv) == 30 and len(cv) == 10
+reviewers = {}
+for line in comparator.splitlines():
+    cells = [cell.strip() for cell in line.split("|")[1:-1]]
+    if len(cells) == 7 and cells[0].isdigit() and cells[1].isdigit():
+        reviewers[int(cells[1])] = cells[2].replace("`", "")
+assert set(reviewers) == set(cv)
+groups = defaultdict(Counter)
+for run, label in cv.items():
+    groups[reviewers[run]][label] += 1
+assert dict(groups) == {
+    "gpt-5.6-luna": {"real": 3, "false/contrived": 1},
+    "gpt-5.6-sol": {"real": 3},
+    "Codex (model unspecified; work-codex-gpt1-medium)": {"real": 2},
+    "stealth/space-bunny-alpha": {"real": 1},
+}
+counts = [Counter(lv.values()), Counter(cv.values())]
+table = [(c["false/contrived"], c["real"]) for c in counts]
+assert table == [(4, 24), (1, 9)]
+
+def wilson(k, n):
+    z = 1.959963984540054
+    p = k / n
+    denominator = 1 + z*z/n
+    center = (p + z*z/(2*n)) / denominator
+    half = z*sqrt(p*(1-p)/n + z*z/(4*n*n)) / denominator
+    return center-half, center+half
+
+for name, (false, justified) in zip(("Luna", "comparator"), table):
+    n = false + justified
+    low, high = wilson(false, n)
+    print(f"{name}: {false}/{n} = {100*false/n:.4f}%; "
+          f"95% Wilson [{100*low:.4f}%, {100*high:.4f}%]")
+(a, b), (c, d) = table
+n1, total_false, total = a+b, a+c, a+b+c+d
+weights = {x: comb(total_false, x)*comb(total-total_false, n1-x)
+           for x in range(max(0, n1-(total-total_false)), min(n1, total_false)+1)}
+p_value = Fraction(sum(w for w in weights.values() if w <= weights[a]),
+                   comb(total, n1))
+gap = 100 * (Fraction(a, a+b) - Fraction(c, c+d))
+assert gap == Fraction(30, 7) and p_value == 1
+passed = gap >= 15 and p_value < Fraction(5, 100)
+assert not passed
+print(f"Luna excess: {float(gap):.4f} percentage points; "
+      f"two-sided Fisher p={float(p_value):.6f}; clearly worse: {passed}")
+print("classification totals and per-reviewer counts verified")
+```
