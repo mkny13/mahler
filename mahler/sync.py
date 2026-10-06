@@ -13,7 +13,8 @@ from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of,
                  completion_evidence)
-from .ledger import iso, parse
+from .ledger import QUIET_DAYS, iso, parse
+from .scorecard import DEFECT_WINDOW, linked_bug
 from .ship import (_shipped, mirror_shipped, pr_merged, record_uat_if_needed,
                    migrate_capacity_waits)
 from .watchdog import request_stop
@@ -111,6 +112,7 @@ def sync(ctx, project):
                     and planned_child(iss, labels, led, project)):
                 _born_ready(led, project, n, iss)
                 item = led.item(project, n)
+            _note_source_reopen(ctx, project, item)
             _adopt_label_edits(ctx, project, item, labels)
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
 
@@ -155,32 +157,118 @@ def sync(ctx, project):
     led.set_kv(depends_key, "4")
 
 
+QUIET_BATCH = 25   # legacy rows migrate in bounded ticks
+
+
+def _note_source_reopen(ctx, project, item):
+    """An open issue whose shipment we closed and labelled was reopened by hand
+    (adverse evidence). A transient close failure never set the mirror."""
+    led = ctx.led
+    n = item["number"]
+    shipped = item["state"] == "shipped" and item["mirror"] == "mahler:shipped"
+    early = (item["state"] == "done" and led.q1(
+        "SELECT 1 FROM completion_evidence WHERE project=? AND number=? AND kind='smoke'",
+        (project, n)))
+    key = f"source_reopened:{project}:{n}"
+    if (shipped or early) and led.get_kv(key) != "1":
+        led.set_kv(key, "1")
+        led.event("source_reopened", project, n, {})
+
+
+def adverse_evidence(led, row):
+    """Why this shipment cannot complete quietly, or None. Looks only at
+    evidence created inside [merge, merge + 14 days] (D33's window)."""
+    project, n = row["project"], row["number"]
+    merged = parse(row["shipped_at"])
+    end = merged + DEFECT_WINDOW
+    inside = lambda at: bool(at) and merged <= parse(at) <= end   # noqa: E731
+    for e in led.q("SELECT at, kind FROM events WHERE project=? AND number=? "
+                   "AND kind IN ('revert_requested','source_reopened')", (project, n)):
+        if inside(e["at"]):
+            return "revert" if e["kind"] == "revert_requested" else "source reopened"
+    for a in led.q("SELECT done_at, created_at FROM console_actions "
+                   "WHERE kind='revert' AND status='done' AND project=? AND number=?",
+                   (project, n)):
+        if inside(a["done_at"] or a["created_at"]):
+            return "revert"
+    if row["verdict"] == "fail" and inside(row["verdict_at"]):
+        return "UAT fail"
+    item = led.item(project, n)
+    refs = {n, row["pr"], item["pr"] if item else None}
+    bugs = []
+    for b in led.items(project):
+        if "type:bug" in json.loads(b["labels"] or "[]"):
+            bugs.append(dict(b))
+    filed = led.item(project, row["bug"]) if row["bug"] else None
+    if linked_bug(bugs, dict(filed) if filed else None, row["bug"], refs, merged):
+        return "linked bug"
+    return None
+
+
 def reconcile_shipped(ctx, project):
     """Closed shipments need their own poll, independent of the open-list ETag."""
     if ctx.dry_run:
         return
-    for item in ctx.led.items(project, ["shipped"]):
+    led = ctx.led
+    quiet_budget = QUIET_BATCH
+    for item in led.items(project, ["shipped"]):
         n = item["number"]
         try:
-            row = ctx.led.uat(project, n)
+            row = led.uat(project, n)
             if row is None and item["pr"]:
                 record_uat_if_needed(ctx, project, n, item["pr"], item,
                                      ctx.gh(project).pr_view(item["pr"]))
-                row = ctx.led.uat(project, n)
+                row = led.uat(project, n)
             if row is None:
+                continue
+            if (quiet_budget > 0 and parse(row["shipped_at"])
+                    and led.now() >= parse(row["shipped_at"]) + timedelta(days=QUIET_DAYS)
+                    and adverse_evidence(led, row) is None):
+                if led.complete_quiet(project, n, row["shipped_at"]):
+                    quiet_budget -= 1
                 continue
             for comment in ctx.gh(project).issue_comments(n):
                 evidence = completion_evidence(comment, row["shipped_at"])
                 if evidence:
-                    ctx.led.accept_evidence(project, n, evidence)
+                    led.accept_evidence(project, n, evidence)
                     break
         except (GHError, ValueError) as exc:
             ctx.say(f"{project}#{n}: evidence lookup failed — {exc}")
+    # An early automated completion is undone, once, by adverse evidence that
+    # falls inside its observation window; quiet completions never are.
+    for item in led.items(project, ["done"]):
+        row = led.uat(project, item["number"])
+        if row is None or not row["shipped_at"]:
+            continue
+        if not led.q1("SELECT 1 FROM completion_evidence WHERE project=? AND number=? "
+                      "AND kind='smoke'", (project, item["number"])):
+            continue
+        reason = adverse_evidence(led, row)
+        if reason:
+            led.reopen_shipment(project, item["number"], reason)
+    for key in [r["key"] for r in led.q("SELECT key FROM kv WHERE key LIKE ? AND value='pending'",
+                                        (f"reopen_mirror:{project}:%",))]:
+        mirror_reopen(ctx, project, int(key.rsplit(":", 1)[1]))
     # Retry the outward mirror after a transient failure, even though the
     # atomic local transition has already completed.
-    for item in ctx.led.items(project, ["done"]):
+    for item in led.items(project, ["done"]):
         if item["mirror"] == "mahler:shipped":
             mirror_done(ctx, project, item["number"])
+
+
+def mirror_reopen(ctx, project, number):
+    try:
+        gh = ctx.gh(project)
+        if gh.issue_state(number) == "CLOSED":
+            gh.reopen_issue(number)
+        current = gh.issue_labels(number)
+        gh.set_state_label(number, "ready", current)
+        gh.set_priority_label(number, 1, current)
+        ctx.led.upsert_item(project, number, mirror=STATE_LABELS["ready"])
+        ctx.led.set_kv(f"reopen_mirror:{project}:{number}", "done")
+        ctx._labels.pop((project, number), None)
+    except GHError as exc:
+        ctx.say(f"{project}#{number}: reopen label update failed — {exc}")
 
 
 def mirror_done(ctx, project, number):

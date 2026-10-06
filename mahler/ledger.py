@@ -272,6 +272,9 @@ def iso(dt):
     return dt.astimezone(timezone.utc).isoformat() if dt else None
 
 
+QUIET_DAYS = 14   # a clean shipment completes this long after its merge (D10/D33)
+
+
 def parse(s):
     if not s:
         return None
@@ -472,6 +475,32 @@ class Ledger:
             self.event("uat_verdict", project, number,
                        {"verdict": "pass", "via": evidence["kind"],
                         "source": evidence["source"]})
+            return True
+
+    def complete_quiet(self, project, number, shipped_at):
+        """Complete a clean shipment 14 days after its merge: one transaction
+        for the evidence, uat row, event, state and label-mirror cursor.
+        The synthetic evidence is stamped at the merge's window end."""
+        end = parse(shipped_at) + timedelta(days=QUIET_DAYS)
+        return self.accept_evidence(project, number, dict(
+            source=f"quiet-period:{project}#{number}", author="mahler",
+            created_at=iso(end), kind="quiet",
+            body="quiet period, no defect reported"))
+
+    def reopen_shipment(self, project, number, reason):
+        """Reopen an early automated completion to ready/p1, once. The
+        completion evidence and uat row stay as audit history."""
+        with self._tx():
+            item = self.item(project, number)
+            if (item is None or item["state"] != "done"
+                    or self.q1("SELECT 1 FROM events WHERE kind='shipment_reopened' "
+                               "AND project=? AND number=?", (project, number))):
+                return False
+            self.con.execute("UPDATE items SET priority=1, mirror=NULL "
+                             "WHERE project=? AND number=?", (project, number))
+            self.set_state(project, number, "ready", f"adverse evidence: {reason}")
+            self.event("shipment_reopened", project, number, {"reason": reason})
+            self.set_kv(f"reopen_mirror:{project}:{number}", "pending")
             return True
 
     def set_uat_verdict(self, project, number, verdict, bug=None, note=None):
