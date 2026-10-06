@@ -723,6 +723,75 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     or change release/merge behavior. Runtime integration waits for the Couch Tour
     prototype to land and needs a separate implementation issue unless later work
     already supplies it. No live project or private operator config is changed.
+- **Durable post-merge contract (mahler#744).** Operator configuration alone
+  controls `[projects.<name>.post_merge]`, recursively overlaid on
+  `[defaults.post_merge]`. Repository `project.toml` remains descriptive, never
+  executable authority. This foundation adds schema and storage only: no commands,
+  provider polling, evidence posting, failure bugs, reverts or console changes.
+  - `enabled = false` is the default. An absent/disabled contract or disabled
+    project creates no check row and runs no command; existing merge/release
+    behavior is unchanged. Disabling a contract later leaves historical rows
+    intact and stops future execution, including pending checks.
+  - `deploy_strategy = "watch"` observes an externally triggered deployment;
+    `deploy_command` must be empty. `"command"` requires a nonempty deploy
+    command that starts deployment of the exact merge. `live_strategy =
+    "command"` is the only supported live strategy and requires `live_command`
+    when enabled; it observes readiness and deployed identity in either mode.
+    These are command contracts, not provider adapters. Unknown fields/strategies,
+    wrong types and incomplete enabled policies fail configuration loading with
+    the project name and field. Disabled templates may leave commands empty.
+  - `environment = "staging"` defaults to staging/preview, never implicitly
+    production. An enabled contract requires a nonempty environment. Production
+    must be explicitly named in operator policy. `timeout_seconds = 1800` is an
+    integer in 1–86400, bounding the entire check from first durable creation;
+    polls, phase changes, process restarts and policy reloads never reset its
+    deadline. `auto_revert = false` is a strict boolean, opt-in policy only;
+    setting true does not itself perform or authorize an unfenced rollback.
+  - Reuse the existing project `smoke` command; there is no nested smoke field.
+    Empty smoke means no smoke execution and no automatic PASS evidence. Live
+    readiness alone must not complete an issue. A future runner records a terminal
+    FAIL with `failure_code = "smoke_disabled"` when it cannot run the smoke phase.
+  - `post_merge_checks` has one immutable identity `(project, issue number,
+    merge_sha)`, using the full lowercase merge commit SHA, never a PR head or
+    moving branch. Several issues may reference the same merge; a newer merge
+    gets its own row. Creation is idempotent and never replaces an existing row.
+    The row carries phase (`deploy`, `live`, `smoke`), status (`pending`, `PASS`,
+    `FAIL`), creation/update/phase-start/deadline/finish timestamps, frozen target
+    environment and optional tag, artifact reference, observed live SHA, bounded
+    sanitized summary, terminal evidence reference and failure code.
+  - Phases move forward one at a time, with same-phase pending polls allowed.
+    Writes compare the expected phase inside an immediate transaction; stale
+    phases are ignored. FAIL ends the current phase and requires a failure code.
+    PASS requires smoke phase, exact live SHA and a report reference. Both terminal
+    states are immutable, including all metadata, on retries and later polls.
+    Timeouts and command/provider/report errors become FAIL, never success.
+  - **Identity fence:** deploy, live observation and smoke must all address the
+    recorded merge SHA and its pinned artifact/tag. A tag is usable only after
+    resolving it to that exact SHA; store that resolution as `live_sha`. A moving
+    tag, mismatched SHA, unknown identity, or another release's report cannot
+    advance to smoke or PASS. The future runner must validate provider/report
+    identity before invoking the ledger transition; an exit-zero HTTP response
+    alone is insufficient. Smoke retains the matching-tag report grammar above.
+  - **Tick integration contract:** future execution polls each pending check once
+    per tick with bounded calls, persists progress before returning, and isolates
+    each project's errors. It never blocks a tick waiting for deployment. External
+    start commands must be idempotent for the check identity so crash recovery does
+    not deploy twice. Poll results may only apply to the phase and immutable merge
+    identity that launched them. Deadline expiry terminates the current phase.
+  - **Account and privacy boundary:** use the project's declared deployment login
+    with D25 environment isolation, never fall back to personal credentials or
+    another compute login. Commands obtain secrets from that login's external
+    store; neither configuration commands nor database fields may contain secret
+    values. No environment, command, credentials or raw output is copied into the
+    check table. Metadata uses public/non-secret artifact and report references,
+    without signed URLs or credential query strings. Ledger writes apply the
+    existing redaction backstop and cap diagnostics at 2000 characters after
+    redaction; this is not a detector for arbitrary secrets.
+  - **One completion path:** terminal report metadata is a durable handoff for
+    D10's existing accepted post-merge evidence path, not permission to call a
+    second done transition. A future runner validates the report and posts the
+    attributed evidence reference; only D10 acceptance changes shipped to done.
+    A deployment failure does not reopen or complete the source issue here.
 - **Optional screenshot contract (mahler#723).** Runtime policy comes only from
   operator `[projects.<name>]`, inheriting `[defaults]`; no new project.toml
   loader. The repo may describe `screenshot` beside `preview` in its descriptive

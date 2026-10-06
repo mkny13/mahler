@@ -20,6 +20,51 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_post_merge_defaults_and_nested_overlays(self):
+        cfg = self.load({})
+        self.assertEqual(config.project_policy(cfg, "app")["post_merge"],
+                         config.DEFAULT_POST_MERGE)
+        cfg = self.load({"defaults": {"smoke": "./smoke", "post_merge": {
+            "enabled": True, "live_command": "./live"}}, "projects": {
+                "app": {"post_merge": {"deploy_strategy": "command",
+                                       "deploy_command": "./deploy", "auto_revert": True}},
+                "off": {"post_merge": {"enabled": False}}}})
+        pol = config.project_policy(cfg, "app")
+        self.assertEqual(pol["smoke"], "./smoke")
+        self.assertEqual(pol["post_merge"]["live_command"], "./live")
+        self.assertEqual(pol["post_merge"]["environment"], "staging")
+        self.assertTrue(pol["post_merge"]["auto_revert"])
+        self.assertFalse(config.project_policy(cfg, "off")["post_merge"]["enabled"])
+        self.assertFalse(config.DEFAULT_POST_MERGE["enabled"])
+        for timeout in (1, 86400):
+            self.load({"projects": {"app": {"post_merge": {"timeout_seconds": timeout}}}})
+
+    def test_post_merge_invalid_contracts_are_project_scoped(self):
+        cases = [("enabled", "yes"), ("auto_revert", 1),
+                 ("deploy_strategy", "provider"), ("live_strategy", "none"),
+                 ("live_command", 1), ("deploy_command", False), ("environment", []),
+                 ("smoke", "./duplicate"), ("token", "not-allowed")]
+        cases += [("timeout_seconds", v) for v in (0, -1, 86401, True, 1.5, "30")]
+        for key, value in cases:
+            with self.subTest(key=key, value=value), self.assertRaisesRegex(
+                    ValueError, f"project 'app': post_merge.*{key}"):
+                self.load({"projects": {"app": {"post_merge": {key: value}}}})
+        for pm, field in (({"enabled": True}, "live_command"),
+                          ({"enabled": True, "live_command": "./live", "environment": " "},
+                           "environment"),
+                          ({"enabled": True, "live_command": "./live",
+                            "deploy_strategy": "command"}, "deploy_command"),
+                          ({"enabled": True, "live_command": "./live",
+                            "deploy_command": "./deploy"}, "deploy_command")):
+            with self.subTest(pm=pm), self.assertRaisesRegex(
+                    ValueError, f"project 'app': post_merge.*{field}"):
+                self.load({"projects": {"app": {"post_merge": pm}}})
+        with self.assertRaisesRegex(ValueError, "project 'app': post_merge must be a table"):
+            self.load({"projects": {"app": {"post_merge": False}}})
+        with self.assertRaisesRegex(ValueError, "project 'app': post_merge.live_command"):
+            self.load({"defaults": {"post_merge": {"enabled": True, "live_command": "./live"}},
+                       "projects": {"app": {"post_merge": {"live_command": ""}}}})
+
     def test_screenshot_defaults_inheritance_and_disable(self):
         defaults = {"screenshot": "", "screenshot_environment": "",
                     "screenshot_preview_non_personal": False,
