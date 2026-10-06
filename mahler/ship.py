@@ -1484,6 +1484,9 @@ def mirror_shipped(ctx, project, item):
         gh = ctx.gh(project)
         if gh.issue_state(n) != "CLOSED":
             gh.close_issue(n)
+        # Closure is confirmed independently of the label write, so a later
+        # owner reopen is still adverse evidence if the label write fails.
+        ctx.led.set_kv(f"shipped_closed:{project}:{n}", "1")
         current = gh.issue_labels(n)
         gh.set_state_label(n, "shipped", current)
         ctx.led.upsert_item(project, n, mirror="mahler:shipped")

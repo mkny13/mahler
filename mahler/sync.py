@@ -188,7 +188,9 @@ def _note_source_reopen(ctx, project, item):
     (adverse evidence). A transient close failure never set the mirror."""
     led = ctx.led
     n = item["number"]
-    shipped = item["state"] == "shipped" and item["mirror"] == "mahler:shipped"
+    shipped = item["state"] == "shipped" and (
+        item["mirror"] == "mahler:shipped"
+        or led.get_kv(f"shipped_closed:{project}:{n}") == "1")
     early = (item["state"] == "done" and led.q1(
         "SELECT 1 FROM completion_evidence WHERE project=? AND number=? AND kind='smoke'",
         (project, n)))

@@ -343,6 +343,18 @@ class QuietWindowTests(unittest.TestCase):
         self.after(days=20)
         self.assertEqual(self.state(), "shipped")
 
+    def test_source_reopen_detected_when_shipped_label_write_failed(self):
+        self.led.upsert_item("x", 5, mirror=None)
+        item = self.led.item("x", 5)
+        self.now = self.MERGED + timedelta(days=1)
+        sync._note_source_reopen(self.ctx, "x", item)   # closure never confirmed
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='source_reopened'"), [])
+        self.led.set_kv("shipped_closed:x:5", "1")      # closed, label write failed
+        sync._note_source_reopen(self.ctx, "x", item)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='source_reopened'")), 1)
+        self.after(days=20)
+        self.assertEqual(self.state(), "shipped")
+
     def smoke(self, at):
         self.gh.comments = [dict(body="Smoke: PASS tag=v1", author={"login": "bot"},
                                  id=1, createdAt=iso(at))]
