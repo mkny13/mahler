@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import tempfile
+from urllib.parse import quote
 
 from . import config, redact
 
@@ -325,6 +326,24 @@ class GH:
         for l in labels:
             args += ["--label", l]
         return self._gh(*args, input=body).strip()
+
+    def edit_issue_body(self, number, body):
+        self._gh("issue", "edit", str(number), "-R", self.repo,
+                 "--body-file", "-", input=body)
+
+    def default_branch_settings(self):
+        """Read merge policy and the default branch; never change settings."""
+        return json.loads(self._gh("api", f"repos/{self.repo}"))
+
+    def branch_protection(self, branch):
+        """Unavailable/unsupported protection raises GHError, not a clean pass."""
+        return json.loads(self._gh(
+            "api", f"repos/{self.repo}/branches/{quote(branch, safe='')}/protection"))
+
+    def branch_rules(self, branch):
+        """Effective ruleset rules, which can supplement classic protection."""
+        return json.loads(self._gh(
+            "api", f"repos/{self.repo}/rules/branches/{quote(branch, safe='')}"))
 
     # ---------- the conductor ships (DESIGN D18) ----------
 
