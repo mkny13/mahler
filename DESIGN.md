@@ -994,6 +994,14 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   from there. Otherwise it's a failed attempt, as before.
 - Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
+- **Repeated no-work build DONE** (temporary guard, mahler#716). A clean worktree
+  with zero commits ahead of the freshly fetched configured base supplies evidence;
+  missing worktrees and Git/snapshot failures do not. Two distinct runs with that
+  base SHA and the same whitespace-normalized DONE explanation park the item and
+  surface the technical hold once, pending independent verification (#705). This
+  is not an owner correctness decision or an automatic closure. The signature
+  persists across restarts and `/mahler go`; changed base/explanation or real saved
+  work starts fresh. Epoch fencing, closed issues and existing fix/PR handling remain.
 - **Unchanged-head fix DONE** (mahler#706). One persisted allowance per project/issue/PR/head
   sends a completed, non-interrupted review-triggered fix back to independent review
   without another attempt or escalation charge. The original fix charge remains.

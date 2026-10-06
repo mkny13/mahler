@@ -52,6 +52,30 @@ class SnapshotTests(unittest.TestCase):
         self.patch.stop()
         self.tmp.cleanup()
 
+    def test_no_work_probe_fetches_configured_base(self):
+        sh(self.repo, "git", "branch", "release")
+        sh(self.repo, "git", "push", "-q", "origin", "release")
+        sh(self.repo, "git", "update-ref", "-d", "refs/remotes/origin/release")
+        self.assertEqual(runner.no_work_base(self.repo, "release"),
+                         sh(self.repo, "git", "rev-parse", "HEAD"))
+
+    def test_no_work_probe_distinguishes_dirty_untracked_and_committed_work(self):
+        for filename in ("a.txt", "new.txt"):
+            with self.subTest(filename=filename):
+                write(os.path.join(self.repo, filename), "changed\n")
+                before = sh(self.repo, "git", "status", "--porcelain")
+                self.assertIsNone(runner.no_work_base(self.repo, "main"))
+                self.assertEqual(sh(self.repo, "git", "status", "--porcelain"), before)
+        sh(self.repo, "git", "add", ".")
+        sh(self.repo, "git", "commit", "-qm", "work")
+        self.assertIsNone(runner.no_work_base(self.repo, "main"))
+
+    def test_no_work_probe_errors_are_not_clean_evidence(self):
+        for wt, base in ((None, "main"), (self.repo + "-missing", "main"),
+                         (self.repo, "missing-base")):
+            with self.subTest(wt=wt, base=base), self.assertRaises(runner.GitError):
+                runner.no_work_base(wt, base)
+
     def test_nothing_new_means_no_snapshot(self):
         self.assertIsNone(runner.snapshot(self.repo, self.repo, 5, 12, "main"))
 

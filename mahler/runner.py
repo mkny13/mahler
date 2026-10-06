@@ -341,6 +341,27 @@ def snapshot(repo, wt, run_id, number, base, env=None):
             os.remove(idx)
 
 
+def no_work_base(wt, base, env=None):
+    """Return the freshly fetched base SHA only for a clean, zero-ahead tree.
+
+    None means work exists; missing trees and failed probes raise GitError,
+    never masquerading as proof that a build did no work.
+    """
+    if not wt or not os.path.isdir(wt):
+        raise GitError("no-work probe: missing worktree")
+    try:
+        ref = f"refs/remotes/origin/{base}"
+        git(wt, "fetch", "--quiet", "origin",
+            f"+refs/heads/{base}:{ref}", env=env)
+        sha = git(wt, "rev-parse", "--verify", f"{ref}^{{commit}}")
+        if git(wt, "status", "--porcelain", "--untracked-files=all"):
+            return None
+        ahead = int(git(wt, "rev-list", "--count", f"{sha}..HEAD"))
+        return sha if ahead == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError) as err:
+        raise GitError(f"no-work probe failed: {err}") from err
+
+
 def worktree_root(pol):
     return os.path.expanduser(pol.get("worktree_root") or config.WORKTREES)
 

@@ -194,6 +194,204 @@ class RunTests(unittest.TestCase):
             finalize.finalize(self.ctx, self.run)
         return snap, rm
 
+    def no_work_done(self, base="base-sha", explanation="already implemented",
+                     saved=None, snapshot_error=None, probe_error=None, ping_error=None):
+        with open(self.log, "w") as stream:
+            stream.write("STATUS: DONE " + explanation + "\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping", side_effect=ping_error) as ping, \
+                mock.patch.object(runner, "snapshot", return_value=saved,
+                                  side_effect=snapshot_error), \
+                mock.patch.object(runner, "no_work_base", return_value=base,
+                                  side_effect=probe_error) as probe, \
+                mock.patch.object(runner, "remove_worktree") as remove:
+            finalize.finalize(self.ctx, self.run)
+        return ping, probe, remove
+
+    def next_no_work_run(self, role="build"):
+        run_id = self.led.create_run(project="x", number=5, role=role,
+                                     platform="cline-free", epoch=1, status="running")
+        epoch, _ = self.led.claim("x", 5, f"run:{run_id}", "auto", 10,
+                                  platform="cline-free", run_id=run_id)
+        self.assertIsNotNone(epoch)
+        epoch = epoch["epoch"]
+        self.led.update_run(run_id, epoch=epoch)
+        self.run.update(id=run_id, epoch=epoch, role=role)
+        self.led.set_state("x", 5, "working", "test run")
+
+    def test_repeated_no_work_parks_before_third_build_and_replay_is_quiet(self):
+        self.no_work_done(explanation="already   implemented")
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        # Persist to disk and reopen, as a daemon restart would.
+        path = os.path.join(self.tmp, "restart.db")
+        import sqlite3
+        target = sqlite3.connect(path)
+        try:
+            self.led.con.backup(target)
+        finally:
+            target.close()
+        self.led.close()
+        self.led = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        sync.resume_item(self.led, "x", 5)
+        self.next_no_work_run()
+        ping, _, _ = self.no_work_done()
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("x")]), [])
+        ping.assert_called_once()
+        comments = list(self.gh.comments)
+        ping, probe, _ = self.no_work_done()
+        ping.assert_not_called()
+        probe.assert_not_called()
+        self.assertEqual(self.gh.comments, comments)
+        # Explicit go does not buy another automatic retry cycle or alert.
+        sync.resume_item(self.led, "x", 5)
+        self.next_no_work_run()
+        ping, _, _ = self.no_work_done()
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        ping.assert_not_called()
+        self.assertEqual(len([c for c in self.gh.comments
+                              if "**Repeated no-work DONE" in c]), 1)
+
+    def test_no_work_guard_retries_failed_comment_without_duplicate_delivery(self):
+        for submitted in (False, True):
+            with self.subTest(submitted=submitted):
+                self.led.set_kv("no_work_done:x#5", None)
+                self.gh.comments.clear()
+                self.no_work_done()
+                self.next_no_work_run()
+                post = self.gh.comment
+
+                def fail_guard(number, body):
+                    if "**Repeated no-work DONE" in body:
+                        if submitted:
+                            post(number, body)
+                        raise gh_module.GHError("temporary GitHub failure")
+                    post(number, body)
+
+                with mock.patch.object(self.gh, "comment", side_effect=fail_guard):
+                    with self.assertRaises(gh_module.GHError):
+                        self.no_work_done()
+                record = json.loads(self.led.get_kv("no_work_done:x#5"))
+                self.assertFalse(record["surfaced"])
+                self.assertEqual(len(record["runs"]), 2)
+                self.assertEqual(self.led.item("x", 5)["state"], "parked")
+                self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("x")]), [])
+                self.assertEqual(self.led.run(self.run["id"])["status"], "running")
+                self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+                ping, _, _ = self.no_work_done()
+                ping.assert_called_once()
+                self.assertTrue(json.loads(self.led.get_kv("no_work_done:x#5"))["surfaced"])
+                self.assertEqual(self.led.run(self.run["id"])["status"], "ended")
+                ping, _, _ = self.no_work_done()
+                ping.assert_not_called()
+                self.assertEqual(len([c for c in self.gh.comments
+                                      if "**Repeated no-work DONE" in c]), 1)
+                self.next_no_work_run()
+
+    def test_no_work_guard_keeps_comment_receipt_when_ping_raises(self):
+        self.no_work_done()
+        self.next_no_work_run()
+        with self.assertRaises(RuntimeError):
+            self.no_work_done(ping_error=RuntimeError("interrupted"))
+        record = json.loads(self.led.get_kv("no_work_done:x#5"))
+        self.assertTrue(record["commented"])
+        self.assertFalse(record["surfaced"])
+        ping, _, _ = self.no_work_done()
+        ping.assert_called_once()
+        self.assertEqual(len([c for c in self.gh.comments
+                              if "**Repeated no-work DONE" in c]), 1)
+        ping, _, _ = self.no_work_done()
+        ping.assert_not_called()
+
+    def test_changed_no_work_evidence_starts_new_signature(self):
+        self.no_work_done()
+        self.next_no_work_run()
+        self.no_work_done(base="new-base")
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.next_no_work_run()
+        self.no_work_done(base="new-base", explanation="different evidence")
+        self.assertNotEqual(self.led.item("x", 5)["state"], "parked")
+        record = json.loads(self.led.get_kv("no_work_done:x#5"))
+        self.assertEqual(record["runs"], [self.run["id"]])
+
+    def test_saved_work_clears_no_work_signature(self):
+        self.no_work_done()
+        self.next_no_work_run()
+        saved = {"ref": "saved", "sha": "abc", "ahead": 1, "stat": None}
+        _, probe, _ = self.no_work_done(saved=saved)
+        self.assertIsNone(self.led.get_kv("no_work_done:x#5"))
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        probe.assert_not_called()
+
+    def test_snapshot_failure_does_not_count_as_no_work(self):
+        self.no_work_done()
+        previous = self.led.get_kv("no_work_done:x#5")
+        self.next_no_work_run()
+        _, probe, remove = self.no_work_done(snapshot_error=runner.GitError("offline"))
+        self.assertEqual(self.led.get_kv("no_work_done:x#5"), previous)
+        probe.assert_not_called()
+        remove.assert_not_called()
+
+    def test_probe_failure_or_unsaved_work_preserves_signature_and_tree(self):
+        self.no_work_done()
+        previous = self.led.get_kv("no_work_done:x#5")
+        for error in (runner.GitError("fetch failed"), None):
+            with self.subTest(error=error):
+                self.next_no_work_run()
+                _, probe, remove = self.no_work_done(base=None, probe_error=error)
+                self.assertEqual(self.led.get_kv("no_work_done:x#5"), previous)
+                probe.assert_called_once()
+                remove.assert_not_called()
+
+    def test_replayed_partial_finalization_does_not_count_one_run_twice(self):
+        self.no_work_done()
+        self.led.update_run(self.run["id"], status="running")
+        self.no_work_done()
+        record = json.loads(self.led.get_kv("no_work_done:x#5"))
+        self.assertEqual(record["runs"], [self.run["id"]])
+        self.assertFalse(record["surfaced"])
+        self.assertNotEqual(self.led.item("x", 5)["state"], "parked")
+
+    def test_missing_tree_or_git_failure_does_not_count_as_no_work(self):
+        self.no_work_done()
+        previous = self.led.get_kv("no_work_done:x#5")
+        self.next_no_work_run()
+        with open(self.log, "w") as stream:
+            stream.write("STATUS: DONE already implemented\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree") as remove:
+            finalize.finalize(self.ctx, self.run)  # real probe: missing worktree
+        self.assertEqual(self.led.get_kv("no_work_done:x#5"), previous)
+        remove.assert_not_called()
+
+    def test_no_work_guard_honors_closed_stale_dry_run_and_fix(self):
+        self.no_work_done()
+        previous = self.led.get_kv("no_work_done:x#5")
+        for case in ("dry", "fix", "stale", "closed"):
+            with self.subTest(case=case):
+                self.next_no_work_run(role="fix" if case == "fix" else "build")
+                if case == "dry":
+                    self.ctx.dry_run = True
+                elif case == "fix":
+                    self.led.upsert_item("x", 5, pr=123, branch="existing")
+                elif case == "stale":
+                    self.run["epoch"] -= 1
+                elif case == "closed":
+                    self.gh.state = "CLOSED"
+                _, probe, _ = self.no_work_done()
+                self.assertEqual(self.led.get_kv("no_work_done:x#5"), previous)
+                probe.assert_not_called()
+                if case == "fix":
+                    self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+                if case == "closed":
+                    self.assertEqual(self.led.item("x", 5)["state"], "done")
+                self.ctx.dry_run = False
+                self.led.release("x", 5)
+
     def last_event(self):
         rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
                           "AND kind='state' ORDER BY at DESC LIMIT 1")

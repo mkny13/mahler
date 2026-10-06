@@ -56,6 +56,7 @@ class Ending:
         self.verb, self.rest, self.reason, self.outcome = verb, rest, reason, outcome
         self.project, self.number = run["project"], run["number"]
         self.saved, self.keep_worktree, self.closed = None, False, False
+        self.no_work_base = None
         self.stale = False          # lease revoked or replaced: leave the item alone
         self.after_commit = []
         self.verify_green = False
@@ -246,6 +247,54 @@ REVIEW_OUTCOMES = {"REVIEW-PASS": _review_passed, "REVIEW-FAIL": _review_failed,
                    "NEEDS-YOU": _needs_you}
 
 
+def _no_work_key(e):
+    return f"no_work_done:{e.project}#{e.number}"
+
+
+def _repeated_no_work(e):
+    if e.run["role"] != "build" or not e.no_work_base:
+        return False
+    key = _no_work_key(e)
+    signature = [e.no_work_base, " ".join((e.rest or "").split())]
+    record = json.loads(e.led.get_kv(key) or "{}")
+    if record.get("signature") != signature:
+        record = {"signature": signature, "runs": [], "surfaced": False}
+    if e.run["id"] not in record["runs"]:
+        record["runs"].append(e.run["id"])
+    repeated = len(record["runs"]) >= 2
+    if repeated:
+        reason = ("Repeated no-work DONE: two distinct builds left clean worktrees "
+                  "with zero commits ahead of the same base and the same explanation. "
+                  "Automatic retries paused pending independent verification.")
+        e.set_state("parked", reason)
+        if not record["surfaced"]:
+            e.defer(_surface_no_work, e, key, record, reason)
+    e.led.set_kv(key, json.dumps(record))
+    return repeated
+
+
+def _surface_no_work(e, key, record, reason):
+    """A failed delivery leaves finalization pending; retry only unsent steps."""
+    if not record.get("commented"):
+        gh = e.ctx.gh(e.project)
+        marker = f"<!-- mahler:no-work-done run={record['runs'][1]} -->"
+        # A failed response may still have submitted the comment. Recover its
+        # receipt before posting again, including after a daemon restart.
+        if not any(marker in comment["body"] for comment in gh.issue_comments(e.number)):
+            gh.comment(e.number,
+                       "<!-- mahler:agent -->\n" + marker
+                       + "\n**Repeated no-work DONE — parked**\n\n"
+                       + reason + f"\n\nBase: `{record['signature'][0]}`. "
+                       + f"Runs: {', '.join(map(str, record['runs']))}."
+                       + f"\n\nExplanation: {record['signature'][1]}")
+        record["commented"] = True
+        e.led.set_kv(key, json.dumps(record))
+    e.ctx.ping(f"No-work builds paused — {e.project} #{e.number}", reason,
+               e.project, e.number, priority="low")
+    record["surfaced"] = True
+    e.led.set_kv(key, json.dumps(record))
+
+
 def _ended_done(e):
     """D18: the run's own job is finished. The conductor (code, not another
     agent) ships it from here: push, PR, CI, merge. A DONE build is a success,
@@ -257,6 +306,8 @@ def _ended_done(e):
         e.set_state("verifying", "fix pushed — CI re-runs on the new SHA")
         e.ping(f"Fix pushed — {e.project} #{e.number}",
                f"{e.run['platform']} ended DONE; CI re-runs on the PR", priority="low")
+        return True
+    if _repeated_no_work(e):
         return True
     if not (e.saved or e.item["branch"]):
         return _retry(e)                        # DONE, but nothing to ship
@@ -452,6 +503,20 @@ def _save_work(e):
     except runner.GitError as err:
         e.keep_worktree = True
         ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
+    if (not e.saved and not e.keep_worktree and not e.stale
+            and e.run["role"] == "build" and e.verb == "DONE"
+            and e.reason in (None, "quota")):
+        try:
+            e.no_work_base = runner.no_work_base(
+                e.run["worktree"], e.pol.get("base", "main"),
+                env=config.run_env(ctx.cfg, config.gh_account_of(e.pol)))
+            # An unsaved dirty tree must survive cleanup even if snapshot
+            # returned None (for example, a base moved during the probe).
+            if e.no_work_base is None:
+                e.keep_worktree = True
+        except runner.GitError as err:
+            e.keep_worktree = True
+            ctx.say(f"{e.project}#{e.number}: no-work evidence unknown — {err}")
     _handoff_comment(ctx, e.run, e.item, e.reason, e.outcome, e.saved, e.log, e.keep_worktree)
 
 
@@ -511,6 +576,11 @@ def finalize(ctx, run):
     """A run that ended passes through here exactly once."""
     led = ctx.led
     project, n = run["project"], run["number"]
+    recorded = led.run(run["id"])
+    if recorded is not None and recorded["status"] == "ended":
+        no_work = json.loads(led.get_kv(f"no_work_done:{project}#{n}") or "{}")
+        if run["id"] in no_work.get("runs", []):
+            return
     pol = ctx.policy(project)
     item = led.item(project, n)
     pconf = ctx.cfg["platforms"].get(run["platform"]) or {}
@@ -576,6 +646,7 @@ def finalize(ctx, run):
         if not ending.stale:
             led.reset_setup_fails(project, n)
             if ending.saved:
+                led.set_kv(_no_work_key(ending), None)
                 led.upsert_item(project, n, branch=ending.saved["ref"])
             if ending.closed:
                 ending.set_state("done", outcome)
