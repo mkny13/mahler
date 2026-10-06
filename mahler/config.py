@@ -92,6 +92,21 @@ DEFAULT_PLATFORM_AUDIT = {
     "candidate_window_days": 180,  # runs newer than this back the candidates
 }
 
+# D39: global cross-project proposals, separate from per-project maintenance.
+# These identifiers are durable deduplication keys, not configurable pass names.
+PRACTICES_AUDIT_PASS = "practices-audit"
+PRACTICES_AUDIT_CHECKS = (
+    "ci-tests", "agent-instructions", "mahler-guidance", "verify-command",
+    "tracked-secrets", "branch-protection",
+)
+DEFAULT_PRACTICES_AUDIT = {
+    "enabled": True,
+    "project": "mahler",  # anchor report and merged-PR throughput
+    "cadence_days": 30,
+    "merged_threshold": 20,
+    "cooldown_days": 14,
+}
+
 DEFAULT_MEASURE = {
     "min_attempts": 8,
     "bars": {"build": 0.70, "fix": 0.70, "sort": 0.80, "plan": 0.75},
@@ -188,6 +203,7 @@ DEFAULTS = {
         "calibration_window": 20,
     },
     "platform_audit": DEFAULT_PLATFORM_AUDIT,
+    "practices_audit": DEFAULT_PRACTICES_AUDIT,
     # Order is preference. DESIGN D8: Claude plans; the free Antigravity pools
     # build first; Claude builds only under its reserve thresholds.
     "routing": {
@@ -1227,6 +1243,16 @@ def platform_audit_policy(cfg):
     a minimal test/partial cfg dict (no [platform_audit] section) still has
     every key `Ledger.maintenance_due` and `platform_audit.queue` expect."""
     return _merge(DEFAULT_PLATFORM_AUDIT, cfg.get("platform_audit") or {})
+
+
+def practices_audit_policy(cfg):
+    """Complete global D39 cadence policy, including for minimal configurations.
+
+    The finite checklist lives in PRACTICES_AUDIT_CHECKS, not operator config.
+    Return an independent value so callers cannot mutate the input or defaults.
+    """
+    return _merge(DEFAULT_PRACTICES_AUDIT,
+                  copy.deepcopy(cfg.get("practices_audit") or {}))
 
 
 def enabled_projects(cfg):

@@ -1954,3 +1954,105 @@ whether to act on the report.
 - **Fresh vs stored.** The CLI computes the learned lines fresh from the
   signals; the console reads only the persisted kv (state is rebuilt per
   request and must never rescan transcripts).
+
+### D39 — Cross-project practices audit: evidence and proposals only
+
+Decided 2026-10-06 (mahler#743, contract in mahler#753). Mahler sees practices
+across projects, but green CI can mean no tests at all. A global
+`practices-audit` pass will expose these gaps without silently standardizing
+repositories. This decision and configuration are the prerequisite; scanning
+and filing ship in #754, cadence/tick integration and the first baseline in
+#755. They do not change D18 merge behavior in this contract change.
+
+**Finite scope and checklist.** The runtime inventory is exactly
+`config.enabled_projects(cfg)`, using each project's configured repository and
+path. The discovery snapshot in #743 is not an allowlist; report snapshot
+repositories outside that inventory as skipped. Do not discover or enable
+additional repositories. `config.PRACTICES_AUDIT_CHECKS` fixes these six stable
+identifiers; they are not configurable or entries in `maintenance.passes`:
+
+| Check ID | Mechanical question and evidence |
+|---|---|
+| `ci-tests` | Does PR CI run tests, beyond a build? Cite workflow triggers, jobs and test commands or referenced scripts; a workflow name alone proves nothing. |
+| `agent-instructions` | Is AGENTS.md the instruction source of truth, with CLAUDE.md a pointer or identical copy? Missing AGENTS.md or divergent content is a gap; a one-line pointer is valid. |
+| `mahler-guidance` | Is the canonical Mahler participation guidance below present and current in the effective agent instructions? Cite missing or stale markers. |
+| `verify-command` | Is a verify command documented in agent docs or `.mahler/project.toml`, consistent with the effective configured `verify`, and run by PR CI? Cite commands and paths; a configured command absent from both docs and CI is a gap. |
+| `tracked-secrets` | Do tracked files contain suspected credentials or private data contrary to D4? Report candidates for review, never assert that heuristics prove absence of all secrets. History scanning is outside this initial check. |
+| `branch-protection` | Are default-branch protection and required checks consistent with D18's squash merge and test gate? Cite GitHub settings and check names; unavailable or unsupported settings are unknown, not a pass. |
+
+Canonical guidance for `mahler-guidance` is the following contract, with the
+project name substituted: interactive sessions use `mahler claim <project>#N`
+before work, `mahler heartbeat <project>#N` while working, `mahler ship
+<project>#N` after pushing, and `mahler release <project>#N` when stopping
+unfinished. Work uses branch `mahler/<N>-short-slug` and PR body `Fixes #N`.
+Autonomous build runs verify, commit and push, then end with a STATUS line;
+the conductor opens, reviews and merges their PR (D18). A pointer to canonical
+instructions is followed before checking these markers, rather than flagged
+as missing text in the pointer file itself.
+
+Each project produces one result per check: pass, gap, or unknown, with cited
+file/line, command or API evidence and a reason. Ambiguous workflow semantics,
+unavailable metadata and suspected secret matches remain explicit review
+candidates, never clean compliance claims. Secret evidence contains only path,
+line, detector ID and redacted context, never candidate values in reports,
+issues, logs or errors. Checks are cheap, deterministic and standard-library;
+model judgments about test quality or spreading practices are deferred.
+
+**Global cadence, one anchor.** `config.practices_audit_policy` supplies complete,
+independent defaults even for a minimal config: `enabled = true`, `project =
+"mahler"`, `cadence_days = 30`, `merged_threshold = 20`, `cooldown_days = 14`.
+The global `[practices_audit]` table overrides those fields; `enabled = false`
+disables the entire pass. A missing or disabled anchor skips it. Per-project
+maintenance disablement or pass selection does not change this global policy
+or the enabled-project inventory.
+
+Reuse D20's checkpoint keyed by `(anchor project, "practices-audit")`, with
+`last_filed_at` and `merged_since`, and `Ledger.maintenance_due`. With no
+checkpoint the pass is immediately due. Afterwards either elapsed cadence or
+merged volume makes it due, but the cooldown is a separate minimum interval
+that neither trigger bypasses. Only conductor-confirmed shipped PRs in the
+anchor increment its counter, once per merge; other projects' merges and raw
+runs do not. The anchor obeys the same one-open-`pass:*`/one-pass-filed-per-tick
+gate as D20 and the platform audit. This is a distinct global pass, not another
+per-project maintenance pass or a platform-tier audit.
+
+**Report, proposals and deduplication.** Create the anchor audit report first,
+labelled `pass:practices-audit`, then create or reuse one proposal in the
+*affected repository* per project/check gap or unresolved evidence question.
+The report lists the inventory, results, skips, errors and proposal links.
+Each proposal links back to that report and includes evidence, a recommended
+change and an executable acceptance check. Proposals carry `type:chore`,
+`size:m` and `p2`; they are ordinary remediation issues, not additional
+`pass:*` audits. For both reports and proposals, consult the destination's
+`config.project_policy`: when `scope == "label"`, include its `scope_label`.
+Thus groundwork/phish-in receive `mahler` under their label policies (#605),
+and custom labels work without any hard-coded repository names.
+
+The durable deduplication identity is `(configured project name, check ID)`,
+encoded in an issue-body marker, scoped to the affected repository. Look for
+that marker in open **and closed** issues before creating anything; titles and
+an in-memory cache are insufficient. Reuse an existing matching issue even
+when closed, link it from the current report and attach the current audit link
+and evidence without automatically reopening it. A repeated or recurring gap
+must not create another issue. Multiple evidence locations for one check stay
+in that single proposal. Failed/incomplete issue lookup must not be interpreted
+as absence. GitHub markers preserve reuse across restarts and partial retries.
+
+Reset the D20 checkpoint only after the anchor report is successfully filed;
+failed report creation and dry runs leave it unchanged. Persist the report
+identity and incomplete filing work so retries resume that audit and reuse
+markers without requiring a new cadence trigger or another report. Complete
+projects proceed even if another project's read or filing fails; failures stay
+visible as errors/unknowns, never empty successful scans. Dry run reports
+intended work without GitHub or ledger writes. A no-gap run still records an
+anchor report and advances its checkpoint, avoiding a due-on-every-tick loop.
+
+**Proposal-only boundary.** The audit may read evidence and write audit/issues,
+labels, links and its own execution checkpoints. It never edits repository
+contents, agent docs, workflows, build scripts, verify commands, secrets,
+protection/required-check settings or operator configuration. It never executes
+repository commands or release jobs to establish evidence. Repository fixes
+follow the normal issue → agent → conductor path; operator config changes remain
+owner decisions. D4's earlier “no secret scanner” statement is amended only to
+permit this read-only, redacted candidate check, not automatic remediation or
+claims about Git history. No model calls enter the control plane.
