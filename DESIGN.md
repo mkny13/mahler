@@ -646,6 +646,10 @@ or the issue explicitly explains why no feasible mechanical check exists. That
 exception does not waive verification of the fix. Non-bug body shapes stay unchanged.
 D20 periodically turns recurring escape classes into mechanical-gate proposals.
 
+- **Review evidence** (mahler#706). Grade the branch against the issue's Done-when.
+  PR-description content alone never blocks; required evidence such as audit output
+  belongs in the repository or CI. Description-only requests are follow-ups, without
+  demoting demonstrated code, security or actual acceptance failures.
 - **Verify contract.** Each repo carries `.mahler/project.toml`, which declares:
   - `verify.fast`: lint + unit tests, under ~2 minutes, run in the worktree before every push
   - `verify.full`: build + e2e
@@ -990,6 +994,14 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   from there. Otherwise it's a failed attempt, as before.
 - Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
+- **Unchanged-head fix DONE** (mahler#706). One persisted allowance per project/issue/PR/head
+  sends a completed, non-interrupted review-triggered fix back to independent review
+  without another attempt or escalation charge. The original fix charge remains.
+  Prefer a different reviewer when eligible; builder/latest-fixer slot independence is
+  mandatory. Pending re-review survives capacity waits, launch failures and restarts.
+  A fresh failure resumes normal accounting; another same-head DONE and the repeat-finding
+  path cannot grant another allowance, even after re-shipping. Review history stays intact
+  and this adds no distinct-head green round. Red-CI and base-conflict fixes are unchanged.
 - Shorter recipes also mean fewer tokens on every run, and a smaller surface for the model to
   lose track of.
 - **Sessions hand over too** (mahler#407, 2026-09-22). mahler#395 and groundwork#153 came

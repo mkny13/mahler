@@ -23,6 +23,9 @@ Rules:
    is a blocking finding unless the issue explicitly requested that change.
 2. **Grade against the issue, not your own taste.** The issue's "Done when" list is the
    reference; a diff that satisfies it in a way you would not have chosen passes.
+   PR-description content alone is never blocking. Required evidence such as audit output
+   belongs in the repository or CI; a PR-description-only evidence request is a follow-up.
+   This does not demote demonstrated code, security, or actual acceptance failures.
 3. **You cannot run the tests from here** (read-only checkout, no verify step). Trust CI's
    already-green result for whether existing tests pass; your job is catching what tests
    don't cover — logic bugs in the diff, spec mismatches, and security issues, especially in

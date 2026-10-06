@@ -455,6 +455,18 @@ class ReviewOperatingContextTests(unittest.TestCase):
                 self.assertIn(fragment, text)
 
 
+class ReviewEvidenceTests(unittest.TestCase):
+    def test_description_only_evidence_is_nonblocking(self):
+        text = " ".join(prompt.render("review", handoff="").split())
+        for fragment in (
+            "PR-description content alone is never blocking",
+            "Required evidence such as audit output belongs in the repository or CI",
+            "a PR-description-only evidence request is a follow-up",
+            "does not demote demonstrated code, security, or actual acceptance failures",
+        ):
+            self.assertIn(fragment, text)
+
+
 class ReviewRecipeMaskingTests(unittest.TestCase):
     def test_review_recipe_warns_about_masked_tool_output(self):
         text = " ".join(prompt.render(
