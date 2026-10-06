@@ -249,6 +249,7 @@ class BurstScheduleTests(unittest.TestCase):
 
 class DesignRoleTests(unittest.TestCase):
     def test_design_routes_through_plan_but_records_design_identity(self):
+        self.enterContext(mock.patch.object(platforms, "available", return_value=True))
         ctx, led = mk_ctx({"a": proj(routing={
             "sort": ["agy-claude"], "plan": ["claude-opus"],
             "build": ["cline-free"],
