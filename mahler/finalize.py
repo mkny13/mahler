@@ -193,8 +193,8 @@ def _prepare_design(e):
             section = re.search(r"^## Done when\s*\n(.*?)(?=^## |\Z)", body or "",
                                 re.MULTILINE | re.DOTALL | re.IGNORECASE)
             criteria = {line.strip() for line in section[1].splitlines()} if section else set()
-            if any(line and line in json.dumps(data["followups"], ensure_ascii=False)
-                   for line in criteria):
+            search_text = json.dumps(data["followups"], ensure_ascii=False) + " " + data.get("rationale", "")
+            if any(line and line in search_text for line in criteria):
                 return None
         return {"data": data, "head": expected, "evidence": evidence}
     except (GHError, runner.GitError, OSError, TypeError, ValueError, AttributeError):
