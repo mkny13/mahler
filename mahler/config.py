@@ -123,6 +123,8 @@ DEFAULTS = {
         "max_parallel": 1,
         "settle_minutes": 10,          # sorted -> eligible to build (DESIGN D7)
         "max_attempts": 3,             # failed runs before needs-you
+        "review_context": ("Personal project: a single user owns and controls all devices "
+                           "and upgrades them together."),
         "review_green_rounds": 2,      # inclusive convergence threshold per PR
         "capacity_wait_max_hours": 24,  # unknown recovery backstop for review/fix capacity
         "verify_timeout_minutes": 60,  # CI pending longer than this -> needs-you (mahler#18)
@@ -1036,6 +1038,8 @@ def validate_accounts(cfg):
             raise ValueError(f"{scope}: routing_mode must be list or measured")
     for scope, conf in [("defaults", cfg.get("defaults", {})),
                         *cfg.get("projects", {}).items()]:
+        if not isinstance(conf.get("review_context", ""), str):
+            raise ValueError(f"{scope}: review_context must be a string")
         value = conf.get("review_green_rounds", 2)
         if type(value) is not int or value < 1:
             raise ValueError(f"{scope}: review_green_rounds must be a positive integer")

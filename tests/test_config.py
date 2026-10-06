@@ -20,6 +20,26 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_review_context_default_override_and_clear(self):
+        default = config.project_policy(self.load({}), "app")["review_context"]
+        self.assertEqual(default, "Personal project: a single user owns and controls all "
+                         "devices and upgrades them together.")
+        for inherited in (default, "Shared service with independent upgrades.", ""):
+            cfg = self.load({"defaults": {"review_context": inherited}, "projects": {
+                "inherited": {}, "override": {"review_context": "  Custom context.\n"},
+                "cleared": {"review_context": ""}}})
+            for name, expected in (("inherited", inherited), ("other", inherited),
+                                   ("override", "  Custom context.\n"), ("cleared", "")):
+                with self.subTest(inherited=inherited, project=name):
+                    self.assertEqual(config.project_policy(cfg, name)["review_context"], expected)
+
+    def test_review_context_rejects_non_strings(self):
+        for value in (False, 1, 1.5, [], {"text": "personal"}):
+            for user in ({"defaults": {"review_context": value}},
+                         {"projects": {"app": {"review_context": value}}}):
+                with self.subTest(user=user), self.assertRaisesRegex(ValueError, "review_context"):
+                    self.load(user)
+
     def test_green_review_round_policy(self):
         self.assertEqual(config.project_policy(self.load({}), "app")["review_green_rounds"], 2)
         cfg = self.load({"defaults": {"review_green_rounds": 3},
