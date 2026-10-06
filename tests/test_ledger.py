@@ -1532,3 +1532,29 @@ class LedgerInitializationResourcesTests(unittest.TestCase):
                         con.execute('SELECT 1')
                     led.__del__()
                     self.assertEqual(con.closes, 1)
+
+
+class CapacityMigrationTests(unittest.TestCase):
+    def test_migration_adds_capacity_table_and_preserves_runs_and_leases(self):
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "m.db")
+            led = Ledger(path)
+            led.upsert_item("a", 1, state="working")
+            run_id = led.create_run(project="a", number=1, role="build", platform="claude",
+                                    epoch=1, status="running")
+            led.claim("a", 1, f"run:{run_id}", "auto", 30, platform="claude", run_id=run_id)
+            led.close()
+            con = sqlite3.connect(path)          # an install from before mahler#734
+            con.execute("DROP TABLE capacity_intervals")
+            con.commit()
+            con.close()
+            led = Ledger(path)
+            self.addCleanup(led.close)
+            self.assertEqual(led.capacity_intervals(), [])
+            self.assertEqual(led.q1("SELECT platform FROM runs WHERE id=?", (run_id,))["platform"],
+                             "claude")
+            self.assertEqual(led.lease("a", 1)["run_id"], run_id)
+            led.capacity_record({("a", 2, "build"): {"signature": "s", "blockers": []}})
+            self.assertEqual(len(led.capacity_intervals()), 1)

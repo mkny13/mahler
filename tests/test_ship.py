@@ -2838,3 +2838,91 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.led.set_kv("reviewfindings:x#5", json.dumps(history))
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
             self.assertIsNotNone(ship._repeat_finding(self.ctx, "x", 5, self.gh.pr_view(88)))
+
+
+class ShipCapacityTests(unittest.TestCase):
+    """Fix and review waits in the shipping pass feed the capacity history (mahler#734)."""
+
+    def setUp(self):
+        ShipTests.setUp(self)
+
+    item = ShipTests.item
+    ship = ShipTests.ship
+
+    def rows(self):
+        self.ctx.capacity.flush()
+        return {(r["role"]): dict(r) for r in self.led.capacity_intervals()}
+
+    def test_ci_fix_wait_is_recorded_each_tick_as_one_interval(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        now = [NOW]
+        self.led.now = lambda: now[0]
+        with mock.patch.object(platforms, "available", return_value=False):
+            self.ship()
+            self.ctx.capacity.flush()
+            for _ in range(3):
+                now[0] += timedelta(seconds=60)
+                self.ship()
+                self.ctx.capacity.flush()
+        (row,) = [dict(r) for r in self.led.capacity_intervals()]
+        self.assertEqual((row["role"], row["required_tier"]), ("fix", 0))
+        self.assertEqual(json.loads(row["blockers"]), ["shipping_wait"])
+        self.assertEqual(row["last_seen"], iso(NOW + timedelta(seconds=180)))
+        self.assertEqual(json.loads(row["platforms"])["agy-claude"]["reasons"], ["unavailable"])
+
+    def test_review_triggered_fix_wait_is_recorded(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, ["x: soft"])):
+            self.ship()
+        row = self.rows()["fix"]
+        self.assertEqual(json.loads(row["blockers"]), ["shipping_wait"])
+
+    def test_review_wait_is_recorded_and_retry_delay_stays_observable(self):
+        self.cfg["routing"]["review"] = ["agy-claude"]
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.record_usage("agy-claude", "hold", 100, iso(NOW + timedelta(hours=30)))
+        with mock.patch("mahler.router.pick_for_project") as pick:
+            self.ship()
+            pick.assert_not_called()              # observation never forces a retry
+        row = self.rows()["review"]
+        self.assertEqual(json.loads(row["platforms"])["agy-claude"]["reasons"], ["hold"])
+
+    def test_launch_after_a_wait_closes_the_interval(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(platforms, "available", return_value=False):
+            self.ship()
+        self.ctx.capacity.flush()
+        self.ctx.capacity.launched("x", 5, "fix", 41, "agy-claude")
+        self.ctx.capacity.flush()
+        (row,) = [dict(r) for r in self.led.capacity_intervals()]
+        self.assertEqual((row["open"], row["launch_run_id"]), (0, 41))
+
+    def test_history_write_failure_does_not_stop_shipping(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(Ledger, "capacity_record", side_effect=OSError("disk")), \
+             mock.patch.object(ship, "_observe_wait", side_effect=RuntimeError("diag")):
+            self.ship()
+            self.ctx.capacity.flush()
+        self.assertTrue(any("capacity history" in l for l in self.ctx.lines))
+
+    def test_diagnosis_failure_does_not_change_the_wait(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(platforms, "available", return_value=False), \
+             mock.patch.object(ship.router, "diagnose", side_effect=RuntimeError("boom")):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertTrue(self.led.get_kv("reviewfix-status:x#5"))
+        self.assertTrue(any("capacity diagnosis failed" in l for l in self.ctx.lines))
+
+    def test_dry_run_records_nothing(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        self.ctx.dry_run = True
+        with mock.patch.object(platforms, "available", return_value=False):
+            self.ship()
+        self.assertEqual(self.rows(), {})
