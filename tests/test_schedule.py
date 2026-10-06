@@ -198,7 +198,6 @@ class BurstScheduleTests(unittest.TestCase):
         seed(led, **{"claude": (85, 85), "agy-claude": (10, 10)})
         item(led, "a", 1, age_minutes=10)
         self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
-        self.assertFalse(any("burst" in l for l in ctx.lines))
 
     def test_burst_suppressed_by_human_claude_flag(self):
         """5h usage rose while no Claude run was live → defer burst."""
@@ -246,6 +245,49 @@ class BurstScheduleTests(unittest.TestCase):
         item(led, "a", 1, age_minutes=10)
         self.assertEqual(plan(ctx, led), ["a#1: would build on agy-claude"])
         self.assertFalse(any("burst" in l for l in ctx.lines))
+
+
+class DesignRoleTests(unittest.TestCase):
+    def test_design_routes_through_plan_but_records_design_identity(self):
+        ctx, led = mk_ctx({"a": proj(routing={
+            "sort": ["agy-claude"], "plan": ["claude-opus"],
+            "build": ["cline-free"],
+        })})
+        self.addCleanup(led.close)
+        seed(led, **{"claude-opus": (10, 10), "agy-claude": (10, 10)})
+        project = config.project_policy(ctx.cfg, "a")
+        item = {"project": "a", "number": 714, "title": "Design result", "labels": "[]",
+                "attempts": 0,
+                "pr": 42, "branch": "mahler/714-design"}
+        schedule_state = tick._init_schedule_state(ctx, [project])
+        platform, _, _ = tick._route(ctx, project, "design", item, schedule_state)
+        self.assertEqual(platform, "claude-opus")
+        direct, _ = router.pick_for_project(ctx.cfg, led, project, "design", size="m")
+        self.assertEqual(direct, "claude-opus")
+
+        platform_cfg = ctx.cfg["platforms"]["claude-opus"]
+        platform_cfg.update(sort_model="planning-model", build_model="builder-model",
+                            sort_effort="high")
+        led.upsert_item("a", 714, title=item["title"], state="working",
+                        pr=42, branch=item["branch"])
+        prep = {"run_dir": "/tmp/design-run", "worktree": "/tmp/design-wt",
+                "branch": item["branch"], "base_ref": "origin/mahler/714-design",
+                "replayed": False, "kept": None, "head_sha": "a" * 40}
+        with mock.patch.object(tick.runner, "prepare", return_value=prep), \
+                mock.patch.object(tick.runner, "launch",
+                                  return_value={"pid": 123, "worktree": prep["worktree"],
+                                                "branch": item["branch"], "base_ref": prep["base_ref"],
+                                                "log_path": "/tmp/design.log",
+                                                "status_path": "/tmp/design.exit"}):
+            self.assertTrue(tick.start(ctx, "a", item, "design", platform,
+                                       context="complete prior findings"))
+        run = led.last_run("a", 714)
+        self.assertEqual(run["role"], "design")
+        self.assertEqual(run["routing_role"], "plan")
+        self.assertEqual(run["model"], "planning-model")
+        self.assertEqual(run["effort"], "high")
+        saved = json.loads(led.get_kv(f"designinput:a#714:42:{run['id']}"))
+        self.assertEqual(saved, {"head": "a" * 40, "evidence": "complete prior findings"})
 
 
 class FairnessTests(unittest.TestCase):

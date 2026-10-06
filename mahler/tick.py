@@ -521,7 +521,8 @@ def _route(ctx, p, role, it, st):
     cfg, led, name, n = ctx.cfg, ctx.led, p["name"], it["number"]
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(it, "labels", "[]"))
                  if l.startswith("size:")), None)
-    routing_role = "plan" if (role == "sort" and needs_plan(row_get(it, "labels", "[]"))) else role
+    routing_role = ("plan" if role == "design" or
+                    role == "sort" and needs_plan(row_get(it, "labels", "[]")) else role)
     pin = it["pin"] if role in ("build", "fix", "sort") else None
 
     effective_min_tier = (max(row_get(it, "esc_tier", 0),
@@ -630,9 +631,11 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     ests = led.estimates()
     est = led.run_estimate(ests, platform, role, size)
     pconf = ctx.cfg["platforms"][platform]
-    effort = platforms.effort_value(pconf, role) or "default"
-    model = pconf.get("sort_model" if role == "sort" else "build_model") or pconf.get("model")
-    routing_role = "plan" if role == "sort" and needs_plan(row_get(item, "labels")) else role
+    platform_role = "sort" if role == "design" else role
+    effort = platforms.effort_value(pconf, platform_role) or "default"
+    model = pconf.get("sort_model" if platform_role == "sort" else "build_model") or pconf.get("model")
+    routing_role = ("plan" if role == "design" or
+                    role == "sort" and needs_plan(row_get(item, "labels")) else role)
     run_id = led.create_run(project=project, number=n, role=role, platform=platform,
                             size=size or "m", model=model, configured_model=model or "", effort=effort,
                             explore=int(explore), routing_role=routing_role,
@@ -658,6 +661,9 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     prep = None
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
+        if role == "design":
+            led.set_kv(prompt.design_input_key(project, n, item["pr"], run_id),
+                       json.dumps({"head": prep["head_sha"], "evidence": context}))
         text = prompt.build(ctx, project, item, role, platform, prep, context=context)
         meta = runner.launch(ctx, project, item, role, platform, run_id, lease["epoch"],
                              text, prep)

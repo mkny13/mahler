@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, platforms, review, router, runner
+from . import config, failures, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -114,6 +114,110 @@ def _sorted_split(e):
 
 
 SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you}
+
+
+# ---------- plan-only design outcomes ----------
+
+def _design_record_key(project, number, pr, sha):
+    return f"design:{project}#{number}:{pr}:{sha}"
+
+
+def _design_payload(rest):
+    """Validate the finite plan/follow-ups emitted by recipes/design.md."""
+    try:
+        data = json.loads(rest)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("head"), str):
+        return None
+    if data.get("disposition") == "fix":
+        if set(data) != {"head", "disposition", "plan"}:
+            return None
+        plan = data["plan"]
+        if not isinstance(plan, dict) or set(plan) != {"summary", "files", "steps", "tests"}:
+            return None
+        if (not isinstance(plan["summary"], str) or not plan["summary"].strip()
+                or not isinstance(plan["tests"], str) or not plan["tests"].strip()):
+            return None
+        for key in ("files", "steps"):
+            values = plan[key]
+            if (not isinstance(values, list) or not values or len(values) > 40
+                    or any(not isinstance(value, str) or not value.strip() for value in values)):
+                return None
+        return data
+    if data.get("disposition") != "followups" or set(data) != {
+            "head", "disposition", "rationale", "followups"}:
+        return None
+    if not isinstance(data["rationale"], str) or not data["rationale"].strip():
+        return None
+    findings = data["followups"]
+    if not isinstance(findings, list) or len(findings) > 100:
+        return None
+    allowed = {"scope", "spec", "behavior", "hardening", "testing"}
+    unsafe = re.compile(
+        r"\b(security|credential|authentication|authorization|data[- ]loss|"
+        r"unrecoverable|irreversible)\b", re.IGNORECASE)
+    for finding in findings:
+        if (not isinstance(finding, dict)
+                or set(finding) != {"finding", "category", "reason"}
+                or finding.get("category") not in allowed
+                or any(not isinstance(finding.get(k), str) or not finding[k].strip()
+                       for k in ("finding", "reason"))):
+            return None
+        if unsafe.search(f"{finding['finding']} {finding['reason']}"):
+            return None
+    return data
+
+
+def _prepare_design(e):
+    """Accept only a result for the checkout and the current live PR head."""
+    data = _design_payload(e.rest)
+    if data is None or not e.item["pr"]:
+        return None
+    input_key = prompt.design_input_key(e.project, e.number, e.item["pr"], e.run["id"])
+    try:
+        source = json.loads(e.led.get_kv(input_key) or "{}")
+        expected = source.get("head")
+        evidence = source.get("evidence")
+        checkout_head = runner.git(e.run["worktree"], "rev-parse", "HEAD")
+        view = e.ctx.gh(e.project).pr_view(e.item["pr"])
+        current = view.get("headRefOid")
+        if not isinstance(evidence, str) or not evidence.strip():
+            return None
+        if (view.get("state") != "OPEN" or not isinstance(expected, str)
+                or data["head"] != expected or checkout_head != expected or current != expected):
+            return None
+        if data["disposition"] == "followups":
+            body = e.ctx.gh(e.project).issue_body(e.number)
+            section = re.search(r"^## Done when\s*\n(.*?)(?=^## |\Z)", body or "",
+                                re.MULTILINE | re.DOTALL | re.IGNORECASE)
+            criteria = {line.strip() for line in section[1].splitlines()} if section else set()
+            if any(line and line in json.dumps(data["followups"], ensure_ascii=False)
+                   for line in criteria):
+                return None
+        return {"data": data, "head": expected, "evidence": evidence}
+    except (GHError, runner.GitError, OSError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _design_result(e, prepared):
+    if prepared is None:
+        e.set_state("verifying", "design run produced no usable current-head result — retrying")
+        return True
+    data = prepared["data"]
+    result = {
+        "pr": e.item["pr"], "head": prepared["head"], "run_id": e.run["id"],
+        "source_review_evidence": prepared["evidence"],
+        "disposition": data["disposition"],
+    }
+    if data["disposition"] == "followups":
+        result["rationale"] = data["rationale"]
+    result["plan" if data["disposition"] == "fix" else "followups"] = data[
+        "plan" if data["disposition"] == "fix" else "followups"]
+    e.led.set_kv(_design_record_key(e.project, e.number, e.item["pr"], prepared["head"]),
+                 json.dumps(result, sort_keys=True))
+    e.set_state("verifying", "design result recorded — conductor can consume it")
+    return True
 
 
 # ---------- review outcomes (DESIGN D11) ----------
@@ -533,7 +637,8 @@ def finalize(ctx, run):
         outcome = f"{verb} {rest}"
     if log.get("credit_exhausted"):
         _record_credit_failure(ctx, run, log)
-    elif reason is None and (log.get("ok") is True or verb in {"DONE", "READY", "SPLIT", "REVIEW-PASS"}):
+    elif reason is None and (log.get("ok") is True or verb in {
+            "DONE", "READY", "SPLIT", "REVIEW-PASS", "DESIGNED"}):
         _record_credit_recovery(ctx, run["platform"])
     ctx.say(f"{project}#{n}: run {run['id']} ({run['role']} on {run['platform']}) ended — "
             f"{outcome}{f' [{reason}]' if reason else ''}")
@@ -554,14 +659,16 @@ def finalize(ctx, run):
 
     # Snapshot pushes and handoff comments can take long enough for an
     # interactive claim to replace us. Do them before taking the write lock.
-    if run["role"] not in ("sort", "review"):
+    if run["role"] not in ("sort", "review", "design"):
         _save_work(ending)
 
     # Prepare slow work without holding SQLite's single writer lock. The
     # transaction below must recheck the epoch after these calls return.
     _mark_stale(ending)
     if not ending.stale and not ending.closed:
-        if run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+        if run["role"] == "design" and verb == "DESIGNED":
+            prepared_design = _prepare_design(ending)
+        elif run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL"):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
@@ -588,6 +695,8 @@ def finalize(ctx, run):
                     REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)
                 else:
                     REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
+            elif run["role"] == "design":
+                _design_result(ending, prepared_design if verb == "DESIGNED" else None)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
     ending.notify()

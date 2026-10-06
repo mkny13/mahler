@@ -14,6 +14,7 @@ import signal
 import subprocess
 
 from . import config, platforms, redact, router
+from .ledger import row_get
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
               "post-rewrite", "pre-applypatch", "pre-commit", "pre-merge-commit",
@@ -146,10 +147,12 @@ def prepare(ctx, project, item, role, platform, run_id):
     if role == "sort":
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
-        # a fix run works on the PR's head branch itself (D18): its pushes
-        # re-trigger CI. A review checks out that same head, read-only
-        # (D11). A build gets the item's canonical branch name.
-        branch = (item["branch"] if role in ("fix", "review") and item["branch"]
+        if role == "design" and (not row_get(item, "pr") or not row_get(item, "branch")
+                                 or not remote_has(repo, row_get(item, "branch"))):
+            raise GitError("design run requires the current PR branch")
+        # A fix works on the PR's branch so pushes re-trigger CI (D18);
+        # review and design inspect that same head without handoff edits (D11).
+        branch = (item["branch"] if role in ("fix", "review", "design") and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
         start = start_ref(repo, base, item["branch"], branch)
         try:
@@ -176,7 +179,8 @@ def prepare(ctx, project, item, role, platform, run_id):
         if kept:
             start = f"origin/{base}"
     return {"run_dir": run_dir, "worktree": wt, "branch": branch,
-            "base_ref": start, "replayed": replayed, "kept": kept}
+            "base_ref": start, "replayed": replayed, "kept": kept,
+            "head_sha": git(wt, "rev-parse", "HEAD")}
 
 
 def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", stdin_path=None):
@@ -234,14 +238,15 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
     pol = ctx.policy(project)
     pconf = ctx.cfg["platforms"][platform]
     wt, run_dir = prep["worktree"], prep["run_dir"]
-    argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
+    platform_role = "sort" if role == "design" else role
+    argv = platforms.argv_for(pconf, prompt, wt, platform_role, pol["run_timeout_minutes"])
     if not argv[0]:
         raise RuntimeError(f"{platform} CLI not found")
     # Keep the run record aligned with the exact validated setting passed to
     # the adapter, including the explicit default for unconfigured runs.
     if hasattr(ctx, "led"):
         lines = router.platform_burst(platform, pconf, getattr(ctx, "burst_lines", None))
-        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default",
+        ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, platform_role) or "default",
                            burst_lines=json.dumps(lines) if lines else None)
 
     env = run_env(ctx, project, item["number"], platform, run_id, epoch)
