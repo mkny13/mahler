@@ -24,7 +24,6 @@ def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
     migrate_capacity_waits(ctx, project)
-    reconcile_shipped(ctx, project)
     _bootstrap_release_baseline(ctx, project, gh)
     # Conditional poll (mahler#90): a 304 means the open-issue collection is
     # byte-identical to the last full sync — no new issues, no edits, no
@@ -38,6 +37,7 @@ def sync(ctx, project):
     # self/ancestor deadlocks as well as preserving qualifiers.
     depends_key = f"depends_format:{project}"
     if not poll_changed and led.get_kv(depends_key) == "4":
+        reconcile_shipped(ctx, project)
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
         return
     issues = gh.open_issues()
@@ -152,6 +152,9 @@ def sync(ctx, project):
                 led.release(project, item["number"])
                 led.set_state(project, item["number"], "done", "closed on GitHub")
 
+    # Ingest this poll's linked bugs and reopen signals before evaluating the
+    # quiet window. A failed fetch must never complete from stale evidence.
+    reconcile_shipped(ctx, project)
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
     led.set_kv(depends_key, "4")

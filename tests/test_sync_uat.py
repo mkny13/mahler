@@ -258,6 +258,41 @@ class QuietWindowTests(unittest.TestCase):
         self.reconcile()
         self.assertEqual(self.state(), "done")
 
+    def test_sync_ingests_last_interval_bug_before_quiet_completion(self):
+        for ref in (5, 88):
+            with self.subTest(ref=ref):
+                self.led.con.execute("DELETE FROM items WHERE number=20")
+                self.now = self.MERGED + timedelta(days=14)
+                bug = dict(number=20, title="Regression", body=f"Broke #{ref}",
+                           labels=[{"name": "type:bug"}], comments=[],
+                           createdAt=iso(self.now - timedelta(seconds=30)))
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(self.gh, "open_issues", return_value=[bug]), \
+                        mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
+                    sync.sync(self.ctx, "x")
+                    sync.sync(self.ctx, "x")
+                self.assertIsNotNone(self.led.item("x", 20))
+                self.assertEqual(self.state(), "shipped")
+                self.assertEqual(self.led.q("SELECT * FROM completion_evidence"), [])
+
+    def test_quiet_completion_still_runs_on_unchanged_poll(self):
+        self.now = self.MERGED + timedelta(days=14)
+        self.led.set_kv("depends_format:x", "4")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "issues_changed", return_value=(False, None)), \
+                mock.patch.object(self.gh, "open_issues") as fetch:
+            sync.sync(self.ctx, "x")
+        fetch.assert_not_called()
+        self.assertEqual(self.state(), "done")
+
+    def test_failed_issue_fetch_does_not_complete_from_stale_evidence(self):
+        self.now = self.MERGED + timedelta(days=14)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "open_issues", side_effect=gh_module.GHError("offline")):
+            with self.assertRaises(gh_module.GHError):
+                sync.sync(self.ctx, "x")
+        self.assertEqual(self.state(), "shipped")
+
     def test_legacy_rows_old_complete_young_wait_in_bounded_batches(self):
         for n in range(10, 10 + sync.QUIET_BATCH + 3):
             self.led.upsert_item("x", n, state="shipped", mirror="mahler:shipped")
