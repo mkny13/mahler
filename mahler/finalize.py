@@ -157,6 +157,8 @@ def _design_payload(rest):
     unsafe = re.compile(
         r"\b(security|credential|authentication|authorization|data[- ]loss|"
         r"unrecoverable|irreversible)\b", re.IGNORECASE)
+    if unsafe.search(data["rationale"]):
+        return None
     for finding in findings:
         if (not isinstance(finding, dict)
                 or set(finding) != {"finding", "category", "reason"}
@@ -192,8 +194,12 @@ def _prepare_design(e):
             body = e.ctx.gh(e.project).issue_body(e.number)
             section = re.search(r"^## Done when\s*\n(.*?)(?=^## |\Z)", body or "",
                                 re.MULTILINE | re.DOTALL | re.IGNORECASE)
-            criteria = {line.strip() for line in section[1].splitlines()} if section else set()
-            search_text = json.dumps(data["followups"], ensure_ascii=False) + " " + data.get("rationale", "")
+            criteria = {
+                re.sub(r"^(?:[-*+]\s+)?(?:\[[ xX]\]\s*)?", "", line.strip()).casefold()
+                for line in section[1].splitlines()
+            } if section else set()
+            search_text = (json.dumps(data["followups"], ensure_ascii=False) + " "
+                           + data["rationale"]).casefold()
             if any(line and line in search_text for line in criteria):
                 return None
         return {"data": data, "head": expected, "evidence": evidence}

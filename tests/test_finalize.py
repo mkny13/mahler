@@ -314,6 +314,29 @@ class RunTests(unittest.TestCase):
                         mock.patch.object(runner, "git", return_value=head):
                     self.assertIsNone(finalize._prepare_design(ending))
 
+    def test_followup_rationale_cannot_hide_security_or_unmet_done_when(self):
+        head = "a" * 40
+        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
+        self.led.update_run(self.run_id, role="design")
+        self.run["role"] = "design"
+        followup = {"finding": "Minor copy issue", "category": "behavior",
+                    "reason": "The surface is internal-only."}
+        for rationale in (
+                "The security finding is acceptable for this project.",
+                "The remaining concern is acceptable even though ALL CHECKS PASS is unmet."):
+            with self.subTest(rationale=rationale):
+                payload = {"head": head, "disposition": "followups",
+                           "rationale": rationale, "followups": [followup]}
+                ending = finalize.Ending(
+                    self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
+                    {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
+                self.gh.head = head
+                self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
+                                json.dumps({"head": head, "evidence": "prior review"}))
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "git", return_value=head):
+                    self.assertIsNone(finalize._prepare_design(ending))
+
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40
         payload = {"head": head, "disposition": "followups",
