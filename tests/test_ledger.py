@@ -32,6 +32,111 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def post_merge_policy(self):
+        return {"enabled": True, "post_merge": {
+            **config.DEFAULT_POST_MERGE, "enabled": True, "live_command": "./live"}}
+
+    def test_post_merge_disabled_and_exact_identity(self):
+        sha = "a" * 40
+        for policy in ({}, {"enabled": True},
+                       {"enabled": True, "post_merge": config.DEFAULT_POST_MERGE},
+                       {**self.post_merge_policy(), "enabled": False}):
+            self.assertIsNone(self.led.create_post_merge_check("p", 1, sha, policy))
+        self.assertEqual(self.led.q("SELECT * FROM post_merge_checks"), [])
+        policy = self.post_merge_policy()
+        first = dict(self.led.create_post_merge_check("p", 1, sha, policy, tag="v1"))
+        self.clock.advance(seconds=10)
+        repeated = dict(self.led.create_post_merge_check("p", 1, sha, policy, tag="v2"))
+        self.assertEqual(first, repeated)
+        self.assertEqual(first["deadline_at"], iso(self.clock() + timedelta(seconds=1790)))
+        for project, number, identity in (("p", 1, "b" * 40), ("p", 2, sha), ("q", 1, sha)):
+            self.led.create_post_merge_check(project, number, identity, policy)
+        self.assertEqual(len(self.led.q("SELECT * FROM post_merge_checks")), 4)
+        with self.assertRaisesRegex(ValueError, "full lowercase merge SHA"):
+            self.led.create_post_merge_check("p", 1, "aaaaaaa", policy)
+
+    def test_post_merge_transitions_fencing_and_terminal_stability(self):
+        sha = "a" * 40
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy())
+        def update(expected, phase, **kw):
+            return self.led.update_post_merge_check("p", 1, sha,
+                expected_phase=expected, phase=phase, **kw)
+        for expected, phase, kw in (("deploy", "smoke", {}),
+                                    ("deploy", "deploy", {"status": "PASS"}),
+                                    ("deploy", "deploy", {"status": "FAIL"})):
+            with self.assertRaises(ValueError):
+                update(expected, phase, **kw)
+        self.assertTrue(update("deploy", "deploy", summary="API_TOKEN=secret"))
+        self.assertEqual(self.led.post_merge_check("p", 1, sha)["summary"],
+                         "API_TOKEN=<redacted>")
+        self.clock.advance(seconds=1)
+        self.assertTrue(update("deploy", "live"))
+        self.assertFalse(update("deploy", "live"))
+        for phase, kw in (("deploy", {}), ("smoke", {}),
+                          ("smoke", {"live_sha": "b" * 40})):
+            with self.assertRaises(ValueError):
+                update("live", phase, **kw)
+        self.assertFalse(self.led.update_post_merge_check("p", 1, "b" * 40,
+                         expected_phase="live", phase="smoke", live_sha=sha))
+        self.assertTrue(update("live", "smoke", live_sha=sha, artifact_ref="artifact-v1"))
+        with self.assertRaisesRegex(ValueError, "evidence reference"):
+            update("smoke", "smoke", status="PASS")
+        self.assertTrue(update("smoke", "smoke", status="PASS", evidence_ref="report=v1.md"))
+        terminal = dict(self.led.post_merge_check("p", 1, sha))
+        self.assertIsNotNone(terminal["finished_at"])
+        self.clock.advance(minutes=1)
+        self.assertFalse(update("smoke", "smoke", status="FAIL", failure_code="late"))
+        self.assertFalse(update("smoke", "smoke"))
+        self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy())
+        self.assertEqual(dict(self.led.post_merge_check("p", 1, sha)), terminal)
+        self.assertEqual(self.led.item("p", 1)["state"], "shipped")
+        self.assertEqual(self.led.q("SELECT * FROM completion_evidence"), [])
+
+    def test_post_merge_failure_in_each_phase_and_redaction(self):
+        for phase in ("deploy", "live", "smoke"):
+            sha = {"deploy": "a", "live": "b", "smoke": "c"}[phase] * 40
+            self.led.create_post_merge_check("p", 1, sha, self.post_merge_policy(),
+                                             artifact_ref="https://u:secret@host/build")
+            if phase != "deploy":
+                self.led.update_post_merge_check("p", 1, sha, expected_phase="deploy", phase="live")
+            if phase == "smoke":
+                self.led.update_post_merge_check("p", 1, sha, expected_phase="live",
+                                                  phase="smoke", live_sha=sha)
+            self.assertTrue(self.led.update_post_merge_check("p", 1, sha,
+                expected_phase=phase, phase=phase, status="FAIL", failure_code="timeout",
+                summary="PASSWORD=secret " + "x" * 3000))
+            row = dict(self.led.post_merge_check("p", 1, sha))
+            self.assertNotIn("secret", str(row))
+            self.assertEqual(len(row["summary"]), 2000)
+            self.assertFalse(self.led.update_post_merge_check("p", 1, sha,
+                expected_phase=phase, phase=phase))
+            self.assertEqual(dict(self.led.post_merge_check("p", 1, sha)), row)
+
+    def test_post_merge_migrates_old_database_and_survives_reopen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            old = sqlite3.connect(path)
+            old.executescript(SCHEMA)
+            old.execute("DROP TABLE post_merge_checks")
+            old.execute("INSERT INTO items(project,number,state) VALUES ('p',1,'shipped')")
+            old.commit()
+            old.close()
+            led = Ledger(path, clock=self.clock)
+            try:
+                self.assertEqual(led.q("SELECT * FROM post_merge_checks"), [])
+                self.assertEqual(led.item("p", 1)["state"], "shipped")
+                row = dict(led.create_post_merge_check("p", 1, "a" * 40,
+                                                      self.post_merge_policy(), tag="v1"))
+            finally:
+                led.close()
+            led = Ledger(path, clock=self.clock)
+            try:
+                self.assertEqual(dict(led.create_post_merge_check("p", 1, "a" * 40,
+                                     self.post_merge_policy())), row)
+            finally:
+                led.close()
+
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
         with self.assertRaisesRegex(ValueError, "requires verification evidence"):
