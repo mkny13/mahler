@@ -25,6 +25,23 @@ class VerifyingUsageTests(unittest.TestCase):
             usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
         self.assertIn("agy-claude", {c.args[1] for c in needs.call_args_list})
 
+    def test_pinned_opt_in_platform_is_probed_only_when_pinned(self):
+        for state in ("inbox", "ready", "verifying"):
+            for pin in ("kiro", None):
+                with self.subTest(state=state, pin=pin):
+                    cfg = copy.deepcopy(config.DEFAULTS)
+                    cfg["platforms"]["kiro"]["enabled"] = True
+                    for role in cfg["routing"]:
+                        cfg["routing"][role] = [n for n in cfg["routing"][role] if n != "kiro"]
+                    cfg["projects"]["x"] = {"path": "/tmp/x", "repo": "x/y"}
+                    led = Ledger(":memory:", clock=lambda: NOW)
+                    self.addCleanup(led.close)
+                    led.upsert_item("x", 1, state=state, priority=2, pin=pin)
+                    ctx = scheduler.Ctx(cfg, led, dry_run=True)
+                    with mock.patch.object(usage, "_usage_needs_refresh", return_value=False) as needs:
+                        usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
+                    self.assertEqual("kiro" in {c.args[1] for c in needs.call_args_list}, pin == "kiro")
+
 
 if __name__ == "__main__":
     unittest.main()
