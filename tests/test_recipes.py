@@ -617,7 +617,7 @@ class CodingScopeRecipeTests(unittest.TestCase):
 
 
 class DesignRecipeTests(unittest.TestCase):
-    def test_contract_is_plan_only_and_always_requires_a_fix_plan(self):
+    def test_contract_is_plan_only_and_returns_structured_dispositions(self):
         rendered = prompt.render(
             "design", number=714, repo="mkny13/mahler", title="Design",
             platform="claude", worktree="/tmp/wt", branch="mahler/714-design",
@@ -627,13 +627,12 @@ class DesignRecipeTests(unittest.TestCase):
         for fragment in (
             "read-only checkout", "Do not edit files", "create or amend commits, push",
             "write to GitHub", "complete supplied review history", "STATUS: DESIGNED",
-            '"disposition":"fix"', '"files":["path"]',
+            '"disposition":"fix"', '"disposition":"followups"', '"files":["path"]',
             '"steps":["..."]', '"tests":"..."', "security finding",
             "unsatisfied Done-when criterion", "silent unrecoverable data loss",
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, compact)
-        self.assertNotIn('"disposition":"followups"', compact)
         for value in ("714", "mkny13/mahler", "42", "a" * 40,
                       "complete review history", "effective project rules"):
             self.assertIn(value, rendered)

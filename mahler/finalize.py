@@ -146,7 +146,35 @@ def _design_payload(rest):
                     or any(not isinstance(value, str) or not value.strip() for value in values)):
                 return None
         return data
-    return None
+    if data.get("disposition") != "followups" or set(data) != {
+            "head", "disposition", "rationale", "followups"}:
+        return None
+    if not isinstance(data["rationale"], str) or not data["rationale"].strip():
+        return None
+    findings = data["followups"]
+    if not isinstance(findings, list) or len(findings) > 100:
+        return None
+    allowed = {"scope", "spec", "behavior", "hardening", "testing"}
+    unsafe = re.compile(
+        r"\b(security|credential|authentication|authorization|api[- ]?keys?|"
+        r"secrets?|passwords?|access[- ]tokens?|private[- ]keys?|data[- ]loss|"
+        r"unrecoverable|irreversible|pii|personal(?:ly)?[- ](?:information|data|identifiable)|"
+        r"privacy|private[- ](?:data|information)|sensitive|confidential|leak(?:s|ed|ing|age)?|"
+        r"expos(?:e|es|ed|ing|ure)|vulnerabilit(?:y|ies)|encrypt(?:ed|ion)?|plaintext|"
+        r"(?:debug|log|logs|logging)[- ]?(?:files?|output)?)\b", re.IGNORECASE)
+    if unsafe.search(data["rationale"]):
+        return None
+    for finding in findings:
+        if (not isinstance(finding, dict)
+                or set(finding) != {"finding", "category", "reason"}
+                or not isinstance(finding.get("category"), str)
+                or finding["category"] not in allowed
+                or any(not isinstance(finding.get(k), str) or not finding[k].strip()
+                       for k in ("finding", "reason"))):
+            return None
+        if unsafe.search(f"{finding['finding']} {finding['reason']}"):
+            return None
+    return data
 
 
 def _prepare_design(e):
@@ -167,6 +195,18 @@ def _prepare_design(e):
         if (view.get("state") != "OPEN" or not isinstance(expected, str)
                 or data["head"] != expected or checkout_head != expected or current != expected):
             return None
+        if data["disposition"] == "followups":
+            body = e.ctx.gh(e.project).issue_body(e.number)
+            section = re.search(r"^## Done when\s*\n(.*?)(?=^## |\Z)", body or "",
+                                re.MULTILINE | re.DOTALL | re.IGNORECASE)
+            criteria = {
+                re.sub(r"^(?:[-*+]\s+)?(?:\[[ xX]\]\s*)?", "", line.strip()).casefold()
+                for line in section[1].splitlines()
+            } if section else set()
+            search_text = (json.dumps(data["followups"], ensure_ascii=False) + " "
+                           + data["rationale"]).casefold()
+            if any(line and line in search_text for line in criteria):
+                return None
         return {"data": data, "head": expected, "evidence": evidence}
     except (GHError, runner.GitError, OSError, TypeError, ValueError, AttributeError):
         return None
@@ -182,7 +222,10 @@ def _design_result(e, prepared):
         "source_review_evidence": prepared["evidence"],
         "disposition": data["disposition"],
     }
-    result["plan"] = data["plan"]
+    if data["disposition"] == "followups":
+        result["rationale"] = data["rationale"]
+    result["plan" if data["disposition"] == "fix" else "followups"] = data[
+        "plan" if data["disposition"] == "fix" else "followups"]
     e.led.set_kv(_design_record_key(e.project, e.number, e.item["pr"], prepared["head"]),
                  json.dumps(result, sort_keys=True))
     e.set_state("verifying", "design result recorded — conductor can consume it")
