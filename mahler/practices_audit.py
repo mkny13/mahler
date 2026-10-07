@@ -229,7 +229,11 @@ def _expand(tree, command, seen=()):
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        for part in re.split(r"\s*(?:&&|;)\s*", line):
+        parts = _verify_parts(line, separators=";")
+        if parts is None:
+            uncertain = True
+            continue
+        for part in parts:
             expanded, unknown = _expand(tree, part, (*seen, command))
             rows.extend((cmd, f"{script}:{number}" + (f" -> {cite}" if cite else ""))
                         for cmd, cite in expanded)
@@ -463,7 +467,8 @@ def _workflow(tree, path):
                         body.append(f_text.strip())
                     cmd_val = "\n".join(body) if cmd_val.startswith("|") else " ".join(body)
                 else:
-                    cmd_val = cmd_val.strip("'\"")
+                    if len(cmd_val) >= 2 and cmd_val[0] in "'\"" and cmd_val[-1] == cmd_val[0]:
+                        cmd_val = cmd_val[1:-1]
                 step_run_cmd = cmd_val
             j += 1
 
@@ -477,11 +482,14 @@ def _workflow(tree, path):
         )
 
         if step_run_cmd is not None:
-            for part in re.split(r"\s*(?:&&|;|\n)\s*", step_run_cmd):
+            parts = _verify_parts(step_run_cmd, separators=";\n")
+            syntax_unknown = parts is None
+            for part in parts if parts is not None else [step_run_cmd]:
                 if not part or part.startswith("#"):
                     continue
                 cmd_dynamic = "${{" in part
                 expanded, unknown = _expand(tree, part)
+                unknown |= syntax_unknown
 
                 for cmd, cite in expanded:
                     cmd_uncertain = False
@@ -573,8 +581,10 @@ def _ci(tree):
     return _finding("ci-tests", state, reason, evidence), rows, sorted(set(jobs)), uncertain
 
 
-def _verify_parts(command):
-    """Split only literal AND chains, retaining shell quoting for _words().
+def _verify_parts(command, *, separators=""):
+    """Split literal AND chains, retaining shell quoting for _words().
+
+    CI extraction can also allow semicolon/newline command lists.
 
     Unsupported shell operators/expansions remain unproven, never executed.
     """
@@ -596,6 +606,9 @@ def _verify_parts(command):
         elif command[i:i + 2] == "&&":
             parts.append(command[start:i].strip())
             i += 1
+            start = i + 1
+        elif char in separators:
+            parts.append(command[start:i].strip())
             start = i + 1
         elif char in "&|;<>()[]{}$`#\n\r":
             return None

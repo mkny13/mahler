@@ -350,6 +350,36 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(finding.state, "gap")
         self.assertIn("pnpm lint", "\n".join(finding.evidence))
 
+    def test_literal_operator_chains_through_workflow_and_scripts(self):
+        for command in ("echo 'a&&b' && test x", 'echo "a&&b"&&test x',
+                        r"echo a\&\&b&&test x", "test x&&echo 'a&&b'"):
+            for source in ("workflow", "shell", "package"):
+                with self.subTest(command=command, source=source):
+                    self.pol["verify"] = command
+                    self.write("AGENTS.md", GUIDANCE + command + "\n")
+                    self.write("checks.sh", command + "\n")
+                    self.write("package.json", json.dumps({"scripts": {"check": command}}))
+                    invocation = {"workflow": command, "shell": "sh checks.sh",
+                                  "package": "pnpm check"}[source]
+                    self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                        "python3 -m unittest discover -s tests", invocation))
+                    self.assertEqual(self.results()["verify-command"].state, "pass")
+
+    def test_invalid_ci_chains_do_not_prove_components(self):
+        for command in ("test x &&", "&& test x", "test x && && echo ok",
+                        "test x || echo ok", "test x | cat", "test x; ; echo ok"):
+            for source in ("workflow", "shell", "package"):
+                with self.subTest(command=command, source=source):
+                    self.pol["verify"] = "test x"
+                    self.write("AGENTS.md", GUIDANCE + "test x\n")
+                    self.write("checks.sh", command + "\n")
+                    self.write("package.json", json.dumps({"scripts": {"check": command}}))
+                    invocation = {"workflow": command, "shell": "sh checks.sh",
+                                  "package": "pnpm check"}[source]
+                    self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                        "python3 -m unittest discover -s tests", invocation))
+                    self.assertNotEqual(self.results()["verify-command"].state, "pass")
+
     def test_literal_verify_chain_parser(self):
         for command, parts in (
             ("a&&b", ["a", "b"]),
