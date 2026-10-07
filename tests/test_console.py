@@ -8,6 +8,7 @@ import re
 import tempfile
 import tomllib
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -818,15 +819,54 @@ class IdleReasonTests(unittest.TestCase):
                 self.assertIn(f"review waiting for capacity; {expected}", reason["text"])
                 self.assertIsNone(reason["countdown"])
 
-    def test_active_fix_does_not_show_old_capacity_wait(self):
-        cfg, led = make_cfg(), make_led()
-        led.upsert_item("mahler", 39, state="verifying", pr=112)
-        led.set_kv("ci:mahler#39:112", json.dumps({"state": "green"}))
-        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
-        led.set_kv("reviewfix-status:mahler#39", json.dumps({"state": "capacity_wait"}))
-        led.create_run(project="mahler", number=39, role="fix", platform="claude", epoch=1)
-        text, _ = state._verification_wait(led, "mahler", led.item("mahler", 39), led.now())
-        self.assertEqual(text, " — review failed; waiting for a fix run.")
+    def test_fix_wait_uses_only_matching_active_runs(self):
+        for ci in ("green", "red"):
+            for project, number, role, status, active_fix in (
+                    ("mahler", 39, "fix", "running", True),
+                    ("mahler", 39, "fix", "stopping", True),
+                    ("mahler", 40, "fix", "running", False),
+                    ("groundwork", 39, "fix", "running", False),
+                    ("mahler", 39, "build", "running", False),
+                    ("mahler", 39, "fix", "ended", False)):
+                with self.subTest(ci=ci, project=project, number=number,
+                                  role=role, status=status), closing(make_led()) as led:
+                    led.upsert_item("mahler", 39, state="verifying", pr=112)
+                    led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
+                    led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+                    led.set_kv("reviewfix-status:mahler#39", json.dumps({
+                        "state": "capacity_wait", "reason": "no eligible route", "tier": 2}))
+                    rid = led.create_run(project=project, number=number, role=role,
+                                         platform="claude", epoch=1)
+                    led.update_run(rid, status=status)
+                    text, _ = state._verification_wait(
+                        led, "mahler", led.item("mahler", 39), led.now())
+                    if active_fix:
+                        failure = "review failed" if ci == "green" else "CI failed"
+                        self.assertEqual(text, f" — {failure}; waiting for a fix run.")
+                    else:
+                        self.assertIn("fix waiting for capacity", text)
+
+    def test_completed_fix_ignores_running_marker_and_shows_fresh_wait(self):
+        for ci in ("green", "red"):
+            with self.subTest(ci=ci), closing(make_led()) as led:
+                led.upsert_item("mahler", 39, state="verifying", pr=112)
+                led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
+                led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+                rid = led.create_run(project="mahler", number=39, role="fix",
+                                     platform="claude", epoch=1)
+                led.update_run(rid, status="ended")
+                item = led.item("mahler", 39)
+                expected = state._verification_wait(led, "mahler", item, led.now())
+                led.set_kv("reviewfix-status:mahler#39", json.dumps({"state": "running"}))
+                self.assertEqual(state._verification_wait(led, "mahler", item, led.now()),
+                                 expected)
+                retry = led.now() + timedelta(hours=2)
+                led.set_kv("reviewfix-status:mahler#39", json.dumps({
+                    "state": "capacity_wait", "since": iso(led.now()), "retry_at": iso(retry)}))
+                text, timeout = state._verification_wait(led, "mahler", item, led.now())
+                self.assertIn(f"fix waiting for capacity; retry around "
+                              f"{retry.astimezone():%b %d %H:%M %Z}", text)
+                self.assertIsNone(timeout)
 
     def test_mergeability_wait_copy_matches_current_checks_and_target(self):
         led = make_led()

@@ -1688,9 +1688,9 @@ def _verification_wait(led, project, item, now):
         return f" — mergeability unknown; waiting for GitHub{detail}.", None
 
     review = read(f"review:{project}#{number}")
-    active = led.active_runs()
-    roles = {r["role"] for r in active
-             if r["project"] == project and r["number"] == number}
+    # Run records, not legacy running-only KV values, own the live fix signal.
+    fix_running = any(r["number"] == number and r["role"] == "fix"
+                      for r in led.active_runs(project))
     needs_review = review.get("verdict") in ("pending", "fail")
     if not needs_review:
         labels = json.loads(row_get(item, "labels", "[]"))
@@ -1699,7 +1699,7 @@ def _verification_wait(led, project, item, now):
     if needs_review and review.get("verdict") in (None, "pending"):
         return " — waiting for the independent review.", elapsed
     if review.get("verdict") == "fail":
-        if "fix" in roles:
+        if fix_running:
             return " — review failed; waiting for a fix run.", elapsed
         fix_wait = read(f"reviewfix-status:{project}#{number}")
         if fix_wait.get("reason") and "no eligible route" in fix_wait["reason"]:

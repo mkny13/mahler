@@ -1011,7 +1011,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, context=context, fix_reason="review",
              **({"explore": True} if explore else {})):
-        led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
+        led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
         if not base_conflict:
@@ -1135,7 +1135,7 @@ def _red_ci(ctx, project, item, pr, view):
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, fix_reason="ci",
              **({"explore": True} if explore else {})):
-        led.set_kv(f"reviewfix-status:{project}#{n}", json.dumps({"state": "running"}))
+        led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
 

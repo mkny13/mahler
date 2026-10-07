@@ -641,6 +641,47 @@ class ShipTests(unittest.TestCase):
                     self.assertIn("no known recovery", ping.call_args.args[1])
                     self.assertEqual(self.item()["state"], "needs_you")
 
+    def test_fix_start_clears_wait_only_on_success(self):
+        for review in (False, True):
+            with self.subTest(review=review):
+                self.led.upsert_item("x", 5, pr=88, attempts=0, labels='["size:m"]')
+                self.gh.rollup = [{"state": "SUCCESS" if review else "FAILURE"}]
+                verdict = {"sha": "abc123", "verdict": "fail"}
+                self.led.set_kv("review:x#5", json.dumps(verdict) if review else None)
+                key = f"{'reviewfix' if review else 'red'}:x#5:88:abc123"
+                with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
+                    self.ship()
+                wait = self.led.get_kv("reviewfix-status:x#5")
+                self.assertEqual(json.loads(wait)["state"], "capacity_wait")
+                cycle = self.led.get_kv(key)
+                with mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
+                        mock.patch.object(ship, "start", return_value=False) as start:
+                    self.ship()
+                    start.assert_called_once()
+                self.assertEqual(self.led.get_kv("reviewfix-status:x#5"), wait)
+                self.assertEqual(self.led.get_kv(key), cycle)
+                self.assertEqual(self.item()["attempts"], 0)
+                self.assertFalse(self.led.get_kv(f"{key}:charged"))
+
+                def launch(ctx, project, item, role, platform, **kwargs):
+                    self.led.create_run(project=project, number=item["number"],
+                                        role=role, platform=platform, epoch=1)
+                    return True
+
+                with mock.patch("mahler.router.pick_for_project", return_value=("claude", [])), \
+                        mock.patch.object(ship, "start", side_effect=launch) as start:
+                    self.ship()
+                    start.assert_called_once()
+                self.assertFalse(self.led.get_kv("reviewfix-status:x#5"))
+                self.assertEqual(self.led.get_kv(key), cycle)
+                self.assertEqual(self.item()["attempts"], 1)
+                self.assertEqual(self.led.get_kv(f"{key}:charged"), "1")
+                run = self.led.last_run("x", 5, roles=("fix",))
+                if review:
+                    self.assertEqual(json.loads(self.led.get_kv(f"{key}:run")),
+                                     {"run_id": run["id"], "verdict": verdict})
+                self.led.update_run(run["id"], status="ended")
+
     def test_known_hold_skips_routing_then_recovers(self):
         self.cfg["routing"]["review"] = ["agy-claude"]
         self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
