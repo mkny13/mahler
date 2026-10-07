@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, presence, router, warmup
+from .. import config, presence, review, router, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -1619,15 +1619,11 @@ def capacity_wait_text(led, project, item, now):
 
     number = item["number"]
     ci = read(f"ci:{project}#{number}:{item['pr']}")
-    review = read(f"review:{project}#{number}")
-    # Like the ship review gate, ignore a verdict for an older PR head.
-    # A fresh pending verdict is only written once the next review starts.
-    if ci.get("sha") and review.get("sha") != ci["sha"]:
-        review = {}
+    rev_status = review.effective_for_item(led, project, number, pr=item["pr"], sha=ci.get("sha"))
     if ci.get("state") == "red" or (ci.get("state") == "green"
-                                         and review.get("verdict") == "fail"):
+                                         and rev_status == "fail"):
         role, key = "fix", "reviewfix-status"
-    elif ci.get("state") == "green" and review.get("verdict") in (None, "pending"):
+    elif ci.get("state") == "green" and rev_status in (None, "pending", "unknown", "required"):
         role, key = "review", "review-wait"
     else:
         return ""
@@ -1687,18 +1683,19 @@ def _verification_wait(led, project, item, now):
         detail = f"; {mergeability['error']}" if mergeability.get("error") else ""
         return f" — mergeability unknown; waiting for GitHub{detail}.", None
 
-    review = read(f"review:{project}#{number}")
+    rev_status = review.effective_for_item(led, project, number, pr=pr, sha=ci.get("sha"))
     # Run records, not legacy running-only KV values, own the live fix signal.
     fix_running = any(r["number"] == number and r["role"] == "fix"
                       for r in led.active_runs(project))
-    needs_review = review.get("verdict") in ("pending", "fail")
+    needs_review = rev_status in ("pending", "fail")
     if not needs_review:
         labels = json.loads(row_get(item, "labels", "[]"))
         size = next((x.split(":", 1)[1] for x in labels if x.startswith("size:")), None)
-        needs_review = size in ("m", "l") or router.risk_min_tier(row_get(item, "title", "")) > 0
-    if needs_review and review.get("verdict") in (None, "pending"):
+        needs_review = (size in ("m", "l") or router.risk_min_tier(row_get(item, "title", "")) > 0
+                        or led.get_kv(f"reviewed-pr:{project}#{number}") == str(pr))
+    if needs_review and rev_status in (None, "pending", "unknown", "required"):
         return " — waiting for the independent review.", elapsed
-    if review.get("verdict") == "fail":
+    if rev_status == "fail":
         if fix_running:
             return " — review failed; waiting for a fix run.", elapsed
         fix_wait = read(f"reviewfix-status:{project}#{number}")

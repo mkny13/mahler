@@ -173,3 +173,85 @@ def file_followups(ctx, project, item):
                 ctx.say(f"{project}#{item['number']}: follow-up filing pending — {err}")
                 return False
     return True
+
+
+def effective(binding, pr=None, sha=None, run=None, *, project=None, number=None, required=False):
+    """Derive effective review status over PR/head identity, launch binding, run lifecycle, and verdict evidence.
+
+    Returns:
+        "pass"     - terminal pass verdict matching identity (PR and SHA)
+        "fail"     - terminal fail verdict matching identity (PR and SHA)
+        "pending"  - active (running/stopping) review run matching identity, item, and role
+        "required" - if required is True and no matching verdict or active run exists
+        "unknown"  - if required is False and no matching verdict or active run exists
+    """
+    if isinstance(binding, str):
+        try:
+            binding = json.loads(binding)
+        except (ValueError, TypeError):
+            binding = {}
+    if not isinstance(binding, dict):
+        binding = {}
+
+    binding_sha = binding.get("sha")
+    binding_pr = binding.get("pr")
+
+    sha_matches = bool(not sha or not binding_sha or binding_sha == sha)
+    pr_matches = bool(pr is None or binding_pr is None or str(binding_pr) == str(pr))
+    identity_matches = sha_matches and pr_matches
+
+    # Terminal verdict evidence: pass/fail only for matching identity.
+    verdict = binding.get("verdict")
+    if identity_matches and verdict in ("pass", "fail"):
+        return verdict
+
+    # Active pending: only for a matching active (running/stopping) review run.
+    if run is not None and identity_matches:
+        run_dict = dict(run) if not isinstance(run, dict) else run
+        run_status = run_dict.get("status")
+        run_role = run_dict.get("role")
+        run_id = run_dict.get("id")
+        run_proj = run_dict.get("project")
+        run_num = run_dict.get("number")
+
+        role_matches = (run_role == "review")
+        status_matches = (run_status in ("running", "stopping"))
+        item_matches = ((project is None or run_proj is None or run_proj == project)
+                        and (number is None or run_num is None or run_num == number))
+
+        bound_run_id = binding.get("run_id")
+        if bound_run_id is not None:
+            id_matches = (run_id is not None and str(run_id) == str(bound_run_id))
+        else:
+            id_matches = bool(verdict == "pending")
+
+        if role_matches and status_matches and item_matches and id_matches:
+            return "pending"
+
+    return "required" if required else "unknown"
+
+
+effective_review = effective
+
+
+def effective_for_item(led, project, number, pr=None, sha=None, required=False):
+    """Convenience helper reading the launch binding and bound run from the ledger."""
+    key = f"review:{project}#{number}"
+    raw = led.get_kv(key)
+    try:
+        binding = json.loads(raw or "null") if raw else {}
+    except (ValueError, TypeError):
+        binding = {}
+    if not isinstance(binding, dict):
+        binding = {}
+    run = None
+    rid = binding.get("run_id")
+    if rid is not None:
+        run = led.run(rid)
+    if not run and binding.get("verdict") == "pending":
+        active = [r for r in led.active_runs(project)
+                  if r["number"] == number and r["role"] == "review"]
+        run = active[0] if active else None
+    return effective(binding, pr=pr, sha=sha, run=run,
+                     project=project, number=number, required=required)
+
