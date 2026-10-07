@@ -463,6 +463,7 @@ Claude may build, but keep headroom for me*):
    - Then Claude, only while the **5-hour window is under 60% and the weekly under 70%**.
    - A `platform:` label overrides the order.
    - The 2026-09-27 Cline check found no new free Gemini 3.8 Flash slot: `cline-free` keeps its GLM-5.3-flash default and tier-1 slot. No `cline-gemini` platform is added; Cline's Gemini provider uses a paid API key, while Antigravity's free `agy-gemini` (`gemini-3.8-flash-high`) already covers that model.
+   - The 2026-10-07 Moonshot Kimi Code CLI investigation (mahler#722) found that official membership documentation (https://www.kimi.com/code/docs/en/kimi-code/membership.html) restricts Kimi Code to paid subscription plans (Plus $19/mo and higher); the free Go/Adagio tier provides 0 coding quota. Third-party reports of a 7-day recurring free starter quota were unsubstantiated rumors that conflated legacy paid plans with a free tier. Per D8 free-only rules (Mahler never spends money; no card on file, no pay-as-you-go, no auto top-up), Kimi Code is ineligible as a free builder; no platform adapter is added.
 3. **Nothing autonomous ever runs into paid extra usage.** At or above 100%, Claude is marked
    exhausted until `resets_at`.
 4. **Escalation:** two failed verify rounds on a weaker platform → the item is retried a tier
