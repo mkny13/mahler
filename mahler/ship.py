@@ -25,6 +25,10 @@ def ship(ctx, projects):
         except Exception as e:                  # noqa: BLE001 — a tick must not break
             ctx.say(f"{p['name']}: ship pass failed — {e}")
         try:
+            _dependency_prs(ctx, p["name"])
+        except Exception as e:                  # one project must not stop the tick
+            ctx.say(f"{p['name']}: dependency-PR pass failed — {e}")
+        try:
             _unowned_prs(ctx, p["name"])
         except Exception as e:                  # noqa: BLE001 — a tick must not break
             ctx.say(f"{p['name']}: unowned-PR check failed — {e}")
@@ -32,6 +36,181 @@ def ship(ctx, projects):
 
 UNOWNED_SCAN_MINUTES = 15
 _BOT_BRANCHES = ("dependabot/", "renovate/")
+
+
+def _dependency_update(view):
+    """Recognize complete, single Dependabot bumps or Renovate update tables.
+
+    Titles and labels are not version evidence. Unknown/grouped body formats
+    deliberately wait for manual handling rather than guessing their risk.
+    """
+    branch = view.get("headRefName", "")
+    login = (view.get("author") or {}).get("login")
+    if view.get("isCrossRepository") is not False or not (
+            branch.startswith("dependabot/") and login in ("dependabot[bot]", "app/dependabot")
+            or branch.startswith("renovate/") and login in ("renovate[bot]", "app/renovate")):
+        return None
+    body = view.get("body") or ""
+    files = [f.get("path", "") for f in view.get("files", [])]
+    actions_only = bool(files) and all(
+        re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", f) for f in files)
+    updates = []
+    if branch.startswith("dependabot/"):
+        opening = body.split("\n\n", 1)[0].strip()
+        match = re.fullmatch(r"Bumps (\[[^\]\n]+\]\([^\s]+\)|[^\s]+) from `?([^`\s]+)`? to `?([^`\s]+?)`?\.?", opening)
+        if not match:
+            return None
+        dep, before, after = match.groups()
+        if branch.startswith("dependabot/github_actions/") and actions_only:
+            return {"classification": "github-actions", "dependencies": [dep]}
+        updates.append((dep, before, after, None))
+    else:
+        # The first markdown table is Renovate's complete package/update table.
+        table = re.search(r"(?m)^\| Package \|[^\n]*\n\|[- :|]+\n((?:\|[^\n]+\n?)+)", body)
+        if not table:
+            return None
+        headers = [c.strip() for c in table.group(0).splitlines()[0].strip('|').split('|')]
+        if not {"Package", "Update", "Change"}.issubset(headers):
+            return None
+        for line in table.group(1).splitlines():
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if len(cells) != len(headers):
+                return None
+            row = dict(zip(headers, cells))
+            if row.get("Type") == "action" and actions_only:
+                updates.append((row["Package"], None, None, "github-actions"))
+                continue
+            versions = re.fullmatch(r"`(v?\d+\.\d+\.\d+)` → `(v?\d+\.\d+\.\d+)`", row["Change"])
+            if not versions:
+                return None
+            updates.append((row["Package"], *versions.groups(), row["Update"]))
+    kinds = []
+    for dep, before, after, declared in updates:
+        if declared == "github-actions":
+            kinds.append(declared)
+            continue
+        if not all(re.fullmatch(r"v?\d+\.\d+\.\d+", v) for v in (before, after)):
+            return None
+        old, new = (tuple(map(int, v.lstrip('v').split('.'))) for v in (before, after))
+        if new <= old:
+            return None
+        kind = "major" if new[0] != old[0] else "minor" if new[1] != old[1] else "patch"
+        if declared and declared != kind:
+            return None
+        kinds.append(kind)
+    if not kinds:
+        return None
+    kind = next((k for k in ("major", "minor", "patch", "github-actions") if k in kinds))
+    return {"classification": kind, "dependencies": [u[0] for u in updates]}
+
+
+def _dependency_ready(view):
+    return (view.get("state") == "OPEN" and view.get("isDraft") is False
+            and view.get("mergeable") == "MERGEABLE"
+            and bool(view.get("headRefOid")) and bool(view.get("baseRefName"))
+            and checks_state(view.get("statusCheckRollup")) == "green")
+
+
+def _dependency_prs(ctx, project):
+    """Adopt low-risk bot PRs after ordinary work, with durable queue recovery."""
+    pol, led = ctx.policy(project), ctx.led
+    if ctx.dry_run or not pol.get("dependency_prs", True):
+        return
+    gh = ctx.gh(project)
+    key = f"dependency-pending:{project}"
+    pending = _kv_json(led, key)
+    # A single durable outstanding request reserves the project until resolved.
+    if pending:
+        view = gh.dependency_pr_view(pending["pr"])
+        if view.get("state") == "MERGED" and view.get("headRefOid") == pending["sha"]:
+            existing = led.q("SELECT detail FROM events WHERE project=? AND kind=?",
+                             (project, "dependency_adopted"))
+            if not any(json.loads(r["detail"])["pr"] == pending["pr"] for r in existing):
+                led.event("dependency_adopted", project, None, {
+                    **pending, "result": "merged", "merged_at": view.get("mergedAt") or iso(led.now())})
+            led.set_kv(key, None)
+            ctx.say(f"{project}: adopted dependency PR #{pending['pr']}")
+        elif view.get("state") == "CLOSED" or view.get("headRefOid") != pending["sha"]:
+            led.set_kv(key, None)
+        elif (view.get("state") == "OPEN" and pending.get("requested_at")
+              and led.now() - parse(pending["requested_at"]) > timedelta(
+                  minutes=pol["verify_timeout_minutes"])):
+            # A rejected/lost request or ejected queue entry is retryable, but
+            # only through all fresh metadata, CI, cap and ancestry gates below.
+            led.set_kv(key, None)
+        else:
+            ctx.say(f"{project}: dependency PR #{pending['pr']} merge request pending")
+            return
+        if view.get("state") != "OPEN":
+            return
+    if ctx.merge_requested or led.items(project, ["verifying"]):
+        return
+    occupied = led.q("SELECT number FROM leases WHERE project=? AND capacity=1 AND expires_at>?",
+                     (project, iso(led.now())))
+    active = {r["number"] for r in occupied}
+    active.update(r["number"] for r in led.active_runs() if r["project"] == project and r["role"] != "sort")
+    if len(active) >= pol["max_parallel"]:
+        return
+    today = led.now().astimezone().date()
+    adopted = [json.loads(r["detail"]) for r in led.q(
+        "SELECT detail FROM events WHERE project=? AND kind=?", (project, "dependency_adopted"))]
+    count = sum(parse(e["merged_at"]).astimezone().date() == today for e in adopted)
+    tracked = {it["pr"] for it in led.items(project) if it["pr"]}
+    for pr in gh.open_prs():
+        n = pr["number"]
+        if n in tracked or not (pr.get("headRefName") or "").startswith(_BOT_BRANCHES):
+            continue
+        try:
+            view = gh.dependency_pr_view(n)
+            update = _dependency_update(view)
+            if not update:
+                ctx.say(f"{project}: dependency PR #{n} has ambiguous metadata; left open")
+                continue
+            if view.get("state") != "OPEN" or view.get("isDraft") is not False:
+                continue
+            marker = f"<!-- mahler:dependency-pr:{n} -->"
+            issue_key = f"dependency-issue:{project}:{n}"
+            if led.get_kv(issue_key):
+                continue
+            if update["classification"] == "major":
+                issue = gh.issue_by_marker(marker)
+                if not issue:
+                    labels = ["type:chore", "size:m", "p2"]
+                    if pol.get("scope") == "label":
+                        labels.append(pol["scope_label"])
+                    url = view["url"]
+                    issue = gh.create_issue(
+                        f"Check major dependency update: {view['title']}",
+                        f"{marker}\n\n## Problem / goal\nValidate and adopt {url}.\n\n"
+                        "## Done when\n- Inspect the dependency migration requirements and resolve breakage.\n"
+                        "- Apply the update, run the project's full verification, and ship through independent review.\n"
+                        f"- Supersede or close the original bot PR {url} after shipping.\n\n"
+                        "## Needs a human to check\nNothing\n", labels)
+                led.set_kv(issue_key, issue)
+                continue
+            if count >= pol.get("dependency_prs_daily_cap", 3) or not _dependency_ready(view):
+                continue
+            fresh = gh.dependency_pr_view(n)
+            if (not _dependency_ready(fresh) or _dependency_update(fresh) != update
+                    or any(fresh.get(k) != view.get(k) for k in
+                           ("headRefOid", "baseRefName", "headRefName"))):
+                continue
+            sha = fresh["headRefOid"]
+            if gh.base_in_head(pol["path"], fresh["baseRefName"], sha) is not True:
+                ctx.say(f"{project}: dependency PR #{n} needs a current-base rebase")
+                continue
+            # Persist before the request: an uncertain API response must not allow
+            # another adoption or lose a merge that succeeded before a crash.
+            led.set_kv(key, json.dumps({"pr": n, "sha": sha,
+                                         "requested_at": iso(led.now()), **update}))
+            ctx.merge_requested = True
+            gh.pr_merge(n, sha)
+            _dependency_prs(ctx, project)  # confirm synchronous merges, or retain queue state
+            return
+        except Exception as exc:  # isolate bot metadata/API failures
+            ctx.say(f"{project}: dependency PR #{n} adoption failed — {exc}")
+            if ctx.merge_requested:
+                return
 
 
 def _unowned_prs(ctx, project):
