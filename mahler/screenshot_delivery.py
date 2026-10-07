@@ -67,7 +67,8 @@ def _publish(ctx, project, pr, sha, gh, record):
     commit = gh.publish_artifacts(BRANCH, prefix, files,
                                   f"Screenshots for PR #{pr} head {sha[:12]}")
     record["commit"] = commit
-    record["links"] = [{"route": e["route"], "url": gh.artifact_url(commit, f"{prefix}/{e['file']}")}
+    record["links"] = [{"route": e["route"], "file": e["file"],
+                        "url": gh.artifact_url(commit, f"{prefix}/{e['file']}")}
                        for e in manifest["screenshots"]]
 
 
@@ -144,13 +145,16 @@ def review_context(ctx, project, pr, sha):
             return ""
         directory, manifest = found
         record = _json(ctx, f"screenshot-delivery:{project}:{pr}:{sha}")
-        urls = {x["route"]: x["url"] for x in record.get("links", []) if record.get("sha") == sha}
+        # Older records omit filenames but preserve the immutable manifest's order.
+        urls = {link.get("file", entry["file"]): link["url"]
+                for entry, link in zip(manifest["screenshots"], record.get("links", []))
+                if record.get("sha") == sha}
         lines = [f"Screenshot evidence for head {sha[:12]} (current head only). "
                  f"{OBSERVATION} Judge the diff on its own merits.\n"]
         for entry in manifest["screenshots"]:
             line = f"- {entry['route']}: local image {directory / entry['file']}"
-            if entry["route"] in urls:
-                line += f" ; durable link {urls[entry['route']]}"
+            if entry["file"] in urls:
+                line += f" ; durable link {urls[entry['file']]}"
             lines.append(line + "\n")
         return "".join(lines)
     except Exception:
