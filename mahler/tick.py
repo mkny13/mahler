@@ -675,7 +675,7 @@ def schedule(ctx, projects):
 
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
-          fix_reason="ci", explore=False, resume_from=None):
+          fix_reason="ci", explore=False, resume_from=None, resume_cycle=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     if not launch_health.allowed(ctx, project, n):
         return False
@@ -706,6 +706,10 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         else:
             ctx.say(f"{project}#{n}: held by {info['held_by']['holder']} — skipped")
         return False
+    if resume_from is not None and resume_cycle:
+        record = json.dumps({"source": resume_from, "run": run_id, "cycle": resume_cycle})
+        led.set_kv(f"{resume_cycle}:resume", record)
+        led.set_kv(f"resume-run:{run_id}", record)
     launch_health.allowed(ctx, project, n, consume=True)
     prep = None
     try:
@@ -737,7 +741,10 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
                        ended_at=iso(led.now()))
         led.event("launch_failed", project, n, str(e)[:500])
         ctx.say(f"{project}#{n}: launch failed — {e}")
-        launch_health.failed(ctx, project, n, run_id, e)
+        if resume_from is not None and isinstance(e, runner.ResumeUnsupported):
+            led.update_run(run_id, stop_reason="resume_rejected")
+        else:
+            launch_health.failed(ctx, project, n, run_id, e)
         return False
     led.update_run(run_id, epoch=lease["epoch"], **meta)
     led.event("run_start", project, n, {"run": run_id, "role": role, "platform": platform})

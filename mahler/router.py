@@ -788,6 +788,19 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     return None, reasons
 
 
+def preferred_for_project(cfg, led, pol, role, preferred, pin=None, busy=(),
+                          size=None, burst_lines=None, min_tier=0):
+    """Check a preference through ordinary gates, without making it a pin."""
+    accts = accounts_of(pol)
+    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
+             if account_mode_of(pol) == "priority" else
+             candidates_for_accounts(cfg, role, accts, pin))
+    if preferred not in names:
+        return None
+    return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
+                min_tier=min_tier, accounts=accts, candidate_order=[preferred])[0]
+
+
 def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
                       min_tier=0, exclude=(), burst_lines=None):
     """Return (eligible names, earliest recovery, safe routing retry time).

@@ -139,6 +139,74 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
+    def resume_builder(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/5-x", labels='["size:m"]')
+        return self.led.create_run(project="x", number=5, role="build", platform="claude",
+            status="ended", outcome="DONE", epoch=1, branch="mahler/5-x", session_id="saved-123")
+
+    def test_resume_all_fix_triggers_keep_current_feedback(self):
+        source = self.resume_builder()
+        for trigger in ("ci", "review", "conflict"):
+            with self.subTest(trigger=trigger), mock.patch.object(ship, "start", return_value=True) as start, \
+                    mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "_repeat_finding", return_value=None):
+                view = self.gh.pr_view(88)
+                view["headRefOid"] = trigger
+                if trigger == "ci":
+                    ship._red_ci(self.ctx, "x", self.item(), 88, view)
+                else:
+                    ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view,
+                        "current blocking feedback", base_conflict=trigger == "conflict")
+                self.assertEqual(start.call_args.args[2]["branch"], "mahler/5-x")
+                self.assertEqual(start.call_args.args[4], "claude")
+                self.assertEqual(start.call_args.kwargs["resume_from"], source)
+                if trigger != "ci":
+                    self.assertIn("current blocking feedback", start.call_args.kwargs["context"])
+
+    def test_resume_source_gates_and_branch_identity(self):
+        source = self.resume_builder()
+        pol = self.ctx.policy("x")
+        for gate in ("missing", "cline", "quota", "tier", "busy", "account", "pin", "branch", "reserved"):
+            with self.subTest(gate=gate):
+                cfg = copy.deepcopy(self.cfg)
+                item = dict(self.item())
+                busy, tier = set(), 0
+                if gate == "missing":
+                    self.led.update_run(source, session_id=None)
+                if gate == "cline":
+                    cfg["platforms"]["claude"]["kind"] = "cline"
+                if gate == "quota":
+                    self.led.record_usage("claude", router.HOLD, 100, iso(NOW + timedelta(hours=1)))
+                if gate == "tier":
+                    tier = 100
+                if gate == "busy":
+                    busy = {"claude"}
+                if gate == "account":
+                    cfg["platforms"]["claude"]["account"] = "other"
+                if gate == "pin":
+                    item["pin"] = "agy-gemini"
+                if gate == "reserved":
+                    self.led.set_kv("cycle:resume", "reserved")
+                with mock.patch.object(self.ctx, "cfg", cfg):
+                    self.assertIsNone(ship._resume_source(self.ctx, "x", item,
+                        "different" if gate == "branch" else "mahler/5-x", "cycle", busy, "m", tier))
+                self.led.update_run(source, session_id="saved-123")
+                self.led.set_kv("cycle:resume", None)
+                self.led.db.execute("DELETE FROM usage WHERE window=?", (router.HOLD,))
+
+    def test_rejected_resume_does_not_reset_cycle_or_review_identity(self):
+        source = self.resume_builder()
+        key = "red:x#5:88:abc123"
+        self.led.set_kv(key, iso(NOW - timedelta(seconds=1)))
+        self.led.set_kv(key + ":charged", "1")
+        self.led.set_kv(key + ":resume", "reserved")
+        self.led.create_run(project="x", number=5, role="fix", platform="agy-gemini",
+            status="ended", outcome="exit 1", stop_reason="resume_rejected", epoch=2,
+            branch="mahler/5-x")
+        ship._clear_charged_if_fix_completed(self.led, "x", 5, key)
+        self.assertEqual(self.led.get_kv(key + ":charged"), "1")
+        self.assertIsNone(ship._resume_source(self.ctx, "x", self.item(), "mahler/5-x", key, (), "m", 0))
+        self.assertEqual(ship._review_route(self.ctx, "x", self.item(), "abc123")[2], {"claude"})
+
     def test_capture_after_acceptable_ci_before_review_even_low_risk(self):
         self.led.upsert_item("x", 5, pr=88, labels='["type:chore", "size:s"]')
         for rollup, expected in [([{"state": "SUCCESS"}], ["capture", "review"]),
@@ -616,11 +684,11 @@ class ShipTests(unittest.TestCase):
         self.led.set_state("x", 5, "needs_you", pr=88, labels='["size:m"]')
         ship._mark_capacity_wait(self.led, "x", self.item(), "review")
         self.cfg["routing"]["review"] = ["agy-gemini"]
-        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}):
+        with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}):
             self.ship()
         self.assertEqual(self.item()["state"], "needs_you")
         self.cfg["routing"]["review"].append("agy-claude")
-        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}), \
+        with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}), \
                 mock.patch.object(ship, "_ship_item"):
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")

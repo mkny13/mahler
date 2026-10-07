@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import capacity, config, failures, no_change, review, router, runner, screenshot_delivery, screenshots
+from . import capacity, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -701,11 +701,12 @@ def _clear_charged_if_fix_completed(led, project, number, key):
         "AND status='ended' AND started_at > ? "
         "AND outcome IS NOT NULL AND outcome != 'not claimed' "
         "AND outcome NOT LIKE 'launch failed:%' "
-        "AND coalesce(stop_reason, '') NOT IN (?, ?, ?) LIMIT 1",
+        "AND coalesce(stop_reason, '') NOT IN (?, ?, ?, 'resume_rejected') LIMIT 1",
         (project, number, cycle_ts, *CAPACITY_STOPS))
     if run:
         led.set_kv(key, None)
         led.set_kv(f"{key}:charged", None)
+        led.set_kv(f"{key}:resume", None)
 
 
 def _mark_capacity_wait(led, project, item, role):
@@ -818,7 +819,13 @@ def _review_route(ctx, project, item, sha):
     # A failed/inconclusive review remains the latest run, but it did not
     # produce the PR head. Always fence against the latest builder/fixer so a
     # retry can never let the builder grade its own work (DESIGN D11).
-    last = led.last_run(project, n, roles=("build", "fix"))
+    last = _code_source(led, project, n, item["branch"])
+    if last is None:
+        last = led.q1("SELECT * FROM runs WHERE project=? AND number=? "
+                      "AND role IN ('build','fix') AND coalesce(stop_reason, '') != 'resume_rejected' "
+                      "AND coalesce(outcome, '') NOT LIKE 'launch failed:%' "
+                      "AND coalesce(outcome, '') != 'not claimed' ORDER BY id DESC LIMIT 1",
+                      (project, n))
     builder_platform = last["platform"] if last else None
     builder_slot = router.platform_slot(cfg, builder_platform) if builder_platform else None
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
@@ -1078,6 +1085,30 @@ def _explored_head(led, project, n):
     return bool(run and run["explore"])
 
 
+def _code_source(led, project, number, branch):
+    return led.q1("SELECT * FROM runs WHERE project=? AND number=? AND branch=? "
+                  "AND role IN ('build','fix') AND status='ended' AND outcome='DONE' "
+                  "AND coalesce(stop_reason, '') NOT IN ('resume_rejected', 'preempted', 'lost-lease') "
+                  "ORDER BY id DESC LIMIT 1", (project, number, branch))
+
+
+def _resume_source(ctx, project, item, head, key, busy, size, min_tier):
+    # Reserving the cycle before launch bounds retries even across a crash.
+    if ctx.led.get_kv(f"{key}:resume"):
+        return None
+    source = _code_source(ctx.led, project, item["number"], head)
+    if not source or not row_get(source, "session_id"):
+        return None
+    name = source["platform"]
+    if not platforms.supports_resume(ctx.cfg["platforms"].get(name, {})):
+        return None
+    if router.preferred_for_project(
+            ctx.cfg, ctx.led, ctx.policy(project), "fix", name, item["pin"], busy,
+            size=size, min_tier=min_tier, burst_lines=ctx.burst_lines):
+        return source
+    return None
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -1174,15 +1205,16 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     capacity = router.capacity_recovery(
         cfg, led, pol, "fix", item["pin"], busy, size=size,
         min_tier=effective_min_tier, burst_lines=ctx.burst_lines)
-    platform = router.explore_for_project(
+    source = _resume_source(ctx, project, item, head, key, busy, size, effective_min_tier)
+    platform = source["platform"] if source else router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
-    explore = platform is not None
+    explore = source is None and platform is not None
     reasons = []
     if explore:
         size = real_size
         ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
-    else:
+    elif source is None:
         if not capacity[0] or capacity[2]:
             _fix_wait(ctx, project, item, key, "no eligible route with capacity",
                       required_tier=effective_min_tier, capacity=capacity)
@@ -1210,7 +1242,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         context = findings
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, context=context, fix_reason="review",
-             **({"explore": True} if explore else {})):
+             **({"explore": True} if explore else {}),
+             **({"resume_from": source["id"], "resume_cycle": key} if source else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
@@ -1306,15 +1339,16 @@ def _red_ci(ctx, project, item, pr, view):
     capacity = router.capacity_recovery(
         cfg, led, pol, "fix", item["pin"], busy, size=size,
         min_tier=effective_min_tier, burst_lines=ctx.burst_lines)
-    platform = router.explore_for_project(
+    source = _resume_source(ctx, project, item, head, key, busy, size, effective_min_tier)
+    platform = source["platform"] if source else router.explore_for_project(
         cfg, led, pol, item, "fix", busy, size=real_size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
-    explore = platform is not None
+    explore = source is None and platform is not None
     reasons = []
     if explore:
         size = real_size
         ctx.say(f"{project}#{n}: trying {platform} (fix exploration)")
-    else:
+    elif source is None:
         if not capacity[0] or capacity[2]:
             _fix_wait(ctx, project, item, key, "no eligible route with capacity",
                       required_tier=effective_min_tier, capacity=capacity)
@@ -1335,7 +1369,8 @@ def _red_ci(ctx, project, item, pr, view):
                                       or conductor["holder"].endswith("/conductor")) else None)
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
              handoff_from=handoff_from, size=size, fix_reason="ci",
-             **({"explore": True} if explore else {})):
+             **({"explore": True} if explore else {}),
+             **({"resume_from": source["id"], "resume_cycle": key} if source else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")

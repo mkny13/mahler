@@ -20,7 +20,7 @@ from .usage import quota_peers, record_claude_usage
 CAPACITY_STOPS = ("quota", "no_credit", "model_unavailable")
 
 NO_ATTEMPT = ("quota", "no_credit", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
-              "model_unavailable")
+              "model_unavailable", "resume_rejected")
 
 MAX_OPTIONS = 3
 MAX_OPTION_LEN = 40
@@ -581,6 +581,8 @@ def finalize(ctx, run):
     project, n = run["project"], run["number"]
     recorded = led.run(run["id"])
     if recorded is not None and recorded["status"] == "ended":
+        if recorded["stop_reason"] == "resume_rejected":
+            return
         no_work = json.loads(led.get_kv(f"no_work_done:{project}#{n}") or "{}")
         if run["id"] in no_work.get("runs", []):
             return
@@ -621,6 +623,17 @@ def finalize(ctx, run):
         _hold_model_unavailable(ctx, run)
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     _mark_stale(ending)
+    resume = json.loads(led.get_kv(f"resume-run:{run['id']}") or "{}")
+    if (run["role"] == "fix" and resume and not reason and not verb
+            and code != 0 and log.get("ok") is not True
+            and platforms.resume_rejected(log)):
+        ending.reason = "resume_rejected"
+        with led._tx():
+            _mark_stale(ending)
+            if not ending.stale:
+                ending.set_state("verifying", "saved session unavailable — fresh fix next")
+        _close_the_books(ending, code)
+        return
     if setup_failed:
         if not ending.stale and _setup_failure(ending):
             return

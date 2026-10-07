@@ -60,6 +60,35 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def test_missing_resume_is_uncharged_fenced_and_replay_safe(self):
+        self.run.update(role="fix", platform="claude")
+        self.led.update_run(self.run_id, role="fix", platform="claude")
+        self.led.upsert_item("x", 5, pr=88, attempts=2, esc_fails=1)
+        self.led.set_kv(f"resume-run:{self.run_id}", json.dumps({"source": 99, "cycle": "cycle"}))
+        self.led.set_kv("cycle:resume", "reserved")
+        Path(self.log).write_text(json.dumps({"type": "error", "message": "Session saved-123 not found"}))
+        Path(self.run["status_path"]).write_text("1")
+        with mock.patch.object(self.ctx, "ping"):
+            snap, _ = self.finalize()
+            snap.assert_not_called()
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"], item["esc_fails"]), ("verifying", 2, 1))
+        self.assertEqual(self.led.run(self.run_id)["stop_reason"], "resume_rejected")
+        self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+
+    def test_stale_missing_resume_preserves_owner(self):
+        self.run.update(role="fix", platform="claude")
+        self.led.update_run(self.run_id, role="fix", platform="claude")
+        self.led.set_kv(f"resume-run:{self.run_id}", '{"cycle":"cycle"}')
+        Path(self.log).write_text("Error: session expired\n")
+        Path(self.run["status_path"]).write_text("1")
+        self.led.claim("x", 5, "owner", "interactive", 60)
+        self.led.set_state("x", 5, "parked")
+        self.finalize()
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(self.led.lease("x", 5)["holder"], "owner")
+
     def test_completed_build_keeps_session_identity(self):
         self.check_completed_session_identity('build')
 
