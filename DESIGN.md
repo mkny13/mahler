@@ -742,7 +742,22 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     browser or command means unavailable; timeout, nonzero exit or invalid output
     means failed. Neither is success, and neither blocks merge. Capture runs once
     per head after acceptable CI and before review, enforces the finite timeout,
-    and kills/reaps its process group. Delivery/console wiring is separate work.
+    and kills/reaps its process group. Delivery follows (mahler#725): only when
+    `screenshot_preview_non_personal` is exactly true (public, private and unknown
+    repository visibility are treated alike) does Mahler publish PNGs and the manifest
+    to `pr-<number>/<head>/` on a dedicated orphan `mahler-screenshots` branch in the
+    same repository, using the Git Database API with the project's existing GitHub
+    identity and a non-force ref update. It never writes the PR branch, base, releases
+    or tags. One marked comment per PR names the captured head and links the immutable
+    artifact-commit URLs (links, not attachments); failures and restricted captures get
+    only generic text. The comment is edited only while the PR still points at that
+    head. Review context for the same head gets durable links and validated local image
+    paths, framed as observations rather than proof; restricted captures get a generic
+    local-only line. Records persist in ledger KV, so ticks and restarts reuse them;
+    attempts are bounded and no failure blocks review or merge. At merge the final head
+    is stored beside the squash-merge SHA (`screenshot-final:<project>#<n>`), never
+    equated with it. Tradeoff: binary history on the artifact branch is retained
+    indefinitely in this first version; cleanup is out of scope.
 - **Trust but verify** (made concrete by D18 and D10). An agent's "done" is a claim.
   Confirmed merges enter `shipped`; accepted post-merge evidence moves them to `done`.
   As shipped, the conductor's gates are green CI and, for qualifying items, the

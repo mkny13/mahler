@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, no_change, review, router, runner, screenshots
+from . import config, failures, no_change, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -288,6 +288,7 @@ def _watch_pr(ctx, project, item, pr):
         ctx.say(f"{project}#{n}: PR #{pr} — mergeability unknown{detail}")
         return
     screenshots.capture(ctx, project, item, pr, view)
+    screenshot_delivery.deliver(ctx, project, item, pr, view)
     _review_gate(ctx, project, item, pr, view)
 
 
@@ -1242,6 +1243,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     how = "squash-merged" if merged else "merged"
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
              item["summary"] or pr_summary_of(view.get("body")) or ""]
+    screenshot_delivery.record_merge(ctx, project, n, pr, view)
     needs = record_uat_if_needed(ctx, project, n, pr, item, view)
     record_release_item_if_needed(ctx, project, n, pr, item, view)
     if needs:

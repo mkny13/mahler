@@ -167,6 +167,25 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["state"], "unavailable")
         self.assertNotIn("signed-secret", json.dumps(result))
 
+    def test_delivery_runs_between_capture_and_review_and_never_blocks(self):
+        self.led.upsert_item("x", 5, pr=88)
+        calls = []
+        with mock.patch.object(ship.screenshots, "capture", side_effect=lambda *a: calls.append("capture")), \
+                mock.patch.object(ship.screenshot_delivery, "deliver", side_effect=lambda *a: calls.append("deliver")), \
+                mock.patch.object(ship, "_review_gate", side_effect=lambda *a: calls.append("review")):
+            self.ship()
+        self.assertEqual(calls, ["capture", "deliver", "review"])
+
+    def test_delivery_records_final_head_beside_merge_sha(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_kv(f"screenshot:x:88:{self.gh.head_sha}", json.dumps(
+            {"sha": self.gh.head_sha, "pr": 88, "state": "success", "reason": "captured"}))
+        self.gh.view_state = "MERGED"
+        self.ship()
+        final = json.loads(self.led.get_kv("screenshot-final:x#5"))
+        self.assertEqual((final["head"], final["merge_sha"]),
+                         (self.gh.head_sha, "4c1f0abfeed5"))
+
     # ---------- opening the PR ----------
 
     def test_pushes_the_branch_and_opens_the_pr(self):

@@ -425,6 +425,73 @@ class GH:
                 return url
         return None
 
+    def _api_json(self, method, path, payload=None):
+        args = ["api", "--method", method, f"repos/{self.repo}/{path}"]
+        if payload is not None:
+            args += ["--input", "-"]
+        out = self._gh(*args, input=json.dumps(payload) if payload is not None else None)
+        return json.loads(out) if out.strip() else {}
+
+    def publish_artifacts(self, branch, directory, files, message):
+        """Commit `files` ({path: bytes}) under `directory` on the artifact `branch`.
+
+        Git Database API only: blobs, tree, commit, then a non-force ref update.
+        A missing branch becomes an orphan root holding only these files. Never
+        touches any other ref. Returns the commit SHA. A published directory is
+        reused rather than rewritten. Ref races raise GHError (advisory).
+        """
+        import base64
+
+        if branch in ("main", "master") or not re.fullmatch(r"[A-Za-z0-9._-]+", branch or ""):
+            raise GHError("artifacts: unsafe branch")
+        ref = f"git/ref/heads/{quote(branch)}"
+        try:
+            parent = self._api_json("GET", ref)["object"]["sha"]
+        except GHError as e:
+            if "404" not in str(e) and "Not Found" not in str(e):
+                raise
+            parent = None
+        base_tree = None
+        if parent:
+            commit = self._api_json("GET", f"git/commits/{parent}")
+            base_tree = commit["tree"]["sha"]
+            listing = self._api_json("GET", f"git/trees/{base_tree}?recursive=1")
+            if any(t.get("path", "").startswith(directory + "/") for t in listing.get("tree", [])):
+                return parent
+        entries = []
+        for name, data in files.items():
+            blob = self._api_json("POST", "git/blobs", {
+                "content": base64.b64encode(data).decode("ascii"), "encoding": "base64"})
+            entries.append({"path": f"{directory}/{name}", "mode": "100644",
+                            "type": "blob", "sha": blob["sha"]})
+        tree = self._api_json("POST", "git/trees", {
+            **({"base_tree": base_tree} if base_tree else {}), "tree": entries})
+        commit = self._api_json("POST", "git/commits", {
+            "message": message, "tree": tree["sha"], "parents": [parent] if parent else []})
+        if parent:
+            self._api_json("PATCH", f"git/refs/heads/{quote(branch)}",
+                           {"sha": commit["sha"], "force": False})
+        else:
+            self._api_json("POST", "git/refs",
+                           {"ref": f"refs/heads/{branch}", "sha": commit["sha"]})
+        return commit["sha"]
+
+    def artifact_url(self, commit, path):
+        return f"https://github.com/{self.repo}/blob/{commit}/{quote(path)}"
+
+    def find_comment(self, number, marker):
+        """Id of the newest agent comment containing `marker`, or None."""
+        for c in reversed(self.issue_comments(number)):
+            if marker in (c.get("body") or "") and (c.get("body") or "").startswith(AGENT_MARK):
+                return c["id"]
+        return None
+
+    def comment_create(self, number, body):
+        return self._api_json("POST", f"issues/{int(number)}/comments", {"body": body})["id"]
+
+    def comment_edit(self, comment_id, body):
+        self._api_json("PATCH", f"issues/comments/{int(comment_id)}", {"body": body})
+
     def pr_edit_body(self, number, body):
         self._gh("pr", "edit", str(number), "-R", self.repo, "--body-file", "-", input=body)
 

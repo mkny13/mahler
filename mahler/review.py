@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 
+from . import screenshot_delivery
 from .gh import GHError
 
 
@@ -99,7 +100,8 @@ def start_context(ctx, project, item, pr, sha):
             "regressions and unsatisfied acceptance checks remain blockers. Other actionable "
             "findings are follow-ups; explain their nonblocking consequence.\n"
             + "Prior green review evidence (old findings are not proof of a current defect):\n"
-            + json.dumps(rounds))
+            + json.dumps(rounds) + "\n"
+            + screenshot_delivery.review_context(ctx, project, pr, sha))
 
 
 def same_findings(before, current):
