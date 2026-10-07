@@ -618,3 +618,33 @@ class CodingScopeRecipeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesktopGateRecipeTests(unittest.TestCase):
+    """D40: build, fix and review route GUI-driving work through the desktop gate."""
+
+    def rendered(self):
+        common = dict(number=779, repo="example/project", title="t", platform="codex",
+                      worktree="/tmp/w", branch="b", handoff="", rules="")
+        return {
+            "build": prompt.render("build", verify="v", base="main", whats_new="", **common),
+            "fix": prompt.render("fix", verify="v", base="main", **common),
+            "review": prompt.render("review", pr=1, **common),
+        }
+
+    def test_wrapper_deferral_and_ci_evidence_contract(self):
+        for name, raw in self.rendered().items():
+            text = " ".join(raw.split())
+            with self.subTest(recipe=name):
+                for fragment in (
+                    "mahler desktop run -- <cmd> [args]", "XCUITest", "xcodebuild test",
+                    "scripts/smoke/run-mac.sh", "run-smoke.sh", "computer-use",
+                    "full foreground command", "authorizes nothing",
+                    "never run as unguarded tool calls", "75",
+                    "call a skip a pass", "Headless tests need no", "CI",
+                ):
+                    self.assertIn(fragment, text)
+                self.assertIn("only with evidence" if name == "review" else "only if you saw evidence",
+                              text)
+                self.assertNotIn("No macOS UI automation", text)
+                self.assertNotIn("screen is locked", text)

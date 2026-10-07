@@ -159,6 +159,8 @@ DEFAULTS = {
         "screenshot_preview_non_personal": False,
         "screenshot_timeout_seconds": 45,
         "smoke": "",                  # optional post-release command; schema only (D11)
+        "gui_idle_minutes": 15,        # D40: GUI-driving work needs this much keyboard/mouse idle
+        "gui_window": "00:00-06:00",   # D40: preferred window for --scheduled GUI jobs; "" disables
         # which open issues Mahler manages: "all", or "label" = only those
         # carrying scope_label (for repos with a big pre-Mahler backlog)
         "scope": "all",
@@ -629,6 +631,43 @@ def routing_warnings(cfg):
     return warnings
 
 
+_GUI_WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
+
+
+def parse_gui_window(value):
+    """"HH:MM-HH:MM" -> (start, end) times (start inclusive, end exclusive, may
+    cross midnight); "" -> None. Raises ValueError."""
+    if not isinstance(value, str):
+        raise ValueError("gui_window must be a string like \"00:00-06:00\" or \"\"")
+    if value == "":
+        return None
+    m = _GUI_WINDOW_RE.match(value)
+    if not m:
+        raise ValueError(f"gui_window {value!r} must look like HH:MM-HH:MM")
+    h1, m1, h2, m2 = map(int, m.groups())
+    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
+        raise ValueError(f"gui_window {value!r} has an invalid time")
+    start, end = time(h1, m1), time(h2, m2)
+    if start == end:
+        raise ValueError(f"gui_window {value!r} has equal endpoints")
+    return start, end
+
+
+def validate_gui_gate(cfg):
+    for label, section in [("defaults", cfg["defaults"])] + [
+            (f"projects.{n}", p) for n, p in cfg["projects"].items()]:
+        minutes = section.get("gui_idle_minutes")
+        if "gui_idle_minutes" in section and (
+                isinstance(minutes, bool) or not isinstance(minutes, (int, float))
+                or not math.isfinite(minutes) or minutes <= 0):
+            raise ValueError(f"{label}.gui_idle_minutes must be a positive finite number")
+        if "gui_window" in section:
+            try:
+                parse_gui_window(section["gui_window"])
+            except ValueError as e:
+                raise ValueError(f"{label}: {e}") from None
+
+
 def load(path=None):
     path = path or CONFIG_PATH
     user = {}
@@ -638,6 +677,7 @@ def load(path=None):
     cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
     validate_github_app(cfg)
+    validate_gui_gate(cfg)
     configure_warmup(cfg, user)
     for name, project in cfg["projects"].items():
         project["maintenance"] = maintenance_policy(cfg, name)

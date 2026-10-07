@@ -37,6 +37,25 @@ class SmokePolicyTests(unittest.TestCase):
                     with self.subTest(section=section), self.assertRaises(ValueError):
                         self.load(section)
 
+    def test_gui_gate_defaults_overrides_and_validation(self):
+        pol = config.project_policy(self.load({}), "app")
+        self.assertEqual(pol["gui_idle_minutes"], 15)
+        self.assertEqual(pol["gui_window"], "00:00-06:00")
+        cfg = self.load({"defaults": {"gui_idle_minutes": 20, "gui_window": ""},
+                         "projects": {"app": {"gui_idle_minutes": 2.5,
+                                              "gui_window": "22:00-02:00"}}})
+        self.assertEqual(config.project_policy(cfg, "app")["gui_idle_minutes"], 2.5)
+        self.assertEqual(cfg["defaults"]["gui_idle_minutes"], 20)
+        self.assertIsNone(config.parse_gui_window(cfg["defaults"]["gui_window"]))
+        for key, values in (("gui_idle_minutes", (0, -1, True, "15", float("inf"), float("nan"))),
+                            ("gui_window", ("0-6", "24:00-01:00", "00:60-01:00", "06:00-06:00",
+                                            "00:00-6:00", 5))):
+            for value in values:
+                for section in ({"defaults": {key: value}},
+                                {"projects": {"app": {key: value}}}):
+                    with self.subTest(section=section), self.assertRaises(ValueError):
+                        self.load(section)
+
     def test_screenshot_defaults_inheritance_and_disable(self):
         defaults = {"screenshot": "", "screenshot_environment": "",
                     "screenshot_preview_non_personal": False,
