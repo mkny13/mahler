@@ -863,6 +863,266 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("state='pass'", result.stdout)
 
+    def test_mahler_shaped_fixture_passes_and_cites_workflow_command(self):
+        mahler_workflow = (
+            "name: ci\n"
+            "on:\n"
+            "  pull_request:\n"
+            "  merge_group:\n"
+            "  push:\n"
+            "    branches: [main]\n"
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "      - uses: actions/setup-python@v5\n"
+            "        with:\n"
+            "          python-version: '3.12'\n"
+            "      - run: python -m mahler.repo_guard\n"
+            "      - run: python -m unittest discover -s tests -v\n"
+            "      - run: python tests/run_random.py\n"
+            "      - run: python -X dev tests/run_strict.py\n"
+        )
+        self.write(".github/workflows/ci.yml", mahler_workflow)
+        self.write("tests/run_random.py", "# random order test runner\n")
+        self.write("tests/run_strict.py", "# strict test runner\n")
+        findings = self.results()
+        finding = findings["verify-command"]
+        self.assertEqual(finding.state, "pass")
+        self.assertEqual(finding.reason, "Documented effective verify command is invoked by PR CI.")
+        self.assertIn(".github/workflows/ci.yml:16 job=test run: python -m unittest discover -s tests -v",
+                      finding.evidence)
+
+    def test_verify_command_provenance_matrix(self):
+        # 1. push-only branch restriction
+        with self.subTest(case="push-only branch restriction"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "  push:\n"
+                "    branches: [main]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "pass")
+            self.assertEqual(f.reason, "Documented effective verify command is invoked by PR CI.")
+
+        # 2. opaque Python step after verify
+        with self.subTest(case="opaque Python step after verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+                "      - run: python script.py\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            self.write("script.py", "# opaque\n")
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "pass")
+            self.assertEqual(f.reason, "Documented effective verify command is invoked by PR CI.")
+
+        # 3. unrelated unresolved workflow
+        with self.subTest(case="unrelated unresolved workflow"):
+            wf1 = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            wf2 = (
+                "name: Unrelated\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  other:\n"
+                "    if: false\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: echo other\n"
+            )
+            self.write(".github/workflows/ci.yml", wf1)
+            self.write(".github/workflows/other.yml", wf2)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "pass")
+            self.assertEqual(f.reason, "Documented effective verify command is invoked by PR CI.")
+            (self.root / ".github/workflows/other.yml").unlink()
+
+        # 4. job-level condition on verify
+        with self.subTest(case="job-level condition on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    if: github.event.pull_request.draft == false\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("job condition", f.reason)
+            self.assertTrue(any("job condition" in e for e in f.evidence))
+
+        # 5. step-level condition on verify
+        with self.subTest(case="step-level condition on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - if: success()\n"
+                "        run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("step condition", f.reason)
+            self.assertTrue(any("step condition" in e for e in f.evidence))
+
+        # 6. PR branch/path filter
+        with self.subTest(case="PR branch/path filter"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "    branches: [main]\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("trigger has filters", f.reason)
+            self.assertTrue(any("PR trigger filter" in e for e in f.evidence))
+
+        # 7. unresolved step before verify
+        with self.subTest(case="unresolved step before verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: ./missing.sh\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("Unresolved execution precedes", f.reason)
+            self.assertTrue(any("unresolved execution" in e for e in f.evidence))
+
+        # 8. changed working directory for verify
+        with self.subTest(case="changed working directory for verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - working-directory: subdir\n"
+                "        run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("changed working directory", f.reason)
+            self.assertTrue(any("changed working directory" in e for e in f.evidence))
+
+        # 9. dynamic verify command
+        with self.subTest(case="dynamic verify command"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests ${{ env.ARGS }}\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("dynamic expansion", f.reason)
+            self.assertTrue(any("dynamic command" in e for e in f.evidence))
+
+        # 10. reusable-only workflow
+        with self.subTest(case="reusable-only workflow"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    uses: owner/repo/.github/workflows/reusable.yml@main\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("reusable workflows", f.reason)
+
+        # 11. absent documentation
+        with self.subTest(case="absent documentation"):
+            self.write(".github/workflows/ci.yml", WORKFLOW)
+            self.pol["verify"] = "python3 -m unittest discover -s tests"
+            self.write("AGENTS.md", "# No verify contract\n")
+            self.write("CLAUDE.md", "# No verify contract\n")
+            self.write(".mahler/project.toml", '[release]\nhow = "merge"\n')
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "gap")
+            self.assertEqual(f.reason, "Verify command is absent from documentation.")
+
+        # 12. absent literal verify invocation
+        with self.subTest(case="absent literal verify invocation"):
+            self.write("AGENTS.md", GUIDANCE)
+            self.write("CLAUDE.md", GUIDANCE)
+            self.write(".mahler/project.toml", '[verify]\nfast = "python3 -m unittest discover -s tests"\n')
+            self.pol["verify"] = "python3 -m unittest discover -s tests"
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: echo no-tests-here\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "gap")
+            self.assertEqual(f.reason, "Verify command is absent from literal PR CI commands.")
+
 
 class SchedulerOrderingTests(unittest.TestCase):
     def test_practices_audit_follows_platform_audit_before_scheduling(self):
