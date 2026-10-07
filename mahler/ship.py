@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, review, router, runner
+from . import config, failures, review, router, runner, no_change
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -292,6 +292,8 @@ def _watch_pr(ctx, project, item, pr):
 
 def _ship_item(ctx, project, item):
     led, n = ctx.led, item["number"]
+    if no_change.advance(ctx, project, item):
+        return
     branch = item["branch"]
     has_snapshot = bool(branch and branch.startswith("mahler/snapshot/"))
     if ctx.dry_run:

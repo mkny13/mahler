@@ -8,7 +8,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from mahler import config, prompt, runner
+from mahler import config, prompt, runner, no_change
+from mahler.ledger import Ledger
 from mahler.gh import depends_of, parse_command
 
 
@@ -455,6 +456,39 @@ class PrepareAccountEnvTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_claim_review_checks_out_exact_base_not_saved_branch(self):
+        sha = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "commit", "--allow-empty", "-qm", "newer saved work")
+        sh(self.repo, "git", "push", "-q", "origin", "HEAD:mahler/snapshot/old")
+        self.ctx.led = Ledger(":memory:")
+        self.addCleanup(self.ctx.led.close)
+        self.ctx.led.upsert_item("acme", 3)
+        rid = self.ctx.led.create_run(project="acme", number=3, role="review",
+                                      platform="claude-work", epoch=1)
+        lease, _ = self.ctx.led.claim("acme", 3, f"run:{rid}", "auto", 10, run_id=rid)
+        no_change.save(self.ctx.led, "acme", 3, {"base_sha": sha, "phase": "waiting"})
+        item = {"number": 3, "title": "t", "branch": "mahler/snapshot/old", "claim_base_sha": sha}
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")), \
+                mock.patch.object(runner, "catch_up") as replay:
+            prep = runner.prepare(self.ctx, "acme", item, "review", "claude-work", rid)
+        self.assertEqual(sh(prep["worktree"], "git", "rev-parse", "HEAD"), sha)
+        self.assertEqual(sh(prep["worktree"], "git", "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+        self.assertIsNone(prep["branch"])
+        self.assertFalse(prep["replayed"])
+        replay.assert_not_called()
+        record = no_change.read(self.ctx.led, "acme", 3)
+        self.assertEqual((record["run_id"], record["epoch"]), (rid, lease["epoch"]))
+        text = prompt.build(self.ctx, "acme", item, "review", "claude-work", prep)
+        self.assertIn(sha, text)
+        self.assertIn("claim mode", text)
+        self.assertNotIn("gh pr", text)
+        self.assertNotIn("already-green", text)
+        normal = prompt.build(self.ctx, "acme", {**item, "claim_base_sha": None, "pr": 8},
+                              "review", "claude-work", prep)
+        self.assertIn("gh pr diff 8", normal)
+        self.assertIn("already-green", normal)
+        self.assertNotIn("claim mode", normal)
 
     def test_fix_preserves_pr_branch_without_replaying_saved_work(self):
         self.git_branch = "mahler/3-reviewed"

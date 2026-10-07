@@ -92,3 +92,8 @@ STATUS: DONE <one-line summary of what changed>
 STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]
 STATUS: BLOCKED <reason>
 STATUS: YIELDED <handoff summary>
+
+If the requested work already exists and your clean checkout has no new commits,
+retain STATUS: DONE. Cite concrete source and verification evidence and explicitly
+list any remaining manual checks in your final summary. The conductor independently
+verifies this claim against the current configured base before closing the issue.

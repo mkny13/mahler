@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, failures, finalize, router, runner, scheduler, sync, tick
+from mahler import config, failures, finalize, router, runner, scheduler, sync, tick, no_change
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -224,6 +224,9 @@ class RunTests(unittest.TestCase):
         return ping, probe, remove
 
     def next_no_work_run(self, role="build"):
+        # A new build follows rejection (or an explicit operator retry), not a
+        # pending independent review. Release that conductor lease in this fixture.
+        self.led.release("x", 5, holder="conductor")
         run_id = self.led.create_run(project="x", number=5, role=role,
                                      platform="cline-free", epoch=1, status="running")
         epoch, _ = self.led.claim("x", 5, f"run:{run_id}", "auto", 10,
@@ -234,9 +237,42 @@ class RunTests(unittest.TestCase):
         self.run.update(id=run_id, epoch=epoch, role=role)
         self.led.set_state("x", 5, "working", "test run")
 
+    def test_no_change_done_review_pass_closes_without_pr_or_attempt_charge(self):
+        self.no_work_done(explanation="src.py:10 satisfies acceptance; unit tests pass")
+        record = no_change.read(self.led, "x", 5)
+        self.assertEqual(record["claim_run"], self.run_id)
+        self.assertEqual(record["base_sha"], "base-sha")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        conductor = self.led.lease("x", 5)
+        rid = self.led.create_run(project="x", number=5, role="review", platform="claude", epoch=0)
+        lease, _ = self.led.claim("x", 5, f"run:{rid}", "auto", 10, run_id=rid,
+                                  handoff_from=("conductor", conductor["epoch"]))
+        self.led.update_run(rid, epoch=lease["epoch"])
+        record.update(phase="reviewing", run_id=rid, epoch=lease["epoch"])
+        no_change.save(self.led, "x", 5, record)
+        self.run.update(id=rid, epoch=lease["epoch"], role="review", platform="claude")
+        with open(self.log, "w") as stream:
+            stream.write('STATUS: REVIEW-PASS {"mode":"claim","evidence":["src.py:10 verified"],"human_checks":[]}\n')
+        self.finalize()
+        self.assertEqual(no_change.read(self.led, "x", 5)["phase"], "verdict")
+        from mahler import ship
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(no_change, "fetched_base", return_value="base-sha"), \
+                mock.patch.object(self.gh, "close_issue", create=True,
+                                  side_effect=lambda n: setattr(self.gh, "state", "CLOSED")) as close, \
+                mock.patch.object(ship, "_open_pr") as pr:
+            ship._ship_item(self.ctx, "x", self.led.item("x", 5))
+            ship._ship_item(self.ctx, "x", self.led.item("x", 5))
+        close.assert_called_once_with(5)
+        pr.assert_not_called()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.assertEqual(len([c for c in self.gh.comments if "mahler:no-change" in c]), 1)
+
     def test_repeated_no_work_parks_before_third_build_and_replay_is_quiet(self):
         self.no_work_done(explanation="already   implemented")
-        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
         # Persist to disk and reopen, as a daemon restart would.
         path = os.path.join(self.tmp, "restart.db")
         import sqlite3
@@ -324,7 +360,7 @@ class RunTests(unittest.TestCase):
         self.no_work_done()
         self.next_no_work_run()
         self.no_work_done(base="new-base")
-        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.next_no_work_run()
         self.no_work_done(base="new-base", explanation="different evidence")
         self.assertNotEqual(self.led.item("x", 5)["state"], "parked")

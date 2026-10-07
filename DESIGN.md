@@ -1034,14 +1034,21 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   from there. Otherwise it's a failed attempt, as before.
 - Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
-- **Repeated no-work build DONE** (temporary guard, mahler#716). A clean worktree
-  with zero commits ahead of the freshly fetched configured base supplies evidence;
-  missing worktrees and Git/snapshot failures do not. Two distinct runs with that
-  base SHA and the same whitespace-normalized DONE explanation park the item and
-  surface the technical hold once, pending independent verification (#705). This
-  is not an owner correctness decision or an automatic closure. The signature
-  persists across restarts and `/mahler go`; changed base/explanation or real saved
-  work starts fresh. Epoch fencing, closed issues and existing fix/PR handling remain.
+- **No-change build DONE** (mahler#716, #717). A clean worktree with zero commits
+  ahead of the freshly fetched configured base supplies evidence; missing worktrees
+  and Git/snapshot failures do not. The first claim enters independent review without
+  a build-attempt charge or PR. The existing review role checks a detached exact base
+  SHA, grading the issue/comments against source and available evidence, never presumed
+  green CI. Claim-mode JSON on REVIEW-PASS/FAIL carries evidence and remaining manual
+  checks, separately from ordinary classified PR reviews. Durable kv binds claim/run/
+  epoch/base and completion operations. Base drift requires a fresh review; stale runs
+  cannot decide. Missing reviewer capacity waits; inconclusive reviews are bounded by
+  max_attempts. An evidenced failure charges one normal build retry with actionable
+  findings. The repeated identical base/explanation guard remains after rejection.
+  An evidenced pass posts a deduplicated comment and closes only after GitHub confirms
+  closure. Remaining manual checks instead park a durable handoff for the UAT follow-on.
+  This path records no merge, release or shipping success. Builds retain DONE and report
+  concrete evidence and explicit remaining manual steps.
 - **Unchanged-head fix DONE** (mahler#706). One persisted allowance per project/issue/PR/head
   sends a completed, non-interrupted review-triggered fix back to independent review
   without another attempt or escalation charge. The original fix charge remains.

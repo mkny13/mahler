@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, platforms, review, router, runner
+from . import config, failures, platforms, review, router, runner, no_change
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -308,6 +308,9 @@ def _ended_done(e):
                f"{e.run['platform']} ended DONE; CI re-runs on the PR", priority="low")
         return True
     if _repeated_no_work(e):
+        return True
+    if e.no_work_base and not e.item["pr"]:
+        no_change.begin(e)
         return True
     if not (e.saved or e.item["branch"]):
         return _retry(e)                        # DONE, but nothing to ship
@@ -631,7 +634,8 @@ def finalize(ctx, run):
     # transaction below must recheck the epoch after these calls return.
     _mark_stale(ending)
     if not ending.stale and not ending.closed:
-        if run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+        if (run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL")
+                and not no_change.read(led, project, n)):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
@@ -647,6 +651,7 @@ def finalize(ctx, run):
             led.reset_setup_fails(project, n)
             if ending.saved:
                 led.set_kv(_no_work_key(ending), None)
+                led.set_kv(no_change.key(project, n), None)
                 led.upsert_item(project, n, branch=ending.saved["ref"])
             if ending.closed:
                 ending.set_state("done", outcome)
@@ -655,7 +660,9 @@ def finalize(ctx, run):
             elif run["role"] == "sort":
                 SORT_OUTCOMES.get(verb, _retry)(ending)
             elif run["role"] == "review":
-                if verb in ("REVIEW-PASS", "REVIEW-FAIL"):
+                if no_change.read(led, project, n):
+                    no_change.finish(ending)
+                elif verb in ("REVIEW-PASS", "REVIEW-FAIL"):
                     REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)
                 else:
                     REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)

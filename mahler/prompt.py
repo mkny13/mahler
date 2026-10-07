@@ -6,6 +6,7 @@ processes, the prompt owns the words. `build()` turns a prepared worktree
 """
 
 import os
+import json
 import re
 import string
 
@@ -61,7 +62,11 @@ def needs_whats_new(item):
 
 def render(recipe, **vars):
     with open(os.path.join(RECIPES, f"{recipe}.md"), encoding="utf-8") as fh:
-        return string.Template(fh.read()).safe_substitute(**vars)
+        text = fh.read()
+        if recipe == "review":
+            claim, normal = text.split("<!-- normal-pr-review -->\n", 1)
+            text = claim if vars.get("claim_mode") else normal
+        return string.Template(text).safe_substitute(**vars)
 
 
 def pr_ci_toolchain_handoff(ctx, project, item):
@@ -160,7 +165,14 @@ def build(ctx, project, item, role, platform, prep, context=None):
     # `$whats_new` (other recipes don't have the placeholder, and ignore it).
     whats_new = WHATS_NEW_GUIDANCE if needs_whats_new(item) else ""
 
-    return render(role, number=item["number"], title=item["title"], repo=pol["repo"],
+    claim = {}
+    if role == "review" and row_get(item, "claim_base_sha"):
+        from . import no_change
+        claim = no_change.read(ctx.led, project, item["number"])
+
+    return render(role, claim_mode=bool(claim), claim_sha=claim.get("base_sha", ""),
+                  claim_evidence=json.dumps({k: claim.get(k) for k in
+                                             ("claim_run", "evidence", "build_evidence")}), number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
                   platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
