@@ -32,6 +32,9 @@ enabled = false                 # opt in only after repo, path and verify are co
 repo = "your-org/your-repo"
 path = "/absolute/path/to/your-repo"
 max_parallel = 1
+# Adopt safe bot dependency PRs; override either setting per project.
+dependency_prs = true
+dependency_prs_daily_cap = 3 # successful adoptions per local calendar day
 # Override for shared apps, or set review_context = "" to clear inherited assumptions.
 # review_context = "Multiple users upgrade their devices independently."
 # review_green_rounds = 3        # optional per-project override

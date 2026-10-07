@@ -136,6 +136,8 @@ DEFAULTS = {
         "enabled": False,
         "base": "main",
         "max_parallel": 1,
+        "dependency_prs": True,
+        "dependency_prs_daily_cap": 3,
         "settle_minutes": 10,          # sorted -> eligible to build (DESIGN D7)
         "max_attempts": 3,             # failed runs before needs-you
         "review_context": ("Personal project: a single user owns and controls all devices "
@@ -1068,6 +1070,11 @@ def validate_accounts(cfg):
             raise ValueError(f"{scope}: screenshot_timeout_seconds must be an integer from 1 to 60")
         if not isinstance(conf.get("review_context", ""), str):
             raise ValueError(f"{scope}: review_context must be a string")
+        if type(conf.get("dependency_prs", True)) is not bool:
+            raise ValueError(f"{scope}: dependency_prs must be a boolean")
+        cap = conf.get("dependency_prs_daily_cap", 3)
+        if type(cap) is not int or cap < 1:
+            raise ValueError(f"{scope}: dependency_prs_daily_cap must be a positive integer")
         value = conf.get("review_green_rounds", 2)
         if type(value) is not int or value < 1:
             raise ValueError(f"{scope}: review_green_rounds must be a positive integer")

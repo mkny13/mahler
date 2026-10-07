@@ -20,6 +20,23 @@ class SmokePolicyTests(unittest.TestCase):
             path.write_text(config.dumps_toml(user))
             return config.load(path)
 
+    def test_dependency_pr_policy(self):
+        pol = config.project_policy(self.load({}), "app")
+        self.assertTrue(pol["dependency_prs"])
+        self.assertEqual(pol["dependency_prs_daily_cap"], 3)
+        cfg = self.load({"projects": {"app": {"dependency_prs": False,
+                                             "dependency_prs_daily_cap": 7}}})
+        pol = config.project_policy(cfg, "app")
+        self.assertFalse(pol["dependency_prs"])
+        self.assertEqual(pol["dependency_prs_daily_cap"], 7)
+        for key, values in (("dependency_prs", (0, "false", [])),
+                            ("dependency_prs_daily_cap", (0, -1, True, 1.5, "3"))):
+            for value in values:
+                for section in ({"defaults": {key: value}},
+                                {"projects": {"app": {key: value}}}):
+                    with self.subTest(section=section), self.assertRaises(ValueError):
+                        self.load(section)
+
     def test_screenshot_defaults_inheritance_and_disable(self):
         defaults = {"screenshot": "", "screenshot_environment": "",
                     "screenshot_preview_non_personal": False,

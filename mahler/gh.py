@@ -509,6 +509,12 @@ class GH:
                                    "--limit", str(limit), "--json",
                                    "number,title,headRefName,createdAt,isDraft"))
 
+    def dependency_pr_view(self, number):
+        """Bot identity, complete update description, files and exact merge gates."""
+        return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
+            "number,url,title,body,author,isCrossRepository,isDraft,state,headRefName,"
+            "headRefOid,baseRefName,mergeable,statusCheckRollup,mergedAt,files"))
+
     def pr_merge_info(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,mergeCommit,title,baseRefName,mergedAt"))

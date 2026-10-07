@@ -3060,3 +3060,192 @@ class ShipCapacityTests(unittest.TestCase):
         with mock.patch.object(platforms, "available", return_value=False):
             self.ship()
         self.assertEqual(self.rows(), {})
+
+
+class DependencyPRTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.now = NOW
+        self.led = Ledger(self.tmp.name + '/ledger.db', clock=lambda: self.now)
+        self.addCleanup(lambda: self.led.close())
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['projects']['x'] = {'path': self.tmp.name, 'repo': 'x/y'}
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.ctx.merge_requested = False
+        self.gh = mock.Mock()
+        self.views = {}
+        self.gh.open_prs.side_effect = lambda: list(self.views.values())
+        self.gh.dependency_pr_view.side_effect = lambda n: copy.deepcopy(self.views[n])
+        self.gh.base_in_head.return_value = True
+        self.gh.pr_merge.side_effect = self.merge
+        self.gh.issue_by_marker.return_value = None
+        self.gh.create_issue.return_value = 'https://github.com/x/y/issues/123'
+        patcher = mock.patch.object(self.ctx, 'gh', return_value=self.gh)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.add(10)
+
+    def add(self, n, before='1.2.3', after='1.2.4', bot='dependabot'):
+        body = f'Bumps [package](https://example.com/package) from {before} to {after}.'
+        if bot == 'renovate':
+            kind = 'major' if before[0] != after[0] else 'minor' if before[2] != after[2] else 'patch'
+            body = ('| Package | Type | Update | Change |\n|---|---|---|---|\n'
+                    f'| package | dependencies | {kind} | `{before}` → `{after}` |\n')
+        self.views[n] = dict(number=n, title='Update package', body=body,
+            url=f'https://github.com/x/y/pull/{n}', author={'login': bot + '[bot]'},
+            isCrossRepository=False, isDraft=False, state='OPEN', headRefName=bot + '/package',
+            headRefOid=str(n).zfill(40), baseRefName='release', mergeable='MERGEABLE',
+            statusCheckRollup=[{'state': 'SUCCESS'}], files=[{'path': 'package-lock.json'}])
+
+    def merge(self, n, sha):
+        self.assertEqual(self.views[n]['headRefOid'], sha)
+        self.views[n].update(state='MERGED', mergedAt=iso(self.now))
+
+    def run_pass(self):
+        self.ctx.merge_requested = False
+        ship._dependency_prs(self.ctx, 'x')
+
+    def events(self):
+        return self.led.q("SELECT * FROM events WHERE kind='dependency_adopted'")
+
+    def test_patch_minor_and_actions(self):
+        for bot in ('dependabot', 'renovate'):
+            for after in ('1.2.4', '1.3.0'):
+                with self.subTest(bot=bot, after=after):
+                    self.add(10, after=after, bot=bot)
+                    self.assertEqual(ship._dependency_update(self.views[10])['classification'],
+                                     'minor' if after == '1.3.0' else 'patch')
+        self.run_pass()
+        self.gh.base_in_head.assert_called_once_with(self.tmp.name, 'release', '10'.zfill(40))
+        self.assertEqual(len(self.events()), 1)
+        self.add(11)
+        self.views[11].update(headRefName='dependabot/github_actions/actions/checkout-5',
+                             body='Bumps [actions/checkout](https://example.com) from 4 to 5.',
+                             files=[{'path': '.github/workflows/ci.yml'}])
+        self.run_pass()
+        self.assertEqual(json.loads(self.events()[-1]['detail'])['classification'], 'github-actions')
+        self.add(12, bot='renovate')
+        self.views[12]['body'] = self.views[12]['body'].replace('dependencies', 'action').replace('`1.2.3` → `1.2.4`', '`abc123` → `def456`')
+        self.views[12]['files'] = [{'path': '.github/workflows/ci.yml'}]
+        self.run_pass()
+        self.assertEqual(len(self.events()), 3)
+
+    def test_refusals(self):
+        original = copy.deepcopy(self.views[10])
+        for changes in ({'isDraft': True}, {'state': 'CLOSED'}, {'mergeable': 'CONFLICTING'},
+                {'mergeable': 'UNKNOWN'}, {'statusCheckRollup': [{'state': 'FAILURE'}]},
+                {'statusCheckRollup': [{'state': 'PENDING'}]}, {'statusCheckRollup': []},
+                {'body': 'Bumps package to latest'}, {'body': 'Bumps package from 1 to 2.'},
+                {'body': 'Bumps package from 1.2.3 to 1.3.0-beta.'},
+                {'author': {'login': 'someone'}}, {'isCrossRepository': True}):
+            with self.subTest(changes=changes):
+                self.views[10] = {**original, **changes}
+                self.run_pass()
+                self.gh.pr_merge.assert_not_called()
+        self.views[10] = original
+        for ancestry in (False, None):
+            self.gh.base_in_head.return_value = ancestry
+            self.run_pass()
+            self.gh.pr_merge.assert_not_called()
+        self.gh.base_in_head.side_effect = gh_module.GHError('fetch failed')
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
+
+    def test_changed_exact_head_base_checks_and_metadata(self):
+        original = self.views[10]
+        for changes in ({'headRefOid': 'b' * 40}, {'baseRefName': 'other'},
+                        {'isDraft': True}, {'body': 'unknown'},
+                        {'statusCheckRollup': [{'state': 'PENDING'}]}):
+            with self.subTest(changes=changes):
+                self.gh.dependency_pr_view.side_effect = [original, {**original, **changes}]
+                self.run_pass()
+                self.gh.pr_merge.assert_not_called()
+
+    def test_major_dedup_and_scope(self):
+        self.cfg['projects']['x'].update(scope='label', scope_label='custom')
+        self.add(10, after='2.0.0')
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        title, body, labels = self.gh.create_issue.call_args.args
+        self.assertIn('Update package', title)
+        self.assertIn('/pull/10', body)
+        self.assertEqual(labels, ['type:chore', 'size:m', 'p2', 'custom'])
+        self.gh.pr_merge.assert_not_called()
+        self.led.set_kv('dependency-issue:x:10', None)
+        self.gh.issue_by_marker.return_value = 'https://github.com/x/y/issues/123'
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+
+    def test_daily_cap_restart_next_day_override_and_idempotence(self):
+        for n in range(11, 15):
+            self.add(n)
+        for _ in range(4):
+            self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 3)
+        self.led.close()
+        self.led = Ledger(self.tmp.name + '/ledger.db', clock=lambda: self.now)
+        self.ctx.led = self.led
+        self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 3)
+        detail = json.loads(self.events()[0]['detail'])
+        self.led.set_kv('dependency-pending:x', json.dumps(detail))
+        self.run_pass()
+        self.assertEqual(len(self.events()), 3)
+        self.cfg['projects']['x']['dependency_prs_daily_cap'] = 4
+        self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 4)
+        self.now += timedelta(days=1)
+        self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 5)
+
+    def test_opt_out_capacity_precedence_dry_run_and_one_per_tick(self):
+        self.cfg['projects']['x']['dependency_prs'] = False
+        self.run_pass()
+        self.gh.open_prs.assert_not_called()
+        self.cfg['projects']['x']['dependency_prs'] = True
+        self.ctx.dry_run = True
+        self.run_pass()
+        self.gh.open_prs.assert_not_called()
+        self.ctx.dry_run = False
+        self.led.upsert_item('x', 5, state='working')
+        self.led.claim('x', 5, 'session', 'interactive', 30)
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
+        self.led.release('x', 5)
+        self.led.set_state('x', 5, 'verifying')
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
+        self.led.set_state('x', 5, 'ready')
+        self.ctx.merge_requested = True
+        ship._dependency_prs(self.ctx, 'x')
+        self.gh.pr_merge.assert_not_called()
+        self.add(11)
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once()
+
+    def test_queue_and_uncertain_response_recovery(self):
+        self.gh.pr_merge.side_effect = gh_module.GHError('response lost')
+        self.run_pass()
+        self.assertTrue(self.ctx.merge_requested)
+        self.assertFalse(self.events())
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once()
+        self.merge(10, self.views[10]['headRefOid'])
+        self.run_pass()
+        self.assertEqual(len(self.events()), 1)
+
+    def test_account_client_and_project_exception_isolation(self):
+        with mock.patch.object(ship, '_ship_project'), mock.patch.object(ship, '_unowned_prs'):
+            self.gh.open_prs.side_effect = gh_module.GHError('unavailable')
+            ship.ship(self.ctx, [{'name': 'x'}, {'name': 'other'}])
+        self.assertIn(mock.call('x'), self.ctx.gh.call_args_list)
+        self.assertIn(mock.call('other'), self.ctx.gh.call_args_list)
+
+    def test_renovate_ambiguous_group_and_conflicting_type(self):
+        self.add(10, bot='renovate')
+        body = self.views[10]['body']
+        for change in (body.replace('patch', 'minor'), body + '| other | deps | minor | unknown |\n'):
+            self.views[10]['body'] = change
+            self.assertIsNone(ship._dependency_update(self.views[10]))
