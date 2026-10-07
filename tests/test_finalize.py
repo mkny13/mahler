@@ -501,9 +501,14 @@ class RunTests(unittest.TestCase):
             for plan in (None, 1, "plan", [], [{}])
         ] + [
             {"head": head, "disposition": "followups", "rationale": "Internal surface",
-             "followups": [{"finding": "Copy issue", "category": category,
-                            "reason": "Minor concern"}]}
-            for category in ([], {}, None, 1)
+             "followups": [{"finding": finding, "category": "behavior",
+                            "reason": "Commands are confined to the owner's checkout."}]}
+            for finding in (
+                "Minor copy issue",
+                "Untrusted issue text is concatenated into a shell command, so a title can run an additional command",
+                "PII is written to debug logs",
+                "silent unrecoverable data loss",
+            )
         ]
         for malformed in malformed_payloads:
             with self.subTest(payload=malformed):
@@ -534,23 +539,20 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
                 snapshot.assert_not_called()
 
-    def test_followup_disposition_cannot_demote_safety_or_done_when(self):
+    def test_followup_disposition_is_never_accepted(self):
         head = "a" * 40
         self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
         self.led.update_run(self.run_id, role="design")
         self.run["role"] = "design"
         for followup in (
-                {"finding": "credential exposure", "category": "behavior",
-                 "reason": "low impact"},
-                {"finding": "API key is written to logs", "category": "behavior",
-                 "reason": "The logs are internal."},
+                {"finding": "Minor copy issue", "category": "behavior",
+                 "reason": "The surface is internal-only."},
+                {"finding": "Untrusted issue text is concatenated into a shell command, so a title can run an additional command",
+                 "category": "behavior",
+                 "reason": "Commands are confined to the owner's checkout."},
                 {"finding": "PII is written to debug logs", "category": "behavior",
                  "reason": "The logs stay on the owner's device."},
-                {"finding": "security concern", "category": "security",
-                 "reason": "not important"},
-                {"finding": "silent unrecoverable data loss", "category": "behavior",
-                 "reason": "low impact"},
-                {"finding": "unrelated issue", "category": "behavior",
+                {"finding": "An acceptance check is deferred", "category": "behavior",
                  "reason": "The acceptance check is deferred: - [ ] all checks pass"}):
             with self.subTest(followup=followup):
                 payload = {"head": head, "disposition": "followups",
@@ -566,7 +568,7 @@ class RunTests(unittest.TestCase):
                         mock.patch.object(runner, "git", return_value=head):
                     self.assertIsNone(finalize._prepare_design(ending))
 
-    def test_followup_rationale_cannot_hide_security_or_unmet_done_when(self):
+    def test_followup_rationale_cannot_claim_prior_findings_are_resolved(self):
         head = "a" * 40
         self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
         self.led.update_run(self.run_id, role="design")
@@ -574,7 +576,7 @@ class RunTests(unittest.TestCase):
         followup = {"finding": "Minor copy issue", "category": "behavior",
                     "reason": "The surface is internal-only."}
         for rationale in (
-                "The security finding is acceptable for this project.",
+                "The prior security finding was fixed; only a minor copy issue remains.",
                 "The remaining concern is acceptable even though ALL CHECKS PASS is unmet."):
             with self.subTest(rationale=rationale):
                 payload = {"head": head, "disposition": "followups",
@@ -591,10 +593,12 @@ class RunTests(unittest.TestCase):
 
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40
-        payload = {"head": head, "disposition": "followups",
-                   "rationale": "Small, isolated concern in this project",
-                   "followups": [{"finding": "Minor copy issue", "category": "behavior",
-                                  "reason": "The surface is internal-only."}]}
+        payload = {"head": head, "disposition": "fix", "plan": {
+            "summary": "Resolve the reviewed issue",
+            "files": ["src/module.py"],
+            "steps": ["Update the implementation"],
+            "tests": "python3 -m unittest",
+        }}
         self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
         self.led.update_run(self.run_id, role="design")
         self.run["role"] = "design"
@@ -612,7 +616,7 @@ class RunTests(unittest.TestCase):
         saved = self.led.get_kv(key)
         finalize._design_result(ending, prepared)
         self.assertEqual(self.led.get_kv(key), saved)
-        self.assertEqual(json.loads(saved)["rationale"], payload["rationale"])
+        self.assertEqual(json.loads(saved)["plan"], payload["plan"])
 
     def last_event(self):
         rows = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "

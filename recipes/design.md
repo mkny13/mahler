@@ -21,27 +21,18 @@ $rules
 Complete supplied review history:
 $handoff
 
-Produce one coherent result across all findings. Either:
-
-1. `fix`: a bounded, finite plan for the next fix run. Name every affected file, give
-   ordered implementation steps, and state the test/verification command or observable
-   check. Do not implement anything.
-2. `followups`: classify every remaining actionable finding as acceptable for this
-   project's context and explain why each is not a merge blocker. Do not use this
-   disposition for a security finding, an unsatisfied Done-when criterion, or silent
-   unrecoverable data loss in normal flow; those always require `fix`.
+Produce one coherent `fix` result: a bounded, finite plan for the next fix run. Name
+every affected file, give ordered implementation steps, and state the
+test/verification command or observable check. Do not implement anything. This
+contract intentionally has no follow-up disposition: review prose can describe a
+security or data-loss finding without recognizable keywords, so every design result
+must direct review work to a fix run. Any security finding, an unsatisfied
+Done-when criterion, or silent unrecoverable data loss in normal flow always
+requires `fix`.
 
 End with exactly one line in this JSON contract (no markdown fence, no extra STATUS line):
 
 `STATUS: DESIGNED {"head":"$head","disposition":"fix","plan":{"summary":"...","files":["path"],"steps":["..."],"tests":"..."}}`
 
-or:
-
-`STATUS: DESIGNED {"head":"$head","disposition":"followups","rationale":"...","followups":[{"finding":"...","category":"behavior","reason":"..."}]}`
 
 For `fix`, `files` and `steps` must be nonempty finite lists; each step must be actionable.
-For `followups`, list each finding separately and use a category from `scope`, `spec`,
-`behavior`, `hardening`, or `testing`; each reason must name the relevant project context.
-Never label a security or data-loss issue acceptable. If no actionable findings remain, use
-an empty `followups` list and use `rationale` to explain why prior findings are resolved or
-not applicable. The rationale and each follow-up reason must be grounded in project context.
