@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
 from unittest import mock
 
 from mahler import config, prompt, runner, no_change
@@ -411,6 +412,118 @@ class PlatformLaunchTests(unittest.TestCase):
             env = popen.call_args.kwargs["env"]
             self.assertEqual(env["MAHLER_EPOCH"], "4")
             self.assertEqual(env["GIT_CONFIG_VALUE_0"], hooks_dir)
+
+
+class ResumeLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+        self.conf = {"kind": "codex", "account": "work", "model": "chosen"}
+        self.home = self.root / "account"
+        self.cfg = {"platforms": {"work": self.conf}, "accounts": {
+            "work": {"env": {"CODEX_HOME": str(self.home),
+                             "CLAUDE_CONFIG_DIR": str(self.home),
+                             "XDG_DATA_HOME": str(self.home), "MISTRAL_API_KEY": "test"}}}}
+        self.ctx = SimpleNamespace(cfg=self.cfg, led=self.led, policy=lambda _: {
+            "path": str(self.root), "account": "work", "run_timeout_minutes": 60})
+        self.source = self.led.create_run(project="p", number=7, role="build",
+            platform="work", epoch=2, status="ended", session_id="session-123")
+        self.new = self.led.create_run(project="p", number=7, role="fix",
+            platform="work", epoch=3, status="running")
+        self.runs = self.root / "runs"
+        self.run_dir = self.runs / str(self.new)
+        self.run_dir.mkdir(parents=True)
+        self.prep = dict(worktree=str(self.root / "new-wt"), run_dir=str(self.run_dir),
+                         branch="mahler/pr-head", base_ref="origin/mahler/pr-head")
+        self.item = dict(number=7, branch="mahler/pr-head")
+        for patcher in (mock.patch.object(config, "RUNS_DIR", str(self.runs)),
+                        mock.patch.object(runner, "fence_hooks", return_value="new-hooks"),
+                        mock.patch.object(runner.platforms, "codex_exe", return_value="codex"),
+                        mock.patch.object(runner.platforms, "vibe_exe", return_value="vibe")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def storage(self, relative):
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}\n")
+        return path
+
+    def launch(self):
+        return runner.launch(self.ctx, "p", self.item, "fix", "work", self.new, 3,
+                             "Full current fix prompt: CI logs and review findings", self.prep,
+                             resume_from=self.source)
+
+    def test_resume_preserves_prompt_worktree_branch_and_new_fencing(self):
+        self.storage("sessions/2026/10/07/rollout-session-123.jsonl")
+        with mock.patch.object(runner, "spawn", return_value=123) as spawn:
+            result = self.launch()
+        argv, cwd, log, status = spawn.call_args.args
+        self.assertEqual(cwd, self.prep["worktree"])
+        self.assertEqual(result["branch"], "mahler/pr-head")
+        self.assertEqual(log, str(self.run_dir / "agent.log"))
+        self.assertEqual(status, str(self.run_dir / "exit"))
+        self.assertEqual(argv[-2], "session-123")
+        self.assertEqual(argv[-1], (self.run_dir / "prompt.md").read_text())
+        env = spawn.call_args.kwargs["env"]
+        self.assertEqual(env["CODEX_HOME"], str(self.home))
+        self.assertEqual(env["MAHLER_RUN_ID"], str(self.new))
+        self.assertEqual(env["MAHLER_EPOCH"], "3")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "new-hooks")
+        self.assertEqual(self.led.run(self.source)["epoch"], 2)
+
+    def test_missing_storage_does_not_spawn_or_select_latest(self):
+        with mock.patch.object(runner, "spawn") as spawn:
+            with self.assertRaises(runner.ResumeUnsupported):
+                self.launch()
+        spawn.assert_not_called()
+
+    def test_rejects_foreign_account_kind_item_and_missing_identity(self):
+        self.storage("sessions/rollout-session-123.jsonl")
+        self.cfg["platforms"]["other"] = {"kind": "codex", "account": "personal"}
+        for changes in ({"platform": "other"}, {"project": "other"}, {"number": 8},
+                        {"session_id": None}, {"session_id": " "},
+                        {"session_id": "--last"}, {"status": "running"}):
+            with self.subTest(changes=changes):
+                self.led.update_run(self.source, platform="work", project="p", number=7,
+                                    session_id="session-123", status="ended")
+                self.led.update_run(self.source, **changes)
+                with mock.patch.object(runner, "spawn") as spawn:
+                    with self.assertRaises(runner.ResumeUnsupported):
+                        self.launch()
+                    spawn.assert_not_called()
+        self.led.update_run(self.source, platform="other", status="ended")
+        self.cfg["platforms"]["other"] = {"kind": "claude", "account": "work"}
+        with self.assertRaises(runner.ResumeUnsupported):
+            self.launch()
+
+    def test_vibe_reuses_only_source_session_storage(self):
+        self.conf["kind"] = "vibe"
+        source_home = self.runs / str(self.source) / "vibe_home"
+        logs = source_home / "logs/session"
+        logs.mkdir(parents=True)
+        (source_home / ".env").write_text("must not copy")
+        (source_home / "config.toml").write_text("must not copy")
+        with mock.patch.object(runner, "spawn", return_value=123) as spawn:
+            self.launch()
+        env = spawn.call_args.kwargs["env"]
+        target = Path(env["VIBE_HOME"])
+        self.assertEqual(target, self.run_dir / "vibe_home")
+        self.assertEqual((target / "logs/session").resolve(), logs.resolve())
+        self.assertFalse((target / ".env").exists())
+        self.assertIn('chosen', (target / "config.toml").read_text())
+        self.assertEqual(env["MAHLER_EPOCH"], "3")
+        self.assertEqual(spawn.call_args.args[0][-2:], ["--resume", "session-123"])
+
+    def test_vibe_missing_source_location_is_unsupported(self):
+        self.conf["kind"] = "vibe"
+        with mock.patch.object(runner, "spawn") as spawn:
+            with self.assertRaises(runner.ResumeUnsupported):
+                self.launch()
+            spawn.assert_not_called()
 
 
 class FenceHookTests(unittest.TestCase):

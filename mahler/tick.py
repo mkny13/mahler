@@ -675,7 +675,7 @@ def schedule(ctx, projects):
 
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
-          fix_reason="ci", explore=False):
+          fix_reason="ci", explore=False, resume_from=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
     if not launch_health.allowed(ctx, project, n):
         return False
@@ -712,7 +712,8 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
         text = prompt.build(ctx, project, item, role, platform, prep, context=context)
         meta = runner.launch(ctx, project, item, role, platform, run_id, lease["epoch"],
-                             text, prep)
+                             text, prep, **({"resume_from": resume_from}
+                                           if resume_from is not None else {}))
     except Exception as e:                       # noqa: BLE001 — any launch failure
         if prep is not None:
             branch = prep.get("branch")
