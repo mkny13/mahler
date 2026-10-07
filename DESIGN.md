@@ -416,6 +416,33 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Mistral Vibe** (`vibe`, `mistral-vibe` 2.25.8, model `codestral-latest`) | `vibe --prompt <p> --workdir <wt> --output streaming --trust --auto-approve --max-price 0 --max-turns N`; resume with `--resume <sessionId>`. Model has no flag: a per-run `VIBE_HOME/config.toml` pins it, and `MISTRAL_API_KEY` comes from the env or `~/.vibe/.env` | Unmetered: chat responses carry only per-minute `x-ratelimit-*` headers, so 429 triggers a 60-minute backoff (as Kilo/Cline). On the free plan only `codestral-latest` (125 req/min) and open models work; the default `mistral-medium-3.5` 429s with a 0 req/min limit. Streaming NDJSON carries `sessionId`. No bash deny-list under `--auto-approve`: accepted guardrail gap (mahler#77). Verified 2026-10-01 (mahler#623) | **Opt-in only** — disabled by default, absent from default routes. Builder, size `s` only. Never enable pay-as-you-go on the Mistral workspace. |
 | OpenCode | — | — | Later backend (Phase 8) |
 
+**MiMo Code investigation: free MiMo Auto retired (mahler#721, 2026-10-07).**
+No adapter or route is added. npm reports `@mimo-ai/cli` **0.1.15** as latest;
+upstream tag `v0.1.15` resolves to `14dfe68a1c121f859544ba810b3c308e8501bfb2`.
+Its [sunset definition](https://github.com/XiaomiMiMo/MiMo-Code/blob/14dfe68a1c121f859544ba810b3c308e8501bfb2/packages/opencode/src/util/free-api-sunset.ts)
+ends the `mimo/mimo-auto` free channel at **2026-07-26 10:00 UTC**. The shared
+[provider implementation](https://github.com/XiaomiMiMo/MiMo-Code/blob/14dfe68a1c121f859544ba810b3c308e8501bfb2/packages/opencode/src/provider/provider.ts#L1787-L1790)
+rejects that model after the cutoff, before SDK resolution, with
+`MiMo free API service has ended. Sign in or configure a third-party API.`
+This applies beyond the interactive UI. The
+[launch announcement](https://mimo.mi.com/docs/en-US/news/latest/mimocode), updated
+June 15, still advertises limited-time anonymous access; it does not establish
+current availability. #719 remained open when checked, so redundancy was not
+the reason to reject this integration.
+
+Verification was **source-derived**, not a live inference: Node 25.6.0 executed
+the pinned sunset helper and the exact shared-provider rejection guard, checking
+the instant before/at cutoff, the investigation date, and model identity; all
+assertions passed. No CLI was installed and no account, consent, payment, or
+project-code transmission was attempted. Daily/request limits and observed
+quota remain unknown; headless success, approval/output flags, exit codes,
+resume, and a live size:s code/test/commit trial were not verified because the
+requested free channel has ended. Authenticated Xiaomi access or third-party
+providers are not established zero-cost substitutes. The owner's approval
+remains **public personal code only**; applicable overseas terms and training
+consent remain unverified. Any future offer needs a new availability and terms
+check before integration. This is the issue's free-offer-ended outcome.
+
 **Antigravity test results (2026-09-12).**
 - `agy` 1.1.23 was already installed at `~/.local/bin/agy` and signed in. dispatch only
   searched the app bundle, which is why NOTES.md says Antigravity has no CLI.
