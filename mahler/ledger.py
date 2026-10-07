@@ -234,6 +234,30 @@ CREATE INDEX IF NOT EXISTS idx_release_items_release
     ON release_items(release_id);
 """
 
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS capacity_intervals (
+    id                INTEGER PRIMARY KEY,
+    project           TEXT NOT NULL,
+    number            INTEGER NOT NULL,
+    role              TEXT NOT NULL,
+    routing_role      TEXT,
+    size              TEXT,
+    effective_size    TEXT,
+    required_tier     INTEGER NOT NULL DEFAULT 0,
+    first_seen        TEXT NOT NULL,
+    last_seen         TEXT NOT NULL,
+    open              INTEGER NOT NULL DEFAULT 1,
+    end_reason        TEXT,
+    signature         TEXT NOT NULL,
+    blockers          TEXT NOT NULL DEFAULT '[]',
+    platforms         TEXT NOT NULL DEFAULT '{}',
+    launch_run_id     INTEGER,
+    launched_platform TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_capacity_open ON capacity_intervals(open, project, number, role);
+CREATE INDEX IF NOT EXISTS idx_capacity_last_seen ON capacity_intervals(last_seen);
+"""
+
 SCHEMA += f"""
 CREATE INDEX IF NOT EXISTS idx_runs_estimate_samples
     ON runs(ended_at DESC, id DESC)
@@ -554,6 +578,84 @@ class Ledger:
 
     def release_items_for_release(self, release_id):
         return self.q("SELECT * FROM release_items WHERE release_id=? ORDER BY shipped_at ASC, number ASC", (release_id,))
+
+    # ---------- capacity intervals (mahler#734; schema in capacity.py) ----------
+
+    def capacity_record(self, observations, gap_seconds=120):
+        """Fold one tick's observations {(project, number, role): dict} into
+        state intervals. An unchanged state only advances last_seen; a changed
+        state, a gap over `gap_seconds`, or a launch closes the open interval
+        (at its last_seen — unobserved time is never waiting time) and starts
+        the next. Open intervals with no observation this tick close as gone."""
+        now = self.now()
+        stamp = iso(now)
+        with self._tx():
+            for row in self.q("SELECT * FROM capacity_intervals WHERE open=1"):
+                key = (row["project"], row["number"], row["role"])
+                obs = observations.get(key)
+                if obs is None:
+                    self._capacity_close(row["id"], "gone")
+                    continue
+                stale = (now - parse(row["last_seen"])).total_seconds() > gap_seconds
+                if obs.get("launch_run_id") is not None:
+                    if stale:
+                        self._capacity_close(row["id"], "gap")
+                    else:
+                        self._capacity_close(row["id"], "launched", last_seen=stamp,
+                                             run_id=obs["launch_run_id"],
+                                             platform=obs.get("launched_platform"))
+                        obs["_handled"] = True
+                    continue
+                if row["signature"] == obs["signature"] and not stale:
+                    self.con.execute("UPDATE capacity_intervals SET last_seen=? WHERE id=?",
+                                     (stamp, row["id"]))
+                    obs["_handled"] = True
+                else:
+                    reason = ("gap" if stale else
+                              "paused" if "paused" in obs["blockers"] else "changed")
+                    self._capacity_close(row["id"], reason)
+            for (project, number, role), obs in observations.items():
+                if obs.pop("_handled", False):
+                    continue
+                launched = obs.get("launch_run_id") is not None
+                self.con.execute(
+                    "INSERT INTO capacity_intervals (project, number, role, routing_role, size,"
+                    " effective_size, required_tier, first_seen, last_seen, open, end_reason,"
+                    " signature, blockers, platforms, launch_run_id, launched_platform)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (project, number, role, obs.get("routing_role"), obs.get("size"),
+                     obs.get("effective_size"), obs.get("required_tier") or 0, stamp, stamp,
+                     0 if launched else 1, "launched" if launched else None,
+                     obs["signature"], json.dumps(obs.get("blockers") or []),
+                     json.dumps(obs.get("platforms") or {}, sort_keys=True),
+                     obs.get("launch_run_id"), obs.get("launched_platform")))
+
+    def _capacity_close(self, row_id, reason, last_seen=None, run_id=None, platform=None):
+        self.con.execute(
+            "UPDATE capacity_intervals SET open=0, end_reason=?, last_seen=COALESCE(?, last_seen),"
+            " launch_run_id=COALESCE(?, launch_run_id),"
+            " launched_platform=COALESCE(?, launched_platform) WHERE id=?",
+            (reason, last_seen, run_id, platform, row_id))
+
+    def capacity_prune(self, days=90):
+        """Drop intervals that ended before the rolling cutoff; clamp the one
+        crossing it so retained time never reaches past the window."""
+        cutoff = iso(self.now() - timedelta(days=days))
+        with self._tx():
+            self.con.execute("DELETE FROM capacity_intervals WHERE last_seen < ?", (cutoff,))
+            self.con.execute("UPDATE capacity_intervals SET first_seen=? WHERE first_seen < ?",
+                             (cutoff, cutoff))
+
+    def capacity_intervals(self, since=None, project=None, limit=5000):
+        """Intervals whose observed span reaches `since` (ISO), oldest first, bounded."""
+        sql, args = "SELECT * FROM capacity_intervals WHERE 1=1", []
+        if since:
+            sql += " AND last_seen >= ?"
+            args.append(since)
+        if project:
+            sql += " AND project=?"
+            args.append(project)
+        return self.q(sql + " ORDER BY first_seen, id LIMIT ?", (*args, limit))
 
     # ---------- plumbing ----------
 

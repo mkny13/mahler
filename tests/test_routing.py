@@ -1289,5 +1289,114 @@ class PeakOverrideCommandTests(unittest.TestCase):
         self.assertIsNone(led.get_kv(router.PEAK_OVERRIDE))
 
 
+class DiagnoseParityTests(unittest.TestCase):
+    """router.diagnose (mahler#734) explains routing without changing it."""
+
+    def setUp(self):
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["claude_peak"]["enabled"] = False
+        self.led = led_with(**{n: (10, 10) for n in
+                               ("agy-claude", "agy-gemini", "copilot", "copilot-high",
+                                "claude", "claude-opus", "claude-low", "codex", "codex-low",
+                                "codex-high")})
+        self.addCleanup(self.led.close)
+        avail = mock.patch.object(__import__("mahler.platforms", fromlist=["x"]),
+                                  "available", return_value=True)
+        avail.start()
+        self.addCleanup(avail.stop)
+
+    def state(self):
+        return (self.led.q("SELECT * FROM usage ORDER BY platform, window"),
+                self.led.q("SELECT * FROM kv ORDER BY key"),
+                self.led.q("SELECT count(*) AS n FROM events")[0]["n"])
+
+    def parity(self, role="build", pin=None, busy=(), size="m", min_tier=0, exclude=()):
+        pol = config.project_policy(self.cfg, "x")
+        before = [[tuple(r) for r in part] if isinstance(part, list) else part
+                  for part in self.state()]
+        kw = dict(pin=pin, busy=busy, size=size, min_tier=min_tier, exclude=exclude)
+        chosen, _ = router.pick_for_project(self.cfg, self.led, pol, role, **kw)
+        diag = router.diagnose(self.cfg, self.led, pol, role, **kw)
+        after = [[tuple(r) for r in part] if isinstance(part, list) else part
+                 for part in self.state()]
+        self.assertEqual(before, after)                      # diagnosing writes nothing
+        again, _ = router.pick_for_project(self.cfg, self.led, pol, role, **kw)
+        self.assertEqual(chosen, again)
+        self.assertEqual(set(diag), set(self.cfg["platforms"]))   # the finite set
+        order = router.candidates(self.cfg, role, pin)
+        eligible = [n for n in order if diag[n] == ["eligible"]]
+        self.assertEqual(eligible[0] if eligible else None, chosen)
+        return chosen, diag
+
+    def test_plain_route_picks_the_first_eligible(self):
+        chosen, diag = self.parity()
+        self.assertEqual(chosen, "agy-claude")
+        self.assertEqual(diag["agy-gemini"], ["eligible"])     # after the winner, still shown
+        self.assertEqual(diag["jetstream"], ["disabled", "route", "size"])
+
+    def test_account_restriction(self):
+        self.cfg["platforms"]["agy-claude"]["account"] = "work"
+        chosen, diag = self.parity()
+        self.assertEqual(diag["agy-claude"], ["account"])
+        self.assertNotEqual(chosen, "agy-claude")
+
+    def test_pin(self):
+        chosen, diag = self.parity(pin="agy-gemini")
+        self.assertEqual((chosen, diag["agy-claude"]), ("agy-gemini", ["pin"]))
+
+    def test_effective_size_and_tier_escalation(self):
+        chosen, diag = self.parity(size="m", min_tier=3)
+        self.assertIn("tier", diag["agy-claude"])
+        self.assertNotIn("tier", diag["agy-gemini"])
+        self.assertEqual(chosen, "agy-gemini")
+        _, diag = self.parity(size="l")
+        self.assertEqual(diag["agy-claude"], ["size"])
+
+    def test_quota_no_credit_hold_and_stale_are_distinct(self):
+        later = iso(NOW + timedelta(hours=3))
+        for window in ("5h", "weekly"):
+            self.led.record_usage("agy-claude", window, 100, later)
+        self.led.record_usage("agy-gemini", "hold", 100, later)
+        self.led.set_kv("hold_reason:agy-gemini", "silent")
+        self.led.record_usage("copilot", "hold", 100, later)
+        self.led.set_kv("hold_reason:copilot", "no_credit")
+        self.led.con.execute("DELETE FROM usage WHERE platform='copilot-high'")
+        chosen, diag = self.parity(size="s")
+        self.assertEqual(diag["agy-claude"], ["quota"])
+        self.assertEqual(diag["agy-gemini"], ["hold"])
+        self.assertEqual(diag["copilot"], ["no_credit"])
+        self.assertIn("unknown", diag["copilot-high"])         # stale is not quota
+        self.assertNotIn("quota", diag["copilot-high"])
+
+    def test_peak_blocks_claude_only_unless_pinned(self):
+        self.cfg["claude_peak"]["enabled"] = True
+        with mock.patch.object(router, "peak_state",
+                               return_value=(True, NOW + timedelta(hours=2))):
+            _, diag = self.parity(role="plan", size="l")
+            self.assertEqual(diag["claude-opus"], ["peak"])
+            chosen, diag = self.parity(role="plan", pin="claude-opus", size="l")
+            self.assertEqual((chosen, diag["claude-opus"]), ("claude-opus", ["eligible"]))
+
+    def test_shared_slots_busy_and_reviewer_exclusion(self):
+        chosen, diag = self.parity(busy={"agy-claude"})
+        self.assertEqual((chosen, diag["agy-claude"]), ("agy-gemini", ["slots_busy"]))
+        chosen, diag = self.parity(role="review", exclude={"agy-claude"})
+        self.assertIn("excluded", diag["agy-claude"])
+
+    def test_measured_exploration_is_unaffected_by_diagnosis(self):
+        self.cfg["measure"]["explore_share"] = dict(build=1, fix=1, sort=1, plan=1)
+        self.cfg["projects"]["x"] = dict(enabled=True, hot_hold=False, path="/tmp/x", repo="x/y")
+        self.led.upsert_item("x", 1, title="Add a button", state="ready",
+                             sorted_at=iso(NOW - timedelta(hours=1)), labels='["size:m"]')
+        pol = config.project_policy(self.cfg, "x")
+        run = lambda: router.explore_for_project(
+            self.cfg, self.led, pol, self.led.item("x", 1), "build", size="m")
+        explored = run()
+        _, diag = self.parity()
+        self.assertEqual(run(), explored)
+        if explored:
+            self.assertEqual(diag[explored], ["eligible"])
+
+
 if __name__ == "__main__":
     unittest.main()
