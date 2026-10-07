@@ -14,6 +14,7 @@ import signal
 import subprocess
 
 from . import config, platforms, redact, router
+from .ledger import row_get
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
               "post-rewrite", "pre-applypatch", "pre-commit", "pre-merge-commit",
@@ -143,7 +144,20 @@ def prepare(ctx, project, item, role, platform, run_id):
 
     git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
     branch, start = None, f"origin/{base}"
-    if role == "sort":
+    claim_sha = row_get(item, "claim_base_sha") if role == "review" else None
+    if claim_sha:
+        from . import no_change
+        # Bind before launch: a restart cannot lose which run owns this review.
+        record = no_change.read(ctx.led, project, item["number"])
+        lease = ctx.led.lease(project, item["number"])
+        if record.get("base_sha") != claim_sha or not lease or lease["run_id"] != run_id:
+            raise GitError("claim review lost its base or lease")
+        record.update(phase="reviewing", run_id=run_id, epoch=lease["epoch"])
+        no_change.save(ctx.led, project, item["number"], record)
+        git(repo, "fetch", "--quiet", "origin", claim_sha, env=env)
+        start = claim_sha
+        git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
+    elif role == "sort":
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
         # a fix run works on the PR's head branch itself (D18): its pushes

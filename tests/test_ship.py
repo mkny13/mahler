@@ -1465,6 +1465,11 @@ class ShipTests(unittest.TestCase):
             'verdict': 'pass', 'review_run': run['id'], 'reviewed_sha': 'reviewed-head'})
         self.assertIn("no blocking issues", self.gh.comments[-1])
 
+    def test_pr_review_ignores_old_no_change_claim(self):
+        self.led.set_kv("no_change:x#5", json.dumps({"phase": "rejected", "mode": "claim"}))
+        self.test_review_pass_posts_a_comment_and_records_the_verdict()
+        self.assertEqual(json.loads(self.led.get_kv("no_change:x#5"))["phase"], "rejected")
+
     def test_review_pass_lists_non_blocking_notes(self):
         run = self.review_run()
         with open(self.log, "w") as fh:
