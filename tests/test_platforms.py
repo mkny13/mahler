@@ -298,6 +298,45 @@ class ResumeArgvTests(unittest.TestCase):
 
 
 class ClineModelPinTests(unittest.TestCase):
+    def test_true_resume_capability_and_explicit_ids(self):
+        for kind, flag in (("claude", "--resume"), ("codex", "resume"),
+                           ("kilo", "--session"), ("vibe", "--resume")):
+            with self.subTest(kind=kind), mock.patch.object(platforms, kind + "_exe",
+                                                          return_value=kind):
+                conf = {"kind": kind, "model": "chosen", "build_model": "chosen",
+                        "effort": "high"}
+                self.assertTrue(platforms.supports_resume(conf))
+                argv = platforms.resume_argv_for(conf, "full fix prompt", "/new/wt",
+                                                 "fix", 60, "session-123")
+                self.assertIn(flag, argv)
+                self.assertIn("session-123", argv)
+                self.assertIn("full fix prompt", argv)
+                self.assertNotIn("--last", argv)
+                self.assertNotIn("--continue", argv)
+                if kind == "codex":
+                    self.assertLess(argv.index("-C"), argv.index("resume"))
+                    self.assertIn('--json', argv)
+                    self.assertIn('model_reasoning_effort="high"', argv)
+                    self.assertIn('--dangerously-bypass-approvals-and-sandbox', argv)
+                if kind == "claude":
+                    self.assertIn("stream-json", argv)
+                    self.assertIn("bypassPermissions", argv)
+                    self.assertIn("chosen", argv)
+                    self.assertIn("high", argv)
+                    for deny in platforms.CLAUDE_DENY:
+                        self.assertIn(deny, argv)
+                for missing in (None, "", "   "):
+                    if kind in ("claude", "codex"):
+                        with self.assertRaises(ValueError):
+                            platforms.resume_argv_for(conf, "p", "/wt", "fix", 60, missing)
+                    else:
+                        fresh = platforms.resume_argv_for(conf, "p", "/wt", "fix", 60, missing)
+                        self.assertNotIn(flag, fresh)
+        for kind in ("cline", "unknown", "agy", "kiro", "copilot"):
+            self.assertFalse(platforms.supports_resume({"kind": kind}))
+        with self.assertRaises(ValueError):
+            platforms.resume_argv_for({"kind": "unknown"}, "p", "/wt", "fix", 60, "id")
+
     def test_default_argv_pins_the_free_model(self):
         argv = platforms.cline_argv(config.DEFAULTS["platforms"]["cline-free"],
                                     "prompt", "/wt", "build")
