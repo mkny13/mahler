@@ -155,6 +155,7 @@ DEFAULTS = {
         "yield_grace_seconds": 120,
         "verify": "",
         "screenshot": "",
+        "screenshot_path": [],
         "screenshot_environment": "",
         "screenshot_preview_non_personal": False,
         "screenshot_timeout_seconds": 45,
@@ -1103,6 +1104,12 @@ def validate_accounts(cfg):
         for key in ("screenshot", "screenshot_environment"):
             if not isinstance(conf.get(key, ""), str):
                 raise ValueError(f"{scope}: {key} must be a string")
+        paths = conf.get("screenshot_path", [])
+        if (not isinstance(paths, list)
+                or any(not isinstance(path, str) or not os.path.isabs(path)
+                       or os.pathsep in path or "\x00" in path for path in paths)):
+            raise ValueError(f"{scope}: screenshot_path must be a list of absolute "
+                             "directories without empty or PATH-separated entries")
         if type(conf.get("screenshot_preview_non_personal", False)) is not bool:
             raise ValueError(f"{scope}: screenshot_preview_non_personal must be a boolean")
         timeout = conf.get("screenshot_timeout_seconds", 45)

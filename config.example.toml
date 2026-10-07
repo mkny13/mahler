@@ -61,6 +61,11 @@ screenshot = ""
 screenshot_environment = ""       # must explicitly name the preview environment
 screenshot_preview_non_personal = false  # strict boolean; local-only by default
 screenshot_timeout_seconds = 45    # integer 1–60
+screenshot_path = []              # inherited operator absolute executable directories
+# screenshot_path = ["/opt/capture/bin"]
+# PATH: resolved screenshot_path entries, /opt/homebrew/bin, /usr/local/bin, os.defpath.
+# Never inherit daemon PATH; relative, empty and colon-separated entries are invalid.
+# Configured directories resolving inside the exact PR worktree are refused.
 # screenshot = "/opt/mahler-screenshots/capture"  # operator-installed executable
 # Absolute executable path only, no shell/arguments; tools in Git checkouts are refused.
 # Install the tool and its browser dependencies outside all project checkouts.
