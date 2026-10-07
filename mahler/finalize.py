@@ -158,7 +158,10 @@ def _design_payload(rest):
     unsafe = re.compile(
         r"\b(security|credential|authentication|authorization|api[- ]?keys?|"
         r"secrets?|passwords?|access[- ]tokens?|private[- ]keys?|data[- ]loss|"
-        r"unrecoverable|irreversible)\b", re.IGNORECASE)
+        r"unrecoverable|irreversible|pii|personal(?:ly)?[- ](?:information|data|identifiable)|"
+        r"privacy|private[- ](?:data|information)|sensitive|confidential|leak(?:s|ed|ing|age)?|"
+        r"expos(?:e|es|ed|ing|ure)|vulnerabilit(?:y|ies)|encrypt(?:ed|ion)?|plaintext|"
+        r"(?:debug|log|logs|logging)[- ]?(?:files?|output)?)\b", re.IGNORECASE)
     if unsafe.search(data["rationale"]):
         return None
     for finding in findings:

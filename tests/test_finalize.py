@@ -544,6 +544,8 @@ class RunTests(unittest.TestCase):
                  "reason": "low impact"},
                 {"finding": "API key is written to logs", "category": "behavior",
                  "reason": "The logs are internal."},
+                {"finding": "PII is written to debug logs", "category": "behavior",
+                 "reason": "The logs stay on the owner's device."},
                 {"finding": "security concern", "category": "security",
                  "reason": "not important"},
                 {"finding": "silent unrecoverable data loss", "category": "behavior",
