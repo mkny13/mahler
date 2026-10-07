@@ -173,10 +173,18 @@ class GH:
         return dict(os.environ if self.env is None else self.env)
 
     def open_issues(self):
-        out = self._gh("issue", "list", "-R", self.repo, "--state", "open", "--limit", "300",
-                       "--json", "number,title,labels,body,createdAt,updatedAt,comments,url,"
-                       "blocking,blockedBy")
-        issues = json.loads(out)
+        # gh paginates up to --limit. Grow until the result proves exhaustion,
+        # retaining its normalized issue/comment and dependency fields.
+        limit = 300
+        while True:
+            out = self._gh("issue", "list", "-R", self.repo, "--state", "open",
+                           "--limit", str(limit), "--json",
+                           "number,title,labels,body,createdAt,updatedAt,comments,url,"
+                           "blocking,blockedBy")
+            issues = json.loads(out)
+            if len(issues) < limit:
+                break
+            limit *= 2
         self._relationships = {
             issue["number"]: {
                 "blocking": _relationship_numbers(issue.get("blocking")),

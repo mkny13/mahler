@@ -181,6 +181,16 @@ class TestGH(unittest.TestCase):
                     "issue", "view", "7", "-R", "mkny13/mahler",
                     "--json", "blocking,blockedBy")
 
+    def test_open_issues_grows_limit_until_complete(self):
+        issues = [{"number": n} for n in range(601)]
+        self.gh._gh.side_effect = [json.dumps(issues[:300]),
+                                  json.dumps(issues[:600]), json.dumps(issues)]
+        self.assertEqual(self.gh.open_issues(), issues)
+        limits = [call.args[call.args.index("--limit") + 1]
+                  for call in self.gh._gh.call_args_list]
+        self.assertEqual(limits, ["300", "600", "1200"])
+        self.assertEqual(self.gh.blocked_by_of(600), [])
+
     def test_open_issues_batches_relationships_for_both_directions(self):
         issue = {"number": 7, "blocking": {"nodes": [{"number": 8}]},
                  "blockedBy": {"nodes": [{"number": 6}]}}

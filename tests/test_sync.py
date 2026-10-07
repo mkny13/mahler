@@ -3,11 +3,11 @@
 import copy
 import json
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from mahler import config, scheduler, sync
-from mahler.ledger import Ledger
+from mahler.ledger import Ledger, iso
 
 
 class CapacityMigrationTests(unittest.TestCase):
@@ -48,3 +48,47 @@ class CapacityMigrationTests(unittest.TestCase):
         self.ctx.dry_run = True
         sync.sync(self.ctx, "x")
         self.assertFalse(self.led.get_kv("capacity-stranded-migrated:x"))
+
+
+class MissingScopeTests(unittest.TestCase):
+    def setUp(self):
+        CapacityMigrationTests.setUp(self)
+        self.ctx.cfg["projects"]["x"].update(scope="label", scope_label="custom")
+        self.gh.issues_changed.return_value = (True, "new-etag")
+        self.gh.blocked_by_of.return_value = []
+
+    def issue(self, number, hours, labels=()):
+        return {"number": number, "title": "Example", "body": "",
+                "createdAt": iso(self.led.now() - timedelta(hours=hours)),
+                "labels": [{"name": label} for label in labels], "comments": []}
+
+    def test_counts_only_over_24_hours_without_configured_label(self):
+        self.gh.open_issues.return_value = [
+            self.issue(1, 25), self.issue(2, 23), self.issue(3, 24),
+            self.issue(4, 25, ["custom"]), self.issue(5, 25, ["mahler"])]
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.get_kv("missing_scope:x"), "2")
+        self.assertEqual([i["number"] for i in self.led.items("x")], [4])
+        self.gh.add_label.assert_not_called()
+        self.gh.open_issues.return_value = []
+        self.gh.issue_state.return_value = "CLOSED"
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.get_kv("missing_scope:x"), "0")
+
+    def test_all_scope_and_dry_run_do_not_record_counts(self):
+        self.gh.open_issues.return_value = []
+        self.ctx.dry_run = True
+        sync.sync(self.ctx, "x")
+        self.assertIsNone(self.led.get_kv("missing_scope:x"))
+        self.ctx.dry_run = False
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        sync.sync(self.ctx, "x")
+        self.assertIsNone(self.led.get_kv("missing_scope:x"))
+
+    def test_failed_listing_preserves_latest_count(self):
+        from mahler.gh import GHError
+        self.led.set_kv("missing_scope:x", "7")
+        self.gh.open_issues.side_effect = GHError("offline")
+        with self.assertRaises(GHError):
+            sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.get_kv("missing_scope:x"), "7")

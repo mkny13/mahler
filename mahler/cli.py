@@ -183,7 +183,9 @@ def _daemon_update_stall(now):
 
 def cmd_status(a, cfg, led):
     from .console.state import capacity_wait_text
+    from .sync import missing_scope_counts
 
+    missing_scope = missing_scope_counts(led, cfg, getattr(a, "project", None))
     now = led.now()
     update_stall = _daemon_update_stall(now)
     if not a.json:
@@ -214,6 +216,7 @@ def cmd_status(a, cfg, led):
             "runs": runs,
             "items": items,
             "leases": leases,
+            "missing_scope_counts": missing_scope,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
             "estimates": {
                 "calibration": led.calibration_stats(),
@@ -266,6 +269,11 @@ def cmd_status(a, cfg, led):
         wait = f"  — {capacity}" if capacity else ""
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
               f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}{wait}")
+    if missing_scope:
+        print("\nOpen issues older than 24h missing scope label (latest full sync)")
+        for project, count in missing_scope.items():
+            label = config.project_policy(cfg, project)["scope_label"]
+            print(f"  {project}: {count if count is not None else 'not yet synced'} ({label})")
     print("\nQuota")
     burst_lines = router.all_bursts(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None

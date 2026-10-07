@@ -39,6 +39,24 @@ class FormatTests(unittest.TestCase):
                              since=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
                              now=datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc))
 
+    def test_missing_scope_is_one_aggregate_line(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        cfg = {"defaults": {}, "projects": {
+            "a": {"scope": "label", "scope_label": "custom"},
+            "b": {"scope": "label", "scope_label": "mahler"},
+            "all": {"scope": "all"},
+            "disabled": {"scope": "label", "enabled": False}}}
+        for name, count in (("a", 2), ("b", 3), ("all", 99), ("disabled", 99)):
+            led.set_kv(f"missing_scope:{name}", str(count))
+        data = digest.gather(led, cfg, since=led.now(),
+                             local_now=datetime(2026, 10, 7))
+        self.assertEqual(data["missing_scope_counts"], {"a": 2, "b": 3})
+        text = digest.format_digest(data)
+        self.assertEqual([line for line in text.splitlines() if "missing scope label" in line],
+                         ["Open issues older than 24h missing scope label: 5 (latest full sync)"])
+        self.assertNotIn("#", text)
+
     def test_includes_shipped_with_titles(self):
         text = digest.format_digest(self.data())
         self.assertIn("Shipped in the last 24h (1):", text)
