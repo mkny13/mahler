@@ -12,6 +12,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+from pathlib import Path
 
 from . import config, platforms, redact, router
 from .ledger import row_get
@@ -241,7 +242,73 @@ def run_env(ctx, project, number, platform, run_id, epoch):
     return env
 
 
-def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
+class ResumeUnsupported(ValueError):
+    """The requested saved session cannot be used for this launch."""
+
+
+def resume_session(ctx, project, item, role, platform, resume_from, env):
+    """Resolve a ledger run's explicit session in its platform/account namespace.
+
+    No discovery of user sessions or old environment reuse. The caller keeps
+    the new run ID, prompt, worktree and fencing. Unusable sources fail closed.
+    """
+    source = ctx.led.run(resume_from)
+    pconf = ctx.cfg["platforms"][platform]
+    old_conf = ctx.cfg["platforms"].get(row_get(source, "platform"), {})
+    session_id = row_get(source, "session_id")
+    if (role != "fix" or not source or source["status"] != "ended"
+            or source["project"] != project or source["number"] != item["number"]
+            or not platforms.supports_resume(pconf)
+            or old_conf.get("kind") != pconf["kind"]
+            or config.account_of(old_conf) != config.account_of(pconf)
+            or not isinstance(session_id, str) or not session_id.strip()):
+        raise ResumeUnsupported("source run is not resumable for this fix")
+    session_id = session_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", session_id):
+        raise ResumeUnsupported("source session ID is not an explicit identifier")
+    kind = pconf["kind"]
+    account = config.account_of(pconf)
+    namespace_var = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME",
+                     "kilo": "XDG_DATA_HOME"}.get(kind)
+    if (account != config.DEFAULT_ACCOUNT and namespace_var
+            and not (ctx.cfg.get("accounts", {}).get(account, {}).get("env") or {}).get(namespace_var)):
+        raise ResumeUnsupported("source account has no isolated session namespace")
+    home = Path(env.get("HOME", platforms.HOME))
+    try:
+        if kind == "claude":
+            root = Path(env.get("CLAUDE_CONFIG_DIR", home / ".claude")) / "projects"
+            paths = list(root.glob(f"*/{session_id}.jsonl"))
+        elif kind == "codex":
+            # Fresh Codex runs remain ephemeral; their IDs alone do not prove
+            # resumability. Only a persisted rollout is usable.
+            root = Path(env.get("CODEX_HOME", home / ".codex")) / "sessions"
+            paths = list(root.glob(f"**/*-{session_id}.jsonl"))
+        elif kind == "kilo":
+            # Kilo 7.6.2 uses the account's XDG data store, shared across
+            # worktrees. Never point a work account at another login's store.
+            root = Path(env.get("XDG_DATA_HOME", home / ".local/share")) / "kilo"
+            paths = [root]
+        else:
+            # Vibe 2.25.8 local source: paths/_vibe_home.py stores sessions at
+            # VIBE_HOME/logs/session. app_server/_runtime.py's _load_session
+            # resolves explicit IDs without the cwd filter used by --continue;
+            # resume_blueprint builds with the NEW options.cwd. Reuse only
+            # session storage, not the old config, credentials or environment.
+            root = Path(config.RUNS_DIR) / str(source["id"]) / "vibe_home/logs/session"
+            paths = [root]
+        if not paths or not all(os.access(p, os.R_OK) for p in paths):
+            raise ResumeUnsupported("source session storage is inaccessible")
+        if kind == "vibe":
+            target = Path(env["VIBE_HOME"]) / "logs/session"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(root.resolve(), target_is_directory=True)
+    except OSError as exc:
+        raise ResumeUnsupported("source session storage is inaccessible") from exc
+    return session_id
+
+
+def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep,
+           resume_from=None):
     """Start the platform's CLI, detached, on the worktree `prepare` made.
     `prompt` is already rendered (mahler/prompt.py) — the runner never writes
     the words a run is given."""
@@ -249,6 +316,12 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
     pconf = ctx.cfg["platforms"][platform]
     wt, run_dir = prep["worktree"], prep["run_dir"]
     argv = platforms.argv_for(pconf, prompt, wt, role, pol["run_timeout_minutes"])
+    env = run_env(ctx, project, item["number"], platform, run_id, epoch)
+    if resume_from is not None:
+        check_account(ctx, project, platform)
+        session_id = resume_session(ctx, project, item, role, platform, resume_from, env)
+        argv = platforms.resume_argv_for(pconf, prompt, wt, role,
+                                         pol["run_timeout_minutes"], session_id=session_id)
     if not argv[0]:
         raise RuntimeError(f"{platform} CLI not found")
     # Keep the run record aligned with the exact validated setting passed to
@@ -258,7 +331,6 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep):
         ctx.led.update_run(run_id, effort=platforms.effort_value(pconf, role) or "default",
                            burst_lines=json.dumps(lines) if lines else None)
 
-    env = run_env(ctx, project, item["number"], platform, run_id, epoch)
     log_path = os.path.join(run_dir, "agent.log")
     status_path = os.path.join(run_dir, "exit")
     with open(os.path.join(run_dir, "prompt.md"), "w") as fh:

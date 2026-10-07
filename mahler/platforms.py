@@ -492,7 +492,29 @@ def kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_
     return argv
 
 
+def supports_resume(pconf):
+    """True session continuation, unlike Cline's transient fresh-run nudge."""
+    return pconf.get("kind") in {"claude", "codex", "kilo", "vibe"}
+
+
 def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=None):
+    # Never turn an absent/blank ID into a CLI's latest-session/picker mode.
+    session_id = session_id.strip() if isinstance(session_id, str) else None
+    if pconf["kind"] in {"claude", "codex"}:
+        if not session_id:
+            raise ValueError("resume requires an explicit session ID")
+        if pconf["kind"] == "claude":
+            # Claude Code 2.1.286, `claude --help`, 2026-10-07: -p and
+            # --resume <id> coexist with stream-json, permissions, model/effort.
+            return claude_argv(pconf, prompt, worktree, role) + ["--resume", session_id]
+        # codex-cli 0.154.0, `codex exec --help` / `exec resume --help`,
+        # 2026-10-07: -C/--color belong BEFORE resume; explicit ID needs no
+        # --last/--all. Keep the prepared worktree as the working root.
+        argv = [codex_exe(), "exec", "-C", worktree, "--color", "never",
+                "resume", "--json", "--dangerously-bypass-approvals-and-sandbox"]
+        if pconf.get("model"):
+            argv += ["--model", pconf["model"]]
+        return argv + effort_args(pconf, role) + [session_id, prompt]
     if pconf["kind"] == "cline":
         return cline_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
     if pconf["kind"] == "kilo":
