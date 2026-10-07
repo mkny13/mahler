@@ -255,68 +255,291 @@ def _yaml_line(line):
     return line
 
 
+@dataclass(frozen=True)
+class _Command:
+    cmd: str
+    cite: str
+    uncertain: bool = False
+    reasons: tuple[str, ...] = ()
+    uncertain_cites: tuple[str, ...] = ()
+
+    def __iter__(self):
+        return iter((self.cmd, self.cite))
+
+    def __getitem__(self, index):
+        return (self.cmd, self.cite)[index]
+
+    def __len__(self):
+        return 2
+
+
 def _workflow(tree, path):
     """Extract literal PR workflow run steps and static job names, not YAML names."""
     text = tree.read(path)
     lines = [_yaml_line(line) for line in text.splitlines()]
-    text = "\n".join(lines)
-    trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", text)
+    clean_text = "\n".join(lines)
+    trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", clean_text)
     if not trigger:
         return [], True, []
     start = trigger.start()
-    next_root = re.search(r"(?m)^[^\s#][^:\n]*:", text[trigger.end():])
-    end = trigger.end() + next_root.start() if next_root else len(text)
-    on = text[start:end]
+    next_root = re.search(r"(?m)^[^\s#][^:\n]*:", clean_text[trigger.end():])
+    end = trigger.end() + next_root.start() if next_root else len(clean_text)
+    on = clean_text[start:end]
     if not re.search(r"\bpull_request\b", on):
         return [], False, []
+
+    pr_filtered, pr_filter_cite = False, ""
+    pr_match = re.search(r"(?m)^([ \t]*)pull_request\s*(?::[ \t]*(.*))?$", on)
+    if pr_match:
+        pr_indent = len(pr_match.group(1))
+        pr_inline = (pr_match.group(2) or "").strip()
+        if pr_inline and pr_inline not in ("{}", "~", "null"):
+            pr_filtered = True
+            line_no = clean_text[:start + pr_match.start()].count("\n") + 1
+            pr_filter_cite = f"{path}:{line_no}: PR trigger filter"
+        else:
+            on_lines = on[pr_match.end():].splitlines()
+            offset = start + pr_match.end()
+            for o_line in on_lines:
+                stripped = o_line.strip()
+                if stripped:
+                    indent = len(o_line) - len(o_line.lstrip())
+                    if indent <= pr_indent:
+                        break
+                    if re.search(r"^\s*(?:paths|paths-ignore|branches|branches-ignore|types)\s*:", o_line):
+                        pr_filtered = True
+                        line_no = clean_text[:offset].count("\n") + 1
+                        pr_filter_cite = f"{path}:{line_no}: PR trigger filter"
+                        break
+                offset += len(o_line) + 1
+
+    wf_anchors = bool(re.search(r"[&*][\w-]+", clean_text))
+    wf_bad_jobs = bool(re.search(r"(?m)^jobs:[ \t]*\S", clean_text))
+    wf_has_reusable = bool(re.search(r"^\s*uses:\s*[^ \n]*\.github/workflows/", clean_text, re.M))
+    wf_has_changed_cwd = bool(re.search(r"(?m)^(?:\s{0,2})working-directory:\s*(\S+)", clean_text))
+    wf_defaults_cwd = bool(re.search(r"(?m)^defaults:\s*\n(?:\s+.*\n)*?\s+working-directory:\s*(\S+)", clean_text))
+    wf_cwd_cite = ""
+    if wf_has_changed_cwd:
+        m = re.search(r"(?m)^(?:\s{0,2})working-directory:\s*(\S+)", clean_text)
+        wf_cwd_cite = f"{path}:{clean_text[:m.start()].count('\n') + 1}: changed working directory"
+    elif wf_defaults_cwd:
+        m = re.search(r"(?m)^\s+working-directory:\s*(\S+)", clean_text)
+        wf_cwd_cite = f"{path}:{clean_text[:m.start()].count('\n') + 1}: changed working directory"
+
+    jobs_match = re.search(r"(?m)^jobs:\s*$", clean_text)
+    if not jobs_match:
+        return [], True, []
+    jobs_idx = clean_text[:jobs_match.start()].count("\n")
+
     rows, jobs = [], []
-    job = ""
-    uncertain = bool(re.search(r"\$\{\{|^\s*(?:-\s*)?(?:if|continue-on-error|working-directory):"
-                               r"|^\s*uses:\s*[^ \n]*\.github/workflows/"
-                               r"|[&*][\w-]+", text, re.M))
-    if re.search(r"(?m)^jobs:[ \t]*\S", text):
-        uncertain = True
-    if re.search(r"^\s+(?:paths|paths-ignore|branches|branches-ignore|types):", on, re.M):
-        uncertain = True
-    i = 0
+    current_job = ""
+    job_has_condition = False
+    job_cond_cite = ""
+    job_has_changed_cwd = bool(wf_cwd_cite)
+    job_cwd_cite = wf_cwd_cite
+    job_preceding_uncertain = False
+    job_preceding_uncertain_cite = ""
+    in_steps = False
+
+    i = jobs_idx + 1
     while i < len(lines):
         line = lines[i]
-        match = re.match(r"^  ([\w-]+):\s*$", line)
-        if match and match.group(1) != "pull_request":
-            job = match.group(1)
-        name = re.match(r"^    name:\s*(.+)", line)
-        if name:
-            job = name.group(1).strip("'\"")
-        run = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", line)
-        if run:
-            number = i + 1
-            command = run.group(2).strip()
-            if command in ("|", "|-", "|+", ">", ">-", ">+"):
-                indent = len(run.group(1)) + (2 if line.lstrip().startswith("-") else 0)
-                body = []
-                while i + 1 < len(lines):
-                    following = lines[i + 1]
-                    if following.strip() and len(following) - len(following.lstrip()) <= indent:
-                        break
-                    i += 1
-                    body.append(following.strip())
-                command = "\n".join(body) if command.startswith("|") else " ".join(body)
-            else:
-                command = command.strip("'\"")
-            for part in re.split(r"\s*(?:&&|;|\n)\s*", command):
+        if not line.strip():
+            i += 1
+            continue
+
+        if re.match(r"^[^\s#][^:\n]*:", line):
+            break
+
+        job_match = re.match(r"^  ([\w-]+):\s*$", line)
+        if job_match and job_match.group(1) != "pull_request":
+            current_job = job_match.group(1)
+            job_has_condition = False
+            job_cond_cite = ""
+            job_has_changed_cwd = bool(wf_cwd_cite)
+            job_cwd_cite = wf_cwd_cite
+            job_preceding_uncertain = False
+            job_preceding_uncertain_cite = ""
+            in_steps = False
+            i += 1
+            continue
+
+        if not current_job:
+            i += 1
+            continue
+
+        if not in_steps:
+            name_match = re.match(r"^    name:\s*(.+)", line)
+            if name_match:
+                current_job = name_match.group(1).strip("'\"")
+                i += 1
+                continue
+
+            cond_match = re.match(r"^    if:\s*(.+)", line)
+            if cond_match:
+                job_has_condition = True
+                job_cond_cite = f"{path}:{i+1}: job condition"
+                i += 1
+                continue
+
+            cwd_match = re.match(r"^\s+working-directory:\s*(.+)", line)
+            if cwd_match:
+                job_has_changed_cwd = True
+                job_cwd_cite = f"{path}:{i+1}: changed working directory"
+                i += 1
+                continue
+
+            if re.match(r"^    uses:\s*([^ \n]*\.github/workflows/.*)", line):
+                wf_has_reusable = True
+                i += 1
+                continue
+
+            if re.match(r"^    steps:\s*$", line):
+                in_steps = True
+                i += 1
+                continue
+
+            i += 1
+            continue
+
+        step_match = re.match(r"^(\s*)-\s*(.*)$", line)
+        if not step_match:
+            i += 1
+            continue
+
+        step_indent = len(step_match.group(1))
+        step_lines = [(i, line)]
+        next_i = i + 1
+        while next_i < len(lines):
+            next_line = lines[next_i]
+            if not next_line.strip():
+                next_i += 1
+                continue
+            next_indent = len(next_line) - len(next_line.lstrip())
+            if next_indent <= 2:
+                break
+            if re.match(r"^\s*-\s+", next_line) and next_indent <= step_indent:
+                break
+            step_lines.append((next_i, next_line))
+            next_i += 1
+
+        step_has_condition = False
+        step_cond_cite = ""
+        step_has_changed_cwd = False
+        step_cwd_cite = ""
+        step_has_continue_on_error = False
+        step_has_reusable = False
+        step_reusable_cite = ""
+        step_run_cmd = None
+        step_run_line = None
+
+        j = 0
+        while j < len(step_lines):
+            s_idx, s_text = step_lines[j]
+            if re.search(r"(?:^|\s)(?:-\s*)?if:\s*(.+)", s_text):
+                step_has_condition = True
+                step_cond_cite = f"{path}:{s_idx+1}: step condition"
+            if re.search(r"(?:^|\s)(?:-\s*)?working-directory:\s*(.+)", s_text):
+                step_has_changed_cwd = True
+                step_cwd_cite = f"{path}:{s_idx+1}: changed working directory"
+            if re.search(r"(?:^|\s)(?:-\s*)?continue-on-error:\s*(.+)", s_text):
+                step_has_continue_on_error = True
+            if re.search(r"uses:\s*[^ \n]*\.github/workflows/", s_text):
+                step_has_reusable = True
+                step_reusable_cite = f"{path}:{s_idx+1}: reusable workflow"
+
+            run_match = re.match(r"^(\s*)(?:-\s*)?run:\s*(.*)$", s_text)
+            if run_match:
+                step_run_line = s_idx + 1
+                cmd_val = run_match.group(2).strip()
+                if cmd_val in ("|", "|-", "|+", ">", ">-", ">+"):
+                    run_indent = len(run_match.group(1)) + (2 if s_text.lstrip().startswith("-") else 0)
+                    body = []
+                    while j + 1 < len(step_lines):
+                        f_idx, f_text = step_lines[j + 1]
+                        if f_text.strip() and len(f_text) - len(f_text.lstrip()) <= run_indent:
+                            break
+                        j += 1
+                        body.append(f_text.strip())
+                    cmd_val = "\n".join(body) if cmd_val.startswith("|") else " ".join(body)
+                else:
+                    cmd_val = cmd_val.strip("'\"")
+                step_run_cmd = cmd_val
+            j += 1
+
+        step_had_uncertainty = (
+            step_has_condition or step_has_changed_cwd or
+            step_has_continue_on_error or step_has_reusable
+        )
+        step_uncertain_cite = (
+            step_cond_cite or step_cwd_cite or step_reusable_cite or
+            (f"{path}:{step_lines[0][0]+1}: conditional step" if step_had_uncertainty else "")
+        )
+
+        if step_run_cmd is not None:
+            for part in re.split(r"\s*(?:&&|;|\n)\s*", step_run_cmd):
                 if not part or part.startswith("#"):
                     continue
+                cmd_dynamic = "${{" in part
                 expanded, unknown = _expand(tree, part)
-                uncertain |= unknown
+
                 for cmd, cite in expanded:
-                    rows.append((cmd, f"{path}:{number} job={job} run: {cmd}"
-                                 + (f" -> {cite}" if cite else "")))
-                    if _is_test(cmd) and job not in jobs:
-                        jobs.append(job)
-        i += 1
-    if not rows:
-        uncertain = True
-    return rows, uncertain, jobs
+                    cmd_uncertain = False
+                    cmd_reasons = []
+                    cmd_cites = []
+
+                    if job_has_condition:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command execution is conditional (job condition).")
+                        cmd_cites.append(job_cond_cite)
+                    elif step_has_condition:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command execution is conditional (step condition).")
+                        cmd_cites.append(step_cond_cite)
+                    elif pr_filtered:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Workflow pull_request trigger has filters.")
+                        cmd_cites.append(pr_filter_cite)
+                    elif job_has_changed_cwd or step_has_changed_cwd:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command runs in a changed working directory.")
+                        cmd_cites.append(step_cwd_cite or job_cwd_cite)
+                    elif job_preceding_uncertain:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Unresolved execution precedes verify command.")
+                        cmd_cites.append(job_preceding_uncertain_cite)
+                    elif cmd_dynamic or unknown:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command uses dynamic expansion or evaluation.")
+                        cmd_cites.append(f"{path}:{step_run_line}: dynamic command")
+
+                    full_cite = f"{path}:{step_run_line} job={current_job} run: {cmd}" + (f" -> {cite}" if cite else "")
+                    cmd_obj = _Command(
+                        cmd=cmd,
+                        cite=full_cite,
+                        uncertain=cmd_uncertain,
+                        reasons=tuple(cmd_reasons),
+                        uncertain_cites=tuple(cmd_cites)
+                    )
+                    rows.append(cmd_obj)
+                    if _is_test(cmd) and current_job not in jobs:
+                        jobs.append(current_job)
+
+                    if unknown or cmd_dynamic:
+                        step_had_uncertainty = True
+                        step_uncertain_cite = f"{path}:{step_run_line}: unresolved execution: {cmd}"
+
+        if step_had_uncertainty:
+            job_preceding_uncertain = True
+            job_preceding_uncertain_cite = step_uncertain_cite
+
+        i = next_i
+
+    wf_uncertain = (
+        pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or
+        not rows or any(r.uncertain for r in rows)
+    )
+    return rows, wf_uncertain, jobs
 
 
 def _ci(tree):
@@ -377,16 +600,61 @@ def _verify(tree, pol, commands, ci_unknown):
             if command in line:
                 documented = True
                 evidence.append(f"{path}:{number}: {command}")
-    matched = [cite for cmd, cite in commands if expected and _words(cmd)[:len(expected)] == expected]
-    evidence += [f"effective verify: {command}", *matched]
-    if not documented or not matched:
-        state = "unknown" if documented and ci_unknown else "gap"
+
+    matched_entries = [
+        cmd_entry for cmd_entry in commands
+        if expected and _words(cmd_entry[0])[:len(expected)] == expected
+    ]
+    matched_cites = [cmd_entry[1] for cmd_entry in matched_entries]
+    evidence += [f"effective verify: {command}", *matched_cites]
+
+    if not documented:
+        state = "gap"
         reason = "Verify command is absent from " + (
-            "documentation and PR CI." if not documented and not matched else
-            "documentation." if not documented else "literal PR CI commands.")
-    else:
-        state = "unknown" if ci_unknown else "pass"
+            "documentation and PR CI." if not matched_entries else "documentation.")
+        return _finding("verify-command", state, reason, evidence)
+
+    if not matched_entries:
+        state = "unknown" if ci_unknown else "gap"
+        if state == "unknown":
+            has_reusable = False
+            try:
+                for wf in (tree.root / ".github/workflows").glob("*.y*ml"):
+                    if re.search(r"uses:\s*[^ \n]*\.github/workflows/", tree.read(str(wf.relative_to(tree.root)))):
+                        has_reusable = True
+                        break
+            except (OSError, UnicodeError):
+                pass
+            if has_reusable:
+                reason = "Verify command is absent from literal PR CI commands (workflow uses reusable workflows)."
+            else:
+                reason = "Verify command is absent from literal PR CI commands."
+        else:
+            reason = "Verify command is absent from literal PR CI commands."
+        return _finding("verify-command", state, reason, evidence)
+
+    proven_entries = [
+        entry for entry in matched_entries
+        if not getattr(entry, "uncertain", False)
+    ]
+
+    if proven_entries:
+        state = "pass"
         reason = "Documented effective verify command is invoked by PR CI."
+    else:
+        state = "unknown"
+        reasons = []
+        uncertain_cites = []
+        for entry in matched_entries:
+            for r in getattr(entry, "reasons", ()):
+                if r not in reasons:
+                    reasons.append(r)
+            for c in getattr(entry, "uncertain_cites", ()):
+                if c not in uncertain_cites and c not in evidence:
+                    uncertain_cites.append(c)
+        reason = reasons[0] if reasons else "Documented effective verify command execution path cannot be proven."
+        evidence = evidence + uncertain_cites
+
     return _finding("verify-command", state, reason, evidence)
 
 
