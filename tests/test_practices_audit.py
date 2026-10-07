@@ -206,6 +206,34 @@ class TestPracticesAudit(unittest.TestCase):
                 self.write(".github/workflows/ci.yml", workflow)
                 self.assertEqual(self.results()["ci-tests"].state, "unknown")
 
+    def test_pr_trigger_filters_remain_unknown(self):
+        for key, value in (
+            ("branches", "[main]"),
+            ("branches-ignore", "[main]"),
+            ("paths", '["**.py"]'),
+            ("paths-ignore", '["docs/**"]'),
+            ("types", "[opened]"),
+        ):
+            with self.subTest(filter=key):
+                workflow = WORKFLOW.replace(
+                    "  pull_request:\n",
+                    f"  pull_request:\n    {key}: {value}\n")
+                self.write(".github/workflows/ci.yml", workflow)
+                self.assertEqual(self.results()["ci-tests"].state, "unknown")
+
+    def test_step_condition_and_expression_test_execution_are_unknown(self):
+        workflows = (
+            WORKFLOW.replace(
+                "      - run:", "      - if: success()\n        run:"),
+            WORKFLOW.replace(
+                "python3 -m unittest discover -s tests",
+                "${{ inputs.test_command }}"),
+        )
+        for workflow in workflows:
+            with self.subTest(workflow=workflow):
+                self.write(".github/workflows/ci.yml", workflow)
+                self.assertEqual(self.results()["ci-tests"].state, "unknown")
+
     def test_multiline_commands_and_inline_trigger(self):
         self.write(".github/workflows/ci.yml",
                    WORKFLOW.replace("on:\n  pull_request:", "on: [push, pull_request]")
@@ -229,7 +257,9 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
             "python3 -m unittest discover -s tests", "python3 fake.py"))
         self.write("fake.py", "# unittest.main() is not execution evidence\n")
-        self.assertEqual(self.results()["ci-tests"].state, "unknown")
+        findings = self.results()
+        self.assertEqual(findings["ci-tests"].state, "unknown")
+        self.assertEqual(findings["verify-command"].state, "unknown")
 
     def test_identical_and_pointer_instructions_pass(self):
         for pointer in ("See AGENTS.md\n", "@AGENTS.md\n", "Read [instructions](AGENTS.md).\n"):
@@ -888,6 +918,9 @@ class TestPracticesAudit(unittest.TestCase):
         self.write("tests/run_random.py", "# random order test runner\n")
         self.write("tests/run_strict.py", "# strict test runner\n")
         findings = self.results()
+        self.assertEqual(findings["ci-tests"].state, "pass")
+        self.assertIn(".github/workflows/ci.yml:16 job=test run: python -m unittest discover -s tests -v",
+                      findings["ci-tests"].evidence)
         finding = findings["verify-command"]
         self.assertEqual(finding.state, "pass")
         self.assertEqual(finding.reason, "Documented effective verify command is invoked by PR CI.")

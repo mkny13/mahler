@@ -280,13 +280,13 @@ def _workflow(tree, path):
     clean_text = "\n".join(lines)
     trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", clean_text)
     if not trigger:
-        return [], True, []
+        return [], True, [], True
     start = trigger.start()
     next_root = re.search(r"(?m)^[^\s#][^:\n]*:", clean_text[trigger.end():])
     end = trigger.end() + next_root.start() if next_root else len(clean_text)
     on = clean_text[start:end]
     if not re.search(r"\bpull_request\b", on):
-        return [], False, []
+        return [], False, [], False
 
     pr_filtered, pr_filter_cite = False, ""
     pr_match = re.search(r"(?m)^([ \t]*)pull_request\s*(?::[ \t]*(.*))?$", on)
@@ -328,7 +328,7 @@ def _workflow(tree, path):
 
     jobs_match = re.search(r"(?m)^jobs:\s*$", clean_text)
     if not jobs_match:
-        return [], True, []
+        return [], True, [], True
     jobs_idx = clean_text[:jobs_match.start()].count("\n")
 
     rows, jobs = [], []
@@ -535,35 +535,40 @@ def _workflow(tree, path):
 
         i = next_i
 
-    wf_uncertain = (
-        pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or
-        not rows or any(r.uncertain for r in rows)
+    structural_uncertainty = (
+        pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or not rows
     )
-    return rows, wf_uncertain, jobs
+    return (rows, structural_uncertainty or any(r.uncertain for r in rows),
+            jobs, structural_uncertainty)
 
 
 def _ci(tree):
     rows, jobs, errors = [], [], []
     workflows = sorted((tree.root / ".github/workflows").glob("*.y*ml"))
     uncertain = False
+    structural_uncertainty = False
     for path in workflows:
         name = str(path.relative_to(tree.root))
         try:
-            commands, unknown, names = _workflow(tree, name)
+            commands, unknown, names, structural_unknown = _workflow(tree, name)
             rows.extend(commands)
             jobs.extend(names)
             uncertain |= unknown
+            structural_uncertainty |= structural_unknown
         except (OSError, UnicodeError):
             errors.append(f"{name}: unreadable workflow")
             uncertain = True
-    tests = [(cmd, cite) for cmd, cite in rows if _is_test(cmd)]
-    state = "unknown" if uncertain else ("pass" if tests else "gap")
+            structural_uncertainty = True
+    tests = [row for row in rows if _is_test(row.cmd)]
+    proven_tests = [row for row in tests if not row.uncertain]
+    state = ("pass" if proven_tests and not structural_uncertainty else
+             "unknown" if uncertain else "gap")
     evidence = [cite for _, cite in rows] + errors
     if not evidence:
         evidence = [".github/workflows: no literal PR run commands found"]
-    reason = ("No proven unconditional PR test execution; workflow semantics need review."
-              if uncertain else
-              "PR CI invokes test commands; test quality is not assessed." if tests else
+    reason = ("PR CI invokes test commands; test quality is not assessed." if state == "pass" else
+              "No proven unconditional PR test execution; workflow semantics need review."
+              if state == "unknown" else
               "No test invocation found in PR CI (a build alone is insufficient).")
     return _finding("ci-tests", state, reason, evidence), rows, sorted(set(jobs)), uncertain
 
