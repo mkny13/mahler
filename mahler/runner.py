@@ -113,11 +113,15 @@ def check_account(ctx, project, platform):
     """Fail closed: a run must spend an account the project declares (D25).
     D26: 'declares' is membership — any of the project's declared accounts."""
     pol = ctx.policy(project)
-    account = config.account_of(ctx.cfg["platforms"][platform])
+    pconf = ctx.cfg["platforms"][platform]
+    account = config.account_of(pconf)
     accounts = config.accounts_of(pol)
     if account not in accounts:      # the router never does this (D25)
         raise RuntimeError(f"{platform} spends the {account} account; "
                            f"{project} is on {', '.join(accounts)}")
+    if pconf.get("kind") == "kimi" and any(a != config.DEFAULT_ACCOUNT for a in accounts):
+        raise RuntimeError(f"{platform} is personal-only and cannot be used for {project} "
+                           f"with accounts {', '.join(accounts)}")
 
 
 def prepare(ctx, project, item, role, platform, run_id):
@@ -238,6 +242,8 @@ def run_env(ctx, project, number, platform, run_id, epoch):
                GIT_CONFIG_VALUE_0=hooks)
     if pconf["kind"] == "vibe":
         env.update(platforms.vibe_env(pconf, run_dir, env))
+    if pconf["kind"] == "kimi":
+        env.update(platforms.kimi_env(pconf, run_dir, env))
     return env
 
 

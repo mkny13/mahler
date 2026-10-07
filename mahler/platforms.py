@@ -232,6 +232,12 @@ def kiro_exe():
     return which("kiro-cli", ["/opt/homebrew/bin", os.path.join(HOME, ".local/bin")])
 
 
+def kimi_exe():
+    return which("kimi", [os.path.join(HOME, ".kimi-code", "bin"),
+                          os.path.join(HOME, ".local/bin"),
+                          "/opt/homebrew/bin", "/usr/local/bin"])
+
+
 def _epoch_iso(secs):
     return datetime.fromtimestamp(int(secs), timezone.utc).isoformat() if secs else None
 
@@ -247,6 +253,7 @@ EFFORTS = {
     "kilo": None,                 # provider-specific free-form variants
     "kiro": {"low", "medium", "high", "xhigh", "max"},
     "vibe": set(),                # no effort flag: thinking is per-model in config.toml
+    "kimi": set(),                # no effort flag in print mode
 }
 
 
@@ -433,6 +440,31 @@ def vibe_env(pconf, run_dir, base_env=None):
     return out
 
 
+def kimi_argv(pconf, prompt, worktree, role, timeout_minutes=60):
+    # Verified 2026-10-07 (mahler#722): kimi 2.1.1, headless stream-json.
+    # Runs non-interactively in the process cwd (worktree).
+    # --auto/--yolo cannot be combined with --prompt/-p (OptionConflictError).
+    argv = [kimi_exe(), "-p", prompt, "--output-format", "stream-json"]
+    if pconf.get("model"):
+        argv += ["--model", pconf["model"]]
+    return argv
+
+
+def kimi_resume_argv(pconf, prompt, worktree, role, timeout_minutes=60, session_id=None):
+    # Verified 2026-10-07: -S <session_id> resumes an exact session.
+    # Without session_id, returns fresh kimi_argv (never cross-session fallback).
+    if session_id:
+        argv = [kimi_exe(), "-S", session_id, "-p", prompt, "--output-format", "stream-json"]
+        if pconf.get("model"):
+            argv += ["--model", pconf["model"]]
+        return argv
+    return kimi_argv(pconf, prompt, worktree, role, timeout_minutes)
+
+
+def kimi_env(pconf, run_dir, base_env=None):
+    return {"KIMI_CODE_NO_AUTO_UPDATE": "1"}
+
+
 def argv_for(pconf, prompt, worktree, role, timeout_minutes):
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
@@ -450,6 +482,8 @@ def argv_for(pconf, prompt, worktree, role, timeout_minutes):
         return kiro_argv(pconf, prompt, worktree, role, timeout_minutes)
     if pconf["kind"] == "vibe":
         return vibe_argv(pconf, prompt, worktree, role, timeout_minutes)
+    if pconf["kind"] == "kimi":
+        return kimi_argv(pconf, prompt, worktree, role, timeout_minutes)
     raise ValueError(f"unknown platform kind {pconf['kind']!r}")
 
 
@@ -499,13 +533,16 @@ def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=N
         return kilo_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
     if pconf["kind"] == "vibe":
         return vibe_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
+    if pconf["kind"] == "kimi":
+        return kimi_resume_argv(pconf, prompt, worktree, role, timeout_minutes, session_id=session_id)
     raise ValueError(f"resume not supported for platform kind {pconf['kind']!r}")
 
 
 def available(pconf):
     exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
            "copilot": copilot_exe, "codex": codex_exe,
-           "kilo": kilo_exe, "kiro": kiro_exe, "vibe": vibe_exe}[pconf["kind"]]()
+           "kilo": kilo_exe, "kiro": kiro_exe, "vibe": vibe_exe,
+           "kimi": kimi_exe}[pconf["kind"]]()
     return exe is not None
 
 
@@ -906,6 +943,68 @@ def probe_kiro(env=None, timeout=30):
     return parse_kiro_usage("".join(text_parts))
 
 
+_KIMI_5H_RE = re.compile(r"(?:5-?hour|rolling 5h|5h)\s*(?:limit|window|quota)?[:\s]+([\d.]+)%", re.IGNORECASE)
+_KIMI_WEEKLY_RE = re.compile(r"(?:weekly|7-?day)\s*(?:limit|window|quota)?[:\s]+([\d.]+)%", re.IGNORECASE)
+_KIMI_RESET_RE = re.compile(r"resets?\s+(?:at|on)\s+([^\s,]+)", re.IGNORECASE)
+
+
+def parse_kimi_usage(text):
+    """Parse Kimi usage response text -> [(window, pct, resets_iso)].
+
+    Kimi enforces a rolling 5-hour rate limit on new plans (and weekly on legacy plans).
+    Returns [] if no percentage/window is found or if text is empty/malformed.
+    """
+    if not text:
+        return []
+    samples = []
+    m_reset = _KIMI_RESET_RE.search(text)
+    resets_iso = m_reset.group(1) if m_reset else None
+
+    m_5h = _KIMI_5H_RE.search(text)
+    if m_5h:
+        pct = float(m_5h.group(1))
+        samples.append(("5h", round(pct, 1), resets_iso))
+
+    m_weekly = _KIMI_WEEKLY_RE.search(text)
+    if m_weekly:
+        pct = float(m_weekly.group(1))
+        samples.append(("weekly", round(pct, 1), resets_iso))
+
+    if not samples and ("quota exceeded" in text.lower() or "rate limit exceeded" in text.lower()):
+        samples.append(("5h", 100.0, resets_iso))
+
+    return samples
+
+
+def probe_kimi(env=None, timeout=30):
+    """Read Kimi's usage without spending a build turn.
+    Kimi Code CLI has no unmetered/unauthenticated usage probe; /usage is an
+    interactive slash command. Returns [] if not installed or unavailable.
+    """
+    exe = kimi_exe()
+    if not exe:
+        return []
+    try:
+        r = subprocess.run(
+            [exe, "-p", "/usage", "--output-format", "stream-json"],
+            capture_output=True, text=True, timeout=timeout, cwd=HOME, env=env)
+    except (subprocess.SubprocessError, OSError):
+        return []
+    if r.returncode != 0:
+        return []
+    text_parts = []
+    for line in r.stdout.splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("role") == "assistant":
+            content = ev.get("content")
+            if isinstance(content, str):
+                text_parts.append(content)
+    return parse_kimi_usage("".join(text_parts))
+
+
 # ---------- run logs ----------
 
 def _collect_text(obj, keys=("text", "content", "message", "delta", "deltaContent")):
@@ -996,9 +1095,15 @@ def _read_plaintext(res, line, texts):
         texts.append(line_str)
         if is_credit_exhausted(line_str):
             _note_credit_exhausted(res, line_str)
-        if is_network_error(line_str) or line_str.lower().startswith("error:"):
+        elif (line_str.lower().startswith(("error:", "provider.rate_limit:"))
+              and any(word in line_str.lower() for word in QUOTA_WORDS)):
+            _note_quota_hit(res, {"message": line_str})
+        if (is_network_error(line_str)
+                or line_str.lower().startswith("error:")
+                or "auth_error" in line_str.lower()
+                or "rate_limit" in line_str.lower()):
             res["last_error"] = line_str
-        if line_str.lower().startswith("error:"):
+        if line_str.lower().startswith("error:") or "auth_error" in line_str.lower():
             _note_log_error(res, line_str)
 
 
@@ -1162,6 +1267,40 @@ def _read_vibe_event(res, ev, texts, first_quota):
         res["last_error"] = _extract_error_message(ev)
 
 
+def _read_kimi_event(res, ev, texts, first_quota):
+    # Native stream-json events (verified 2026-10-07, kimi 2.1.1):
+    # - meta session.resume_hint: {"role": "meta", "type": "session.resume_hint", "session_id": "..."}
+    # - assistant: {"role": "assistant", "content": "..."}
+    # - tool: {"role": "tool", ...}
+    # - retrying: {"role": "meta", "type": "turn.step.retrying", "status_code": 429, "error_message": "..."}
+    # - error / turn failure: {"type": "error", "message": "..."}
+    _note_session_id(res, ev.get("session_id") or ev.get("sessionId"))
+    role = ev.get("role")
+    t = ev.get("type")
+    if role == "assistant":
+        content = ev.get("content")
+        if isinstance(content, str):
+            if content.strip():
+                texts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, str) and block.strip():
+                    texts.append(block)
+                elif isinstance(block, dict) and block.get("type", "text") == "text" and block.get("text"):
+                    texts.append(block["text"])
+    elif role == "meta" and t == "turn.step.retrying":
+        if ev.get("status_code") == 429:
+            _note_quota_hit(res, ev)
+        msg = ev.get("error_message")
+        if msg:
+            _note_log_error(res, ev)
+            if res.get("last_error") is None:
+                res["last_error"] = msg
+    elif t == "error" or ev.get("status") == "error":
+        _note_log_error(res, ev)
+        res["last_error"] = _extract_error_message(ev)
+
+
 def _finish_log(res, texts, kind):
     joined = "".join(texts) if kind == "agy" else "\n".join(texts)
     # The last_text feeds handoff comments (GitHub) and the final text can land
@@ -1181,6 +1320,7 @@ _LOG_HANDLERS = {
     "agy": _read_agy_event,
     "kiro": _read_kiro_event,
     "vibe": _read_vibe_event,
+    "kimi": _read_kimi_event,
 }
 
 

@@ -23,6 +23,7 @@ def provider_error_events(message):
         ('agy', {'event': 'result', 'result': {'status': 'FAILED', 'response': message}}),
         ('kiro', {'type': 'runError', 'data': {'message': message}}),
         ('vibe', {'type': 'error', 'message': message}),
+        ('kimi', {'type': 'error', 'message': message}),
     )
 
 
@@ -391,7 +392,7 @@ if __name__ == "__main__":
 
 
 class ReadLogContractTests(unittest.TestCase):
-    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy', 'kiro', 'vibe')
+    kinds = ('claude', 'cline', 'copilot', 'codex', 'kilo', 'agy', 'kiro', 'vibe', 'kimi')
 
     def read(self, kind, lines):
         with tempfile.TemporaryDirectory() as directory:
@@ -409,6 +410,7 @@ class ReadLogContractTests(unittest.TestCase):
             ('codex', {'type': 'thread.started'}, 'thread_id'),
             ('kilo', {'type': 'step_start'}, 'sessionID'),
             ('vibe', {'type': 'message', 'role': 'assistant'}, 'sessionId'),
+            ('kimi', {'role': 'meta', 'type': 'session.resume_hint'}, 'session_id'),
         )
         for kind, event, field in cases:
             with self.subTest(kind=kind, event=event):
@@ -468,11 +470,12 @@ class ReadLogContractTests(unittest.TestCase):
                   'content': {'type': 'text', 'text': 'earlier'}}}},
                 {'type': 'runFinished', 'data': {'sessionId': 'sess-abc',
                  'status': 'success', 'finalText': final}}], True, 'sess-abc'),
+            ('kimi', [{'role': 'assistant', 'content': final}], None, None),
         )
         for kind, events, ok, session_id in cases:
             with self.subTest(kind=kind):
                 expected = self.empty_result()
-                expected.update(final=None if kind in ('kilo', 'vibe') else final, ok=ok,
+                expected.update(final=None if kind in ('kilo', 'vibe', 'kimi') else final, ok=ok,
                                last_text=final, session_id=session_id)
                 if kind == 'cline':     # no request event seen: unknown, flags observed
                     expected.update(rate_limited=False)
@@ -560,6 +563,7 @@ class ReadLogContractTests(unittest.TestCase):
             ('vibe', {'type': 'error', 'sessionId': 'v1', 'message': message}, None, message),
             ('kiro', {'type': 'runError', 'data': {'sessionId': 's1',
                  'stage': 'prompt', 'message': message}}, False, message),
+            ('kimi', {'type': 'error', 'session_id': 's1', 'message': message}, None, message),
         )
         for kind, event, ok, last_error in cases:
             with self.subTest(kind=kind):
@@ -750,3 +754,132 @@ class KiroReadLogTests(unittest.TestCase):
         self.assertEqual(res["last_error"],
                          "error: Security error: SecKeychainItemCreateFromContent")
         self.assertFalse(res["model_unavailable"])
+
+
+class KimiTests(unittest.TestCase):
+    def test_real_stream_tool_calls_then_assistant_status(self):
+        records = (
+            '{"role":"meta","type":"system.version","version":"2.1.1"}\n'
+            '{"role":"assistant","tool_calls":[{"type":"function","id":"call_w1",'
+            '"function":{"name":"Write","arguments":"{\\"path\\":\\"/tmp/wt/hello.txt\\",\\"content\\":\\"hi\\"}"}}]}\n'
+            '{"role":"tool","tool_call_id":"call_w1","content":"Wrote 2 bytes to /tmp/wt/hello.txt"}\n'
+            '{"role":"assistant","content":"STATUS: DONE write complete\\n"}\n'
+            '{"role":"meta","type":"session.resume_hint","session_id":"session_0401e7e3-c3ac-41e3-9fb6-a87147cadbb3",'
+            '"command":"kimi -r session_0401e7e3-c3ac-41e3-9fb6-a87147cadbb3"}\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "agent.log")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(records)
+            summary = platforms.read_log(path, "kimi")
+        self.assertEqual(summary["session_id"], "session_0401e7e3-c3ac-41e3-9fb6-a87147cadbb3")
+        self.assertEqual(summary["last_text"].strip(), "STATUS: DONE write complete")
+        self.assertIsNone(summary["last_error"])
+
+    def test_argv(self):
+        with mock.patch.object(platforms, "kimi_exe", return_value="/app/kimi"):
+            argv = platforms.kimi_argv({"kind": "kimi"}, "do it", "/wt", "build", 60)
+            resumed = platforms.kimi_resume_argv({"kind": "kimi"}, "go", "/wt", "build", 60,
+                                                 session_id="session-42")
+            fresh = platforms.kimi_resume_argv({"kind": "kimi"}, "go", "/wt", "build", 60)
+            with_model = platforms.kimi_argv({"kind": "kimi", "model": "k3"}, "do it", "/wt", "build", 60)
+        self.assertEqual(argv[:3], ["/app/kimi", "-p", "do it"])
+        self.assertEqual(argv[argv.index("--output-format") + 1], "stream-json")
+        self.assertNotIn("-S", argv)
+        self.assertNotIn("--model", argv)
+        self.assertEqual(resumed[resumed.index("-S") + 1], "session-42")
+        self.assertNotIn("-S", fresh)
+        self.assertEqual(with_model[with_model.index("--model") + 1], "k3")
+
+    def test_env_disables_auto_update(self):
+        run = "/tmp/run"
+        env = platforms.kimi_env({"kind": "kimi"}, run, {})
+        self.assertEqual(env["KIMI_CODE_NO_AUTO_UPDATE"], "1")
+
+    def test_429_is_quota_hit(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l1")
+            with open(path, "w") as fh:
+                fh.write(json.dumps({
+                    "role": "meta",
+                    "type": "turn.step.retrying",
+                    "status_code": 429,
+                    "error_message": "Rate limit exceeded: 5-hour limit reached"
+                }) + "\n")
+            res = platforms.read_log(path, "kimi")
+            self.assertTrue(res["quota_hit"])
+            self.assertEqual(res["last_error"], "Rate limit exceeded: 5-hour limit reached")
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l2")
+            with open(path, "w") as fh:
+                fh.write(json.dumps({"type": "error", "message": "HTTP 429 Rate limit exceeded"}) + "\n")
+            self.assertTrue(platforms.read_log(path, "kimi")["quota_hit"])
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l3")
+            with open(path, "w") as fh:
+                fh.write("provider.rate_limit: 429 Rate limit exceeded: 5-hour limit reached\n")
+            self.assertTrue(platforms.read_log(path, "kimi")["quota_hit"])
+
+    def test_auth_failure_error_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l")
+            with open(path, "w") as fh:
+                fh.write("provider.auth_error: 401 Invalid API Key\n")
+            res = platforms.read_log(path, "kimi")
+            self.assertIn("401", res["last_error"])
+
+
+class KimiUsageProbeTests(unittest.TestCase):
+    def test_parse_kimi_usage_5h_and_weekly(self):
+        text = ("Current usage: 5-hour limit: 42.5% used, resets at 2026-10-07T18:00:00Z\n"
+                "Weekly quota: 15.0% used, resets at 2026-10-14T00:00:00Z\n")
+        samples = platforms.parse_kimi_usage(text)
+        self.assertEqual(len(samples), 2)
+        w1, pct1, r1 = samples[0]
+        self.assertEqual(w1, "5h")
+        self.assertAlmostEqual(pct1, 42.5, places=1)
+        self.assertEqual(r1, "2026-10-07T18:00:00Z")
+        w2, pct2, r2 = samples[1]
+        self.assertEqual(w2, "weekly")
+        self.assertAlmostEqual(pct2, 15.0, places=1)
+
+    def test_parse_kimi_usage_quota_exceeded(self):
+        samples = platforms.parse_kimi_usage("Error: 5-hour Rate limit exceeded. Try again later.")
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0][0], "5h")
+        self.assertEqual(samples[0][1], 100.0)
+
+    def test_parse_kimi_usage_empty_and_no_quota(self):
+        self.assertEqual(platforms.parse_kimi_usage(""), [])
+        self.assertEqual(platforms.parse_kimi_usage(None), [])
+        self.assertEqual(platforms.parse_kimi_usage("Just some random text without limits"), [])
+
+    def test_probe_kimi_not_installed(self):
+        with mock.patch.object(platforms, "kimi_exe", return_value=None):
+            self.assertEqual(platforms.probe_kimi(), [])
+
+    def test_probe_kimi_failed_run(self):
+        result = mock.Mock(returncode=1, stdout="", stderr="error: not authenticated")
+        with mock.patch.object(platforms, "kimi_exe", return_value="/app/kimi"), \
+             mock.patch.object(platforms.subprocess, "run", return_value=result):
+            self.assertEqual(platforms.probe_kimi(), [])
+
+    def test_probe_kimi_timeout(self):
+        with mock.patch.object(platforms, "kimi_exe", return_value="/app/kimi"), \
+             mock.patch.object(platforms.subprocess, "run", side_effect=platforms.subprocess.TimeoutExpired(cmd="kimi", timeout=30)):
+            self.assertEqual(platforms.probe_kimi(), [])
+
+    def test_probe_kimi_parses_assistant_message(self):
+        stdout = "\n".join([
+            json.dumps({"role": "meta", "type": "system.version", "version": "2.1.1"}),
+            json.dumps({"role": "assistant", "content": "5-hour limit: 25.0% used"}),
+        ])
+        result = mock.Mock(returncode=0, stdout=stdout, stderr="")
+        with mock.patch.object(platforms, "kimi_exe", return_value="/app/kimi"), \
+             mock.patch.object(platforms.subprocess, "run", return_value=result):
+            samples = platforms.probe_kimi()
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0][0], "5h")
+        self.assertAlmostEqual(samples[0][1], 25.0, places=1)

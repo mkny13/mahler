@@ -456,6 +456,8 @@ def candidates_for_accounts(cfg, role, accounts, pin=None, burst_lines=None):
     merged = []
     for group in zip_longest(*per_account):
         merged.extend(name for name in group if name is not None)
+    if any(account != DEFAULT_ACCOUNT for account in accounts):
+        merged = [n for n in merged if cfg["platforms"].get(n, {}).get("kind") != "kimi"]
     return merged
 
 
@@ -481,8 +483,11 @@ def candidates_for_priority(cfg, role, accounts, routing, pin=None, burst_lines=
                     if platform_burst(n, cfg["platforms"].get(n, {}), burst_lines)]
         order = bursting + [n for n in order if n not in bursting]
     allowed = set(accounts)
-    return [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")
-            and account_of(cfg["platforms"][n]) in allowed]
+    candidates = [n for n in order if n in cfg["platforms"] and cfg["platforms"][n].get("enabled")
+                  and account_of(cfg["platforms"][n]) in allowed]
+    if any(account != DEFAULT_ACCOUNT for account in accounts):
+        candidates = [n for n in candidates if cfg["platforms"].get(n, {}).get("kind") != "kimi"]
+    return candidates
 
 
 def tier_of(pconf):

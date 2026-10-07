@@ -33,7 +33,7 @@ SETTING_TIMERS = (
     "yield_grace_seconds",
 )
 SETTING_ROLES = ("sort", "plan", "build")
-PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro", "vibe")
+PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro", "vibe", "kimi")
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -473,6 +473,22 @@ DEFAULTS["platforms"]["vibe"] = {
     "enabled": False, "kind": "vibe", "model": "codestral-latest",
     "plan": "free tier", "metered": False, "backoff_minutes": 60,
     "max_size": "s", "tier": 1, "cost_class": "free", "quota_group": "vibe",
+    "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
+    "stale_minutes": 60,
+}
+
+
+# Moonshot Kimi Code CLI (`kimi`, verified 2026-10-07, mahler#722).
+# Disabled by default and in no default route: opt in per machine.
+# Personal-only (D25): models may train on input/output per terms;
+# work projects and work accounts are rejected. The official membership
+# docs confirm Kimi Code is available only on paid plans (Plus and above,
+# $19+/mo); the free Go tier has 0 coding quota, so there is no renewable
+# free starter quota. Unmetered with backoff on 429 rolling 5-hour limit.
+DEFAULTS["platforms"]["kimi"] = {
+    "enabled": False, "kind": "kimi", "model": "k3",
+    "plan": "free tier", "metered": False, "backoff_minutes": 60,
+    "max_size": "s", "tier": 1, "cost_class": "free", "quota_group": "kimi",
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,
 }
@@ -1102,12 +1118,29 @@ def validate_accounts(cfg):
         account = account_of(pconf)
         if account not in defined:
             raise ValueError(f"platform {name!r}: account {account!r} is not defined")
+        if pconf.get("kind") == "kimi":
+            if account != DEFAULT_ACCOUNT:
+                raise ValueError(f"platform {name!r}: kimi is personal-only and cannot use non-personal account {account!r} (D25)")
+            if pconf.get("max_size") not in (None, "", "s"):
+                raise ValueError(f"platform {name!r}: kimi is limited to size:s (D8)")
         group = pconf.get("quota_group", name)
         owner = group_accounts.setdefault(group, account)
         if owner != account:
             raise ValueError(f"quota_group {group!r} is shared by accounts {owner!r} "
                              f"and {account!r} (DESIGN D25)")
     for name, proj in cfg.get("projects", {}).items():
+        proj_accounts = set(accounts_of(proj))
+        if any(a != DEFAULT_ACCOUNT for a in proj_accounts):
+            proj_routing = proj.get("routing") or {}
+            for role, route in proj_routing.items():
+                if isinstance(route, list):
+                    for entry in route:
+                        plat_conf = cfg.get("platforms", {}).get(entry) or {}
+                        if plat_conf.get("kind") == "kimi" or entry == "kimi":
+                            raise ValueError(
+                                f"project {name!r}: kimi is personal-only and cannot be routed for "
+                                f"project with non-personal accounts {sorted(proj_accounts)} (D25)"
+                            )
         if "account" in proj and "accounts" in proj:
             raise ValueError(f"project {name!r} sets both 'account' and "
                              "'accounts' — one or the other (DESIGN D26)")
