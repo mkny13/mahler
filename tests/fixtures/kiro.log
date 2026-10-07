@@ -1,0 +1,8 @@
+{"type":"runStarted","data":{"payloadSchema":"acp","acpProtocolVersion":1,"engine":"v2"}}
+{"type":"metadata","data":{"sessionId":"sess-695abc12","contextUsagePercentage":2.1}}
+{"type":"sessionUpdate","data":{"sessionId":"sess-695abc12","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I'll start by reading the issue and relevant files.\n"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"sess-695abc12","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Now implementing the requested changes.\n"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"sess-695abc12","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Running the test suite to verify.\n"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"sess-695abc12","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All tests pass. Committing and pushing.\n"}}}}
+{"type":"sessionUpdate","data":{"sessionId":"sess-695abc12","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STATUS: DONE added kiro stream fixture and tests"}}}}
+{"type":"runFinished","data":{"sessionId":"sess-695abc12","status":"success","finalText":"STATUS: DONE added kiro stream fixture and tests","stopReason":"end_turn"}}
