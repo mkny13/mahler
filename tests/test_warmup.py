@@ -57,6 +57,7 @@ class WarmupTests(unittest.TestCase):
                 patch('mahler.scheduler.warmup_pass'), \
                 patch('mahler.scheduler.queue_maintenance'), \
                 patch('mahler.scheduler.platform_audit.queue'), \
+                patch('mahler.scheduler.practices_audit.queue'), \
                 patch('mahler.scheduler.schedule'), \
                 patch('mahler.scheduler.ship'), \
                 patch('mahler.scheduler.digest.maybe_send'), \
