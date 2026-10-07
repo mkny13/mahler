@@ -38,8 +38,9 @@ class VerifyingUsageTests(unittest.TestCase):
                     self.addCleanup(led.close)
                     led.upsert_item("x", 1, state=state, priority=2, pin=pin)
                     ctx = scheduler.Ctx(cfg, led, dry_run=True)
-                    with mock.patch.object(usage, "_usage_needs_refresh", return_value=True), \
-                            mock.patch.object(platforms, "oauth_usage", return_value=[]), \
+                    with mock.patch.object(usage, "_usage_needs_refresh",
+                                           side_effect=lambda led, name, conf: name == "kiro"), \
+                            mock.patch.object(platforms, "probe_agy", return_value={}), \
                             mock.patch.object(platforms, "probe_kiro", return_value=[]) as probe:
                         usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
                     if pin == "kiro":
