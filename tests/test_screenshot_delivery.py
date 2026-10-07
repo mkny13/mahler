@@ -69,13 +69,16 @@ class DeliveryTests(unittest.TestCase):
         self.addCleanup(patch.stop)
         self.capture(SHA)
 
-    def capture(self, sha, state="success"):
+    def capture(self, sha, state="success", entries=None):
         if state == "success":
+            if entries is None:
+                entries = [{"route": "/home", "file": "home.png"}]
             src = self.base / f"src-{sha[:1]}"
             src.mkdir()
-            (src / "home.png").write_bytes(screenshots.PNG_SIGNATURE + b"x")
-            (src / "manifest.json").write_text(json.dumps({"version": 1, "sha": sha, "screenshots": [
-                {"route": "/home", "file": "home.png"}]}))
+            for entry in entries:
+                (src / entry["file"]).write_bytes(screenshots.PNG_SIGNATURE + b"x")
+            (src / "manifest.json").write_text(json.dumps(
+                {"version": 1, "sha": sha, "screenshots": entries}))
             screenshots.store(src, "x", 9, sha)
         self.led.set_kv(f"screenshot:x:9:{sha}", json.dumps(
             {"sha": sha, "pr": 9, "state": state, "reason": "captured"}))
@@ -124,6 +127,31 @@ class DeliveryTests(unittest.TestCase):
         self.deliver()
         self.deliver()
         self.assertEqual((len(self.gh.published), len(self.gh.created), self.gh.edited), (1, 1, []))
+
+    def test_duplicate_routes_pair_each_local_image_with_its_durable_url(self):
+        entries = [{"route": "/home", "file": "home-wide.png"},
+                   {"route": "/home", "file": "home-narrow.png"}]
+        self.capture(NEW, entries=entries)
+        self.gh.head = NEW
+        self.deliver(NEW)
+        key = f"screenshot-delivery:x:9:{NEW}"
+        record = json.loads(self.led.get_kv(key))
+        self.assertEqual([link["file"] for link in record["links"]],
+                         [entry["file"] for entry in entries])
+        context = sd.review_context(self.ctx, "x", 9, NEW)
+        lines = [line for line in context.splitlines() if line.startswith("- /home:")]
+        self.assertEqual(len(lines), 2)
+        for entry, other in ((entries[0], entries[1]), (entries[1], entries[0])):
+            local = self.base / "screenshots" / "x" / "9" / NEW / entry["file"]
+            url = self.gh.artifact_url("c" * 40, f"pr-9/{NEW}/{entry['file']}")
+            other_url = self.gh.artifact_url("c" * 40, f"pr-9/{NEW}/{other['file']}")
+            line = next(line for line in lines if f"local image {local}" in line)
+            self.assertIn(f" ; durable link {url}", line)
+            self.assertNotIn(other_url, line)
+        for link in record["links"]:
+            del link["file"]
+        self.led.set_kv(key, json.dumps(record))
+        self.assertEqual(sd.review_context(self.ctx, "x", 9, NEW), context)
 
     def test_lost_comment_record_recovers_by_marker(self):
         self.gh.existing = 55
