@@ -7,9 +7,10 @@ upload, whatever the repository's visibility). Evidence lives on a dedicated
 orphan branch, never on the PR branch, the base, releases or tags.
 """
 import json
+import re
 
 from . import screenshots
-from .gh import AGENT_NOTE, HELP_FOOTER
+from .gh import AGENT_NOTE, HELP_FOOTER, GHError
 
 BRANCH = "mahler-screenshots"
 MARKER = "<!-- mahler:screenshots -->"
@@ -101,11 +102,22 @@ def deliver(ctx, project, item, pr, view):
             return
         body = _body(sha, capture, opted, record)
         ckey = f"screenshot-comment:{project}:{pr}"
-        comment = _json(ctx, ckey).get("id") or gh.find_comment(pr, MARKER)
+        comment = _json(ctx, ckey).get("id")
         if comment:
-            gh.comment_edit(comment, body)
-        else:
-            comment = gh.comment_create(pr, body)
+            try:
+                gh.comment_edit(comment, body)
+            except GHError as error:
+                if not re.search(r"\bHTTP 404\b", str(error)):
+                    raise
+                # Invalidate before lookup so a failed recovery can retry cleanly.
+                ctx.led.set_kv(ckey, "")
+                comment = None
+        if not comment:
+            comment = gh.find_comment(pr, MARKER)
+            if comment:
+                gh.comment_edit(comment, body)
+            else:
+                comment = gh.comment_create(pr, body)
         ctx.led.set_kv(ckey, json.dumps({"id": comment}))
         record.update(done=True, comment=comment)
         ctx.led.set_kv(key, json.dumps(record))

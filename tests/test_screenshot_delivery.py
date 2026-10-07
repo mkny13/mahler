@@ -142,6 +142,66 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn(NEW[:12], body)
         self.assertNotIn(SHA[:12], body)
 
+    def test_deleted_cached_comment_recovers_without_duplicate_or_reupload(self):
+        for existing in (None, 55):
+            with self.subTest(existing=existing):
+                self.led.set_kv(f"screenshot-delivery:x:9:{SHA}", "")
+                self.led.set_kv("screenshot-comment:x:9", json.dumps({"id": 40477}))
+                self.gh = FakeGH()
+                self.ctx.gh.return_value = self.gh
+                self.gh.existing = existing
+                original = self.gh.comment_edit
+
+                def edit(cid, body):
+                    if cid == 40477:
+                        raise GHError("gh api: Not Found (HTTP 404)")
+                    original(cid, body)
+
+                with mock.patch.object(self.gh, "comment_edit", side_effect=edit), \
+                        mock.patch.object(self.gh, "find_comment",
+                                          wraps=self.gh.find_comment) as find:
+                    self.deliver()
+                    self.deliver()
+                find.assert_called_once_with(9, sd.MARKER)
+                replacement = existing or 77
+                self.assertEqual(json.loads(self.led.get_kv("screenshot-comment:x:9")),
+                                 {"id": replacement})
+                record = json.loads(self.led.get_kv(f"screenshot-delivery:x:9:{SHA}"))
+                self.assertTrue(record["done"])
+                self.assertEqual((record["comment"], record["attempts"]), (replacement, 1))
+                self.assertEqual(len(self.gh.published), 1)
+                self.assertEqual(len(self.gh.created), 0 if existing else 1)
+                self.assertEqual([cid for cid, _ in self.gh.edited],
+                                 [existing] if existing else [])
+
+    def test_deleted_cached_id_stays_cleared_when_lookup_fails(self):
+        self.led.set_kv("screenshot-comment:x:9", json.dumps({"id": 44}))
+        with mock.patch.object(self.gh, "comment_edit",
+                               side_effect=GHError("gh api: HTTP 404: Not Found")), \
+                mock.patch.object(self.gh, "find_comment", side_effect=GHError("offline")):
+            self.deliver()
+        self.assertFalse(self.led.get_kv("screenshot-comment:x:9"))
+        self.deliver()
+        self.assertEqual((len(self.gh.published), len(self.gh.created)), (1, 1))
+        self.assertTrue(json.loads(self.led.get_kv(f"screenshot-delivery:x:9:{SHA}"))["done"])
+
+    def test_non_404_edit_failure_keeps_cached_id_without_replacement(self):
+        cached = json.dumps({"id": 40477})
+        self.led.set_kv("screenshot-comment:x:9", cached)
+        with mock.patch.object(self.gh, "comment_edit", side_effect=GHError(
+                "gh api issues/comments/40477: Forbidden (HTTP 403)")), \
+                mock.patch.object(self.gh, "find_comment") as find, \
+                mock.patch.object(self.ctx, "say") as say:
+            self.deliver()
+        find.assert_not_called()
+        say.assert_called_once_with("x PR #9: screenshot delivery unavailable")
+        self.assertEqual(self.led.get_kv("screenshot-comment:x:9"), cached)
+        self.assertEqual(self.gh.created, [])
+        self.assertFalse(json.loads(self.led.get_kv(f"screenshot-delivery:x:9:{SHA}")).get("done"))
+        self.deliver()
+        self.assertEqual(len(self.gh.published), 1)
+        self.assertEqual(self.gh.edited[0][0], 40477)
+
     def test_wrong_head_never_publishes_or_comments(self):
         self.capture(NEW)
         self.gh.head = SHA          # PR moved on after the view was read
