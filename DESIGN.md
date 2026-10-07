@@ -2064,8 +2064,23 @@ GitHub client. Literal PR workflow commands and referenced package/shell
 scripts supply CI evidence. Conditional, dynamic, reusable or otherwise
 unresolved execution is unknown; arbitrary Python runner control flow is not
 inferred. The tracked-text scan skips binary, unreadable and over-2-MB files
-with explicit unknown evidence. Instruction pointers are local, cycle-bounded
-and cannot escape the configured repository.
+with explicit unknown evidence. An optional, versioned (`version: 1`), tracked
+`.mahler/secret-reviews.json` manifest allows recording explicit reviews of
+proven non-secret candidates (runtime expressions, prose/examples, synthetic test
+fixtures). Each entry binds an exact repository-relative path, complete-file
+SHA-256 byte digest, line number, detector ID (`credential-assignment`,
+`credential-shape`, or `private-key`), and a nonempty safe rationale. Candidate
+values are never stored in the manifest, and the manifest is scanned like any
+tracked file. Reviews apply strictly to exact matching candidates in unchanged
+files; changed files, moved lines, and new candidates remain findings. Malformed
+schemas, unsafe paths, invalid detector IDs, and duplicate entries are rejected
+with a redacted unknown diagnostic. Stale reviews (unmatched against current
+candidates) remain visible as diagnostics and prevent a clean pass. The check
+preserves `gap > unknown > pass` precedence: unreviewed candidates yield `gap`,
+while uninspected binary or oversized files and review metadata diagnostics yield
+`unknown`, exposing the count of reviewed candidates without asserting that the
+repository is credential-free or proving absence of secrets. Instruction pointers
+are local, cycle-bounded and cannot escape the configured repository.
 
 **Global cadence, one anchor.** `config.practices_audit_policy` supplies complete,
 independent defaults even for a minimal config: `enabled = true`, `project =
