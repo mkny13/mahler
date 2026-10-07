@@ -459,7 +459,11 @@ class PrepareAccountEnvTests(unittest.TestCase):
 
     def test_claim_review_checks_out_exact_base_not_saved_branch(self):
         sha = sh(self.repo, "git", "rev-parse", "HEAD")
+        sh(self.repo, "git", "push", "-q", "origin", "HEAD:release")
+        self.ctx.policy("acme")["base"] = "release"
         sh(self.repo, "git", "commit", "--allow-empty", "-qm", "newer saved work")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+        self.assertEqual(no_change.fetched_base(self.ctx, "acme"), sha)
         sh(self.repo, "git", "push", "-q", "origin", "HEAD:mahler/snapshot/old")
         self.ctx.led = Ledger(":memory:")
         self.addCleanup(self.ctx.led.close)

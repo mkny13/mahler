@@ -5,8 +5,8 @@ processes, the prompt owns the words. `build()` turns a prepared worktree
 (runner.prepare) into the single string the CLI is launched with.
 """
 
-import os
 import json
+import os
 import re
 import string
 
@@ -172,7 +172,8 @@ def build(ctx, project, item, role, platform, prep, context=None):
 
     return render(role, claim_mode=bool(claim), claim_sha=claim.get("base_sha", ""),
                   claim_evidence=json.dumps({k: claim.get(k) for k in
-                                             ("claim_run", "evidence", "build_evidence")}), number=item["number"], title=item["title"], repo=pol["repo"],
+                                             ("claim_run", "evidence", "build_evidence")}),
+                  number=item["number"], title=item["title"], repo=pol["repo"],
                   worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
                   platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",

@@ -87,13 +87,13 @@ Every issue or PR comment you post must begin with the line `<!-- mahler:agent -
 
 If a yield is delivered: commit your work, push the branch, and end with STATUS: YIELDED — a handoff, not a failure.
 
+If the requested work already exists and your clean checkout has no new commits,
+retain STATUS: DONE. Cite concrete source and verification evidence and explicitly
+list any remaining manual checks in your final summary. The conductor independently
+verifies this claim against the current configured base before closing the issue.
+
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what changed>
 STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]
 STATUS: BLOCKED <reason>
 STATUS: YIELDED <handoff summary>
-
-If the requested work already exists and your clean checkout has no new commits,
-retain STATUS: DONE. Cite concrete source and verification evidence and explicitly
-list any remaining manual checks in your final summary. The conductor independently
-verifies this claim against the current configured base before closing the issue.

@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, review, router, runner, no_change
+from . import config, failures, no_change, review, router, runner
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get

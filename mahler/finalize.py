@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, platforms, review, router, runner, no_change
+from . import config, failures, no_change, platforms, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -635,7 +635,7 @@ def finalize(ctx, run):
     _mark_stale(ending)
     if not ending.stale and not ending.closed:
         if (run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL")
-                and not no_change.read(led, project, n)):
+                and (item["pr"] or not no_change.read(led, project, n))):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
@@ -660,7 +660,7 @@ def finalize(ctx, run):
             elif run["role"] == "sort":
                 SORT_OUTCOMES.get(verb, _retry)(ending)
             elif run["role"] == "review":
-                if no_change.read(led, project, n):
+                if not item["pr"] and no_change.read(led, project, n):
                     no_change.finish(ending)
                 elif verb in ("REVIEW-PASS", "REVIEW-FAIL"):
                     REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)

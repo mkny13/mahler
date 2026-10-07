@@ -3,7 +3,7 @@
 import json
 
 from . import config, router, runner
-from .ledger import CONDUCTOR, row_get
+from .ledger import CONDUCTOR
 
 
 def key(project, number):
@@ -137,6 +137,8 @@ def advance(ctx, project, item):
         elif record["human_checks"]:
             record["phase"] = "manual"
             with led._tx():
+                if not _owned(ctx, project, n, epoch):
+                    return True
                 save(led, project, n, record)
                 led.set_state(project, n, "parked", "verified no-change claim awaiting manual checks")
             led.release(project, n, holder=CONDUCTOR)
@@ -148,6 +150,8 @@ def advance(ctx, project, item):
             if gh.issue_state(n) == "CLOSED" and _owned(ctx, project, n, epoch):
                 record["phase"] = "done"
                 with led._tx():
+                    if not _owned(ctx, project, n, epoch):
+                        return True
                     save(led, project, n, record)
                     led.set_state(project, n, "done", "independently verified on configured base")
                 led.release(project, n, holder=CONDUCTOR)
