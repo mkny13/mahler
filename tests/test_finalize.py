@@ -542,6 +542,8 @@ class RunTests(unittest.TestCase):
         for followup in (
                 {"finding": "credential exposure", "category": "behavior",
                  "reason": "low impact"},
+                {"finding": "API key is written to logs", "category": "behavior",
+                 "reason": "The logs are internal."},
                 {"finding": "security concern", "category": "security",
                  "reason": "not important"},
                 {"finding": "silent unrecoverable data loss", "category": "behavior",

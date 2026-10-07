@@ -156,7 +156,8 @@ def _design_payload(rest):
         return None
     allowed = {"scope", "spec", "behavior", "hardening", "testing"}
     unsafe = re.compile(
-        r"\b(security|credential|authentication|authorization|data[- ]loss|"
+        r"\b(security|credential|authentication|authorization|api[- ]?keys?|"
+        r"secrets?|passwords?|access[- ]tokens?|private[- ]keys?|data[- ]loss|"
         r"unrecoverable|irreversible)\b", re.IGNORECASE)
     if unsafe.search(data["rationale"]):
         return None
