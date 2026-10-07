@@ -139,6 +139,34 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
+    def test_capture_after_acceptable_ci_before_review_even_low_risk(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["type:chore", "size:s"]')
+        for rollup, expected in [([{"state": "SUCCESS"}], ["capture", "review"]),
+                                 ([], ["capture", "review"]),
+                                 ([{"state": "PENDING"}], []),
+                                 ([{"state": "FAILURE"}], [])]:
+            with self.subTest(rollup=rollup):
+                self.gh.rollup = rollup
+                calls = []
+                with mock.patch.object(ship.screenshots, "capture", side_effect=lambda *a: calls.append("capture")), \
+                        mock.patch.object(ship, "_review_gate", side_effect=lambda *a: calls.append("review")), \
+                        mock.patch.object(ship, "_red_ci"):
+                    self.ship()
+                self.assertEqual(calls, expected)
+
+    def test_capture_failure_still_reaches_review(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.head_sha = "a" * 40
+        self.cfg["projects"]["x"].update(
+            screenshot="capture", screenshot_environment="Preview")
+        self.gh.screenshot_preview = mock.Mock(side_effect=RuntimeError("signed-secret"))
+        with mock.patch.object(ship, "_review_gate") as review:
+            self.ship()
+        review.assert_called_once()
+        result = json.loads(self.led.get_kv(f"screenshot:x:88:{self.gh.head_sha}"))
+        self.assertEqual(result["state"], "unavailable")
+        self.assertNotIn("signed-secret", json.dumps(result))
+
     # ---------- opening the PR ----------
 
     def test_pushes_the_branch_and_opens_the_pr(self):
