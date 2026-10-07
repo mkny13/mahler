@@ -11,11 +11,18 @@ import re
 import shlex
 import subprocess
 import tomllib
+import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 from . import config, redact
 from .gh import GHError
+from .ledger import parse
+
+TITLE = "Cross-project practices audit"
+REPORT_URL_KEY = "practices_audit:report_url"
+REPORT_MARKER_KEY = "practices_audit:report_marker"
 
 
 @dataclass(frozen=True)
@@ -517,6 +524,78 @@ def _labels(pol, report=False):
     return list(dict.fromkeys(labels))
 
 
+def _has_open_pass(led, project):
+    for item in led.items(project):
+        if item["state"] == "done":
+            continue
+        labels = json.loads(item["labels"] or "[]")
+        title = (item["title"] or "").strip().lower()
+        if any(label.startswith("pass:") for label in labels) or title == TITLE.lower():
+            return True
+    return False
+
+
+def _cooling_down(led, project, policy):
+    filed_at = led.maintenance_checkpoint(
+        project, config.PRACTICES_AUDIT_PASS)["last_filed_at"]
+    filed_at = parse(filed_at)
+    return filed_at is not None and led.now() - filed_at < timedelta(
+        days=policy["cooldown_days"])
+
+
+def queue(ctx, projects):
+    """Queue or resume the global practices audit without breaking the tick."""
+    try:
+        _queue(ctx, projects)
+    except Exception as exc:  # noqa: BLE001 — an audit must not break the tick
+        project = config.practices_audit_policy(ctx.cfg)["project"]
+        ctx.say(f"{project}: practices-audit pass failed — {exc}")
+
+
+def _queue(ctx, _projects):
+    led = ctx.led
+    policy = config.practices_audit_policy(ctx.cfg)
+    if not policy["enabled"]:
+        return
+    anchor = policy["project"]
+    inventory = config.enabled_projects(ctx.cfg)
+    if anchor not in {project["name"] for project in inventory}:
+        return
+    if anchor in ctx.passes_filed:
+        return
+
+    report_url = led.get_kv(REPORT_URL_KEY)
+    marker = led.get_kv(REPORT_MARKER_KEY)
+    if not report_url and not marker:
+        if not led.maintenance_due(anchor, config.PRACTICES_AUDIT_PASS, policy=policy):
+            return
+        if _cooling_down(led, anchor, policy) or _has_open_pass(led, anchor):
+            return
+        marker = f"<!-- mahler:practices-audit:report:{uuid.uuid4().hex} -->"
+        if not ctx.dry_run:
+            led.set_kv(REPORT_MARKER_KEY, marker)
+
+    ctx.say(f"{anchor}: queuing {config.PRACTICES_AUDIT_PASS} pass")
+    if ctx.dry_run:
+        ctx.passes_filed.add(anchor)
+        return
+
+    ctx.passes_filed.add(anchor)
+    results = scan(ctx.cfg, ctx.gh)
+    filing = file_audit(ctx.cfg, results, ctx.gh, report_url=report_url,
+                        report_marker=marker)
+    if filing.report_url:
+        led.set_kv(REPORT_URL_KEY, filing.report_url)
+    if filing.errors:
+        ctx.say(f"{anchor}: practices-audit filing incomplete — "
+                + "; ".join(filing.errors))
+        return
+
+    led.set_maintenance_checkpoint(anchor, config.PRACTICES_AUDIT_PASS)
+    led.set_kv(REPORT_URL_KEY, "")
+    led.set_kv(REPORT_MARKER_KEY, "")
+
+
 def _details(finding):
     return f"**{finding.check}: {finding.state}** — {finding.reason}\n\n" + "\n".join(
         f"- {e}" for e in finding.evidence)
@@ -534,8 +613,9 @@ def _acceptance(pol, check):
     return "python3 -c " + shlex.quote(code)
 
 
-def _report(results, proposals, errors, skips):
-    body = ["## Practices audit", "Read-only mechanical evidence; proposals are not automatic fixes.",
+def _report(results, proposals, errors, skips, marker=""):
+    body = [marker, "## Practices audit",
+            "Read-only mechanical evidence; proposals are not automatic fixes.",
             "## Inventory"]
     for result in results:
         body += [f"### {result.project} ({result.repo})",
@@ -546,7 +626,8 @@ def _report(results, proposals, errors, skips):
     return _safe("\n\n".join(body))
 
 
-def file_audit(cfg, results, client, *, report_url=None, skips=(), dry_run=False):
+def file_audit(cfg, results, client, *, report_url=None, report_marker=None,
+               skips=(), dry_run=False):
     """File the anchor first; resume partial work with its URL on subsequent calls.
 
     Durable proposal markers survive restarts and closed issues. The scheduling
@@ -564,11 +645,15 @@ def file_audit(cfg, results, client, *, report_url=None, skips=(), dry_run=False
     if dry_run:
         return Filing(report_url or "", {}, ("Dry run: no GitHub writes.",))
     anchor_gh = client(anchor)
+    report_marker = (report_marker
+                     or f"<!-- mahler:practices-audit:report:{uuid.uuid4().hex} -->")
     if not report_url:
         anchor_gh.ensure_pass_label(config.PRACTICES_AUDIT_PASS)
-        report_url = anchor_gh.create_issue(
-            "Cross-project practices audit", _report(results, {}, ["Proposal filing pending."], skips),
-            _labels(pol, report=True))
+        report_url = anchor_gh.issue_by_marker(report_marker)
+        if not report_url:
+            report_url = anchor_gh.create_issue(
+                TITLE, _report(results, {}, ["Proposal filing pending."], skips, report_marker),
+                _labels(pol, report=True))
         if not report_url:
             raise GHError("practices audit report creation returned no URL")
     proposals, errors = {}, []
@@ -604,7 +689,7 @@ def file_audit(cfg, results, client, *, report_url=None, skips=(), dry_run=False
                 errors.append(f"{key}: proposal filing failed; retry required")
     try:
         anchor_gh.edit_issue_body(int(report_url.rstrip("/").rsplit("/", 1)[1]),
-                                  _report(results, proposals, errors, skips))
+                                  _report(results, proposals, errors, skips, report_marker))
     except (GHError, ValueError):
         errors.append("anchor report update failed; retry required")
     return Filing(report_url, proposals, tuple(errors))

@@ -13,7 +13,7 @@ import fcntl
 import os
 import sys
 
-from . import backup, config, digest, failures, janitor, notify, platform_audit
+from . import backup, config, digest, failures, janitor, notify, platform_audit, practices_audit
 from .console import outbox
 from .gh import project_client, GHError
 from .ledger import iso
@@ -124,6 +124,7 @@ def tick(ctx):
         warmup_pass(ctx)
         queue_maintenance(ctx, projects)
         platform_audit.queue(ctx, projects)
+        practices_audit.queue(ctx, projects)
         schedule(ctx, projects)
     record_holds(ctx)
     if not ctx.led.paused():

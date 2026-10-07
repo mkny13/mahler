@@ -164,7 +164,8 @@ class BackupFailureTests(unittest.TestCase):
                 stack.enter_context(patch("mahler.scheduler._project_ok", return_value=True))
                 for name in ("compute_burst", "watchdog", "sync", "expire",
                              "close_finished_parents", "refresh_usage", "queue_maintenance",
-                             "platform_audit.queue", "schedule", "ship", "mirror_labels"):
+                             "platform_audit.queue", "practices_audit.queue", "schedule",
+                             "ship", "mirror_labels"):
                     stack.enter_context(patch(f"mahler.scheduler.{name}"))
                 stack.enter_context(patch.object(self.led, "paused", return_value=True))
                 digest = stack.enter_context(patch("mahler.scheduler.digest.maybe_send"))
@@ -311,6 +312,7 @@ class RunLedgerTests(unittest.TestCase):
             stack.enter_context(patch("mahler.scheduler.config.enabled_projects", return_value=[]))
             for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
                          "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                         "practices_audit.queue",
                          "schedule", "ship", "mirror_labels", "digest.maybe_send", "janitor.maybe_run"):
                 stack.enter_context(patch(f"mahler.scheduler.{name}"))
             stack.enter_context(patch.object(self.led, "paused", return_value=True))
