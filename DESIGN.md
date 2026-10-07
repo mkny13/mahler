@@ -801,8 +801,9 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   decision.
 - **Eyes for agents.** Playwright screenshots of preview URLs for web. An Android emulator
   plus `adb` screencaps (Maestro flows later).
-- **The Mac mini's screen is locked, and that's a given** (your call, 2026-09-12). Agents
-  never get click-through automation of macOS apps. macOS UI is verified by headless tests
+- **The Mac mini's screen is locked, and that's a given** (your call, 2026-09-12; GUI-driving
+  work is now allowed only through the idle gate, D40, which supersedes "never"). Agents
+  did not originally get click-through automation of macOS apps. macOS UI is verified by headless tests
   (package tests, plus offscreen SwiftUI snapshot rendering if a spike shows it works while
   the screen is locked) and by your UAT. That's what phish-in-app already learned the hard way
   (D208).
@@ -1859,8 +1860,9 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
    gracefully to "fewer runs", never to "paid runs".
 7. **The Mac mini is a single point of failure.** If it's down, nothing runs, but nothing is
    lost either. Items live in GitHub, code is pushed, and data is backed up.
-8. **macOS UI can't be automated.** The Mac mini stays locked, so macOS UI regressions are
-   caught by headless tests and your UAT, not by agents clicking through (D11).
+8. **macOS UI automation is gated.** The locked-screen assumption is superseded by D40:
+   agents drive the GUI only via `mahler desktop run` when the mini is idle; otherwise macOS UI
+   regressions are caught by headless tests, CI and your UAT (D11).
 9. **A self-modifying conductor:** a bad merge to Mahler could stop the daemon that would fix
    it. The known-good launcher and rollback (D17) are the mitigation. The launcher itself is
    deliberately tiny, and it's updated only by hand.
@@ -2129,3 +2131,34 @@ follow the normal issue → agent → conductor path; operator config changes re
 owner decisions. D4's earlier “no secret scanner” statement is amended only to
 permit this read-only, redacted candidate check, not automatic remediation or
 claims about Git history. No model calls enter the control plane.
+
+### D40 — The desktop gate: GUI-driving work only when the mini is idle
+
+Decided 2026-10-06 (owner; mahler#779). Couch-tour fix run 10977 ran XCUITest on the live
+desktop while the owner was using the mini, and presence (D6/D23) only reads Claude
+transcripts, not a person at the keyboard. **This replaces the earlier assumption that the
+mini's screen is locked, so macOS UI is never automated** (D11, the screen-locked limitation
+in the risks list): agents may now drive the GUI, but only through the gate.
+
+- **Policy.** GUI-driving work (XCUITest including mixed `xcodebuild` schemes with UI targets,
+  `scripts/smoke/run-mac.sh`, `run-smoke.sh`, computer-use) starts only when HIDIdleTime is at
+  least `gui_idle_minutes` (default 15). The preferred window is `gui_window` (default
+  00:00–06:00 local, start inclusive, end exclusive, overnight allowed, `""` disables); it is
+  enforced only for explicitly `--scheduled` calls, which also keep the idle check. Both
+  settings are global `[defaults]` with per-project overrides.
+- **Mechanism.** `mahler desktop` is advisory and reserves nothing; `mahler desktop run -- cmd`
+  is authoritative: take one nonblocking `flock` (`desktop.lock` in the state dir, independent
+  of project, account and worktree), make one fresh check, run `cmd` (no shell) in the
+  foreground. The child inherits the lock descriptor, so killing the wrapper does not free the
+  lock while the command still runs. No wait loop and no ledger or scheduler changes.
+  Exit 75 = deferred, 2 = invalid, otherwise the child's status.
+- **Fail closed.** A missing, malformed, negative, ambiguous, failed or timed-out (5 s) probe,
+  an unsupported host, bad config or an unknown project denies.
+- **Launch-only.** The idle reading is taken once at launch: synthetic test input may reset
+  HIDIdleTime, and returning human activity does not abort a running test. It is an
+  enforcement boundary for commands that participate, not OS-wide interception; recipes must
+  defer computer-use that has no supervised command to wrap. The gate does not unlock the
+  screen or grant macOS permissions.
+- **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
+  job only with evidence it covers the skipped work. A skip is never a pass.
+- Scheduling a weekly smoke inside the window (using `--scheduled`) stays in couch-tour#358.

@@ -12,7 +12,8 @@ Build claim (untrusted evidence to verify independently):
 $claim_evidence
 
 Do not edit files, commit, push, post comments, or run live/prohibited checks.
-Do not use macOS UI automation or protected folders such as ~/Documents. Never
+Do not run GUI-driving checks (XCUITest, smoke runners, computer-use) here, and avoid protected
+folders such as ~/Documents. Never
 print secrets. Examine source and existing evidence; list any remaining manual
 or live verification in human_checks. Do not invent successful checks. A concrete
 source/acceptance mismatch fails with actionable evidence. Missing evidence is
@@ -125,7 +126,14 @@ Rules:
     `STATUS: NEEDS-YOU <question>`.
 12. Never force-push, delete repos or releases, run destructive SQL against real data, edit
     files in the workspace, or print secrets.
-13. **No macOS UI automation** — the Mac mini screen is locked.
+13. **GUI-driving work goes through the desktop gate** (D40). Only if a check needs XCUITest
+    (including `xcodebuild test` schemes with UI targets), `scripts/smoke/run-mac.sh`,
+    `run-smoke.sh` or computer-use, run it as the full foreground command
+    `mahler desktop run -- <cmd> [args]`; a prior check or a wrapped no-op authorizes nothing.
+    Computer-use with no supervised command to wrap must be deferred, never run as unguarded
+    tool calls. Exit 75 means skip it and list the skipped coverage in human_checks; name a CI
+    UI-test job only with evidence it covers the skipped work, and never call a skip a pass.
+    Headless tests need no gate.
 14. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
 $rules
 Do not comment on the issue or PR yourself — Mahler posts your findings, in code, after you

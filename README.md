@@ -230,6 +230,28 @@ A normal human comment on a `needs-you` item supplies the answer and sends the
 item back through sorting. The reference for GitHub issue comment commands is in
 [docs/commands.md](docs/commands.md).
 
+## Desktop gate for GUI-driving work
+
+XCUITest, `scripts/smoke/run-mac.sh`, `run-smoke.sh` and computer-use take over the mini's
+mouse and keyboard, so the build, fix and review recipes route them through the gate (D40):
+
+```bash
+mahler desktop [--project NAME] [--scheduled]        # advisory: exit 0 if it would run now
+mahler desktop run [--project NAME] [--scheduled] -- <cmd> [args...]
+```
+
+`run` takes one host-wide lock (`~/.mahler/desktop.lock`, shared by every project), makes a
+single fresh check, then runs the command in the foreground and returns its exit status. It
+launches only when `ioreg -c IOHIDSystem` reports `HIDIdleTime` of at least `gui_idle_minutes`
+(default 15); a missing, malformed or failed reading denies. `--scheduled` additionally
+requires the local time to be inside `gui_window` (default `00:00-06:00`; `""` disables).
+Both settings live under `[defaults]` with `[projects.<name>]` overrides; the project comes
+from `--project`, then `MAHLER_PROJECT`, then the global defaults (an unknown project fails).
+Exit codes: 0 permitted, 75 deferred (one-line reason on stderr, nothing launched), 2 invalid
+invocation or config; a launched command's own status passes through. The check happens once
+at launch only; the gate neither interrupts a running test nor unlocks the screen. Detached
+GUI jobs are unsupported.
+
 ## Operator console
 
 Run the console in the foreground:

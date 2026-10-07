@@ -16,7 +16,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 
-from . import config, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
+from . import config, desktop, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import project_client, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -1128,8 +1128,19 @@ def cmd_capacity(a, cfg, led):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["desktop"]:  # needs no ledger; a bad config must exit 2 (D40)
+        try:
+            return desktop.main(argv[1:])
+        except ValueError as e:
+            print(f"mahler desktop: {e}", file=sys.stderr)
+            return desktop.EX_INVALID
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("desktop", help="gate GUI-driving work on the mini being idle: "
+                       "`desktop [--project P] [--scheduled]` or `desktop run -- CMD` (D40)")
+    s.add_argument("args", nargs=argparse.REMAINDER)
 
     s = sub.add_parser("tick", help="one scheduler pass (launchd runs this every 60s)")
     s.add_argument("--dry-run", action="store_true")

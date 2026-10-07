@@ -75,7 +75,16 @@ result is obtained, the better. Never trade verification for speed.
    push what you have and end with `STATUS: BLOCKED <reason>`.
 7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
-8. **No macOS UI automation** — the Mac mini screen is locked.
+8. **GUI-driving work goes through the desktop gate** (D40). XCUITest (including any
+   `xcodebuild test` scheme with UI test targets), `scripts/smoke/run-mac.sh`, `run-smoke.sh`
+   and computer-use take over the mini's mouse and keyboard, so run each only as the full
+   foreground command `mahler desktop run -- <cmd> [args]`. A prior `mahler desktop` check,
+   or wrapping a no-op, authorizes nothing later. Computer-use with no supervised command to
+   wrap must be deferred, never run as unguarded tool calls. Exit 75 means the gate is closed
+   (in use or lock held): skip that local GUI step, record the reason and the coverage still
+   outstanding in your summary, and name the CI UI-test job only if you saw evidence it covers
+   the skipped work. Never call a skip a pass or invent CI coverage. Headless tests need no
+   gate. The gate does not unlock the screen.
 9. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
 10. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
    <prefix>` to avoid collisions.
