@@ -303,6 +303,108 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace("python3", "python") + "\n")
         self.assertEqual(self.results()["verify-command"].state, "pass")
 
+    def test_compound_verify_multiline_same_step_and_toml_fallback(self):
+        command = "cargo test && swift test"
+        self.write(".mahler/project.toml", '[verify]\nfast = "' + command + '"\n')
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "- run: python3 -m unittest discover -s tests",
+            "- run: |\n          cargo test &&\n          swift test"))
+        self.pol["verify"] = ""
+        finding = self.results()["verify-command"]
+        self.assertEqual(finding.state, "pass")
+        self.assertTrue(any("cargo test" in e and "run:" in e for e in finding.evidence))
+        self.assertTrue(any("swift test" in e and "run:" in e for e in finding.evidence))
+
+    def test_compound_verify_separate_jobs_and_uncertainty(self):
+        command = "cargo test&&swift test"
+        self.pol["verify"] = command
+        self.write("AGENTS.md", GUIDANCE + command + "\n")
+        workflow = WORKFLOW.replace("python3 -m unittest discover -s tests", "cargo test") + (
+            "  mac:\n    runs-on: macos-latest\n    steps:\n      - run: swift test\n")
+        self.write(".github/workflows/ci.yml", workflow)
+        finding = self.results()["verify-command"]
+        self.assertEqual(finding.state, "pass")
+        for job, component in (("test", "cargo test"), ("mac", "swift test")):
+            self.assertTrue(any(
+                f"job={job} run:" in e and component in e for e in finding.evidence
+            ))
+        self.write(".github/workflows/ci.yml", workflow.replace(
+            "  mac:\n", "  mac:\n    if: github.event_name == 'pull_request'\n"))
+        self.assertEqual(self.results()["verify-command"].state, "unknown")
+        self.write(".github/workflows/ci.yml", workflow)
+        self.write("AGENTS.md", GUIDANCE + "cargo test\nswift test\n")
+        self.assertEqual(self.results()["verify-command"].state, "gap")
+
+    def test_compound_verify_script_components_and_missing_component(self):
+        command = "pnpm typecheck && pnpm lint && pnpm test"
+        self.pol["verify"] = command
+        self.write("AGENTS.md", GUIDANCE + command + "\n")
+        self.write("package.json", json.dumps({"scripts": {
+            "check": "sh checks.sh", "typecheck": "tsc --noEmit",
+            "lint": "eslint .", "test": "vitest run"}}))
+        self.write("checks.sh", command + "\n")
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "python3 -m unittest discover -s tests", "pnpm check"))
+        finding = self.results()["verify-command"]
+        self.assertEqual(finding.state, "pass")
+        self.assertTrue(any("checks.sh:1" in e for e in finding.evidence))
+        self.write("checks.sh", "pnpm typecheck && pnpm test\n")
+        finding = self.results()["verify-command"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("pnpm lint", "\n".join(finding.evidence))
+
+    def test_literal_operator_chains_through_workflow_and_scripts(self):
+        for command in ("echo 'a&&b' && test x", 'echo "a&&b"&&test x',
+                        r"echo a\&\&b&&test x", "test x&&echo 'a&&b'"):
+            for source in ("workflow", "shell", "package"):
+                with self.subTest(command=command, source=source):
+                    self.pol["verify"] = command
+                    self.write("AGENTS.md", GUIDANCE + command + "\n")
+                    self.write("checks.sh", command + "\n")
+                    self.write("package.json", json.dumps({"scripts": {"check": command}}))
+                    invocation = {"workflow": command, "shell": "sh checks.sh",
+                                  "package": "pnpm check"}[source]
+                    self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                        "python3 -m unittest discover -s tests", invocation))
+                    self.assertEqual(self.results()["verify-command"].state, "pass")
+
+    def test_invalid_ci_chains_do_not_prove_components(self):
+        for command in ("test x &&", "&& test x", "test x && && echo ok",
+                        "test x || echo ok", "test x | cat", "test x; ; echo ok"):
+            for source in ("workflow", "shell", "package"):
+                with self.subTest(command=command, source=source):
+                    self.pol["verify"] = "test x"
+                    self.write("AGENTS.md", GUIDANCE + "test x\n")
+                    self.write("checks.sh", command + "\n")
+                    self.write("package.json", json.dumps({"scripts": {"check": command}}))
+                    invocation = {"workflow": command, "shell": "sh checks.sh",
+                                  "package": "pnpm check"}[source]
+                    self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                        "python3 -m unittest discover -s tests", invocation))
+                    self.assertNotEqual(self.results()["verify-command"].state, "pass")
+
+    def test_literal_verify_chain_parser(self):
+        for command, parts in (
+            ("a&&b", ["a", "b"]),
+            ("echo 'a&&b' && test x", ["echo 'a&&b'", "test x"]),
+            ('echo "a&&b" && test x', ['echo "a&&b"', "test x"]),
+            (r"echo a\&\&b && test x", [r"echo a\&\&b", "test x"]),
+            ("JAVA_HOME=/jdk gradle test && swift test",
+             ["JAVA_HOME=/jdk gradle test", "swift test"]),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(audit._verify_parts(command), parts)
+        for command in ("", "a &&", "&& a", "a && && b", "a && 'b", "a || b",
+                        "a | b", "a; b", "a & b", "a > b", "a\nb", "echo $(test)",
+                        "if true", "echo `test`", "a # comment"):
+            with self.subTest(command=command):
+                self.assertIsNone(audit._verify_parts(command))
+                self.pol["verify"] = command
+                self.write("AGENTS.md", GUIDANCE + command + "\n")
+                self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                    "python3 -m unittest discover -s tests", command))
+                self.assertNotEqual(self.results()["verify-command"].state, "pass")
+
     def test_missing_verify_and_invalid_contract(self):
         self.pol["verify"] = ""
         (self.root / ".mahler/project.toml").unlink()

@@ -229,7 +229,11 @@ def _expand(tree, command, seen=()):
     for number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        for part in re.split(r"\s*(?:&&|;)\s*", line):
+        parts = _verify_parts(line, separators=";")
+        if parts is None:
+            uncertain = True
+            continue
+        for part in parts:
             expanded, unknown = _expand(tree, part, (*seen, command))
             rows.extend((cmd, f"{script}:{number}" + (f" -> {cite}" if cite else ""))
                         for cmd, cite in expanded)
@@ -463,7 +467,8 @@ def _workflow(tree, path):
                         body.append(f_text.strip())
                     cmd_val = "\n".join(body) if cmd_val.startswith("|") else " ".join(body)
                 else:
-                    cmd_val = cmd_val.strip("'\"")
+                    if len(cmd_val) >= 2 and cmd_val[0] in "'\"" and cmd_val[-1] == cmd_val[0]:
+                        cmd_val = cmd_val[1:-1]
                 step_run_cmd = cmd_val
             j += 1
 
@@ -477,11 +482,14 @@ def _workflow(tree, path):
         )
 
         if step_run_cmd is not None:
-            for part in re.split(r"\s*(?:&&|;|\n)\s*", step_run_cmd):
+            parts = _verify_parts(step_run_cmd, separators=";\n")
+            syntax_unknown = parts is None
+            for part in parts if parts is not None else [step_run_cmd]:
                 if not part or part.startswith("#"):
                     continue
                 cmd_dynamic = "${{" in part
                 expanded, unknown = _expand(tree, part)
+                unknown |= syntax_unknown
 
                 for cmd, cite in expanded:
                     cmd_uncertain = False
@@ -573,6 +581,54 @@ def _ci(tree):
     return _finding("ci-tests", state, reason, evidence), rows, sorted(set(jobs)), uncertain
 
 
+def _verify_parts(command, *, separators=""):
+    """Split literal AND chains, retaining shell quoting for _words().
+
+    CI extraction can also allow semicolon/newline command lists.
+
+    Unsupported shell operators/expansions remain unproven, never executed.
+    """
+    parts, start, quote, escaped = [], 0, None, False
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+            elif quote == '"' and char in "$`":
+                return None
+        elif char in ("'", '"'):
+            quote = char
+        elif command[i:i + 2] == "&&":
+            parts.append(command[start:i].strip())
+            i += 2
+            while i < len(command) and command[i].isspace():
+                i += 1
+            start = i
+            continue
+        elif char in separators:
+            parts.append(command[start:i].strip())
+            start = i + 1
+        elif char in "&|;<>()[]{}$`#\n\r":
+            return None
+        i += 1
+    if quote or escaped:
+        return None
+    parts.append(command[start:].strip())
+    for part in parts:
+        words = _words(part)
+        if not words or words[0] in (
+            "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+            "case", "esac", "in", "function", "!", "eval", "source", ".",
+        ):
+            return None
+    return parts
+
+
 def _verify(tree, pol, commands, ci_unknown):
     evidence, docs = [], []
     for name in ("AGENTS.md", "CLAUDE.md"):
@@ -598,7 +654,7 @@ def _verify(tree, pol, commands, ci_unknown):
     if not command:
         return _finding("verify-command", "gap", "No effective verify command is defined.",
                         [".mahler/project.toml [verify].fast; project policy verify"])
-    expected = _words(command)
+    parts = _verify_parts(command)
     documented = False
     for path, text in docs:
         for number, line in enumerate(text.splitlines(), 1):
@@ -606,12 +662,17 @@ def _verify(tree, pol, commands, ci_unknown):
                 documented = True
                 evidence.append(f"{path}:{number}: {command}")
 
-    matched_entries = [
-        cmd_entry for cmd_entry in commands
-        if expected and _words(cmd_entry[0])[:len(expected)] == expected
-    ]
-    matched_cites = [cmd_entry[1] for cmd_entry in matched_entries]
-    evidence += [f"effective verify: {command}", *matched_cites]
+    component_matches = []
+    for part in parts or ():
+        expected = _words(part)
+        component_matches.append([
+            entry for entry in commands
+            if _words(entry[0])[:len(expected)] == expected
+        ])
+    matched_entries = [entry for matches in component_matches for entry in matches]
+    evidence += [f"effective verify: {command}", *(entry[1] for entry in matched_entries)]
+    missing = [part for part, matches in zip(parts or (), component_matches) if not matches]
+    evidence += [f"Missing verify component: {part}" for part in missing]
 
     if not documented:
         state = "gap"
@@ -619,7 +680,11 @@ def _verify(tree, pol, commands, ci_unknown):
             "documentation and PR CI." if not matched_entries else "documentation.")
         return _finding("verify-command", state, reason, evidence)
 
-    if not matched_entries:
+    if parts is None:
+        return _finding("verify-command", "unknown",
+                        "Verify command has unsupported or malformed shell syntax.", evidence)
+
+    if missing:
         state = "unknown" if ci_unknown else "gap"
         if state == "unknown":
             has_reusable = False
@@ -638,12 +703,8 @@ def _verify(tree, pol, commands, ci_unknown):
             reason = "Verify command is absent from literal PR CI commands."
         return _finding("verify-command", state, reason, evidence)
 
-    proven_entries = [
-        entry for entry in matched_entries
-        if not getattr(entry, "uncertain", False)
-    ]
-
-    if proven_entries:
+    if all(any(not getattr(entry, "uncertain", False) for entry in matches)
+           for matches in component_matches):
         state = "pass"
         reason = "Documented effective verify command is invoked by PR CI."
     else:
