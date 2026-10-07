@@ -180,6 +180,11 @@ class CaptureTests(unittest.TestCase):
 
     def command(self, command, cwd, env, timeout):
         output = Path(env['MAHLER_SCREENSHOT_DIR'])
+        self.assertEqual(cwd, env['MAHLER_SCREENSHOT_PROFILE_DIR'])
+        self.assertEqual(env['HOME'], cwd)
+        self.assertEqual(env['TMPDIR'], cwd)
+        self.assertNotIn('GH_TOKEN', env)
+        self.assertNotIn('PYTHONPATH', env)
         self.paths.extend([output, Path(env['MAHLER_SCREENSHOT_PROFILE_DIR'])])
         self.assertNotEqual(*self.paths[-2:])
         (output / 'a.png').write_bytes(ss.PNG_SIGNATURE)
@@ -257,13 +262,55 @@ class CaptureTests(unittest.TestCase):
         proc.wait.side_effect = [subprocess.TimeoutExpired('capture', 1), 0]
         proc.__enter__ = Mock(return_value=proc)
         proc.__exit__ = Mock(return_value=False)
+        tool = Path(self.tmp.name) / 'capture'
+        tool.write_text('#!/bin/sh\nexit 0\n')
+        tool.chmod(0o700)
         with patch.object(ss.subprocess, 'Popen', return_value=proc) as popen, \
                 patch.object(ss.os, 'killpg') as kill:
             with self.assertRaises(subprocess.TimeoutExpired):
-                ss._command('capture', self.tmp.name, {}, 1)
+                ss._command(str(tool), self.tmp.name, {}, 1)
         kill.assert_called_once_with(123, signal.SIGKILL)
         self.assertEqual(proc.wait.call_count, 2)
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
+        self.assertNotIn('shell', popen.call_args.kwargs)
+        self.assertEqual(popen.call_args.args[0], [str(tool.resolve())])
+
+    def test_project_script_and_symlink_are_never_executed(self):
+        import subprocess
+        checkout = Path(self.tmp.name) / 'checkout'
+        checkout.mkdir()
+        subprocess.run(['/usr/bin/git', 'init', '-q', str(checkout)], check=True)
+        tool = checkout / 'capture'
+        tool.write_text('#!/bin/sh\nexit 0\n')
+        tool.chmod(0o700)
+        link = Path(self.tmp.name) / 'capture-link'
+        link.symlink_to(tool)
+        with patch.object(ss.subprocess, 'Popen') as popen:
+            for command in ('./capture', 'capture', str(tool), str(link)):
+                with self.subTest(command=command):
+                    self.assertEqual(ss._command(command, self.tmp.name, {}, 1), 126)
+            self.assertEqual(ss._command(f'{tool}; echo unsafe', self.tmp.name, {}, 1), 127)
+            # A broken worktree marker cannot turn project code into a trusted tool.
+            shutil.rmtree(checkout / '.git')
+            (checkout / '.git').write_text('gitdir: missing\n')
+            self.assertEqual(ss._command(str(tool), self.tmp.name, {}, 1), 126)
+            popen.assert_not_called()
+
+    def test_installed_tool_uses_only_capture_environment(self):
+        tool = Path(self.tmp.name) / 'capture'
+        tool.write_text(
+            '#!/bin/sh\n'
+            'test -z "$GH_TOKEN" && test -z "$PYTHONPATH" || exit 1\n'
+            'test "$PWD" = "$HOME" && test "$PWD" != "$CHECKOUT" || exit 2\n'
+            'printf "\\211PNG\\r\\n\\032\\n" > "$MAHLER_SCREENSHOT_DIR/a.png"\n'
+            'printf \'{"version":1,"sha":"%s","screenshots":'
+            '[{"route":"/","file":"a.png"}]}\' "$MAHLER_SCREENSHOT_SHA" '
+            '> "$MAHLER_SCREENSHOT_DIR/manifest.json"\n')
+        tool.chmod(0o700)
+        self.policy['screenshot'] = str(tool)
+        with patch.dict(os.environ, {'GH_TOKEN': 'secret', 'PYTHONPATH': self.tmp.name,
+                                    'CHECKOUT': self.tmp.name}):
+            self.assertEqual(self.capture()['state'], 'success')
 
     def test_worktree_requires_exact_head_and_build_role(self):
         self.led.create_run(project='app', number=1, role='build', platform='test', epoch=1, status='ended', worktree=self.tmp.name)

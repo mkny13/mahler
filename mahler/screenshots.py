@@ -192,8 +192,21 @@ def lookup(project, pr, sha, *, root=None):
 
 
 def _command(command, cwd, env, timeout):
-    """No output is retained. Kill the entire session, including browser children."""
-    with subprocess.Popen(command, shell=True, cwd=cwd, env=env,
+    """Run only an installed operator tool, never a shell or checkout command."""
+    tool = Path(command)
+    if not tool.is_absolute():
+        return 126
+    try:
+        tool = tool.resolve(strict=True)
+    except FileNotFoundError:
+        return 127
+    if not tool.is_file() or not os.access(tool, os.X_OK):
+        return 126
+    for parent in tool.parents:
+        marker = parent / ".git"
+        if marker.exists() or marker.is_symlink():
+            return 126
+    with subprocess.Popen([str(tool)], cwd=cwd, env=env,
                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, start_new_session=True) as proc:
         try:
@@ -252,12 +265,15 @@ def capture(ctx, project, item, pr, view):
             if cwd:
                 with tempfile.TemporaryDirectory(prefix="mahler-screenshot-output-") as output, \
                         tempfile.TemporaryDirectory(prefix="mahler-screenshot-profile-") as profile:
-                    env = dict(os.environ, MAHLER_SCREENSHOT_URL=url,
-                               MAHLER_SCREENSHOT_DIR=output,
-                               MAHLER_SCREENSHOT_PROFILE_DIR=profile,
-                               MAHLER_SCREENSHOT_SHA=sha, MAHLER_SCREENSHOT_PR=str(pr))
+                    output, profile = str(Path(output).resolve()), str(Path(profile).resolve())
+                    env = {"PATH": os.defpath, "HOME": profile, "TMPDIR": profile,
+                           "XDG_CONFIG_HOME": profile, "XDG_CACHE_HOME": profile,
+                           "MAHLER_SCREENSHOT_URL": url,
+                           "MAHLER_SCREENSHOT_DIR": output,
+                           "MAHLER_SCREENSHOT_PROFILE_DIR": profile,
+                           "MAHLER_SCREENSHOT_SHA": sha, "MAHLER_SCREENSHOT_PR": str(pr)}
                     result.update(state="failed", reason="command_failed")
-                    code = _command(policy["screenshot"], cwd, env,
+                    code = _command(policy["screenshot"], profile, env,
                                     policy.get("screenshot_timeout_seconds", 45))
                     if code in (126, 127):
                         result.update(state="unavailable", reason="command_unavailable")

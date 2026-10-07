@@ -46,14 +46,19 @@ verify = "python3 -m unittest discover -s tests"
 # See DESIGN D11 for release context, report grammar and evidence requirements.
 smoke = ""
 # smoke = "./scripts/smoke/run-smoke.sh"  # illustrative; runner interface is deferred
-# Optional screenshot contract (schema/storage only; no command runs yet).
+# Optional advisory screenshot capture after CI and before review.
 # These settings inherit [defaults]; an empty command explicitly disables capture.
 screenshot = ""
 screenshot_environment = ""       # must explicitly name the preview environment
 screenshot_preview_non_personal = false  # strict boolean; local-only by default
 screenshot_timeout_seconds = 45    # integer 1–60
-# screenshot = "./scripts/screenshots.sh"  # project-owned browser dependencies
-# Run at exact PR head, with headless Chromium and a fresh temporary profile/context.
+# screenshot = "/opt/mahler-screenshots/capture"  # operator-installed executable
+# Absolute executable path only, no shell/arguments; tools in Git checkouts are refused.
+# Install the tool and its browser dependencies outside all project checkouts.
+# It must not load scripts, configuration or dependencies from PR worktrees.
+# Verify an exact-head checkout exists, but run the trusted tool in a fresh directory
+# with a minimal environment (no inherited credentials) and temporary HOME/profile.
+# Capture the exact-head preview with headless Chromium and a fresh profile/context.
 # Never use real Chrome, extensions, saved cookies or personal authentication state.
 # Inputs: MAHLER_SCREENSHOT_URL (preview), MAHLER_SCREENSHOT_DIR (output),
 # MAHLER_SCREENSHOT_PROFILE_DIR (fresh profile), MAHLER_SCREENSHOT_SHA (head),
