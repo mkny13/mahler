@@ -135,6 +135,17 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn("ci.yml:8", str(findings["ci-tests"].evidence))
         self.assertIn("heuristics do not prove absence", findings["tracked-secrets"].reason)
 
+    def test_report_evidence_is_bounded_with_omission_count(self):
+        finding = audit.Finding("ci-tests", "unknown", "review semantics",
+                                tuple(f"citation-{i}-" + "x" * 400 for i in range(300)))
+        result = audit.ProjectAudit("demo", "owner/demo", (finding,) * 6)
+        body = audit._report((result,), {}, [], [])
+        self.assertLess(len(body), 10_000)
+        self.assertIn("298 additional evidence entries omitted", body)
+        detail = audit._details(finding)
+        self.assertLess(len(detail), 50_000)
+        self.assertIn("260 additional evidence entries omitted", detail)
+
     def test_build_only_is_not_test_coverage(self):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
             "python3 -m unittest discover -s tests", "npm run build"))

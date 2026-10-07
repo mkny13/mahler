@@ -596,9 +596,17 @@ def _queue(ctx, _projects):
     led.set_kv(REPORT_MARKER_KEY, "")
 
 
-def _details(finding):
-    return f"**{finding.check}: {finding.state}** — {finding.reason}\n\n" + "\n".join(
-        f"- {e}" for e in finding.evidence)
+def _details(finding, *, evidence_limit=40, evidence_char_limit=1000):
+    evidence = []
+    for item in finding.evidence[:evidence_limit]:
+        text = item[:evidence_char_limit]
+        if len(item) > evidence_char_limit:
+            text += " [truncated]"
+        evidence.append(f"- {text}")
+    omitted = len(finding.evidence) - len(evidence)
+    if omitted:
+        evidence.append(f"- {omitted} additional evidence entries omitted")
+    return f"**{finding.check}: {finding.state}** — {finding.reason}\n\n" + "\n".join(evidence)
 
 
 def _acceptance(pol, check):
@@ -619,7 +627,8 @@ def _report(results, proposals, errors, skips, marker=""):
             "## Inventory"]
     for result in results:
         body += [f"### {result.project} ({result.repo})",
-                 *[_details(f) for f in result.findings]]
+                 *[_details(f, evidence_limit=2, evidence_char_limit=240)
+                   for f in result.findings]]
     body += ["## Proposals", *[f"- {key}: {url}" for key, url in proposals.items()],
              "## Skips", *(skips or ["None."]),
              "## Errors", *(errors or ["None."])]
