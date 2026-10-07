@@ -401,6 +401,32 @@ class ReadLogContractTests(unittest.TestCase):
                     stream.write((line if isinstance(line, str) else json.dumps(line)) + '\n')
             return platforms.read_log(path, kind, model='configured')
 
+    def test_structured_session_identities(self):
+        cases = (
+            ('claude', {'type': 'system', 'subtype': 'init'}, 'session_id'),
+            ('claude', {'type': 'assistant'}, 'session_id'),
+            ('claude', {'type': 'result', 'subtype': 'success'}, 'session_id'),
+            ('codex', {'type': 'thread.started'}, 'thread_id'),
+            ('kilo', {'type': 'step_start'}, 'sessionID'),
+            ('vibe', {'type': 'message', 'role': 'assistant'}, 'sessionId'),
+        )
+        for kind, event, field in cases:
+            with self.subTest(kind=kind, event=event):
+                self.assertIsNone(self.read(kind, [event])['session_id'])
+                valid = dict(event, **{field: 'session-123'})
+                self.assertEqual(self.read(kind, [valid])['session_id'], 'session-123')
+                for value in (None, '', '   ', 42, True, [], {'id': 'wrong'}):
+                    invalid = dict(event, **{field: value})
+                    self.assertIsNone(self.read(kind, [invalid])['session_id'])
+                    self.assertEqual(self.read(kind, [valid, invalid])['session_id'], 'session-123')
+                unrelated = {'type': 'tool_result', 'data': {field: 'wrong'}}
+                self.assertIsNone(self.read(kind, [unrelated])['session_id'])
+        for kind, event in (
+                ('claude', {'type': 'tool_result', 'session_id': 'wrong'}),
+                ('claude', {'type': 'system', 'subtype': 'other', 'session_id': 'wrong'}),
+                ('codex', {'type': 'item.completed', 'thread_id': 'wrong'})):
+            self.assertIsNone(self.read(kind, [event])['session_id'])
+
     def empty_result(self):
         return dict(final=None, ok=None, usage=[], quota_hit=False,
                     credit_exhausted=False, overage=False, retry_after=None,

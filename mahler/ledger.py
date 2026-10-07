@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS runs (
     effort      TEXT,
     explore     INTEGER NOT NULL DEFAULT 0,
     configured_model TEXT,              -- routing identity; empty means CLI default
+    session_id  TEXT,
     routing_role TEXT,                   -- plan uses the sort execution recipe
     tokens_in   INTEGER,
     tokens_cached INTEGER,
@@ -308,7 +309,7 @@ class Ledger:
                 if col not in cols:
                     self.con.execute(f"ALTER TABLE items ADD COLUMN {col} {ddl}")
             run_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(runs)")}
-            for col, ddl in (("configured_model", "TEXT"), ("routing_role", "TEXT"), ("explore", "INTEGER NOT NULL DEFAULT 0"),
+            for col, ddl in (("session_id", "TEXT"), ("configured_model", "TEXT"), ("routing_role", "TEXT"), ("explore", "INTEGER NOT NULL DEFAULT 0"),
                              ("tokens_in", "INTEGER"), ("tokens_cached", "INTEGER"),
                              ("tokens_out", "INTEGER"), ("tokens_reasoning", "INTEGER"),
                              ("cost_usd", "REAL"), ("cost_source", "TEXT"),

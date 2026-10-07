@@ -1002,8 +1002,15 @@ def _read_plaintext(res, line, texts):
             _note_log_error(res, line_str)
 
 
+def _note_session_id(res, value):
+    if isinstance(value, str) and value.strip():
+        res["session_id"] = value
+
+
 def _read_claude_event(res, ev, texts, first_quota):
     t = ev.get("type")
+    if (t == "system" and ev.get("subtype") == "init") or t in {"assistant", "user", "result"}:
+        _note_session_id(res, ev.get("session_id"))
     if t == "rate_limit_event":
         res["usage"] = claude_samples_from_event(ev)
         for window, pct, resets in res["usage"]:
@@ -1056,6 +1063,8 @@ def _read_copilot_event(res, ev, texts, first_quota):
 
 def _read_codex_event(res, ev, texts, first_quota):
     t = ev.get("type")
+    if t == "thread.started":
+        _note_session_id(res, ev.get("thread_id"))
     if t == "item.completed":
         item = ev.get("item") or {}
         if item.get("type") == "agent_message" and item.get("text"):
@@ -1069,8 +1078,7 @@ def _read_codex_event(res, ev, texts, first_quota):
 
 
 def _read_kilo_event(res, ev, texts, first_quota):
-    if ev.get("sessionID"):
-        res["session_id"] = ev.get("sessionID")
+    _note_session_id(res, ev.get("sessionID"))
     if ev.get("type") == "error":
         _note_log_error(res, ev)
         res["last_error"] = _extract_error_message(ev)
@@ -1145,8 +1153,7 @@ def _read_vibe_event(res, ev, texts, first_quota):
     # sessionId (verified 2026-10-01, mahler#623). Tool "effect" records are
     # not text and are ignored. Exit codes are undocumented, so success is
     # left to the exit file rather than inferred here.
-    if ev.get("sessionId"):
-        res["session_id"] = ev["sessionId"]
+    _note_session_id(res, ev.get("sessionId"))
     t = ev.get("type")
     if t == "message" and ev.get("role") == "assistant":
         texts.extend(_vibe_text(ev.get("content")))

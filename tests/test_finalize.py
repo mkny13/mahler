@@ -60,6 +60,38 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def test_completed_build_keeps_session_identity(self):
+        self.check_completed_session_identity('build')
+
+    def test_completed_fix_keeps_session_identity(self):
+        self.check_completed_session_identity('fix')
+
+    def check_completed_session_identity(self, role):
+        self.run.update(role=role, platform='claude')
+        self.led.update_run(self.run_id, role=role, platform='claude', status='running')
+        Path(self.log).write_text(json.dumps({
+            'type': 'result', 'subtype': 'success',
+            'session_id': 'session-123', 'result': 'STATUS: DONE implemented'}) + '\n')
+        with mock.patch.object(self.ctx, 'ping'):
+            self.finalize()
+        row = self.led.run(self.run_id)
+        self.assertEqual((row['status'], row['session_id']), ('ended', 'session-123'))
+        Path(self.log).write_text('STATUS: DONE implemented\n')
+        with mock.patch.object(self.ctx, 'ping'):
+            self.finalize()
+        self.assertEqual(self.led.run(self.run_id)['session_id'], 'session-123')
+
+
+    def test_session_identity_dry_run_does_not_write(self):
+        self.run['platform'] = 'codex'
+        self.ctx.dry_run = True
+        Path(self.log).write_text(json.dumps({'type': 'thread.started', 'thread_id': 'new'}))
+        for existing in (None, 'saved'):
+            self.led.update_run(self.run_id, session_id=existing)
+            before = list(self.led.con.iterdump())
+            self.finalize()
+            self.assertEqual(list(self.led.con.iterdump()), before)
+
     def test_terminal_run_failure_comments_and_backfill_are_idempotent(self):
         for role, reason, code, kind in (
                 ("sort", None, 1, "crashed"),
@@ -1340,6 +1372,7 @@ class ResumeNudgeTests(unittest.TestCase):
         argv = spawn.call_args.args[0]
         self.assertIn("--session", argv)
         self.assertEqual(argv[argv.index("--session") + 1], "ses_kilo999")
+        self.assertEqual(self.led.run(run_id)["session_id"], "ses_kilo999")
         self.assertEqual(self.led.run(run_id)["status"], "running")
 
     def test_kilo_session_not_found_uses_fresh_run_fallback(self):
