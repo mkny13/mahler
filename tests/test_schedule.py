@@ -467,6 +467,7 @@ class QuotaGroupTests(unittest.TestCase):
         """_red_ci uses busy_platforms: a fix run doesn't start on
         claude while claude-opus is busy (same quota group)."""
         ctx, led = mk_ctx({"a": proj()}, total=4, max_runs=1)
+        self.addCleanup(led.close)
         seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="claude-opus",
                        epoch=1)
@@ -974,6 +975,7 @@ class InteractiveLeaseRenewalTests(unittest.TestCase):
     def setUp(self):
         self.t = {"now": NOW}
         self.led = Ledger(":memory:", clock=lambda: self.t["now"])
+        self.addCleanup(self.led.close)
         cfg = mk_cfg({"a": proj()})
         self.ctx = scheduler.Ctx(cfg, self.led, dry_run=True)
 
@@ -1165,6 +1167,7 @@ class ScheduleStateUpdateTests(unittest.TestCase):
         """When start() returns False (e.g. lease conflict), the item's slot
         is not consumed — a later candidate in the same project can still start."""
         ctx, led = mk_ctx({"a": proj(max_parallel=2), "b": proj()}, total=3, max_runs=3)
+        self.addCleanup(led.close)
         ctx.dry_run = False  # need real start path
         seed(led, **{p: (10, 10) for p in ("claude", "agy-claude", "agy-gemini")})
         item(led, "a", 1, age_minutes=30)
