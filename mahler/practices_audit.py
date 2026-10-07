@@ -199,7 +199,7 @@ def _expand(tree, command, seen=()):
     script = None
     nested = None
     if words[0] in ("npm", "pnpm", "yarn"):
-        if words[1:2] in (["ci"], ["install"]):
+        if words[1:2] in (["ci"], ["install"], ["audit"]):
             return rows, False
         key = words[2] if len(words) > 2 and words[1] == "run" else (
             words[1] if len(words) > 1 else "")
@@ -213,10 +213,10 @@ def _expand(tree, command, seen=()):
         script = "package.json"
     elif words[0] in ("bash", "sh", "python") and len(words) > 1 and not words[1].startswith("-"):
         script = words[1]
-    elif words[0].startswith("./"):
+    elif words[0].startswith("./") and words[0] != "./gradlew":
         script = words[0]
     if not script:
-        return rows, "${{" in command or words[0] in (
+        return rows, words[0] in (
             "make", "just", "if", "then", "else", "for", "while", "case", "eval", "source", ".")
     try:
         text = nested if nested is not None else tree.read(script)
@@ -277,6 +277,14 @@ class _Command:
         return 2
 
 
+class _WorkflowResult(tuple):
+    def __new__(cls, rows, unknown, jobs, structural_uncertainty, is_auxiliary=False):
+        return super().__new__(cls, (rows, unknown, jobs, structural_uncertainty))
+
+    def __init__(self, rows, unknown, jobs, structural_uncertainty, is_auxiliary=False):
+        self.is_auxiliary = is_auxiliary
+
+
 def _workflow(tree, path):
     """Extract literal PR workflow run steps and static job names, not YAML names."""
     text = tree.read(path)
@@ -284,15 +292,16 @@ def _workflow(tree, path):
     clean_text = "\n".join(lines)
     trigger = re.search(r"(?m)^(?:on|['\"]on['\"]):\s*(.*)$", clean_text)
     if not trigger:
-        return [], True, [], True
+        return _WorkflowResult([], True, [], True)
     start = trigger.start()
     next_root = re.search(r"(?m)^[^\s#][^:\n]*:", clean_text[trigger.end():])
     end = trigger.end() + next_root.start() if next_root else len(clean_text)
     on = clean_text[start:end]
     if not re.search(r"\bpull_request\b", on):
-        return [], False, [], False
+        return _WorkflowResult([], False, [], False)
 
     pr_filtered, pr_filter_cite = False, ""
+    is_auxiliary = False
     pr_match = re.search(r"(?m)^([ \t]*)pull_request\s*(?::[ \t]*(.*))?$", on)
     if pr_match:
         pr_indent = len(pr_match.group(1))
@@ -304,18 +313,40 @@ def _workflow(tree, path):
         else:
             on_lines = on[pr_match.end():].splitlines()
             offset = start + pr_match.end()
+            pr_filter_lines = []
             for o_line in on_lines:
                 stripped = o_line.strip()
                 if stripped:
                     indent = len(o_line) - len(o_line.lstrip())
                     if indent <= pr_indent:
                         break
-                    if re.search(r"^\s*(?:paths|paths-ignore|branches|branches-ignore|types)\s*:", o_line):
+                    pr_filter_lines.append(o_line)
+                    if re.search(r"^[ \t]*(?:branches|branches-ignore|types)\s*:", o_line):
                         pr_filtered = True
                         line_no = clean_text[:offset].count("\n") + 1
                         pr_filter_cite = f"{path}:{line_no}: PR trigger filter"
-                        break
                 offset += len(o_line) + 1
+
+            pr_filter_text = "\n".join(pr_filter_lines)
+            types_match = re.search(r"(?m)^[ \t]*types[ \t]*:[ \t]*(.*)$", pr_filter_text)
+            if types_match:
+                inline_val = types_match.group(1).strip()
+                types = []
+                if inline_val.startswith("[") and inline_val.endswith("]"):
+                    types = re.findall(r"[\w-]+", inline_val)
+                elif not inline_val:
+                    types_sublines = pr_filter_text[types_match.end():].splitlines()
+                    for t_line in types_sublines:
+                        if not t_line.strip():
+                            continue
+                        item = re.match(r"^[ \t]*-[ \t]*([\w-]+)", t_line)
+                        if item:
+                            types.append(item.group(1))
+                        else:
+                            break
+                if types and not any(t in ("opened", "synchronize", "reopened") for t in types):
+                    is_auxiliary = True
+                    pr_filtered = False
 
     wf_anchors = bool(re.search(r"[&*][\w-]+", clean_text))
     wf_bad_jobs = bool(re.search(r"(?m)^jobs:[ \t]*\S", clean_text))
@@ -488,8 +519,8 @@ def _workflow(tree, path):
                 if not part or part.startswith("#"):
                     continue
                 cmd_dynamic = "${{" in part
-                expanded, unknown = _expand(tree, part)
-                unknown |= syntax_unknown
+                expanded, expand_unknown = _expand(tree, part)
+                unknown = expand_unknown or syntax_unknown
 
                 for cmd, cite in expanded:
                     cmd_uncertain = False
@@ -533,7 +564,7 @@ def _workflow(tree, path):
                     if _is_test(cmd) and current_job not in jobs:
                         jobs.append(current_job)
 
-                    if unknown or cmd_dynamic:
+                    if expand_unknown:
                         step_had_uncertainty = True
                         step_uncertain_cite = f"{path}:{step_run_line}: unresolved execution: {cmd}"
 
@@ -546,27 +577,43 @@ def _workflow(tree, path):
     structural_uncertainty = (
         pr_filtered or wf_anchors or wf_bad_jobs or wf_has_reusable or not rows
     )
-    return (rows, structural_uncertainty or any(r.uncertain for r in rows),
-            jobs, structural_uncertainty)
+    tests = [r for r in rows if _is_test(r.cmd)]
+    proven_tests = [r for r in tests if not r.uncertain]
+    cmd_uncertainty = any(r.uncertain for r in tests) if proven_tests else any(r.uncertain for r in rows)
+    return _WorkflowResult(
+        rows,
+        structural_uncertainty or cmd_uncertainty,
+        jobs,
+        structural_uncertainty,
+        is_auxiliary=is_auxiliary,
+    )
 
 
 def _ci(tree):
     rows, jobs, errors = [], [], []
     workflows = sorted((tree.root / ".github/workflows").glob("*.y*ml"))
-    uncertain = False
-    structural_uncertainty = False
+    primary_results = []
+    aux_results = []
     for path in workflows:
         name = str(path.relative_to(tree.root))
         try:
-            commands, unknown, names, structural_unknown = _workflow(tree, name)
-            rows.extend(commands)
-            jobs.extend(names)
-            uncertain |= unknown
-            structural_uncertainty |= structural_unknown
+            res = _workflow(tree, name)
+            if getattr(res, "is_auxiliary", False):
+                aux_results.append((name, res))
+            else:
+                primary_results.append((name, res))
         except (OSError, UnicodeError):
             errors.append(f"{name}: unreadable workflow")
-            uncertain = True
-            structural_uncertainty = True
+
+    target_results = primary_results if primary_results else aux_results
+    for name, res in target_results:
+        commands, unknown, names, structural_unknown = res
+        rows.extend(commands)
+        jobs.extend(names)
+
+    uncertain = any(res[1] for _, res in target_results) or bool(errors)
+    structural_uncertainty = any(res[3] for _, res in target_results) or bool(errors)
+
     tests = [row for row in rows if _is_test(row.cmd)]
     proven_tests = [row for row in tests if not row.uncertain]
     state = ("pass" if proven_tests and not structural_uncertainty else
