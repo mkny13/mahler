@@ -777,6 +777,25 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.protection["required_pull_request_reviews"] = {"required_approving_review_count": 1}
         self.assertEqual(self.results()["branch-protection"].state, "unknown")
 
+    def test_npm_test_node_script_runner_is_recognized(self):
+        self.write("package.json", json.dumps({"scripts": {"test": "node scripts/run_tests.js"}}))
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "python3 -m unittest discover -s tests", "npm test"))
+        self.assertEqual(self.results()["ci-tests"].state, "pass")
+
+    def test_self_test_binary_step_is_recognized(self):
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "python3 -m unittest discover -s tests", "./build/App --self-test"))
+        self.assertEqual(self.results()["ci-tests"].state, "pass")
+        self.assertTrue(audit._is_test("./build/App --self-test"))
+        self.assertFalse(audit._is_test("node scripts/build.js"))
+
+    def test_protection_passes_with_script_test_job_context(self):
+        self.write("package.json", json.dumps({"scripts": {"test": "node scripts/run_tests.js"}}))
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "python3 -m unittest discover -s tests", "npm test"))
+        self.assertEqual(self.results()["branch-protection"].state, "pass")
+
     def test_scope_labels_anchor_first_links_and_closed_marker_reuse(self):
         self.pol.update(scope="label", scope_label="custom")
         self.write("CLAUDE.md", "Diverged\n")

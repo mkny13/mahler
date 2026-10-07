@@ -176,6 +176,12 @@ def _is_test(command):
     pytest = w[0] == "pytest" or w[:3] == ["python", "-m", "pytest"]
     if "-n" in w and not pytest:
         return False
+    # Repository test scripts run by node, and apps exposing a self-test mode.
+    script = next((x for x in w[1:] if not x.startswith("-")), "")
+    if w[0] == "node" and re.search(r"(?:^|[/_.-])tests?(?:[/_.-]|$)|run_tests?", script):
+        return True
+    if "--self-test" in w:
+        return True
     return bool(
         w[0] in ("pytest", "nosetests", "jest", "vitest", "mocha")
         or w[:3] in (["python", "-m", "unittest"], ["python", "-m", "pytest"])
@@ -196,6 +202,8 @@ def _expand(tree, command, seen=()):
     words = _words(command)
     if not words:
         return rows, True
+    if "--self-test" in words and _is_test(command):
+        return rows, False
     script = None
     nested = None
     if words[0] in ("npm", "pnpm", "yarn"):
@@ -972,10 +980,12 @@ def _protection(gh, jobs, ci_unknown):
     if settings.get("allow_squash_merge") is False or not contexts:
         return _finding("branch-protection", "gap",
                         "Squash merging is disabled or no required checks gate the default branch.", evidence)
-    if settings.get("allow_squash_merge") is not True or ci_unknown or not jobs:
+    gated = any(name in contexts for name in jobs)
+    # Unrelated workflow uncertainty must not hide an established required test gate.
+    if settings.get("allow_squash_merge") is not True or not jobs or (ci_unknown and not gated):
         return _finding("branch-protection", "unknown",
                         "Cannot establish squash/test-gate compatibility.", evidence)
-    if not any(name in contexts for name in jobs):
+    if not gated:
         return _finding("branch-protection", "gap",
                         "No identified PR test job is a required check.", [*evidence, f"test jobs: {jobs}"])
     incompatible = [r.get("type") for r in rules if r.get("type") in
