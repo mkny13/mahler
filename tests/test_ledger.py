@@ -50,6 +50,30 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
 
+    def test_session_id_migrates_and_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "legacy.db")
+            con = sqlite3.connect(path)
+            try:
+                con.executescript(SCHEMA.replace("    session_id  TEXT,", ""))
+                con.execute("INSERT INTO runs(project,number,role,platform,epoch,status,started_at) "
+                            "VALUES ('p',1,'build','claude',1,'ended','2026-09-12')")
+                con.commit()
+            finally:
+                con.close()
+            for attempt in range(2):
+                led = Ledger(path)
+                try:
+                    self.assertIsNone(led.run(1)["session_id"])
+                    if attempt == 0:
+                        rid = led.create_run(project="p", number=2, role="fix",
+                                             platform="codex", epoch=1, session_id="thread-1")
+                        self.assertEqual(led.run(rid)["session_id"], "thread-1")
+                        led.update_run(rid, session_id="thread-2")
+                    self.assertEqual(led.run(rid)["session_id"], "thread-2")
+                finally:
+                    led.close()
+
     def test_burst_lines_migrate_and_survive_reopen(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "legacy.db")

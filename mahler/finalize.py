@@ -592,6 +592,9 @@ def finalize(ctx, run):
     model = run_dict.get("model") or pconf.get("sort_model" if run_dict.get("role") == "sort" else "build_model") or pconf.get("model")
     log = platforms.read_log(run["log_path"], kind, model=model)
     _record_run_usage(ctx, run, kind, log)
+    session_id = log.get("session_id")
+    if not ctx.dry_run and isinstance(session_id, str) and session_id.strip():
+        led.update_run(run["id"], session_id=session_id)
 
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
