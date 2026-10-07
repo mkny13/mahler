@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import shlex
 import subprocess
@@ -309,6 +310,254 @@ class TestPracticesAudit(unittest.TestCase):
             self.assertNotIn("secret diagnostic", repr(finding))
         self.write("binary", "\0binary")
         self.assertEqual(self.results()["tracked-secrets"].state, "unknown")
+
+    def test_exact_review_match_suppresses_candidate(self):
+        content = f"{chr(84)}OKEN=synthetic-token-123\n"
+        self.write("reviewed.env", content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "reviewed.env",
+                    "sha256": digest,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "synthetic test fixture in temporary repository",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+        self.assertIn(".mahler/secret-reviews.json: 1 reviewed non-secret candidate", finding.evidence)
+        self.assertIn("heuristics do not prove absence", finding.reason)
+        self.assertNotIn("synthetic-token-123", repr(finding))
+
+    def test_candidate_changed_in_same_file_remains_gap(self):
+        content = f"# header line\n{chr(84)}OKEN=synthetic-token-123\n"
+        self.write("reviewed.env", content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "reviewed.env",
+                    "sha256": digest,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "synthetic test fixture line 1 review",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("reviewed.env:2: detector=credential-assignment; context=<redacted>", finding.evidence)
+        self.assertIn(".mahler/secret-reviews.json: stale review: reviewed.env:1: detector=credential-assignment",
+                      finding.evidence)
+
+    def test_new_candidate_in_reviewed_file_remains_gap(self):
+        content = f"{chr(84)}OKEN=first-token\n{chr(80)}ASSWORD=second-secret\n"
+        self.write("reviewed.env", content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "reviewed.env",
+                    "sha256": digest,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "first token reviewed",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("reviewed.env:2: detector=credential-assignment; context=<redacted>", finding.evidence)
+        self.assertIn(".mahler/secret-reviews.json: 1 reviewed non-secret candidate", finding.evidence)
+        self.assertNotIn("reviewed.env:1:", str(finding.evidence))
+
+    def test_same_candidate_in_different_file_remains_gap(self):
+        content = f"{chr(84)}OKEN=synthetic-token\n"
+        self.write("file_a.env", content)
+        self.write("file_b.env", content)
+        digest_a = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "file_a.env",
+                    "sha256": digest_a,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "file a reviewed",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("file_b.env:1: detector=credential-assignment; context=<redacted>", finding.evidence)
+        self.assertNotIn("file_a.env:1:", str(finding.evidence))
+
+    def test_stale_digest_remains_gap_and_reports_stale_metadata(self):
+        content = f"{chr(84)}OKEN=synthetic-token\n"
+        self.write("reviewed.env", content)
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "reviewed.env",
+                    "sha256": "0" * 64,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "stale digest test",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("reviewed.env:1: detector=credential-assignment; context=<redacted>", finding.evidence)
+        self.assertIn(".mahler/secret-reviews.json: stale review: reviewed.env:1: detector=credential-assignment",
+                      finding.evidence)
+
+    def test_malformed_duplicate_and_unsafe_path_review_data(self):
+        # 1. Malformed JSON
+        self.write(".mahler/secret-reviews.json", "not valid json {")
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn(".mahler/secret-reviews.json: malformed schema", finding.evidence)
+
+        # 2. Malformed schema (unsupported version or missing fields)
+        self.write(".mahler/secret-reviews.json", json.dumps({"version": 99, "reviews": []}))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn(".mahler/secret-reviews.json: malformed schema", finding.evidence)
+
+        # 3. Unsafe path in review entry
+        self.write(".mahler/secret-reviews.json", json.dumps({
+            "version": 1,
+            "reviews": [{
+                "path": "../outside.env",
+                "sha256": "a" * 64,
+                "line": 1,
+                "detector": "credential-assignment",
+                "rationale": "unsafe path test",
+            }],
+        }))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn(".mahler/secret-reviews.json: unsafe path: ../outside.env", finding.evidence)
+
+        # 4. Invalid detector ID
+        self.write(".mahler/secret-reviews.json", json.dumps({
+            "version": 1,
+            "reviews": [{
+                "path": "file.env",
+                "sha256": "a" * 64,
+                "line": 1,
+                "detector": "invalid-detector-id",
+                "rationale": "invalid detector test",
+            }],
+        }))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn(".mahler/secret-reviews.json: invalid detector ID: invalid-detector-id", finding.evidence)
+
+        # 5. Duplicate entries
+        dup_entry = {
+            "path": "file.env",
+            "sha256": "a" * 64,
+            "line": 1,
+            "detector": "credential-assignment",
+            "rationale": "duplicate review test",
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps({
+            "version": 1,
+            "reviews": [dup_entry, dup_entry],
+        }))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn(".mahler/secret-reviews.json: duplicate entry: file.env:1: detector=credential-assignment",
+                      finding.evidence)
+
+    def test_missing_manifest_retains_current_behavior(self):
+        manifest_path = self.root / ".mahler/secret-reviews.json"
+        if manifest_path.exists():
+            manifest_path.unlink()
+        content = f"{chr(84)}OKEN=synthetic-token\n"
+        self.write("secret.env", content)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("secret.env:1: detector=credential-assignment; context=<redacted>", finding.evidence)
+
+    def test_binary_file_alongside_reviewed_text_retains_unknown(self):
+        content = f"{chr(84)}OKEN=synthetic-token\n"
+        self.write("reviewed.env", content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "reviewed.env",
+                    "sha256": digest,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "valid review alongside binary file",
+                }
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        self.write("screenshot.png", "data\0bytes")
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertEqual(finding.reason, "Some tracked files could not be inspected.")
+        self.assertIn("screenshot.png: binary file not inspected", finding.evidence)
+        self.assertIn(".mahler/secret-reviews.json: 1 reviewed non-secret candidate", finding.evidence)
+
+    def test_synthetic_detectors_and_candidate_safe_in_filing(self):
+        pk = "-----" + "BEGIN PRIVATE KEY-----"
+        candidates = ["ghp_" + "b" * 36, "synthetic-password-xyz", pk]
+        content = f"{chr(80)}ASSWORD={candidates[1]}\n{candidates[0]}\n{candidates[2]}\n"
+        self.write("synthetic.env", content)
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        manifest = {
+            "version": 1,
+            "reviews": [
+                {
+                    "path": "synthetic.env",
+                    "sha256": digest,
+                    "line": 1,
+                    "detector": "credential-assignment",
+                    "rationale": "reviewed assignment",
+                },
+                {
+                    "path": "synthetic.env",
+                    "sha256": digest,
+                    "line": 2,
+                    "detector": "credential-shape",
+                    "rationale": "reviewed shape",
+                },
+                {
+                    "path": "synthetic.env",
+                    "sha256": digest,
+                    "line": 3,
+                    "detector": "private-key",
+                    "rationale": "reviewed private key",
+                },
+            ],
+        }
+        self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+        self.assertIn(".mahler/secret-reviews.json: 3 reviewed non-secret candidates", finding.evidence)
+        for val in candidates:
+            self.assertNotIn(val, repr(finding))
+
 
     def test_external_instruction_pointer_is_not_followed(self):
         self.write("AGENTS.md", "See ../external.md\n")

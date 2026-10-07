@@ -390,6 +390,103 @@ def _verify(tree, pol, commands, ci_unknown):
     return _finding("verify-command", state, reason, evidence)
 
 
+VALID_DETECTORS = ("credential-assignment", "credential-shape", "private-key")
+REVIEWS_PATH = ".mahler/secret-reviews.json"
+
+
+def _load_secret_reviews(tree):
+    try:
+        resolved = tree.root / REVIEWS_PATH
+        if not resolved.resolve().is_relative_to(tree.root):
+            return {}, [f"{REVIEWS_PATH}: unsafe path"]
+        if resolved.stat().st_size > 2_000_000:
+            return {}, [f"{REVIEWS_PATH}: exceeds 2 MB scan limit"]
+        data = resolved.read_bytes()
+        text = data.decode("utf-8")
+    except FileNotFoundError:
+        return {}, []
+    except (OSError, UnicodeError):
+        return {}, [f"{REVIEWS_PATH}: cannot inspect tracked content"]
+
+    try:
+        manifest = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return {}, [f"{REVIEWS_PATH}: malformed schema"]
+
+    if not isinstance(manifest, dict):
+        return {}, [f"{REVIEWS_PATH}: malformed schema"]
+    if manifest.get("version") != 1:
+        return {}, [f"{REVIEWS_PATH}: malformed schema"]
+    if set(manifest.keys()) != {"version", "reviews"}:
+        return {}, [f"{REVIEWS_PATH}: malformed schema"]
+    reviews_list = manifest.get("reviews")
+    if not isinstance(reviews_list, list):
+        return {}, [f"{REVIEWS_PATH}: malformed schema"]
+
+    valid_reviews = {}
+    errors = []
+    seen_keys = set()
+    duplicate_keys = set()
+
+    for entry in reviews_list:
+        if not isinstance(entry, dict) or set(entry.keys()) != {"path", "sha256", "line", "detector", "rationale"}:
+            errors.append(f"{REVIEWS_PATH}: malformed schema")
+            continue
+        rel_path = entry.get("path")
+        sha256 = entry.get("sha256")
+        line = entry.get("line")
+        detector = entry.get("detector")
+        rationale = entry.get("rationale")
+
+        if not isinstance(rel_path, str) or not rel_path.strip():
+            errors.append(f"{REVIEWS_PATH}: malformed schema")
+            continue
+        path_obj = Path(rel_path)
+        if path_obj.is_absolute() or any(p == ".." for p in path_obj.parts):
+            errors.append(f"{REVIEWS_PATH}: unsafe path: {rel_path}")
+            continue
+        try:
+            entry_resolved = (tree.root / rel_path).resolve()
+            if not entry_resolved.is_relative_to(tree.root):
+                errors.append(f"{REVIEWS_PATH}: unsafe path: {rel_path}")
+                continue
+        except (OSError, ValueError):
+            errors.append(f"{REVIEWS_PATH}: unsafe path: {rel_path}")
+            continue
+
+        if not (isinstance(sha256, str) and len(sha256) == 64 and all(c in "0123456789abcdefABCDEF" for c in sha256)):
+            errors.append(f"{REVIEWS_PATH}: malformed schema")
+            continue
+
+        if not (isinstance(line, int) and not isinstance(line, bool) and line >= 1):
+            errors.append(f"{REVIEWS_PATH}: malformed schema")
+            continue
+
+        if detector not in VALID_DETECTORS:
+            errors.append(f"{REVIEWS_PATH}: invalid detector ID: {detector}")
+            continue
+
+        if not (isinstance(rationale, str) and bool(rationale.strip())):
+            errors.append(f"{REVIEWS_PATH}: malformed schema")
+            continue
+
+        key = (rel_path, line, detector)
+        if key in seen_keys:
+            duplicate_keys.add(key)
+            errors.append(f"{REVIEWS_PATH}: duplicate entry: {rel_path}:{line}: detector={detector}")
+            continue
+        seen_keys.add(key)
+        valid_reviews[key] = {
+            "sha256": sha256.lower(),
+            "rationale": rationale,
+        }
+
+    for dup in duplicate_keys:
+        valid_reviews.pop(dup, None)
+
+    return valid_reviews, errors
+
+
 def _secrets(tree):
     candidates, errors = [], []
     try:
@@ -397,6 +494,12 @@ def _secrets(tree):
     except (OSError, UnicodeError):
         return _finding("tracked-secrets", "unknown", "Tracked inventory unavailable.",
                         ["git ls-files -z"])
+
+    valid_reviews, review_errors = _load_secret_reviews(tree)
+    errors.extend(review_errors)
+    matched_reviews = set()
+    reviewed_count = 0
+
     for path in paths:
         try:
             resolved = tree.root / path
@@ -413,6 +516,8 @@ def _secrets(tree):
         except (OSError, UnicodeError):
             errors.append(f"{path}: cannot inspect tracked content")
             continue
+
+        file_sha256 = hashlib.sha256(data).hexdigest()
         for number, line in enumerate(text.splitlines(), 1):
             detectors = []
             if _PRIVATE_KEY.search(line):
@@ -423,13 +528,42 @@ def _secrets(tree):
             if redact.redact(without_assignments) != without_assignments:
                 detectors.append("credential-shape")
             for detector in detectors:
-                candidates.append(f"{path}:{number}: detector={detector}; context={redact.MARK}")
-    return _finding("tracked-secrets", "gap" if candidates else "unknown" if errors else "pass",
-                    "Suspected credentials require review." if candidates else
-                    "Some tracked files could not be inspected." if errors else
-                    "No candidates in inspected tracked text; heuristics do not prove absence "
-                    "of credentials or private data. Git history is not inspected.",
-                    candidates + errors or ["git ls-files -z: tracked text inspected"])
+                key = (path, number, detector)
+                if key in valid_reviews and valid_reviews[key]["sha256"] == file_sha256:
+                    matched_reviews.add(key)
+                    reviewed_count += 1
+                else:
+                    candidates.append(f"{path}:{number}: detector={detector}; context={redact.MARK}")
+
+    for key in sorted(valid_reviews.keys()):
+        if key not in matched_reviews:
+            r_path, r_line, r_detector = key
+            errors.append(f"{REVIEWS_PATH}: stale review: {r_path}:{r_line}: detector={r_detector}")
+
+    reviewed_evidence = [
+        f"{REVIEWS_PATH}: {reviewed_count} reviewed non-secret candidate{'s' if reviewed_count != 1 else ''}"
+    ] if reviewed_count else []
+
+    if candidates:
+        state = "gap"
+        reason = "Suspected credentials require review."
+        evidence = candidates + errors + reviewed_evidence
+    elif errors:
+        state = "unknown"
+        reason = "Some tracked files could not be inspected."
+        evidence = errors + reviewed_evidence
+    else:
+        state = "pass"
+        reason = (
+            f"No unresolved candidates in inspected tracked text ({reviewed_count} reviewed); "
+            "heuristics do not prove absence of credentials or private data. Git history is not inspected."
+            if reviewed_count else
+            "No candidates in inspected tracked text; heuristics do not prove absence "
+            "of credentials or private data. Git history is not inspected."
+        )
+        evidence = reviewed_evidence + ["git ls-files -z: tracked text inspected"]
+
+    return _finding("tracked-secrets", state, reason, evidence)
 
 
 def _protection(gh, jobs, ci_unknown):
