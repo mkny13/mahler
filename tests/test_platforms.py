@@ -546,6 +546,28 @@ class ReadLogContractTests(unittest.TestCase):
 
 
 class VibeTests(unittest.TestCase):
+    def test_real_stream_write_file_effect_then_assistant_message(self):
+        # Vibe 2.25.8 / codestral-latest, captured 2026-10-04 (mahler#710).
+        records = (
+            '{"type":"effect","title":"write_file",'
+            '"sessionId":"4e158a39-0e81-8b61-5843-4110359e2b48",'
+            '"detail":{"toolName":"write_file","kind":"file_write",'
+            '"input":{"filePath":"/tmp/wt/hello.txt","content":"hi"}},'
+            '"state":{"status":"completed","decision":"execute",'
+            '"approvalSource":"bypass"}}\n'
+            '{"type":"message","role":"assistant",'
+            '"sessionId":"4e158a39-0e81-8b61-5843-4110359e2b48",'
+            '"content":[{"type":"text","text":"DONE"}]}\n'
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "stream.ndjson")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(records)
+            summary = platforms.read_log(path, "vibe")
+        self.assertEqual(summary["session_id"], "4e158a39-0e81-8b61-5843-4110359e2b48")
+        self.assertEqual(summary["last_text"], "DONE")
+        self.assertIsNone(summary["last_error"])
+
     def test_argv(self):
         with mock.patch.object(platforms, "vibe_exe", return_value="/app/vibe"):
             argv = platforms.vibe_argv({"kind": "vibe"}, "do it", "/wt", "build", 60)
