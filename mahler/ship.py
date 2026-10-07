@@ -132,9 +132,17 @@ def _dependency_prs(ctx, project):
             ctx.say(f"{project}: adopted dependency PR #{pending['pr']}")
         elif view.get("state") == "CLOSED" or view.get("headRefOid") != pending["sha"]:
             led.set_kv(key, None)
+        elif (view.get("state") == "OPEN" and pending.get("requested_at")
+              and led.now() - parse(pending["requested_at"]) > timedelta(
+                  minutes=pol["verify_timeout_minutes"])):
+            # A rejected/lost request or ejected queue entry is retryable, but
+            # only through all fresh metadata, CI, cap and ancestry gates below.
+            led.set_kv(key, None)
         else:
             ctx.say(f"{project}: dependency PR #{pending['pr']} merge request pending")
-        return
+            return
+        if view.get("state") != "OPEN":
+            return
     if ctx.merge_requested or led.items(project, ["verifying"]):
         return
     occupied = led.q("SELECT number FROM leases WHERE project=? AND capacity=1 AND expires_at>?",
@@ -193,7 +201,8 @@ def _dependency_prs(ctx, project):
                 continue
             # Persist before the request: an uncertain API response must not allow
             # another adoption or lose a merge that succeeded before a crash.
-            led.set_kv(key, json.dumps({"pr": n, "sha": sha, **update}))
+            led.set_kv(key, json.dumps({"pr": n, "sha": sha,
+                                         "requested_at": iso(led.now()), **update}))
             ctx.merge_requested = True
             gh.pr_merge(n, sha)
             _dependency_prs(ctx, project)  # confirm synchronous merges, or retain queue state

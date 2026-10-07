@@ -3131,6 +3131,40 @@ class DependencyPRTests(unittest.TestCase):
         self.run_pass()
         self.assertEqual(len(self.events()), 3)
 
+    def test_each_bot_patch_and_minor_merge(self):
+        self.cfg['projects']['x']['dependency_prs_daily_cap'] = 10
+        n = 10
+        for bot in ('dependabot', 'renovate'):
+            for after in ('1.2.4', '1.3.0'):
+                with self.subTest(bot=bot, after=after):
+                    self.add(n, after=after, bot=bot)
+                    self.run_pass()
+                    self.assertEqual(self.views[n]['state'], 'MERGED')
+                    n += 1
+        self.assertEqual(len(self.events()), 4)
+
+    def test_dependency_metadata_uses_account_environment(self):
+        env = {"GH_CONFIG_DIR": "/test/work-account"}
+        with mock.patch.object(gh_module, "_gh", return_value="{}") as call:
+            gh_module.GH("work/repo", env=env).dependency_pr_view(10)
+        self.assertEqual(call.call_args.kwargs['env'], env)
+        self.assertEqual(call.call_args.args[:6], ('pr', 'view', '10', '-R', 'work/repo', '--json'))
+        for field in ('author', 'files', 'body', 'headRefOid', 'baseRefName', 'isDraft'):
+            self.assertIn(field, call.call_args.args[-1].split(','))
+
+    def test_rejected_request_retries_after_timeout_with_fresh_gates(self):
+        self.gh.pr_merge.side_effect = gh_module.GHError('rejected')
+        self.run_pass()
+        self.now += timedelta(minutes=61)
+        self.gh.pr_merge.side_effect = self.merge
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 1)
+        self.gh.base_in_head.return_value = True
+        self.run_pass()
+        self.assertEqual(self.gh.pr_merge.call_count, 2)
+        self.assertEqual(len(self.events()), 1)
+
     def test_refusals(self):
         original = copy.deepcopy(self.views[10])
         for changes in ({'isDraft': True}, {'state': 'CLOSED'}, {'mergeable': 'CONFLICTING'},
