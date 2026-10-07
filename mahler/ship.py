@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, no_change, review, router, runner
+from . import config, failures, no_change, review, router, runner, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -287,6 +287,7 @@ def _watch_pr(ctx, project, item, pr):
         detail = f"; {wait['error']}" if wait.get("error") else ""
         ctx.say(f"{project}#{n}: PR #{pr} — mergeability unknown{detail}")
         return
+    screenshots.capture(ctx, project, item, pr, view)
     _review_gate(ctx, project, item, pr, view)
 
 

@@ -700,13 +700,20 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   loader. The repo may describe `screenshot` beside `preview` in its descriptive
   `.mahler/project.toml`. `screenshot = ""` disables capture, including an inherited
   command. `screenshot_environment = ""` has no implicit target: an environment
-  must be explicitly named before a future runner may capture. Never assume prod.
+  must be explicitly named before capture. Never assume prod.
   `screenshot_preview_non_personal` is a strict boolean, default false.
   `screenshot_timeout_seconds` is an integer from 1–60, default 45.
-  - **Execution contract:** run the project-owned command at the exact PR-head
-    worktree, using that project's browser dependencies. Mahler remains standard
-    library only. Supply `MAHLER_SCREENSHOT_URL` (preview URL for the named
-    environment), `MAHLER_SCREENSHOT_DIR` (fresh output directory),
+  - **Execution contract (mahler#724):** verify an existing exact PR-head worktree,
+    but never execute PR-controlled scripts with conductor privileges. `screenshot`
+    is an absolute path to an operator-installed executable, without shell syntax
+    or arguments. Resolve symlinks and refuse executables in Git checkouts.
+    Install its browser dependencies outside project checkouts; the trusted tool
+    must not load code, configuration or dependencies from PR worktrees. Run it
+    in a fresh temporary directory with a minimal environment and temporary
+    HOME/profile, not the conductor's credentials or personal configuration.
+    This is a trusted-tool boundary, not a sandbox for arbitrary project code.
+    Mahler remains standard library only. Supply `MAHLER_SCREENSHOT_URL` (preview
+    URL for the named environment), `MAHLER_SCREENSHOT_DIR` (fresh output directory),
     `MAHLER_SCREENSHOT_PROFILE_DIR` (fresh temporary browser profile directory),
     `MAHLER_SCREENSHOT_SHA` (full PR-head SHA) and `MAHLER_SCREENSHOT_PR` (PR number).
     Use headless Chromium with a fresh temporary profile/context. Never use real
@@ -733,8 +740,9 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     assurance of safety or delivery. Screenshots are advisory evidence, never a
     UAT pass or merge gate. Disabled/missing environment or unavailable preview,
     browser or command means unavailable; timeout, nonzero exit or invalid output
-    means failed. Neither is success, and neither blocks merge. A future runner
-    enforces the finite timeout; capture/delivery/console wiring is separate work.
+    means failed. Neither is success, and neither blocks merge. Capture runs once
+    per head after acceptable CI and before review, enforces the finite timeout,
+    and kills/reaps its process group. Delivery/console wiring is separate work.
 - **Trust but verify** (made concrete by D18 and D10). An agent's "done" is a claim.
   Confirmed merges enter `shipped`; accepted post-merge evidence moves them to `done`.
   As shipped, the conductor's gates are green CI and, for qualifying items, the

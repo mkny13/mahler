@@ -396,6 +396,35 @@ class GH:
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
                                    "headRefOid,baseRefName,mergeCommit,title,mergedAt"))
 
+    def screenshot_preview(self, sha, environment):
+        """Bounded exact-head preview discovery; never infer a production target."""
+        from urllib.parse import urlencode, urlsplit
+
+        if not environment or environment.casefold() == "production":
+            return None
+        query = urlencode({"sha": sha, "environment": environment, "per_page": 20})
+        deployments = json.loads(self._gh(
+            "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}"))
+        for deployment in sorted(deployments[:20], key=lambda d: d["id"], reverse=True):
+            if (deployment.get("sha") != sha or deployment.get("environment") != environment
+                    or deployment.get("production_environment") is not False):
+                continue
+            statuses = json.loads(self._gh(
+                "api", "--method", "GET",
+                f"repos/{self.repo}/deployments/{int(deployment['id'])}/statuses?per_page=1"))
+            if not statuses or statuses[0].get("state") != "success":
+                continue
+            status = statuses[0]
+            if status.get("environment", environment) != environment:
+                continue
+            url = status.get("environment_url") or ""
+            parsed = urlsplit(url)
+            if (parsed.scheme == "https" and parsed.hostname and not parsed.username
+                    and not parsed.password and not any(c.isspace() for c in url)
+                    and "\\" not in url and "@" not in parsed.netloc):
+                return url
+        return None
+
     def pr_edit_body(self, number, body):
         self._gh("pr", "edit", str(number), "-R", self.repo, "--body-file", "-", input=body)
 
