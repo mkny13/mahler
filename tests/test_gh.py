@@ -33,6 +33,70 @@ class TestGH(unittest.TestCase):
         self.assertIsNone(self.gh.screenshot_preview(sha, "pRoDuCtIoN"))
         self.gh._gh.assert_not_called()
 
+    def test_publish_artifacts_creates_orphan_branch_without_other_refs(self):
+        calls = []
+
+        def api(*args, input=None, **kw):
+            calls.append((args[2], args[3].split("/", 3)[-1], json.loads(input) if input else None))
+            path = args[3]
+            if args[2] == "GET":
+                raise GHError("gh api: HTTP 404: Not Found")
+            return json.dumps({"sha": "s" * 40})
+        from mahler.gh import GHError
+        self.gh._gh.side_effect = api
+        commit = self.gh.publish_artifacts("mahler-screenshots", "pr-1/" + "a" * 40,
+                                           {"a.png": b"png", "manifest.json": b"{}"}, "msg")
+        self.assertEqual(commit, "s" * 40)
+        methods = [(m, p) for m, p, _ in calls]
+        self.assertEqual(methods[-1], ("POST", "git/refs"))
+        self.assertTrue(all(p.startswith(("git/ref/heads/mahler-screenshots", "git/blobs",
+                                          "git/trees", "git/commits", "git/refs"))
+                            for _, p in methods))
+        self.assertEqual(calls[-1][2]["ref"], "refs/heads/mahler-screenshots")
+        commit_body = [b for m, p, b in calls if p == "git/commits"][0]
+        self.assertEqual(commit_body["parents"], [])
+        tree_body = [b for m, p, b in calls if p == "git/trees"][0]
+        self.assertNotIn("base_tree", tree_body)
+        self.assertEqual(len(tree_body["tree"]), 2)
+
+    def test_publish_artifacts_advances_without_force_and_reuses_head(self):
+        calls = []
+        directory = "pr-1/" + "a" * 40
+
+        def api(*args, input=None, **kw):
+            calls.append((args[2], args[3].split("/", 3)[-1], json.loads(input) if input else None))
+            path = args[3]
+            if "git/ref/heads" in path:
+                return json.dumps({"object": {"sha": "p" * 40}})
+            if "git/commits/" in path:
+                return json.dumps({"tree": {"sha": "t" * 40}})
+            if "git/trees/" in path:
+                return json.dumps({"tree": existing})
+            return json.dumps({"sha": "n" * 40})
+        self.gh._gh.side_effect = api
+        existing = []
+        self.gh.publish_artifacts("mahler-screenshots", directory, {"a.png": b"x"}, "m")
+        patch_call = calls[-1]
+        self.assertEqual(patch_call[0], "PATCH")
+        self.assertEqual(patch_call[2], {"sha": "n" * 40, "force": False})
+        self.assertEqual([b for m, p, b in calls if p == "git/trees"][0]["base_tree"], "t" * 40)
+        calls.clear()
+        existing.append({"path": directory + "/a.png"})
+        self.assertEqual(self.gh.publish_artifacts("mahler-screenshots", directory,
+                                                   {"a.png": b"x"}, "m"), "p" * 40)
+        self.assertFalse([c for c in calls if c[0] in ("POST", "PATCH")])
+
+    def test_publish_artifacts_refuses_application_branches(self):
+        from mahler.gh import GHError
+        for branch in ("main", "master", "", "a b", "../x"):
+            with self.assertRaises(GHError):
+                self.gh.publish_artifacts(branch, "pr-1/x", {}, "m")
+        self.gh._gh.assert_not_called()
+
+    def test_artifact_url_is_commit_pinned(self):
+        self.assertEqual(self.gh.artifact_url("c" * 40, "pr-1/x/a b.png"),
+                         f"https://github.com/mkny13/mahler/blob/{'c' * 40}/pr-1/x/a%20b.png")
+
     def test_screenshot_discovery_bound_and_exact_query(self):
         sha = 'a' * 40
         deployments = [{"id": i, "sha": sha, "environment": "Preview",
