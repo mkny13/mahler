@@ -442,7 +442,7 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
     hold_until = router._ts(hold.get("resets_at")) if hold else None
     metered = router.is_metered(led, name, pconf)
     windows = []
-    for w in pconf.get("windows", router.WINDOWS):
+    for w in router.target_windows(led, name, pconf):
         u = usage.get(w)
         if u is None:
             continue
