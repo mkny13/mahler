@@ -210,8 +210,6 @@ class TestPracticesAudit(unittest.TestCase):
         for key, value in (
             ("branches", "[main]"),
             ("branches-ignore", "[main]"),
-            ("paths", '["**.py"]'),
-            ("paths-ignore", '["docs/**"]'),
             ("types", "[opened]"),
         ):
             with self.subTest(filter=key):
@@ -220,6 +218,69 @@ class TestPracticesAudit(unittest.TestCase):
                     f"  pull_request:\n    {key}: {value}\n")
                 self.write(".github/workflows/ci.yml", workflow)
                 self.assertEqual(self.results()["ci-tests"].state, "unknown")
+
+    def test_pr_paths_filters_pass(self):
+        for key, value in (
+            ("paths", '["**.py"]'),
+            ("paths-ignore", '["docs/**"]'),
+        ):
+            with self.subTest(filter=key):
+                workflow = WORKFLOW.replace(
+                    "  pull_request:\n",
+                    f"  pull_request:\n    {key}: {value}\n")
+                self.write(".github/workflows/ci.yml", workflow)
+                tree = audit._Tree(self.temp.name)
+                rows, unknown, jobs, struct = audit._workflow(tree, ".github/workflows/ci.yml")
+                self.assertFalse(unknown)
+                self.assertFalse(struct)
+                self.assertEqual(self.results()["ci-tests"].state, "pass")
+
+    def test_workflow_concurrency_expression_passes(self):
+        workflow = (
+            "name: CI\n"
+            "concurrency:\n"
+            "  group: ${{ github.workflow }}-${{ github.ref }}\n"
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: Log ref ${{ github.ref }}\n"
+            "        run: echo ${{ github.sha }}\n"
+            "      - run: python3 -m unittest discover -s tests\n"
+        )
+        self.write(".github/workflows/ci.yml", workflow)
+        tree = audit._Tree(self.temp.name)
+        rows, unknown, jobs, struct = audit._workflow(tree, ".github/workflows/ci.yml")
+        self.assertFalse(unknown)
+        self.assertFalse(struct)
+        finding = self.results()["ci-tests"]
+        self.assertEqual(finding.state, "pass")
+
+    def test_auxiliary_pr_cleanup_workflow_does_not_override_primary_ci(self):
+        cleanup_wf = (
+            "name: Cleanup\n"
+            "on:\n"
+            "  pull_request:\n"
+            "    types: [closed]\n"
+            "jobs:\n"
+            "  cleanup:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: echo cleanup\n"
+        )
+        self.write(".github/workflows/cleanup.yml", cleanup_wf)
+        tree = audit._Tree(self.temp.name)
+        res = audit._workflow(tree, ".github/workflows/cleanup.yml")
+        self.assertTrue(getattr(res, "is_auxiliary", False))
+        finding = self.results()["ci-tests"]
+        self.assertEqual(finding.state, "pass")
+
+        # Repository with only the auxiliary cleanup workflow evaluates to gap
+        (self.root / ".github/workflows/ci.yml").unlink()
+        finding_alone = self.results()["ci-tests"]
+        self.assertEqual(finding_alone.state, "gap")
 
     def test_step_condition_and_expression_test_execution_are_unknown(self):
         workflows = (
