@@ -40,7 +40,6 @@ PLATFORM_ALIASES = {
     "kilo": ["kilo"],
     "kiro": ["kiro cli", "kiro"],
     "vibe": ["mistral vibe", "vibe cli", "mistral-vibe"],
-    "kimi": ["moonshot kimi", "kimi code", "kimi cli", "kimi"],
     "copilot": ["copilot cli", "copilot"],
     "copilot-high": ["copilot-high"],
     "codex-low": ["codex cli", "codex-low", "gpt-5.6-luna"],

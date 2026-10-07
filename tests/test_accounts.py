@@ -5,7 +5,6 @@ account's Claude login is its own run slot and quota; bursts and usage-rise
 human flags use each login's own quota group.
 """
 
-import copy
 import os
 import subprocess
 import tempfile
@@ -177,46 +176,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
         self.assertEqual(env["CODEX_HOME"], os.path.expanduser("~/.codex-work"))
 
-    def test_kimi_is_opt_in_disabled_by_default_and_absent_from_default_routes(self):
-        kimi_conf = config.DEFAULTS["platforms"]["kimi"]
-        self.assertFalse(kimi_conf["enabled"])
-        self.assertEqual(kimi_conf["max_size"], "s")
-        for role, platforms_list in config.DEFAULTS["routing"].items():
-            self.assertNotIn("kimi", platforms_list, f"kimi must not be in default route for {role}")
-
-    def test_kimi_rejects_non_personal_account(self):
-        cfg = work_cfg()
-        cfg["platforms"]["work-kimi"] = {"kind": "kimi", "account": "work"}
-        with self.assertRaisesRegex(ValueError, "personal account"):
-            config.validate_accounts(cfg)
-
-    def test_kimi_rejects_inherited_work_platform(self):
-        cfg = work_cfg()
-        cfg["platforms"]["work-kimi"] = {"from": "kimi", "account": "work"}
-        cfg = config.resolve_platforms(cfg)
-        with self.assertRaisesRegex(ValueError, "personal account"):
-            config.validate_accounts(cfg)
-
-    def test_kimi_rejects_project_with_non_personal_account(self):
-        cfg = work_cfg(acme={"enabled": True, "repo": "acme/app", "path": "/tmp/acme",
-                             "account": "work", "routing": {"build": ["kimi"]}})
-        with self.assertRaisesRegex(ValueError, "personal-only"):
-            config.validate_accounts(cfg)
-
-        cfg2 = work_cfg(mixed={"enabled": True, "repo": "acme/app", "path": "/tmp/acme",
-                               "accounts": ["personal", "work"], "routing": {"build": ["kimi"]}})
-        with self.assertRaisesRegex(ValueError, "personal-only"):
-            config.validate_accounts(cfg2)
-
-    def test_kimi_max_size_must_be_s(self):
-        cfg = work_cfg()
-        cfg["platforms"]["kimi"]["max_size"] = "m"
-        with self.assertRaisesRegex(ValueError, "limited to size:s"):
-            config.validate_accounts(cfg)
-        cfg["platforms"]["kimi"]["max_size"] = "l"
-        with self.assertRaisesRegex(ValueError, "limited to size:s"):
-            config.validate_accounts(cfg)
-
 
 class RouterTests(unittest.TestCase):
     def setUp(self):
@@ -296,35 +255,12 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(
             router.usage_state(self.led, "claude-work", pc["claude-work"], burst)[0], "hard")
 
-    def test_kimi_excluded_from_work_and_mixed_accounts(self):
-        cfg = copy.deepcopy(self.cfg)
-        cfg["platforms"]["kimi"]["enabled"] = True
-        cfg["routing"]["build"] = ["kimi", "claude"]
-        cand_work = router.candidates_for_accounts(cfg, "build", ["work"])
-        self.assertNotIn("kimi", cand_work)
-        cand_mixed = router.candidates_for_accounts(cfg, "build", ["personal", "work"])
-        self.assertNotIn("kimi", cand_mixed)
-        cand_personal = router.candidates_for_accounts(cfg, "build", ["personal"])
-        self.assertIn("kimi", cand_personal)
-
 
 class SlotAndUsageTests(unittest.TestCase):
     def setUp(self):
         self.cfg = work_cfg()
         self.led = Ledger(":memory:", clock=lambda: NOW)
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=True)
-
-    def test_runner_check_account_rejects_kimi_for_work_or_mixed_project(self):
-        cfg = work_cfg(
-            acme={"enabled": True, "repo": "acme/app", "path": "/tmp/acme", "account": "work"},
-            mixed={"enabled": True, "repo": "acme/mix", "path": "/tmp/mix", "accounts": ["personal", "work"]},
-        )
-        cfg["platforms"]["kimi"]["enabled"] = True
-        ctx = scheduler.Ctx(cfg, self.led, dry_run=True)
-        with self.assertRaises(RuntimeError):
-            runner.check_account(ctx, "acme", "kimi")
-        with self.assertRaisesRegex(RuntimeError, "personal-only"):
-            runner.check_account(ctx, "mixed", "kimi")
 
     def test_each_claude_login_has_its_own_run_slot(self):
         self.led.create_run(project="home", number=1, role="build", platform="claude", epoch=1)
