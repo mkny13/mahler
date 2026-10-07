@@ -546,6 +546,10 @@ class RunTests(unittest.TestCase):
                  "reason": "The logs are internal."},
                 {"finding": "PII is written to debug logs", "category": "behavior",
                  "reason": "The logs stay on the owner's device."},
+                {"finding": "An issue title is interpolated into a shell command, allowing "
+                            "a crafted title to run another command",
+                 "category": "behavior",
+                 "reason": "The command only runs in the owner's checkout."},
                 {"finding": "security concern", "category": "security",
                  "reason": "not important"},
                 {"finding": "silent unrecoverable data loss", "category": "behavior",

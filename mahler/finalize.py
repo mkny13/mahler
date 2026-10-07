@@ -161,6 +161,10 @@ def _design_payload(rest):
         r"unrecoverable|irreversible|pii|personal(?:ly)?[- ](?:information|data|identifiable)|"
         r"privacy|private[- ](?:data|information)|sensitive|confidential|leak(?:s|ed|ing|age)?|"
         r"expos(?:e|es|ed|ing|ure)|vulnerabilit(?:y|ies)|encrypt(?:ed|ion)?|plaintext|"
+        r"inject(?:s|ed|ing|ion|ions)?|shell|exploit(?:s|ed|able|ation)?|attack(?:s|er|ers)?|"
+        r"malicious|crafted|untrusted|sanitiz(?:e|es|ed|ing|ation)|unsanitized|"
+        r"arbitrary[- ](?:code|command|file)|(?:run|runs|execute|executes)[- ]another|"
+        r"interpolat(?:e|es|ed|ing|ion)|path[- ]traversal|"
         r"(?:debug|log|logs|logging)[- ]?(?:files?|output)?)\b", re.IGNORECASE)
     if unsafe.search(data["rationale"]):
         return None
