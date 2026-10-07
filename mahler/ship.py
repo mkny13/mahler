@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import config, failures, no_change, review, router, runner, screenshot_delivery, screenshots
+from . import capacity, config, failures, no_change, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -714,6 +714,7 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
                    capacity, required_tier=None):
     """Persist a retryable wait; only configuration or unknown backstop escalates."""
     led, n = ctx.led, item["number"]
+    _observe_wait(ctx, project, item, role, required_tier)
     if role == "fix":
         led.release(project, n, holder=CONDUCTOR)
     previous = _kv_json(led, status_key)
@@ -741,6 +742,31 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
     _mark_capacity_wait(led, project, led.item(project, n), role)
     ctx.ping(f"{role.capitalize()} {state.replace('_', ' ')} — {project} #{n}", question,
              project, n, priority="high", tags="warning")
+
+
+def _observe_wait(ctx, project, item, role, required_tier):
+    """Record a persisted fix/review wait for the capacity history (mahler#734):
+    read-only, never forces a retry and never blocks the wait itself."""
+    try:
+        cfg, led = ctx.cfg, ctx.led
+        pol = ctx.policy(project)
+        busy = busy_platforms(cfg, led.active_runs())
+        size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                     if l.startswith("size:")), None)
+        effective_size = size
+        pin, exclude, tier = item["pin"], (), required_tier or 0
+        if role == "review":
+            pin, effective_size, exclude = _review_route(ctx, project, item, "")
+            tier = 0
+        elif size == "l" or (tier >= 2 and size == "s"):
+            effective_size = "m"
+        diag = router.diagnose(cfg, led, pol, role, pin, busy, size=effective_size,
+                               burst_lines=ctx.burst_lines, min_tier=tier, exclude=exclude)
+        capacity.of(ctx).observe(project, item["number"], role, blockers=["shipping_wait"],
+                                 diag=diag, routing_role=role, size=size,
+                                 effective_size=effective_size, required_tier=tier)
+    except Exception as e:                      # noqa: BLE001 — telemetry only
+        ctx.say(f"{project}#{item['number']}: capacity diagnosis failed — {e}")
 
 
 def _fix_wait(ctx, project, item, key, reason, *, required_tier=None, capacity=None):
@@ -953,16 +979,17 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                  project, n, priority="high", tags="warning")
 
     active = led.active_runs()
+    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if len(active) >= cfg["concurrency"]["total"]:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, but every run slot is busy; "
                 "the fix waits for the next tick")
-        _fix_wait(ctx, project, item, key, "every run slot is busy")
+        _fix_wait(ctx, project, item, key, "every run slot is busy",
+                  required_tier=effective_min_tier)
         return
     busy = busy_platforms(cfg, active)
     real_size = size
     if size == "l":
         size = "m"
-    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
     capacity = router.capacity_recovery(
@@ -1081,17 +1108,18 @@ def _red_ci(ctx, project, item, pr, view):
                  project, n, priority="high", tags="warning")
 
     active = led.active_runs()
+    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if len(active) >= cfg["concurrency"]["total"]:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, but every run slot is busy; "
                 "the fix waits for the next tick")
-        _fix_wait(ctx, project, item, key, "every run slot is busy")
+        _fix_wait(ctx, project, item, key, "every run slot is busy",
+                  required_tier=effective_min_tier)
         return
     busy = busy_platforms(cfg, active)
     # For fix runs, treat size:l as size:m so a CI fix never needs Opus by size alone (DESIGN D21)
     real_size = size
     if size == "l":
         size = "m"
-    effective_min_tier = max(cur_tier, router.risk_min_tier(row_get(item, "title", "")))
     if effective_min_tier >= 2 and size == "s":
         size = "m"
     # D26: route within the project's declared accounts: fallback order,

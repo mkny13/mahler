@@ -13,7 +13,7 @@ import fcntl
 import os
 import sys
 
-from . import backup, config, digest, failures, janitor, notify, platform_audit
+from . import backup, capacity, config, digest, failures, janitor, notify, platform_audit
 from .console import outbox
 from .gh import project_client, GHError
 from .ledger import iso
@@ -36,6 +36,7 @@ class Ctx:
         self._labels = {}          # (project, number) -> labels from this tick's sync
         self._scorecard_rows = None
         self.burst_lines = None    # D23: set by compute_burst during this tick
+        self.capacity = capacity.Observer(self)   # mahler#734: this tick's waiting work
 
     @property
     def scorecard_rows(self):
@@ -113,6 +114,7 @@ def tick(ctx):
     if ctx.led.paused():
         ctx.say("paused — not starting anything (mahler resume)")
         ctx.hold("paused")
+        capacity.of(ctx).observe_paused(projects)
     else:
         refresh_usage(ctx, projects)
         resets.spend_banked(ctx, projects)
@@ -128,6 +130,7 @@ def tick(ctx):
     record_holds(ctx)
     if not ctx.led.paused():
         ship(ctx, projects)
+    capacity.of(ctx).flush()
     for p in projects:
         mirror_labels(ctx, p["name"])
     if not ctx.dry_run:
