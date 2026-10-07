@@ -605,8 +605,11 @@ def _verify_parts(command, *, separators=""):
             quote = char
         elif command[i:i + 2] == "&&":
             parts.append(command[start:i].strip())
-            i += 1
-            start = i + 1
+            i += 2
+            while i < len(command) and command[i].isspace():
+                i += 1
+            start = i
+            continue
         elif char in separators:
             parts.append(command[start:i].strip())
             start = i + 1

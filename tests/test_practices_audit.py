@@ -303,15 +303,16 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace("python3", "python") + "\n")
         self.assertEqual(self.results()["verify-command"].state, "pass")
 
-    def test_compound_verify_same_step_and_toml_fallback(self):
-        command = "python3 -m unittest discover -s tests && swift test"
+    def test_compound_verify_multiline_same_step_and_toml_fallback(self):
+        command = "cargo test && swift test"
         self.write(".mahler/project.toml", '[verify]\nfast = "' + command + '"\n')
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
-            "python3 -m unittest discover -s tests", command.replace("python3", "python")))
+            "- run: python3 -m unittest discover -s tests",
+            "- run: |\n          cargo test &&\n          swift test"))
         self.pol["verify"] = ""
         finding = self.results()["verify-command"]
         self.assertEqual(finding.state, "pass")
-        self.assertTrue(any("run: python -m unittest" in e for e in finding.evidence))
+        self.assertTrue(any("cargo test" in e and "run:" in e for e in finding.evidence))
         self.assertTrue(any("swift test" in e and "run:" in e for e in finding.evidence))
 
     def test_compound_verify_separate_jobs_and_uncertainty(self):
@@ -323,8 +324,10 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".github/workflows/ci.yml", workflow)
         finding = self.results()["verify-command"]
         self.assertEqual(finding.state, "pass")
-        for job in ("test", "mac"):
-            self.assertTrue(any(f"job={job} run:" in e for e in finding.evidence))
+        for job, component in (("test", "cargo test"), ("mac", "swift test")):
+            self.assertTrue(any(
+                f"job={job} run:" in e and component in e for e in finding.evidence
+            ))
         self.write(".github/workflows/ci.yml", workflow.replace(
             "  mac:\n", "  mac:\n    if: github.event_name == 'pull_request'\n"))
         self.assertEqual(self.results()["verify-command"].state, "unknown")
