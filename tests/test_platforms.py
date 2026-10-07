@@ -750,3 +750,70 @@ class KiroReadLogTests(unittest.TestCase):
         self.assertEqual(res["last_error"],
                          "error: Security error: SecKeychainItemCreateFromContent")
         self.assertFalse(res["model_unavailable"])
+
+
+class KiroFixtureTests(unittest.TestCase):
+    """Fixture-based tests for kiro stream parsing against real kiro-cli output.
+
+    The fixture at tests/fixtures/kiro.log contains a representative ACP v2
+    stream-json log from kiro-cli 2.26.1+ (mahler#695). It exercises the full
+    happy path: runStarted → metadata → sessionUpdate chunks → runFinished.
+    """
+
+    FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "kiro.log")
+
+    def test_fixture_parses_successfully(self):
+        """The fixture file parses without errors and returns a complete result."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertIsNotNone(res)
+        # All required keys must be present (contract from read_log).
+        for key in ("final", "ok", "usage", "quota_hit", "credit_exhausted",
+                    "overage", "retry_after", "last_text", "model", "session_id",
+                    "last_error", "model_unavailable", "tokens", "cost_usd",
+                    "credits", "quota_used"):
+            self.assertIn(key, res, f"missing key: {key}")
+
+    def test_fixture_extracts_session_id(self):
+        """The session ID is read from the metadata event."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertEqual(res["session_id"], "sess-695abc12")
+
+    def test_fixture_run_succeeded(self):
+        """runFinished with status=success sets ok=True."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertTrue(res["ok"])
+
+    def test_fixture_final_text_and_status_line(self):
+        """finalText carries a STATUS: DONE line; status_line parses it correctly."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertEqual(res["final"], "STATUS: DONE added kiro stream fixture and tests")
+        verb, rest = platforms.status_line(res["last_text"])
+        self.assertEqual(verb, "DONE")
+        self.assertIn("kiro", rest)
+
+    def test_fixture_no_errors(self):
+        """A successful run has no quota hits, credit exhaustion, or last_error."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertFalse(res["quota_hit"])
+        self.assertFalse(res["credit_exhausted"])
+        self.assertFalse(res["overage"])
+        self.assertFalse(res["model_unavailable"])
+        self.assertIsNone(res["last_error"])
+        self.assertIsNone(res["retry_after"])
+
+    def test_fixture_last_text_is_final_text(self):
+        """last_text is sourced from runFinished.finalText when it is set.
+
+        read_log uses res["final"] (from runFinished) over the accumulated chunk
+        text when building last_text, so STATUS lines always appear there.
+        """
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        # finalText overrides the accumulated chunk text in last_text.
+        self.assertIn("STATUS: DONE", res["last_text"])
+        self.assertEqual(res["last_text"], res["final"])
+
+    def test_fixture_no_quota_usage(self):
+        """A normal run with no rate_limit events produces empty quota usage."""
+        res = platforms.read_log(self.FIXTURE, "kiro")
+        self.assertEqual(res["usage"], [])
+        self.assertEqual(res["quota_used"], {})
