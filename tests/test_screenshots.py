@@ -312,6 +312,55 @@ class CaptureTests(unittest.TestCase):
                                     'CHECKOUT': self.tmp.name}):
             self.assertEqual(self.capture()['state'], 'success')
 
+    def test_env_shebang_resolves_configured_interpreter_without_inherited_env(self):
+        checkout = Path(self.tmp.name) / 'checkout'
+        checkout.mkdir()
+        binaries = Path(self.tmp.name) / 'operator-bin'
+        binaries.mkdir()
+        # A fake Python interpreter proves env actually chose our configured directory.
+        interpreter = binaries / 'python3'
+        interpreter.write_text('#!/bin/sh\nexport CAPTURE_INTERPRETER=configured\nexec /bin/sh "$@"\n')
+        interpreter.chmod(0o700)
+        tool = Path(self.tmp.name) / 'capture'
+        expected_path = os.pathsep.join([str(binaries.resolve()), '/opt/homebrew/bin',
+                                        '/usr/local/bin', os.defpath])
+        import shlex
+        tool.write_text(
+            '#!/usr/bin/env python3\n'
+            'test "$CAPTURE_INTERPRETER" = configured || exit 1\n'
+            f'test "$PATH" = {shlex.quote(expected_path)} || exit 2\n'
+            'test -z "$GH_TOKEN" && test -z "$PYTHONPATH" && test -z "$NODE_OPTIONS" || exit 3\n'
+            'test "$PWD" = "$HOME" && test "$HOME" = "$MAHLER_SCREENSHOT_PROFILE_DIR" || exit 4\n'
+            'printf "\\211PNG\\r\\n\\032\\n" > "$MAHLER_SCREENSHOT_DIR/a.png"\n'
+            'printf \'{"version":1,"sha":"%s","screenshots":'
+            '[{"route":"/","file":"a.png"}]}\' "$MAHLER_SCREENSHOT_SHA" '
+            '> "$MAHLER_SCREENSHOT_DIR/manifest.json"\n')
+        tool.chmod(0o700)
+        self.policy.update(screenshot=str(tool), screenshot_path=[str(binaries)])
+        with patch.object(ss, '_worktree', return_value=str(checkout)), \
+                patch.dict(os.environ, {'PATH': '/daemon-only', 'GH_TOKEN': 'secret',
+                                        'PYTHONPATH': '/daemon-python', 'NODE_OPTIONS': 'secret'}):
+            self.assertEqual(self.capture()['state'], 'success')
+        self.assertIsNotNone(ss.lookup('app', 12, self.sha,
+                                      root=Path(self.tmp.name) / 'screenshots'))
+
+    def test_configured_worktree_paths_and_symlinks_are_refused(self):
+        checkout = Path(self.tmp.name) / 'checkout'
+        binaries = checkout / 'bin'
+        binaries.mkdir(parents=True)
+        alias = Path(self.tmp.name) / 'operator-bin'
+        alias.symlink_to(binaries, target_is_directory=True)
+        for index, directory in enumerate((checkout, binaries, alias)):
+            with self.subTest(directory=directory):
+                self.sha = f'{index:040x}'
+                self.policy['screenshot_path'] = [str(directory)]
+                with patch.object(ss, '_worktree', return_value=str(checkout)), \
+                        patch.object(ss, '_command') as command:
+                    result = self.capture()
+                    self.assertEqual(result['state'], 'unavailable')
+                    self.assertEqual(result['reason'], 'path_unavailable')
+                    command.assert_not_called()
+
     def test_worktree_requires_exact_head_and_build_role(self):
         self.led.create_run(project='app', number=1, role='build', platform='test', epoch=1, status='ended', worktree=self.tmp.name)
         with patch.object(ss.subprocess, 'run') as run:

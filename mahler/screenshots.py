@@ -234,6 +234,18 @@ def _worktree(led, project, number, sha):
     return None
 
 
+def _capture_path(paths, worktree):
+    """Resolve trusted operator directories without borrowing the daemon PATH."""
+    checkout = Path(worktree).resolve()
+    directories = []
+    for entry in paths:
+        directory = Path(entry).resolve()
+        if directory.is_relative_to(checkout):
+            raise InvalidScreenshot("capture dependency path is inside the PR worktree")
+        directories.append(str(directory))
+    return os.pathsep.join([*directories, "/opt/homebrew/bin", "/usr/local/bin", os.defpath])
+
+
 def capture(ctx, project, item, pr, view):
     """At most one advisory attempt per head, including across conductor restarts.
 
@@ -266,7 +278,9 @@ def capture(ctx, project, item, pr, view):
                 with tempfile.TemporaryDirectory(prefix="mahler-screenshot-output-") as output, \
                         tempfile.TemporaryDirectory(prefix="mahler-screenshot-profile-") as profile:
                     output, profile = str(Path(output).resolve()), str(Path(profile).resolve())
-                    env = {"PATH": os.defpath, "HOME": profile, "TMPDIR": profile,
+                    result["reason"] = "path_unavailable"
+                    capture_path = _capture_path(policy.get("screenshot_path", []), cwd)
+                    env = {"PATH": capture_path, "HOME": profile, "TMPDIR": profile,
                            "XDG_CONFIG_HOME": profile, "XDG_CACHE_HOME": profile,
                            "MAHLER_SCREENSHOT_URL": url,
                            "MAHLER_SCREENSHOT_DIR": output,

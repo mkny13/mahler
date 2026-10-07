@@ -731,6 +731,14 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   must be explicitly named before capture. Never assume prod.
   `screenshot_preview_non_personal` is a strict boolean, default false.
   `screenshot_timeout_seconds` is an integer from 1–60, default 45.
+  `screenshot_path` is a list of operator-owned absolute executable directories,
+  default empty, inherited from defaults with project overrides (including `[]`).
+  Reject relative, empty, NUL-containing or colon-separated entries. Child PATH
+  contains resolved configured directories, then `/opt/homebrew/bin`,
+  `/usr/local/bin`, then `os.defpath`; never inherit the daemon PATH.
+  Refuse configured directories resolving inside the exact PR worktree, including
+  symlink aliases. Operators must keep these directories and their dependencies
+  trusted and outside project checkouts; capture failure remains advisory.
   - **Execution contract (mahler#724):** verify an existing exact PR-head worktree,
     but never execute PR-controlled scripts with conductor privileges. `screenshot`
     is an absolute path to an operator-installed executable, without shell syntax

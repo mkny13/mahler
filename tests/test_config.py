@@ -57,16 +57,18 @@ class SmokePolicyTests(unittest.TestCase):
                         self.load(section)
 
     def test_screenshot_defaults_inheritance_and_disable(self):
-        defaults = {"screenshot": "", "screenshot_environment": "",
+        defaults = {"screenshot": "", "screenshot_environment": "", "screenshot_path": [],
                     "screenshot_preview_non_personal": False,
                     "screenshot_timeout_seconds": 45}
         policy = config.project_policy(self.load({}), "app")
         self.assertEqual({k: policy[k] for k in defaults}, defaults)
         enabled = dict(screenshot="./capture.sh", screenshot_environment="staging",
+                       screenshot_path=["/opt/capture/bin"],
                        screenshot_preview_non_personal=True, screenshot_timeout_seconds=60)
         cfg = self.load({"defaults": enabled, "projects": {
             "disabled": {"screenshot": ""}, "override": {
                 "screenshot": "./other.sh", "screenshot_environment": "preview",
+                "screenshot_path": [],
                 "screenshot_preview_non_personal": False, "screenshot_timeout_seconds": 1}}})
         self.assertEqual(config.project_policy(cfg, "inherited")["screenshot"], "./capture.sh")
         self.assertEqual(config.project_policy(cfg, "disabled")["screenshot"], "")
@@ -74,9 +76,13 @@ class SmokePolicyTests(unittest.TestCase):
             self.assertEqual(config.project_policy(cfg, "inherited")[key], value)
         self.assertEqual(config.project_policy(cfg, "override")["screenshot_timeout_seconds"], 1)
         self.assertFalse(config.project_policy(cfg, "override")["screenshot_preview_non_personal"])
+        self.assertEqual(config.project_policy(cfg, "override")["screenshot_path"], [])
 
     def test_screenshot_invalid_types(self):
         cases = {"screenshot": [True, 1, [], {}],
+                 "screenshot_path": [True, 1, "/opt/bin", {}, [1], [""], ["."],
+                                     ["bin"], ["/opt/bin", ""], ["/opt/bin:"],
+                                     ["/opt/bin:.:/usr/bin"]],
                  "screenshot_environment": [False, 1, [], {}],
                  "screenshot_preview_non_personal": ["true", 0, 1, [], {}],
                  "screenshot_timeout_seconds": [True, 0, 61, 1.5, "45", [], {}]}
