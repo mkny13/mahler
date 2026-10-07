@@ -122,8 +122,7 @@ def _update_reviewed_pr(ctx, project, item, pr, view):
     led, n = ctx.led, item["number"]
     key = f"review:{project}#{n}"
     info = _kv_json(led, key)
-    passed = (view.get("headRefOid") and info.get("sha") == view["headRefOid"]
-              and info.get("verdict") == "pass")
+    passed = (review.effective(info, pr=pr, sha=view.get("headRefOid")) == "pass")
     retained_key = f"reviewed-pr:{project}#{n}"
     if not passed and led.get_kv(retained_key) != str(pr):
         return False
@@ -447,26 +446,19 @@ def _review_gate(ctx, project, item, pr, view):
     info = json.loads(seen) if seen else {}
     if checks_state(view.get("statusCheckRollup")) not in {"green", "none"}:
         return
-    if sha and info.get("sha") == sha and info.get("pr", pr) == pr:
-        verdict = info.get("verdict")
-        if verdict in {"pass", "fail"}:
-            review.record_green(ctx, project, item, pr, info)
-            _review_not_converging(ctx, project, item, pr, view)
-        if verdict == "pass":
-            if not review.file_followups(ctx, project, item):
-                return
-            _merge_queued(ctx, project, item, pr, view)
+    status = review.effective_for_item(led, project, n, pr=pr, sha=sha)
+    if status in {"pass", "fail"}:
+        review.record_green(ctx, project, item, pr, info)
+        _review_not_converging(ctx, project, item, pr, view)
+    if status == "pass":
+        if not review.file_followups(ctx, project, item):
             return
-        if verdict == "fail":
-            if not _unchanged_done_review(ctx, project, item, pr, sha, info):
-                _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
-                return
-        # verdict still "pending" for this sha: a review run is (or was) in
-        # flight; fall through to the active-run check below rather than
-        # trusting a run that may itself have died without finalizing.
-    # a new sha (no record, or the record is for an older sha) falls through
-    # the same way — _start_review_run below writes the fresh "pending" kv
-    # only once a run actually starts.
+        _merge_queued(ctx, project, item, pr, view)
+        return
+    if status == "fail":
+        if not _unchanged_done_review(ctx, project, item, pr, sha, info):
+            _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
+            return
     if any(r["project"] == project and r["number"] == n and r["role"] == "review"
            for r in led.active_runs()):
         ctx.say(f"{project}#{n}: PR #{pr} — independent review in progress")
@@ -712,7 +704,7 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     if start(ctx, project, {**item, "branch": head}, "review", platform,
              handoff_from=handoff_from, size=size,
              context=review.start_context(ctx, project, item, pr, sha)):
-        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "pr": pr, "verdict": "pending",
+        led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "pr": pr,
             "run_id": row_get(led.last_run(project, n, roles=("review",)) or {}, "id")}))
         led.set_kv(wait_key, "")
         led.set_kv(ping_key, "")

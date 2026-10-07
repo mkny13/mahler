@@ -1033,7 +1033,7 @@ class ShipTests(unittest.TestCase):
         role, platform, context = calls[0]
         self.assertEqual(role, "review")
         info = json.loads(self.led.get_kv("review:x#5"))
-        self.assertEqual(info, {"sha": "greensha1", "pr": 88, "verdict": "pending", "run_id": None})
+        self.assertEqual(info, {"sha": "greensha1", "pr": 88, "run_id": None})
 
     def test_review_start_delivers_effective_operating_context_in_prompt(self):
         from mahler import prompt
