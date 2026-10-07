@@ -1102,6 +1102,23 @@ def cmd_scorecard(a, cfg, led):
             print("No attempts in this window.")
 
 
+def _capacity_days(value):
+    try:
+        val = int(value)
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError(f"invalid days '{value}': must be an integer between 1 and 90")
+    if not (1 <= val <= 90):
+        raise argparse.ArgumentTypeError(f"invalid days '{value}': must be an integer between 1 and 90")
+    return val
+
+
+def cmd_capacity(a, cfg, led):
+    from . import capacity
+    report = capacity.capacity_report(led, days=a.days)
+    print(capacity.format_capacity_report(report))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1131,6 +1148,11 @@ def main(argv=None):
     s.add_argument("--since", type=_scorecard_days, metavar="30d")
     s.add_argument("--raw", action="store_true")
     s.set_defaults(fn=cmd_scorecard)
+
+    s = sub.add_parser("capacity", help="historical free-capacity report (mahler#736)")
+    s.add_argument("--days", type=_capacity_days, default=30,
+                   help="reporting window in days (1–90, default 30)")
+    s.set_defaults(fn=cmd_capacity)
 
     s = sub.add_parser("serve", help="the operator console (D27)")
     s.add_argument("--host", type=str, default=None,

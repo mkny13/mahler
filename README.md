@@ -330,3 +330,36 @@ stays NULL. Costs use a CLI-reported dollar amount when available, otherwise
 Cached input defaults to the input rate; reasoning uses the output rate. Unknown
 models remain unpriced. These are raw API-equivalent costs, before any scorecard
 quota-group weighting, and do not represent subscription charges.
+
+### Historical free-capacity report
+
+Run `mahler capacity [--days N]` to inspect retained queue intervals and request
+accounting (mahler#736). The reporting window defaults to 30 days and accepts an
+integer range of 1–90 days.
+
+```bash
+mahler capacity
+mahler capacity --days 14
+```
+
+Semantics and limits:
+- **Observed opportunity, not guaranteed throughput:** $X$ is union wall-clock hours
+  where waiting work had no eligible routed platform and at least one free platform
+  blocked solely by quota or exhausted credit; it is not predicted agent runtime.
+  $Y$ is distinct observed launch run IDs linked to those waiting episodes, not a
+  prediction of how many hypothetical runs would finish.
+- **Structural and unknown blockers are excluded:** waiting intervals with item-level
+  blockers (e.g. dependencies, paused, busy concurrency slots, area collisions) or
+  platform structural mismatches (size, tier, generic hold, disabled, restricted accounts)
+  contribute zero opportunity hours.
+- **Coverage bounds:** queries bound intervals strictly to the requested UTC window
+  and recorded history. Gaps over 120 seconds and missing history are never extrapolated.
+- **Replacement pool assumption:** an extra pool is assumed to match the exhausted
+  candidate's account eligibility, role, and size support.
+- **Diversions:** lists runs launched on Claude-kind or paid-class routes for which a
+  free candidate was unavailable solely due to quota/credit at launch time.
+- **Request accounting:** aggregates complete timestamped model-call buckets into peak
+  UTC daily requests per platform and model with observed 429/limit evidence. Partial
+  streams, unknown-day totals, and unknown-model counts are displayed separately and
+  never claimed as daily maximums or provider-wide limits. An absence of observed 429s
+  does not infer an actual provider rate limit.
