@@ -220,8 +220,10 @@ def effective_lines(led, name, pconf, window, burst_lines=None):
     Unknown progressive reset times get day one's allowance. Expired samples
     remain stale in usage_state; no allowance is inferred for a new cycle.
     """
-    soft = pconf.get("soft", {}).get(window, 100)
-    hard = pconf.get("hard", {}).get(window, 100)
+    fallback_soft = 70 if pconf.get("kind") == "codex" else 100
+    fallback_hard = 90 if pconf.get("kind") == "codex" else 100
+    soft = (pconf.get("soft") or {}).get(window, fallback_soft)
+    hard = (pconf.get("hard") or {}).get(window, fallback_hard)
     if window == "weekly" and window in pconf.get("progressive", []):
         reset = _ts(led.usage(name).get(window, {}).get("resets_at"))
         day = (min(7, max(1, ceil(7 - (reset - led.now()).total_seconds() / 86400)))
@@ -259,7 +261,7 @@ def window_countdowns(led, name, pconf):
     now = led.now()
     usage = led.usage(name)
     out = []
-    for w in pconf.get("windows", WINDOWS):
+    for w in target_windows(led, name, pconf):
         u = usage.get(w)
         if u is None:
             continue
@@ -321,6 +323,37 @@ def codex_detail(led, name, pconf):
     return " · ".join(parts)
 
 
+def is_long_codex_window(w):
+    """True if window label represents minutes > 10080 (the weekly window duration)."""
+    if isinstance(w, str) and w.endswith("m"):
+        try:
+            return int(w[:-1]) > 10080
+        except ValueError:
+            return False
+    return False
+
+
+def is_supported_codex_shape(windows):
+    """Supported Codex shapes: exact 5h + weekly pair, or exactly one window longer than weekly."""
+    names = {w["window"] for w in windows} if windows else set()
+    if names == set(WINDOWS):
+        return True
+    if len(windows) == 1:
+        return is_long_codex_window(windows[0].get("window", ""))
+    return False
+
+
+def target_windows(led, name, pconf):
+    """The quota windows evaluated for a platform: dynamically adopts a single
+    long Codex window when reported, otherwise falling back to configured windows."""
+    if pconf.get("kind") == "codex":
+        quota = codex_quota(led, name, pconf)
+        windows = quota.get("windows", [])
+        if len(windows) == 1 and is_long_codex_window(windows[0].get("window", "")):
+            return [windows[0]["window"]]
+    return pconf.get("windows", WINDOWS)
+
+
 # Why a HOLD window is active, keyed off finalize.py's `hold_reason:<name>` kv
 # — distinct wording per cause, so the router and console describe it
 # accurately instead of a generic catch-all (issue #420).
@@ -368,11 +401,11 @@ def usage_state(led, name, pconf, burst_lines=None):
     sampled = _ts(quota.get("sampled_at"))
     if quota.get("blocked") and sampled and now - sampled < stale_after:
         return "hard", codex_detail(led, name, pconf)
-    if quota and {w["window"] for w in quota.get("windows", [])} != set(WINDOWS):
+    if quota and not is_supported_codex_shape(quota.get("windows", [])):
         return "stale", "unrecognized or incomplete quota windows · " + codex_detail(led, name, pconf)
     worst, detail = "ok", []
     rank = {"ok": 0, "soft": 1, "hard": 2, "stale": 3}
-    for w in pconf.get("windows", WINDOWS):
+    for w in target_windows(led, name, pconf):
         u = usage.get(w)
         if u is None:
             state = "stale"

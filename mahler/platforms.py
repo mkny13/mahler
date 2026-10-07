@@ -610,7 +610,7 @@ class CodexUsage(list):
 
 def _codex_usage(result, keep_ids=False):
     limits = result["rateLimits"]
-    samples, windows = [], []
+    raw_windows = []
     for key in ("primary", "secondary"):
         window = limits.get(key)
         if window is None:
@@ -620,11 +620,24 @@ def _codex_usage(result, keep_ids=False):
                 type(pct) not in (int, float) or not math.isfinite(pct) or pct < 0):
             raise ValueError("invalid quota window")
         reset = _epoch_iso(window.get("resetsAt"))
-        label = {300: "5h", 10080: "weekly"}.get(minutes)
-        if label:
+        raw_windows.append((minutes, pct, reset))
+
+    samples, windows = [], []
+    minutes_set = {m for m, _, _ in raw_windows}
+    if minutes_set == {300, 10080}:
+        for minutes, pct, reset in raw_windows:
+            label = "5h" if minutes == 300 else "weekly"
             samples.append((label, pct, reset))
-        windows.append({"window": label or f"{minutes}m", "used_pct": pct,
-                        "resets_at": reset})
+            windows.append({"window": label, "used_pct": pct, "resets_at": reset})
+    elif len(raw_windows) == 1 and raw_windows[0][0] > 10080:
+        minutes, pct, reset = raw_windows[0]
+        label = f"{minutes}m"
+        samples.append((label, pct, reset))
+        windows.append({"window": label, "used_pct": pct, "resets_at": reset})
+    else:
+        for minutes, pct, reset in raw_windows:
+            label = {300: "5h", 10080: "weekly"}.get(minutes) or f"{minutes}m"
+            windows.append({"window": label, "used_pct": pct, "resets_at": reset})
     credits = result.get("rateLimitResetCredits") or {}
     count = credits.get("availableCount")
     if count is not None and (type(count) is not int or count < 0):

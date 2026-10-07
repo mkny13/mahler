@@ -75,7 +75,8 @@ time.sleep(5)
 
     def test_personal_nonstandard_window_is_not_a_weekly_sample(self):
         result = self.probe(response(blocked=True, personal=True))
-        self.assertEqual(result, [])
+        self.assertEqual([(w, p) for w, p, _ in result], [("43200m", 100)])
+        self.assertNotIn("weekly", [w for w, _, _ in result])
         self.assertTrue(result.metadata["blocked"])
         self.assertEqual(result.metadata["windows"][0]["window"], "43200m")
 
@@ -85,7 +86,14 @@ time.sleep(5)
                 self.assertEqual(self.probe(mode=mode), [])
 
     def test_malformed_shapes_fail_closed(self):
-        for body in ([1], {"rateLimits": []}, {"rateLimits": {"primary": {}}}):
+        # Malformed or unsupported shapes emit no routing samples
+        incomplete = {"rateLimits": {"primary": {"windowDurationMins": 300, "usedPercent": 20}}}
+        unsupported_multi = {"rateLimits": {
+            "primary": {"windowDurationMins": 300, "usedPercent": 20},
+            "secondary": {"windowDurationMins": 43200, "usedPercent": 20}}}
+        short_single = {"rateLimits": {"primary": {"windowDurationMins": 10, "usedPercent": 20}}}
+        for body in ([1], {"rateLimits": []}, {"rateLimits": {"primary": {}}},
+                     incomplete, unsupported_multi, short_single):
             with self.subTest(body=body):
                 self.assertEqual(self.probe(body), [])
 
@@ -216,6 +224,169 @@ class CodexRefreshTests(unittest.TestCase):
             args, _ = notify_send.call_args
             self.assertEqual(args[1], "Codex (work) quota exhausted")
             self.assertIn("no reset credits remaining", args[2])
+
+    def test_single_long_window_routed_and_thresholds(self):
+        # 1. Unblocked 43200m at 20%: ok and routed
+        self.refresh(platforms._codex_usage(response(blocked=False, personal=True)))
+        pc = self.cfg["platforms"]["codex"]
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "ok")
+        self.assertIn("43200m 20%", detail)
+        name, _ = router.pick(self.cfg, self.led, "build")
+        self.assertEqual(name, "codex")
+
+        # 2. At 70%: soft, not picked
+        self.now += timedelta(minutes=16)
+        body = response(blocked=False, personal=True)
+        body["rateLimits"]["primary"]["usedPercent"] = 70
+        self.refresh(platforms._codex_usage(body))
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "soft")
+        self.assertIn("43200m 70%", detail)
+        name, reasons = router.pick(self.cfg, self.led, "build")
+        self.assertNotEqual(name, "codex")
+        self.assertTrue(any("codex: soft" in r for r in reasons))
+
+        # 3. At 90%: hard, not picked
+        self.now += timedelta(minutes=16)
+        body["rateLimits"]["primary"]["usedPercent"] = 90
+        self.refresh(platforms._codex_usage(body))
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "hard")
+        self.assertIn("43200m 90%", detail)
+        name, reasons = router.pick(self.cfg, self.led, "build")
+        self.assertNotEqual(name, "codex")
+        self.assertTrue(any("codex: hard" in r for r in reasons))
+
+        # 4. Explicitly blocked with low usage: still hard
+        self.now += timedelta(minutes=16)
+        body = response(blocked=True, personal=True)
+        body["rateLimits"]["primary"]["usedPercent"] = 20
+        self.refresh(platforms._codex_usage(body))
+        status, _ = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "hard")
+
+    def test_unsupported_and_incomplete_shapes_remain_stale(self):
+        pc = self.cfg["platforms"]["codex"]
+        # Incomplete shape: only 5h window
+        body_inc = {"ordinaryUsageAllowed": True,
+                    "rateLimits": {"primary": {"windowDurationMins": 300, "usedPercent": 20}}}
+        self.refresh(platforms._codex_usage(body_inc))
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "stale")
+        self.assertIn("unrecognized or incomplete", detail)
+
+        # Unsupported multi-window: 5h + 43200m
+        body_multi = {"ordinaryUsageAllowed": True, "rateLimits": {
+            "primary": {"windowDurationMins": 300, "usedPercent": 20},
+            "secondary": {"windowDurationMins": 43200, "usedPercent": 20}}}
+        self.refresh(platforms._codex_usage(body_multi))
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "stale")
+        self.assertIn("unrecognized or incomplete", detail)
+
+        # Short single window: 10m
+        body_short = {"ordinaryUsageAllowed": True,
+                      "rateLimits": {"primary": {"windowDurationMins": 10, "usedPercent": 20}}}
+        self.refresh(platforms._codex_usage(body_short))
+        status, detail = router.usage_state(self.led, "codex", pc)
+        self.assertEqual(status, "stale")
+        self.assertIn("unrecognized or incomplete", detail)
+
+    def test_unsupported_shape_alerts_after_four_hours_and_cleared(self):
+        unsupported = platforms._codex_usage({
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {"primary": {"windowDurationMins": 10, "usedPercent": 20}}})
+
+        # 1. Four hours of continuous fresh probes triggers exactly one alert; no repeats
+        with mock.patch("mahler.notify.send") as notify_send:
+            with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                # t = 0
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+                notify_send.assert_not_called()
+                # t = 2h (8 * 15m) -> no early alert
+                for _ in range(8):
+                    self.now += timedelta(minutes=15)
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+                notify_send.assert_not_called()
+                # t = 4h (another 8 * 15m) -> exactly one alert
+                for _ in range(8):
+                    self.now += timedelta(minutes=15)
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+                notify_send.assert_called_once()
+                args, kwargs = notify_send.call_args
+                self.assertIn("work", args[1] + args[2])
+                self.assertIn("codex-work", args[1] + args[2])
+                self.assertIn("10m", args[1] + args[2])
+                self.assertEqual(kwargs.get("priority"), "high")
+
+                # Duplicate refresh after 4h does not send again
+                notify_send.reset_mock()
+                self.now += timedelta(minutes=15)
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+                notify_send.assert_not_called()
+
+        # 2. Failed probe clears pending condition
+        self.led.set_kv("codex:unsupported-shape:first:work", "")
+        self.led.set_kv("codex:unsupported-shape:shape:work", "")
+        self.led.set_kv("codex:unsupported-shape:last:work", "")
+        self.led.set_kv("notified:codex-unsupported:work", "")
+        with mock.patch("mahler.notify.send") as notify_send:
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            # Failed probe at 2h
+            self.now += timedelta(minutes=15)
+            with mock.patch.object(platforms, "probe_codex", return_value=[]):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            # Another 2h: no alert because counter was cleared
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_not_called()
+
+        # 3. Supported shape clears pending condition
+        self.led.set_kv("codex:unsupported-shape:first:work", "")
+        self.led.set_kv("codex:unsupported-shape:shape:work", "")
+        self.led.set_kv("codex:unsupported-shape:last:work", "")
+        self.led.set_kv("notified:codex-unsupported:work", "")
+        with mock.patch("mahler.notify.send") as notify_send:
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            # Supported shape returns
+            self.now += timedelta(minutes=15)
+            with mock.patch.object(platforms, "probe_codex", return_value=platforms._codex_usage(response())):
+                usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            # Another 2h: no alert
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_not_called()
+
+        # 4. Shape change clears pending condition
+        self.led.set_kv("codex:unsupported-shape:first:work", "")
+        self.led.set_kv("codex:unsupported-shape:shape:work", "")
+        self.led.set_kv("codex:unsupported-shape:last:work", "")
+        self.led.set_kv("notified:codex-unsupported:work", "")
+        unsupported_20 = platforms._codex_usage({
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {"primary": {"windowDurationMins": 20, "usedPercent": 20}}})
+        with mock.patch("mahler.notify.send") as notify_send:
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            # Shape changes to 20m for 2h
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                with mock.patch.object(platforms, "probe_codex", return_value=unsupported_20):
+                    usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+            notify_send.assert_not_called()
 
 
 class CodexResetSpendTests(unittest.TestCase):
