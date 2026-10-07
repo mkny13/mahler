@@ -38,9 +38,13 @@ class VerifyingUsageTests(unittest.TestCase):
                     self.addCleanup(led.close)
                     led.upsert_item("x", 1, state=state, priority=2, pin=pin)
                     ctx = scheduler.Ctx(cfg, led, dry_run=True)
-                    with mock.patch.object(usage, "_usage_needs_refresh", return_value=False) as needs:
+                    with mock.patch.object(usage, "_usage_needs_refresh", return_value=True), \
+                            mock.patch.object(platforms, "probe_kiro", return_value=[]) as probe:
                         usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
-                    self.assertEqual("kiro" in {c.args[1] for c in needs.call_args_list}, pin == "kiro")
+                    if pin == "kiro":
+                        probe.assert_called_once()
+                    else:
+                        probe.assert_not_called()
 
 
 if __name__ == "__main__":
