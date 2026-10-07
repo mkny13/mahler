@@ -130,6 +130,28 @@ class TestPracticesAudit(unittest.TestCase):
         self.write("package.json", json.dumps({"scripts": {"build": "next build"}}))
         self.assertEqual(self.results()["ci-tests"].state, "gap")
 
+    def test_pytest_parallel_workers_are_test_execution(self):
+        for command in ("pytest -n auto", "python3 -m pytest -n 2"):
+            with self.subTest(command=command):
+                self.assertTrue(audit._is_test(command))
+                self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                    "python3 -m unittest discover -s tests", command))
+                finding = self.results()["ci-tests"]
+                self.assertEqual(finding.state, "pass")
+                self.assertIn(f".github/workflows/ci.yml:8 job=test run: {command}",
+                              finding.evidence)
+
+    def test_pytest_non_execution_options_are_not_test_evidence(self):
+        for option in ("--help", "-h", "--version", "--collect-only", "--dry-run"):
+            for runner in ("pytest", "python3 -m pytest"):
+                command = f"{runner} -n auto {option}"
+                with self.subTest(command=command):
+                    self.assertFalse(audit._is_test(command))
+                    self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+                        "python3 -m unittest discover -s tests", command))
+                    self.assertEqual(self.results()["ci-tests"].state, "gap")
+        self.assertFalse(audit._is_test("go test -n ./..."))
+
     def test_named_test_workflow_and_echo_do_not_prove_tests(self):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
             "python3 -m unittest discover -s tests", "echo pytest"))

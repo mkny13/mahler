@@ -163,7 +163,11 @@ def _is_test(command):
     w = _words(command)
     if not w:
         return False
-    if any(x in w for x in ("--help", "-h", "--version", "--collect-only", "--dry-run", "-n")):
+    if any(x in w for x in ("--help", "-h", "--version", "--collect-only", "--dry-run")):
+        return False
+    # pytest-xdist uses -n for workers, unlike dry-run flags in other runners.
+    pytest = w[0] == "pytest" or w[:3] == ["python", "-m", "pytest"]
+    if "-n" in w and not pytest:
         return False
     return bool(
         w[0] in ("pytest", "nosetests", "jest", "vitest", "mocha")
