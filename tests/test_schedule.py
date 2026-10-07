@@ -1063,6 +1063,7 @@ class ScheduleHoldTests(unittest.TestCase):
                 with ExitStack() as stack:
                     for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
                                  "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                                 "practices_audit.queue",
                                  "ship", "digest.maybe_send", "janitor.maybe_run"):
                         stack.enter_context(mock.patch("mahler.scheduler." + name))
                     stack.enter_context(mock.patch("mahler.scheduler.schedule", side_effect=lambda c, p:

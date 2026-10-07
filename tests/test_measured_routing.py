@@ -220,6 +220,7 @@ class MeasuredRoutingTests(unittest.TestCase):
             stack.enter_context(patch.object(scheduler, "_project_ok", return_value=True))
             for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
                          "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                         "practices_audit.queue",
                          "janitor.maybe_run", "outbox.drain"):
                 stack.enter_context(patch("mahler.scheduler." + name))
             for name in ("schedule", "ship", "digest.maybe_send"):

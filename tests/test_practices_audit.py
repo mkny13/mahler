@@ -4,11 +4,14 @@ import shlex
 import subprocess
 import tempfile
 import unittest
+from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mahler import config, practices_audit as audit
+from mahler import config, practices_audit as audit, scheduler, ship
 from mahler.gh import GH, GHError
+from mahler.ledger import Ledger, iso
 
 
 GUIDANCE = """# Instructions
@@ -58,7 +61,7 @@ class FakeGH:
 
     def issue_by_marker(self, marker):
         self.calls.append(("lookup", marker))
-        if self.lookup_error:
+        if self.lookup_error and ":report:" not in marker:
             raise GHError("incomplete listing")
         return next((url for url, issue in self.issues.items() if marker in issue["body"]), None)
 
@@ -93,6 +96,9 @@ class TestPracticesAudit(unittest.TestCase):
         self.pol = {"name": "demo", "repo": "owner/demo", "path": self.temp.name,
                     "enabled": True, "verify": "python3 -m unittest discover -s tests"}
         self.gh = FakeGH("owner/demo")
+        self.now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
         self.write("AGENTS.md", GUIDANCE)
         self.write("CLAUDE.md", GUIDANCE)
         self.write(".github/workflows/ci.yml", WORKFLOW)
@@ -117,12 +123,28 @@ class TestPracticesAudit(unittest.TestCase):
         return {"defaults": {}, "projects": {"demo": self.pol},
                 "practices_audit": {"project": "demo"}}
 
+    def context(self, dry_run=False):
+        ctx = scheduler.Ctx(self.cfg(), self.led, dry_run=dry_run)
+        ctx._gh["owner/demo"] = self.gh
+        return ctx
+
     def test_six_pass_outcomes_and_citations(self):
         findings = self.results()
         self.assertEqual({check: "pass" for check in config.PRACTICES_AUDIT_CHECKS},
                          {check: f.state for check, f in findings.items()})
         self.assertIn("ci.yml:8", str(findings["ci-tests"].evidence))
         self.assertIn("heuristics do not prove absence", findings["tracked-secrets"].reason)
+
+    def test_report_evidence_is_bounded_with_omission_count(self):
+        finding = audit.Finding("ci-tests", "unknown", "review semantics",
+                                tuple(f"citation-{i}-" + "x" * 400 for i in range(300)))
+        result = audit.ProjectAudit("demo", "owner/demo", (finding,) * 6)
+        body = audit._report((result,), {}, [], [])
+        self.assertLess(len(body), 10_000)
+        self.assertIn("298 additional evidence entries omitted", body)
+        detail = audit._details(finding)
+        self.assertLess(len(detail), 50_000)
+        self.assertIn("260 additional evidence entries omitted", detail)
 
     def test_build_only_is_not_test_coverage(self):
         self.write(".github/workflows/ci.yml", WORKFLOW.replace(
@@ -320,7 +342,7 @@ class TestPracticesAudit(unittest.TestCase):
         first = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
         proposal = first.proposals["demo/agent-instructions"]
         self.assertIn(first.report_url, self.gh.issues[proposal]["body"])
-        self.assertEqual(self.gh.calls[1], ("create", "Cross-project practices audit"))
+        self.assertEqual(self.gh.calls[2], ("create", audit.TITLE))
         for issue in self.gh.issues.values():
             self.assertTrue(set(["custom", "type:chore", "size:m", "p2"]) <= set(issue["labels"]))
         self.assertIn("pass:practices-audit", self.gh.issues[first.report_url]["labels"])
@@ -374,13 +396,178 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertTrue(other.issues)
         self.assertIn("retry required", self.gh.issues[filing.report_url]["body"])
 
+    def test_scan_failure_is_unknown_and_does_not_stop_next_project(self):
+        cfg = self.cfg()
+        other = {**self.pol, "name": "other", "repo": "owner/other"}
+        cfg["projects"]["other"] = other
+        calls = []
+
+        def scan_project(pol, _gh):
+            calls.append(pol["name"])
+            if pol["name"] == "demo":
+                raise GHError("metadata unavailable")
+            return audit.ProjectAudit("other", "owner/other", tuple(
+                audit.Finding(check, "pass", "ok", ("fixture",))
+                for check in config.PRACTICES_AUDIT_CHECKS))
+
+        with patch.object(audit, "scan_project", side_effect=scan_project):
+            results = audit.scan(cfg, lambda _: self.gh)
+        self.assertEqual(calls, ["demo", "other"])
+        self.assertEqual(
+            {finding.state for finding in results[0].findings}, {"unknown"})
+        self.assertEqual({finding.state for finding in results[1].findings}, {"pass"})
+
+    def test_due_filing_resets_checkpoint_and_passes_tick_gate(self):
+        ctx = self.context()
+        audit.queue(ctx, [self.pol])
+        self.assertIn("demo", ctx.passes_filed)
+        self.assertIn("queuing practices-audit", ctx.lines[0])
+        checkpoint = self.led.maintenance_checkpoint("demo", config.PRACTICES_AUDIT_PASS)
+        self.assertEqual(checkpoint["last_filed_at"], iso(self.now))
+        self.assertEqual(checkpoint["merged_since"], 0)
+        self.assertFalse(self.led.maintenance_due(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            policy=config.practices_audit_policy(ctx.cfg)))
+        self.assertIn("<!-- mahler:practices-audit:report:", self.gh.issues[
+            "https://github.com/owner/demo/issues/1"]["body"])
+
+    def test_report_marker_recovers_created_report_without_saved_url(self):
+        result = audit.scan_project(self.pol, self.gh)
+        marker = "<!-- mahler:practices-audit:report:retry -->"
+        first = audit.file_audit(self.cfg(), (result,), lambda _: self.gh,
+                                 report_marker=marker)
+        second = audit.file_audit(self.cfg(), (result,), lambda _: self.gh,
+                                  report_marker=marker)
+        self.assertEqual(second.report_url, first.report_url)
+        self.assertEqual(len(self.gh.issues), 1)
+
+    def test_dry_run_names_due_audit_without_writes_or_checkpoint_changes(self):
+        ctx = self.context(dry_run=True)
+        before = self.led.maintenance_checkpoint("demo", config.PRACTICES_AUDIT_PASS)
+        audit.queue(ctx, [self.pol])
+        self.assertTrue(any("practices-audit" in line for line in ctx.lines))
+        self.assertEqual(ctx.passes_filed, {"demo"})
+        self.assertFalse(self.gh.calls)
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS), before)
+        self.assertIsNone(self.led.get_kv(audit.REPORT_MARKER_KEY))
+
+    def test_cadence_volume_and_cooldown_gates(self):
+        ctx = self.context()
+        self.led.set_maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            last_filed_at=self.now - timedelta(days=1), merged_since=0)
+        with patch.object(audit, "scan") as scan:
+            audit.queue(ctx, [self.pol])
+            scan.assert_not_called()
+
+        self.led.set_maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            last_filed_at=self.now - timedelta(days=3), merged_since=20)
+        with patch.object(audit, "scan") as scan:
+            audit.queue(ctx, [self.pol])
+            scan.assert_not_called()
+        self.assertTrue(self.led.maintenance_due(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            policy=config.practices_audit_policy(ctx.cfg)))
+
+        self.led.set_maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            last_filed_at=self.now - timedelta(days=15), merged_since=20)
+        with patch.object(audit, "scan", return_value=()) as scan, \
+                patch.object(audit, "file_audit",
+                             return_value=audit.Filing("report", {}, ())):
+            audit.queue(ctx, [self.pol])
+            scan.assert_called_once()
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"], iso(self.now))
+
+    def test_elapsed_cadence_queues_without_merged_volume(self):
+        ctx = self.context()
+        self.led.set_maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS,
+            last_filed_at=self.now - timedelta(days=31), merged_since=0)
+        with patch.object(audit, "scan", return_value=()) as scan, \
+                patch.object(audit, "file_audit",
+                             return_value=audit.Filing("report", {}, ())):
+            audit.queue(ctx, [self.pol])
+        scan.assert_called_once()
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"], iso(self.now))
+
+    def test_disabled_or_unmanaged_anchor_skips(self):
+        ctx = self.context()
+        ctx.cfg["practices_audit"]["enabled"] = False
+        audit.queue(ctx, [self.pol])
+        self.assertFalse(self.gh.calls)
+        ctx.cfg["practices_audit"]["enabled"] = True
+        ctx.cfg["projects"]["demo"]["enabled"] = False
+        audit.queue(ctx, [self.pol])
+        self.assertFalse(self.gh.calls)
+        self.assertIsNone(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"])
+
+    def test_open_pass_blocks_audit_filing(self):
+        self.led.upsert_item("demo", 99, labels=json.dumps(["pass:security"]),
+                             state="ready")
+        audit.queue(self.context(), [self.pol])
+        self.assertFalse(self.gh.calls)
+        self.assertIsNone(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"])
+
+    def test_partial_filing_persists_identity_then_resets_after_retry(self):
+        ctx = self.context()
+        partial = audit.Filing("https://github.com/owner/demo/issues/10", {}, ("retry",))
+        with patch.object(audit, "scan", return_value=()), \
+                patch.object(audit, "file_audit", return_value=partial):
+            audit.queue(ctx, [self.pol])
+        self.assertEqual(self.led.get_kv(audit.REPORT_URL_KEY), partial.report_url)
+        marker = self.led.get_kv(audit.REPORT_MARKER_KEY)
+        self.assertTrue(marker)
+        self.assertIsNone(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"])
+
+        ctx = self.context()
+        with patch.object(audit, "scan", return_value=()), \
+                patch.object(audit, "file_audit",
+                             return_value=audit.Filing(partial.report_url, {}, ())) as retry:
+            audit.queue(ctx, [self.pol])
+        retry.assert_called_once_with(
+            ctx.cfg, (), ctx.gh, report_url=partial.report_url,
+            report_marker=marker)
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["last_filed_at"], iso(self.now))
+        self.assertEqual(self.led.get_kv(audit.REPORT_URL_KEY), "")
+        self.assertEqual(self.led.get_kv(audit.REPORT_MARKER_KEY), "")
+
+    def test_shipped_volume_counts_only_enabled_anchor(self):
+        cfg = self.cfg()
+        cfg["projects"]["other"] = {**self.pol, "name": "other", "repo": "owner/other"}
+        self.led.upsert_item("demo", 1, title="anchor")
+        self.led.upsert_item("other", 2, title="other")
+        ctx = MagicMock(cfg=cfg, led=self.led)
+        ctx.gh.return_value.comment = MagicMock()
+        with patch.object(ship, "record_uat_if_needed", return_value=""), \
+                patch.object(ship, "record_release_item_if_needed"), \
+                patch.object(ship, "mirror_shipped"):
+            ship._shipped(ctx, "demo", 1, 10, self.led.item("demo", 1),
+                          {"state": "MERGED"})
+            ship._shipped(ctx, "other", 2, 11, self.led.item("other", 2),
+                          {"state": "MERGED"})
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "demo", config.PRACTICES_AUDIT_PASS)["merged_since"], 1)
+        self.assertEqual(self.led.maintenance_checkpoint(
+            "other", config.PRACTICES_AUDIT_PASS)["merged_since"], 0)
+
     def test_report_failure_prevents_proposals(self):
         self.gh.create_error = True
         self.write("CLAUDE.md", "Diverged\n")
         with self.assertRaises(GHError):
             audit.file_audit(self.cfg(), (audit.scan_project(self.pol, self.gh),), lambda _: self.gh)
         self.assertFalse(self.gh.comments)
-        self.assertFalse(any(call[0] == "lookup" for call in self.gh.calls))
+        lookups = [call for call in self.gh.calls if call[0] == "lookup"]
+        self.assertEqual(len(lookups), 1)
+        self.assertIn(":report:", lookups[0][1])
 
     def test_report_update_failure_retains_identity_for_retry(self):
         self.write("CLAUDE.md", "Diverged\n")
@@ -426,6 +613,72 @@ class TestPracticesAudit(unittest.TestCase):
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("state='pass'", result.stdout)
+
+
+class SchedulerOrderingTests(unittest.TestCase):
+    def test_practices_audit_follows_platform_audit_before_scheduling(self):
+        now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        led = Ledger(":memory:", clock=lambda: now)
+        self.addCleanup(led.close)
+        ctx = scheduler.Ctx({"defaults": {}, "projects": {}}, led, dry_run=True)
+        order = []
+        with patch("mahler.scheduler.config.enabled_projects", return_value=[]), \
+                patch("mahler.scheduler.outbox.drain"), \
+                patch("mahler.scheduler.compute_burst"), \
+                patch("mahler.scheduler.watchdog"), \
+                patch("mahler.scheduler.failures.backfill"), \
+                patch("mahler.scheduler.expire"), \
+                patch("mahler.scheduler.close_finished_parents"), \
+                patch("mahler.scheduler.refresh_usage"), \
+                patch("mahler.scheduler.resets.spend_banked"), \
+                patch("mahler.scheduler.relearn_due", return_value=False), \
+                patch("mahler.scheduler.warmup_pass"), \
+                patch("mahler.scheduler.queue_maintenance",
+                      side_effect=lambda *_: order.append("maintenance")), \
+                patch("mahler.scheduler.platform_audit.queue",
+                      side_effect=lambda *_: order.append("platform")), \
+                patch("mahler.scheduler.practices_audit.queue",
+                      side_effect=lambda *_: order.append("practices")), \
+                patch("mahler.scheduler.schedule",
+                      side_effect=lambda *_: order.append("schedule")), \
+                patch("mahler.scheduler.ship"), \
+                patch("mahler.scheduler.mirror_labels"), \
+                patch("mahler.scheduler.backup.run_ledger"), \
+                patch("mahler.scheduler.digest.maybe_send"), \
+                patch("mahler.scheduler.janitor.maybe_run"):
+            scheduler.tick(ctx)
+        self.assertLess(order.index("maintenance"), order.index("platform"))
+        self.assertLess(order.index("platform"), order.index("practices"))
+        self.assertLess(order.index("practices"), order.index("schedule"))
+
+    def test_scan_exception_is_reported_without_aborting_tick(self):
+        now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        led = Ledger(":memory:", clock=lambda: now)
+        self.addCleanup(led.close)
+        cfg = {"defaults": {}, "projects": {},
+               "practices_audit": {"project": "mahler"}}
+        ctx = scheduler.Ctx(cfg, led)
+        project = {"name": "mahler", "repo": "mkny13/mahler", "path": "/tmp"}
+        with ExitStack() as stack:
+            stack.enter_context(patch(
+                "mahler.scheduler.config.enabled_projects", return_value=[project]))
+            stack.enter_context(patch("mahler.scheduler._project_ok", return_value=True))
+            for target in (
+                    "outbox.drain", "compute_burst", "watchdog", "sync",
+                    "failures.backfill", "expire", "close_finished_parents",
+                    "refresh_usage", "resets.spend_banked", "warmup_pass",
+                    "queue_maintenance", "platform_audit.queue", "ship",
+                    "mirror_labels", "backup.run_ledger", "digest.maybe_send",
+                    "janitor.maybe_run"):
+                stack.enter_context(patch(f"mahler.scheduler.{target}"))
+            stack.enter_context(patch("mahler.scheduler.relearn_due", return_value=False))
+            stack.enter_context(patch(
+                "mahler.practices_audit.scan", side_effect=RuntimeError("scan failure")))
+            schedule = stack.enter_context(patch("mahler.scheduler.schedule"))
+            scheduler.tick(ctx)
+        schedule.assert_called_once_with(ctx, [project])
+        self.assertTrue(any("practices-audit pass failed — scan failure" in line
+                            for line in ctx.lines))
 
 
 class TestPracticesGHReads(unittest.TestCase):

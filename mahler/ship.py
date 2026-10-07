@@ -1462,6 +1462,9 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     audit_pol = config.platform_audit_policy(ctx.cfg)
     if audit_pol["enabled"] and project == audit_pol["project"]:
         led.increment_maintenance_merged(project, config.PLATFORM_AUDIT_PASS)
+    practices_pol = config.practices_audit_policy(ctx.cfg)
+    if practices_pol["enabled"] and project == practices_pol["project"]:
+        led.increment_maintenance_merged(project, config.PRACTICES_AUDIT_PASS)
     led.release(project, n, holder=CONDUCTOR)
     mirror_shipped(ctx, project, led.item(project, n))
 
