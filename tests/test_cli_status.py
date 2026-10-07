@@ -38,6 +38,27 @@ class StatusCliTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_missing_scope_counts_text_json_and_project_filter(self):
+        self.cfg["projects"].update({
+            "a": {"enabled": True, "scope": "label", "scope_label": "custom"},
+            "b": {"enabled": True, "scope": "label", "scope_label": "mahler"}})
+        self.led.set_kv("missing_scope:a", "2")
+        self.led.set_kv("missing_scope:b", "3")
+        self.led.set_kv("missing_scope:proj", "99")
+        for project, expected in ((None, {"a": 2, "b": 3}), ("a", {"a": 2})):
+            for as_json in (False, True):
+                with self.subTest(project=project, json=as_json):
+                    buf = io.StringIO()
+                    with patch("sys.stdout", buf):
+                        cli.cmd_status(SimpleNamespace(json=as_json, project=project),
+                                       self.cfg, self.led)
+                    if as_json:
+                        self.assertEqual(json.loads(buf.getvalue())["missing_scope_counts"], expected)
+                    else:
+                        self.assertIn("a: 2 (custom)", buf.getvalue())
+                        self.assertEqual("b: 3 (mahler)" in buf.getvalue(), project is None)
+                        self.assertNotIn("proj: 99", buf.getvalue())
+
     def test_status_item_urls_with_sqlite_row(self):
         # Insert an item without PR
         self.led.upsert_item("proj", 1, title="Test Issue 1", state="ready")

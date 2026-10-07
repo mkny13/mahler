@@ -13,6 +13,7 @@ from datetime import timedelta
 
 from . import notify
 from .ledger import iso
+from .sync import missing_scope_counts
 
 KV_KEY = "last_digest_date"
 DEFAULT_HOUR = 8
@@ -61,7 +62,8 @@ def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
 
     weekly = weekly_models(led, cfg, scorecard_rows) if (local_now or now.astimezone()).weekday() == 0 else None
     return {"models": weekly, "shipped": shipped, "waiting": waiting, "handoffs": handoffs,
-            "usage": usage, "since": since, "now": now}
+            "usage": usage, "since": since, "now": now,
+            "missing_scope_counts": missing_scope_counts(led, cfg)}
 
 
 # ---------- the text builder (pure; unit-tested) ----------
@@ -105,6 +107,14 @@ def format_digest(data):
             lines.append(f"- {_label(h['project'], h['number'])} — {h['detail']}")
     else:
         lines.append("- none")
+
+    missing = data.get("missing_scope_counts", {})
+    if missing:
+        total = sum(count for count in missing.values() if count is not None)
+        unknown = sum(count is None for count in missing.values())
+        suffix = f"; {unknown} projects not yet synced" if unknown else ""
+        lines.append(f"Open issues older than 24h missing scope label: {total} "
+                     f"(latest full sync{suffix})")
 
     lines.append("Quota:")
     for u in data["usage"]:

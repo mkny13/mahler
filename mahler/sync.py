@@ -19,6 +19,20 @@ from .ship import (_shipped, mirror_shipped, pr_merged, record_uat_if_needed,
 from .watchdog import request_stop
 
 
+def missing_scope_counts(led, cfg, project=None):
+    """Latest full-sync counts; None means this project has not been measured."""
+    counts = {}
+    for name in cfg.get("projects", {}):
+        pol = config.project_policy(cfg, name)
+        if (project and name != project) or pol.get("scope") != "label":
+            continue
+        if not pol.get("enabled", True):
+            continue
+        value = led.get_kv(f"missing_scope:{name}")
+        counts[name] = int(value) if value is not None else None
+    return counts
+
+
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
@@ -43,6 +57,12 @@ def sync(ctx, project):
 
     if pol.get("scope") == "label":
         scope_label = pol["scope_label"]
+        cutoff = led.now() - timedelta(hours=24)
+        count = sum(1 for iss in issues
+                    if scope_label not in label_names(iss)
+                    and parse(iss["createdAt"]) < cutoff)
+        if not ctx.dry_run:
+            led.set_kv(f"missing_scope:{project}", str(count))
         in_scope_nums = {
             iss["number"] for iss in issues
             if scope_label in label_names(iss)
