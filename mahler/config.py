@@ -114,6 +114,17 @@ DEFAULT_MEASURE = {
     "explore_share": {"build": 0.15, "fix": 0.15, "sort": 0.15, "plan": 0.05},
 }
 
+DEFAULT_POST_MERGE = {
+    "enabled": False,
+    "deploy_strategy": "watch",
+    "deploy_command": "",
+    "live_strategy": "command",
+    "live_command": "",
+    "environment": "staging",
+    "timeout_seconds": 1800,
+    "auto_revert": False,
+}
+
 DEFAULTS = {
     "routing_mode": "list",
     "measure": DEFAULT_MEASURE,
@@ -159,6 +170,7 @@ DEFAULTS = {
         "screenshot_environment": "",
         "screenshot_preview_non_personal": False,
         "screenshot_timeout_seconds": 45,
+        "post_merge": DEFAULT_POST_MERGE,
         "smoke": "",                  # optional post-release command; schema only (D11)
         "gui_idle_minutes": 15,        # D40: GUI-driving work needs this much keyboard/mouse idle
         "gui_window": "00:00-06:00",   # D40: preferred window for --scheduled GUI jobs; "" disables
@@ -677,12 +689,50 @@ def load(path=None):
             user = tomllib.load(fh)
     cfg = resolve_platforms(_merge(DEFAULTS, user))
     validate_accounts(cfg)
+    validate_post_merge(cfg)
     validate_github_app(cfg)
     validate_gui_gate(cfg)
     configure_warmup(cfg, user)
     for name, project in cfg["projects"].items():
         project["maintenance"] = maintenance_policy(cfg, name)
     return cfg
+
+
+def validate_post_merge(cfg):
+    """Validate effective operator contracts, including nested project overlays."""
+    policies = [("defaults", cfg["defaults"])] + [
+        (f"project {name!r}", project_policy(cfg, name)) for name in cfg["projects"]]
+    for scope, policy in policies:
+        pm = policy.get("post_merge")
+        prefix = f"{scope}: post_merge"
+        if not isinstance(pm, dict):
+            raise ValueError(f"{prefix} must be a table")
+        unknown = set(pm) - set(DEFAULT_POST_MERGE)
+        if unknown:
+            raise ValueError(f"{prefix}: unknown fields {', '.join(sorted(unknown))}")
+        for key in ("enabled", "auto_revert"):
+            if type(pm[key]) is not bool:
+                raise ValueError(f"{prefix}.{key} must be a boolean")
+        for key, choices in (("deploy_strategy", ("command", "watch")),
+                             ("live_strategy", ("command",))):
+            if pm[key] not in choices:
+                raise ValueError(f"{prefix}.{key} must be {' or '.join(choices)}")
+        for key in ("deploy_command", "live_command", "environment"):
+            if not isinstance(pm[key], str):
+                raise ValueError(f"{prefix}.{key} must be a string")
+        timeout = pm["timeout_seconds"]
+        if type(timeout) is not int or not 1 <= timeout <= 86400:
+            raise ValueError(f"{prefix}.timeout_seconds must be an integer from 1 to 86400")
+        if pm["enabled"]:
+            for key in ("environment", "live_command"):
+                if not pm[key].strip():
+                    raise ValueError(f"{prefix}.{key} is required when enabled")
+            if pm["deploy_strategy"] == "command" and not pm["deploy_command"].strip():
+                raise ValueError(f"{prefix}.deploy_command is required for command strategy")
+            if pm["deploy_strategy"] == "watch" and pm["deploy_command"].strip():
+                raise ValueError(f"{prefix}.deploy_command must be empty for watch strategy")
+            if not isinstance(policy.get("smoke", ""), str):
+                raise ValueError(f"{prefix}: smoke must be a command string")
 
 
 def github_app_settings(cfg, pol):
