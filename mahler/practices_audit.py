@@ -1106,8 +1106,7 @@ def _protection(gh, jobs, ci_unknown):
 
 _EXEMPTION_KW = re.compile(
     r"\b(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
-    r"scanner|accepted(?:[ -]limitation)?|known[ -]limitation|decision[s]?|decided|"
-    r"practice[s]?|audit[s]?|mkny13/mahler|mahler#\d+|rationale)\b",
+    r"waiv(?:e|er|ers|ed)?|(?:scanner|accepted|known)[ -](?:limitation|bug|issue|risk|gap)[s]?)\b",
     re.I
 )
 
@@ -1185,7 +1184,6 @@ def _scan_markdown_exemptions(tree, rel_path):
 
     lines = text.splitlines()
     current_heading = ""
-    is_decision_file = "decision" in rel_path.lower()
 
     for idx, raw_line in enumerate(lines, 1):
         line = raw_line.strip()
@@ -1204,7 +1202,7 @@ def _scan_markdown_exemptions(tree, rel_path):
 
             if matches_check or matches_heading_check:
                 context_text = f"{current_heading} {line}"
-                if is_decision_file or _EXEMPTION_KW.search(context_text):
+                if _EXEMPTION_KW.search(context_text):
                     rationale = line.lstrip("-*# \t")
                     colon_idx = rationale.find(":")
                     if colon_idx != -1 and colon_idx < len(check) + 5:
