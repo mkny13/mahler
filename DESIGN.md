@@ -735,7 +735,7 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   - `deploy_strategy = "watch"` observes an externally triggered deployment;
     `deploy_command` must be empty. `"command"` requires a nonempty deploy
     command that starts deployment of the exact merge. `live_strategy =
-    "command"` is the only supported live strategy and requires `live_command`
+    "command"` requires `live_command`
     when enabled; it observes readiness and deployed identity in either mode.
     These are command contracts, not provider adapters. Unknown fields/strategies,
     wrong types and incomplete enabled policies fail configuration loading with
@@ -818,8 +818,34 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     A later tick posts `Smoke: PASS report=<immutable-reference>`; retries look
     up that exact attributed comment before posting. D10's existing comment
     acceptance performs completion. The runner never changes an item to done.
-    Provider detection, failure remediation, console display and live contract
-    activation remain separate work (#746–#748).
+    Failure remediation, console display and live contract activation remain
+    separate work (#747–#748).
+- **Exact built-in live detectors (mahler#746).** `live_strategy = "mahler"`
+  or `"github"` requires an empty `live_command`; command mode remains available.
+  The Mahler detector requires the full merge SHA in both `launch_ok` and the
+  installed `$MAHLER_HOME/app` HEAD, then exit zero from that installation's
+  `python -m mahler version`, rechecking the marker afterwards. `known_good`
+  alone proves nothing. It returns `mahler:<full-sha>` as the artifact reference.
+  - GitHub uses the project's existing repository/account client and an exact
+    configured environment. `prod`/`production` names and production-marked
+    deployments are refused; this strategy has no production override. It reads
+    up to 100 environment deployments without filtering away newer SHAs, requires
+    exactly one record for the merge SHA and requires that record to be newest.
+    A full page is inconclusive. It then reads up to 100 statuses, requiring one
+    unambiguous newest status with success in the same environment. Failed,
+    inactive, pending, malformed, stale and ambiguous observations cannot pass.
+    The public HTTPS `environment_url` must exist and contain no credentials,
+    query string or fragment; only that URL is passed to smoke, never payloads.
+    The API contract is GitHub's [deployments API](https://docs.github.com/en/rest/deployments/deployments)
+    and [deployment statuses API](https://docs.github.com/en/rest/deployments/statuses).
+  - Each observation uses at most two calls, each capped at five seconds and
+    half the remaining deadline. It does not wait for a deployment to finish.
+    Lookup/auth/parse errors, unavailable identities and unhealthy version commands
+    remain pending for the next tick until the original durable timeout. Other
+    projects continue. Successful observations persist the exact live SHA and
+    artifact reference before smoke; they are never completion evidence alone.
+    Fixture examples are in `config.example.toml`; tests use temporary homes and
+    synthetic provider records. Live activation/proof remains deferred.
 - **Optional screenshot contract (mahler#723).** Runtime policy comes only from
   operator `[projects.<name>]`, inheriting `[defaults]`; no new project.toml
   loader. The repo may describe `screenshot` beside `preview` in its descriptive

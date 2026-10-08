@@ -75,6 +75,19 @@ class SmokePolicyTests(unittest.TestCase):
         for timeout in (1, 86400):
             self.load({"projects": {"app": {"post_merge": {"timeout_seconds": timeout}}}})
 
+    def test_post_merge_builtin_strategies(self):
+        for strategy in ("mahler", "github"):
+            cfg = self.load({"projects": {"app": {"post_merge": {
+                "enabled": True, "live_strategy": strategy}}}})
+            self.assertEqual(config.project_policy(cfg, "app")["post_merge"]["live_strategy"], strategy)
+            with self.assertRaisesRegex(ValueError, "live_command"):
+                self.load({"projects": {"app": {"post_merge": {
+                    "live_strategy": strategy, "live_command": "./live"}}}})
+        for environment in ("prod", "Production"):
+            with self.assertRaisesRegex(ValueError, "non-production"):
+                self.load({"projects": {"app": {"post_merge": {
+                    "live_strategy": "github", "environment": environment}}}})
+
     def test_post_merge_invalid_contracts_are_project_scoped(self):
         cases = [("enabled", "yes"), ("auto_revert", 1),
                  ("deploy_strategy", "provider"), ("live_strategy", "none"),

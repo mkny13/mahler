@@ -123,6 +123,28 @@ def _poll(ctx, row, directory):
                 evidence_ref=str(report))
 
 
+def _observe_live(ctx, row, policy):
+    from . import config, launch_health
+    from .ledger import parse
+    remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
+    timeout = min(5, max(.01, remaining / 2))
+    try:
+        if policy["post_merge"]["live_strategy"] == "mahler":
+            artifact = launch_health.exact_live(
+                row["merge_sha"], timeout=timeout,
+                env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
+        else:
+            artifact = ctx.gh(row["project"]).exact_preview(
+                row["merge_sha"], row["target"], timeout=timeout)
+    except Exception:
+        # Provider/auth/JSON failures are retryable, without retaining payloads.
+        return
+    if ctx.led.now() >= parse(row["deadline_at"]):
+        _fail(ctx, row, "timeout")
+    elif artifact:
+        _change(ctx, row, phase="smoke", live_sha=row["merge_sha"], artifact_ref=artifact)
+
+
 def _advance(ctx, row, policy):
     from .ledger import parse
     if ctx.led.now() >= parse(row["deadline_at"]):
@@ -130,6 +152,9 @@ def _advance(ctx, row, policy):
         return
     if row["phase"] == "deploy" and policy["post_merge"]["deploy_strategy"] == "watch":
         _change(ctx, row, phase="live")
+        return
+    if row["phase"] == "live" and policy["post_merge"]["live_strategy"] != "command":
+        _observe_live(ctx, row, policy)
         return
     command = (policy.get("smoke") if row["phase"] == "smoke"
                else policy["post_merge"][row["phase"] + "_command"])

@@ -39,6 +39,37 @@ class LaunchHealthTests(unittest.TestCase):
         for project, number in [('a', 1), ('a', 2), ('a', 3), ('b', 1)]:
             item(self.led, project, number)
 
+    def test_exact_live_requires_launch_marker_installed_head_and_health(self):
+        sha = "a" * 40
+        home = Path(self.tmp.name)
+        (home / "known_good").write_text(sha)
+        with patch.object(launch_health.subprocess, "run") as run:
+            self.assertIsNone(launch_health.exact_live(sha))
+            run.assert_not_called()
+            (home / "launch_ok").write_text("b" * 40)
+            self.assertIsNone(launch_health.exact_live(sha))
+            run.assert_not_called()
+            (home / "launch_ok").write_text(sha)
+            for head, health, expected in (("b" * 40, 0, None), (sha, 1, None),
+                                           (sha, 0, "mahler:" + sha)):
+                run.side_effect = [Mock(returncode=0, stdout=head), Mock(returncode=health)]
+                self.assertEqual(launch_health.exact_live(sha, timeout=2,
+                    env={"PYTHONPATH": "/task", "LOGIN": "work"}), expected)
+            self.assertEqual(run.call_args.args[0], [sys.executable, "-m", "mahler", "version"])
+            self.assertEqual(run.call_args.kwargs["cwd"], home / "app")
+            self.assertEqual(run.call_args.kwargs["timeout"], 2)
+            self.assertNotIn("PYTHONPATH", run.call_args.kwargs["env"])
+            self.assertEqual(run.call_args.kwargs["env"]["MAHLER_HOME"], str(home))
+            run.side_effect = subprocess.TimeoutExpired("version", 2)
+            self.assertIsNone(launch_health.exact_live(sha))
+            def changed(*args, **kwargs):
+                if args[0][0] == "git":
+                    return Mock(returncode=0, stdout=sha)
+                (home / "launch_ok").write_text("b" * 40)
+                return Mock(returncode=0)
+            run.side_effect = changed
+            self.assertIsNone(launch_health.exact_live(sha))
+
     def start(self, project='a', number=1):
         return tick.start(self.ctx, project, self.led.item(project, number), 'build', 'claude')
 

@@ -33,7 +33,7 @@ gui_window = "00:00-06:00"
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
 
-# Optional post-merge contract; schema/storage only, no execution yet.
+# Optional post-merge deploy/live/smoke execution contract.
 # Defaults and per-project tables merge recursively. Keep disabled until configured.
 # Uses projects.<name>.smoke above/below; never define post_merge.smoke.
 # Commands and references must contain no credentials; use account-owned secret stores.
@@ -41,13 +41,37 @@ topic = ""                      # optional: set an unguessable topic and subscri
 # enabled = false
 # deploy_strategy = "watch"       # watch external deploy, or command to initiate it
 # deploy_command = ""             # required for command, empty for watch
-# live_strategy = "command"       # only supported live strategy
-# live_command = "./scripts/check-live.sh"  # required when enabled; exact SHA/tag
+# live_strategy = "command"       # command, mahler, or github
+# live_command = "./scripts/check-live.sh"  # required for command; empty for built-ins
 # environment = "staging"         # preview/staging default; production is explicit
 # timeout_seconds = 1800          # integer 1–86400, total durable check deadline
 # auto_revert = false             # opt-in policy only; this does not execute a revert
-# The future runner must supply the exact merge SHA, tag and artifact context.
+# The runner supplies the exact merge SHA, tag and artifact context.
 # Empty smoke cannot produce PASS; D11 defines identity, reports and D10 handoff.
+
+# Fixture-backed built-in examples (tests/test_post_merge.py, test_gh.py,
+# test_launch_health.py). Activation and real deployment proof are separate.
+# [projects.mahler.post_merge]
+# enabled = false
+# deploy_strategy = "watch"
+# live_strategy = "mahler"
+# live_command = ""
+# environment = "daemon"          # read-only installed version health check
+# timeout_seconds = 1800
+# Requires MAHLER_HOME/launch_ok and MAHLER_HOME/app HEAD == the merge SHA.
+# Runs installed python -m mahler version, then the project's smoke command.
+#
+# [projects.preview_web.post_merge]
+# enabled = false
+# deploy_strategy = "watch"
+# live_strategy = "github"
+# live_command = ""
+# environment = "Preview"         # exact GitHub environment; never prod/production
+# timeout_seconds = 1800
+# Uses projects.preview_web.repo and gh_account. The latest deployment must be
+# the sole record for this SHA, non-production, with a latest success status.
+# Its HTTPS environment_url (no credentials/query/fragment) becomes
+# MAHLER_ARTIFACT_REF for the existing project smoke command.
 
 [projects.example]
 enabled = false                 # opt in only after repo, path and verify are correct

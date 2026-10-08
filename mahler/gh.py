@@ -404,6 +404,58 @@ class GH:
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
                                    "headRefOid,baseRefName,mergeCommit,title,mergedAt"))
 
+    def exact_preview(self, sha, environment, *, timeout=5):
+        """Two bounded lookups; incomplete/ambiguous observations never prove live.
+
+        Do not filter the first lookup by SHA: that hides a newer deployment.
+        A full page is inconclusive rather than silently ignoring more records.
+        """
+        from urllib.parse import urlencode, urlsplit
+
+        if (not re.fullmatch(r"[0-9a-f]{40}", sha) or not environment
+                or environment.strip().casefold() in ("prod", "production")):
+            return None
+        query = urlencode({"environment": environment, "per_page": 100})
+        deployments = json.loads(self._gh(
+            "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
+        if not isinstance(deployments, list) or not deployments or len(deployments) >= 100:
+            return None
+        if any(not isinstance(d, dict) or type(d.get("id")) is not int
+               or d.get("environment") != environment for d in deployments):
+            return None
+        matches = [d for d in deployments if d.get("sha") == sha]
+        if len(matches) != 1:
+            return None
+        deployment = matches[0]
+        if (deployment["id"] != max(d["id"] for d in deployments)
+                or deployment.get("production_environment") is not False):
+            return None
+        repository_url = f"https://api.github.com/repos/{self.repo}"
+        if deployment.get("repository_url", repository_url) != repository_url:
+            return None
+        statuses = json.loads(self._gh(
+            "api", "--method", "GET",
+            f"repos/{self.repo}/deployments/{deployment['id']}/statuses?per_page=100",
+            timeout=timeout))
+        if not isinstance(statuses, list) or not statuses or len(statuses) >= 100:
+            return None
+        if any(not isinstance(s, dict) or type(s.get("id")) is not int for s in statuses):
+            return None
+        latest_id = max(s["id"] for s in statuses)
+        latest = [s for s in statuses if s["id"] == latest_id]
+        if len(latest) != 1:
+            return None
+        status = latest[0]
+        if status.get("state") != "success" or status.get("environment", environment) != environment:
+            return None
+        url = status.get("environment_url") or ""
+        parsed = urlsplit(url)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment
+                or any(ord(c) <= 32 for c in url) or "\\" in url or "@" in parsed.netloc):
+            return None
+        return url
+
     def screenshot_preview(self, sha, environment):
         """Bounded exact-head preview discovery; never infer a production target."""
         from urllib.parse import urlencode, urlsplit
