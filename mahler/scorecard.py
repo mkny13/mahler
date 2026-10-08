@@ -23,6 +23,8 @@ def _json(value, default):
 
 
 def _exclusion(run):
+    if run['role'] == 'design':
+        return 'design run'
     outcome = run['outcome'] or ''
     if outcome.startswith('launch failed'):
         return 'launch failed'

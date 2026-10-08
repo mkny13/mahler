@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, no_change, platforms, review, router, runner
+from . import config, failures, no_change, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -681,7 +681,8 @@ def finalize(ctx, run):
         outcome = f"{verb} {rest}"
     if log.get("credit_exhausted"):
         _record_credit_failure(ctx, run, log)
-    elif reason is None and (log.get("ok") is True or verb in {"DONE", "READY", "SPLIT", "REVIEW-PASS"}):
+    elif reason is None and (log.get("ok") is True or verb in {
+            "DONE", "READY", "SPLIT", "REVIEW-PASS", "DESIGNED"}):
         _record_credit_recovery(ctx, run["platform"])
     ctx.say(f"{project}#{n}: run {run['id']} ({run['role']} on {run['platform']}) ended — "
             f"{outcome}{f' [{reason}]' if reason else ''}")
@@ -709,11 +710,11 @@ def finalize(ctx, run):
     # transaction below must recheck the epoch after these calls return.
     _mark_stale(ending)
     if not ending.stale and not ending.closed:
-        if (run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL")
+        if run["role"] == "design" and verb == "DESIGNED":
+            prepared_design = _prepare_design(ending)
+        elif (run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL")
                 and (item["pr"] or not no_change.read(led, project, n))):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
-        elif run["role"] == "design":
-            prepared_design = _prepare_design(ending)
         elif run["role"] not in ("sort", "review", "design"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed:
@@ -744,7 +745,7 @@ def finalize(ctx, run):
                 else:
                     REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
             elif run["role"] == "design":
-                _design_result(ending, prepared_design)
+                _design_result(ending, prepared_design if verb == "DESIGNED" else None)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
     ending.notify()

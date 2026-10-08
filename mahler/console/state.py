@@ -41,7 +41,8 @@ ATTENTION_KINDS = ("launch_failed", "backup_failed")
 
 STATE_ORDER = ("needs_you", "failed", "working", "verifying", "ready", "inbox",
                "parked", "parent")
-ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI", "design": "designing"}
+ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI",
+              "review": "reviewing", "design": "designing"}
 NUMBER_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
                 "Eight", "Nine")
 DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"
@@ -690,7 +691,8 @@ def _runs(cfg, led, now):
         held = bool(lease and lease["holder"] == f"run:{r['id']}")
         wt = (r["worktree"] or "").rstrip("/").rsplit("/", 1)[-1]
         label = f"trying {_platform_label(cfg, r['platform'])}" if r["explore"] else r["platform"]
-        meta = [label, f"run {r['id']}"]
+        role_label = ROLE_WORDS.get(r["role"], f"{r['role']} run")
+        meta = [role_label, label, f"run {r['id']}"]
         if wt:
             meta.append(f"worktree {wt}")
         meta += [f"epoch {r['epoch']}", "lease held" if held else "no lease"]
@@ -703,7 +705,7 @@ def _runs(cfg, led, now):
         out.append({
             "id": r["id"], "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": (item["title"] if item else None) or _ref(project, n),
-            "platform": r["platform"], "role": r["role"],
+            "platform": r["platform"], "role": r["role"], "role_label": role_label,
             "mins": mins, "est": est,
             "progress": min(100, round(mins / est * 100)),
             "tone": "warn" if over else "acc",

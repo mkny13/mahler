@@ -147,6 +147,18 @@ def build(ctx, project, item, role, platform, prep, context=None):
     failed review's findings, rather than red CI (D11)."""
     pol = ctx.policy(project)
     base = pol.get("base", "main")
+    if role == "design":
+        pr = row_get(item, "pr")
+        if not pr or not prep.get("head_sha") or not context:
+            raise ValueError("a design run requires a PR, resolved head, and review history")
+        return render(
+            "design", number=item["number"], title=item["title"], repo=pol["repo"],
+            worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
+            platform=platform, pr=pr, head=prep["head_sha"],
+            handoff=context, rules=(
+                "\nProject rules and review context:\n" + pol["rules"].strip() + "\n")
+            if pol.get("rules") else "")
+
     if role == "fix":
         handoff = (ci_handoff(ctx, project, item, prep["branch"]) if context is None
                    else pr_ci_toolchain_handoff(ctx, project, item) + "\n" + context)

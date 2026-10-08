@@ -194,6 +194,18 @@ class RunTests(unittest.TestCase):
         self.assertEqual(r["tone"], "warn")
         self.assertEqual(r["progress"], 100)
 
+    def test_active_design_role_is_visible_in_console_copy(self):
+        rid = self.led.create_run(project="mahler", number=41, role="design",
+                                  platform="claude-opus", epoch=3, est_mins=20)
+        self.led.claim("mahler", 41, f"run:{rid}", "auto", 10,
+                       platform="claude-opus", run_id=rid)
+        snapshot = state.build(self.cfg, self.led)
+        run = snapshot["runs"][0]
+        self.assertEqual(run["role"], "design")
+        self.assertEqual(run["role_label"], "designing")
+        rendered = page.document(snapshot)
+        self.assertIn("claude-opus · designing", rendered)
+
 
 class NeedsTests(unittest.TestCase):
     def test_question_comes_from_the_needs_you_transition(self):
