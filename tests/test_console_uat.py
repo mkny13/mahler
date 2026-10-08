@@ -73,3 +73,112 @@ class ShipmentHistoryTests(unittest.TestCase):
         self.assertNotIn("bug filed", html)
         with self.assertRaises(actions.ActionError):
             actions.run(self.cfg, self.led, "uat_fail", dict(project="mahler", number=1, note="again"))
+
+
+def capture_fixture(led, base, number=1, count=1, head="a" * 40, pr=None):
+    """A local-only capture and a confirmed squash merge, with no public links."""
+    import json
+    from pathlib import Path
+    from mahler import screenshots
+    pr = pr or number + 100
+    merge = "f" * 40
+    led.upsert_item("mahler", number, state="shipped")
+    led.add_uat("mahler", number, pr, merge, f"Change {number}", "")
+    source = Path(base) / f"source-{number}-{head}"
+    source.mkdir()
+    entries = [{"route": f'/page-{i}<aside>', "file": f"{i}.png"} for i in range(count)]
+    for entry in entries:
+        (source / entry["file"]).write_bytes(screenshots.PNG_SIGNATURE + b"fixture")
+    (source / "manifest.json").write_text(json.dumps(
+        {"version": 1, "sha": head, "screenshots": entries}))
+    directory = screenshots.store(source, "mahler", pr, head)
+    led.set_kv(f"screenshot:mahler:{pr}:{head}",
+               json.dumps({"pr": pr, "sha": head, "state": "success"}))
+    led.set_kv(f"screenshot-final:mahler#{number}",
+               json.dumps({"pr": pr, "head": head, "merge_sha": merge}))
+    return directory
+
+
+class ShipmentScreenshotTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from unittest.mock import patch
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch("mahler.config.STATE", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.led = make_led()
+        self.addCleanup(self.led.close)
+        self.cfg = make_cfg(projects={"mahler": {"screenshot": "/operator/capture"}})
+
+    def snapshot(self):
+        return state.build(self.cfg, self.led)
+
+    def test_one_and_ten_private_images_on_both_layouts(self):
+        capture_fixture(self.led, self.tmp.name)
+        capture_fixture(self.led, self.tmp.name, number=2, count=10, head="b" * 40)
+        snapshot = self.snapshot()
+        rows = {r["number"]: r for r in snapshot["uat"]}
+        self.assertEqual(len(rows[1]["screenshots"]), 1)
+        self.assertEqual(len(rows[2]["screenshots"]), 10)
+        self.assertEqual(rows[1]["screenshot_head"], "a" * 40)
+        self.assertEqual(rows[1]["sha"], "f" * 40)
+        self.assertTrue(set(x["id"] for x in rows[1]["screenshots"]).isdisjoint(
+            x["id"] for x in rows[2]["screenshots"]))
+        for html in (page._d_test(snapshot), page._p_triage(snapshot)):
+            self.assertEqual(html.count('<img '), 11)
+            self.assertEqual(html.count('class="screenshot-gallery"'), 2)
+            self.assertEqual(html.count('>Fail</button>'), 2)
+            self.assertIn('alt="Screenshot of /page-0&lt;aside&gt;"', html)
+            self.assertIn('loading="lazy"', html)
+            self.assertNotIn('>Pass<', html)
+            for row in rows.values():
+                for image in row["screenshots"]:
+                    self.assertIn(f'href="{image["url"]}"', html)
+                    self.assertIn(f'src="{image["url"]}"', html)
+                    self.assertTrue(image["url"].startswith("/screenshots/"))
+
+    def test_disabled_no_capture_and_wrong_attribution_have_no_gallery(self):
+        import json
+        capture_fixture(self.led, self.tmp.name)
+        key = "screenshot-final:mahler#1"
+        original = json.loads(self.led.get_kv(key))
+        cases = [{}, dict(original, pr=999), dict(original, head="b" * 40),
+                 dict(original, merge_sha="c" * 40)]
+        for final in cases:
+            self.led.set_kv(key, json.dumps(final))
+            for html in (page._d_test(self.snapshot()), page._p_triage(self.snapshot())):
+                self.assertNotIn('screenshot-gallery', html)
+                self.assertNotIn('<img ', html)
+        self.led.set_kv(key, json.dumps(original))
+        self.cfg = make_cfg()
+        self.assertNotIn("screenshots", self.snapshot()["uat"][0])
+
+    def test_failed_missing_and_malformed_artifacts_are_unavailable(self):
+        import json
+        directory = capture_fixture(self.led, self.tmp.name)
+        image = self.snapshot()["uat"][0]["screenshots"][0]
+        (directory / "0.png").unlink()
+        self.assertIsNone(state.screenshot_image(self.cfg, self.led, image["id"]))
+        for html in (page._d_test(self.snapshot()), page._p_triage(self.snapshot())):
+            self.assertIn("Screenshots unavailable.", html)
+            self.assertNotIn('<img ', html)
+            self.assertIn('>Fail</button>', html)
+        self.led.set_kv("screenshot:mahler:101:" + "a" * 40,
+                       json.dumps({"pr": 101, "sha": "a" * 40, "state": "failed"}))
+        self.assertEqual(self.snapshot()["uat"][0]["screenshot_status"],
+                         "Screenshots unavailable.")
+        self.led.set_kv("screenshot-final:mahler#1", "[]")
+        self.assertNotIn("screenshots", self.snapshot()["uat"][0])
+
+    def test_superseded_head_never_appears(self):
+        import json
+        capture_fixture(self.led, self.tmp.name)
+        capture_fixture(self.led, self.tmp.name, head="b" * 40)
+        row = self.snapshot()["uat"][0]
+        self.assertEqual(row["screenshot_head"], "b" * 40)
+        from mahler.screenshots import artifact_id
+        old = artifact_id("mahler", 101, "a" * 40, 0)
+        self.assertIsNone(state.screenshot_image(self.cfg, self.led, old))
+        self.assertNotEqual(row["screenshots"][0]["id"], old)

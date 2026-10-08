@@ -107,12 +107,12 @@ class _Handler(BaseHTTPRequestHandler):
         if keyword.lower() == "content-length" and self.command != "HEAD":
             self._response_size = int(value)
 
-    def _send(self, status, body, ctype):
+    def _send(self, status, body, ctype, cache_control="no-store"):
         data = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
@@ -149,6 +149,16 @@ class _Handler(BaseHTTPRequestHandler):
             status_obj = logtail.live_status(run_dict)
             
             self._json(200, {"lines": lines, "status": status_obj})
+            return
+
+        if path.startswith("/screenshots/"):
+            with self.lock:
+                data = state.screenshot_image(
+                    self.load_cfg(), self.led, path[len("/screenshots/"):])
+            self._send(200 if data is not None else 404,
+                       data if data is not None else "Screenshot unavailable.",
+                       "image/png" if data is not None else "text/plain",
+                       cache_control="private, no-store")
             return
 
         if path.startswith("/attachments/"):

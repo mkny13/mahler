@@ -793,3 +793,55 @@ class TestReleasesFeed(_Served):
         # Ensure no internal fields leaked
         self.assertNotIn("merge_sha", rel["sections"]["features"][0])
         self.assertNotIn("labels", rel["sections"]["features"][0])
+
+
+class TestScreenshotImages(_Served):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch("mahler.config.STATE", self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.cfg["projects"]["mahler"]["screenshot"] = "/operator/capture"
+        from test_console_uat import capture_fixture
+        self.directory = capture_fixture(self.led, self.tmp.name)
+        from mahler.screenshots import artifact_id
+        self.identifier = artifact_id("mahler", 101, "a" * 40, 0)
+        self.path = "/screenshots/" + self.identifier
+
+    def test_png_private_headers_and_missing_file(self):
+        from mahler.screenshots import PNG_SIGNATURE
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{self.path}") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), PNG_SIGNATURE + b"fixture")
+            self.assertEqual(response.headers["Content-Type"], "image/png")
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        (self.directory / "0.png").unlink()
+        self.assertEqual(self.request(self.path)[0], 404)
+
+    def test_unknown_and_traversal_identifiers(self):
+        for identifier in ("0" * 64, "../config.toml", "%2e%2e%2fconfig.toml",
+                           self.identifier + "/0.png", self.identifier + "%00"):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(self.request("/screenshots/" + identifier)[0], 404)
+
+    def test_symlink_file_and_directory_escape_and_invalid_png(self):
+        from pathlib import Path
+        outside = Path(self.tmp.name) / "outside.png"
+        outside.write_bytes(b"secret")
+        image = self.directory / "0.png"
+        image.unlink()
+        image.symlink_to(outside)
+        self.assertEqual(self.request(self.path)[0], 404)
+        image.unlink()
+        image.write_bytes(b"not a PNG")
+        self.assertEqual(self.request(self.path)[0], 404)
+        original = self.directory.rename(self.directory.with_name("saved"))
+        self.directory.symlink_to(original, target_is_directory=True)
+        self.assertEqual(self.request(self.path)[0], 404)
+
+    def test_disabled_project_cannot_serve_existing_capture(self):
+        self.cfg["projects"]["mahler"]["enabled"] = False
+        self.assertEqual(self.request(self.path)[0], 404)

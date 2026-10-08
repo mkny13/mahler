@@ -475,11 +475,27 @@ def _uat_link(u):
     return f'<span class="lnk">{_a(u["link"], u["link_label"] + " ↗")}</span>'
 
 
+
+def _uat_gallery(u):
+    images = u.get("screenshots", [])
+    if not images:
+        status = u.get("screenshot_status")
+        return f'<span class="check">{e(status)}</span>' if status else ""
+    links = "".join(
+        f'<a href="{e(image["url"])}" target="_blank" rel="noopener">'
+        f'<img src="{e(image["url"])}" alt="{e("Screenshot of " + image["route"])}" '
+        f'width="240" height="160" loading="lazy" decoding="async">'
+        f'<span>{e(image["route"])} · Full size ↗</span></a>'
+        for image in images)
+    return (f'<div class="screenshot-gallery">{links}</div>'
+            f'<span class="meta">Captured head {e(u["screenshot_head"][:12])}</span>')
+
+
 def _uat_left(u):
     hint = f'<span class="check">If you notice: {e(u["check"])}</span>' if u["check"] else ""
     return (f'<div class="body"><span class="t">{e(u["title"])}</span>'
             f'<span class="meta">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span>'
-            f'{hint}{_uat_link(u)}</div>')
+            f'{hint}{_uat_link(u)}{_uat_gallery(u)}</div>')
 
 
 def _uat_buttons(u):
