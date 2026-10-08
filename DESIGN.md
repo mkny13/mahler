@@ -1582,6 +1582,11 @@ crossed" rule, declared per project in `~/.mahler/config.toml`, not a loophole o
   project's App installation and shared token cache. Interactive claim and lease
   release remain ledger operations; the next daemon sync writes their state labels
   as the App. Compute routing and agent credentials remain governed by D25.
+  The global App installation is inherited only by the effective `personal`
+  GitHub account: explicit `gh_account`, otherwise the first declared account,
+  otherwise personal (owner decision, mahler#780/#811). Other accounts use their
+  own `gh` credentials unless the project explicitly sets
+  `github_app_installation_id`; that override takes precedence for any account.
   Without App configuration, the existing `gh_account` selection and human `gh auth`
   login remain the fallback. Invalid App configuration fails instead of silently
   switching to the human. Ordinary user-run `gh` commands and Git pushes are unchanged.

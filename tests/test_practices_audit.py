@@ -1648,3 +1648,63 @@ class TestPracticesGHReads(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FilingIdentityTests(unittest.TestCase):
+    def test_real_factory_separates_anchor_and_proposal_and_resumes(self):
+        import os
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["projects"] = {
+            "mahler": {"enabled": True, "repo": "personal/mahler", "path": "/fake"},
+            "work": {"enabled": True, "repo": "work/app", "path": "/fake",
+                     "gh_account": "work"}}
+        cfg["accounts"] = {"work": {"env": {"GH_CONFIG_DIR": "/fake/work-gh"}}}
+        cfg["github_app"] = {"app_id": 123, "installation_id": 456,
+                             "private_key_path": "/fake/key.pem"}
+        result = audit.ProjectAudit("work", "work/app", (
+            audit.Finding("agent-instructions", "gap", "Missing guidance", ("AGENTS.md",)),))
+        issues = {"personal/mahler": [], "work/app": []}
+        operations = []
+
+        def run(argv, **kwargs):
+            if argv[1] == "api":
+                repo = argv[-1].split("repos/", 1)[1].split("/issues", 1)[0]
+                output = json.dumps([issues[repo]])
+                operation = "lookup"
+            else:
+                repo = argv[argv.index("-R") + 1]
+                operation = argv[2]
+                output = ""
+                if argv[1:3] == ["issue", "create"]:
+                    output = f"https://github.com/{repo}/issues/{len(issues[repo]) + 1}"
+                    issues[repo].append({"html_url": output, "body": kwargs["input"],
+                                         "state": "closed"})
+            env = kwargs["env"]
+            if repo == "work/app":
+                self.assertEqual(env["GH_CONFIG_DIR"], "/fake/work-gh")
+                for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"):
+                    self.assertNotIn(key, env)
+            else:
+                self.assertEqual(env["GH_TOKEN"], "fake-app-token")
+            operations.append((repo, operation))
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(config, "STATE", tmp), \
+                patch.dict(os.environ, {key: "daemon" for key in config.GH_IDENTITY_VARS}), \
+                patch("mahler.github_app.Installation", autospec=True) as app, \
+                patch("mahler.gh.subprocess.run", side_effect=run):
+            app.return_value.token.return_value = "fake-app-token"
+            first = audit.file_audit(cfg, (result,), scheduler.Ctx(cfg, led).gh)
+            self.assertEqual(first.errors, ())
+            self.assertEqual(app.call_count, 1)  # personal only
+            second = audit.file_audit(cfg, (result,), scheduler.Ctx(cfg, led).gh,
+                                      report_url=first.report_url)
+            self.assertEqual(second.errors, ())
+            self.assertEqual(second.proposals, first.proposals)
+            self.assertEqual(app.call_count, 2)  # fresh personal client only
+        self.assertEqual([len(rows) for rows in issues.values()], [1, 1])
+        self.assertIn(("personal/mahler", "lookup"), operations)
+        self.assertIn(("work/app", "lookup"), operations)
+        self.assertIn(("work/app", "comment"), operations)
