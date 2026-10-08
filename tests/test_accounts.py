@@ -617,6 +617,35 @@ class LaunchAndGitHubTests(unittest.TestCase):
             GH("acme/app", env={"GH_CONFIG_DIR": "/w"}).issue_state(3)
         self.assertEqual(run.call_args.kwargs["env"], {"GH_CONFIG_DIR": "/w"})
 
+    def test_global_app_never_overrides_work_subprocess_identity(self):
+        cfg = work_cfg()
+        cfg["github_app"] = {"app_id": 123, "installation_id": 456,
+                             "private_key_path": "/fake/key.pem"}
+        cfg["accounts"]["work"]["env"]["GH_CONFIG_DIR"] = "/fake/work-gh"
+        inherited = {key: "daemon-identity" for key in config.GH_IDENTITY_VARS}
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(config, "STATE", tmp), \
+                mock.patch.dict(os.environ, inherited), \
+                mock.patch("mahler.github_app.Installation", autospec=True) as app, \
+                mock.patch("mahler.gh.subprocess.run", return_value=
+                           subprocess.CompletedProcess([], 0, '{"state":"OPEN"}', "")) as run:
+            led = Ledger(":memory:")
+            self.addCleanup(led.close)
+            ctx = scheduler.Ctx(cfg, led)
+            ctx.gh("acme").issue_state(1)
+            app.assert_not_called()
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["GH_CONFIG_DIR"], "/fake/work-gh")
+            for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"):
+                self.assertNotIn(key, env)
+            app.return_value.token.return_value = "fake-personal-app"
+            ctx.gh("home").issue_state(1)
+            app.assert_called_once()
+            app.return_value.token.assert_called_once()
+            env = run.call_args.kwargs["env"]
+            self.assertEqual(env["GH_TOKEN"], "fake-personal-app")
+            self.assertNotIn("GITHUB_TOKEN", env)
+
     def test_scheduler_app_selection_does_not_change_agent_identity(self):
         cfg = work_cfg()
         cfg["github_app"] = {"app_id": 123, "installation_id": 456,

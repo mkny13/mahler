@@ -759,6 +759,10 @@ def github_app_settings(cfg, pol):
                          "with the path to the private key file")
     if not isinstance(key_path, str) or not key_path.strip() or "\x00" in key_path:
         raise ValueError("github_app requires private_key_path")
+    # An installation override is explicit opt-in. The global installation
+    # belongs to the personal identity, never to an unrelated work login.
+    if "github_app_installation_id" not in pol and gh_account_of(pol) != DEFAULT_ACCOUNT:
+        return None
     return str(app["app_id"]), str(installation), key_path
 
 

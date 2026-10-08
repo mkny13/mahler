@@ -137,6 +137,30 @@ class ConfigTests(unittest.TestCase):
         config.validate_github_app(cfg)
         self.assertIsNone(config.github_app_settings({}, {}))
 
+    def test_effective_account_inheritance_matrix(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/fake/key.pem"}}
+        for pol, installation in (
+            ({}, "456"),
+            ({"gh_account": "personal", "account": "work"}, "456"),
+            ({"gh_account": "work"}, None),
+            ({"account": "work"}, None),
+            ({"accounts": ["work", "personal"]}, None),
+            ({"accounts": ["personal", "work"]}, "456"),
+            ({"gh_account": "work", "github_app_installation_id": 789}, "789"),
+        ):
+            with self.subTest(pol=pol):
+                result = config.github_app_settings(cfg, pol)
+                self.assertEqual(result[1] if result else None, installation)
+        for invalid in (None, 0, -1, True, "bad"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                config.github_app_settings(cfg, {"gh_account": "work",
+                                                "github_app_installation_id": invalid})
+        cfg["projects"] = {"work": {"gh_account": "work"}}
+        cfg["github_app"]["app_id"] = "bad"
+        with self.assertRaises(ValueError):
+            config.validate_github_app(cfg)
+
     def test_incomplete_or_invalid_configuration_fails_without_values(self):
         for app in ({"app_id": 123}, {"private_key_path": "/secret/key.pem"},
                     {"app_id": True}, {"app_id": "../secret"}, "secret", None):

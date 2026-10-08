@@ -92,3 +92,102 @@ class MissingScopeTests(unittest.TestCase):
         with self.assertRaises(GHError):
             sync.sync(self.ctx, "x")
         self.assertEqual(self.led.get_kv("missing_scope:x"), "7")
+
+
+class RepositoryAccessAlertTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from contextlib import ExitStack
+        from pathlib import Path
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        tmp = self.stack.enter_context(tempfile.TemporaryDirectory())
+        self.path = str(Path(tmp) / "ledger.db")
+        self.led = Ledger(self.path)
+        self.addCleanup(lambda: self.led.close())
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"] = {
+            name: {"enabled": True, "repo": f"org/{name}", "path": tmp}
+            for name in ("work", "home")}
+        self.clients = {name: mock.Mock() for name in self.cfg["projects"]}
+        for name, client in self.clients.items():
+            client.issues_changed.return_value = (False, "etag")
+            self.led.set_kv(f"depends_format:{name}", "4")
+            self.led.set_kv(f"release_baseline_checked:{name}", "1")
+        # Exercise the real tick sync boundary and real sync (including 304),
+        # isolating every unrelated pass from machine state and external services.
+        for target in (
+            "outbox.drain", "compute_burst", "watchdog", "failures.backfill",
+            "expire", "close_finished_parents", "refresh_usage", "resets.spend_banked",
+            "relearn", "warmup_pass", "queue_maintenance", "platform_audit.queue",
+            "practices_audit.queue", "schedule", "record_holds", "ship",
+            "capacity.Observer.observe_paused", "capacity.Observer.flush",
+            "mirror_labels", "backup.run_ledger", "digest.maybe_send", "janitor.maybe_run",
+        ):
+            self.stack.enter_context(mock.patch("mahler.scheduler." + target))
+        self.stack.enter_context(mock.patch("mahler.scheduler.relearn_due", return_value=False))
+        self.stack.enter_context(mock.patch("mahler.scheduler._project_ok", return_value=True))
+        self.send = self.stack.enter_context(mock.patch("mahler.scheduler.notify.send"))
+
+    def tick(self, work=None, home=None, dry_run=False):
+        from mahler.gh import GHError
+        for name, error in (("work", work), ("home", home)):
+            self.clients[name].issues_changed.side_effect = GHError(error) if error else None
+        ctx = scheduler.Ctx(self.cfg, self.led, dry_run=dry_run)
+        ctx._gh = {f"org/{name}": client for name, client in self.clients.items()}
+        scheduler.tick(ctx)
+        return ctx
+
+    def test_outage_restart_recovery_and_project_isolation(self):
+        self.tick("HTTP 404: Not Found")
+        self.send.assert_not_called()
+        self.tick("GraphQL: Could not resolve to a Repository named work")
+        self.assertEqual(self.send.call_count, 1)
+        args, kwargs = self.send.call_args
+        self.assertIn("work", args[1])
+        self.assertIn("org/work", args[2])
+        self.assertIsNone(kwargs["click"])
+        self.assertNotIn("GraphQL", args[2])
+        self.tick("http 404", "NOT FOUND")
+        self.assertEqual(self.send.call_count, 1)
+        self.led.close()
+        self.led = Ledger(self.path)
+        self.tick("HTTP 404", "not found")
+        self.assertEqual(self.send.call_count, 2)  # home's independent second failure
+        self.assertEqual(self.clients["home"].issues_changed.call_count, 4)
+        self.tick("timeout")
+        self.tick("HTTP 404")
+        self.tick("HTTP 404")
+        self.assertEqual(self.send.call_count, 2)  # unrelated error does not re-arm
+        ctx = self.tick()
+        self.assertTrue(any("work: GitHub unchanged (304)" in line for line in ctx.lines))
+        self.assertFalse(self.led.get_kv("sync_access:work"))
+        self.tick("HTTP 404")
+        self.assertEqual(self.send.call_count, 2)
+        self.tick("HTTP 404")
+        self.assertEqual(self.send.call_count, 3)
+
+    def test_nonmatching_breaks_streak_and_dry_run_is_read_only(self):
+        for error in ("timeout", "issue 404 failed", "HTTP 4040", "HTTP 500"):
+            self.tick("HTTP 404")
+            self.tick(error)
+            self.assertEqual(json.loads(self.led.get_kv("sync_access:work"))["failures"], 0)
+        self.send.assert_not_called()
+        previous = self.led.get_kv("sync_access:work")
+        for _ in range(3):
+            self.tick("HTTP 404", "HTTP 404", dry_run=True)
+        self.assertEqual(self.led.get_kv("sync_access:work"), previous)
+        self.assertIsNone(self.led.get_kv("sync_access:home"))
+        self.send.assert_not_called()
+        self.tick("HTTP 404")
+        self.send.assert_not_called()
+        self.tick("HTTP 404")
+        self.send.assert_called_once()
+
+    def test_notification_exception_does_not_stop_sync_or_repeat(self):
+        self.send.side_effect = RuntimeError("delivery unavailable")
+        self.tick("HTTP 404")
+        self.tick("HTTP 404")
+        self.tick("HTTP 404")
+        self.send.assert_called_once()
+        self.assertEqual(self.clients["home"].issues_changed.call_count, 3)
