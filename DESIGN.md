@@ -846,6 +846,16 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     artifact reference before smoke; they are never completion evidence alone.
     Fixture examples are in `config.example.toml`; tests use temporary homes and
     synthetic provider records. Live activation/proof remains deferred.
+- **Post-merge failure remediation and guarded auto-revert (mahler#747).**
+  A terminal check FAIL creates one linked `type:bug`, `p1` issue naming the
+  source issue, PR, merge SHA, phase and failure code, with a bounded sanitized
+  log tail (up to 30 lines and 16 KiB, redacted). Retries recover an already-created
+  bug via durable ledger KV records and exact GitHub issue markers. One ntfy
+  notification is sent, keyed durably to the check and linking to the filed bug
+  without secret-bearing output. If `auto_revert = true` is opted in, the shared
+  conductor revert operation prepares a squash revert branch on the project's
+  shipping base with PR, CI and merge safeguards preserved; `auto_revert = false`
+  (the default) never creates a revert.
 - **Optional screenshot contract (mahler#723).** Runtime policy comes only from
   operator `[projects.<name>]`, inheriting `[defaults]`; no new project.toml
   loader. The repo may describe `screenshot` beside `preview` in its descriptive

@@ -36,6 +36,8 @@ class PostMergeTests(unittest.TestCase):
         self.ctx = scheduler.Ctx(self.cfg, self.led)
         self.gh = mock.Mock()
         self.gh.issue_comments.return_value = []
+        self.gh.create_issue.return_value = "https://github.com/x/y/issues/99"
+        self.gh.issue_by_marker.return_value = None
         self.ctx.gh = mock.Mock(return_value=self.gh)
         self.projects = [{"name": "p"}]
         self.register()
@@ -299,6 +301,105 @@ class PostMergeTests(unittest.TestCase):
             (directory / "intent.json").write_text(json.dumps({"identity": post_merge._identity(self.row()), "token": "x"}))
             post_merge._worker(directory, .05, command)
             self.assertEqual(json.loads((directory / "result.json").read_text())["error"], "command_failed")
+
+    def test_post_merge_failure_files_linked_p1_bug_and_sends_ping(self):
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.add_uat("p", 1, 42, SHA, "test-feature", "needs nothing")
+        self.cfg["ntfy"] = {"topic": "post-merge-alerts"}
+        self.cfg["projects"]["p"]["post_merge"]["live_command"] = "exit 1"
+        self.phase()  # deploy -> live
+        self.gh.create_issue.reset_mock()
+        with mock.patch("mahler.notify.send") as notify_mock:
+            notify_mock.return_value = True
+            self.phase()  # live runs and fails (exit 1)
+            self.assertEqual(self.row()["status"], "FAIL")
+            self.gh.create_issue.assert_called_once()
+            args, _ = self.gh.create_issue.call_args
+            title, body, labels = args
+            self.assertIn("Post-merge live fail: p#1", title)
+            self.assertEqual(labels, ["type:bug", "p1"])
+            self.assertIn("#1", body)
+            self.assertIn("PR #42", body)
+            self.assertIn(SHA, body)
+            self.assertIn("live", body)
+            self.assertIn("<!-- mahler:post-merge-failure", body)
+            notify_mock.assert_called_once()
+            ping_args, ping_kwargs = notify_mock.call_args
+            self.assertIn("Post-merge live failed: p#1", ping_args[1])
+            self.assertIn("https://github.com/x/y/issues/99", ping_kwargs.get("click", ""))
+            self.assertEqual(self.led.item("p", 99)["state"], "inbox")
+            self.assertEqual(self.led.item("p", 99)["priority"], 1)
+
+    def test_crash_recovery_after_each_point_does_not_duplicate_bug_or_ping(self):
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.add_uat("p", 1, 42, SHA, "test-feature", "needs nothing")
+        self.cfg["ntfy"] = {"topic": "post-merge-alerts"}
+        self.led.update_post_merge_check("p", 1, SHA, expected_phase="deploy",
+                                         phase="deploy", status="FAIL", failure_code="command_failed")
+        # Crash Point 1: Issue exists on GitHub via marker, but kv record lost
+        self.gh.issue_by_marker.return_value = "https://github.com/x/y/issues/105"
+        with mock.patch("mahler.notify.send") as notify_mock:
+            notify_mock.return_value = True
+            self.tick()
+            self.gh.create_issue.assert_not_called()
+            self.assertEqual(self.led.get_kv(f"post-merge-bug:p:1:{SHA}"), "105")
+            self.assertEqual(notify_mock.call_count, 1)
+
+        # Crash Point 2: Bug in kv, ping sent (in kv), retry tick does not duplicate either
+        self.gh.create_issue.reset_mock()
+        with mock.patch("mahler.notify.send") as notify_mock:
+            self.tick()
+            self.gh.create_issue.assert_not_called()
+            notify_mock.assert_not_called()
+
+    def test_auto_revert_opt_in_prepares_revert_and_recovers_without_duplicates(self):
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.add_uat("p", 1, 42, SHA, "test-feature", "needs nothing")
+        self.led.update_post_merge_check("p", 1, SHA, expected_phase="deploy",
+                                         phase="deploy", status="FAIL", failure_code="timeout")
+        # auto_revert = false: never calls revert
+        self.cfg["projects"]["p"]["post_merge"]["auto_revert"] = False
+        with mock.patch("mahler.console.revert.revert") as revert_mock:
+            self.tick()
+            revert_mock.assert_not_called()
+
+        # auto_revert = true: calls revert with recover=True
+        self.led.con.execute("DELETE FROM kv WHERE key LIKE 'post-merge-remediation%'")
+        self.cfg["projects"]["p"]["post_merge"]["auto_revert"] = True
+        with mock.patch("mahler.console.revert.revert") as revert_mock:
+            revert_mock.return_value = ("done", "200")
+            self.tick()
+            revert_mock.assert_called_once_with(self.ctx, "p", 1, 42, source="post_merge", recover=True)
+
+        # Crash recovery on next tick: does not duplicate
+        with mock.patch("mahler.console.revert.revert") as revert_mock:
+            self.tick()
+            revert_mock.assert_not_called()
+
+    def test_credentials_and_personal_captures_redacted_in_issue_event_and_ping(self):
+        secret = "ghp_0123456789abcdefghijklmn"
+        url_secret = "postgres://bob:s3cret@db.example.com:5432/app"
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.add_uat("p", 1, 42, SHA, "test-feature", "needs nothing")
+        self.cfg["ntfy"] = {"topic": "alerts"}
+        self.led.update_post_merge_check("p", 1, SHA, expected_phase="deploy",
+                                         phase="deploy", status="FAIL", failure_code="command_failed")
+        from mahler import failures
+        with mock.patch("mahler.notify.send") as notify_mock:
+            notify_mock.return_value = True
+            failures.report_post_merge(self.ctx, "p", 1, SHA, "deploy", "command_failed",
+                                       output=f"Error leaking {secret} and {url_secret}")
+            self.gh.create_issue.assert_called_once()
+            _, body, _ = self.gh.create_issue.call_args[0]
+            self.assertNotIn(secret, body)
+            self.assertNotIn("s3cret", body)
+            self.assertIn("<redacted>", body)
+            ping_args = notify_mock.call_args[0]
+            self.assertNotIn(secret, ping_args[1])
+            self.assertNotIn(secret, ping_args[2])
+            events = self.led.q("SELECT * FROM events WHERE kind='post_merge_failed'")
+            self.assertEqual(len(events), 1)
+            self.assertNotIn(secret, events[0]["detail"])
 
 
 if __name__ == "__main__":

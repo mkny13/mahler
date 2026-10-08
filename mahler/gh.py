@@ -570,6 +570,20 @@ class GH:
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,mergeCommit,title,baseRefName,mergedAt"))
 
+    def pr_for_commit(self, sha):
+        """Find the pull request that merged a commit SHA."""
+        try:
+            out = self._gh("api", f"repos/{self.repo}/commits/{sha}/pulls")
+            prs = json.loads(out or "[]")
+            for pr in prs:
+                if pr.get("merged_at"):
+                    return pr.get("number")
+            if prs and prs[0].get("number"):
+                return prs[0]["number"]
+        except (GHError, json.JSONDecodeError, KeyError, IndexError):
+            pass
+        return None
+
     def base_in_head(self, path, base, head):
         """Fetch exact objects without changing working files; prove ancestry.
 
