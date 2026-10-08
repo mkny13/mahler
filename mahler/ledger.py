@@ -318,6 +318,9 @@ def iso(dt):
     return dt.astimezone(timezone.utc).isoformat() if dt else None
 
 
+QUIET_DAYS = 14   # a clean shipment completes this long after its merge (D10/D33)
+
+
 def parse(s):
     if not s:
         return None
@@ -595,6 +598,32 @@ class Ledger:
                         "source": evidence["source"]})
             return True
 
+    def complete_quiet(self, project, number, shipped_at):
+        """Complete a clean shipment 14 days after its merge: one transaction
+        for the evidence, uat row, event, state and label-mirror cursor.
+        The synthetic evidence is stamped at the merge's window end."""
+        end = parse(shipped_at) + timedelta(days=QUIET_DAYS)
+        return self.accept_evidence(project, number, dict(
+            source=f"quiet-period:{project}#{number}", author="mahler",
+            created_at=iso(end), kind="quiet",
+            body="quiet period, no defect reported"))
+
+    def reopen_shipment(self, project, number, reason):
+        """Reopen an early automated completion to ready/p1, once. The
+        completion evidence and uat row stay as audit history."""
+        with self._tx():
+            item = self.item(project, number)
+            if (item is None or item["state"] != "done"
+                    or self.q1("SELECT 1 FROM events WHERE kind='shipment_reopened' "
+                               "AND project=? AND number=?", (project, number))):
+                return False
+            self.con.execute("UPDATE items SET priority=1, mirror=NULL "
+                             "WHERE project=? AND number=?", (project, number))
+            self.set_state(project, number, "ready", f"adverse evidence: {reason}")
+            self.event("shipment_reopened", project, number, {"reason": reason})
+            self.set_kv(f"reopen_mirror:{project}:{number}", "pending")
+            return True
+
     def set_uat_verdict(self, project, number, verdict, bug=None, note=None):
         """Record pass or fail exactly once: a row that already has a verdict
         stays as it is, so a double-tap can't overwrite a recorded one."""
@@ -764,11 +793,11 @@ class Ledger:
     def q1(self, sql, args=()):
         return self.con.execute(sql, args).fetchone()
 
-    def event(self, kind, project=None, number=None, detail=None, passes=None):
+    def event(self, kind, project=None, number=None, detail=None, passes=None, at=None):
         selected_passes = passes
         self.con.execute(
             "INSERT INTO events (at, project, number, kind, detail) VALUES (?,?,?,?,?)",
-            (iso(self.now()), project, number, kind,
+            (at or iso(self.now()), project, number, kind,
              detail if isinstance(detail, str) or detail is None else json.dumps(detail)))
         if kind == "shipped" and project:
             self.record_shipped(project, MAINTENANCE_PASSES if selected_passes is None

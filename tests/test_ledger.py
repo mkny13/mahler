@@ -137,6 +137,11 @@ class LeaseTests(unittest.TestCase):
             finally:
                 led.close()
 
+    def test_event_can_preserve_observed_timestamp(self):
+        observed = "2026-09-01T11:59:00+00:00"
+        self.led.event("source_reopened", "p", 1, {}, at=observed)
+        self.assertEqual(self.led.q("SELECT at FROM events")[0]["at"], observed)
+
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
         with self.assertRaisesRegex(ValueError, "requires verification evidence"):
@@ -841,6 +846,33 @@ class StateTests(unittest.TestCase):
             with self.subTest(state=state), self.assertRaisesRegex(
                     ValueError, "invalid item state"):
                 led.upsert_item("p", 3, state=state)
+
+
+class QuietCompletionTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:", clock=lambda: datetime(2026, 9, 20, tzinfo=timezone.utc))
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("x", 1, state="shipped", mirror=None)
+
+    def test_complete_quiet_is_atomic_and_once(self):
+        merged = iso(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertTrue(self.led.complete_quiet("x", 1, merged))
+        self.assertFalse(self.led.complete_quiet("x", 1, merged))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["mirror"]), ("done", "mahler:shipped"))
+        ev = self.led.q("SELECT * FROM completion_evidence")
+        self.assertEqual([(e["kind"], e["created_at"][:10]) for e in ev], [("quiet", "2026-09-15")])
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+
+    def test_reopen_only_done_and_once(self):
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
+        self.assertTrue(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.set_state("x", 1, "done", "again")
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["priority"]), ("done", 1))
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
 
 
 class ClearUsageTests(unittest.TestCase):
