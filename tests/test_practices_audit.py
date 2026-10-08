@@ -1559,7 +1559,8 @@ class TestPracticesAudit(unittest.TestCase):
         self.write("DECISIONS.md", (
             "# Architectural Decisions\n\n"
             "### D39 — Cross-project practices audit: evidence and proposals only\n"
-            "We conduct automated checks including tracked-secrets, branch-protection, and ci-tests.\n"
+            "#### Known gaps\n"
+            "The tracked-secrets check does not inspect Git history.\n"
         ))
         findings = self.results()
         self.assertEqual(findings["tracked-secrets"].state, "gap")

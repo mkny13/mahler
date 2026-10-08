@@ -1106,7 +1106,7 @@ def _protection(gh, jobs, ci_unknown):
 
 _EXEMPTION_KW = re.compile(
     r"\b(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
-    r"waiv(?:e|er|ers|ed)?|(?:scanner|accepted|known)[ -](?:limitation|bug|issue|risk|gap)[s]?)\b",
+    r"waiv(?:e|er|ers|ed)?)\b",
     re.I
 )
 
