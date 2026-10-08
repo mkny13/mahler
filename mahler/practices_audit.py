@@ -462,6 +462,8 @@ def _workflow(tree, path):
     job_cond_cite = ""
     job_has_changed_cwd = bool(wf_cwd_cite)
     job_cwd_cite = wf_cwd_cite
+    job_has_continue_on_error = False
+    job_continue_cite = ""
     job_preceding_uncertain = False
     job_preceding_uncertain_cite = ""
     in_steps = False
@@ -483,6 +485,8 @@ def _workflow(tree, path):
             job_cond_cite = ""
             job_has_changed_cwd = bool(wf_cwd_cite)
             job_cwd_cite = wf_cwd_cite
+            job_has_continue_on_error = False
+            job_continue_cite = ""
             job_preceding_uncertain = False
             job_preceding_uncertain_cite = ""
             in_steps = False
@@ -511,6 +515,13 @@ def _workflow(tree, path):
             if cwd_match:
                 job_has_changed_cwd = True
                 job_cwd_cite = f"{path}:{i+1}: changed working directory"
+                i += 1
+                continue
+
+            continue_match = re.match(r"^\s+continue-on-error:\s*(?:true|'true'|\"true\")\s*$", line, re.IGNORECASE)
+            if continue_match:
+                job_has_continue_on_error = True
+                job_continue_cite = f"{path}:{i+1}: continue-on-error: true"
                 i += 1
                 continue
 
@@ -553,6 +564,7 @@ def _workflow(tree, path):
         step_has_changed_cwd = False
         step_cwd_cite = ""
         step_has_continue_on_error = False
+        step_continue_cite = ""
         step_has_reusable = False
         step_reusable_cite = ""
         step_run_cmd = None
@@ -567,8 +579,9 @@ def _workflow(tree, path):
             if re.search(r"(?:^|\s)(?:-\s*)?working-directory:\s*(.+)", s_text):
                 step_has_changed_cwd = True
                 step_cwd_cite = f"{path}:{s_idx+1}: changed working directory"
-            if re.search(r"(?:^|\s)(?:-\s*)?continue-on-error:\s*(.+)", s_text):
+            if re.match(r"^\s*(?:-\s*)?continue-on-error:\s*(?:true|'true'|\"true\")\s*$", s_text, re.IGNORECASE):
                 step_has_continue_on_error = True
+                step_continue_cite = f"{path}:{s_idx+1}: continue-on-error: true"
             if re.search(r"uses:\s*[^ \n]*\.github/workflows/", s_text):
                 step_has_reusable = True
                 step_reusable_cite = f"{path}:{s_idx+1}: reusable workflow"
@@ -598,7 +611,7 @@ def _workflow(tree, path):
             step_has_continue_on_error or step_has_reusable
         )
         step_uncertain_cite = (
-            step_cond_cite or step_cwd_cite or step_reusable_cite or
+            step_cond_cite or step_continue_cite or step_cwd_cite or step_reusable_cite or
             (f"{path}:{step_lines[0][0]+1}: conditional step" if step_had_uncertainty else "")
         )
 
@@ -625,6 +638,14 @@ def _workflow(tree, path):
                         cmd_uncertain = True
                         cmd_reasons.append("Verify command execution is conditional (step condition).")
                         cmd_cites.append(step_cond_cite)
+                    elif job_has_continue_on_error:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command execution allows failure (job continue-on-error).")
+                        cmd_cites.append(job_continue_cite)
+                    elif step_has_continue_on_error:
+                        cmd_uncertain = True
+                        cmd_reasons.append("Verify command execution allows failure (step continue-on-error).")
+                        cmd_cites.append(step_continue_cite)
                     elif pr_filtered:
                         cmd_uncertain = True
                         cmd_reasons.append("Workflow pull_request trigger has filters.")
