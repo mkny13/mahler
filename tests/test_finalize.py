@@ -589,7 +589,10 @@ class RunTests(unittest.TestCase):
                 ("justification dismisses security concern", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "c"}]),
                 ("justification", [{"severity": "low", "category": "security", "location": "l", "scenario": "s", "consequence": "c"}]),
                 ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "silent normal-flow data loss", "consequence": "c"}]),
+                ("justification", [{"severity": "low", "category": "data-loss", "location": "l", "scenario": "s", "consequence": "c"}]),
                 ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "a quoted unsatisfied Done-when line"}]),
+                ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "a quoted unsatisfied done when line"}]),
+                ("justification citing done when criterion", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "c"}]),
             )
         ]
         for malformed in malformed_payloads:
@@ -650,6 +653,50 @@ class RunTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result["data"]["disposition"], "followups")
             self.assertEqual(result["data"]["findings"], payload["findings"])
+
+    def test_design_payload_rejects_data_loss_category_and_spaced_done_when(self):
+        head = "a" * 40
+        payload_data_loss = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "internal finding only",
+            "findings": [{
+                "severity": "low",
+                "category": "data-loss",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNone(finalize._design_payload(json.dumps(payload_data_loss)))
+
+        payload_done_when_justification = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "we will handle the done when requirement later",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNone(finalize._design_payload(json.dumps(payload_done_when_justification)))
+
+        payload_done_when_finding = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "deferring finding",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "unsatisfied done when criterion",
+            }],
+        }
+        self.assertIsNone(finalize._design_payload(json.dumps(payload_done_when_finding)))
 
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40

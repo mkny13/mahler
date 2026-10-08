@@ -168,8 +168,12 @@ def _design_payload(rest):
             if any(not isinstance(v, str) or not v.strip() for v in finding.values()):
                 return None
             text_to_check += " " + " ".join(str(v).lower() for v in finding.values())
-            
-        if "security" in text_to_check or "done-when" in text_to_check or "data loss" in text_to_check:
+        normalized = re.sub(r"[\s_-]+", " ", text_to_check)
+        if ("security" in text_to_check
+                or "done-when" in text_to_check
+                or "done when" in normalized
+                or "data-loss" in text_to_check
+                or "data loss" in normalized):
             return None
         return data
         
