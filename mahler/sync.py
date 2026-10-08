@@ -184,18 +184,17 @@ QUIET_BATCH = 25   # legacy rows migrate in bounded ticks
 
 
 def _note_source_reopen(ctx, project, item):
-    """An open issue whose shipment we closed and labelled was reopened by hand
-    (adverse evidence). A transient close failure never set the mirror."""
+    """An open shipment is reopen evidence only after confirmed closure."""
     led = ctx.led
     n = item["number"]
-    shipped = item["state"] == "shipped" and (
-        item["mirror"] == "mahler:shipped"
-        or led.get_kv(f"shipped_closed:{project}:{n}") == "1")
+    closed = (item["mirror"] == "mahler:shipped"
+              or led.get_kv(f"shipped_closed:{project}:{n}") == "1")
+    shipped = item["state"] == "shipped"
     early = (item["state"] == "done" and led.q1(
         "SELECT 1 FROM completion_evidence WHERE project=? AND number=? AND kind='smoke'",
         (project, n)))
     key = f"source_reopened:{project}:{n}"
-    if (shipped or early) and led.get_kv(key) != "1":
+    if closed and (shipped or early) and led.get_kv(key) != "1":
         led.set_kv(key, "1")
         led.event("source_reopened", project, n, {})
 

@@ -366,6 +366,45 @@ class QuietWindowTests(unittest.TestCase):
         ev = self.led.q("SELECT * FROM completion_evidence")[0]
         self.assertEqual((ev["kind"], ev["author"]), ("smoke", "bot"))
 
+    def test_smoke_after_failed_close_is_not_a_source_reopen(self):
+        self.led.upsert_item("x", 5, mirror=None)
+        self.gh.state = "OPEN"
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "close_issue", create=True,
+                                  side_effect=gh_module.GHError("offline")) as close:
+            sync.mirror_shipped(self.ctx, "x", self.led.item("x", 5))
+        close.assert_called_once_with(5)
+        self.assertIsNone(self.led.get_kv("shipped_closed:x:5"))
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.assertEqual(self.state(), "done")
+
+        issue = dict(number=5, title="Wired", body="", labels=[], comments=[],
+                     createdAt=iso(self.MERGED))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
+                mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
+            sync.sync(self.ctx, "x")
+            sync.sync(self.ctx, "x")
+        self.assertEqual(self.state(), "done")
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind IN "
+                                    "('source_reopened', 'shipment_reopened')"), [])
+        self.assertEqual(self.gh.priorities, [])
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
+    def test_source_reopen_after_smoke_uses_retained_closure_confirmation(self):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.mirror_shipped(self.ctx, "x", self.led.item("x", 5))
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.gh.state = "OPEN"
+        sync._note_source_reopen(self.ctx, "x", self.led.item("x", 5))
+        self.reconcile()
+        self.assertEqual(self.state(), "ready")
+        self.assertEqual(self.gh.priorities, [1])
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='source_reopened'")), 1)
+
     def test_boundary_smoke_wins_after_transient_comment_fetch_failure(self):
         self.now = self.MERGED + timedelta(days=13, hours=23, minutes=59)
         with mock.patch.object(self.gh, "issue_comments",
