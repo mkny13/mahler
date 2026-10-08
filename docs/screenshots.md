@@ -58,6 +58,13 @@ The harness must not import Groundwork `playwright.config.ts` or global-setup.
 
 **Prerequisite:** Groundwork preview deployment access and a successful capture using the example.
 
+**Attempted evidence:**
+- Identified Preview deployment: SHA `3d5916ab07b15b13e464389ac30d93885e99b40e`
+- Preview URL: `https://groundwork-j9sfxpl5z-mkny13s-projects.vercel.app`
+- Checkout prepared at `/tmp/groundwork-checkout` at the exact SHA.
+- Playwright dependencies not installed in the isolated checkout during this run; `npm install @playwright/test` timed out and the example could not be executed against the live preview.
+- Result: live capture not performed. No PNG/manifest generated.
+
 **Recorded evidence (to be filled after successful capture):**
 - Deployment head SHA: *<sha>*
 - Preview URL: *<url>*
@@ -68,7 +75,7 @@ The harness must not import Groundwork `playwright.config.ts` or global-setup.
 
 > If live capture is unavailable/protected, record the failure honestly. An unavailable/protected page is not completion evidence. The ROADMAP Phase 6 screenshot item must remain unchecked until real preview evidence exists.
 
-Current status: **pending live preview capture**. No live capture attempted yet; the runner and harness are committed as a checkpoint.
+Current status: **checkpointed with runner/harness; live preview capture pending due to missing Playwright install in isolated checkout**. Runner and harness are committed; ROADMAP Phase 6 remains unchecked.
 
 ## Privacy
 
