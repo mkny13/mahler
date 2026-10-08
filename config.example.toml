@@ -33,6 +33,22 @@ gui_window = "00:00-06:00"
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)
 
+# Optional post-merge contract; schema/storage only, no execution yet.
+# Defaults and per-project tables merge recursively. Keep disabled until configured.
+# Uses projects.<name>.smoke above/below; never define post_merge.smoke.
+# Commands and references must contain no credentials; use account-owned secret stores.
+# [projects.example.post_merge]
+# enabled = false
+# deploy_strategy = "watch"       # watch external deploy, or command to initiate it
+# deploy_command = ""             # required for command, empty for watch
+# live_strategy = "command"       # only supported live strategy
+# live_command = "./scripts/check-live.sh"  # required when enabled; exact SHA/tag
+# environment = "staging"         # preview/staging default; production is explicit
+# timeout_seconds = 1800          # integer 1–86400, total durable check deadline
+# auto_revert = false             # opt-in policy only; this does not execute a revert
+# The future runner must supply the exact merge SHA, tag and artifact context.
+# Empty smoke cannot produce PASS; D11 defines identity, reports and D10 handoff.
+
 [projects.example]
 enabled = false                 # opt in only after repo, path and verify are correct
 repo = "your-org/your-repo"

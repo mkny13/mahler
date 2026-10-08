@@ -25,6 +25,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 
 from .config import MAINTENANCE_PASSES, ensure_private_dir
+from .redact import redact
 
 
 # Keep duration evidence aligned with outcome_not_started(): launch failures and
@@ -168,6 +169,26 @@ CREATE TABLE IF NOT EXISTS uat (
     bug         INTEGER,                -- the p1 bug a fail filed
     note        TEXT,                   -- the fail's note
     PRIMARY KEY (project, number)
+);
+CREATE TABLE IF NOT EXISTS post_merge_checks (
+    project TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    merge_sha TEXT NOT NULL,
+    phase TEXT NOT NULL CHECK (phase IN ('deploy', 'live', 'smoke')),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'PASS', 'FAIL')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    phase_started_at TEXT NOT NULL,
+    deadline_at TEXT NOT NULL,
+    finished_at TEXT,
+    target TEXT NOT NULL,
+    tag TEXT NOT NULL DEFAULT '',
+    artifact_ref TEXT NOT NULL DEFAULT '',
+    live_sha TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    evidence_ref TEXT NOT NULL DEFAULT '',
+    failure_code TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (project, number, merge_sha)
 );
 CREATE TABLE IF NOT EXISTS completion_evidence (
     project TEXT NOT NULL,
@@ -456,6 +477,81 @@ class Ledger:
                          (status, iso(self.now()), result, id))
 
     # ---------- the UAT queue (D10, D27) ----------
+
+    def post_merge_check(self, project, number, merge_sha):
+        return self.q1("SELECT * FROM post_merge_checks WHERE project=? AND number=? "
+                       "AND merge_sha=?", (project, number, merge_sha))
+
+    def create_post_merge_check(self, project, number, merge_sha, policy, *,
+                                tag="", artifact_ref=""):
+        """Create once from an effective policy; disabled contracts leave no row.
+
+        Commands and account environments are deliberately never persisted here.
+        Target, tag and deadline are frozen on the first observation of this merge.
+        """
+        pm = policy.get("post_merge", {})
+        if not policy.get("enabled", False) or not pm.get("enabled", False):
+            return None
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", merge_sha):
+            raise ValueError("post_merge requires a full lowercase merge SHA")
+        timeout = pm["timeout_seconds"]
+        if type(timeout) is not int or not 1 <= timeout <= 86400:
+            raise ValueError("post_merge timeout_seconds must be an integer from 1 to 86400")
+        now = self.now()
+        self.con.execute(
+            "INSERT INTO post_merge_checks(project,number,merge_sha,phase,status,"
+            "created_at,updated_at,phase_started_at,deadline_at,target,tag,artifact_ref) "
+            "VALUES (?,?,?,'deploy','pending',?,?,?,?,?,?,?) "
+            "ON CONFLICT(project,number,merge_sha) DO NOTHING",
+            (project, number, merge_sha, iso(now), iso(now), iso(now),
+             iso(now + timedelta(seconds=timeout)), redact(pm["environment"]),
+             redact(tag), redact(artifact_ref)))
+        return self.post_merge_check(project, number, merge_sha)
+
+    def update_post_merge_check(self, project, number, merge_sha, *, expected_phase,
+                                phase, status="pending", live_sha=None,
+                                artifact_ref=None, summary="", evidence_ref="",
+                                failure_code=""):
+        """Compare-and-set one poll; stale phases and terminal rows are immutable.
+
+        PASS requires exact live identity plus terminal report metadata. This does
+        not accept D10 evidence or change the issue's shipped/done state.
+        """
+        phases = ("deploy", "live", "smoke")
+        if phase not in phases or expected_phase not in phases:
+            raise ValueError("invalid post_merge phase")
+        if status not in ("pending", "PASS", "FAIL"):
+            raise ValueError("invalid post_merge status")
+        with self._tx():
+            row = self.post_merge_check(project, number, merge_sha)
+            if not row or row["status"] != "pending" or row["phase"] != expected_phase:
+                return False
+            if phases.index(phase) - phases.index(expected_phase) not in (0, 1):
+                raise ValueError("illegal post_merge phase transition")
+            identity = row["live_sha"] if live_sha is None else live_sha
+            if identity and identity != merge_sha:
+                raise ValueError("live SHA does not match merge SHA")
+            if phase == "smoke" and identity != merge_sha:
+                raise ValueError("smoke requires exact live SHA")
+            if status == "PASS" and (phase != "smoke" or not evidence_ref.strip()):
+                raise ValueError("PASS requires smoke phase and evidence reference")
+            if status == "FAIL" and (phase != expected_phase or not failure_code.strip()):
+                raise ValueError("FAIL requires current phase and failure code")
+            if status != "PASS" and evidence_ref:
+                raise ValueError("evidence reference requires PASS")
+            if status != "FAIL" and failure_code:
+                raise ValueError("failure code requires FAIL")
+            now = iso(self.now())
+            self.con.execute(
+                "UPDATE post_merge_checks SET phase=?,status=?,updated_at=?,"
+                "phase_started_at=?,finished_at=?,live_sha=?,artifact_ref=?,summary=?,"
+                "evidence_ref=?,failure_code=? WHERE project=? AND number=? AND merge_sha=?",
+                (phase, status, now, now if phase != expected_phase else row["phase_started_at"],
+                 now if status != "pending" else None, identity,
+                 row["artifact_ref"] if artifact_ref is None else redact(artifact_ref),
+                 redact(summary)[:2000], redact(evidence_ref), redact(failure_code),
+                 project, number, merge_sha))
+            return True
 
     def add_uat(self, project, number, pr, sha, title, needs, shipped_at=None):
         self.con.execute(
