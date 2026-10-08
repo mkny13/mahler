@@ -327,10 +327,7 @@ class CodexRefreshTests(unittest.TestCase):
                 notify_send.assert_not_called()
 
         # 2. Failed probe clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         with mock.patch("mahler.notify.send") as notify_send:
             for _ in range(8):
                 self.now += timedelta(minutes=15)
@@ -348,10 +345,7 @@ class CodexRefreshTests(unittest.TestCase):
             notify_send.assert_not_called()
 
         # 3. Supported shape clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         with mock.patch("mahler.notify.send") as notify_send:
             for _ in range(8):
                 self.now += timedelta(minutes=15)
@@ -369,10 +363,7 @@ class CodexRefreshTests(unittest.TestCase):
             notify_send.assert_not_called()
 
         # 4. Shape change clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         unsupported_20 = platforms._codex_usage({
             "ordinaryUsageAllowed": True,
             "rateLimits": {"primary": {"windowDurationMins": 20, "usedPercent": 20}}})
