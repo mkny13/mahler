@@ -125,10 +125,10 @@ class StatusCliTests(unittest.TestCase):
                                    ("review", "review-wait", "pending"),
                                    ("review", "review-wait", "fail")):
             self.led.set_kv("ci:proj#1:123", json.dumps({"state": "green"}))
-            self.led.set_kv("review:proj#1", json.dumps({"verdict": verdict}))
+            self.led.set_kv("review:proj#1", json.dumps({"verdict": verdict, "pr": 123}))
             if role == "review" and verdict == "fail":
                 self.led.set_kv("ci:proj#1:123", json.dumps({"state": "green", "sha": "new"}))
-                self.led.set_kv("review:proj#1", json.dumps({"verdict": "fail", "sha": "old"}))
+                self.led.set_kv("review:proj#1", json.dumps({"verdict": "fail", "sha": "old", "pr": 123}))
                 self.led.set_kv("reviewfix-status:proj#1", json.dumps({"state": "running"}))
             for retry_at, expected in (
                     (iso(retry), f"retry around {retry.astimezone():%b %d %H:%M %Z}"),

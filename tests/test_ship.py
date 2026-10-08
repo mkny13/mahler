@@ -673,7 +673,7 @@ class ShipTests(unittest.TestCase):
             with self.subTest(review=review):
                 self.led.upsert_item("x", 5, pr=88, state="verifying", labels='["size:m"]')
                 self.gh.rollup = [{"state": "SUCCESS" if review else "FAILURE"}]
-                self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"})
+                self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88})
                                 if review else None)
                 self.led.set_kv("reviewfix-status:x#5", None)
                 now = [NOW]
@@ -693,7 +693,7 @@ class ShipTests(unittest.TestCase):
             with self.subTest(review=review):
                 self.led.upsert_item("x", 5, pr=88, attempts=0, labels='["size:m"]')
                 self.gh.rollup = [{"state": "SUCCESS" if review else "FAILURE"}]
-                verdict = {"sha": "abc123", "verdict": "fail"}
+                verdict = {"sha": "abc123", "verdict": "fail", "pr": 88}
                 self.led.set_kv("review:x#5", json.dumps(verdict) if review else None)
                 key = f"{'reviewfix' if review else 'red'}:x#5:88:abc123"
                 with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
@@ -772,7 +772,7 @@ class ShipTests(unittest.TestCase):
 
     def test_failed_review_releases_capacity_for_another_green_pr(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
-        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88}))
         self.led.upsert_item("x", 6, pr=89, state="verifying", title="small fix",
                              labels='["size:s"]', branch="mahler/6-fix")
         # Enforce canonical max_parallel=1 with the real ledger claim path.
@@ -803,14 +803,14 @@ class ShipTests(unittest.TestCase):
             started.append(item["number"])
             ctx.led.claim(project, item["number"], "conductor", "auto", 10,
                           capacity=False, handoff_from=("run:99", lease["epoch"]))
-            ctx.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass"}))
+            ctx.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass", "pr": 89}))
             return True
         with mock.patch.object(self.led, "claim", side_effect=bounded_claim), \
              mock.patch("mahler.router.pick_for_project",
                         side_effect=[(None, ["no quota"]), ("claude", [])]), \
              mock.patch.object(ship, "start", side_effect=review_start):
             self.ship()
-        self.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass"}))
+        self.led.set_kv("review:x#6", json.dumps({"sha": "abc123", "verdict": "pass", "pr": 89}))
         self.assertEqual(started, [6])
         lease = self.led.lease("x", 5)
         self.assertEqual(lease["capacity"], 0)
@@ -1156,7 +1156,7 @@ class ShipTests(unittest.TestCase):
 
     def reviewed_pr(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
-        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass", "pr": 88}))
 
     def test_reviewed_stale_pr_updates_then_waits_for_ci_and_fresh_base(self):
         self.reviewed_pr()
@@ -1244,7 +1244,7 @@ class ShipTests(unittest.TestCase):
 
     def test_review_pass_verdict_merges(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
-        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": self.gh.head_sha, "verdict": "pass", "pr": 88}))
         self.ship()
         self.assertEqual(self.gh.merged, [88])
 
@@ -1280,7 +1280,7 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         self.led.set_kv("review:x#5", json.dumps({
             "sha": self.gh.head_sha, "verdict": "fail",
-            "findings": "auth.py: missing null check on session token"}))
+            "findings": "auth.py: missing null check on session token", "pr": 88}))
         calls = []
         self.patch_review_start(calls)
         self.ship()
@@ -1486,7 +1486,7 @@ class ShipTests(unittest.TestCase):
                 self.gh.rollup = [{"state": "FAILURE" if trigger == "ci" else "SUCCESS"}]
                 self.led.set_kv("review:x#5", json.dumps({
                     "sha": self.gh.head_sha, "verdict": "fail",
-                    "findings": "missing null check"}))
+                    "findings": "missing null check", "pr": 88}))
                 with mock.patch("mahler.tick.runner.prepare", return_value={}), \
                         mock.patch("mahler.tick.prompt.build", return_value="fix prompt"), \
                         mock.patch("mahler.tick.runner.launch", return_value={"branch": "mahler/5-x"}), \
@@ -1511,7 +1511,7 @@ class ShipTests(unittest.TestCase):
         """A fix round (or any new push) changes the head sha: a verdict
         recorded for the old sha must not merge or re-fix on the new one."""
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
-        self.led.set_kv("review:x#5", json.dumps({"sha": "oldsha", "verdict": "pass"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "oldsha", "verdict": "pass", "pr": 88}))
         self.gh.head_sha = "newsha"
         calls = []
         self.patch_review_start(calls)
@@ -1929,7 +1929,7 @@ class ShipTests(unittest.TestCase):
                     for prefix in ("ci", "mergeability", "queue"):
                         self.led.set_kv(f"{prefix}:x#5:88", old)
                         self.led.set_kv(f"{prefix}:x#6:89", old)
-                    self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "pass"}))
+                    self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "pass", "pr": 88}))
                     self.led.set_kv("fix:x#5:88", "evidence")
                     self.gh.mergeable = "UNKNOWN" if condition == "UNKNOWN" else "MERGEABLE"
                     self.gh.rollup = [{"state": "PENDING" if condition == "pending" else "SUCCESS"}]
@@ -2263,7 +2263,7 @@ class TestReviewConvergence(unittest.TestCase):
         self.gh.head_sha = history[-1]["sha"]
         self.led.set_kv("reviewfindings:x#5", json.dumps(history))
         self.led.set_kv("review:x#5", json.dumps({
-            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1], "pr": 88}))
         return history
 
     def test_two_divergent_transitions_keep_blockers_in_bounded_fix_flow(self):
@@ -2399,7 +2399,7 @@ class TestRepeatReviewFinding(unittest.TestCase):
         self.gh.head_sha = history[-1]["sha"]
         self.led.set_kv("reviewfindings:x#5", json.dumps(history))
         self.led.set_kv("review:x#5", json.dumps({
-            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1]}))
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": findings[-1], "pr": 88}))
 
     def test_repeat_on_unchanged_line_asks_another_platform_without_a_fix(self):
         self.failed_rounds([self.FINDING, self.FINDING],
@@ -2425,7 +2425,7 @@ class TestRepeatReviewFinding(unittest.TestCase):
                         "run_id": 3, "platform": "agy-gemini"})
         self.led.set_kv("reviewfindings:x#5", json.dumps(history))
         self.led.set_kv("review:x#5", json.dumps({
-            "sha": self.gh.head_sha, "verdict": "fail", "findings": self.FINDING}))
+            "sha": self.gh.head_sha, "verdict": "fail", "findings": self.FINDING, "pr": 88}))
         for run in self.led.active_runs():
             self.led.update_run(run["id"], status="ended")
         self.led.release("x", 5)
@@ -2651,7 +2651,7 @@ class TestClassifiedReview(unittest.TestCase):
 
     def ending(self, findings, verdict="pass", rid=10):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
-        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "run_id": rid}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "run_id": rid, "pr": 88}))
         return SimpleNamespace(led=self.led, ctx=self.ctx, project="x", number=5,
             item=self.item(), run={"id": rid, "platform": "agy-gemini"},
             rest=json.dumps({"findings": findings}), outcome="completed", set_state=mock.Mock())
@@ -2967,7 +2967,7 @@ class ShipCapacityTests(unittest.TestCase):
 
     def test_review_triggered_fix_wait_is_recorded(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
-        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88}))
         with mock.patch("mahler.router.pick_for_project", return_value=(None, ["x: soft"])):
             self.ship()
         row = self.rows()["fix"]
@@ -3019,7 +3019,7 @@ class ShipCapacityTests(unittest.TestCase):
         self.led.create_run(project="y", number=99, role="build", platform="claude", epoch=1)
         self.led.upsert_item("x", 5, pr=88, labels='["size:s"]', esc_tier=2)
         self.led.set_kv("reviewed-pr:x#5", "88")
-        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail"}))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88}))
         self.ship()
         row = self.rows()["fix"]
         self.assertEqual((row["size"], row["effective_size"], row["required_tier"]),

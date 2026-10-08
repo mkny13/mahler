@@ -754,7 +754,7 @@ class IdleReasonTests(unittest.TestCase):
         reason = self.idle(cfg, led)["reasons"][0]
         self.assertIn("waiting for the independent review", reason["text"])
 
-        led.set_kv("review:mahler#39", json.dumps({"verdict": "pass"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "pass", "pr": 112}))
         led.set_kv("queue:mahler#39:112", json.dumps({"since": iso(led.now())}))
         reason = self.idle(cfg, led)["reasons"][0]
         self.assertIn("green, waiting for its turn to merge", reason["text"])
@@ -766,7 +766,7 @@ class IdleReasonTests(unittest.TestCase):
                         labels=json.dumps(["size:m"]))
         led.upsert_item("mahler", 40, title="next", state="ready")
         led.set_kv("ci:mahler#39:112", json.dumps({"state": "green"}))
-        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "pr": 112}))
         led.set_kv("reviewfix-status:mahler#39", json.dumps({
             "reason": "no eligible route", "tier": 2}))
         reason = self.idle(cfg, led)["reasons"][0]
@@ -785,7 +785,7 @@ class IdleReasonTests(unittest.TestCase):
                 ("fix", "green", "fail", "reviewfix-status"),
                 ("fix", "red", "pass", "reviewfix-status")):
             led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
-            led.set_kv("review:mahler#39", json.dumps({"verdict": verdict}))
+            led.set_kv("review:mahler#39", json.dumps({"verdict": verdict, "pr": 112}))
             for retry_at, expected in (
                     (iso(retry), f"retry around {retry.astimezone():%b %d %H:%M %Z}"),
                     (None, "retry time unknown; will re-check"),
@@ -806,7 +806,7 @@ class IdleReasonTests(unittest.TestCase):
                         labels=json.dumps(["size:m"]))
         led.upsert_item("mahler", 40, title="next", state="ready")
         led.set_kv("ci:mahler#39:112", json.dumps({"state": "green", "sha": "new"}))
-        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "sha": "old"}))
+        led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "sha": "old", "pr": 112}))
         led.set_kv("reviewfix-status:mahler#39", json.dumps({"state": "running"}))
         retry = led.now() + timedelta(hours=2)
         for retry_at, expected in (
@@ -832,7 +832,7 @@ class IdleReasonTests(unittest.TestCase):
                                   role=role, status=status), closing(make_led()) as led:
                     led.upsert_item("mahler", 39, state="verifying", pr=112)
                     led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
-                    led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+                    led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "pr": 112}))
                     led.set_kv("reviewfix-status:mahler#39", json.dumps({
                         "state": "capacity_wait", "reason": "no eligible route", "tier": 2}))
                     rid = led.create_run(project=project, number=number, role=role,
@@ -851,7 +851,7 @@ class IdleReasonTests(unittest.TestCase):
             with self.subTest(ci=ci), closing(make_led()) as led:
                 led.upsert_item("mahler", 39, state="verifying", pr=112)
                 led.set_kv("ci:mahler#39:112", json.dumps({"state": ci}))
-                led.set_kv("review:mahler#39", json.dumps({"verdict": "fail"}))
+                led.set_kv("review:mahler#39", json.dumps({"verdict": "fail", "pr": 112}))
                 rid = led.create_run(project="mahler", number=39, role="fix",
                                      platform="claude", epoch=1)
                 led.update_run(rid, status="ended")
