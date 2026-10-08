@@ -57,7 +57,13 @@ def _dependency_update(view):
         re.fullmatch(r"\.github/workflows/[^/]+\.ya?ml", f) for f in files)
     updates = []
     if branch.startswith("dependabot/"):
-        opening = body.split("\n\n", 1)[0].strip()
+        opening = ""
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith("<!--") or line.startswith("[//]:"):
+                continue
+            opening = line
+            break
         match = re.fullmatch(r"Bumps (\[[^\]\n]+\]\([^\s]+\)|[^\s]+) from `?([^`\s]+)`? to `?([^`\s]+?)`?\.?", opening)
         if not match:
             return None

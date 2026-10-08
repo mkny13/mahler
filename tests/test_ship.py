@@ -3708,6 +3708,83 @@ class DependencyPRTests(unittest.TestCase):
         self.run_pass()
         self.assertEqual(len(self.events()), 3)
 
+    def test_dependabot_body_without_blank_line_before_details(self):
+        """Dependabot emits <details> immediately after Bumps without empty line."""
+        body = (
+            "Bumps [actions/checkout](https://github.com/actions/checkout) from 4 to 7.\n"
+            "<details>\n"
+            "<summary>Release notes</summary>\n"
+            "</details>\n"
+        )
+        view = {
+            "headRefName": "dependabot/github_actions/actions/checkout-7",
+            "author": {"login": "dependabot[bot]"},
+            "isCrossRepository": False,
+            "body": body,
+            "files": [{"path": ".github/workflows/ci.yml"}],
+        }
+        res = ship._dependency_update(view)
+        self.assertEqual(res, {
+            "classification": "github-actions",
+            "dependencies": ["[actions/checkout](https://github.com/actions/checkout)"],
+        })
+
+        npm_body = (
+            "Bumps [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react) from 5.2.0 to 6.1.1.\n"
+            "<details>\n"
+            "<summary>Release notes</summary>\n"
+            "</details>\n"
+        )
+        npm_view = {
+            "headRefName": "dependabot/npm_and_yarn/vitejs/plugin-react-6.1.1",
+            "author": {"login": "dependabot[bot]"},
+            "isCrossRepository": False,
+            "body": npm_body,
+            "files": [{"path": "package.json"}, {"path": "package-lock.json"}],
+        }
+        res_npm = ship._dependency_update(npm_view)
+        self.assertEqual(res_npm, {
+            "classification": "major",
+            "dependencies": ["[@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react)"],
+        })
+
+        patch_body = (
+            "Bumps foo from 1.2.3 to 1.2.4.\n"
+            "<details>\n"
+            "<summary>Release notes</summary>\n"
+            "</details>\n"
+        )
+        patch_view = {
+            "headRefName": "dependabot/pip/foo-1.2.4",
+            "author": {"login": "dependabot[bot]"},
+            "isCrossRepository": False,
+            "body": patch_body,
+            "files": [{"path": "requirements.txt"}],
+        }
+        res_patch = ship._dependency_update(patch_view)
+        self.assertEqual(res_patch, {
+            "classification": "patch",
+            "dependencies": ["foo"],
+        })
+
+        comment_body = (
+            "<!-- comment -->\n"
+            "Bumps foo from 1.2.3 to 1.3.0.\n"
+            "<details>\n"
+        )
+        comment_view = {
+            "headRefName": "dependabot/pip/foo-1.3.0",
+            "author": {"login": "dependabot[bot]"},
+            "isCrossRepository": False,
+            "body": comment_body,
+            "files": [{"path": "requirements.txt"}],
+        }
+        res_comment = ship._dependency_update(comment_view)
+        self.assertEqual(res_comment, {
+            "classification": "minor",
+            "dependencies": ["foo"],
+        })
+
     def test_each_bot_patch_and_minor_merge(self):
         self.cfg['projects']['x']['dependency_prs_daily_cap'] = 10
         n = 10
