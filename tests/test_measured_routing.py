@@ -33,6 +33,22 @@ class MeasuredRoutingTests(unittest.TestCase):
                                        kwargs.pop("role", "build"),
                                        scorecard_rows=self.rows, **kwargs)[0]
 
+    def test_resume_preference_obeys_measured_and_priority_route_gates(self):
+        for mode in ("order", "equal", "priority"):
+            with self.subTest(mode=mode), patch("mahler.platforms.available", return_value=True):
+                pol = {**self.pol, "account_mode": mode, "routing": {"build": ["cheap", "expensive"]}}
+                self.assertEqual(router.preferred_for_project(
+                    self.cfg, self.led, pol, "fix", "expensive", size="m"), "expensive")
+                self.assertIsNone(router.preferred_for_project(
+                    self.cfg, self.led, pol, "fix", "expensive", size="m", busy={"expensive"}))
+                self.assertIsNone(router.preferred_for_project(
+                    self.cfg, self.led, pol, "fix", "cheap", size="m", min_tier=2))
+                self.assertIsNone(router.preferred_for_project(
+                    self.cfg, self.led, pol, "fix", "expensive", pin="cheap", size="m"))
+                if mode == "priority":
+                    self.assertIsNone(router.preferred_for_project(
+                        self.cfg, self.led, pol, "fix", "unknown", size="m"))
+
     def test_all_roles_and_fallback_order(self):
         for role in ("build", "fix", "review", "sort", "plan"):
             with self.subTest(role=role):
