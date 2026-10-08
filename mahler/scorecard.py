@@ -169,8 +169,8 @@ def attempts(led, since, until=None):
         check = uat.get(key, {})
         if (not review and check.get('verdict') == 'fail'
                 and _time(check.get('verdict_at')) and _time(check['verdict_at']) >= end):
-            return 'UAT fail'
-        # Shipping events cover items without UAT; release snapshots cover sync's
+            return 'reported failure'
+        # Shipping events cover items without historical shipment rows; release snapshots cover sync's
         # externally merged path. Do not infer a merge from mutable item state.
         merges = [_time(e['at']) for e in history
                   if e['kind'] == 'shipped' and e['detail'].get('merged') is not False]

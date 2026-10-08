@@ -10,14 +10,14 @@ parts.
 **Bootstrap first (re-sequenced 2026-09-12 at your request).** The fastest route out of
 hand-driving Claude Code is a small kernel that can work through its *own* GitHub issues.
 From Phase B onward, every later phase is a set of issues in the Mahler repo, and Mahler
-builds them. You steer by filing issues (GitHub app, any chat), answering pings and doing UAT.
+builds them. You steer by filing issues (GitHub app, any chat), answering questions and reporting problems during ordinary use.
 
 **First real app:** `groundwork` (Phase 1). It's a Next.js app on Vercel + Neon, with CI,
 Playwright and preview deploys already in place, and it has real personal data.
 
 ```
 0 Spikes (mostly done) → B Bootstrap: Mahler builds Mahler → 1 POC on groundwork
-→ ◆ checkpoint → 2 Claude Design (Mahler's screens) → 3 Intake + UAT loop
+→ ◆ checkpoint → 2 Claude Design (Mahler's screens) → 3 Intake + fix-on-failure
 → 4 Safety hardening → 5 Cutover & rollout → 6 Deeper feedback loop
 → 7 Cross-product review → 8 Extras
 ```
@@ -67,20 +67,20 @@ detailed record.
   variants and work-account slots, switching on measured routing) are handled by the daily
   scheduled task `mahler-d33-followup`.
 - **Interaction today is GitHub + chat + ntfy + the phone/desktop console.** Phase 2's
-  console is built; the full MCP and in-app UAT designs remain incomplete:
+  console is built; the full MCP design remains incomplete:
   - a minimal MCP server (`mahler/mcp.py`): `list_items`, `add_item`, `claim`,
     `heartbeat`, `release`, `handoff`, `next_id` — missing `ask_user`, `report_progress`,
     `get_context` from the original Phase 3 list
   - the operator console (`mahler serve`, its own launchd job; DESIGN D27): status, quota,
     idle reasons, backlog and dependency views, capture with attachments, needs-you answers
-    with Undo, live logs, stop-and-handoff, UAT pass/fail, and CI-gated merge reverts
+    with Undo, live logs, stop-and-handoff, optional failure reports, and CI-gated merge reverts
   - GitHub comment commands (`/mahler go`, `/mahler park`, `/mahler platform <name>`) and
     a plain reply on a `needs-you` item
   - Claude Code `SessionStart`/`PreToolUse`/`PostToolUse`/`UserPromptSubmit` hooks
     (`mahler hooks`), a daily digest (`digest.maybe_send`, wired into every tick), and
     a deduplicated high-priority ntfy alert when Codex quota is exhausted during probe
     refreshes (cleared upon recovery; prompts to reset in ChatGPT if reset credits exist)
-  - the rest of the MCP tool set and app-embedded UAT surfaces remain queued, not dropped
+  - the rest of the MCP tool set remains queued; manual-verdict app panels are superseded (D10)
 - **Onboarding order diverged from the Phase 5 plan.** Couch Tour and Movebreak went live,
   and Hockey Draft Copilot and Sit Stand Walk joined even though they were not in the original
   sequence. `mental-jukebox` and `puppy-growth-chart` remain candidates rather than enabled
@@ -161,7 +161,7 @@ project: Mahler itself.
 - Claude session hooks
 - the Cline backend
 - the thread sensor
-- the UAT loop
+- automated post-merge evidence and optional failure capture
 - backups
 - the statusline sidecar
 - groundwork onboarding
@@ -240,50 +240,54 @@ DESIGN.md gets updated with the answers.
 
 **Status: the console is designed (2026-09-15).** The approved canvas and spec are in
 [docs/console/design.md](docs/console/design.md), and building it is Phase 3's first item
-(DESIGN D27). The in-app UAT panel and the notification copy are not designed yet.
+(DESIGN D27). Manual-verdict panels are superseded by D10; notification copy remains.
 
 Your request: a design phase after the POC for Mahler's own interfaces.
 
 - [x] **Console, phone-first** (approved 2026-09-15, docs/console/design.md):
   - **Capture:** text, voice via the keyboard, photo or screenshot, project picker
   - **Needs you:** one-tap answers
-  - **Ready to test**
+  - **What changed**
   - **Now:** running work, quota gauges, handoffs
   - **Backlog:** per project, reorder, park
   - **History:** with Undo
   - **Pause all**
   - the same console on the Mac's larger screen
-- [ ] **In-app UAT panel:** the web overlay first. Then the Android and macOS equivalents,
-      based on the existing Feedback buttons, plus the **test-app vs real-app** distinction
-      from D16.
+- [x] **In-app UAT panel — superseded (2026-10-06):** the proposed web, Android
+      and macOS manual-verdict surfaces are retired in favor of automated post-merge
+      evidence and ordinary failure capture (D10). The original Feedback buttons
+      remain the historical starting point.
 - [ ] **Notification copy:** what each ping says, and where tapping lands.
 - [ ] Built as a Claude Design canvas (`/design`), revised with you until you're happy.
       Output: the approved canvas + a short component spec, filed as issues for Phase 3.
 
-**Done when:** you've approved the console and the web UAT panel designs.
+**Done when:** the console design supports What changed and optional failure capture;
+no owner shipment verdict is required.
 
 ---
 
-## Phase 3 — Intake and the UAT loop
+## Phase 3 — Intake and fix-on-failure
 
 - [x] The standard-library console, built to the Phase 2 designs (DESIGN D27): phone and
-      desktop views; scheduler-recorded idle reasons; answers; UAT; capture and attachments;
+      desktop views; scheduler-recorded idle reasons; answers; What changed; capture and attachments;
       stop-and-handoff; live logs; merge revert; pause, quota and digest controls. Tailscale
       exposure remains an explicit per-machine operator setting.
 - [~] Full MCP tool set — `next_id` shipped with the Phase 1 minimal server; `ask_user`,
       `report_progress`, `get_context` still open. `/mahler` skill and Mahler-aware
       `handoff`/`pickup` skills not confirmed.
 - [ ] `/mahler undo`.
-- [~] Shipped issues whose PR has a "Needs a human to check" section register in the console
-      UAT queue. Full deploy/channel registration and a separate `uat-author` recipe remain.
-- [ ] `mahler-uat.js` web panel in groundwork's staging/preview builds. A fail reopens the
-      issue or opens a linked p1 bug with your note and screenshot. Offline queue +
-      GitHub-URL fallback.
+- [x] **Manual-UAT loop — superseded (2026-10-06):** the former checklist queue
+      and proposed `uat-author` role no longer gate completion. Shipments complete
+      on automated evidence or a 14-day quiet period; early automated completion
+      reopens on adverse evidence within that window (D10).
+- [x] **`mahler-uat.js` web panel — superseded:** the planned groundwork staging
+      pass/fail panel and its offline verdict queue are retired. Ordinary optional
+      failure capture files linked p1 fix work; historical evidence is retained.
 - [x] Daily digest ping — `digest.maybe_send()` runs every tick (mahler/scheduler.py).
 
-**Done when:** you log a groundwork bug from your phone, it gets fixed and deployed, you check
-it in the in-app panel and mark it passed, all without touching a laptop. A failed UAT check
-has turned into a fix with no action from you beyond tapping "fails".
+**Done when:** you log a groundwork bug from your phone, it gets fixed and deployed,
+and automated evidence or 14 quiet days completes it. An optional failure report
+creates linked fix work without an owner pass step.
 
 ---
 
@@ -306,7 +310,8 @@ has turned into a fix with no action from you beyond tapping "fails".
 
 **Done when:** a deliberately bad migration on groundwork is caught or rolled back with its
 data intact. Undo has reverted a real change. A restore drill has passed for every groundwork
-store.
+store. These are automated safety checks, not owner shipment verdicts; D10 governs
+automated-or-14-day-quiet completion and optional failure reports.
 
 ---
 
@@ -355,7 +360,8 @@ config.
     - live repo is `makastel_ncstate/sit-stand-walk`, using `./test.sh` for verification
     - both agent-instruction files exist; the full `project.toml`, data, release, and restore
       checklist has not been reconciled in this review
-- [ ] Android + macOS UAT panels. Migrate phish-in-app's `UAT.md` history.
+- [x] Android + macOS manual-UAT panels — superseded by D10 (2026-10-06).
+      Retain phish-in-app's `UAT.md` history; use ordinary failure capture.
 - [x] **Retire the legacy agent dispatchers.** The owner unloaded
       `com.mike.dispatch` on 2026-09-16; `dispatch.py`, the legacy `thread.py` runtime,
       ThreadBar, and Cline Kanban are retired. ThreadBar will not be repointed at Mahler.
@@ -377,8 +383,8 @@ external scanner or dispatcher acts on Mahler refs or worktrees.
 - [ ] Android emulator + `adb` screencaps; Maestro flows.
 - [ ] Runtime error capture → auto-filed issues.
 - [ ] **Spike:** can offscreen SwiftUI snapshot tests render while the Mac mini is locked?
-      If yes, macOS UI gets agent-visible regression checks. If not, macOS UI stays UAT-only
-      (the screen stays locked; decided).
+      Headless checks remain useful; GUI-driving regression checks use the D40 desktop
+      gate. Unavailable checks are reported as coverage gaps, not owner verdict tasks.
 - [ ] Self-hosted GitHub Actions runner vs local-only verify for Apple/Android. (couch-tour is
       a public repo, so its GitHub-hosted macOS minutes are free.)
 

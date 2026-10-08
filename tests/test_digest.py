@@ -17,7 +17,7 @@ class Clock:
 
 
 def seeded_ledger(clock=None):
-    """A ledger with one shipped item, one needs_you, one handoff, one usage row."""
+    """A ledger with one completed item, one needs_you, one handoff, one usage row."""
     clock = clock or Clock()
     led = Ledger(":memory:", clock=clock)
     led.upsert_item("mahler", 6, title="Daily digest ping")
@@ -35,9 +35,50 @@ def seeded_ledger(clock=None):
 
 class FormatTests(unittest.TestCase):
     def data(self):
-        return digest.gather(seeded_ledger(), {"platforms": {"claude": {"enabled": True}}},
+        led = seeded_ledger()
+        self.addCleanup(led.close)
+        return digest.gather(led, {"platforms": {"claude": {"enabled": True}}},
                              since=datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc),
                              now=datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc))
+
+    def test_shipments_never_create_owner_waits_or_nags(self):
+        clock = Clock()
+        led = Ledger(":memory:", clock=clock)
+        self.addCleanup(led.close)
+        for n, state in enumerate(("shipped", "shipped", "needs_you", "failed"), 1):
+            led.upsert_item("p", n, title=f"Change {n}")
+            led.set_state("p", n, state)
+        for n in (1, 2):
+            led.add_uat("p", n, n + 10, "sha", f"Change {n}", "Legacy checklist")
+        data = digest.gather(led, {}, since=clock.t)
+        self.assertEqual([(w["number"], w["state"]) for w in data["waiting"]],
+                         [(3, "needs_you"), (4, "failed")])
+        self.assertEqual(data["completed"], [])
+        text = digest.format_digest(data)
+        self.assertIn("Waiting on you (2):", text)
+        for absent in ("Change 1", "Change 2", "UAT", "Ready to test", "verdict", "backlog"):
+            self.assertNotIn(absent, text)
+
+    def test_automated_and_quiet_completion_roll_up_as_completed(self):
+        clock = Clock()
+        led = Ledger(":memory:", clock=clock)
+        self.addCleanup(led.close)
+        merged = iso(clock.t)
+        for n in (1, 2):
+            led.upsert_item("p", n, title=f"Change {n}")
+            led.set_state("p", n, "shipped")
+            led.add_uat("p", n, n + 10, "sha", f"Change {n}", "")
+        clock.t += timedelta(days=14)
+        self.assertTrue(led.complete_quiet("p", 1, merged))
+        self.assertTrue(led.accept_evidence("p", 2, dict(
+            source="report:2", author="bot", created_at=iso(clock.t),
+            kind="smoke", body="Smoke: PASS report=2")))
+        data = digest.gather(led, {}, since=clock.t - timedelta(days=1))
+        self.assertEqual({r["number"] for r in data["completed"]}, {1, 2})
+        text = digest.format_digest(data)
+        self.assertIn("Completed in the last 24h (2):", text)
+        self.assertIn("Waiting on you (0):", text)
+        self.assertNotIn("Shipped", text)
 
     def test_missing_scope_is_one_aggregate_line(self):
         led = Ledger(":memory:")
@@ -57,9 +98,9 @@ class FormatTests(unittest.TestCase):
                          ["Open issues older than 24h missing scope label: 5 (latest full sync)"])
         self.assertNotIn("#", text)
 
-    def test_includes_shipped_with_titles(self):
+    def test_includes_completed_with_titles(self):
         text = digest.format_digest(self.data())
-        self.assertIn("Shipped in the last 24h (1):", text)
+        self.assertIn("Completed in the last 24h (1):", text)
         self.assertIn("- mahler#6 Daily digest ping", text)
 
     def test_includes_waiting_on_you(self):
@@ -77,7 +118,7 @@ class FormatTests(unittest.TestCase):
         self.assertIn("- claude: 5h 42%, week 10%", text)
 
     def test_empty_day(self):
-        data = {"shipped": [], "waiting": [], "handoffs": [],
+        data = {"completed": [], "waiting": [], "handoffs": [],
                 "usage": [{"platform": "claude", "5h": None, "weekly": None}]}
         text = digest.format_digest(data)
         self.assertIn("- none", text)
@@ -86,8 +127,8 @@ class FormatTests(unittest.TestCase):
 
     def test_gather_ignores_out_of_window_events(self):
         data = self.data()
-        self.assertEqual([s["number"] for s in data["shipped"]], [6])
-        self.assertNotIn(9, [s["number"] for s in data["shipped"]])
+        self.assertEqual([s["number"] for s in data["completed"]], [6])
+        self.assertNotIn(9, [s["number"] for s in data["completed"]])
 
 
 class GatingTests(unittest.TestCase):
