@@ -153,7 +153,11 @@ def _deliver(ctx, row):
     if ctx.led.get_kv(key):
         return
     uat = ctx.led.uat(row["project"], row["number"])
-    if not uat or uat["sha"] != row["merge_sha"]:
+    latest = ctx.led.q1("SELECT merge_sha FROM post_merge_checks WHERE project=? AND number=? "
+                        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                        (row["project"], row["number"]))
+    if (not uat or uat["sha"] != row["merge_sha"]
+            or latest["merge_sha"] != row["merge_sha"]):
         return
     body = "Smoke: PASS report=" + Path(row["evidence_ref"]).as_uri()
     gh = ctx.gh(row["project"])

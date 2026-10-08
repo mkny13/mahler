@@ -213,6 +213,28 @@ class PostMergeTests(unittest.TestCase):
         self.tick()
         self.gh.comment_create.assert_called_once()
 
+    def test_newer_merge_cannot_receive_older_pass_evidence(self):
+        self.led.add_uat("p", 1, 4, SHA, "test", "verify", shipped_at=iso(NOW - timedelta(seconds=1)))
+        self.through_live()
+        self.phase()
+        self.register("b" * 40)
+        with mock.patch.object(post_merge, "_advance"):
+            self.tick()
+        self.gh.comment_create.assert_not_called()
+
+    def test_registration_recovery_uses_confirmed_merge_and_is_idempotent(self):
+        self.led.con.execute("DELETE FROM post_merge_checks")
+        post_merge.register(self.ctx, "p", 1, {"state": "CLOSED", "headRefOid": SHA})
+        self.assertIsNone(self.row())
+        self.led.upsert_item("p", 1, state="shipped")
+        self.led.add_uat("p", 1, 4, SHA, "test", "verify")
+        with mock.patch.object(post_merge, "_advance"):
+            self.tick()
+            original = dict(self.row())
+            self.now += timedelta(seconds=60)
+            self.tick()
+        self.assertEqual(dict(self.row()), original)
+
     def test_account_environment_and_literal_metadata(self):
         self.cfg["accounts"] = {"work": {"env": {"DEPLOY_LOGIN": "work"}}}
         self.cfg["projects"]["p"]["account"] = "work"
