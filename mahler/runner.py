@@ -188,14 +188,17 @@ def prepare(ctx, project, item, role, platform, run_id):
         git(repo, "fetch", "--quiet", "origin", claim_sha, env=env)
         start = claim_sha
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
-    elif role in ("sort", "review"):
+    elif role == "sort":
         if role == "review":
             start = start_ref(repo, base, item["branch"], item["branch"])
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
-        # a fix run works on the PR's head branch itself (D18): its pushes
-        # re-trigger CI. A build gets the item's canonical branch name.
-        branch = (item["branch"] if role == "fix" and item["branch"]
+        if role == "design" and (not row_get(item, "pr") or not row_get(item, "branch")
+                                 or not remote_has(repo, row_get(item, "branch"))):
+            raise GitError("design run requires the current PR branch")
+        # A fix works on the PR's branch so pushes re-trigger CI (D18);
+        # review and design inspect that same head without handoff edits (D11).
+        branch = (item["branch"] if role in ("fix", "review", "design") and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
         start = start_ref(repo, base, item["branch"], branch)
         try:

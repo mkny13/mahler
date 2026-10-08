@@ -41,7 +41,7 @@ ATTENTION_KINDS = ("launch_failed", "backup_failed")
 
 STATE_ORDER = ("needs_you", "failed", "working", "verifying", "ready", "inbox",
                "parked", "parent")
-ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI"}
+ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI", "design": "designing"}
 NUMBER_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
                 "Eight", "Nine")
 DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"

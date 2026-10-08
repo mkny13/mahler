@@ -15,6 +15,11 @@ from .ledger import row_get
 
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
 
+
+def design_input_key(project, number, pr, run_id):
+    return f"designinput:{project}#{number}:{pr}:{run_id}"
+
+
 # The in-app What's New contract (DESIGN D31, mahler#358), injected into a
 # build prompt only when the issue itself asks for that work (mahler#569).
 # Most builds never touch a release feed; keeping the ~170-word block out of

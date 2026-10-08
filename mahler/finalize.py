@@ -117,6 +117,78 @@ def _sorted_split(e):
 SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you}
 
 
+# ---------- plan-only design outcomes ----------
+
+def _design_record_key(project, number, pr, sha):
+    return f"design:{project}#{number}:{pr}:{sha}"
+
+
+def _design_payload(rest):
+    """Validate the finite plan emitted by recipes/design.md."""
+    try:
+        data = json.loads(rest)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("head"), str):
+        return None
+    if data.get("disposition") != "fix":
+        return None
+    if set(data) != {"head", "disposition", "plan"}:
+        return None
+    plan = data["plan"]
+    if not isinstance(plan, dict) or set(plan) != {"summary", "files", "steps", "tests"}:
+        return None
+    if (not isinstance(plan["summary"], str) or not plan["summary"].strip()
+            or not isinstance(plan["tests"], str) or not plan["tests"].strip()):
+        return None
+    for key in ("files", "steps"):
+        values = plan[key]
+        if (not isinstance(values, list) or not values or len(values) > 40
+                or any(not isinstance(value, str) or not value.strip() for value in values)):
+            return None
+    return data
+
+
+def _prepare_design(e):
+    """Accept only a result for the checkout and the current live PR head."""
+    try:
+        data = _design_payload(e.rest)
+        if data is None or not e.item["pr"]:
+            return None
+        input_key = prompt.design_input_key(e.project, e.number, e.item["pr"], e.run["id"])
+        source = json.loads(e.led.get_kv(input_key) or "{}")
+        expected = source.get("head")
+        evidence = source.get("evidence")
+        checkout_head = runner.git(e.run["worktree"], "rev-parse", "HEAD")
+        view = e.ctx.gh(e.project).pr_view(e.item["pr"])
+        current = view.get("headRefOid")
+        if not isinstance(evidence, str) or not evidence.strip():
+            return None
+        if (view.get("state") != "OPEN" or not isinstance(expected, str)
+                or data["head"] != expected or checkout_head != expected or current != expected):
+            return None
+        return {"data": data, "head": expected, "evidence": evidence}
+    except (GHError, runner.GitError, OSError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _design_result(e, prepared):
+    if prepared is None:
+        e.set_state("verifying", "design run produced no usable current-head result — retrying")
+        return True
+    data = prepared["data"]
+    result = {
+        "pr": e.item["pr"], "head": prepared["head"], "run_id": e.run["id"],
+        "source_review_evidence": prepared["evidence"],
+        "disposition": data["disposition"],
+        "plan": data["plan"],
+    }
+    e.led.set_kv(_design_record_key(e.project, e.number, e.item["pr"], prepared["head"]),
+                 json.dumps(result, sort_keys=True))
+    e.set_state("verifying", "design result recorded — conductor can consume it")
+    return True
+
+
 # ---------- review outcomes (DESIGN D11) ----------
 #
 # A review run never touches the worktree (recipes/review.md is read-only),
@@ -630,7 +702,7 @@ def finalize(ctx, run):
 
     # Snapshot pushes and handoff comments can take long enough for an
     # interactive claim to replace us. Do them before taking the write lock.
-    if run["role"] not in ("sort", "review"):
+    if run["role"] not in ("sort", "review", "design"):
         _save_work(ending)
 
     # Prepare slow work without holding SQLite's single writer lock. The
@@ -640,7 +712,9 @@ def finalize(ctx, run):
         if (run["role"] == "review" and verb in ("REVIEW-PASS", "REVIEW-FAIL")
                 and (item["pr"] or not no_change.read(led, project, n))):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
-        elif run["role"] not in ("sort", "review"):
+        elif run["role"] == "design":
+            prepared_design = _prepare_design(ending)
+        elif run["role"] not in ("sort", "review", "design"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed:
                 ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item)
@@ -669,6 +743,8 @@ def finalize(ctx, run):
                     REVIEW_OUTCOMES[verb](ending, prepared_review, ending.defer)
                 else:
                     REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
+            elif run["role"] == "design":
+                _design_result(ending, prepared_design)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
     ending.notify()
