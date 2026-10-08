@@ -41,6 +41,36 @@ def _exclusion(run):
     return None
 
 
+DEFECT_WINDOW = timedelta(days=14)
+
+
+def link_pattern(refs):
+    """Whole-token #N references to any of an item's issue or PR numbers."""
+    nums = [str(n) for n in refs if n is not None]
+    if not nums:
+        return None
+    return re.compile(r'(?<![\w/#])#(?:' + '|'.join(nums) + r')(?!\w)')
+
+
+def linked_bug(bugs, filed_bug, filed_number, refs, merged):
+    """The one definition of a linked defect (D33), shared with the lifecycle.
+
+    A `type:bug` created in [merged, merged + 14 days] that names the issue or
+    PR as a whole #N token, or the bug a failed check filed. Returns the bug
+    row or None."""
+    pattern = link_pattern(refs)
+    candidates = list(bugs)
+    if filed_bug and filed_bug not in candidates:
+        candidates.append(filed_bug)
+    for bug in candidates:
+        created = _time(bug['created_at'])
+        if (created and merged <= created <= merged + DEFECT_WINDOW
+                and ((filed_number is not None and bug['number'] == filed_number)
+                     or (pattern and pattern.search(bug['issue_body'] or '')))):
+            return bug
+    return None
+
+
 def attempts(led, since, until=None):
     """Return ended runs in [since, until), selected by end time.
 
@@ -154,18 +184,9 @@ def attempts(led, since, until=None):
         refs = {run['number'], items.get(key, {}).get('pr'), check.get('pr'),
                 releases.get(key, {}).get('pr')}
         refs.update(e['detail'].get('pr') for e in history if e['kind'] == 'shipped')
-        pattern = re.compile(r'(?<![\w/#])#(?:' + '|'.join(str(n) for n in refs if n is not None)
-                             + r')(?!\w)')
-        candidates = list(bugs[run['project']])
-        linked = items.get((run['project'], check.get('bug')))
-        if linked and linked not in candidates:
-            candidates.append(linked)
-        for bug in candidates:
-            created = _time(bug['created_at'])
-            if (created and merged <= created <= merged + timedelta(days=14)
-                    and (bug['number'] == check.get('bug')
-                         or pattern.search(bug['issue_body'] or ''))):
-                return 'bug within 14 days'
+        if linked_bug(bugs[run['project']], items.get((run['project'], check.get('bug'))),
+                      check.get('bug'), refs, merged):
+            return 'bug within 14 days'
         return None
 
     def first_build(key):

@@ -253,6 +253,14 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def issue_reopens(self, number):
+        """Actual reopen timestamps; issue updatedAt also changes on later edits."""
+        pages = json.loads(self._gh(
+            "api", f"repos/{self.repo}/issues/{number}/events?per_page=100",
+            "--paginate", "--slurp"))
+        return [event["created_at"] for page in pages for event in page
+                if event.get("event") == "reopened"]
+
     def issue_comments(self, number):
         """Fetch every comment, retaining GitHub attribution and durable identity."""
         pages = json.loads(self._gh(
@@ -711,6 +719,20 @@ class GH:
         if comment:
             args += ["--comment", comment]
         self._gh(*args)
+
+    def reopen_issue(self, number):
+        self._gh("issue", "reopen", str(number), "-R", self.repo)
+
+    def set_priority_label(self, number, priority, current_labels):
+        want = f"p{priority}"
+        args = ["issue", "edit", str(number), "-R", self.repo]
+        for l in current_labels:
+            if l in ("p1", "p2", "p3") and l != want:
+                args += ["--remove-label", l]
+        if want not in current_labels:
+            args += ["--add-label", want]
+        if len(args) > 5:
+            self._gh(*args)
 
     def branch_sha(self, branch):
         """The current remote commit SHA of `branch`."""

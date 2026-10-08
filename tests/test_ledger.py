@@ -137,6 +137,11 @@ class LeaseTests(unittest.TestCase):
             finally:
                 led.close()
 
+    def test_event_can_preserve_observed_timestamp(self):
+        observed = "2026-09-01T11:59:00+00:00"
+        self.led.event("source_reopened", "p", 1, {}, at=observed)
+        self.assertEqual(self.led.q("SELECT at FROM events")[0]["at"], observed)
+
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
         with self.assertRaisesRegex(ValueError, "requires verification evidence"):
@@ -843,6 +848,52 @@ class StateTests(unittest.TestCase):
                 led.upsert_item("p", 3, state=state)
 
 
+class QuietCompletionTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:", clock=lambda: datetime(2026, 9, 20, tzinfo=timezone.utc))
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("x", 1, state="shipped", mirror=None)
+
+    def test_complete_quiet_is_atomic_and_once(self):
+        merged = iso(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertTrue(self.led.complete_quiet("x", 1, merged))
+        self.assertFalse(self.led.complete_quiet("x", 1, merged))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["mirror"]), ("done", "mahler:shipped"))
+        ev = self.led.q("SELECT * FROM completion_evidence")
+        self.assertEqual([(e["kind"], e["created_at"][:10]) for e in ev], [("quiet", "2026-09-15")])
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
+
+    def test_replacement_archives_history_and_resets_only_once(self):
+        self.led.add_uat("x", 1, 10, "old", "Old", "check", "2026-09-01T00:00:00+00:00")
+        self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
+        for prefix in ("source_reopened", "shipped_closed", "reopen_mirror"):
+            self.led.set_kv(f"{prefix}:x:1", "1")
+        self.led.add_uat("x", 1, 11, "new", "New", "check", "2026-09-20T00:00:00+00:00")
+        row = self.led.uat("x", 1)
+        self.assertEqual((row["pr"], row["sha"], row["verdict"]), (11, "new", None))
+        self.assertEqual(self.led.q("SELECT * FROM completion_evidence"), [])
+        for prefix in ("source_reopened", "shipped_closed", "reopen_mirror"):
+            self.assertIsNone(self.led.get_kv(f"{prefix}:x:1"))
+        archive = self.led.q("SELECT detail FROM events WHERE kind='shipment_superseded'")
+        self.assertEqual(len(archive), 1)
+        self.assertIn('"quiet"', archive[0]["detail"])
+        self.led.set_uat_verdict("x", 1, "fail", bug=99, note="broken")
+        self.led.add_uat("x", 1, 11, "new", "New", "check")
+        self.assertEqual(self.led.uat("x", 1)["verdict"], "fail")
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_superseded'")), 1)
+
+    def test_reopen_only_done_and_once(self):
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
+        self.assertTrue(self.led.reopen_shipment("x", 1, "revert"))
+        self.led.set_state("x", 1, "done", "again")
+        self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
+        item = self.led.item("x", 1)
+        self.assertEqual((item["state"], item["priority"]), ("done", 1))
+        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+
+
 class ClearUsageTests(unittest.TestCase):
     def test_clears_only_named_windows_of_one_platform(self):
         led = Ledger(":memory:")
@@ -1379,7 +1430,7 @@ class UatTests(unittest.TestCase):
 
     def test_add_is_idempotent(self):
         self.led.add_uat('x', 5, 88, 'a', 't', 'n')
-        self.led.add_uat('x', 5, 89, 'b', 'other', 'other')
+        self.led.add_uat('x', 5, 88, 'a', 'other', 'other')
         row = self.led.uat('x', 5)
         self.assertEqual((row['pr'], row['title']), (88, 't'))
 
