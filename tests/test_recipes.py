@@ -648,3 +648,43 @@ class DesktopGateRecipeTests(unittest.TestCase):
                               text)
                 self.assertNotIn("No macOS UI automation", text)
                 self.assertNotIn("screen is locked", text)
+
+
+class DesignRecipeTests(unittest.TestCase):
+    def test_contract_is_plan_only_and_always_requires_a_fix_plan(self):
+        rendered = prompt.render(
+            "design", number=714, repo="mkny13/mahler", title="Design",
+            platform="claude", worktree="/tmp/wt", branch="mahler/714-design",
+            base="main", pr=42, head="a" * 40, handoff="complete review history",
+            rules="effective project rules")
+        compact = " ".join(rendered.split())
+        for fragment in (
+            "read-only checkout", "Do not edit files", "create or amend commits, push",
+            "write to GitHub", "complete supplied review history", "STATUS: DESIGNED",
+            '"disposition":"fix"', '"files":["path"]',
+            '"steps":["..."]', '"tests":"..."', "security finding",
+            "unsatisfied Done-when criterion", "silent unrecoverable data loss",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, compact)
+        self.assertIn('"disposition":"followups"', compact)
+        for value in ("714", "mkny13/mahler", "42", "a" * 40,
+                      "complete review history", "effective project rules"):
+            self.assertIn(value, rendered)
+
+    def test_design_prompt_includes_required_pr_context(self):
+        class DummyCtx:
+            def policy(self, project):
+                return {"repo": "mkny13/mahler", "rules": "project rules",
+                        "base": "main"}
+
+        item = {"number": 714, "title": "Design", "pr": 42}
+        prep = {"worktree": "/tmp/wt", "branch": "mahler/714-design",
+                "head_sha": "a" * 40}
+        text = prompt.build(DummyCtx(), "mahler", item, "design", "claude",
+                            prep, context="all review findings")
+        for value in ("issue #714", "PR #42", "a" * 40, "all review findings",
+                      "project rules"):
+            self.assertIn(value, text)
+        with self.assertRaisesRegex(ValueError, "review history"):
+            prompt.build(DummyCtx(), "mahler", item, "design", "claude", prep)
