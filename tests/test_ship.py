@@ -253,16 +253,38 @@ class ShipTests(unittest.TestCase):
             self.led.update_run(fresh["id"], status="ended", outcome="DONE")
             self.cfg["platforms"]["gemini-peer"] = {
                 **self.cfg["platforms"]["agy-gemini"], "slot": "agy-gemini"}
-            self.assertIn("agy-gemini", ship._review_route(self.ctx, "x", self.item(), "next")[2])
+            pin, size, exclude = ship._review_route(self.ctx, "x", self.item(), "next")
+            for candidate in ("agy-gemini", "gemini-peer"):
+                chosen, _ = router.pick(self.cfg, self.led, "review", candidate,
+                                        size=size, exclude=exclude)
+                self.assertIsNone(chosen)
+
+    def test_successful_resumed_fixer_is_source_and_review_excludes_its_slot(self):
+        self.resume_builder()
+        fixer = self.led.create_run(project="x", number=5, role="fix", platform="claude",
+            status="ended", outcome="DONE", epoch=2, branch="mahler/5-x", session_id="continued")
+        self.led.create_run(project="x", number=5, role="review", platform="agy-gemini",
+            status="ended", outcome="REVIEW-FAIL", epoch=3, branch="mahler/5-x", session_id="review")
+        source = ship._resume_source(self.ctx, "x", self.item(), "mahler/5-x", "new", (), "m", 0)
+        self.assertEqual(source["id"], fixer)
+        self.cfg["platforms"]["claude-peer"] = {**self.cfg["platforms"]["claude"], "slot": "claude"}
+        _, size, exclude = ship._review_route(self.ctx, "x", self.item(), "new")
+        for candidate in ("claude", "claude-peer"):
+            self.assertIsNone(router.pick(self.cfg, self.led, "review", candidate,
+                                         size=size, exclude=exclude)[0])
 
     def test_resume_source_gates_and_branch_identity(self):
         source = self.resume_builder()
         pol = self.ctx.policy("x")
-        for gate in ("missing", "cline", "quota", "tier", "busy", "account", "pin", "branch", "reserved"):
+        for gate in ("missing", "cline", "quota", "tier", "busy", "account", "pin", "branch", "reserved", "size", "disabled"):
             with self.subTest(gate=gate):
                 cfg = copy.deepcopy(self.cfg)
                 item = dict(self.item())
                 busy, tier = set(), 0
+                if gate == "size":
+                    cfg["platforms"]["claude"]["max_size"] = "s"
+                if gate == "disabled":
+                    cfg["platforms"]["claude"]["enabled"] = False
                 if gate == "missing":
                     self.led.update_run(source, session_id=None)
                 if gate == "cline":

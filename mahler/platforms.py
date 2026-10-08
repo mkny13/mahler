@@ -1021,7 +1021,9 @@ def _extract_error_message(ev):
 def _note_log_error(res, ev):
     """Classify structured failures shared by the non-Claude protocols."""
     _classify_error(res, ev)
-    res["last_error"] = _extract_error_message(ev) if isinstance(ev, dict) else str(ev)
+    error = _extract_error_message(ev) if isinstance(ev, dict) else str(ev)
+    if resume_rejected({"last_error": error}):
+        res["last_error"] = error
     if is_model_unavailable(ev):
         res["model_unavailable"] = True
 

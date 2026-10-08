@@ -75,7 +75,10 @@ class RunTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88, attempts=2, esc_fails=1)
         self.led.set_kv(f"resume-run:{self.run_id}", json.dumps({"source": 99, "cycle": "cycle"}))
         self.led.set_kv("cycle:resume", "reserved")
-        Path(self.log).write_text(json.dumps({"type": "error", "message": "Session saved-123 not found"}))
+        usage = {"type": "rate_limit_event", "rate_limit_info": {
+            "unifiedWindows": {"five_hour": {"utilization": 0.45, "resetsAt": 1789200000}}}}
+        Path(self.log).write_text(json.dumps(usage) + "\n" + json.dumps(
+            {"type": "error", "message": "Session saved-123 not found"}))
         Path(self.run["status_path"]).write_text("1")
         with mock.patch.object(self.ctx, "ping"):
             snap, _ = self.finalize()
@@ -85,6 +88,21 @@ class RunTests(unittest.TestCase):
         self.assertEqual((item["state"], item["attempts"], item["esc_fails"]), ("verifying", 2, 1))
         self.assertEqual(self.led.run(self.run_id)["stop_reason"], "resume_rejected")
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
+        usage = self.led.q1("SELECT used_pct FROM usage WHERE platform='claude' AND window='5h'")
+        self.assertEqual(usage["used_pct"], 45.0)
+
+    def test_generic_resumed_agent_failure_retains_normal_attempt_charge(self):
+        self.run.update(role="fix", platform="claude")
+        self.led.update_run(self.run_id, role="fix", platform="claude")
+        self.led.set_kv(f"resume-run:{self.run_id}", '{"cycle":"cycle"}')
+        Path(self.log).write_text("Error: test assertion failed\n")
+        Path(self.run["status_path"]).write_text("1")
+        with mock.patch.object(self.ctx, "ping"), \
+                mock.patch.object(finalize, "_try_verify_fallback", return_value=False):
+            snap, _ = self.finalize()
+        snap.assert_called_once()
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+        self.assertNotEqual(self.led.run(self.run_id)["stop_reason"], "resume_rejected")
 
     def test_stale_missing_resume_preserves_owner(self):
         self.run.update(role="fix", platform="claude")

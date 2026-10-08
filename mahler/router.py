@@ -855,9 +855,9 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
     """
     role = route_role(role)
     accts = accounts_of(pol)
-    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
+    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
              if account_mode_of(pol) == "priority" else
-             candidates_for_accounts(cfg, role, accts, pin, burst_lines))
+             candidates_for_accounts(cfg, role, accts, pin))
     excluded = {platform_slot(cfg, name) for name in exclude}
     eligible, recoveries = [], []
     now = led.now()

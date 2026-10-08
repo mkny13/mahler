@@ -26,6 +26,32 @@ def provider_error_events(message):
     )
 
 
+class ResumeRejectionTests(unittest.TestCase):
+    def test_explicit_session_errors_across_supported_protocols(self):
+        for message in ("Session saved-123 not found", "Conversation has expired",
+                        "No conversation found with session ID: saved-123",
+                        "Thread 'saved-123' does not exist"):
+            for kind, event in provider_error_events(message):
+                if kind not in {"claude", "codex", "kilo", "vibe"}:
+                    continue
+                with self.subTest(kind=kind, message=message), tempfile.TemporaryDirectory() as tmp:
+                    path = os.path.join(tmp, "agent.log")
+                    with open(path, "w") as stream:
+                        stream.write(json.dumps(event) + "\n")
+                    self.assertTrue(platforms.resume_rejected(platforms.read_log(path, kind)))
+
+    def test_generic_errors_and_assistant_text_do_not_reject_resume(self):
+        for message in ("authentication expired", "File not found", "session failed",
+                        "connection reset", "test assertion failed"):
+            self.assertFalse(platforms.resume_rejected({"last_error": message}))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "agent.log")
+            with open(path, "w") as stream:
+                stream.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "The test checks session not found"}]}}))
+            self.assertFalse(platforms.resume_rejected(platforms.read_log(path, "claude")))
+
+
 class NetworkErrorDetectionTests(unittest.TestCase):
     def test_matches_network_patterns_case_insensitively(self):
         patterns = [
