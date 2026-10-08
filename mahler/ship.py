@@ -1457,9 +1457,39 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
             ctx.say(f"{project}#{n}: PR #{pr} — consumed design plan for fix run on head {sha[:8]}")
         if not base_conflict:
             run = led.last_run(project, n, roles=("fix",))
+            verdict = _kv_json(led, f"review:{project}#{n}")
             led.set_kv(f"{key}:run", json.dumps({
                 "run_id": run["id"] if run else None,
-                "verdict": _kv_json(led, f"review:{project}#{n}")}))
+                "verdict": verdict}))
+            review_run_id = verdict.get("run_id")
+            if not review_run_id:
+                last_rev = led.last_run(project, n, roles=("review",))
+                if last_rev:
+                    review_run_id = last_rev["id"]
+            if run and review_run_id:
+                fix_run_id = run["id"]
+                reviewed_sha = verdict.get("sha") or sha
+                existing = led.q(
+                    "SELECT detail FROM events WHERE project=? AND number=? AND kind='review_fix_trigger'",
+                    (project, n)
+                )
+                already_linked = False
+                for erow in existing:
+                    try:
+                        d = json.loads(erow["detail"] or "{}")
+                        if d.get("fix_run") == fix_run_id and d.get("review_run") == review_run_id:
+                            already_linked = True
+                            break
+                    except (ValueError, TypeError):
+                        pass
+                if not already_linked:
+                    led.event("review_fix_trigger", project, n, {
+                        "version": 1,
+                        "fix_run": fix_run_id,
+                        "review_run": review_run_id,
+                        "reviewed_sha": reviewed_sha,
+                        "pr": pr,
+                    })
 
 
 def _red_ci(ctx, project, item, pr, view):

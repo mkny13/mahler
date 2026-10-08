@@ -32,3 +32,20 @@ To reply, simply **add a comment on the issue with your answer**. Mahler will
 automatically read the comment and move the item back to `inbox`, so a sorting
 run can incorporate the answer before work resumes. The console provides the
 same flow with a 60-second Undo window.
+
+## Review Adjudication and Precision (D33)
+
+Operator CLI commands for managing durable review adjudications and measuring reviewer precision:
+
+- `mahler review-adjudicate <project>#N --review-run ID --sha SHA --classification false|justified|unresolved --evidence URL --reason TEXT [--fix-run ID ...]`
+  - **Authority**: The explicit operator command is the sole adjudication authority. Neither a builder's claim, a later pass, nor a PR merge automatically adjudicates a verdict.
+  - **Events**: Appends a versioned `review_adjudication` event (`version: 1`, `review_run`, `sha`, `classification`, `evidence`, `reason`, `fix_runs`). If `--fix-run` is supplied, also appends durable `review_fix_trigger` event(s).
+  - **Idempotency**: Identical submissions are idempotent no-ops; later corrections append a new event without modifying earlier events (latest event ID wins).
+  - **Validation & Historical Links**: Validates that `--review-run` is an ended `REVIEW-FAIL` run on that item with a matching `review_verdict` event and matching SHA. For `--fix-run`, validates the same item, `role: "fix"`, valid chronology (fix started after review ended), and rejects conflicting links. Any validation error fails atomically without partial writes.
+  - **D33 Attribution Rule**: In `scorecard`, a failed review is disregarded only when its latest valid adjudication is `false`. A later fix is disregarded only when an exact durable `review_fix_trigger` links solely to that false verdict. Unlinked legacy fixes, CI fixes, and base-conflict fixes remain adverse. Historical run rows and operational counters are never mutated.
+
+- `mahler scorecard --review-precision [--project P] [--since 30d] [--json]`
+  - Reports reviewer precision grouped by recorded platform, model, and effort over failed review runs in the requested window.
+  - Each failed verdict is counted once despite duplicate finalization events.
+  - Precision is `justified / (justified + false)`; false-fail share is `false / (justified + false)`. Both excluded counts (`unresolved` and `unadjudicated`) are displayed. When the denominator is zero, precision and false-fail share are reported as `unknown` (`null` in JSON).
+

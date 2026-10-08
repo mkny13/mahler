@@ -9,6 +9,8 @@ remains readable; JSON-looking malformed output is never legacy approval.
 import hashlib
 import json
 import re
+import urllib.parse
+from datetime import datetime, timezone
 
 from . import screenshot_delivery
 from .gh import GHError
@@ -258,4 +260,152 @@ def effective_for_item(led, project, number, pr=None, sha=None, required=False):
         run = active[0] if active else None
     return effective(binding, pr=pr, sha=sha, run=run,
                      project=project, number=number, required=required)
+
+
+def _time(value):
+    if not value:
+        return None
+    dt = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def adjudicate(led, project, number, *, review_run, sha, classification, evidence, reason, fix_runs=None):
+    fix_runs = list(fix_runs or [])
+    if classification not in {"false", "justified", "unresolved"}:
+        raise ValueError(f"invalid classification '{classification}': must be false, justified, or unresolved")
+
+    item = led.item(project, number)
+    if not item:
+        raise ValueError(f"item {project}#{number} not found")
+
+    if not sha or not isinstance(sha, str) or not sha.strip():
+        raise ValueError("missing or invalid SHA")
+    sha = sha.strip()
+
+    evidence = (evidence or "").strip()
+    if not evidence:
+        raise ValueError("missing evidence URL")
+    parsed = urllib.parse.urlsplit(evidence)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"malformed evidence URL: '{evidence}'")
+
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValueError("missing reason text")
+
+    run = led.run(review_run)
+    if not run:
+        raise ValueError(f"review run {review_run} not found")
+    if run["project"] != project or run["number"] != number:
+        raise ValueError(f"review run {review_run} belongs to {run['project']}#{run['number']}, not {project}#{number}")
+    if run["role"] != "review":
+        raise ValueError(f"run {review_run} is role '{run['role']}', expected 'review'")
+    if run["status"] != "ended":
+        raise ValueError(f"review run {review_run} has not ended (status: {run['status']})")
+    if run["outcome"] != "REVIEW-FAIL":
+        raise ValueError(f"review run {review_run} outcome is '{run['outcome']}', expected 'REVIEW-FAIL'")
+
+    verdict_rows = led.q(
+        "SELECT id, at, detail FROM events WHERE project=? AND number=? AND kind='review_verdict' ORDER BY id",
+        (project, number)
+    )
+    matching_verdicts = []
+    for r in verdict_rows:
+        try:
+            d = json.loads(r["detail"] or "{}")
+        except (ValueError, TypeError):
+            continue
+        if d.get("review_run") == review_run and d.get("verdict") == "fail":
+            matching_verdicts.append(d)
+
+    if not matching_verdicts:
+        raise ValueError(f"no matching review_verdict event found for review run {review_run}")
+
+    for v in matching_verdicts:
+        rev_sha = v.get("reviewed_sha")
+        if rev_sha and rev_sha != sha:
+            raise ValueError(f"mismatched SHA: review verdict has '{rev_sha}', but '{sha}' was specified")
+
+    rev_end = _time(run["ended_at"] or run["started_at"])
+    trigger_rows = led.q(
+        "SELECT id, detail FROM events WHERE project=? AND number=? AND kind='review_fix_trigger' ORDER BY id",
+        (project, number)
+    )
+    existing_triggers = {}
+    for r in trigger_rows:
+        try:
+            d = json.loads(r["detail"] or "{}")
+            if "fix_run" in d and "review_run" in d:
+                existing_triggers[d["fix_run"]] = d["review_run"]
+        except (ValueError, TypeError):
+            continue
+
+    for fix_id in fix_runs:
+        frun = led.run(fix_id)
+        if not frun:
+            raise ValueError(f"fix run {fix_id} not found")
+        if frun["project"] != project or frun["number"] != number:
+            raise ValueError(f"fix run {fix_id} item mismatch: belongs to {frun['project']}#{frun['number']}")
+        if frun["role"] != "fix":
+            raise ValueError(f"run {fix_id} is role '{frun['role']}', expected 'fix'")
+        fix_start = _time(frun["started_at"])
+        if not fix_start or not rev_end or (fix_start, frun["id"]) <= (rev_end, run["id"]):
+            raise ValueError(
+                f"invalid chronology: fix run {fix_id} started at {frun['started_at']} "
+                f"before review run {review_run} ended at {run['ended_at'] or run['started_at']}"
+            )
+        if fix_id in existing_triggers and existing_triggers[fix_id] != review_run:
+            raise ValueError(
+                f"conflicting existing link: fix run {fix_id} already linked to review run {existing_triggers[fix_id]}"
+            )
+
+    adj_rows = led.q(
+        "SELECT id, detail FROM events WHERE project=? AND number=? AND kind='review_adjudication' ORDER BY id DESC",
+        (project, number)
+    )
+    latest_adj = None
+    for r in adj_rows:
+        try:
+            d = json.loads(r["detail"] or "{}")
+            if d.get("review_run") == review_run:
+                latest_adj = d
+                break
+        except (ValueError, TypeError):
+            continue
+
+    all_fixes_already_linked = all(fix_id in existing_triggers for fix_id in fix_runs)
+    if (latest_adj is not None
+            and latest_adj.get("classification") == classification
+            and latest_adj.get("sha") == sha
+            and latest_adj.get("evidence") == evidence
+            and latest_adj.get("reason") == reason
+            and set(latest_adj.get("fix_runs", [])) == set(fix_runs)
+            and all_fixes_already_linked):
+        return False
+
+    with led.con:
+        led.event("review_adjudication", project, number, {
+            "version": 1,
+            "review_run": review_run,
+            "sha": sha,
+            "classification": classification,
+            "evidence": evidence,
+            "reason": reason,
+            "fix_runs": sorted(fix_runs),
+        })
+        for fix_id in fix_runs:
+            if fix_id not in existing_triggers:
+                led.event("review_fix_trigger", project, number, {
+                    "version": 1,
+                    "fix_run": fix_id,
+                    "review_run": review_run,
+                    "reviewed_sha": sha,
+                    "pr": dict(item).get("pr"),
+                    "attested": True,
+                    "evidence": evidence,
+                    "reason": reason,
+                })
+                existing_triggers[fix_id] = review_run
+
+    return True
 
