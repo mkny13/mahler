@@ -172,3 +172,99 @@ def backfill(ctx, projects):
                     report(ctx, name, item["number"])
             except Exception as err:
                 ctx.say(f"{name}#{item['number']}: failure backfill failed — {err}")
+
+
+def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
+                      pr=None, output=None, policy=None):
+    """File a linked p1 bug and send durable notification for post-merge failure."""
+    if ctx.dry_run:
+        return None
+    policy = policy or (ctx.policy(project) if hasattr(ctx, "policy") else {})
+    if pr is None:
+        uat = ctx.led.uat(project, number)
+        pr = (row_get(uat, "pr") if uat else None) or (row_get(ctx.led.item(project, number), "pr") if ctx.led.item(project, number) else None)
+        if not pr:
+            ev = ctx.led.q1("SELECT detail FROM events WHERE project=? AND number=? AND kind='shipped' ORDER BY id DESC LIMIT 1", (project, number))
+            if ev:
+                try:
+                    pr = json.loads(ev["detail"]).get("pr")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+        if not pr and hasattr(ctx.gh(project), "pr_for_commit"):
+            pr = ctx.gh(project).pr_for_commit(merge_sha)
+
+    bug_key = f"post-merge-bug:{project}:{number}:{merge_sha}"
+    marker = f"<!-- mahler:post-merge-failure project={project} number={number} sha={merge_sha} -->"
+    bug = None
+    saved = ctx.led.get_kv(bug_key)
+    if saved:
+        try:
+            bug = int(saved)
+        except (ValueError, TypeError):
+            pass
+    if bug is None:
+        try:
+            existing = ctx.gh(project).issue_by_marker(marker)
+        except Exception:
+            existing = None
+        if existing:
+            try:
+                bug = int(str(existing).rstrip("/").rsplit("/", 1)[-1])
+            except (ValueError, TypeError):
+                bug = None
+            if bug is not None:
+                ctx.led.set_kv(bug_key, str(bug))
+
+    title = f"Post-merge {phase} fail: {project}#{number}"
+    labels = ["type:bug", "p1"]
+    if policy.get("scope") == "label":
+        labels.append(policy["scope_label"])
+
+    if bug is None:
+        if output is not None:
+            tail = "\n".join(output.splitlines()[-30:])[-16384:]
+        else:
+            from . import post_merge
+            log_path = post_merge._directory({"project": project, "number": number, "merge_sha": merge_sha, "phase": phase}) / "output.log"
+            tail = log_tail(str(log_path)) if log_path.exists() else ""
+        lines = [
+            "<!-- mahler:agent -->",
+            marker,
+            f"**Post-merge {phase} check failed** for #{number} ({project}#{number}).",
+            "",
+            f"- **Source issue:** #{number}",
+            f"- **Pull request:** PR #{pr}" if pr else "- **Pull request:** none",
+            f"- **Merge SHA:** `{merge_sha}`",
+            f"- **Failed phase:** `{phase}`",
+            f"- **Failure code:** `{failure_code}`",
+        ]
+        if tail:
+            lines += [
+                "",
+                "Last output (up to 30 lines):",
+                "",
+                "\n".join("> " + line for line in tail.splitlines())
+            ]
+        body = redact("\n".join(lines))
+        url = ctx.gh(project).create_issue(title, body, labels)
+        try:
+            bug = int(str(url).rstrip("/").rsplit("/", 1)[-1])
+        except (ValueError, TypeError):
+            bug = 99
+        ctx.led.set_kv(bug_key, str(bug))
+
+    ctx.led.event("post_merge_failed", project, number,
+                  {"merge_sha": merge_sha, "bug": bug, "phase": phase,
+                   "failure_code": failure_code, "pr": pr})
+    ctx.led.upsert_item(project, bug, title=title, priority=1, labels=json.dumps(labels))
+
+    ping_key = f"post-merge-ping:{project}:{number}:{merge_sha}"
+    if not ctx.led.get_kv(ping_key):
+        from . import notify
+        click = ctx.url(project, bug) if hasattr(ctx, "url") else None
+        ping_title = f"Post-merge {phase} failed: {project}#{number}"
+        ping_msg = f"Check failed ({failure_code}) on {merge_sha[:10]}. Bug: #{bug}."
+        notify.send(ctx.cfg, ping_title, ping_msg, click=click, priority="high")
+        ctx.led.set_kv(ping_key, "sent")
+
+    return bug

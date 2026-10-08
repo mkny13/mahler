@@ -143,6 +143,30 @@ class RevertTests(unittest.TestCase):
         outbox.drain(self.ctx)
         self.gh.create_issue.assert_not_called()
 
+    def test_auto_revert_with_recovery(self):
+        from mahler.console.revert import revert
+        res, issue_num = revert(self.ctx, 'mahler', 1, 2, source="post_merge", recover=True)
+        self.assertEqual((res, issue_num), ('done', '99'))
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+        self.assertEqual(self.gh.comment.call_count, 1)
+        self.assertIn('Asked for automatically', self.gh.create_issue.call_args[0][1])
+        self.assertEqual(self.gh.comment.call_args[0][1], '↩︎ Revert requested automatically — #99.')
+
+        # Second call with recover=True does not duplicate issue or comment
+        self.gh.issue_comments = Mock(return_value=[{'body': '↩︎ Revert requested automatically — #99.'}])
+        res2, issue_num2 = revert(self.ctx, 'mahler', 1, 2, source="post_merge", recover=True)
+        self.assertEqual((res2, issue_num2), ('done', '99'))
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+        self.assertEqual(self.gh.comment.call_count, 1)
+
+        # Crash recovery: issue exists on GitHub via marker, but kv record lost
+        self.led.con.execute("DELETE FROM kv WHERE key LIKE 'revert:%'")
+        self.gh.issue_by_marker = Mock(return_value='https://github.com/test/repo/issues/99')
+        res3, issue_num3 = revert(self.ctx, 'mahler', 1, 2, source="post_merge", recover=True)
+        self.assertEqual((res3, issue_num3), ('done', '99'))
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+        self.assertEqual(self.led.get_kv('revert:mahler:2'), '99')
+
 
 if __name__ == '__main__':
     unittest.main()

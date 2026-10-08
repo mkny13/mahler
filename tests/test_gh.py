@@ -465,3 +465,22 @@ class ReviewedBranchUpdateTests(unittest.TestCase):
         with self.assertRaises(GHError):
             self.client.update_reviewed_branch(self.repo, 'topic', 'release', self.base, lambda: True)
         self.assertEqual(self.remote_head(), self.head)
+
+
+class TestCommitPRLookup(unittest.TestCase):
+    def test_pr_for_commit_finds_merged_pr(self):
+        gh = GH("owner/repo")
+        with patch.object(gh, "_gh", return_value=json.dumps([
+                {"number": 10, "merged_at": None},
+                {"number": 12, "merged_at": "2026-10-08T00:00:00Z"}])):
+            self.assertEqual(gh.pr_for_commit("a" * 40), 12)
+
+    def test_pr_for_commit_fallback_first_or_none(self):
+        gh = GH("owner/repo")
+        with patch.object(gh, "_gh", return_value=json.dumps([{"number": 15}])):
+            self.assertEqual(gh.pr_for_commit("a" * 40), 15)
+        with patch.object(gh, "_gh", return_value="[]"):
+            self.assertIsNone(gh.pr_for_commit("a" * 40))
+        from mahler.gh import GHError
+        with patch.object(gh, "_gh", side_effect=GHError("offline")):
+            self.assertIsNone(gh.pr_for_commit("a" * 40))

@@ -54,9 +54,45 @@ def _change(ctx, row, **values):
         expected_phase=row["phase"], phase=values.pop("phase", row["phase"]), **values)
 
 
-def _fail(ctx, row, code):
+def _remediate(ctx, row, policy):
+    project, number, sha = row["project"], row["number"], row["merge_sha"]
+    rem_key = f"post-merge-remediation:{project}:{number}:{sha}"
+    if ctx.led.get_kv(rem_key):
+        return
+    from .ledger import row_get
+    uat = ctx.led.uat(project, number)
+    pr = (row_get(uat, "pr") if uat else None) or (row_get(ctx.led.item(project, number), "pr") if ctx.led.item(project, number) else None)
+    if not pr:
+        ev = ctx.led.q1("SELECT detail FROM events WHERE project=? AND number=? AND kind='shipped' ORDER BY id DESC LIMIT 1", (project, number))
+        if ev:
+            try:
+                pr = json.loads(ev["detail"]).get("pr")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+    if not pr and hasattr(ctx.gh(project), "pr_for_commit"):
+        pr = ctx.gh(project).pr_for_commit(sha)
+
+    from . import failures
+    failures.report_post_merge(ctx, project, number, sha, row["phase"],
+                               row_get(row, "failure_code", ""), pr=pr, policy=policy)
+
+    if policy.get("post_merge", {}).get("auto_revert", False) and pr:
+        from .console.revert import revert
+        revert(ctx, project, number, pr, source="post_merge", recover=True)
+
+    ctx.led.set_kv(rem_key, "done")
+
+
+def _fail(ctx, row, code, policy=None):
     _change(ctx, row, status="FAIL", failure_code=code,
             summary=f"Post-merge {row['phase']}: {code}")
+    policy = policy or (ctx.policy(row["project"]) if hasattr(ctx, "policy") else None)
+    if policy:
+        try:
+            updated = ctx.led.post_merge_check(row["project"], row["number"], row["merge_sha"])
+            _remediate(ctx, updated or {**row, "status": "FAIL", "failure_code": code}, policy)
+        except Exception:
+            ctx.say(f"{row['project']}#{row['number']}: post-merge failure remediation unavailable")
 
 
 def register(ctx, project, number, view):
@@ -209,15 +245,17 @@ def advance(ctx, projects):
                                  "WHERE u.project=? AND i.state='shipped'", (name,)):
                 register(ctx, name, uat["number"], {"state": "MERGED", "mergeCommit": {"oid": uat["sha"]}})
             for row in ctx.led.q("SELECT * FROM post_merge_checks WHERE project=? "
-                                 "AND status IN ('pending','PASS')", (name,)):
+                                 "AND status IN ('pending','PASS','FAIL')", (name,)):
                 try:
                     if row["status"] == "PASS":
                         _deliver(ctx, row)
+                    elif row["status"] == "FAIL":
+                        _remediate(ctx, row, policy)
                     else:
                         _advance(ctx, row, policy)
                 except Exception:
                     if row["status"] == "pending":
-                        _fail(ctx, row, "execution_error")
+                        _fail(ctx, row, "execution_error", policy=policy)
                     ctx.say(f"{name}#{row['number']}: post-merge action unavailable")
         except Exception:
             ctx.say(f"{name}: post-merge pass unavailable")
@@ -229,6 +267,7 @@ def _worker(directory, timeout, command):
     intent = json.loads(_read(directory / "intent.json"))
     result = dict(intent)
     proc = None
+    output = b""
     try:
         proc = subprocess.Popen(["/bin/sh", "-c", command], stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, start_new_session=True)
@@ -254,6 +293,11 @@ def _worker(directory, timeout, command):
             timer.cancel()
             kill()  # remove background descendants too
             proc.wait()
+            if output:
+                try:
+                    (directory / "output.log").write_bytes(output[:MAX_OUTPUT])
+                except OSError:
+                    pass
         text = output.decode("utf-8")
         phase = intent["identity"]["phase"]
         if phase == "live":
@@ -268,6 +312,11 @@ def _worker(directory, timeout, command):
             result.update(tag=intent["identity"]["tag"] if valid else None,
                           **{"pass": valid})
     except Exception:
+        if output:
+            try:
+                (directory / "output.log").write_bytes(output[:MAX_OUTPUT])
+            except OSError:
+                pass
         result = {**intent, "error": "command_failed"}
     temporary = directory / "result.tmp"
     temporary.write_text(json.dumps(result))

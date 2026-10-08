@@ -45,7 +45,7 @@ topic = ""                      # optional: set an unguessable topic and subscri
 # live_command = "./scripts/check-live.sh"  # required for command; empty for built-ins
 # environment = "staging"         # preview/staging default; production is explicit
 # timeout_seconds = 1800          # integer 1–86400, total durable check deadline
-# auto_revert = false             # opt-in policy only; this does not execute a revert
+# auto_revert = false             # opt-in policy only; prepare a guarded revert PR on failure
 # The runner supplies the exact merge SHA, tag and artifact context.
 # Empty smoke cannot produce PASS; D11 defines identity, reports and D10 handoff.
 
