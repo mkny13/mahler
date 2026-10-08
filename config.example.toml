@@ -8,6 +8,9 @@ routing_mode = "list"
 # Nothing is managed until a project here says enabled = true.
 
 # Optional daemon-only GitHub App identity. Omit the whole table to keep gh auth.
+# The global installation applies only to the effective personal GitHub account
+# (gh_account, else first account/accounts entry, else personal). Work accounts
+# use their own gh credentials unless explicitly opting into an installation below.
 # Requires openssl and an installed App with repository permissions for the
 # conductor's operations (contents, issues, pull requests, checks/actions reads).
 # Store the private key securely; neither it nor tokens belong in account env.
@@ -84,7 +87,7 @@ dependency_prs_daily_cap = 3 # successful adoptions per local calendar day
 # Override for shared apps, or set review_context = "" to clear inherited assumptions.
 # review_context = "Multiple users upgrade their devices independently."
 # review_green_rounds = 3        # optional per-project override
-# github_app_installation_id = 98765  # override for another GitHub owner
+# github_app_installation_id = 98765  # explicit App opt-in/override for any account
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
 # Defaults to true with a personal account, false for work-only projects.
 # explore = false

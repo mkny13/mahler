@@ -11,6 +11,7 @@ This module is the entry only: each pass it calls lives in its own module
 import json
 import fcntl
 import os
+import re
 import sys
 
 from . import backup, capacity, config, digest, failures, janitor, notify, platform_audit, practices_audit
@@ -108,6 +109,9 @@ def tick(ctx):
             sync(ctx, p["name"])
         except GHError as e:
             ctx.say(f"{p['name']}: GitHub sync failed — {e}")
+            _sync_access_result(ctx, p, e)
+        else:
+            _sync_access_result(ctx, p)
     failures.backfill(ctx, projects)
     expire(ctx)
     close_finished_parents(ctx, projects)
@@ -149,6 +153,38 @@ def tick(ctx):
     digest.maybe_send(ctx)                  # informational: also runs while paused
     janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
     return ctx.lines
+
+
+def _sync_access_result(ctx, project, error=None):
+    """Alert once per repository-access outage, surviving ticks and restarts."""
+    if ctx.dry_run:
+        return
+    name = project["name"]
+    key = f"sync_access:{name}"
+    try:
+        previous = ctx.led.get_kv(key)
+        if error is None:
+            if previous:
+                ctx.led.set_kv(key, "")
+            return
+        state = json.loads(previous) if previous else {"failures": 0, "notified": False}
+        matching = re.search(
+            r"\bHTTP\s+404\b|\bnot found\b|\bcould not resolve to a repository\b",
+            str(error), re.IGNORECASE)
+        state["failures"] = min(2, state["failures"] + 1) if matching else 0
+        alert = state["failures"] == 2 and not state["notified"]
+        if alert:
+            state["notified"] = True
+        # Latch before attempting delivery, so a failed notification cannot
+        # repeatedly ping on each tick. Only successful sync re-arms it.
+        ctx.led.set_kv(key, json.dumps(state))
+        if alert:
+            ctx.ping(f"{name}: GitHub repository unreachable",
+                     f"Cannot sync {project['repo']} for two consecutive ticks. "
+                     "Check the project's GitHub login and repository access.",
+                     priority="high", tags="warning")
+    except Exception:  # diagnostics must never block another project's sync
+        ctx.say(f"{name}: could not record or notify GitHub access outage")
 
 
 def record_holds(ctx):
