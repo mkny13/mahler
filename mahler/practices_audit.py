@@ -1083,6 +1083,145 @@ def _protection(gh, jobs, ci_unknown):
                     "Squash merging enabled and a PR test check is required.", evidence)
 
 
+_EXEMPTION_KW = re.compile(
+    r"\b(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
+    r"scanner|accepted(?:[ -]limitation)?|known[ -]limitation|decision[s]?|decided|"
+    r"practice[s]?|audit[s]?|mkny13/mahler|mahler#\d+|rationale)\b",
+    re.I
+)
+
+
+def _extract_toml_rationale(val):
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, dict):
+        return str(val.get("rationale") or val.get("reason") or val.get("issue")
+                   or val.get("decision") or val).strip()
+    return "Documented exemption"
+
+
+def _project_toml_exemptions(tree):
+    exemptions = {}
+    try:
+        text = tree.read(".mahler/project.toml")
+        data = tomllib.loads(text)
+    except Exception:
+        return exemptions
+
+    practices = data.get("practices")
+    if not isinstance(practices, dict):
+        return exemptions
+
+    ex_table = practices.get("exemptions")
+    if isinstance(ex_table, dict):
+        for check, val in ex_table.items():
+            if check in config.PRACTICES_AUDIT_CHECKS:
+                exemptions[check] = (
+                    ".mahler/project.toml: [practices.exemptions]",
+                    _extract_toml_rationale(val),
+                )
+    elif isinstance(ex_table, (list, tuple)):
+        for check in ex_table:
+            if isinstance(check, str) and check in config.PRACTICES_AUDIT_CHECKS:
+                exemptions[check] = (
+                    ".mahler/project.toml: [practices.exemptions]",
+                    "Documented exemption in project.toml",
+                )
+
+    ex_list = practices.get("exempt")
+    if isinstance(ex_list, (list, tuple)):
+        for check in ex_list:
+            if isinstance(check, str) and check in config.PRACTICES_AUDIT_CHECKS and check not in exemptions:
+                exemptions[check] = (
+                    ".mahler/project.toml: [practices.exempt]",
+                    "Documented exemption in project.toml",
+                )
+    elif isinstance(ex_list, dict):
+        for check, val in ex_list.items():
+            if check in config.PRACTICES_AUDIT_CHECKS and check not in exemptions:
+                exemptions[check] = (
+                    ".mahler/project.toml: [practices.exempt]",
+                    _extract_toml_rationale(val),
+                )
+
+    for check in config.PRACTICES_AUDIT_CHECKS:
+        if check in practices and check not in exemptions:
+            val = practices[check]
+            exemptions[check] = (
+                f".mahler/project.toml: [practices.{check}]",
+                _extract_toml_rationale(val),
+            )
+
+    return exemptions
+
+
+def _scan_markdown_exemptions(tree, rel_path):
+    exemptions = {}
+    try:
+        text = tree.read(rel_path)
+    except (FileNotFoundError, OSError, UnicodeError):
+        return exemptions
+
+    lines = text.splitlines()
+    current_heading = ""
+    is_decision_file = "decision" in rel_path.lower()
+
+    for idx, raw_line in enumerate(lines, 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            current_heading = line.lstrip("#").strip()
+
+        for check in config.PRACTICES_AUDIT_CHECKS:
+            if check in exemptions:
+                continue
+            pat = r"""(?i)(?:^|[\s`"'(])""" + re.escape(check) + r"""(?:$|[\s`"')/:,-])"""
+            alt_pat = r"""(?i)(?:^|[\s`"'(])""" + re.escape(check.replace("-", "_")) + r"""(?:$|[\s`"')/:,-])"""
+            matches_check = bool(re.search(pat, line) or re.search(alt_pat, line))
+            matches_heading_check = bool(re.search(pat, current_heading) or re.search(alt_pat, current_heading))
+
+            if matches_check or matches_heading_check:
+                context_text = f"{current_heading} {line}"
+                if is_decision_file or _EXEMPTION_KW.search(context_text):
+                    rationale = line.lstrip("-*# \t")
+                    colon_idx = rationale.find(":")
+                    if colon_idx != -1 and colon_idx < len(check) + 5:
+                        rationale = rationale[colon_idx + 1:].strip()
+                    if line.startswith("#"):
+                        for next_line in lines[idx:idx + 3]:
+                            nl = next_line.strip()
+                            if nl and not nl.startswith("#"):
+                                rationale = f"{line.lstrip('#').strip()} — {nl}"
+                                break
+                    if not rationale:
+                        rationale = current_heading or "Documented decision or exemption"
+                    cite = f"{rel_path}:{idx}: {line[:120]}"
+                    exemptions[check] = (cite, rationale)
+
+    return exemptions
+
+
+def _load_exemptions(tree):
+    exemptions = {}
+    exemptions.update(_project_toml_exemptions(tree))
+    for doc in ("docs/DECISIONS.md", "DECISIONS.md", "AGENTS.md"):
+        doc_exemptions = _scan_markdown_exemptions(tree, doc)
+        for check, val in doc_exemptions.items():
+            if check not in exemptions:
+                exemptions[check] = val
+    try:
+        source, _ = _effective(tree, "AGENTS.md")
+        if source not in ("AGENTS.md", "docs/DECISIONS.md", "DECISIONS.md"):
+            doc_exemptions = _scan_markdown_exemptions(tree, source)
+            for check, val in doc_exemptions.items():
+                if check not in exemptions:
+                    exemptions[check] = val
+    except (FileNotFoundError, OSError, UnicodeError):
+        pass
+    return exemptions
+
+
 def scan_project(pol, gh):
     """Exactly six outcomes, including explicit unknowns for unreadable evidence."""
     tree = _Tree(pol["path"])
@@ -1093,9 +1232,21 @@ def scan_project(pol, gh):
             for check in config.PRACTICES_AUDIT_CHECKS))
     ci, commands, jobs, uncertain = _ci(tree)
     instructions, guidance = _instructions(tree, pol["name"])
-    findings = (ci, instructions, guidance, _verify(tree, pol, commands, uncertain),
-                _secrets(tree), _protection(gh, jobs, uncertain))
-    return ProjectAudit(pol["name"], pol["repo"], findings)
+    raw_findings = (ci, instructions, guidance, _verify(tree, pol, commands, uncertain),
+                    _secrets(tree), _protection(gh, jobs, uncertain))
+    exemptions = _load_exemptions(tree)
+    findings = []
+    for f in raw_findings:
+        if f.state != "pass" and f.check in exemptions:
+            cite, rationale = exemptions[f.check]
+            findings.append(_finding(
+                f.check, "pass",
+                f"Documented architectural decision or exemption accepts {f.check}: {rationale}",
+                (cite, *f.evidence),
+            ))
+        else:
+            findings.append(f)
+    return ProjectAudit(pol["name"], pol["repo"], tuple(findings))
 
 
 def scan(cfg, client):
@@ -1283,17 +1434,50 @@ def file_audit(cfg, results, client, *, report_url=None, report_marker=None,
     for result in results:
         project = inventory[result.project]
         for finding in result.findings:
-            if finding.state == "pass":
-                continue
             key = f"{result.project}/{finding.check}"
             marker = proposal_marker(result.project, finding.check)
+            if finding.state == "pass":
+                try:
+                    gh = client(result.project)
+                    url = gh.issue_by_marker(marker)
+                    if url:
+                        number = int(url.rstrip("/").rsplit("/", 1)[1])
+                        is_closed = False
+                        if hasattr(gh, "issue_state"):
+                            try:
+                                is_closed = gh.issue_state(number).lower() == "closed"
+                            except (GHError, ValueError, KeyError):
+                                is_closed = False
+                        if not is_closed:
+                            close_comment = _safe(
+                                f"<!-- mahler:practices-audit:resolved -->\n\n"
+                                f"Practices check `{finding.check}` is now resolved ({finding.state}) — {finding.reason}."
+                            )
+                            if hasattr(gh, "close_issue"):
+                                gh.close_issue(number, comment=close_comment)
+                            else:
+                                gh.comment(number, close_comment)
+                        proposals[key] = url
+                except (GHError, ValueError):
+                    errors.append(f"{key}: proposal resolution failed; retry required")
+                continue
             body = _safe(
                 f"{marker}\n\nAudit report: {report_url}\n\n## Evidence\n\n{_details(finding)}"
                 f"\n\n## Recommended repository change\n\n{_CHANGES[finding.check]}"
                 "\n\n## Done when\n\nThe read-only check passes; review heuristic candidates "
                 "locally without publishing credential values. Run from the root of the "
                 "worktree containing your changes, with Mahler installed.\n\n"
-                f"```sh\n{_acceptance(project, finding.check)}\n```\n")
+                f"```sh\n{_acceptance(project, finding.check)}\n```\n\n"
+                "### Resolving verified scanner false positives\n\n"
+                "If investigation confirms the repository satisfies the practice in substance "
+                "or the finding is a scanner limitation/false positive:\n"
+                "- **Documented architectural decision or exemption**: Record the rationale in "
+                "`docs/DECISIONS.md`, `DECISIONS.md`, `AGENTS.md`, or `.mahler/project.toml` "
+                "(e.g. `[practices.exemptions]`). The acceptance check above will recognize "
+                "documented decisions and pass cleanly.\n"
+                "- **Scanner issue tracking**: If the scanner has a bug or limitation, record the "
+                "finding rationale and file/reference a Mahler tracking issue in `mkny13/mahler`. "
+                "Close or resolve the proposal cleanly rather than escalating to `needs_you`.\n")
             try:
                 gh = client(result.project)
                 url = gh.issue_by_marker(marker)

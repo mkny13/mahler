@@ -84,6 +84,18 @@ class FakeGH:
     def add_label(self, number, label):
         self.issues[f"https://github.com/{self.repo}/issues/{number}"]["labels"].append(label)
 
+    def issue_state(self, number):
+        url = f"https://github.com/{self.repo}/issues/{number}"
+        return self.issues.get(url, {}).get("state", "open").upper()
+
+    def close_issue(self, number, comment=None):
+        self.calls.append(("close", number))
+        url = f"https://github.com/{self.repo}/issues/{number}"
+        if url in self.issues:
+            self.issues[url]["state"] = "closed"
+        if comment:
+            self.comment(number, comment)
+
     def ensure_pass_label(self, name):
         self.calls.append(("label", name))
 
@@ -1416,6 +1428,125 @@ class TestPracticesAudit(unittest.TestCase):
             f = self.results()["verify-command"]
             self.assertEqual(f.state, "gap")
             self.assertEqual(f.reason, "Verify command is absent from literal PR CI commands.")
+
+    def test_proposal_body_includes_false_positive_resolution_contract(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        result = audit.scan_project(self.pol, self.gh)
+        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        proposal_url = filing.proposals["demo/agent-instructions"]
+        body = self.gh.issues[proposal_url]["body"]
+        self.assertIn("Resolving verified scanner false positives", body)
+        self.assertIn("docs/DECISIONS.md", body)
+        self.assertIn("DECISIONS.md", body)
+        self.assertIn("AGENTS.md", body)
+        self.assertIn(".mahler/project.toml", body)
+        self.assertIn("mkny13/mahler", body)
+        self.assertIn("needs_you", body)
+
+    def test_documented_decisions_in_decisions_md_resolve_cleanly(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        findings = self.results()
+        self.assertEqual(findings["agent-instructions"].state, "gap")
+
+        self.write("DECISIONS.md", (
+            "# Architectural Decisions\n\n"
+            "### D12 — agent-instructions exemption\n"
+            "CLAUDE.md is maintained separately for tool compatibility; "
+            "scanner limitation tracked in mkny13/mahler#806.\n"
+        ))
+        resolved = self.results()
+        self.assertEqual(resolved["agent-instructions"].state, "pass")
+        self.assertIn("Documented architectural decision or exemption",
+                      resolved["agent-instructions"].reason)
+        self.assertIn("DECISIONS.md", resolved["agent-instructions"].evidence[0])
+        self.assertIn("mkny13/mahler#806", resolved["agent-instructions"].reason)
+
+    def test_project_toml_exemption_resolves_finding_cleanly(self):
+        self.gh.settings["allow_squash_merge"] = False
+        findings = self.results()
+        self.assertEqual(findings["branch-protection"].state, "gap")
+
+        self.write(".mahler/project.toml", (
+            '[verify]\nfast = "python3 -m unittest discover -s tests"\n\n'
+            '[practices.exemptions]\n'
+            'branch-protection = "Solo developer repository with direct commits"\n'
+        ))
+        resolved = self.results()
+        self.assertEqual(resolved["branch-protection"].state, "pass")
+        self.assertIn(".mahler/project.toml", resolved["branch-protection"].evidence[0])
+        self.assertIn("Solo developer repository", resolved["branch-protection"].reason)
+
+    def test_agents_md_exemption_resolves_finding_cleanly(self):
+        self.write(".github/workflows/ci.yml", "name: CI\non: pull_request\njobs: {}\n")
+        findings = self.results()
+        self.assertIn(findings["ci-tests"].state, ("gap", "unknown"))
+
+        self.write("AGENTS.md", (
+            GUIDANCE + "\n## Practices exemptions\n"
+            "- `ci-tests`: tests run on external builder; scanner false positive tracked in mkny13/mahler#803.\n"
+        ))
+        resolved = self.results()
+        self.assertEqual(resolved["ci-tests"].state, "pass")
+        self.assertIn("AGENTS.md", resolved["ci-tests"].evidence[0])
+        self.assertIn("external builder", resolved["ci-tests"].reason)
+
+    def test_proposal_acceptance_passes_with_documented_decision(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        result = audit.scan_project(self.pol, self.gh)
+        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        body = self.gh.issues[filing.proposals["demo/agent-instructions"]]["body"]
+        command = body.split("```sh\n", 1)[1].split("\n```", 1)[0]
+        executable, flag, code = shlex.split(command)
+        self.assertEqual((executable, flag), ("python3", "-c"))
+
+        with tempfile.TemporaryDirectory() as worktree:
+            root = Path(worktree)
+            (root / "AGENTS.md").write_text(GUIDANCE)
+            (root / "CLAUDE.md").write_text("Diverged\n")
+            (root / "DECISIONS.md").write_text(
+                "# Decisions\n\n### D42 — agent-instructions exemption\n"
+                "Exempt due to custom tool requirements (mkny13/mahler#806).\n"
+            )
+            with patch("pathlib.Path.cwd", return_value=root), \
+                    patch("mahler.gh.GH", return_value=self.gh), \
+                    patch("builtins.print"):
+                exec(code, {})
+
+    def test_audit_rerun_cleanly_reconciles_resolved_proposals(self):
+        self.write("CLAUDE.md", "Diverged\n")
+        first_result = audit.scan_project(self.pol, self.gh)
+        self.assertEqual(first_result.findings[1].state, "gap")
+        first = audit.file_audit(self.cfg(), (first_result,), lambda _: self.gh)
+        proposal_url = first.proposals["demo/agent-instructions"]
+        self.assertEqual(len(self.gh.issues), 2)
+        self.assertEqual(self.gh.issues[proposal_url]["state"], "open")
+
+        # Now repo documents exemption
+        self.write("DECISIONS.md", (
+            "# Decisions\n\n### D1 — agent-instructions exemption\n"
+            "Scanner false positive tracked in mkny13/mahler#806.\n"
+        ))
+        second_result = audit.scan_project(self.pol, self.gh)
+        self.assertEqual(second_result.findings[1].state, "pass")
+
+        # Re-run file_audit
+        second = audit.file_audit(self.cfg(), (second_result,), lambda _: self.gh,
+                                  report_url=first.report_url)
+        # Reuses marker without creating duplicate issues
+        self.assertEqual(len(self.gh.issues), 2)
+        self.assertEqual(second.proposals["demo/agent-instructions"], proposal_url)
+        # Marks proposal resolved (closed with comment)
+        self.assertEqual(self.gh.issues[proposal_url]["state"], "closed")
+        self.assertTrue(any("resolved" in c[1].lower() for c in self.gh.comments if c[0] == 2))
+        self.assertFalse(second.errors)
+
+        # Third run when already closed does not re-comment
+        comment_count = len(self.gh.comments)
+        third = audit.file_audit(self.cfg(), (second_result,), lambda _: self.gh,
+                                 report_url=first.report_url)
+        self.assertEqual(len(self.gh.issues), 2)
+        self.assertEqual(len(self.gh.comments), comment_count)
+        self.assertEqual(third.proposals["demo/agent-instructions"], proposal_url)
 
 
 class SchedulerOrderingTests(unittest.TestCase):
