@@ -109,6 +109,81 @@ class TestEffectiveReviewPure(unittest.TestCase):
             "unknown",
         )
 
+    def test_terminal_verdict_missing_bound_sha_is_not_accepted(self):
+        for verdict in ("pass", "fail"):
+            with self.subTest(verdict=verdict):
+                binding = {"pr": 10, "verdict": verdict}
+                # When current SHA is supplied, missing bound SHA must not match as wildcard
+                self.assertEqual(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    "unknown",
+                )
+                self.assertEqual(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5, required=True),
+                    "required",
+                )
+                self.assertNotIn(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    ("pass", "fail"),
+                )
+                # Explicit None sha in binding must also not match
+                binding_none = {"sha": None, "pr": 10, "verdict": verdict}
+                self.assertEqual(
+                    review.effective(binding_none, pr=10, sha="head1", run=None, project="x", number=5),
+                    "unknown",
+                )
+
+    def test_terminal_verdict_missing_bound_pr_is_not_accepted(self):
+        for verdict in ("pass", "fail"):
+            with self.subTest(verdict=verdict):
+                binding = {"sha": "head1", "verdict": verdict}
+                # When current PR is supplied, missing bound PR must not match as wildcard
+                self.assertEqual(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    "unknown",
+                )
+                self.assertEqual(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5, required=True),
+                    "required",
+                )
+                self.assertNotIn(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    ("pass", "fail"),
+                )
+                # Explicit None pr in binding must also not match
+                binding_none = {"sha": "head1", "pr": None, "verdict": verdict}
+                self.assertEqual(
+                    review.effective(binding_none, pr=10, sha="head1", run=None, project="x", number=5),
+                    "unknown",
+                )
+
+    def test_terminal_verdict_missing_both_bound_sha_and_pr_is_not_accepted(self):
+        for verdict in ("pass", "fail"):
+            with self.subTest(verdict=verdict):
+                binding = {"verdict": verdict}
+                self.assertEqual(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    "unknown",
+                )
+                self.assertNotIn(
+                    review.effective(binding, pr=10, sha="head1", run=None, project="x", number=5),
+                    ("pass", "fail"),
+                )
+
+    def test_active_run_with_unbound_identity_remains_pending(self):
+        run = {"id": 1, "role": "review", "status": "running", "project": "x", "number": 5}
+        # Pending runs with missing bound SHA or PR retain existing pending behavior
+        binding_no_sha = {"pr": 10, "run_id": 1}
+        self.assertEqual(
+            review.effective(binding_no_sha, pr=10, sha="head1", run=run, project="x", number=5),
+            "pending",
+        )
+        binding_no_pr = {"sha": "head1", "run_id": 1}
+        self.assertEqual(
+            review.effective(binding_no_pr, pr=10, sha="head1", run=run, project="x", number=5),
+            "pending",
+        )
+
     def test_terminal_verdicts_are_durable_across_run_lifecycle(self):
         for verdict in ("pass", "fail"):
             with self.subTest(verdict=verdict):
@@ -234,6 +309,27 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         self.assertEqual(
             review.effective_for_item(self.led, "x", 5, pr=88, sha="head1"),
             "unknown",
+        )
+
+    def test_ledger_effective_for_item_terminal_verdict_missing_bound_sha_or_pr(self):
+        self.led.upsert_item("x", 5, pr=88, state="verifying")
+        # Missing bound sha in terminal record
+        self.led.set_kv("review:x#5", json.dumps({"pr": 88, "verdict": "pass"}))
+        self.assertEqual(
+            review.effective_for_item(self.led, "x", 5, pr=88, sha="head1"),
+            "unknown",
+        )
+        # Missing bound pr in terminal record
+        self.led.set_kv("review:x#5", json.dumps({"sha": "head1", "verdict": "pass"}))
+        self.assertEqual(
+            review.effective_for_item(self.led, "x", 5, pr=88, sha="head1"),
+            "unknown",
+        )
+        # Fully bound terminal record matches
+        self.led.set_kv("review:x#5", json.dumps({"sha": "head1", "pr": 88, "verdict": "pass"}))
+        self.assertEqual(
+            review.effective_for_item(self.led, "x", 5, pr=88, sha="head1"),
+            "pass",
         )
 
     def test_finalization_after_interactive_preemption_leaves_item_not_pending(self):

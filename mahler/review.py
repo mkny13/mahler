@@ -196,16 +196,20 @@ def effective(binding, pr=None, sha=None, run=None, *, project=None, number=None
     binding_sha = binding.get("sha")
     binding_pr = binding.get("pr")
 
+    # Terminal verdict evidence: pass/fail only for matching identity.
+    # Reject terminal verdicts when any supplied current identity component lacks
+    # an equal corresponding bound value (missing bound fields do not match as wildcards).
+    term_sha_matches = bool(not sha or (binding_sha is not None and binding_sha == sha))
+    term_pr_matches = bool(pr is None or (binding_pr is not None and str(binding_pr) == str(pr)))
+    verdict = binding.get("verdict")
+    if term_sha_matches and term_pr_matches and verdict in ("pass", "fail"):
+        return verdict
+
+    # Active pending: only for a matching active (running/stopping) review run.
     sha_matches = bool(not sha or not binding_sha or binding_sha == sha)
     pr_matches = bool(pr is None or binding_pr is None or str(binding_pr) == str(pr))
     identity_matches = sha_matches and pr_matches
 
-    # Terminal verdict evidence: pass/fail only for matching identity.
-    verdict = binding.get("verdict")
-    if identity_matches and verdict in ("pass", "fail"):
-        return verdict
-
-    # Active pending: only for a matching active (running/stopping) review run.
     if run is not None and identity_matches:
         run_dict = dict(run) if not isinstance(run, dict) else run
         run_status = run_dict.get("status")
