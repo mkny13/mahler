@@ -400,7 +400,6 @@ def capacity_report(led, *, days=30, now=None):
 
     daily_requests = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
     limits_seen = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"rate_limited": False, "limit_hit": False})))
-    platform_limits = defaultdict(lambda: {"rate_limited": False, "limit_hit": False})
     unknown_day_counts = defaultdict(int)
     unknown_model_counts = defaultdict(int)
     partial_counts = defaultdict(int)
@@ -414,11 +413,6 @@ def capacity_report(led, *, days=30, now=None):
         buckets_json = r.get("request_buckets")
         rate_limited = bool(r.get("rate_limited"))
         limit_hit = bool(r.get("limit_hit"))
-
-        if rate_limited:
-            platform_limits[platform]["rate_limited"] = True
-        if limit_hit:
-            platform_limits[platform]["limit_hit"] = True
 
         if requests_count is None and not buckets_json:
             if "cline" in platform or "kilo" in platform:
@@ -465,8 +459,8 @@ def capacity_report(led, *, days=30, now=None):
                 continue
             peak_day = max(days_dict.keys(), key=lambda d: (days_dict[d], d))
             peak_count = days_dict[peak_day]
-            r_lim = limits_seen[platform][model][peak_day]["rate_limited"] or platform_limits[platform]["rate_limited"]
-            l_hit = limits_seen[platform][model][peak_day]["limit_hit"] or platform_limits[platform]["limit_hit"]
+            r_lim = limits_seen[platform][model][peak_day]["rate_limited"]
+            l_hit = limits_seen[platform][model][peak_day]["limit_hit"]
             peaks.append({
                 "platform": platform,
                 "model": model,

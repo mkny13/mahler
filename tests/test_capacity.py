@@ -411,6 +411,35 @@ class CapacityReportTests(unittest.TestCase):
         self.assertIn(1, rep["tiers"])
         self.assertEqual(rep["tiers"][1]["hours"], 1.0)
 
+    def test_peak_limit_evidence_does_not_leak_between_dates_or_models(self):
+        for flag, label in (("rate_limited", "429 observed"), ("limit_hit", "limit hit")):
+            with self.subTest(flag=flag):
+                self.led.con.execute("DELETE FROM runs")
+                for run_id, day, model, count, limited in (
+                    (1, 0, "model-a", 10, True),
+                    (2, 1, "model-a", 25, False),
+                    (3, 0, "model-b", 30, False),
+                    (4, 0, "model-c", 15, True),
+                ):
+                    start = T0 + timedelta(days=day)
+                    self.insert_run(
+                        run_id, "kilo", start, start + timedelta(hours=1),
+                        requests=count,
+                        request_buckets={start.date().isoformat(): {model: count}},
+                        request_coverage="complete", **{flag: int(limited)})
+
+                rep = capacity.capacity_report(self.led, days=30, now=T0 + timedelta(days=2))
+                peaks = {p["model"]: p for p in rep["requests"]["peaks"]}
+                self.assertEqual(peaks["model-a"]["peak_date"], "2026-09-13")
+                for model in ("model-a", "model-b"):
+                    self.assertFalse(peaks[model]["rate_limited"])
+                    self.assertFalse(peaks[model]["limit_hit"])
+                self.assertTrue(peaks["model-c"][flag])
+                text = capacity.format_capacity_report(rep)
+                self.assertIn("model-a: peak 25 requests on 2026-09-13 (limit evidence: none observed)", text)
+                self.assertIn("model-b: peak 30 requests on 2026-09-12 (limit evidence: none observed)", text)
+                self.assertIn(f"model-c: peak 15 requests on 2026-09-12 (limit evidence: {label})", text)
+
     def test_request_accounting_peaks_and_visible_unknown(self):
         t_base = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
         # Run 1: kilo on 2026-09-07, 10 requests
