@@ -23,7 +23,7 @@ $handoff
 
 Produce one coherent `fix` or `followups` result:
 - `fix`: a bounded, finite plan for the next fix run. Name every affected file, give ordered implementation steps, and state the test/verification command or observable check. Do not implement anything. Any security finding, an unsatisfied Done-when criterion, or silent unrecoverable data loss in normal flow always requires `fix`.
-- `followups`: conclude that the remaining findings are acceptable and record them. Provide a nonempty project-context justification and a list of classified findings (severity, category, location, scenario, consequence). You cannot use this to demote security, an unsatisfied Done-when line, or silent normal-flow data loss.
+- `followups`: conclude that the remaining findings are acceptable and record them. Provide a nonempty project-context justification and a list of classified findings (severity, category, location, scenario, consequence). Each finding must be structured with its category (such as `behavior`, `hardening`, `testing`, `scope`, `spec`). Any finding classified as a protected blocker — category `security`, `done-when` (or an unsatisfied Done-when criterion), or `data-loss` — cannot be accepted as a follow-up and requires `fix`. Incidental mentions of security, done-when, or data loss in justification or finding prose do not make a finding a protected blocker unless it is structured/classified as one. You cannot use this to demote security, an unsatisfied Done-when line, or silent normal-flow data loss.
 
 End with exactly one line in this JSON contract (no markdown fence, no extra STATUS line):
 
@@ -32,4 +32,4 @@ or
 `STATUS: DESIGNED {"head":"$head","disposition":"followups","justification":"...","findings":[{"severity":"...","category":"...","location":"...","scenario":"...","consequence":"..."}]}`
 
 For `fix`, `files` and `steps` must be nonempty finite lists; each step must be actionable.
-For `followups`, `findings` must be a nonempty finite list.
+For `followups`, `findings` must be a nonempty finite list of classified findings. Explicitly classified protected blockers (category `security`, `done-when`, or `data-loss`) are rejected and remain on the fix path; incidental mentions in prose do not trigger rejection.

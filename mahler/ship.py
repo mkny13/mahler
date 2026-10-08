@@ -639,6 +639,30 @@ def _format_design_plan(plan):
     return "\n".join(lines).strip()
 
 
+def _is_protected_blocker(finding):
+    """Return True if a finding is explicitly classified as a protected blocker.
+
+    Protected blockers (security, unsatisfied Done-when, or data loss) cannot
+    enter the design follow-up merge path (DESIGN D18, Rule 6).
+    """
+    if not isinstance(finding, dict):
+        return False
+    category = re.sub(r"[\s_]+", "-", str(finding.get("category") or "").strip().lower())
+    if category in {"security", "done-when", "data-loss"}:
+        return True
+    if (finding.get("done_when") and str(finding.get("done_when")).strip()) or (
+            finding.get("done-when") and str(finding.get("done-when")).strip()):
+        return True
+    pb = finding.get("protected_blocker")
+    if pb is True or (isinstance(pb, str) and re.sub(r"[\s_]+", "-", pb.strip().lower()) in {
+            "true", "yes", "security", "done-when", "data-loss"}):
+        return True
+    severity = re.sub(r"[\s_]+", "-", str(finding.get("severity") or "").strip().lower())
+    if severity in {"security", "done-when", "data-loss"}:
+        return True
+    return False
+
+
 def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, info):
     """Handle followups disposition from a completed design run (issue #715).
 
@@ -651,20 +675,25 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
     review_findings = info.get("findings", "")
 
     # Rule 6: Never accept followups for security, unsatisfied Done-when, or data loss
-    text_to_check = justification.lower() + " " + review_findings.lower()
-    for f in findings:
-        if isinstance(f, dict):
-            text_to_check += " " + " ".join(str(v).lower() for v in f.values())
-        else:
-            text_to_check += " " + str(f).lower()
-
-    if ("security" in text_to_check
-            or "done-when" in text_to_check
-            or "data loss" in text_to_check
-            or "data-loss" in text_to_check):
+    if any(_is_protected_blocker(f) for f in findings if isinstance(f, dict)):
         ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
                 "(security, Done-when, or data loss); remaining on fix path")
         return False
+
+    review_classified = info.get("classified") or []
+    if isinstance(review_classified, list):
+        if any(isinstance(rf, dict) and rf.get("severity") == "blocking" and _is_protected_blocker(rf)
+               for rf in review_classified):
+            ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
+                    "(security, Done-when, or data loss); remaining on fix path")
+            return False
+
+    if isinstance(review_findings, str):
+        if (re.search(r"\[blocking/(?:security|data[-_ ]loss)\]", review_findings, re.IGNORECASE)
+                or re.search(r"\[blocking/(?:scope|spec)\][^(]*\(Done when:", review_findings, re.IGNORECASE)):
+            ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
+                    "(security, Done-when, or data loss); remaining on fix path")
+            return False
 
     # Ingest findings into reviewresults for deduplicated follow-up filing
     key = f"reviewresults:{project}#{n}"

@@ -3375,8 +3375,8 @@ class TestGreenReviewRounds(unittest.TestCase):
         for keyword in ("security", "Done-when", "data loss"):
             with self.subTest(keyword=keyword):
                 findings = [{
-                    "severity": "follow-up", "category": "behavior",
-                    "location": "a.py:10", "scenario": f"Found {keyword} issue", "consequence": "critical"
+                    "severity": "follow-up", "category": keyword,
+                    "location": "a.py:10", "scenario": f"Explicit {keyword} blocker", "consequence": "critical"
                 }]
                 self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
                 self.led.set_kv("design:x#5:88:head-3", json.dumps({
@@ -3387,6 +3387,50 @@ class TestGreenReviewRounds(unittest.TestCase):
                 merge, fix, _ = self.gate()
                 merge.assert_not_called()
                 fix.assert_called_once()
+        with self.subTest(case="unsatisfied-done-when-field"):
+            findings = [{
+                "severity": "follow-up", "category": "spec", "done_when": "- [ ] Must verify credentials",
+                "location": "a.py:10", "scenario": "Credentials not verified", "consequence": "acceptance criteria unsatisfied"
+            }]
+            self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+            self.led.set_kv("design:x#5:88:head-3", json.dumps({
+                "head": "head-3", "run_id": 42, "disposition": "followups",
+                "justification": "Acceptable follow-up",
+                "findings": findings
+            }))
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_called_once()
+
+    def test_design_result_followups_accepts_incidental_prose_mentions(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        for idx, keyword in enumerate(("security", "Done-when", "data loss"), 1):
+            with self.subTest(keyword=keyword):
+                self.led.set_kv("reviewresults:x#5", None)
+                sha = f"head-incidental-{idx}"
+                findings = [{
+                    "severity": "follow-up", "category": "behavior",
+                    "location": "a.py:10",
+                    "scenario": f"Found nonblocking behavior issue mentioning {keyword} incidentally",
+                    "consequence": f"Incidental mention of {keyword} in consequence"
+                }]
+                self.complete_head(sha, [{
+                    **self.finding("blocking"),
+                    "location": "c.py:30",
+                    "scenario": f"Review prose incidentally mentioning {keyword}",
+                }], idx)
+                self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+                    "head": sha, "run_id": 40 + idx, "disposition": "followups",
+                    "justification": f"Acceptable justification mentioning {keyword} incidentally",
+                    "findings": findings
+                }))
+                self.gh.issue_by_marker = mock.Mock(return_value=None)
+                self.gh.create_issue = mock.Mock(return_value=f"https://github.com/x/y/issues/10{idx}")
+                merge, fix, _ = self.gate()
+                merge.assert_called_once()
+                fix.assert_not_called()
+                self.gh.create_issue.assert_called_once()
+                self.assertTrue(any(f"issues/10{idx}" in c for c in self.gh.comments))
 
     def test_overlapping_findings_reset_drift_and_missing_locations_inconclusive(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
