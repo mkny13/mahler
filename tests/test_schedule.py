@@ -1122,6 +1122,29 @@ class ScheduleHoldTests(unittest.TestCase):
                         "at": iso(NOW), "holds": [{"kind": "paused"}] if paused else
                         [{"kind": "lease_host", "project": "a"}]})
 
+    def test_post_merge_runs_after_shipping_and_respects_pause(self):
+        from contextlib import ExitStack
+        for paused in (False, True):
+            ctx, led = mk_ctx({})
+            self.addCleanup(led.close)
+            ctx.dry_run = False
+            if paused:
+                led.set_kv("paused", "1")
+            calls = []
+            with ExitStack() as stack:
+                for name in ("compute_burst", "watchdog", "expire", "close_finished_parents",
+                             "refresh_usage", "queue_maintenance", "platform_audit.queue",
+                             "practices_audit.queue", "schedule", "warmup_pass",
+                             "relearn_due", "resets.spend_banked", "outbox.drain",
+                             "backup.run_ledger", "digest.maybe_send", "janitor.maybe_run"):
+                    stack.enter_context(mock.patch("mahler.scheduler." + name, return_value=False))
+                stack.enter_context(mock.patch("mahler.scheduler.ship",
+                                               side_effect=lambda *a: calls.append("ship")))
+                stack.enter_context(mock.patch("mahler.scheduler.post_merge.advance",
+                                               side_effect=lambda *a: calls.append("post_merge")))
+                scheduler.tick(ctx)
+            self.assertEqual(calls, [] if paused else ["ship", "post_merge"])
+
     def test_snapshot_is_bounded_and_dry_run_does_not_write(self):
         ctx, led = mk_ctx({})
         self.addCleanup(led.close)
