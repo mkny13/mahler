@@ -26,6 +26,36 @@ class GitError(RuntimeError):
     pass
 
 
+class WorktreeConflict(GitError):
+    """A PR branch is held by a worktree we must leave alone."""
+
+    def __init__(self, branch, path):
+        self.branch, self.path = branch, path
+        super().__init__(f"Branch '{branch}' is checked out by worktree at '{path}'. "
+                         "Release that branch in the worktree, then retry the item.")
+
+
+def _fix_worktree_conflict(ctx, repo, branch, root):
+    """Recover only inactive managed checkouts; never alter an external tree."""
+    listing = git(repo, "worktree", "list", "--porcelain", "-z")
+    for record in listing.split("\0\0"):
+        fields = dict(field.split(" ", 1) for field in record.split("\0") if " " in field)
+        if fields.get("branch") != f"refs/heads/{branch}" or not fields.get("worktree"):
+            continue
+        path = fields["worktree"]
+        candidate, base = Path(path).resolve(), Path(root).resolve()
+        if candidate == base or not candidate.is_relative_to(base):
+            raise WorktreeConflict(branch, path)
+        if any(r["worktree"] and Path(r["worktree"]).resolve() == candidate
+               for r in ctx.led.active_runs()):
+            return False
+        # No --force: dirty, locked, or otherwise unsafe worktrees stay intact.
+        git(repo, "worktree", "remove", path)
+        git(repo, "worktree", "prune")
+        return True
+    return False
+
+
 def git(repo, *args, env=None, check=True):
     r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
                        env=env, timeout=300)
@@ -158,13 +188,14 @@ def prepare(ctx, project, item, role, platform, run_id):
         git(repo, "fetch", "--quiet", "origin", claim_sha, env=env)
         start = claim_sha
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
-    elif role == "sort":
+    elif role in ("sort", "review"):
+        if role == "review":
+            start = start_ref(repo, base, item["branch"], item["branch"])
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     else:
         # a fix run works on the PR's head branch itself (D18): its pushes
-        # re-trigger CI. A review checks out that same head, read-only
-        # (D11). A build gets the item's canonical branch name.
-        branch = (item["branch"] if role in ("fix", "review") and item["branch"]
+        # re-trigger CI. A build gets the item's canonical branch name.
+        branch = (item["branch"] if role == "fix" and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
         start = start_ref(repo, base, item["branch"], branch)
         try:
@@ -172,8 +203,10 @@ def prepare(ctx, project, item, role, platform, run_id):
         except GitError:          # branch still checked out by a kept worktree
             if role == "fix":
                 # A fix must push the existing PR, never silently fork its head.
-                raise
-            branch = f"{branch}-r{run_id}"
+                if not _fix_worktree_conflict(ctx, repo, branch, worktree_root(pol)):
+                    raise
+            else:
+                branch = f"{branch}-r{run_id}"
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
     # git created the worktree under the process umask; keep it user-only —
     # it can hold linked .env files and repo content (issue #75)

@@ -421,10 +421,12 @@ def _watch_pr(ctx, project, item, pr):
     try:
         view = gh.pr_view(pr)
     except (GHError, ValueError) as e:
-        _ci_pending(ctx, project, item, pr, {}, reason=f"PR lookup failed: {e}")
+        _ci_pending(ctx, project, item, pr, {}, reason=f"PR lookup failed: {e}",
+                    lookup=True)
         return
     if not _ship_lease(ctx, project, item):
         return
+    led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
     view = _mergeability_observation(ctx, project, item, pr, view)
     if not _ship_lease(ctx, project, item):
         return
@@ -496,16 +498,18 @@ def _ship_item(ctx, project, item):
              unconfirmed=unconfirmed)
 
 
-def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
+def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", lookup=False):
     """CI still running. It is watched across ticks (the 30s loop never blocks
     a tick), but a hung CI must not park the item silently: past
     verify_timeout_minutes it goes to needs-you with a ping. A new head SHA
-    (e.g. a fix run's push) restarts the wait, because CI starts over."""
+    (e.g. a fix run's push) restarts the wait, because CI starts over.
+    Lookup outages have their own timer, cleared by a successful lookup, so
+    a single network failure cannot inherit hours spent watching CI."""
     if not _ship_lease(ctx, project, item):
         return
     led, n = ctx.led, item["number"]
     pol = ctx.policy(project)
-    key = f"ci:{project}#{n}:{pr}"
+    key = f"{'pr-lookup' if lookup else 'ci'}:{project}#{n}:{pr}"
     sha = view.get("headRefOid") or ""
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else None
@@ -517,6 +521,10 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running"):
         ctx.say(f"{project}#{n}: PR #{pr} — {reason}")
         return
     elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
+    last = led.last_run(project, n, roles=("build", "fix"))
+    if (last and (last["outcome"] or "").startswith("launch failed:")
+            and last["ended_at"] and parse(last["ended_at"]) >= parse(item["state_changed_at"])):
+        reason = last["outcome"]
     reason = f"PR #{pr}: {reason} after {elapsed} min"
     led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
     ctx.ping(f"Mahler needs you — {project} #{n}",

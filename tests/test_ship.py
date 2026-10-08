@@ -2011,15 +2011,46 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("fetch failed", self.last_event())
 
-    def test_lookup_failure_keeps_existing_verification_deadline(self):
+    def test_lookup_failure_has_separate_verification_deadline(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "base_in_head", return_value=None):
             self.ship()
         self.led.now = lambda: NOW + timedelta(minutes=90)
         self.gh.fail_view = {88}
         self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.led.now = lambda: NOW + timedelta(minutes=180)
+        self.ship()
         self.assertEqual(self.item()["state"], "needs_you")
         self.assertEqual(self.gh.merged, [])
+
+    def test_ci_pending_timeout_reports_launch_failure_not_transient_error(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.ship()
+        for minute in (10, 40):
+            self.led.now = lambda m=minute: NOW + timedelta(minutes=m)
+            self.led.create_run(project="x", number=5, role="fix", platform="claude",
+                                epoch=1, status="ended", ended_at=iso(self.led.now()),
+                                outcome="launch failed: branch held at /interactive/worktree")
+        self.led.now = lambda: NOW + timedelta(minutes=90)
+        with mock.patch.object(self.gh, "pr_view", side_effect=gh_module.GHError("TLS timeout")):
+            self.ship()
+            self.assertEqual(self.item()["state"], "verifying")
+            self.led.now = lambda: NOW + timedelta(minutes=180)
+            self.ship()
+        self.assertIn("branch held at /interactive/worktree", self.item()["question"])
+        self.assertNotIn("TLS", self.item()["question"])
+
+    def test_successful_lookup_clears_lookup_failure_timer(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "PENDING"}]
+        self.gh.fail_view = {88}
+        self.ship()
+        self.assertIsNotNone(self.led.get_kv("pr-lookup:x#5:88"))
+        self.gh.fail_view = set()
+        self.ship()
+        self.assertIsNone(self.led.get_kv("pr-lookup:x#5:88"))
 
     def test_missing_metadata_on_first_observation_waits(self):
         self.led.upsert_item("x", 5, pr=88)

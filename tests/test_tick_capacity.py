@@ -5,7 +5,7 @@ import unittest
 from datetime import timedelta
 from unittest import mock
 
-from mahler import capacity, platforms, scheduler, tick
+from mahler import capacity, config, platforms, runner, scheduler, ship, tick
 from mahler.ledger import Ledger, iso
 from tests.test_schedule import NOW, item, mk_cfg, proj, seed
 
@@ -47,6 +47,35 @@ class LaunchCapacityTests(unittest.TestCase):
         self.assertEqual(launch.call_args.args[5:],
                          (new["id"], lease["epoch"], current_prompt, prep))
         self.assertEqual(launch.call_args.kwargs, {"resume_from": source})
+
+    def test_fix_launch_external_worktree_conflict_parks_needs_you(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = mk_cfg({"a": proj(max_parallel=1)}, total=1)
+        ctx = scheduler.Ctx(cfg, led)
+        ctx.ping = mock.Mock()
+        item(led, "a", 1)
+        led.upsert_item("a", 1, state="verifying", branch="pr-head", pr=88)
+        old, _ = led.claim("a", 1, "conductor", "auto", 30, capacity=False)
+        with mock.patch("mahler.tick.runner.prepare",
+                        side_effect=runner.WorktreeConflict("pr-head", "/interactive/tree")) as prepare, \
+                mock.patch("mahler.tick.runner.launch") as launch, \
+                mock.patch("mahler.launch_health.failed") as failed:
+            self.assertFalse(tick.start(ctx, "a", led.item("a", 1), "fix", "claude",
+                                      handoff_from=("conductor", old["epoch"])))
+            self.assertEqual(led.item("a", 1)["state"], "needs_you")
+            self.assertIn("/interactive/tree", led.item("a", 1)["question"])
+            self.assertIn("pr-head", led.item("a", 1)["question"])
+            self.assertIsNone(led.lease("a", 1))
+            for minute in (30, 60, 360):
+                led.now = lambda m=minute: NOW + timedelta(minutes=m)
+                ship._ship_project(ctx, "a")
+                tick.schedule(ctx, list(config.enabled_projects(cfg)))
+            self.assertEqual(prepare.call_count, 1)
+            launch.assert_not_called()
+            failed.assert_not_called()
+        ctx.ping.assert_called_once()
+        self.assertEqual(ctx.ping.call_args.kwargs["priority"], "high")
 
     def test_three_launch_failures_preserve_budget_and_retry_after_backoff(self):
         led = Ledger(":memory:", clock=lambda: NOW)
