@@ -616,6 +616,65 @@ def _review_required(item):
     return router.risk_min_tier(row_get(item, "title", "")) > 0
 
 
+def _maybe_start_design(ctx, project, item, pr, view, sha, info):
+    """Route non-converging blocking reviews through a single design pass (issue #715).
+
+    Returns True if a design run was started, False otherwise.
+    """
+    led = ctx.led
+    n = item["number"]
+    # Do not start design if a design run is already active
+    if any(r["project"] == project and r["number"] == n and r["role"] == "design" for r in led.active_runs()):
+        return False
+    # Avoid duplicate design for the same PR/head
+    design_kv_key = f"design:{project}#{n}:{pr}:{sha}"
+    if led.get_kv(design_kv_key):
+        return False
+    # Require review failure round threshold and drift evidence
+    pol = ctx.policy(project)
+    threshold = pol.get("review_green_rounds", 0)
+    rounds = review.window(led, project, n, pr)
+    round_num = review.round_number(rounds, sha)
+    if round_num < threshold:
+        return False
+    if not led.get_kv(f"reviewdrift:{project}#{n}:{pr}"):
+        return False
+    # Pick a design platform
+    platform, reasons = router.pick_for_project(
+        ctx.cfg, led, pol, "design", pin=None, busy=set(),
+        size=None, burst_lines=None, min_tier=0, exclude=()
+    )
+    if not platform:
+        ctx.say(f"{project}#{n}: no platform for design pass — {'; '.join(reasons)}")
+        return False
+    # Build context: classified findings, prior dispositions, diff/head, issue acceptance criteria, review_context
+    review_ctx = review.start_context(ctx, project, item, pr, sha)
+    # Issue acceptance criteria from issue body
+    try:
+        issue_body = ctx.gh(project).issue_body(n)
+    except Exception:
+        issue_body = ""
+    # Current diff/head summary (PR view already contains head)
+    diff_head = f"PR #{pr} head {sha} — title: {view.get('title','')} — state: {view.get('state','')}"
+    context = (
+        "Design review routing for non-converging blocking review (issue #715).\n\n"
+        f"{diff_head}\n\n"
+        "Issue acceptance criteria:\n"
+        f"{issue_body}\n\n"
+        "Effective review_context (from #713):\n"
+        f"{review_ctx}\n\n"
+        "Prior review dispositions and classified findings are included above. "
+        "Supply design input covering every classified finding in the current PR window, "
+        "prior dispositions, current diff/head, and issue acceptance criteria."
+    )
+    # Start design run
+    ok = start(ctx, project, item, "design", platform, context=context)
+    if ok:
+        ctx.say(f"{project}#{n}: started design pass on {platform} for non-converging review")
+        return True
+    return False
+
+
 def _review_gate(ctx, project, item, pr, view):
     """Between CI-green and merge, DESIGN D11's independent review: CI-green
     proves the tests that exist pass, not that the diff is sound, so a
@@ -643,6 +702,8 @@ def _review_gate(ctx, project, item, pr, view):
         _merge_queued(ctx, project, item, pr, view)
         return
     if status == "fail":
+        if _maybe_start_design(ctx, project, item, pr, view, sha, info):
+            return
         if not _unchanged_done_review(ctx, project, item, pr, sha, info):
             _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""))
             return
