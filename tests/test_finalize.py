@@ -698,6 +698,63 @@ class RunTests(unittest.TestCase):
         }
         self.assertIsNone(finalize._design_payload(json.dumps(payload_done_when_finding)))
 
+        # False-rejection regression: substrings that contain the canonical phrases should be accepted
+        payload_data_lossy = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "data-lossy behavior observed",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_data_lossy)))
+
+        payload_done_whenever = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "done-whenever handling",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_done_whenever)))
+
+        payload_insecurity = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "insecurity finding noted",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_insecurity)))
+
+        payload_data_lossiness = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "data-lossiness is acceptable",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_data_lossiness)))
+
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40
         payload = {"head": head, "disposition": "fix", "plan": {
