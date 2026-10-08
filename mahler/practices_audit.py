@@ -1109,6 +1109,20 @@ _EXEMPTION_KW = re.compile(
     r"waiv(?:e|er|ers|ed)?)\b",
     re.I
 )
+_NEGATED_EXEMPTION_KW = re.compile(
+    r"\b(?:"
+    r"(?:no|without)\s+(?:an?\s+)?(?:(?:explicit|documented|approved|granted)\s+)?"
+    r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
+    r"(?:not|never)\s+(?:(?:explicitly|currently)\s+)?(?:be\s+)?"
+    r"(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
+    r"waiv(?:e|er|ers|ed)?)"
+    r")\b",
+    re.I,
+)
+
+
+def _has_exemption_language(text):
+    return bool(_EXEMPTION_KW.search(_NEGATED_EXEMPTION_KW.sub("", text)))
 
 
 def _extract_toml_rationale(val):
@@ -1202,7 +1216,7 @@ def _scan_markdown_exemptions(tree, rel_path):
 
             if matches_check or matches_heading_check:
                 context_text = f"{current_heading} {line}"
-                if _EXEMPTION_KW.search(context_text):
+                if _has_exemption_language(context_text):
                     rationale = line.lstrip("-*# \t")
                     colon_idx = rationale.find(":")
                     if colon_idx != -1 and colon_idx < len(check) + 5:
