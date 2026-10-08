@@ -723,7 +723,12 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
                                        runner.worktree_root(pol))
             except Exception as cleanup_error:    # noqa: BLE001 — preserve launch error
                 ctx.say(f"{project}#{n}: launch cleanup failed — {cleanup_error}")
-        if handoff_from:
+        conflict = isinstance(e, runner.WorktreeConflict)
+        if conflict:
+            led.release(project, n, holder=f"run:{run_id}")
+            reason = str(e)
+            led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
+        elif handoff_from:
             restored, _ = led.claim(
                 project, n, handoff_from[0], "auto", pol["auto_lease_minutes"],
                 capacity=False, handoff_from=(f"run:{run_id}", lease["epoch"]))
@@ -737,7 +742,11 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
                        ended_at=iso(led.now()))
         led.event("launch_failed", project, n, str(e)[:500])
         ctx.say(f"{project}#{n}: launch failed — {e}")
-        launch_health.failed(ctx, project, n, run_id, e)
+        if conflict:
+            ctx.ping(f"Mahler needs you — {project} #{n}", str(e), project, n,
+                     priority="high", tags="question", console=True)
+        else:
+            launch_health.failed(ctx, project, n, run_id, e)
         return False
     led.update_run(run_id, epoch=lease["epoch"], **meta)
     led.event("run_start", project, n, {"run": run_id, "role": role, "platform": platform})

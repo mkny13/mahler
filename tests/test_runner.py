@@ -607,6 +607,37 @@ class PrepareAccountEnvTests(unittest.TestCase):
         self.assertIn("already-green", normal)
         self.assertNotIn("claim mode", normal)
 
+    def test_review_worktree_detached_when_branch_held(self):
+        item = {"number": 3, "title": "t", "branch": "main"}
+        sha = sh(self.repo, "git", "rev-parse", "HEAD")
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")):
+            prep = runner.prepare(self.ctx, "acme", item, "review", "claude-work", 1)
+        self.assertEqual(sh(prep["worktree"], "git", "rev-parse", "HEAD"), sha)
+        self.assertEqual(sh(prep["worktree"], "git", "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
+        self.assertIsNone(prep["branch"])
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
+    def test_fix_external_conflict_identifies_untouched_worktree(self):
+        item = {"number": 3, "title": "t", "branch": "main"}
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")):
+            with self.assertRaises(runner.WorktreeConflict) as error:
+                runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 1)
+        self.assertEqual(Path(error.exception.path).resolve(), Path(self.repo).resolve())
+        self.assertEqual(error.exception.branch, "main")
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "--abbrev-ref", "HEAD"), "main")
+
+    def test_fix_reclaims_inactive_managed_worktree(self):
+        sh(self.repo, "git", "branch", "pr-head")
+        sh(self.repo, "git", "push", "-q", "origin", "pr-head")
+        item = {"number": 3, "title": "t", "branch": "pr-head"}
+        self.ctx.led = mock.Mock()
+        self.ctx.led.active_runs.return_value = []
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")):
+            old = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 1)
+            prep = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+        self.assertFalse(os.path.exists(old["worktree"]))
+        self.assertEqual(prep["branch"], "pr-head")
+
     def test_fix_preserves_pr_branch_without_replaying_saved_work(self):
         self.git_branch = "mahler/3-reviewed"
         sh(self.repo, "git", "branch", self.git_branch)
@@ -618,7 +649,9 @@ class PrepareAccountEnvTests(unittest.TestCase):
             self.assertEqual(prep["branch"], self.git_branch)
             self.assertFalse(prep["replayed"])
             replay.assert_not_called()
-            # A second checkout must fail rather than give the fix a new branch.
+            # An active checkout must fail rather than give the fix a new branch.
+            self.ctx.led = mock.Mock()
+            self.ctx.led.active_runs.return_value = [{"worktree": prep["worktree"]}]
             with self.assertRaises(runner.GitError):
                 runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
 
