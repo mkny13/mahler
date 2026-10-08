@@ -1737,6 +1737,8 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
     if practices_pol["enabled"] and project == practices_pol["project"]:
         led.increment_maintenance_merged(project, config.PRACTICES_AUDIT_PASS)
     led.release(project, n, holder=CONDUCTOR)
+    from . import post_merge
+    post_merge.register(ctx, project, n, view)
     mirror_shipped(ctx, project, led.item(project, n))
 
 

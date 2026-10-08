@@ -23,7 +23,7 @@ from .tick import expire, queue_maintenance, schedule
 from .usage import compute_burst, refresh_usage
 from .watchdog import watchdog
 from .warmup import relearn, relearn_due, warmup_pass
-from . import resets
+from . import post_merge, resets
 
 
 class Ctx:
@@ -131,6 +131,7 @@ def tick(ctx):
     record_holds(ctx)
     if not ctx.led.paused():
         ship(ctx, projects)
+        post_merge.advance(ctx, projects)
     capacity.of(ctx).flush()
     for p in projects:
         mirror_labels(ctx, p["name"])

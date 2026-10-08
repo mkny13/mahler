@@ -792,6 +792,34 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     second done transition. A future runner validates the report and posts the
     attributed evidence reference; only D10 acceptance changes shipped to done.
     A deployment failure does not reopen or complete the source issue here.
+- **Command runner enforcement (mahler#745).** The post-merge foundation above
+  is now executed by `post_merge.advance`, after shipping on unpaused ticks.
+  Enabled contracts register only confirmed merge SHAs; durable UAT merge rows
+  recover a registration interrupted after shipping. Each check takes at most
+  one phase launch or poll per tick. Private, exclusive phase directories fence
+  launches; workers atomically publish identity/token-bound results. A crash in
+  the launch gap waits for the original deadline rather than deploying twice.
+  Detached workers enforce the remaining deadline, bound stdout to 64 KiB and
+  discard stderr; raw outputs and commands are never written to the ledger.
+  Diagnostics are fixed codes, not exception or command output.
+  - Commands run in the configured project path with its `gh_account` login via
+    D25 `run_env`. They receive `MAHLER_PROJECT`, `MAHLER_ISSUE`,
+    `MAHLER_MERGE_SHA`, `MAHLER_TAG`, `MAHLER_ARTIFACT_REF`,
+    `MAHLER_ENVIRONMENT` and `MAHLER_POST_MERGE_PHASE` as environment data.
+    Automatic registration uses the full merge SHA as its tag when no release
+    tag is known. Commands must address these inputs, never moving checkout HEAD.
+    GUI-driving commands must wrap their GUI work in the D40 desktop gate.
+  - Command deploy requires exit zero; watch deploy advances to live observation.
+    The live command waits for readiness and emits a JSON object with `sha` and
+    `tag`, both exactly matching the supplied identity (resolve release tags to
+    the full SHA). Smoke stdout supplies the #617 report. Nonzero exit, invalid
+    identity/report, missing smoke, launch/result errors and timeout fail closed.
+  - A validated PASS retains only a minimal matching report in private state.
+    A later tick posts `Smoke: PASS report=<immutable-reference>`; retries look
+    up that exact attributed comment before posting. D10's existing comment
+    acceptance performs completion. The runner never changes an item to done.
+    Provider detection, failure remediation, console display and live contract
+    activation remain separate work (#746–#748).
 - **Optional screenshot contract (mahler#723).** Runtime policy comes only from
   operator `[projects.<name>]`, inheriting `[defaults]`; no new project.toml
   loader. The repo may describe `screenshot` beside `preview` in its descriptive

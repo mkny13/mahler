@@ -240,6 +240,21 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
 
+    def test_confirmed_merge_registers_post_merge_after_shipped(self):
+        from mahler import post_merge
+        self.led.upsert_item("x", 5, pr=88)
+        observed = []
+        with mock.patch.object(post_merge, "register", side_effect=lambda *args:
+                               observed.append(self.item()["state"])):
+            self.ship()
+        self.assertEqual(observed, ["shipped"])
+
+    def test_disabled_contract_keeps_shipment_without_check(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.ship()
+        self.assertEqual(self.item()["state"], "shipped")
+        self.assertEqual(self.led.q("SELECT * FROM post_merge_checks"), [])
+
     def test_shipped_label_failure_retries_after_issue_leaves_open_poll(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("down")):
