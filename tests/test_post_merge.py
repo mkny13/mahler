@@ -68,6 +68,49 @@ class PostMergeTests(unittest.TestCase):
         self.phase()
         self.assertEqual(self.row()["phase"], "smoke")
 
+    def test_builtin_live_strategies_feed_artifact_to_smoke(self):
+        for strategy in ("github", "mahler"):
+            with self.subTest(strategy=strategy):
+                self.led.con.execute("DELETE FROM post_merge_checks")
+                self.register()
+                self.cfg["projects"]["p"]["post_merge"].update(
+                    deploy_strategy="watch", live_strategy=strategy, live_command="")
+                self.tick()
+                artifact = "https://preview.example/build-10" if strategy == "github" else "mahler:" + SHA
+                self.gh.exact_preview.return_value = artifact
+                with mock.patch("mahler.launch_health.exact_live", return_value=artifact):
+                    self.tick()
+                self.assertEqual(self.row()["phase"], "smoke")
+                self.assertEqual(self.row()["live_sha"], SHA)
+                self.assertEqual(self.row()["artifact_ref"], artifact)
+                with mock.patch.object(post_merge.subprocess, "Popen") as launch:
+                    # Use a fresh directory for each strategy's smoke intent.
+                    with mock.patch.object(post_merge, "_directory", return_value=self.root / strategy):
+                        self.tick()
+                    self.assertEqual(launch.call_args.kwargs["env"]["MAHLER_ARTIFACT_REF"], artifact)
+
+    def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.tick()
+        self.cfg["projects"]["q"] = copy.deepcopy(self.cfg["projects"]["p"])
+        self.projects.append({"name": "q"})
+        post_merge.register(self.ctx, "q", 2, {"state": "MERGED", "mergeCommit": {"oid": SHA}})
+        self.gh.exact_preview.side_effect = RuntimeError("private-provider-payload")
+        deadline = self.row()["deadline_at"]
+        self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.assertEqual(self.led.post_merge_check("q", 2, SHA)["phase"], "live")
+        self.gh.exact_preview.side_effect = [None, "https://preview.example/build"]
+        self.tick()
+        self.assertEqual(self.row()["phase"], "live")
+        self.assertEqual(self.led.post_merge_check("q", 2, SHA)["phase"], "smoke")
+        self.assertEqual(self.row()["deadline_at"], deadline)
+        self.now += timedelta(seconds=1800)
+        self.tick()
+        self.assertEqual(self.row()["failure_code"], "timeout")
+        self.assertNotIn("private-provider-payload", " ".join(self.ctx.lines))
+
     def test_pass_across_ticks_and_single_d10_evidence(self):
         self.led.upsert_item("p", 1, state="shipped")
         self.led.add_uat("p", 1, 4, SHA, "test", "verify", shipped_at=iso(NOW - timedelta(seconds=1)))

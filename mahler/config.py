@@ -714,7 +714,7 @@ def validate_post_merge(cfg):
             if type(pm[key]) is not bool:
                 raise ValueError(f"{prefix}.{key} must be a boolean")
         for key, choices in (("deploy_strategy", ("command", "watch")),
-                             ("live_strategy", ("command",))):
+                             ("live_strategy", ("command", "mahler", "github"))):
             if pm[key] not in choices:
                 raise ValueError(f"{prefix}.{key} must be {' or '.join(choices)}")
         for key in ("deploy_command", "live_command", "environment"):
@@ -723,8 +723,13 @@ def validate_post_merge(cfg):
         timeout = pm["timeout_seconds"]
         if type(timeout) is not int or not 1 <= timeout <= 86400:
             raise ValueError(f"{prefix}.timeout_seconds must be an integer from 1 to 86400")
+        if pm["live_strategy"] != "command" and pm["live_command"].strip():
+            raise ValueError(f"{prefix}.live_command must be empty for built-in strategies")
+        if pm["live_strategy"] == "github" and pm["environment"].strip().casefold() in ("prod", "production"):
+            raise ValueError(f"{prefix}.environment must be non-production for github")
         if pm["enabled"]:
-            for key in ("environment", "live_command"):
+            for key in (("environment", "live_command") if pm["live_strategy"] == "command"
+                        else ("environment",)):
                 if not pm[key].strip():
                     raise ValueError(f"{prefix}.{key} is required when enabled")
             if pm["deploy_strategy"] == "command" and not pm["deploy_command"].strip():

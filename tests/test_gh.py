@@ -8,6 +8,52 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_exact_preview_fixtures(self):
+        sha = "a" * 40
+        deployment = {"id": 100, "sha": sha, "environment": "Preview",
+                      "production_environment": False,
+                      "repository_url": "https://api.github.com/repos/mkny13/mahler"}
+        success = {"id": 200, "state": "success", "environment": "Preview",
+                   "environment_url": "https://preview.example/build-10"}
+        cases = [
+            ([deployment], [success], success["environment_url"]),
+            ([{**deployment, "sha": "b" * 40}], [success], None),
+            ([deployment, {**deployment, "id": 101}], [success], None),
+            ([deployment, {**deployment, "id": 101, "sha": "b" * 40}], [success], None),
+            ([{**deployment, "production_environment": True}], [success], None),
+            ([{**deployment, "environment": "production"}], [success], None),
+            ([{**deployment, "repository_url": "https://api.github.com/repos/other/repo"}], [success], None),
+            ([deployment], [success, {**success, "state": "failure"}], None),
+            ([deployment], [success, {**success, "id": 201, "state": "pending"}], None),
+            ([deployment], [{**success, "id": 199, "state": "pending"}, success], success["environment_url"]),
+            ([deployment], [], None),
+            ([deployment] * 100, [success], None),
+            ([deployment], [success] * 100, None),
+            ([deployment, *[{**deployment, "id": 100 - i, "sha": f"{i:040x}"} for i in range(1, 100)]], [success], success["environment_url"]),
+            ([deployment], [success, *[{**success, "id": 200 - i, "state": "pending"} for i in range(1, 100)]], success["environment_url"]),
+        ]
+        for field, value in (("state", "failure"), ("state", "inactive"),
+                             ("environment", "production"), ("environment_url", ""),
+                             ("environment_url", "https://user:secret@preview.example"),
+                             ("environment_url", "https://preview.example?token=secret"),
+                             ("environment_url", "https://preview.example/#secret"),
+                             ("environment_url", "http://preview.example")):
+            cases.append(([deployment], [{**success, field: value}], None))
+        for deployments, statuses, expected in cases:
+            with self.subTest(deployments=deployments, statuses=statuses):
+                self.gh._gh.side_effect = [json.dumps(deployments), json.dumps(statuses)]
+                self.assertEqual(self.gh.exact_preview(sha, "Preview"), expected)
+        self.gh._gh.reset_mock()
+        self.gh._gh.side_effect = [json.dumps([deployment]), json.dumps([success])]
+        self.gh.exact_preview(sha, "Preview", timeout=2)
+        calls = self.gh._gh.call_args_list
+        self.assertIn("repos/mkny13/mahler/deployments?environment=Preview", calls[0].args[-1])
+        self.assertNotIn("sha=", calls[0].args[-1])
+        self.assertTrue(all(c.kwargs["timeout"] == 2 for c in calls))
+        self.gh._gh.reset_mock()
+        self.assertIsNone(self.gh.exact_preview(sha, "Production"))
+        self.gh._gh.assert_not_called()
+
     def test_screenshot_preview_filters_and_newest_status(self):
         sha = 'a' * 40
         deployment = {"id": 1, "sha": sha, "environment": "Preview",

@@ -4,6 +4,8 @@ import json
 import os
 import re
 import tempfile
+import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -12,6 +14,33 @@ from .ledger import iso, parse
 from .redact import redact
 
 CANARY_INTERVAL = timedelta(minutes=30)
+
+
+def exact_live(sha, *, timeout=5, env=None):
+    """Observe the installed clone, never the task checkout or known_good alone."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None
+    home = Path(config.STATE)
+    app = home / "app"
+    marker = home / "launch_ok"
+    try:
+        if marker.read_text().strip() != sha:
+            return None
+        child_env = dict(os.environ if env is None else env)
+        child_env.pop("PYTHONPATH", None)
+        child_env["MAHLER_HOME"] = str(home)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app,
+                              env=child_env, capture_output=True, text=True, timeout=timeout)
+        if head.returncode or head.stdout.strip() != sha:
+            return None
+        health = subprocess.run([sys.executable, "-m", "mahler", "version"], cwd=app,
+                                env=child_env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=timeout)
+        if health.returncode == 0 and marker.read_text().strip() == sha:
+            return f"mahler:{sha}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
 
 
 def _head():
