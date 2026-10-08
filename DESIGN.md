@@ -664,6 +664,18 @@ completion. Repeated polls and double taps do not repeat the completion event.
 
 ### D11 — The agents' feedback loop
 
+CI, classified review blockers and base-conflict fixes prefer the latest completed
+DONE build/fix session for the same issue and PR branch. The exact platform/account
+must still pass ordinary routing, pin, size, risk/escalation, quota and capacity
+gates; this preference is not a pin. Unsupported or absent sessions use fresh
+routing. A durable cycle reservation permits at most one resume attempt: inaccessible
+storage or an explicit missing/expired-session rejection returns to the conductor
+for a fresh routed fix. Rejection retains usage but adds no attempt, escalation
+failure or completed-fix reset. Generic failures retain normal handling. Existing
+max_attempts, conflict exemptions and review convergence rules are unchanged.
+Independent review excludes the actual successful builder/fixer and its shared
+platform slot; a rejected resume never becomes the builder identity.
+
 **Gates, not guidance** (mahler#613): the couch-tour 0.83 review's escapes
 ([couch-tour#403](https://github.com/mkny13/couch-tour/issues/403)) showed why
 fixing symptoms and adding instructions alone do not close the loop. Every sorted

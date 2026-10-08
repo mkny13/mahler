@@ -139,6 +139,167 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
+    def resume_builder(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/5-x", labels='["size:m"]')
+        return self.led.create_run(project="x", number=5, role="build", platform="claude",
+            status="ended", outcome="DONE", epoch=1, branch="mahler/5-x", session_id="saved-123")
+
+    def test_resume_all_fix_triggers_keep_current_feedback(self):
+        source = self.resume_builder()
+        for trigger in ("ci", "review", "conflict"):
+            with self.subTest(trigger=trigger), mock.patch.object(ship, "start", return_value=True) as start, \
+                    mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "_repeat_finding", return_value=None):
+                view = self.gh.pr_view(88)
+                view["headRefOid"] = trigger
+                if trigger == "ci":
+                    ship._red_ci(self.ctx, "x", self.item(), 88, view)
+                else:
+                    ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view,
+                        "current blocking feedback", base_conflict=trigger == "conflict")
+                self.assertEqual(start.call_args.args[2]["branch"], "mahler/5-x")
+                self.assertEqual(start.call_args.args[4], "claude")
+                self.assertEqual(start.call_args.kwargs["resume_from"], source)
+                if trigger != "ci":
+                    self.assertIn("current blocking feedback", start.call_args.kwargs["context"])
+
+    def test_ci_launch_rejection_falls_back_once(self):
+        self.check_resume_fallback("ci", detached=False)
+
+    def test_review_launch_rejection_falls_back_once(self):
+        self.check_resume_fallback("review", detached=False)
+
+    def test_conflict_launch_rejection_falls_back_once(self):
+        self.check_resume_fallback("conflict", detached=False)
+
+    def test_ci_detached_rejection_falls_back_once(self):
+        self.check_resume_fallback("ci", detached=True)
+
+    def test_review_detached_rejection_falls_back_once(self):
+        self.check_resume_fallback("review", detached=True)
+
+    def test_conflict_detached_rejection_falls_back_once(self):
+        self.check_resume_fallback("conflict", detached=True)
+
+    def check_resume_fallback(self, trigger, detached):
+        source = self.resume_builder()
+        self.led.claim("x", 5, CONDUCTOR, "auto", 60, capacity=False)
+        view = self.gh.pr_view(88)
+        prep = {"worktree": self.tmp, "run_dir": self.tmp, "branch": "mahler/5-x",
+                "base_ref": "origin/mahler/5-x"}
+        meta = {"pid": 123, "worktree": self.tmp, "branch": "mahler/5-x",
+                "log_path": os.path.join(self.tmp, "agent.log"),
+                "status_path": os.path.join(self.tmp, "exit")}
+
+        def trigger_fix():
+            if trigger == "ci":
+                ship._red_ci(self.ctx, "x", self.item(), 88, view)
+            else:
+                ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view,
+                    "current blocking feedback", base_conflict=trigger == "conflict")
+
+        def launch(*args, **kwargs):
+            if "resume_from" in kwargs and not detached:
+                raise runner.ResumeUnsupported("source session storage is inaccessible")
+            return meta
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), \
+                mock.patch.object(ship, "_repeat_finding", return_value=None), \
+                mock.patch.object(runner, "prepare", return_value=prep), \
+                mock.patch("mahler.tick.prompt.build", return_value="current full prompt"), \
+                mock.patch.object(runner, "launch", side_effect=launch) as launched, \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch("mahler.launch_health.failed") as failed, \
+                mock.patch("mahler.launch_health.succeeded"):
+            trigger_fix()
+            rejected = self.led.last_run("x", 5, roles=("fix",))
+            self.assertEqual(launched.call_args.kwargs, {"resume_from": source})
+            if detached:
+                with open(meta["log_path"], "w") as stream:
+                    stream.write("Error: session saved-123 expired\n")
+                with open(meta["status_path"], "w") as stream:
+                    stream.write("1")
+                finalize.finalize(self.ctx, rejected)
+                finalize.finalize(self.ctx, rejected)
+            self.assertEqual(self.led.run(rejected["id"])["stop_reason"], "resume_rejected")
+            self.assertEqual(self.led.lease("x", 5)["holder"], CONDUCTOR)
+            self.assertEqual(ship._review_route(self.ctx, "x", self.item(), "abc123")[2], {"claude"})
+            failed.assert_not_called()
+
+            # Reopen persisted state, so fallback does not depend on process memory.
+            persisted = os.path.join(self.tmp, "restart.db")
+            with sqlite3.connect(persisted) as connection:
+                self.led.con.backup(connection)
+            connection.close()
+            restarted = Ledger(persisted, clock=lambda: NOW + timedelta(seconds=1))
+            self.addCleanup(restarted.close)
+            self.led = restarted
+            self.ctx.led = restarted
+            # The normal route is free to pick a different platform.
+            with mock.patch.object(router, "pick_for_project", return_value=("agy-gemini", [])):
+                trigger_fix()
+            self.assertEqual(launched.call_count, 2)
+            self.assertEqual(launched.call_args.kwargs, {})
+            self.assertEqual(launched.call_args.args[4], "agy-gemini")
+            self.assertEqual(launched.call_args.args[2]["branch"], "mahler/5-x")
+            expected = 0 if trigger == "conflict" else 1
+            self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]),
+                             (expected, expected))
+            # Ordinary shipping ticks cannot launch another fix while it is active.
+            self.ship()
+            self.ship()
+            self.assertEqual(launched.call_count, 2)
+            fresh = self.led.last_run("x", 5, roles=("fix",))
+            self.led.update_run(fresh["id"], status="ended", outcome="DONE")
+            self.cfg["platforms"]["gemini-peer"] = {
+                **self.cfg["platforms"]["agy-gemini"], "slot": "agy-gemini"}
+            self.assertIn("agy-gemini", ship._review_route(self.ctx, "x", self.item(), "next")[2])
+
+    def test_resume_source_gates_and_branch_identity(self):
+        source = self.resume_builder()
+        pol = self.ctx.policy("x")
+        for gate in ("missing", "cline", "quota", "tier", "busy", "account", "pin", "branch", "reserved"):
+            with self.subTest(gate=gate):
+                cfg = copy.deepcopy(self.cfg)
+                item = dict(self.item())
+                busy, tier = set(), 0
+                if gate == "missing":
+                    self.led.update_run(source, session_id=None)
+                if gate == "cline":
+                    cfg["platforms"]["claude"]["kind"] = "cline"
+                if gate == "quota":
+                    self.led.record_usage("claude", router.HOLD, 100, iso(NOW + timedelta(hours=1)))
+                if gate == "tier":
+                    tier = 100
+                if gate == "busy":
+                    busy = {"claude"}
+                if gate == "account":
+                    cfg["platforms"]["claude"]["account"] = "other"
+                if gate == "pin":
+                    item["pin"] = "agy-gemini"
+                if gate == "reserved":
+                    self.led.set_kv("cycle:resume", "reserved")
+                with mock.patch.object(self.ctx, "cfg", cfg):
+                    self.assertIsNone(ship._resume_source(self.ctx, "x", item,
+                        "different" if gate == "branch" else "mahler/5-x", "cycle", busy, "m", tier))
+                self.led.update_run(source, session_id="saved-123")
+                self.led.set_kv("cycle:resume", None)
+                self.led.clear_usage("claude", [router.HOLD])
+
+    def test_rejected_resume_does_not_reset_cycle_or_review_identity(self):
+        source = self.resume_builder()
+        key = "red:x#5:88:abc123"
+        self.led.set_kv(key, iso(NOW - timedelta(seconds=1)))
+        self.led.set_kv(key + ":charged", "1")
+        self.led.set_kv(key + ":resume", "reserved")
+        self.led.create_run(project="x", number=5, role="fix", platform="agy-gemini",
+            status="ended", outcome="exit 1", stop_reason="resume_rejected", epoch=2,
+            branch="mahler/5-x")
+        ship._clear_charged_if_fix_completed(self.led, "x", 5, key)
+        self.assertEqual(self.led.get_kv(key + ":charged"), "1")
+        self.assertIsNone(ship._resume_source(self.ctx, "x", self.item(), "mahler/5-x", key, (), "m", 0))
+        self.assertEqual(ship._review_route(self.ctx, "x", self.item(), "abc123")[2], {"claude"})
+
     def test_capture_after_acceptable_ci_before_review_even_low_risk(self):
         self.led.upsert_item("x", 5, pr=88, labels='["type:chore", "size:s"]')
         for rollup, expected in [([{"state": "SUCCESS"}], ["capture", "review"]),
@@ -631,11 +792,11 @@ class ShipTests(unittest.TestCase):
         self.led.set_state("x", 5, "needs_you", pr=88, labels='["size:m"]')
         ship._mark_capacity_wait(self.led, "x", self.item(), "review")
         self.cfg["routing"]["review"] = ["agy-gemini"]
-        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}):
+        with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}):
             self.ship()
         self.assertEqual(self.item()["state"], "needs_you")
         self.cfg["routing"]["review"].append("agy-claude")
-        with mock.patch.object(self.led, "last_run", return_value={"platform": "agy-gemini"}), \
+        with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}), \
                 mock.patch.object(ship, "_ship_item"):
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")

@@ -1021,6 +1021,7 @@ def _extract_error_message(ev):
 def _note_log_error(res, ev):
     """Classify structured failures shared by the non-Claude protocols."""
     _classify_error(res, ev)
+    res["last_error"] = _extract_error_message(ev) if isinstance(ev, dict) else str(ev)
     if is_model_unavailable(ev):
         res["model_unavailable"] = True
 
@@ -1031,7 +1032,8 @@ def _read_plaintext(res, line, texts):
         texts.append(line_str)
         if is_credit_exhausted(line_str):
             _note_credit_exhausted(res, line_str)
-        if is_network_error(line_str) or line_str.lower().startswith("error:"):
+        if (is_network_error(line_str) or line_str.lower().startswith("error:")
+                or resume_rejected({"last_error": line_str})):
             res["last_error"] = line_str
         if line_str.lower().startswith("error:"):
             _note_log_error(res, line_str)
@@ -1268,6 +1270,17 @@ def read_log(path, kind, model=None):
             handler(res, ev, texts, first_quota)
     finish_requests(res, kind, True)
     return _finish_log(res, texts, kind)
+
+
+def resume_rejected(log):
+    """Only explicit session lookup failures qualify, never generic agent errors."""
+    error = log.get("last_error") or ""
+    return bool(re.search(
+        r"\b(?:session|conversation|thread)(?: (?:id|with id))?"
+        r"(?: ['\"]?[a-zA-Z0-9_-]+['\"]?)? (?:was |has )?"
+        r"(?:not found|expired|does not exist)\b|"
+        r"\bno (?:conversation|session|thread) found\b",
+        error, re.IGNORECASE))
 
 
 def status_line(text):
