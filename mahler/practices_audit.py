@@ -1115,7 +1115,14 @@ _NEGATED_EXEMPTION_KW = re.compile(
     r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
     r"(?:not|never)\s+(?:(?:explicitly|currently)\s+)?(?:be\s+)?"
     r"(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
-    r"waiv(?:e|er|ers|ed)?)"
+    r"waiv(?:e|er|ers|ed)?)|"
+    r"(?:prohibit(?:s|ed|ing)?|forbid(?:s|den|ding)?|disallow(?:s|ed|ing)?|den(?:y|ies|ied)|reject(?:s|ed)?|ban(?:s|ned)?)"
+    r"\s+(?:all\s+|any\s+)?(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
+    r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)"
+    r"(?:\s+(?:for|to|of|from)\s+[\w`-]+(?:\s+[\w`-]+)?)?\s+"
+    r"(?:(?:are|is|were|was|will\s+be|must\s+be|shall\s+be|may\s+not\s+be|cannot\s+be|can\s+not\s+be|"
+    r"aren't|isn't)\s+)?(?:\w+\s+)?"
+    r"(?:prohibited|forbidden|disallowed|denied|rejected|banned|not\s+(?:allowed|permitted|granted|accepted|approved))"
     r")\b",
     re.I,
 )
