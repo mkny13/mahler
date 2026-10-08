@@ -3280,6 +3280,35 @@ class TestGreenReviewRounds(unittest.TestCase):
             self.assertEqual(start_mock.call_args.args[3], "design")
             self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
 
+    def test_failed_design_start_retries_without_fix_or_competing_review(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        with mock.patch.object(ship, "start", return_value=False) as start_mock:
+            merge, fix, start_review = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            start_review.assert_not_called()
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "design")
+        # Failed attempt is not recorded as completed, leaving it retryable
+        self.assertIsNone(self.led.get_kv("design:x#5:88:head-3"))
+        # Subsequent gate pass retries and succeeds when start returns True
+        with mock.patch.object(ship, "start", return_value=True) as retry_mock:
+            merge, fix, start_review = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            start_review.assert_not_called()
+            retry_mock.assert_called_once()
+            self.assertEqual(retry_mock.call_args.args[3], "design")
+
     def test_design_capacity_wait_does_not_start_fix_run(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
