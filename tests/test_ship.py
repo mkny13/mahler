@@ -3431,6 +3431,41 @@ class TestGreenReviewRounds(unittest.TestCase):
             merge.assert_not_called()
             fix.assert_called_once()
 
+    def test_design_result_followups_refuses_blocking_classified_blocker(self):
+        for category in ("security", "data-loss"):
+            for severity in ("blocking", "follow-up"):
+                with self.subTest(category=category, severity=severity):
+                    self.led.set_kv("reviewresults:x#5", None)
+                    sha = f"head-{category}-{severity}"
+                    findings = [{
+                        "severity": severity, "category": category,
+                        "location": "a.py:10", "scenario": "Retry after interruption",
+                        "consequence": "Stored information is exposed or lost",
+                    }]
+                    # Keep the review failing for the nonblocking control, too.
+                    findings.append(self.finding("blocking"))
+                    self.complete_head(sha, findings, 3)
+                    info = json.loads(self.led.get_kv("review:x#5"))
+                    self.assertEqual(info["classified"], findings)
+                    self.assertEqual(info["verdict"], "fail")
+                    # Isolate the classified guard from the redundant prose guard.
+                    info["findings"] = "Review requires a fix."
+                    self.led.set_kv("review:x#5", json.dumps(info))
+                    self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+                        "head": sha, "run_id": 42, "disposition": "followups",
+                        "justification": "Minor edge case acceptable for v1",
+                        "findings": [self.finding("follow-up")],
+                    }))
+                    self.gh.issue_by_marker = mock.Mock(return_value=None)
+                    self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/101")
+                    merge, fix, _ = self.gate()
+                    if severity == "blocking":
+                        merge.assert_not_called()
+                        fix.assert_called_once()
+                    else:
+                        merge.assert_called_once()
+                        fix.assert_not_called()
+
     def test_design_result_followups_accepts_incidental_prose_mentions(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         for idx, keyword in enumerate(("security", "Done-when", "data loss"), 1):
