@@ -496,13 +496,17 @@ class TestPracticesAudit(unittest.TestCase):
         self.write("local.env", "PASSWORD=local-private-value", tracked=False)
         self.assertEqual(self.results()["tracked-secrets"].state, "pass")
 
-    def test_unavailable_tracked_inventory_and_nontext_are_explicit_unknowns(self):
+    def test_unavailable_tracked_inventory_and_corrupt_content_are_explicit_unknowns(self):
         with patch.object(audit._Tree, "tracked", side_effect=OSError("secret diagnostic")):
             finding = self.results()["tracked-secrets"]
             self.assertEqual(finding.state, "unknown")
             self.assertNotIn("secret diagnostic", repr(finding))
-        self.write("binary", "\0binary")
-        self.assertEqual(self.results()["tracked-secrets"].state, "unknown")
+        corrupt = self.root / "corrupted.txt"
+        corrupt.write_bytes(b"\xff\xfe\xfd")
+        subprocess.run(["git", "-C", self.temp.name, "add", "--", "corrupted.txt"], check=True)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "unknown")
+        self.assertIn("corrupted.txt: cannot inspect tracked content", finding.evidence)
 
     def test_exact_review_match_suppresses_candidate(self):
         content = f"{chr(84)}OKEN=synthetic-token-123\n"
@@ -688,7 +692,7 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(finding.state, "gap")
         self.assertIn("secret.env:1: detector=credential-assignment; context=<redacted>", finding.evidence)
 
-    def test_binary_file_alongside_reviewed_text_retains_unknown(self):
+    def test_binary_file_alongside_reviewed_text_passes(self):
         content = f"{chr(84)}OKEN=synthetic-token\n"
         self.write("reviewed.env", content)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -707,10 +711,85 @@ class TestPracticesAudit(unittest.TestCase):
         self.write(".mahler/secret-reviews.json", json.dumps(manifest, indent=2))
         self.write("screenshot.png", "data\0bytes")
         finding = self.results()["tracked-secrets"]
-        self.assertEqual(finding.state, "unknown")
-        self.assertEqual(finding.reason, "Some tracked files could not be inspected.")
-        self.assertIn("screenshot.png: binary file not inspected", finding.evidence)
+        self.assertEqual(finding.state, "pass")
+        self.assertNotIn("binary file not inspected", str(finding.evidence))
         self.assertIn(".mahler/secret-reviews.json: 1 reviewed non-secret candidate", finding.evidence)
+
+    def test_tracked_binary_assets_and_clean_text_return_pass(self):
+        self.write("screenshot.png", "png\0data")
+        self.write("icon.ico", "ico\0data")
+        self.write("doc.pdf", "pdf\0data")
+        self.write("clean.txt", "normal application code\n")
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+        self.assertNotIn("binary file not inspected", str(finding.evidence))
+
+    def test_drizzle_schema_definitions_return_pass(self):
+        schema = (
+            "import { pgTable, text, varchar } from 'drizzle-orm/pg-core';\n\n"
+            "export const users = pgTable('users', {\n"
+            '  password: text("password"),\n'
+            '  token: varchar("token"),\n'
+            "});\n"
+        )
+        self.write("src/schema.ts", schema)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+
+    def test_language_type_annotations_return_pass(self):
+        annotations = (
+            "interface AuthProps {\n"
+            "  password: String;\n"
+            "  token: string;\n"
+            "  authToken: String?;\n"
+            "}\n\n"
+            "fun authenticate(password: String, token: string) {}\n\n"
+            "def login(password: str, token: str):\n"
+            "  pass\n"
+        )
+        self.write("src/types.ts", annotations)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+
+    def test_environment_and_config_lookups_return_pass(self):
+        lookups = (
+            "token = process.env.TOKEN\n"
+            'api_key = configparser.get("section", "api_key")\n'
+            'secret = os.environ["TOKEN"]\n'
+            'conf_key = config.get("api_key")\n'
+        )
+        self.write("src/config.py", lookups)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+
+    def test_dict_keys_and_mock_fixtures_return_pass(self):
+        code = (
+            'user = {"password": password}\n'
+            'data = {"token": token}\n'
+            'payload = {"password": user.password}\n'
+            'mock_pw = "hunter2"\n'
+            'mock_tok = "mock-token"\n'
+            'local_url = "http://localhost:3000/token"\n'
+        )
+        self.write("src/fixtures.py", code)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "pass")
+
+    def test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence(self):
+        raw_token = "ghp_123456789012345678901234567890123456"
+        raw_password = "super-secret-password-xyz"
+        content = (
+            f'TOKEN = "{raw_token}"\n'
+            f'PASSWORD = "{raw_password}"\n'
+            "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASC\n"
+        )
+        self.write("src/credentials.env", content)
+        finding = self.results()["tracked-secrets"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("src/credentials.env:1: detector=credential-assignment; context=<redacted>", finding.evidence)
+        self.assertIn("src/credentials.env:3: detector=private-key; context=<redacted>", finding.evidence)
+        self.assertNotIn(raw_token, repr(finding))
+        self.assertNotIn(raw_password, repr(finding))
 
     def test_synthetic_detectors_and_candidate_safe_in_filing(self):
         pk = "-----" + "BEGIN PRIVATE KEY-----"

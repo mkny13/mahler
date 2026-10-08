@@ -47,18 +47,100 @@ class Filing:
     errors: tuple[str, ...]
 
 
+_BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".ico", ".webp", ".pdf",
+    ".gif", ".bmp", ".tiff", ".woff", ".woff2", ".ttf", ".eot",
+    ".mp3", ".mp4", ".mov", ".zip", ".tar", ".gz",
+}
+
 _ASSIGNMENT = re.compile(
-    r"""(?ix)\b[\w-]*(?:token|secret|password|api[_-]?key|private[_-]?key)\b
-        ["']?\s*[:=]\s*["']?([^\s"'`,;}]+)""")
+    r"""(?ix)\b(?P<key>[\w-]*(?:token|secret|password|api[_-]?key|private[_-]?key))\b
+        \??["']?\s*(?P<sep>[:=])\s*["']?(?P<val>[^\s"'`,;}]+)""")
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----")
 _PLACEHOLDER = re.compile(
-    r"^(?:\$|<|redacted|changeme|example|dummy|placeholder|none|null|false|true)",
-    re.IGNORECASE)
+    r"""(?ix)^(?:\$|<|redacted|changeme|example|dummy|placeholder|none|null|nil|"""
+    r"""undefined|false|true|hunter2|mock|sample|fake|test(?:ing)?|temp|default|"""
+    r"""empty|anon|anonymous)""")
+_SCHEMA_DEF = re.compile(
+    r"""(?ix)^(?:(?:\w+\.)?(?:text|varchar|char|string|uuid|integer|int|serial|"""
+    r"""boolean|bool|timestamp|datetime|date|json|jsonb|blob|binary|customtype|citext|"""
+    r"""columndefinition|field|column)\s*\(|models\.|column\()""")
+_ENV_LOOKUP = re.compile(
+    r"""(?ix)^(?:process\.env|os\.environ|os\.getenv|configparser\.get|"""
+    r"""config\.get|conf\.get|cfg\.get|settings\.get|options\.get|params\.get|"""
+    r"""system\.getenv|env(?:\.get|\(|\[)|ENV(?:\[|\.fetch)|"""
+    r"""(?:req|request)\.headers|c\.env|context\.env|\w+\.get\(|\w+\.getenv\()""")
+_TYPE_ANNOTATION = re.compile(
+    r"""(?ix)^\??(?:string|str|optional|secretstr|charfield|textfield|text|"""
+    r"""bytes|bytearray|bytestring|any|unknown|never|void|boolean|bool|int|integer|"""
+    r"""number|float|char|character|data)(?:[?!|\[\]<>\s].*)?$""")
+
+
+def _is_local_url(val):
+    v = val.lower()
+    return v.startswith((
+        "http://localhost", "https://localhost",
+        "http://127.0.0.1", "https://127.0.0.1",
+        "http://0.0.0.0", "ws://localhost", "wss://localhost",
+    ))
+
+
+def _is_dict_var_or_property(key, val):
+    clean_k = re.sub(r"[^a-z0-9]", "", key.lower())
+    clean_v = re.sub(r"[^a-z0-9]", "", val.lower())
+    if clean_k == clean_v:
+        return True
+    if clean_v in ("password", "token", "secret", "apikey", "privatekey", "key"):
+        return True
+    if re.match(
+        r"""(?ix)^(?:this|self|req|request|res|response|data|body|user|account|"""
+        r"""client|auth|credentials|params|item|row|payload)\.""", val
+    ):
+        return True
+    if re.match(r"""(?ix)^(?:params|options|data|headers|payload|req|request)\[""", val):
+        return True
+    return False
+
+
+def _is_candidate_assignment(m):
+    key = m.group("key")
+    sep = m.group("sep")
+    raw_val = m.group("val")
+    val = raw_val.rstrip(")]}>:;,")
+    if not val:
+        return False
+    if _PLACEHOLDER.match(val):
+        return False
+    if _is_local_url(val):
+        return False
+    if _SCHEMA_DEF.match(val):
+        return False
+    if _ENV_LOOKUP.match(val):
+        return False
+    if sep == ":" and _TYPE_ANNOTATION.match(val):
+        return False
+    if _is_dict_var_or_property(key, val):
+        return False
+    return True
+
+
+def _has_credential_shape(text):
+    if not text or not text.strip():
+        return False
+    for shape in redact._TOKEN_SHAPES:
+        if shape.search(text):
+            return True
+    for m in redact._URL_CREDS.finditer(text):
+        cred = m.group(2)
+        if not _PLACEHOLDER.match(cred) and not _is_local_url(m.group(0)):
+            return True
+    return False
 
 
 def _safe(text):
     return redact.redact(_ASSIGNMENT.sub(
-        lambda m: m.group(0).replace(m.group(1), redact.MARK), str(text)))
+        lambda m: m.group(0).replace(m.group("val"), redact.MARK) if _is_candidate_assignment(m) else m.group(0),
+        str(text)))
 
 
 def _finding(check, state, reason, evidence):
@@ -894,12 +976,14 @@ def _secrets(tree):
             resolved = tree.root / path
             if not resolved.resolve().is_relative_to(tree.root):
                 raise OSError("external symlink")
+            if Path(path).suffix.lower() in _BINARY_EXTENSIONS:
+                resolved.stat()
+                continue
             if resolved.stat().st_size > 2_000_000:
                 errors.append(f"{path}: exceeds 2 MB scan limit")
                 continue
             data = resolved.read_bytes()
             if b"\0" in data:
-                errors.append(f"{path}: binary file not inspected")
                 continue
             text = data.decode("utf-8")
         except (OSError, UnicodeError):
@@ -911,10 +995,11 @@ def _secrets(tree):
             detectors = []
             if _PRIVATE_KEY.search(line):
                 detectors.append("private-key")
-            if any(not _PLACEHOLDER.match(m.group(1)) for m in _ASSIGNMENT.finditer(line)):
+            if any(_is_candidate_assignment(m) for m in _ASSIGNMENT.finditer(line)):
                 detectors.append("credential-assignment")
-            without_assignments = _ASSIGNMENT.sub("", line)
-            if redact.redact(without_assignments) != without_assignments:
+            without_assignments = _ASSIGNMENT.sub(
+                lambda m: "" if _is_candidate_assignment(m) else m.group(0), line)
+            if _has_credential_shape(without_assignments):
                 detectors.append("credential-shape")
             for detector in detectors:
                 key = (path, number, detector)
