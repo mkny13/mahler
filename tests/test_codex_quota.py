@@ -379,6 +379,40 @@ class CodexRefreshTests(unittest.TestCase):
                     usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
             notify_send.assert_not_called()
 
+    def test_unsupported_shape_gap_resets_and_legacy_keys_migrate(self):
+        unsupported = platforms._codex_usage({
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {"primary": {"windowDurationMins": 10, "usedPercent": 20}}})
+        run = lambda: usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+        with mock.patch("mahler.notify.send") as notify_send, \
+                mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+            run()
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                run()
+            # a gap beyond 5 * stale_minutes restarts the four-hour interval
+            self.now += timedelta(minutes=76)
+            run()
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                run()
+            notify_send.assert_not_called()
+
+        # legacy four-key state from before the upgrade is honoured, not reset
+        self.led.set_kv("codex:unsupported-shape:work", "")
+        started = self.now - timedelta(hours=4)
+        self.led.set_kv("codex:unsupported-shape:first:work", started.isoformat())
+        self.led.set_kv("codex:unsupported-shape:shape:work", "10m")
+        self.led.set_kv("codex:unsupported-shape:last:work", (self.now - timedelta(minutes=15)).isoformat())
+        with mock.patch("mahler.notify.send") as notify_send, \
+                mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+            run()
+            self.assertEqual(notify_send.call_count, 1)
+            self.assertEqual(self.led.get_kv("codex:unsupported-shape:first:work"), "")
+            self.now += timedelta(minutes=15)
+            run()
+            self.assertEqual(notify_send.call_count, 1)
+
 
 class CodexResetSpendTests(unittest.TestCase):
     """Banked (expiring) reset credits are spent by the tick, never purchased

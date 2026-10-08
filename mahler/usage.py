@@ -162,6 +162,15 @@ def codex_env(cfg, account):
     return env
 
 
+def _clear_codex_alert(led, account):
+    for key in (f"codex:unsupported-shape:{account}",
+                f"codex:unsupported-shape:first:{account}",
+                f"codex:unsupported-shape:shape:{account}",
+                f"codex:unsupported-shape:last:{account}",
+                f"notified:codex-unsupported:{account}"):
+        led.set_kv(key, "")
+
+
 def refresh_codex(cfg, led, name, force=False):
     """One bounded probe per login, including failures; never fall back accounts."""
     pc = cfg["platforms"][name]
@@ -188,11 +197,11 @@ def refresh_codex(cfg, led, name, force=False):
         for w, pct, resets in samples:
             led.record_usage(peer, w, pct, resets)
     if not isinstance(samples, platforms.CodexUsage):
-        led.set_kv(alert_key, "")
+        _clear_codex_alert(led, account)
         return
     raw_windows = samples.metadata.get("windows", [])
     if router.is_supported_codex_shape(raw_windows):
-        led.set_kv(alert_key, "")
+        _clear_codex_alert(led, account)
     else:
         shape_label = ", ".join(w["window"] for w in raw_windows) if raw_windows else "none"
         # one record: first/last sighting, shape, and when the alert was sent
@@ -200,6 +209,15 @@ def refresh_codex(cfg, led, name, force=False):
             state = json.loads(led.get_kv(alert_key) or "{}")
         except ValueError:
             state = {}
+        if not state:
+            # carry over an in-flight condition recorded under the old four keys
+            legacy = {"first": f"codex:unsupported-shape:first:{account}",
+                      "shape": f"codex:unsupported-shape:shape:{account}",
+                      "last": f"codex:unsupported-shape:last:{account}",
+                      "notified": f"notified:codex-unsupported:{account}"}
+            state = {k: v for k, key in legacy.items() if (v := led.get_kv(key))}
+            for key in legacy.values():
+                led.set_kv(key, "")
         if not isinstance(state, dict):
             state = {}
         last_probe_time = parse(state.get("last"))
