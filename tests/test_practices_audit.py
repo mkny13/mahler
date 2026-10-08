@@ -1581,6 +1581,13 @@ class TestPracticesAudit(unittest.TestCase):
         prohibited = self.results()
         self.assertEqual(prohibited["tracked-secrets"].state, "gap")
 
+        for line in ("The tracked-secrets check does not support exemptions.",
+                     "The tracked-secrets check doesn't allow exemptions.",
+                     "The tracked-secrets check does not permit any exemptions."):
+            self.write("DECISIONS.md", (
+                "# Architectural Decisions\n\n### tracked-secrets policy\n" + line + "\n"))
+            self.assertEqual(self.results()["tracked-secrets"].state, "gap", line)
+
         # Explicit exemption or false-positive wording in DECISIONS.md still resolves the finding
         self.write("DECISIONS.md", (
             "# Architectural Decisions\n\n"
