@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
-from mahler.ledger import Ledger, iso
+from mahler.ledger import CONDUCTOR, Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -2962,6 +2962,190 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.led.set_kv("reviewfindings:x#5", json.dumps(history))
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
             self.assertIsNotNone(ship._repeat_finding(self.ctx, "x", 5, self.gh.pr_view(88)))
+
+    def test_before_threshold_blocker_starts_fix_without_design(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 3
+        finding = {**self.finding("blocking"), "location": "a.py:10"}
+        self.complete_head("head-1", [finding], 1)
+        merge, fix, _ = self.gate()
+        merge.assert_not_called()
+        fix.assert_called_once()
+        self.assertIsNone(self.led.get_kv("design:x#5:88:head-1"))
+
+    def test_threshold_with_disjoint_location_drift_starts_one_design_run_and_no_simultaneous_fix(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "design")
+            self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
+
+    def test_design_capacity_wait_does_not_start_fix_run(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.gate()
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        with mock.patch.object(router, "capacity_recovery", return_value=(["busy"], None, None)):
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            wait = json.loads(self.led.get_kv("design-wait:x#5") or "{}")
+            self.assertEqual(wait.get("state"), "capacity_wait")
+
+    def test_one_design_only_across_ticks_and_restarts(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        # Active design run: waits across ticks without starting fix or another design
+        self.led.create_run(project="x", number=5, role="design", platform="agy-gemini", status="running", epoch=1)
+        with mock.patch.object(ship, "start") as start_mock:
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            start_mock.assert_not_called()
+        # Completed design run: duplicate ticks/restarts do not start a second design run
+        self.led.q("DELETE FROM runs WHERE project='x' AND number=5 AND role='design'")
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({"disposition": "fix", "consumed": True}))
+        with mock.patch.object(ship, "start") as start_mock:
+            self.gate()
+            self.assertFalse(any(c.args[3] == "design" for c in start_mock.call_args_list if len(c.args) > 3))
+
+    def test_planned_fix_consumption_starts_one_fix_and_subsequent_head_reviewed(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        plan = {
+            "summary": "Fix all bugs",
+            "files": ["a.py", "b.py"],
+            "steps": ["step 1", "step 2"],
+            "tests": "pytest"
+        }
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({
+            "head": "head-3", "disposition": "fix", "plan": plan, "consumed": False
+        }))
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "fix")
+            context = start_mock.call_args.kwargs["context"]
+            self.assertIn("Fix all bugs", context)
+            self.assertIn("step 1", context)
+            self.assertIn("pytest", context)
+        self.assertEqual(self.led.get_kv("design-consumed:x#5:88:head-3"), "1")
+        record = json.loads(self.led.get_kv("design:x#5:88:head-3"))
+        self.assertTrue(record.get("consumed"))
+        # Subsequent new head triggers fresh independent review
+        self.gh.head_sha = "head-4"
+        self.led.set_kv("review:x#5", None)
+        with mock.patch.object(ship, "_start_review_run") as start_review:
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            start_review.assert_called_once()
+
+    def test_design_result_followups_files_deduped_issues_and_merges(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        findings = [{
+            "severity": "follow-up", "category": "behavior",
+            "location": "a.py:10", "scenario": "edge case", "consequence": "minor glitch"
+        }]
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({
+            "head": "head-3", "run_id": 42, "disposition": "followups",
+            "justification": "Minor edge case acceptable for v1",
+            "findings": findings
+        }))
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/101")
+        merge, fix, _ = self.gate()
+        merge.assert_called_once()
+        fix.assert_not_called()
+        self.gh.create_issue.assert_called_once()
+        self.assertTrue(any("issues/101" in c for c in self.gh.comments))
+        self.assertTrue(any("Minor edge case acceptable for v1" in c for c in self.gh.comments))
+
+    def test_design_result_followups_refuses_protected_blocker(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        for keyword in ("security", "Done-when", "data loss"):
+            with self.subTest(keyword=keyword):
+                findings = [{
+                    "severity": "follow-up", "category": "behavior",
+                    "location": "a.py:10", "scenario": f"Found {keyword} issue", "consequence": "critical"
+                }]
+                self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+                self.led.set_kv("design:x#5:88:head-3", json.dumps({
+                    "head": "head-3", "run_id": 42, "disposition": "followups",
+                    "justification": f"Acceptable despite {keyword}",
+                    "findings": findings
+                }))
+                merge, fix, _ = self.gate()
+                merge.assert_not_called()
+                fix.assert_called_once()
+
+    def test_overlapping_findings_reset_drift_and_missing_locations_inconclusive(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.gate()
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        # Overlapping finding resets drift
+        self.complete_head("head-4", [{**self.finding("blocking"), "location": "b.py:20"}], 4)
+        merge, fix, _ = self.gate()
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:88"))
+        fix.assert_called_once()
+        # Location-less finding is inconclusive
+        self.complete_head("head-5", [{**self.finding("blocking"), "location": "unknown"}], 5)
+        merge, fix, _ = self.gate()
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:88"))
+        fix.assert_called_once()
+
+    def test_new_pr_starts_fresh_convergence_window(self):
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.gate()
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        # Switch to PR 89
+        self.led.upsert_item("x", 5, pr=89)
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:89"))
+        self.assertIsNone(self.led.get_kv("design:x#5:89:head-3"))
+        from mahler import review
+        self.assertEqual(review.window(self.led, "x", 5, 89), [])
+
+    def test_stale_head_does_not_start_design(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
+        self.gate()
+        self.complete_head("head-2", [{**self.finding("blocking"), "location": "b.py:20"}], 2)
+        self.gate()
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.gate()
+        # Now PR head moves to new-head while review was on head-3
+        self.gh.head_sha = "new-head"
+        merge, fix, start = self.gate()
+        merge.assert_not_called()
+        fix.assert_not_called()
+        start.assert_called_once()
 
 
 class ShipCapacityTests(unittest.TestCase):

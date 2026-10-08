@@ -836,6 +836,26 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   intake before merge, with their classification reason in PR evidence. Security, data
   loss, regressions and unsatisfied acceptance checks retain the normal bounded fix flow.
   Current-head independent review, fresh CI and merge/base safety gates remain required.
+- **Design pass for non-converging reviews** (mahler#715): at or after the
+  `review_green_rounds` threshold, the existing disjoint-location convergence signal
+  replaces serial local patching with exactly one plan-only `design` run.
+  - **State transition and routing:** routed via `routing.plan`. If no planning platform
+    is currently available, the conductor records a design capacity wait rather than
+    launching a fix run. A design run already active or completed for the same
+    PR/head/evidence window is excluded; repeated ticks, restarts, duplicate verdicts,
+    alternate same-head reviewers, and manual re-ship cannot start a second design run.
+  - **Plan consumption (`fix`):** a durable `fix` design result starts exactly one normal
+    fix run with the complete ordered finite plan in its handoff. That plan is consumed
+    idempotently; the subsequent head is independently reviewed.
+  - **Follow-up merge path (`followups`):** an acceptable `followups` design result
+    ingests findings through deduplicated follow-up intake, posts classification evidence
+    to the PR, and permits merge only after follow-up filing, current-head review, fresh
+    green CI, and merge/base safety gates pass.
+  - **Protected blockers:** security, an unsatisfied Done-when criterion, and silent
+    unrecoverable normal-flow data loss can never enter the design follow-up merge path
+    and remain on the bounded fix path.
+  - **Reset bounds:** overlapping findings reset drift, missing locations remain
+    inconclusive, and a new PR starts a fresh convergence and design window.
 - **Review has a blocking bar** (mahler#499). Only a *realistic* scenario with a real
   consequence (a broken "Done when" item, a regression, data loss, unrecoverable state) or
   any security issue blocks a merge. Contrived edge cases, hardening and heuristic misses on

@@ -6,6 +6,7 @@ green. Only executing runs take capacity; conductor watch leases do not.
 Never merge once the item's lease has gone to a session (D6).
 """
 
+import hashlib
 import json
 import re
 from datetime import timedelta
@@ -616,45 +617,161 @@ def _review_required(item):
     return router.risk_min_tier(row_get(item, "title", "")) > 0
 
 
+def _format_design_plan(plan):
+    """Format a finite design plan into actionable instructions for a fix run."""
+    summary = (plan.get("summary") or "").strip()
+    files = plan.get("files") or []
+    steps = plan.get("steps") or []
+    tests = (plan.get("tests") or "").strip()
+    lines = []
+    if summary:
+        lines.append(f"Summary: {summary}\n")
+    if files:
+        lines.append("Affected files:")
+        lines.extend(f"- {f}" for f in files)
+        lines.append("")
+    if steps:
+        lines.append("Ordered implementation steps:")
+        lines.extend(f"{i}. {s}" for i, s in enumerate(steps, 1))
+        lines.append("")
+    if tests:
+        lines.append(f"Verification:\n{tests}")
+    return "\n".join(lines).strip()
+
+
+def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, info):
+    """Handle followups disposition from a completed design run (issue #715).
+
+    Returns True if handled (either queued for merge or waiting on filing),
+    False if rejected (protected blocker present, falling through to fix).
+    """
+    led, n = ctx.led, item["number"]
+    findings = design_record.get("findings", [])
+    justification = design_record.get("justification", "")
+    review_findings = info.get("findings", "")
+
+    # Rule 6: Never accept followups for security, unsatisfied Done-when, or data loss
+    text_to_check = justification.lower() + " " + review_findings.lower()
+    for f in findings:
+        if isinstance(f, dict):
+            text_to_check += " " + " ".join(str(v).lower() for v in f.values())
+        else:
+            text_to_check += " " + str(f).lower()
+
+    if ("security" in text_to_check
+            or "done-when" in text_to_check
+            or "data loss" in text_to_check
+            or "data-loss" in text_to_check):
+        ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
+                "(security, Done-when, or data loss); remaining on fix path")
+        return False
+
+    # Ingest findings into reviewresults for deduplicated follow-up filing
+    key = f"reviewresults:{project}#{n}"
+    records = _kv_json(led, key)
+    rid = str(design_record.get("run_id") or f"design-{sha[:8]}")
+    if rid not in records:
+        rows = []
+        for f in findings:
+            if isinstance(f, dict):
+                f_copy = dict(f)
+                f_copy["severity"] = "follow-up"
+                marker = hashlib.sha256(json.dumps([project, n, f_copy], sort_keys=True).encode()).hexdigest()
+                f_copy["marker"] = f"<!-- mahler:review-follow-up:{marker} -->"
+                rows.append(f_copy)
+        reason = f"Classified as nonblocking follow-ups by design pass: {justification}"
+        records[rid] = {
+            "run_id": design_record.get("run_id"),
+            "sha": sha,
+            "pr": pr,
+            "findings": rows,
+            "text": justification,
+            "reason": reason,
+        }
+        led.set_kv(key, json.dumps(records))
+
+    # File deduplicated follow-ups
+    if not review.file_followups(ctx, project, item):
+        ctx.say(f"{project}#{n}: PR #{pr} — filing design follow-up issues pending")
+        return True
+
+    # Post classification reason as PR evidence if not already posted
+    evidence_key = f"design-evidence:{project}#{n}:{pr}:{sha}"
+    if not led.get_kv(evidence_key):
+        try:
+            ctx.gh(project).comment(
+                pr,
+                f"Design pass classified remaining review findings as follow-ups on head `{sha[:8]}`:\n\n"
+                f"{justification}\n\n"
+                "Follow-up issues have been filed. Proceeding to merge."
+            )
+            led.set_kv(evidence_key, "1")
+        except Exception as e:
+            ctx.say(f"{project}#{n}: posting design evidence comment skipped — {e}")
+
+    # Merge once current-head review, green CI, and safety gates pass
+    _merge_queued(ctx, project, item, pr, view)
+    return True
+
+
 def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     """Route non-converging blocking reviews through a single design pass (issue #715).
 
-    Returns True if a design run was started, False otherwise.
+    Returns True if a design run was started or capacity wait recorded, False otherwise.
     """
     led = ctx.led
     n = item["number"]
     # Do not start design if a design run is already active
     if any(r["project"] == project and r["number"] == n and r["role"] == "design" for r in led.active_runs()):
-        return False
+        return True
     # Avoid duplicate design for the same PR/head
     design_kv_key = f"design:{project}#{n}:{pr}:{sha}"
     if led.get_kv(design_kv_key):
         return False
     # Require review failure round threshold and drift evidence
     pol = ctx.policy(project)
-    threshold = pol.get("review_green_rounds", 0)
+    threshold = pol.get("review_green_rounds", 2)
     rounds = review.window(led, project, n, pr)
     round_num = review.round_number(rounds, sha)
     if round_num < threshold:
         return False
     if not led.get_kv(f"reviewdrift:{project}#{n}:{pr}"):
         return False
-    # Pick a design platform
+
+    cfg = ctx.cfg
+    active = led.active_runs()
+    busy = busy_platforms(cfg, active)
+    size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
+                 if l.startswith("size:")), None)
+    wait_key = f"design-wait:{project}#{n}"
+    capacity = router.capacity_recovery(
+        cfg, led, pol, "design", pin=None, busy=busy, size=size,
+        burst_lines=ctx.burst_lines)
+    full = len(active) >= cfg["concurrency"]["total"]
+    if full or not capacity[0] or capacity[2]:
+        _capacity_wait(ctx, project, item, wait_key, sha,
+                       "every run slot is busy" if full else "no eligible platform for design",
+                       "design", (capacity[0], None, None) if full else capacity)
+        return True
+
+    # Pick a design platform via routing.plan
     platform, reasons = router.pick_for_project(
-        ctx.cfg, led, pol, "design", pin=None, busy=set(),
-        size=None, burst_lines=None, min_tier=0, exclude=()
+        cfg, led, pol, "design", pin=None, busy=busy,
+        size=size, burst_lines=ctx.burst_lines, min_tier=0, exclude=(),
+        scorecard_rows=getattr(ctx, "scorecard_rows", None)
     )
     if not platform:
-        ctx.say(f"{project}#{n}: no platform for design pass — {'; '.join(reasons)}")
-        return False
+        detail = "; ".join(reasons) or "no eligible platform for design"
+        ctx.say(f"{project}#{n}: no platform for design pass — {detail}")
+        _capacity_wait(ctx, project, item, wait_key, sha, detail, "design", capacity)
+        return True
+
     # Build context: classified findings, prior dispositions, diff/head, issue acceptance criteria, review_context
     review_ctx = review.start_context(ctx, project, item, pr, sha)
-    # Issue acceptance criteria from issue body
     try:
         issue_body = ctx.gh(project).issue_body(n)
     except Exception:
         issue_body = ""
-    # Current diff/head summary (PR view already contains head)
     diff_head = f"PR #{pr} head {sha} — title: {view.get('title','')} — state: {view.get('state','')}"
     context = (
         "Design review routing for non-converging blocking review (issue #715).\n\n"
@@ -667,9 +784,15 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
         "Supply design input covering every classified finding in the current PR window, "
         "prior dispositions, current diff/head, and issue acceptance criteria."
     )
-    # Start design run
-    ok = start(ctx, project, item, "design", platform, context=context)
+    conductor = led.lease(project, n)
+    handoff_from = ((CONDUCTOR, conductor["epoch"])
+                    if conductor and (conductor["holder"] == CONDUCTOR
+                                      or conductor["holder"].endswith("/conductor")) else None)
+    head = view.get("headRefName") or item.get("branch")
+    ok = start(ctx, project, {**item, "branch": head, "pr": pr}, "design", platform,
+               handoff_from=handoff_from, size=size, context=context)
     if ok:
+        led.set_kv(wait_key, "")
         ctx.say(f"{project}#{n}: started design pass on {platform} for non-converging review")
         return True
     return False
@@ -702,6 +825,28 @@ def _review_gate(ctx, project, item, pr, view):
         _merge_queued(ctx, project, item, pr, view)
         return
     if status == "fail":
+        if any(r["project"] == project and r["number"] == n and r["role"] == "design"
+               for r in led.active_runs()):
+            ctx.say(f"{project}#{n}: PR #{pr} — design pass in progress")
+            return
+
+        design_key = f"design:{project}#{n}:{pr}:{sha}"
+        design_record = _kv_json(led, design_key)
+        if design_record:
+            disposition = design_record.get("disposition")
+            if disposition == "followups":
+                if _handle_design_followups(ctx, project, item, pr, view, sha, design_record, info):
+                    return
+            elif disposition == "fix":
+                consumed = (design_record.get("consumed")
+                            or bool(led.get_kv(f"design-consumed:{project}#{n}:{pr}:{sha}")))
+                if not consumed:
+                    plan = design_record.get("plan")
+                    if plan:
+                        _review_triggered_fix(ctx, project, item, pr, view, info.get("findings", ""),
+                                              design_plan=plan)
+                        return
+
         if _maybe_start_design(ctx, project, item, pr, view, sha, info):
             return
         if not _unchanged_done_review(ctx, project, item, pr, sha, info):
@@ -807,7 +952,8 @@ def migrate_capacity_waits(ctx, project):
                           rf"could start for over \d+ minutes: .+", question):
             role = "review"
         # #654 already persisted structured escalations before this migration.
-        for candidate, prefix in (("fix", "reviewfix-status"), ("review", "review-wait")):
+        for candidate, prefix in (("fix", "reviewfix-status"), ("review", "review-wait"),
+                                  ("design", "design-wait")):
             status = _kv_json(led, f"{prefix}:{project}#{item['number']}")
             if status.get("state") in ("missing_tier", "capacity_wait_expired"):
                 # These records predate an explicit pause marker: only adopt
@@ -830,7 +976,7 @@ def recover_capacity_waits(ctx, project):
         n = item["number"]
         key = f"capacity-stranded:{project}#{n}"
         marker = _kv_json(led, key)
-        if marker.get("role") not in ("fix", "review"):
+        if marker.get("role") not in ("fix", "review", "design"):
             continue
         if marker.get("at") != item["state_changed_at"] or marker.get("pr") != item["pr"]:
             led.set_kv(key, "")
@@ -850,6 +996,10 @@ def recover_capacity_waits(ctx, project):
                 view = ctx.gh(project).pr_view(item["pr"])
                 pin, size, exclude = _review_route(ctx, project, item, view.get("headRefOid") or "")
                 route = dict(pin=pin, size=size, exclude=exclude)
+            elif role == "design":
+                size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
+                             if l.startswith("size:")), None)
+                route = dict(size=size)
             else:
                 size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
                              if l.startswith("size:")), None)
@@ -867,7 +1017,7 @@ def recover_capacity_waits(ctx, project):
             led.set_state(project, n, "verifying", f"{role} capacity returned",
                           question=None, options="[]")
             led.set_kv(key, "")
-            for prefix in ("review-wait", "review-pinged", "reviewfix-status"):
+            for prefix in ("review-wait", "review-pinged", "reviewfix-status", "design-wait"):
                 led.set_kv(f"{prefix}:{project}#{n}", "")
             for prefix in ("ci", "mergeability"):
                 led.set_kv(f"{prefix}:{project}#{n}:{item['pr']}", "")
@@ -1003,15 +1153,17 @@ def _observe_wait(ctx, project, item, role, required_tier):
                      if l.startswith("size:")), None)
         effective_size = size
         pin, exclude, tier = item["pin"], (), required_tier or 0
-        if role == "review":
-            pin, effective_size, exclude = _review_route(ctx, project, item, "")
+        if role in ("review", "design"):
+            pin, effective_size, exclude = (
+                _review_route(ctx, project, item, "") if role == "review"
+                else (None, size, ()))
             tier = 0
         elif size == "l" or (tier >= 2 and size == "s"):
             effective_size = "m"
         diag = router.diagnose(cfg, led, pol, role, pin, busy, size=effective_size,
                                burst_lines=ctx.burst_lines, min_tier=tier, exclude=exclude)
         capacity.of(ctx).observe(project, item["number"], role, blockers=["shipping_wait"],
-                                 diag=diag, routing_role=role, size=size,
+                                 diag=diag, routing_role=router.route_role(role), size=size,
                                  effective_size=effective_size, required_tier=tier)
     except Exception as e:                      # noqa: BLE001 — telemetry only
         ctx.say(f"{project}#{item['number']}: capacity diagnosis failed — {e}")
@@ -1109,6 +1261,8 @@ def _review_not_converging(ctx, project, item, pr, view):
         rounds = [r for r in history[int(led.get_kv(f"reviewconvergence:{project}#{n}") or 0):]
                   if r.get("pr", pr) == pr]
     if len(rounds) < 3 or rounds[-1]["sha"] != view.get("headRefOid"):
+        if not ctx.dry_run and len(rounds) < 3:
+            led.set_kv(f"reviewdrift:{project}#{n}:{pr}", None)
         return False
 
     # A location-less review is inconclusive. Overlap with any earlier round
@@ -1123,6 +1277,8 @@ def _review_not_converging(ctx, project, item, pr, view):
             divergent += 1
         seen_files.update(files)
     if divergent < 2:
+        if not ctx.dry_run:
+            led.set_kv(f"reviewdrift:{project}#{n}:{pr}", None)
         return False
 
     # File drift is diagnostic evidence, never a reason to demote a blocker
@@ -1147,7 +1303,7 @@ def _explored_head(led, project, n):
     return bool(run and run["explore"])
 
 
-def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False):
+def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False, design_plan=None):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
     fix (`_red_ci`), except the fix prompt carries the review's findings
@@ -1270,11 +1426,19 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     handoff_from = ((CONDUCTOR, conductor["epoch"])
                     if conductor and (conductor["holder"] == CONDUCTOR
                                       or conductor["holder"].endswith("/conductor")) else None)
-    context = ("- an independent review of this PR found blocking issues (posted as a PR "
-               f"comment already); address every one of them, verify, push, and end with "
-               f"STATUS: DONE:\n\n{findings}" if findings else
-               "- an independent review of this PR found blocking issues (see the PR "
-               "comments); address them, verify, push, and end with STATUS: DONE")
+    if design_plan:
+        plan_text = _format_design_plan(design_plan)
+        context = (
+            "- a design pass produced this implementation plan for the blocking review issues; "
+            f"execute every step, verify, push, and end with STATUS: DONE:\n\n{plan_text}"
+        )
+    elif findings:
+        context = ("- an independent review of this PR found blocking issues (posted as a PR "
+                   f"comment already); address every one of them, verify, push, and end with "
+                   f"STATUS: DONE:\n\n{findings}")
+    else:
+        context = ("- an independent review of this PR found blocking issues (see the PR "
+                   "comments); address them, verify, push, and end with STATUS: DONE")
     if base_conflict:
         context = findings
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
@@ -1283,6 +1447,14 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        if design_plan:
+            design_key = f"design:{project}#{n}:{pr}:{sha}"
+            rec = _kv_json(led, design_key)
+            if rec:
+                rec["consumed"] = True
+                led.set_kv(design_key, json.dumps(rec))
+            led.set_kv(f"design-consumed:{project}#{n}:{pr}:{sha}", "1")
+            ctx.say(f"{project}#{n}: PR #{pr} — consumed design plan for fix run on head {sha[:8]}")
         if not base_conflict:
             run = led.last_run(project, n, roles=("fix",))
             led.set_kv(f"{key}:run", json.dumps({
