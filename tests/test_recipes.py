@@ -159,7 +159,7 @@ class SortPromptScopeTests(unittest.TestCase):
         rendered = prompt.build(ctx, "couch-tour", self.item, "sort", "claude", self.prep)
         self.assertIn("Project scope (`couch-tour`)", rendered)
         self.assertIn("When filing follow-up or split issues in this project (including prerequisites)", rendered)
-        self.assertIn("you must apply the `couch-tour` label at creation (`--add-label couch-tour`)", rendered)
+        self.assertIn("you must apply the `couch-tour` label at creation (`--label couch-tour`)", rendered)
         self.assertIn("so Mahler sees the new issue on the next sync", rendered)
         self.assertNotIn("$scope_rules", rendered)
         self.assertNotIn("$", rendered)
@@ -173,7 +173,7 @@ class SortPromptScopeTests(unittest.TestCase):
         })
         rendered = prompt.build(ctx, "example", self.item, "sort", "claude", self.prep)
         self.assertIn("custom-scope", rendered)
-        self.assertIn("apply the `custom-scope` label at creation (`--add-label custom-scope`)", rendered)
+        self.assertIn("apply the `custom-scope` label at creation (`--label custom-scope`)", rendered)
         self.assertNotIn("apply the `mahler` label", rendered)
         self.assertNotIn("Project scope (`mahler`)", rendered)
         self.assertNotIn("$scope_rules", rendered)
@@ -187,7 +187,7 @@ class SortPromptScopeTests(unittest.TestCase):
         })
         rendered = prompt.build(ctx, "example", self.item, "sort", "claude", self.prep)
         self.assertIn("Project scope (`mahler`)", rendered)
-        self.assertIn("apply the `mahler` label at creation (`--add-label mahler`)", rendered)
+        self.assertIn("apply the `mahler` label at creation (`--label mahler`)", rendered)
         self.assertNotIn("$scope_rules", rendered)
         self.assertNotIn("$", rendered)
 
@@ -217,7 +217,7 @@ class SortPromptScopeTests(unittest.TestCase):
             "this project manages only issues carrying the `test-label` label",
             "When filing follow-up or split issues in this project (including prerequisites)",
             "you must apply the `test-label` label at creation",
-            "`--add-label test-label`",
+            "`--label test-label`",
             "so Mahler sees the new issue on the next sync",
         ):
             with self.subTest(fragment=fragment):

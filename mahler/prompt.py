@@ -184,7 +184,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
             f"\n   Project scope (`{scope_label}`): this project manages only issues carrying the "
             f"`{scope_label}` label (`scope = \"label\"`). When filing follow-up or split issues in "
             f"this project (including prerequisites), you must apply the `{scope_label}` label at "
-            f"creation (`--add-label {scope_label}`) so Mahler sees the new issue on the next sync."
+            f"creation (`--label {scope_label}`) so Mahler sees the new issue on the next sync."
         )
 
     # mahler#569: only builds whose issue explicitly asks for a What's New
