@@ -253,6 +253,14 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def issue_reopens(self, number):
+        """Actual reopen timestamps; issue updatedAt also changes on later edits."""
+        pages = json.loads(self._gh(
+            "api", f"repos/{self.repo}/issues/{number}/events?per_page=100",
+            "--paginate", "--slurp"))
+        return [event["created_at"] for page in pages for event in page
+                if event.get("event") == "reopened"]
+
     def issue_comments(self, number):
         """Fetch every comment, retaining GitHub attribution and durable identity."""
         pages = json.loads(self._gh(

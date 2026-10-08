@@ -864,6 +864,25 @@ class QuietCompletionTests(unittest.TestCase):
         self.assertEqual([(e["kind"], e["created_at"][:10]) for e in ev], [("quiet", "2026-09-15")])
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
 
+    def test_replacement_archives_history_and_resets_only_once(self):
+        self.led.add_uat("x", 1, 10, "old", "Old", "check", "2026-09-01T00:00:00+00:00")
+        self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
+        for prefix in ("source_reopened", "shipped_closed", "reopen_mirror"):
+            self.led.set_kv(f"{prefix}:x:1", "1")
+        self.led.add_uat("x", 1, 11, "new", "New", "check", "2026-09-20T00:00:00+00:00")
+        row = self.led.uat("x", 1)
+        self.assertEqual((row["pr"], row["sha"], row["verdict"]), (11, "new", None))
+        self.assertEqual(self.led.q("SELECT * FROM completion_evidence"), [])
+        for prefix in ("source_reopened", "shipped_closed", "reopen_mirror"):
+            self.assertIsNone(self.led.get_kv(f"{prefix}:x:1"))
+        archive = self.led.q("SELECT detail FROM events WHERE kind='shipment_superseded'")
+        self.assertEqual(len(archive), 1)
+        self.assertIn('"quiet"', archive[0]["detail"])
+        self.led.set_uat_verdict("x", 1, "fail", bug=99, note="broken")
+        self.led.add_uat("x", 1, 11, "new", "New", "check")
+        self.assertEqual(self.led.uat("x", 1)["verdict"], "fail")
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_superseded'")), 1)
+
     def test_reopen_only_done_and_once(self):
         self.assertFalse(self.led.reopen_shipment("x", 1, "revert"))
         self.led.complete_quiet("x", 1, "2026-09-01T00:00:00+00:00")
@@ -1411,7 +1430,7 @@ class UatTests(unittest.TestCase):
 
     def test_add_is_idempotent(self):
         self.led.add_uat('x', 5, 88, 'a', 't', 'n')
-        self.led.add_uat('x', 5, 89, 'b', 'other', 'other')
+        self.led.add_uat('x', 5, 88, 'a', 'other', 'other')
         row = self.led.uat('x', 5)
         self.assertEqual((row['pr'], row['title']), (88, 't'))
 

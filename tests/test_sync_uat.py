@@ -217,6 +217,10 @@ class QuietWindowTests(unittest.TestCase):
         self.gh.reopen_issue = lambda n: (self.gh.opened.append(n), setattr(self.gh, "state", "OPEN"))
         self.gh.set_priority_label = lambda n, p, cur: self.gh.priorities.append(p)
         self.gh.comment = mock.Mock()
+        gh_patch = mock.patch.object(self.ctx, "gh", return_value=self.gh)
+        gh_patch.start()
+        self.addCleanup(gh_patch.stop)
+        self.gh.issue_reopens = lambda n: [iso(self.now)]
         self.gh.pr_merged_at = iso(self.MERGED)
         self.pr_view = self.gh.pr_view
         self.gh.pr_view = lambda n: dict(self.pr_view(n), mergedAt=self.gh.pr_merged_at)
@@ -348,7 +352,8 @@ class QuietWindowTests(unittest.TestCase):
         self.now = self.MERGED + timedelta(days=14, minutes=1)
         issue = dict(number=5, title="Wired", body="",
                      labels=[{"name": "mahler:shipped"}], comments=[],
-                     createdAt=iso(self.MERGED), updatedAt=iso(reopened_at))
+                     createdAt=iso(self.MERGED), updatedAt=iso(self.now))
+        self.gh.issue_reopens = lambda n: [iso(reopened_at)]
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
                 mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
@@ -452,6 +457,55 @@ class QuietWindowTests(unittest.TestCase):
         self.after(days=5)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
 
+    def test_replacement_shipment_requires_fresh_evidence_and_can_reopen(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.bug(20, self.MERGED + timedelta(days=3))
+        self.after(days=4)
+        self.assertEqual(self.state(), "ready")
+        replacement = self.MERGED + timedelta(days=5)
+        self.led.add_uat("x", 5, 99, "replacement", "Fixed", "- check",
+                         shipped_at=iso(replacement))
+        self.led.upsert_item("x", 5, state="shipped", pr=99)
+        self.after(days=6)
+        self.assertEqual(self.state(), "shipped")  # old smoke is before this merge
+        self.assertIsNone(self.led.uat("x", 5)["verdict"])
+        self.smoke(replacement + timedelta(hours=1))
+        self.after(days=7)
+        self.assertEqual(self.state(), "done")
+        self.bug(21, replacement + timedelta(days=3), body="Regression of #99")
+        self.after(days=9)
+        self.assertEqual(self.state(), "ready")
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 2)
+
+    def test_replacement_gets_its_own_quiet_window(self):
+        self.after(days=14)
+        replacement = self.MERGED + timedelta(days=20)
+        self.led.add_uat("x", 5, 99, "replacement", "Fixed", "- check",
+                         shipped_at=iso(replacement))
+        self.led.upsert_item("x", 5, state="shipped", pr=99)
+        self.after(days=33, hours=23, minutes=59)
+        self.assertEqual(self.state(), "shipped")
+        self.after(days=34)
+        self.assertEqual(self.state(), "done")
+        evidence = self.led.q("SELECT * FROM completion_evidence")[0]
+        self.assertEqual(evidence["created_at"], iso(replacement + timedelta(days=14)))
+
+    def test_reopen_fetch_failure_retries_without_quiet_completion(self):
+        self.now = self.MERGED + timedelta(days=14, minutes=1)
+        issue = dict(number=5, title="Wired", body="", labels=[], comments=[],
+                     createdAt=iso(self.MERGED), updatedAt=iso(self.now))
+        with mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
+                mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
+            with mock.patch.object(self.gh, "issue_reopens", side_effect=gh_module.GHError("offline")):
+                with self.assertRaises(gh_module.GHError):
+                    sync.sync(self.ctx, "x")
+            self.assertEqual(self.state(), "shipped")
+            self.assertIsNone(self.led.get_kv("source_reopened:x:5"))
+            self.gh.issue_reopens = lambda n: [iso(self.MERGED + timedelta(days=13))]
+            sync.sync(self.ctx, "x")
+        self.assertEqual(self.state(), "shipped")
+
     def test_defect_after_window_does_not_undo_completions(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
@@ -487,6 +541,15 @@ class QuietWindowTests(unittest.TestCase):
 
 
 class EvidenceGrammarTests(unittest.TestCase):
+    def test_reopen_fetch_uses_event_times_across_pages(self):
+        gh = gh_module.GH("owner/repo")
+        pages = [[dict(event="closed", created_at="old")],
+                 [dict(event="reopened", created_at="actual")]]
+        with mock.patch.object(gh, "_gh", return_value=json.dumps(pages)) as call:
+            self.assertEqual(gh.issue_reopens(5), ["actual"])
+        self.assertIn("--paginate", call.call_args.args)
+        self.assertIn("repos/owner/repo/issues/5/events?per_page=100", call.call_args.args)
+
     def test_comment_fetch_preserves_attribution_across_pages(self):
         gh = gh_module.GH("owner/repo")
         comment = dict(body="Verified: works", user={"login": "owner"},

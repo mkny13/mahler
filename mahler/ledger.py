@@ -557,10 +557,25 @@ class Ledger:
             return True
 
     def add_uat(self, project, number, pr, sha, title, needs, shipped_at=None):
-        self.con.execute(
-            "INSERT OR IGNORE INTO uat(project,number,pr,sha,title,needs,shipped_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (project, number, pr, sha, title, needs, shipped_at or iso(self.now())))
+        with self._tx():
+            previous = self.uat(project, number)
+            if previous is not None:
+                if previous["sha"] == sha and previous["pr"] == pr:
+                    return  # Retry of the same confirmed merge.
+                evidence = self.q1("SELECT * FROM completion_evidence WHERE project=? AND number=?",
+                                   (project, number))
+                self.event("shipment_superseded", project, number,
+                           {"shipment": dict(previous),
+                            "evidence": dict(evidence) if evidence else None})
+                self.con.execute("DELETE FROM completion_evidence WHERE project=? AND number=?",
+                                 (project, number))
+                for prefix in ("source_reopened", "shipped_closed", "reopen_mirror"):
+                    self.con.execute("DELETE FROM kv WHERE key=?",
+                                     (f"{prefix}:{project}:{number}",))
+            self.con.execute(
+                "INSERT OR REPLACE INTO uat(project,number,pr,sha,title,needs,shipped_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (project, number, pr, sha, title, needs, shipped_at or iso(self.now())))
 
     def uat(self, project, number):
         return self.q1("SELECT * FROM uat WHERE project=? AND number=?", (project, number))
@@ -615,7 +630,9 @@ class Ledger:
             item = self.item(project, number)
             if (item is None or item["state"] != "done"
                     or self.q1("SELECT 1 FROM events WHERE kind='shipment_reopened' "
-                               "AND project=? AND number=?", (project, number))):
+                               "AND project=? AND number=? AND id > coalesce((SELECT max(id) FROM events "
+                               "WHERE kind='shipment_superseded' AND project=? AND number=?), 0)",
+                               (project, number, project, number))):
                 return False
             self.con.execute("UPDATE items SET priority=1, mirror=NULL "
                              "WHERE project=? AND number=?", (project, number))
