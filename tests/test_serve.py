@@ -807,7 +807,7 @@ class TestScreenshotImages(_Served):
         from test_console_uat import capture_fixture
         self.directory = capture_fixture(self.led, self.tmp.name)
         from mahler.screenshots import artifact_id
-        self.identifier = artifact_id("mahler", 101, "a" * 40, "0.png")
+        self.identifier = artifact_id("mahler", 101, "a" * 40, 0)
         self.path = "/screenshots/" + self.identifier
 
     def test_png_private_headers_and_missing_file(self):

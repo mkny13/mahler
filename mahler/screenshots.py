@@ -193,9 +193,9 @@ def lookup(project, pr, sha, *, root=None):
 
 
 
-def artifact_id(project, pr, sha, name):
+def artifact_id(project, pr, sha, index):
     """Opaque identity; never a client-supplied filesystem path."""
-    return hashlib.sha256(json.dumps([project, pr, sha, name]).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([project, pr, sha, index]).encode()).hexdigest()
 
 
 def console_artifacts(project, pr, sha):
@@ -213,9 +213,9 @@ def console_artifacts(project, pr, sha):
         finally:
             os.close(fd)
     data = dict(files)
-    return [({"id": artifact_id(project, pr, sha, entry["file"]),
+    return [({"id": artifact_id(project, pr, sha, index),
               "route": entry["route"]}, data[entry["file"]])
-            for entry in manifest["screenshots"]]
+            for index, entry in enumerate(manifest["screenshots"])]
 
 
 def _command(command, cwd, env, timeout):

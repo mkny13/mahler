@@ -179,6 +179,6 @@ class ShipmentScreenshotTests(unittest.TestCase):
         row = self.snapshot()["uat"][0]
         self.assertEqual(row["screenshot_head"], "b" * 40)
         from mahler.screenshots import artifact_id
-        old = artifact_id("mahler", 101, "a" * 40, "0.png")
+        old = artifact_id("mahler", 101, "a" * 40, 0)
         self.assertIsNone(state.screenshot_image(self.cfg, self.led, old))
         self.assertNotEqual(row["screenshots"][0]["id"], old)

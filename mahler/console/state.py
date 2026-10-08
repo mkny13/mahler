@@ -849,6 +849,11 @@ def screenshot_image(cfg, led, identifier):
             capture = _shipment_capture(led, row, policy)
             if capture is None or capture[1] != "success":
                 continue
+            # Match the bounded manifest slot before reading any PNG bytes.
+            if identifier not in {
+                    screenshots.artifact_id(row["project"], row["pr"], capture[0], i)
+                    for i in range(screenshots.MAX_SCREENSHOTS)}:
+                continue
             try:
                 for entry, data in screenshots.console_artifacts(
                         row["project"], row["pr"], capture[0]):
