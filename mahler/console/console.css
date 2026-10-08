@@ -534,7 +534,7 @@ a { color: var(--acc); text-decoration: none; }
   .revertfoot .btn { min-height: 48px; }
 }
 
-/* Ready to test — the UAT queue (mahler#250). */
+/* What changed — shipment history (mahler#250). */
 .uat { border-top: 1px solid var(--line); padding: 13px 0; display: flex; gap: 16px; align-items: flex-start; }
 .uat .body { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .uat .t { font-size: 14.5px; line-height: 1.45; }
@@ -543,7 +543,6 @@ a { color: var(--acc); text-decoration: none; }
 .uat .lnk a, .puat .lnk a { color: var(--acc); }
 .uatbtns { display: flex; gap: 8px; flex: none; }
 .uatbtns .btn { min-height: 36px; }
-.uat-pass { background: var(--accq); border-color: var(--acc); color: var(--acc); font-weight: 600; }
 .uat-fail { border-color: var(--bad); color: var(--bad); }
 .uat-done { font-size: 13px; align-self: center; }
 .puat { border: 1px solid var(--line); border-radius: 4px; padding: 12px;

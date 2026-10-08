@@ -1400,10 +1400,10 @@ class UatStateTests(unittest.TestCase):
                          ("https://github.com/mkny13/mahler/pull/88", "PR #88"))
         self.assertIsNone(u["pending"])
 
-    def test_the_check_is_the_markers_stripped_and_capped(self):
+    def test_the_check_preserves_all_hint_text(self):
         long = "\n".join(f"- thing {i} that goes on" for i in range(20))
         self.led.add_uat('mahler', 10, 89, 'abc', 'Later', long)
-        self.assertEqual(len(self.uat()[0]["check"]), 200)   # capped
+        self.assertIn("thing 19 that goes on", self.uat()[0]["check"])
 
     def test_newest_first_and_disabled_projects_hidden(self):
         self.led.add_uat('mahler', 10, 89, 'abc', 'Later', '- x')
@@ -1411,9 +1411,9 @@ class UatStateTests(unittest.TestCase):
         self.assertEqual([u["number"] for u in self.uat()], [10, 9])
         self.assertNotIn("old", [u["project"] for u in self.uat()])
 
-    def test_a_recorded_verdict_removes_the_row(self):
+    def test_a_recorded_verdict_preserves_the_row(self):
         self.led.set_uat_verdict('mahler', 9, 'pass')
-        self.assertEqual(self.uat(), [])
+        self.assertEqual(len(self.uat()), 1)
 
     def test_uat_url_config_beats_the_pr_link(self):
         cfg = make_cfg(projects={'mahler': {
@@ -1424,15 +1424,16 @@ class UatStateTests(unittest.TestCase):
         self.assertEqual(u["link_label"], 'Open build')
 
     def test_counts_exclude_a_queued_verdict(self):
-        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+        actions.run(self.cfg, self.led, 'uat_fail', {'project': 'mahler', 'number': 9, 'note': ''})
         s = state.build(self.cfg, self.led)
-        self.assertEqual((s["uat_count"], len(s["uat"])), (0, 1))
-        self.assertEqual(s["uat"][0]["pending"], "uat_pass")
+        self.assertNotIn("uat_count", s)
+        self.assertEqual(len(s["uat"]), 1)
+        self.assertEqual(s["uat"][0]["pending"], "uat_fail")
         self.assertEqual(s["landing"], {"tab": "now", "view": "now"})   # nothing to act on
 
-    def test_landing_lands_on_ready_to_test(self):
+    def test_shipments_do_not_change_landing(self):
         self.assertEqual(state.build(self.cfg, self.led)["landing"],
-                         {"tab": "triage", "view": "test"})
+                         {"tab": "now", "view": "now"})
 
 
 class UatPageTests(unittest.TestCase):
@@ -1449,19 +1450,19 @@ class UatPageTests(unittest.TestCase):
     def doc(self):
         return console_snapshot.document(state.build(self.cfg, self.led))
 
-    def test_renders_the_row_with_pass_and_fail(self):
+    def test_renders_the_row_with_only_fail(self):
         frag = self.frag()
         self.assertIn('data-uat="mahler#9"', frag)
         self.assertIn("Wired the exporter", frag)
         self.assertIn("the new ping arrives", frag)
         self.assertIn('href="https://github.com/mkny13/mahler/pull/88"', frag)
         self.assertIn("PR #88 ↗", frag)
-        self.assertIn('data-act="uat_pass"', frag)
+        self.assertNotIn('data-act="uat_pass"', frag)
         self.assertIn('data-open-bug="mahler#9"', frag)
-        self.assertIn(">Pass</button>", frag)
+        self.assertNotIn(">Pass</button>", frag)
         self.assertIn(">Fail</button>", frag)
-        self.assertIn('data-view="test" data-tab="triage"', self.doc())
-        self.assertIn('<span>Ready to test</span><span class="mono t-mut">1</span>',
+        self.assertIn('data-view="now" data-tab="now"', self.doc())
+        self.assertIn('<span>What changed</span>',
                       self.doc())                                # the rail badge
 
     def test_the_bug_sheet_is_in_the_page_and_wired(self):
@@ -1473,17 +1474,17 @@ class UatPageTests(unittest.TestCase):
         self.assertIn('data-act="uat_fail"', frag)
 
     def test_a_queued_verdict_shows_its_copy(self):
-        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
-        self.assertIn("Passed — UAT recorded.", self.frag())
+        actions.run(self.cfg, self.led, 'uat_fail', {'project': 'mahler', 'number': 9, 'note': ''})
+        self.assertIn("Failure report queued.", self.frag())
         self.led2 = make_led()
         self.led2.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter', '- x')
         actions.run(self.cfg, self.led2, 'uat_fail',
                     {'project': 'mahler', 'number': 9, 'note': 'nope'})
-        self.assertIn("Failed — p1 bug filed and routed.", console_snapshot.app(state.build(self.cfg, self.led2)))
+        self.assertIn("Failure report queued.", console_snapshot.app(state.build(self.cfg, self.led2)))
 
     def test_phone_has_a_ready_to_test_section(self):
         frag = self.frag()
-        self.assertIn("Ready to test · 1", frag)
+        self.assertIn("What changed", frag)
         self.assertIn('class="puat"', frag)
 
     def test_phone_ready_to_test_card_glues_ref_to_meta(self):
@@ -1511,11 +1512,11 @@ class UatPageTests(unittest.TestCase):
         self.assertIn('mahler#239</a> · merged 20:01', html)
         self.assertNotIn('mahler#239merged', html)
 
-    def test_an_empty_queue_renders_no_section(self):
+    def test_historical_pass_stays_visible(self):
         self.led.set_uat_verdict('mahler', 9, 'pass')
         frag = self.frag()
         self.assertNotIn("Ready to test ·", frag)
-        self.assertNotIn('class="puat"', frag)
+        self.assertIn('class="puat"', frag)
 
     def test_adjacent_inline_content_spans_have_separators(self):
         """Guard against glued adjacent content spans (.t/.meta/.check/.lnk/.q/.pchip).
@@ -2310,18 +2311,18 @@ class UatActionTests(unittest.TestCase):
                      {'project': 'old', 'number': 9},
                      {'project': 'mahler', 'number': 8}):
             with self.assertRaises(actions.ActionError, msg=body):
-                actions.run(self.cfg, self.led, 'uat_pass', body)
+                actions.run(self.cfg, self.led, 'uat_fail', {**body, 'note': ''})
 
-    def test_pass_queues_with_no_delay_and_records_the_event(self):
-        id = actions.run(self.cfg, self.led, 'uat_pass',
-                         {'project': 'mahler', 'number': 9})['id']
+    def test_failure_queues_with_no_delay_and_records_the_event(self):
+        id = actions.run(self.cfg, self.led, 'uat_fail',
+                         {'project': 'mahler', 'number': 9, 'note': ''})['id']
         row = self.row(id)
         self.assertEqual((row['kind'], row['project'], row['number'],
-                          json.loads(row['payload'])), ('uat_pass', 'mahler', 9, {}))
+                          json.loads(row['payload'])), ('uat_fail', 'mahler', 9, {'note': ''}))
         self.assertEqual(self.led.due_actions()[0]['id'], id)   # due at once
         ev = self.led.q1("SELECT * FROM events WHERE kind='console_uat_queued'")
         self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
-                         ('mahler', 9, 'pass'))
+                         ('mahler', 9, 'fail'))
 
     def test_fail_needs_a_note_of_at_most_2000_chars(self):
         for body in ({'project': 'mahler', 'number': 9},
@@ -2334,15 +2335,15 @@ class UatActionTests(unittest.TestCase):
         self.assertEqual(json.loads(self.row(id)['payload']), {'note': ''})
 
     def test_a_second_verdict_is_refused_while_one_is_queued(self):
-        actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+        actions.run(self.cfg, self.led, 'uat_fail', {'project': 'mahler', 'number': 9, 'note': ''})
         with self.assertRaises(actions.ActionError):
             actions.run(self.cfg, self.led, 'uat_fail',
                         {'project': 'mahler', 'number': 9, 'note': 'again'})
 
     def test_a_second_verdict_is_refused_after_one_is_recorded(self):
-        self.led.set_uat_verdict('mahler', 9, 'pass')
+        self.led.set_uat_verdict('mahler', 9, 'fail')
         with self.assertRaises(actions.ActionError):
-            actions.run(self.cfg, self.led, 'uat_pass', {'project': 'mahler', 'number': 9})
+            actions.run(self.cfg, self.led, 'uat_fail', {'project': 'mahler', 'number': 9, 'note': ''})
 
 
 class UatOutboxTests(unittest.TestCase):
@@ -2355,13 +2356,12 @@ class UatOutboxTests(unittest.TestCase):
         self.addCleanup(self.led.close)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
         self.gh = mock.Mock()
+        self.gh.issue_by_marker.return_value = None
+        self.gh.create_issue.return_value = "https://github.com/mkny13/mahler/issues/42"
         self.ctx._gh['mkny13/mahler'] = self.gh
         self.led.add_uat('mahler', 9, 88, '4c1f0ab', 'Wired the exporter',
                          '- the new ping arrives', shipped_at=iso(self.led.now() - timedelta(minutes=1)))
         self.led.upsert_item('mahler', 9, state='shipped', mirror='mahler:shipped')
-        self.gh.issue_comments.side_effect = lambda n: ([dict(
-            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
-            id=123, createdAt=iso(self.led.now()))] if self.gh.comment.called else [])
 
     def row(self, id):
         return self.led.q1('SELECT * FROM console_actions WHERE id=?', (id,))
@@ -2376,74 +2376,53 @@ class UatOutboxTests(unittest.TestCase):
     def drain(self):
         self.outbox.drain(self.ctx)
 
-    def test_pass_comments_and_records_the_verdict(self):
-        id = self.queue('uat_pass')
-        self.drain()
-        self.gh.comment.assert_called_once_with(
-            9, "✅ **UAT passed** (from the console).", agent=False)
-        row = self.uat()
-        self.assertEqual(row['verdict'], 'pass')
-        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
-        self.assertEqual(row['verdict_at'], iso(self.led.now()))
-        self.assertEqual(self.row(id)['status'], 'done')
-        ev = self.led.q1("SELECT * FROM events WHERE kind='uat_verdict'")
-        self.assertEqual((ev['project'], ev['number'], json.loads(ev['detail'])['verdict']),
-                         ('mahler', 9, 'pass'))
 
-    def test_pass_recovers_existing_comment_without_reposting(self):
-        self.gh.issue_comments.side_effect = None
-        self.gh.issue_comments.return_value = [dict(
-            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
-            id=123, createdAt=iso(self.led.now()))]
-        self.queue('uat_pass')
+    def test_done_failure_retains_completion_and_exact_sha(self):
+        self.led.accept_evidence('mahler', 9, dict(source='report:x', author='ci',
+            created_at=iso(self.led.now()), kind='smoke', body='Smoke: PASS report:x'))
+        self.queue('uat_fail', note='broken after completion')
         self.drain()
-        self.drain()
-        self.gh.comment.assert_not_called()
+        body = self.gh.create_issue.call_args.args[1]
+        self.assertIn('**Merge SHA:** `4c1f0ab`', body)
+        self.assertIn('https://github.com/mkny13/mahler/issues/9', body)
         self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
-        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
-
-    def test_failure_can_later_pass_without_another_bug(self):
-        self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
-        self.queue('uat_fail', note='broken')
-        self.drain()
-        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
-        self.queue('uat_pass')
-        self.drain()
-        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
-        self.gh.create_issue.assert_called_once()
+        self.assertEqual(self.uat()['verdict'], 'pass')
         self.assertEqual(self.uat()['bug'], 42)
+        self.assertEqual(self.led.shipment_history('mahler')[0]['completion_kind'], 'smoke')
+        with self.assertRaises(actions.ActionError):
+            self.queue('uat_fail', note='double tap')
 
-    def test_pass_retry_after_stale_comment_read(self):
-        self.check_pass_retry_after_comment_read_failure([])
-
-    def test_pass_retry_after_unavailable_comment_read(self):
+    def test_retry_recovers_bug_after_comment_failure_or_create_timeout(self):
         from mahler.gh import GHError
-        self.check_pass_retry_after_comment_read_failure(GHError('temporarily unavailable'))
+        remote = {}
+        self.gh.issue_by_marker.side_effect = lambda marker: remote.get(marker)
+        def create(title, body, labels):
+            marker = body.splitlines()[-1]
+            remote[marker] = 'https://github.com/mkny13/mahler/issues/42'
+            raise GHError('response lost after creation')
+        self.gh.create_issue.side_effect = create
+        first = self.queue('uat_fail', note='broken')
+        self.drain()
+        self.assertEqual(self.row(first)['status'], 'failed')
+        self.gh.comment.side_effect = GHError('comment unavailable')
+        second = self.queue('uat_fail', note='broken')
+        self.drain()
+        self.assertEqual(self.row(second)['status'], 'failed')
+        self.gh.comment.side_effect = None
+        third = self.queue('uat_fail', note='broken')
+        self.drain()
+        self.drain()
+        self.assertEqual(self.row(third)['status'], 'done')
+        self.assertEqual(self.uat()['bug'], 42)
+        self.gh.create_issue.assert_called_once()
 
-    def check_pass_retry_after_comment_read_failure(self, followup):
-        self.gh.issue_comments.side_effect = [[], followup]
-        action = self.queue('uat_pass')
+    def test_failed_marker_lookup_never_creates_duplicate(self):
+        from mahler.gh import GHError
+        self.gh.issue_by_marker.side_effect = GHError('unavailable')
+        action = self.queue('uat_fail', note='broken')
         self.drain()
         self.assertEqual(self.row(action)['status'], 'failed')
-        self.assertEqual(self.led.item('mahler', 9)['state'], 'shipped')
-
-        self.gh.issue_comments.side_effect = [[], []]
-        for _ in range(2):
-            action = self.queue('uat_pass')
-            self.drain()
-            self.assertEqual(self.row(action)['status'], 'failed')
-        self.gh.comment.assert_called_once()
-
-        self.gh.issue_comments.side_effect = None
-        self.gh.issue_comments.return_value = [dict(
-            body="✅ **UAT passed** (from the console).", author={'login': 'mike'},
-            id=123, createdAt=iso(self.led.now()))]
-        action = self.queue('uat_pass')
-        self.drain()
-        self.gh.comment.assert_called_once()
-        self.assertEqual(self.row(action)['status'], 'done')
-        self.assertEqual(self.led.item('mahler', 9)['state'], 'done')
-        self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
+        self.gh.create_issue.assert_not_called()
 
     def test_fail_files_a_p1_bug_and_routs_it(self):
         self.gh.create_issue.return_value = 'https://github.com/mkny13/mahler/issues/42'
@@ -2490,14 +2469,14 @@ class UatOutboxTests(unittest.TestCase):
     def test_a_github_failure_marks_the_action_failed_and_leaves_it_pending(self):
         from mahler.gh import GHError
         self.gh.comment.side_effect = GHError('boom')
-        id = self.queue('uat_pass')
+        id = self.queue('uat_fail', note='broken')
         self.drain()
         self.assertEqual(self.row(id)['status'], 'failed')
         self.assertIsNone(self.uat()['verdict'])    # still in the queue
 
     def test_a_recorded_verdict_is_skipped(self):
         id = self.queue('uat_fail', note='late')
-        self.led.set_uat_verdict('mahler', 9, 'pass')   # decided before the tick runs
+        self.led.set_uat_verdict('mahler', 9, 'fail')   # decided before the tick runs
         self.drain()
         self.gh.create_issue.assert_not_called()
         self.assertEqual((self.row(id)['status'], self.row(id)['result']),
@@ -2506,7 +2485,7 @@ class UatOutboxTests(unittest.TestCase):
     def test_a_disabled_project_is_skipped(self):
         self.ctx.cfg = make_cfg()
         self.ctx.cfg['projects']['mahler']['enabled'] = False
-        id = self.queue('uat_pass')
+        id = self.queue('uat_fail', note='broken')
         self.drain()
         self.gh.comment.assert_not_called()
         self.assertEqual((self.row(id)['status'], self.row(id)['result']),
@@ -3170,7 +3149,7 @@ assert.equal(reloads, 0);
 const attrs = {"data-act":"future_action", "data-project":"mahler", "data-number":"42", "class":"btn"};
 const button = {attributes:Object.entries(attrs).map(([name,value]) => ({name,value})), getAttribute:key => attrs[key]};
 assert.deepEqual(payloadFor(button, "future_action"), {project:"mahler", number:"42"});
-assert.deepEqual(payloadFor(button, "uat_pass"), {project:"mahler", number:42});
+
 function showSavedToast(message) { saved.push(message); }
 function showErrorToast(message) { throw Error(message); }
 function refresh(force) { refreshes.push(force); return Promise.resolve(); }

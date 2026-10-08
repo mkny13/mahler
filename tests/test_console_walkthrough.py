@@ -37,6 +37,8 @@ class WalkthroughTests(unittest.TestCase):
         self.assertIn("--verbose", launched)
         prompt = argv_for.call_args.args[1]
         self.assertIn("http://127.0.0.1:", prompt)
+        self.assertIn("What changed", prompt)
+        self.assertIn("report a failure", prompt)
 
     def test_launch_uses_platform_account_environment(self):
         cfg = make_cfg()

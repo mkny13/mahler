@@ -301,7 +301,7 @@ def revert(cfg, led, body):
     return {"id": id}
 
 
-# ---------- Ready to test (the UAT queue) ----------
+# ---------- Shipment failure reports ----------
 
 def _uat_target(cfg, led, body):
     project, number = body.get("project"), body.get("number")
@@ -319,27 +319,20 @@ def _uat_target(cfg, led, body):
 def _verdict_pending(led, project, number):
     """A verdict queued but not yet run (capture can lag): nothing else may
     queue a second one."""
-    for kind in ("uat_pass", "uat_fail"):
-        for r in led.pending_actions(kind):
-            if r["project"] == project and r["number"] == number:
-                return True
-    return False
+    return any(r["project"] == project and r["number"] == number
+               for r in led.pending_actions("uat_fail"))
 
 
 def _queue_verdict(cfg, led, kind, body, payload, verdict):
     with led._tx():
         row = _uat_target(cfg, led, body)
-        if (row["verdict"] == "pass" or (row["verdict"] == "fail" and kind != "uat_pass")) or _verdict_pending(led, row["project"], row["number"]):
+        if (row["bug"] or row["verdict"] == "fail") or _verdict_pending(led, row["project"], row["number"]):
             raise ActionError("the verdict is already recorded or queued")
         id = led.queue_action(kind, row["project"], row["number"], payload,
                               delay_seconds=0)
         led.event("console_uat_queued", row["project"], row["number"],
                   {"verdict": verdict, "id": id})
     return {"id": id}
-
-
-def uat_pass(cfg, led, body):
-    return _queue_verdict(cfg, led, "uat_pass", body, {}, "pass")
 
 
 def uat_fail(cfg, led, body):
@@ -498,7 +491,7 @@ def cut_release(cfg, led, body):
 
 ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
-                                   capture, revert, uat_pass, uat_fail, attach, cut_release,
+                                   capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log)}
 
 

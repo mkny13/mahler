@@ -24,8 +24,13 @@ def run(cfg, platform_name):
     # Insert fixture data for the agent to interact with
     led.con.execute("INSERT INTO items (project, number, title, state, labels) VALUES ('mahler', 301, 'Walkthrough item', 'ready', 'mahler:working')")
     led.con.execute("INSERT INTO items (project, number, title, state, question, options) VALUES ('mahler', 302, 'Needs you item', 'needs-you', 'What should we do?', '[\"Option A\", \"Option B\"]')")
-    led.con.execute("INSERT INTO uat (project, number, pr, sha, title, needs, shipped_at, verdict, verdict_at, bug, note) VALUES ('mahler', 303, 100, 'abcdef', 'UAT item', 'Check this.', '2026-09-16T00:00:00', NULL, NULL, NULL, NULL)")
+    led.con.execute("INSERT INTO uat (project, number, pr, sha, title, needs, shipped_at, verdict, verdict_at, bug, note) VALUES ('mahler', 303, 100, 'abcdef', 'Shipped change', 'Check this.', '2026-09-16T00:00:00', NULL, NULL, NULL, NULL)")
     
+    led.upsert_item("mahler", 303, state="shipped")
+    led.upsert_item("mahler", 304, state="done")
+    led.add_uat("mahler", 304, 101, "fedcba", "Completed change", "")
+    led.set_uat_verdict("mahler", 304, "pass")
+
     load = lambda: fixture_cfg
     handler = type("Handler", (serve._Handler,),
                    {"led": led, "lock": threading.Lock(),

@@ -588,6 +588,21 @@ class Ledger:
                       "AND i.state='shipped')) "
                       "ORDER BY shipped_at DESC, number DESC")
 
+    def shipment_history(self, project, limit=20):
+        """Newest retained shipments; display retention never deletes evidence."""
+        return self.q("SELECT u.*, e.kind AS completion_kind FROM uat u "
+                      "LEFT JOIN completion_evidence e ON e.project=u.project AND e.number=u.number "
+                      "WHERE u.project=? ORDER BY u.shipped_at DESC, u.number DESC LIMIT ?",
+                      (project, limit))
+
+    def report_shipment_failure(self, project, number, bug, note):
+        """Keep historical completion evidence while recording one linked defect."""
+        return bool(self.con.execute(
+            "UPDATE uat SET bug=?,note=?,verdict=CASE WHEN verdict='pass' THEN verdict ELSE 'fail' END,"
+            "verdict_at=CASE WHEN verdict='pass' THEN verdict_at ELSE ? END "
+            "WHERE project=? AND number=? AND bug IS NULL",
+            (bug, note, iso(self.now()), project, number)).rowcount)
+
     def accept_evidence(self, project, number, evidence):
         """Atomically complete a shipment once, retaining any failed UAT history."""
         with self._tx():

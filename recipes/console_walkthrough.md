@@ -4,7 +4,7 @@ The console is running locally at: $url
 Please perform this exact checklist using your browser tools:
 1. Visit the home page (every view in `VIEWS` in `mahler/console/page.py` is accessible from here).
 2. Test both phone and desktop layouts (resize your viewport or use device emulation).
-3. Review a UAT row (Pass/Fail/bug-sheet on an item in waiting_for_owner or ended).
+3. Open What changed, inspect the optional “If you notice” hint, and report a failure on a shipped or done item using its Fail button and bug sheet. Confirm there are no Pass controls or pending-verdict counts.
 4. Answer the needs-you item.
 5. Open the Capture form.
 6. Toggle a backlog group.
