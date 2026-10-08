@@ -1417,6 +1417,26 @@ class UatTests(unittest.TestCase):
         self.led = Ledger(':memory:', clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_shipment_history_is_bounded_per_project_and_keeps_passes(self):
+        for project in ('a', 'b'):
+            for n in range(25):
+                self.led.add_uat(project, n, 88, 'abc', 'Change', '')
+                self.led.set_uat_verdict(project, n, 'pass')
+            rows = self.led.shipment_history(project)
+            self.assertEqual([r['number'] for r in rows], list(range(24, 4, -1)))
+        self.assertEqual(self.led.q1('SELECT count(*) AS n FROM uat')['n'], 50)
+
+    def test_report_failure_preserves_historical_pass_and_is_idempotent(self):
+        self.led.add_uat('x', 5, 88, 'abc', 'Change', '')
+        self.led.set_uat_verdict('x', 5, 'pass')
+        before = dict(self.led.uat('x', 5))
+        self.assertTrue(self.led.report_shipment_failure('x', 5, 99, 'broken'))
+        self.assertFalse(self.led.report_shipment_failure('x', 5, 100, 'again'))
+        after = self.led.uat('x', 5)
+        self.assertEqual(after['verdict'], 'pass')
+        self.assertEqual(after['verdict_at'], before['verdict_at'])
+        self.assertEqual((after['bug'], after['note']), (99, 'broken'))
+
     def test_add_pending_and_verdict(self):
         self.led.add_uat('x', 5, 88, '4c1f0ab0123', 'Wired the exporter',
                          '- the new ping arrives')

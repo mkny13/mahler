@@ -111,8 +111,6 @@ def build(cfg, led, stats_range="week", section=None):
         "needs_count": sum(n["pending"] is None for n in needs),
         "uat": uat,
         "sessions": _uat_sessions(uat),
-        # the count you act on: items with no verdict, recorded or queued
-        "uat_count": sum(u["pending"] is None for u in uat),
         "backlog": backlog,
         "backlog_total": sum(len(g["items"]) for g in backlog),
         "dep_graph": dep_graph,
@@ -140,8 +138,8 @@ def build(cfg, led, stats_range="week", section=None):
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
     s["landing"] = {
-        "tab": "triage" if needs or s["uat_count"] else "now",
-        "view": "needs" if needs else "test" if s["uat_count"] else "now",
+        "tab": "triage" if needs else "now",
+        "view": "needs" if needs else "now",
     }
     return s
 
@@ -802,18 +800,13 @@ def _needs(cfg, led, projects, now):
 
 
 def _uat(cfg, led, projects):
-    """Every shipment awaiting passing evidence, including failed checks.
-    Queued verdicts remain visible until the tick applies them."""
+    """Newest shipments, with optional hints and failure-report status."""
     pols = {p["name"]: p for p in projects}
-    queued = {}
-    for kind in ("uat_pass", "uat_fail"):
-        for r in led.pending_actions(kind):
-            queued[(r["project"], r["number"])] = kind
+    queued = {(r["project"], r["number"]): "uat_fail"
+              for r in led.pending_actions("uat_fail")}
     out = []
-    for row in led.pending_uat():
+    for row in (row for project in pols for row in led.shipment_history(project)):
         project, n = row["project"], row["number"]
-        if project not in pols:
-            continue
         shipped = parse(row["shipped_at"])
         minutes = max(0, int((led.now() - shipped).total_seconds() // 60)) if shipped else 0
         age = (f"{minutes // 1440}d" if minutes >= 1440 else
@@ -822,7 +815,14 @@ def _uat(cfg, led, projects):
         if row["pr"]:
             meta.append(f"PR #{row['pr']}")
         if row["verdict"] == "fail":
-            meta.append("UAT failed; awaiting passing evidence")
+            meta.append("Defect reported")
+        if row["bug"] and row["verdict"] != "fail":
+            meta.append("Defect reported")
+        kind = row["completion_kind"]
+        if kind:
+            meta.append("Quiet period completed" if kind == "quiet" else "Automated completion" if kind == "smoke" else "Completion evidence recorded")
+        elif row["verdict"] == "pass":
+            meta.append("Historical pass recorded")
         if row["sha"]:
             meta.append(f"sha {row['sha'][:7]}")
         needs = []
@@ -839,52 +839,30 @@ def _uat(cfg, led, projects):
             link, link_label = _pr_url(cfg, project, row["pr"]), f"PR #{row['pr']}"
         else:
             link, link_label = None, None
-        item = led.item(project, n)
-        labels = json.loads(row_get(item, "labels", "[]") or "[]")
-        areas = sorted(label for label in labels if label.startswith("area:"))
-        parent = row_get(item, "parent")
-        group = areas[0] if areas else f"Part of #{parent}" if parent else "Other changes"
         shared = bool(uat_url and "{number}" not in uat_url and "{pr}" not in uat_url)
         out.append({
-            "group": group, "shared_link": link if shared else None,
+            "shared_link": link if shared else None,
             "pr_link": _pr_url(cfg, project, row["pr"]) if row["pr"] else None,
             "pr_label": f"PR #{row['pr']}" if row["pr"] else None,
             "project": project, "number": n, "ref": _ref(project, n),
             "url": _issue_url(cfg, project, n),
             "title": row["title"] or _ref(project, n),
-            "meta": " · ".join(meta), "check": "; ".join(needs)[:200],
+            "meta": " · ".join(meta), "check": "; ".join(needs),
             "link": link, "link_label": link_label,
-            "pending": queued.get((project, n)),
+            "pending": queued.get((project, n)), "reported": bool(row["bug"] or row["verdict"] == "fail"),
+            "sha": row["sha"], "shipped_at": row["shipped_at"], "completion_kind": kind,
         })
     return out
 
 
 def _uat_sessions(uat):
-    """Bounded review sessions; retain the flat queue for per-change overlays."""
+    """One newest-first shipment history per enabled project."""
     groups = {}
     for u in uat:
-        groups.setdefault((u["project"], u.get("group", "Other changes")), []).append(u)
-    sessions = []
-    for (project, group), changes in sorted(groups.items()):
-        parts = (len(changes) + 9) // 10
-        for offset in range(0, len(changes), 10):
-            part = offset // 10 + 1
-            rows = changes[offset:offset + 10]
-            count = sum(u["pending"] is None for u in rows)
-            title = f"{project} · {group}"
-            if parts > 1:
-                title += f" · Part {part} of {parts}"
-            sessions.append({
-                "title": title, "project": project, "group": group,
-                "part": part, "parts": parts, "changes": rows,
-                "pending_count": count,
-                "link": rows[0].get("shared_link"), "link_label": rows[0]["link_label"],
-                # Confirmation is local to this rendered snapshot, never persisted.
-                "pass_all": {"confirmed": False, "disabled": count == 0,
-                             "label": f"Pass all {count}",
-                             "confirm_label": f"Tap again to pass all {count}"},
-            })
-    return sorted(sessions, key=lambda session: -session["pending_count"])
+        groups.setdefault(u["project"], []).append(u)
+    return [{"title": project, "project": project, "changes": rows,
+             "link": rows[0].get("shared_link"), "link_label": rows[0]["link_label"]}
+            for project, rows in sorted(groups.items())]
 
 
 # ---------- backlog ----------

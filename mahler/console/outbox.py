@@ -110,36 +110,9 @@ def uat_pending_row(ctx, project, number):
     if project not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
         return None, "the project is disabled"
     r = ctx.led.uat(project, number)
-    if r is None or r["verdict"] == "pass":
+    if r is None or r["bug"] or r["verdict"] == "fail":
         return None, "the verdict is already recorded"
     return r, None
-
-
-def uat_pass(ctx, row, payload):
-    project, number = row["project"], row["number"]
-    r, skip = uat_pending_row(ctx, project, number)
-    if r is None:
-        return "skipped", skip
-    from ..gh import UAT_PASS_COMMENT, completion_evidence
-    from ..sync import mirror_done
-
-    gh = ctx.gh(project)
-    posted_key = f"uat-pass-posted:{project}:{number}:{r['shipped_at']}"
-    # Recover a successful post after a crash/timeout before local persistence.
-    evidence = next((e for c in gh.issue_comments(number)
-                     if (e := completion_evidence(c, r["shipped_at"]))), None)
-    if evidence is None and not ctx.led.get_kv(posted_key):
-        gh.comment(number, UAT_PASS_COMMENT, agent=False)
-        # The outbox commits this marker even if the read below fails. Scope it
-        # to the shipment, since retrying Pass creates a new console action.
-        ctx.led.set_kv(posted_key, "1")
-        evidence = next((e for c in gh.issue_comments(number)
-                         if (e := completion_evidence(c, r["shipped_at"]))), None)
-    if evidence is None:
-        raise ValueError("UAT comment not yet visible with post-merge attribution")
-    if ctx.led.accept_evidence(project, number, evidence):
-        mirror_done(ctx, project, number)
-    return "done", "UAT passed"
 
 
 def uat_fail(ctx, row, payload):
@@ -147,8 +120,6 @@ def uat_fail(ctx, row, payload):
     r, skip = uat_pending_row(ctx, project, number)
     if r is None:
         return "skipped", skip
-    if r["verdict"] == "fail":
-        return "skipped", "the failure is already recorded"
     pol = config.project_policy(ctx.cfg, project)
     labels = ["type:bug", "p1"]
     if pol.get("scope") == "label":
@@ -169,13 +140,18 @@ def uat_fail(ctx, row, payload):
     att = format_attachment(ctx.cfg, payload)
     if att:
         body = body.replace("\n\n---", f"{att}\n\n---", 1)
-    url = ctx.gh(project).create_issue(uat_bug_title(item_id, title), body, labels)
+    marker = f"<!-- mahler:shipment-defect:{project}:{number}:{r['sha']}:{r['shipped_at']} -->"
+    body += f"\n\n**Merge SHA:** `{r['sha']}`\nSource issue: {ctx.url(project, number)}\n{marker}"
+    gh = ctx.gh(project)
+    url = gh.issue_by_marker(marker)
+    if not url:
+        url = gh.create_issue(uat_bug_title(item_id, title), body, labels)
     try:
         bug = int(url.rstrip("/").rsplit("/", 1)[-1])
     except ValueError:
         raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
     ctx.gh(project).comment(number, f"❌ **UAT failed** — filed #{bug}.", agent=False)
-    if not ctx.led.set_uat_verdict(project, number, "fail", bug=bug,
+    if not ctx.led.report_shipment_failure(project, number, bug=bug,
                                    note=note or None):
         return "skipped", "the verdict is already recorded"
     ctx.led.event("uat_verdict", project, number,
@@ -211,7 +187,7 @@ def cut_release(ctx, row, payload):
 
 
 HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
-            'uat_pass': uat_pass, 'uat_fail': uat_fail, 'cut_release': cut_release}
+            'uat_fail': uat_fail, 'cut_release': cut_release}
 
 
 def _report(ctx, message):

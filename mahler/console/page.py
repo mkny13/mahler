@@ -15,7 +15,7 @@ with open(os.path.join(HERE, "console.css"), encoding="utf-8") as _fh:
 with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
     JS = _fh.read()
 
-VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "Ready to test"),
+VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "What changed"),
          ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
          ("capacity", "Capacity"), ("stats", "Stats"), ("models", MODELS_LABEL), ("history", "Event stream"),
          ("settings", "Settings"))
@@ -84,7 +84,7 @@ def selection(s, layout="desktop", view=None, tab=None):
 def app(s, layout="desktop", view=None, tab=None, overlays=None):
     """Only render the requested layout, section and open overlay forms."""
     layout, selected = selection(s, layout, view, tab)
-    counts = {"runs": len(s["runs"]), "needs": s["needs_count"], "uat": s["uat_count"],
+    counts = {"runs": len(s["runs"]), "needs": s["needs_count"],
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     out = (f'<span hidden data-console-revision="{asset_revision()}" '
            f'data-rendered-layout="{layout}" data-rendered-section="{selected}"></span>'
@@ -355,7 +355,7 @@ def _desktop(s, view):
     rail_counts = {
         "now": (str(len(s["runs"])) if s["runs"] else "", "acc"),
         "needs": (str(s["needs_count"]) if s["needs"] else "", "bad"),
-        "test": (str(s["uat_count"]) if s["uat"] else "", "mut"),
+        "test": ("", "mut"),
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
         "releases": (str(s["releases_suggested"]) if s.get("releases_suggested") else "", "acc"),
@@ -476,45 +476,34 @@ def _uat_link(u):
 
 
 def _uat_left(u):
+    hint = f'<span class="check">If you notice: {e(u["check"])}</span>' if u["check"] else ""
     return (f'<div class="body"><span class="t">{e(u["title"])}</span>'
             f'<span class="meta">{_a(u["url"], u["ref"])} · {e(u["meta"])}</span>'
-            f'<span class="check">{e(u["check"])}</span>{_uat_link(u)}</div>')
+            f'{hint}{_uat_link(u)}</div>')
 
 
 def _uat_buttons(u):
-    return ('<div class="uatbtns">'
-            f'<button class="btn uat-pass" data-act="uat_pass" '
-            f'data-project="{e(u["project"])}" data-number="{u["number"]}">Pass</button>'
-            f'<button class="btn uat-fail" data-open-bug="{e(u["ref"])}">Fail</button></div>')
+    return (f'<div class="uatbtns"><button class="btn uat-fail" '
+            f'data-open-bug="{e(u["ref"])}">Fail</button></div>')
 
 
 def _uat_done(u):
-    """A verdict queued but not yet run shows the copy it will become."""
-    if u["pending"] == "uat_pass":
-        return '<span class="uat-done t-good">Passed — UAT recorded.</span>'
     if u["pending"] == "uat_fail":
-        return ('<span class="uat-done t-bad">Failed — p1 bug filed and routed. '
-                'The revert is one tap away in History.</span>')
+        return '<span class="uat-done">Failure report queued.</span>'
+    if u.get("reported"):
+        return '<span class="uat-done t-bad">Defect reported.</span>'
     return ""
 
 
 def _uat_cards(s, phone=False):
     out = []
     for session in (s["sessions"] if "sessions" in s else _uat_sessions(s["uat"])):
-        confirm = session["pass_all"]
         out.append(f'<article class="uat-session"><header><h3>{e(session["title"])}</h3>'
-                   f'<span class="meta">{session["pending_count"]} awaiting verdict</span>'
-                   f'{_uat_link(session)}'
-                   f'<button class="btn uat-pass" data-pass-all data-pass-all-state="idle" '
-                   f'data-confirm-label="{e(confirm["confirm_label"])}"'
-                   f'{" disabled" if confirm["disabled"] else ""}>{e(confirm["label"])}</button>'
-                   '</header>')
+                   f'{_uat_link(session)}</header>')
         for u in session["changes"]:
             row = dict(u)
             if session["link"]:
                 row["link"] = None
-            elif "pr_link" in row:
-                row["link"], row["link_label"] = row["pr_link"], row["pr_label"]
             out.append(f'<div class="{"puat" if phone else "uat"}" data-uat="{e(u["ref"])}">'
                        f'{_uat_left(row)}{_uat_done(u) or _uat_buttons(u)}</div>')
         out.append('</article>')
@@ -1140,8 +1129,7 @@ def _p_triage(s):
                    'you. Runs continue on their own.</div>')
     out.append("</div>")
     if s["uat"]:
-        out.append(f'<div class="psect" style="gap:12px"><span class="lbl">Ready to test · '
-                   f'{s["uat_count"]}</span>')
+        out.append(f'<div class="psect" style="gap:12px"><span class="lbl">What changed</span>')
         out.append(_uat_cards(s, phone=True))
         out.append("</div>")
     out.append("</div></section>")

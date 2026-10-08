@@ -25,7 +25,7 @@ LEDGER_ONLY = {
     "client_log", "attach", "answer_undo",
 }
 # The queued actions (D27): applied only by the tick's outbox drain.
-QUEUED = {"answer", "stop_run", "capture", "revert", "uat_pass", "uat_fail",
+QUEUED = {"answer", "stop_run", "capture", "revert", "uat_fail",
           "cut_release"}
 
 
