@@ -169,11 +169,9 @@ def _design_payload(rest):
                 return None
             text_to_check += " " + " ".join(str(v).lower() for v in finding.values())
         normalized = re.sub(r"[\s_-]+", " ", text_to_check)
-        if ("security" in text_to_check
-                or "done-when" in text_to_check
-                or "done when" in normalized
-                or "data-loss" in text_to_check
-                or "data loss" in normalized):
+        if (re.search(r'\bsecurity\b', normalized)
+                or re.search(r'\bdone when\b', normalized)
+                or re.search(r'\bdata loss\b', normalized)):
             return None
         return data
         
