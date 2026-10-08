@@ -10,25 +10,27 @@ class TestGH(unittest.TestCase):
 
     def test_exact_preview_fixtures(self):
         sha = "a" * 40
-        deployment = {"id": 10, "sha": sha, "environment": "Preview",
+        deployment = {"id": 100, "sha": sha, "environment": "Preview",
                       "production_environment": False,
                       "repository_url": "https://api.github.com/repos/mkny13/mahler"}
-        success = {"id": 20, "state": "success", "environment": "Preview",
+        success = {"id": 200, "state": "success", "environment": "Preview",
                    "environment_url": "https://preview.example/build-10"}
         cases = [
             ([deployment], [success], success["environment_url"]),
             ([{**deployment, "sha": "b" * 40}], [success], None),
-            ([deployment, {**deployment, "id": 11}], [success], None),
-            ([deployment, {**deployment, "id": 11, "sha": "b" * 40}], [success], None),
+            ([deployment, {**deployment, "id": 101}], [success], None),
+            ([deployment, {**deployment, "id": 101, "sha": "b" * 40}], [success], None),
             ([{**deployment, "production_environment": True}], [success], None),
             ([{**deployment, "environment": "production"}], [success], None),
             ([{**deployment, "repository_url": "https://api.github.com/repos/other/repo"}], [success], None),
             ([deployment], [success, {**success, "state": "failure"}], None),
-            ([deployment], [success, {**success, "id": 21, "state": "pending"}], None),
-            ([deployment], [{**success, "id": 19, "state": "pending"}, success], success["environment_url"]),
+            ([deployment], [success, {**success, "id": 201, "state": "pending"}], None),
+            ([deployment], [{**success, "id": 199, "state": "pending"}, success], success["environment_url"]),
             ([deployment], [], None),
             ([deployment] * 100, [success], None),
             ([deployment], [success] * 100, None),
+            ([deployment, *[{**deployment, "id": 100 - i, "sha": f"{i:040x}"} for i in range(1, 100)]], [success], success["environment_url"]),
+            ([deployment], [success, *[{**success, "id": 200 - i, "state": "pending"} for i in range(1, 100)]], success["environment_url"]),
         ]
         for field, value in (("state", "failure"), ("state", "inactive"),
                              ("environment", "production"), ("environment_url", ""),

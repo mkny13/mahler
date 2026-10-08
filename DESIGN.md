@@ -831,8 +831,8 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     deployments are refused; this strategy has no production override. It reads
     up to 100 environment deployments without filtering away newer SHAs, requires
     exactly one record for the merge SHA and requires that record to be newest.
-    A full page is inconclusive. It then reads up to 100 statuses, requiring one
-    unambiguous newest status with success in the same environment. Failed,
+    It then reads up to 100 statuses, requiring one unambiguous newest status with
+    success in the same environment. Failed,
     inactive, pending, malformed, stale and ambiguous observations cannot pass.
     The public HTTPS `environment_url` must exist and contain no credentials,
     query string or fragment; only that URL is passed to smoke, never payloads.

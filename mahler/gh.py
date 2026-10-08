@@ -408,7 +408,6 @@ class GH:
         """Two bounded lookups; incomplete/ambiguous observations never prove live.
 
         Do not filter the first lookup by SHA: that hides a newer deployment.
-        A full page is inconclusive rather than silently ignoring more records.
         """
         from urllib.parse import urlencode, urlsplit
 
@@ -418,7 +417,7 @@ class GH:
         query = urlencode({"environment": environment, "per_page": 100})
         deployments = json.loads(self._gh(
             "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
-        if not isinstance(deployments, list) or not deployments or len(deployments) >= 100:
+        if not isinstance(deployments, list) or not deployments:
             return None
         if any(not isinstance(d, dict) or type(d.get("id")) is not int
                or d.get("environment") != environment for d in deployments):
@@ -437,7 +436,7 @@ class GH:
             "api", "--method", "GET",
             f"repos/{self.repo}/deployments/{deployment['id']}/statuses?per_page=100",
             timeout=timeout))
-        if not isinstance(statuses, list) or not statuses or len(statuses) >= 100:
+        if not isinstance(statuses, list) or not statuses:
             return None
         if any(not isinstance(s, dict) or type(s.get("id")) is not int for s in statuses):
             return None
