@@ -327,10 +327,7 @@ class CodexRefreshTests(unittest.TestCase):
                 notify_send.assert_not_called()
 
         # 2. Failed probe clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         with mock.patch("mahler.notify.send") as notify_send:
             for _ in range(8):
                 self.now += timedelta(minutes=15)
@@ -348,10 +345,7 @@ class CodexRefreshTests(unittest.TestCase):
             notify_send.assert_not_called()
 
         # 3. Supported shape clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         with mock.patch("mahler.notify.send") as notify_send:
             for _ in range(8):
                 self.now += timedelta(minutes=15)
@@ -369,10 +363,7 @@ class CodexRefreshTests(unittest.TestCase):
             notify_send.assert_not_called()
 
         # 4. Shape change clears pending condition
-        self.led.set_kv("codex:unsupported-shape:first:work", "")
-        self.led.set_kv("codex:unsupported-shape:shape:work", "")
-        self.led.set_kv("codex:unsupported-shape:last:work", "")
-        self.led.set_kv("notified:codex-unsupported:work", "")
+        self.led.set_kv("codex:unsupported-shape:work", "")
         unsupported_20 = platforms._codex_usage({
             "ordinaryUsageAllowed": True,
             "rateLimits": {"primary": {"windowDurationMins": 20, "usedPercent": 20}}})
@@ -387,6 +378,40 @@ class CodexRefreshTests(unittest.TestCase):
                 with mock.patch.object(platforms, "probe_codex", return_value=unsupported_20):
                     usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
             notify_send.assert_not_called()
+
+    def test_unsupported_shape_gap_resets_and_legacy_keys_migrate(self):
+        unsupported = platforms._codex_usage({
+            "ordinaryUsageAllowed": True,
+            "rateLimits": {"primary": {"windowDurationMins": 10, "usedPercent": 20}}})
+        run = lambda: usage.refresh_codex(self.cfg, self.led, "codex-work", force=True)
+        with mock.patch("mahler.notify.send") as notify_send, \
+                mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+            run()
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                run()
+            # a gap beyond 5 * stale_minutes restarts the four-hour interval
+            self.now += timedelta(minutes=76)
+            run()
+            for _ in range(8):
+                self.now += timedelta(minutes=15)
+                run()
+            notify_send.assert_not_called()
+
+        # legacy four-key state from before the upgrade is honoured, not reset
+        self.led.set_kv("codex:unsupported-shape:work", "")
+        started = self.now - timedelta(hours=4)
+        self.led.set_kv("codex:unsupported-shape:first:work", started.isoformat())
+        self.led.set_kv("codex:unsupported-shape:shape:work", "10m")
+        self.led.set_kv("codex:unsupported-shape:last:work", (self.now - timedelta(minutes=15)).isoformat())
+        with mock.patch("mahler.notify.send") as notify_send, \
+                mock.patch.object(platforms, "probe_codex", return_value=unsupported):
+            run()
+            self.assertEqual(notify_send.call_count, 1)
+            self.assertEqual(self.led.get_kv("codex:unsupported-shape:first:work"), "")
+            self.now += timedelta(minutes=15)
+            run()
+            self.assertEqual(notify_send.call_count, 1)
 
 
 class CodexResetSpendTests(unittest.TestCase):

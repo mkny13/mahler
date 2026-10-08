@@ -162,6 +162,15 @@ def codex_env(cfg, account):
     return env
 
 
+def _clear_codex_alert(led, account):
+    for key in (f"codex:unsupported-shape:{account}",
+                f"codex:unsupported-shape:first:{account}",
+                f"codex:unsupported-shape:shape:{account}",
+                f"codex:unsupported-shape:last:{account}",
+                f"notified:codex-unsupported:{account}"):
+        led.set_kv(key, "")
+
+
 def refresh_codex(cfg, led, name, force=False):
     """One bounded probe per login, including failures; never fall back accounts."""
     pc = cfg["platforms"][name]
@@ -171,10 +180,7 @@ def refresh_codex(cfg, led, name, force=False):
     if not force and last and led.now() - last < timedelta(minutes=pc.get("stale_minutes", 15)):
         return
     account = config.account_of(pc)
-    first_key = f"codex:unsupported-shape:first:{account}"
-    shape_key = f"codex:unsupported-shape:shape:{account}"
-    last_key = f"codex:unsupported-shape:last:{account}"
-    notified_shape_key = f"notified:codex-unsupported:{account}"
+    alert_key = f"codex:unsupported-shape:{account}"
     env = codex_env(cfg, account)
     if env is None:
         return
@@ -191,38 +197,44 @@ def refresh_codex(cfg, led, name, force=False):
         for w, pct, resets in samples:
             led.record_usage(peer, w, pct, resets)
     if not isinstance(samples, platforms.CodexUsage):
-        led.set_kv(first_key, "")
-        led.set_kv(shape_key, "")
-        led.set_kv(last_key, "")
-        led.set_kv(notified_shape_key, "")
+        _clear_codex_alert(led, account)
         return
     raw_windows = samples.metadata.get("windows", [])
     if router.is_supported_codex_shape(raw_windows):
-        led.set_kv(first_key, "")
-        led.set_kv(shape_key, "")
-        led.set_kv(last_key, "")
-        led.set_kv(notified_shape_key, "")
+        _clear_codex_alert(led, account)
     else:
         shape_label = ", ".join(w["window"] for w in raw_windows) if raw_windows else "none"
-        prev_shape = led.get_kv(shape_key)
-        last_probe_time = parse(led.get_kv(last_key))
+        # one record: first/last sighting, shape, and when the alert was sent
+        try:
+            state = json.loads(led.get_kv(alert_key) or "{}")
+        except ValueError:
+            state = {}
+        if not state:
+            # carry over an in-flight condition recorded under the old four keys
+            legacy = {"first": f"codex:unsupported-shape:first:{account}",
+                      "shape": f"codex:unsupported-shape:shape:{account}",
+                      "last": f"codex:unsupported-shape:last:{account}",
+                      "notified": f"notified:codex-unsupported:{account}"}
+            state = {k: v for k, key in legacy.items() if (v := led.get_kv(key))}
+            for key in legacy.values():
+                led.set_kv(key, "")
+        if not isinstance(state, dict):
+            state = {}
+        last_probe_time = parse(state.get("last"))
         max_gap = timedelta(minutes=pc.get("stale_minutes", 15) * 5)
-        if prev_shape != shape_label or (last_probe_time and led.now() - last_probe_time > max_gap):
-            led.set_kv(first_key, iso(led.now()))
-            led.set_kv(shape_key, shape_label)
-            led.set_kv(notified_shape_key, "")
-        first_time = parse(led.get_kv(first_key))
+        if state.get("shape") != shape_label or (last_probe_time and led.now() - last_probe_time > max_gap):
+            state = {"first": iso(led.now()), "shape": shape_label}
+        first_time = parse(state.get("first"))
         if first_time is None:
             first_time = led.now()
-            led.set_kv(first_key, iso(first_time))
-            led.set_kv(shape_key, shape_label)
-        led.set_kv(last_key, iso(led.now()))
-        if led.now() - first_time >= timedelta(hours=4):
-            if not led.get_kv(notified_shape_key):
-                notify.send(cfg, f"Codex ({account}) unsupported quota shape: {shape_label}",
-                            f"Codex platform {name} ({account}) reported unsupported quota shape '{shape_label}' continuously for 4 hours.",
-                            priority="high", tags="warning")
-                led.set_kv(notified_shape_key, iso(led.now()))
+            state.update(first=iso(first_time), shape=shape_label)
+        state["last"] = iso(led.now())
+        if led.now() - first_time >= timedelta(hours=4) and not state.get("notified"):
+            notify.send(cfg, f"Codex ({account}) unsupported quota shape: {shape_label}",
+                        f"Codex platform {name} ({account}) reported unsupported quota shape '{shape_label}' continuously for 4 hours.",
+                        priority="high", tags="warning")
+            state["notified"] = iso(led.now())
+        led.set_kv(alert_key, json.dumps(state))
     if isinstance(samples, platforms.CodexUsage):
         new_5h = next((pct for w, pct, _ in samples if w == "5h"), None)
         if prev_5h is not None and new_5h is not None and new_5h > prev_5h:
