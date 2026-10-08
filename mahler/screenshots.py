@@ -4,6 +4,7 @@ Callers supply the exact PR head, catch InvalidScreenshot/OSError as advisory
 failures, and keep lifecycle state (including any later merge SHA) in ledger KV.
 """
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -189,6 +190,32 @@ def lookup(project, pr, sha, *, root=None):
     except FileNotFoundError:
         return None
     return target, manifest
+
+
+
+def artifact_id(project, pr, sha, name):
+    """Opaque identity; never a client-supplied filesystem path."""
+    return hashlib.sha256(json.dumps([project, pr, sha, name]).encode()).hexdigest()
+
+
+def console_artifacts(project, pr, sha):
+    """Read validated manifest and bytes through pinned, no-follow directories."""
+    parts = _key(project, pr, sha)
+    with _directory(Path(config.STATE) / "screenshots") as root:
+        fd = os.dup(root)
+        try:
+            for part in parts:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=fd)
+                os.close(fd)
+                fd = child
+            manifest, files = _load(fd, sha)
+        finally:
+            os.close(fd)
+    data = dict(files)
+    return [({"id": artifact_id(project, pr, sha, entry["file"]),
+              "route": entry["route"]}, data[entry["file"]])
+            for entry in manifest["screenshots"]]
 
 
 def _command(command, cwd, env, timeout):

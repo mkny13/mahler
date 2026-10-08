@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, presence, review, router, warmup
+from .. import config, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -799,6 +799,66 @@ def _needs(cfg, led, projects, now):
     return out
 
 
+
+def _shipment_capture(led, row, policy):
+    """Only final evidence confirmed for this shipment, never a latest-head guess."""
+    if not policy.get("screenshot"):
+        return None
+    try:
+        final = json.loads(led.get_kv(
+            f"screenshot-final:{row['project']}#{row['number']}") or "{}")
+        if (not isinstance(final, dict) or final.get("pr") != row["pr"]
+                or not final.get("merge_sha") or final["merge_sha"] != row["sha"]):
+            return None
+        head = final.get("head")
+        capture = json.loads(led.get_kv(
+            f"screenshot:{row['project']}:{row['pr']}:{head}") or "{}")
+        if (not isinstance(capture, dict) or capture.get("pr") != row["pr"]
+                or capture.get("sha") != head or not capture.get("state")):
+            return None
+        return head, capture["state"]
+    except (ValueError, TypeError):
+        return None
+
+
+def _shipment_gallery(led, row, policy):
+    capture = _shipment_capture(led, row, policy)
+    if capture is None:
+        return {}
+    head, status = capture
+    gallery = {"screenshot_head": head, "screenshots": [],
+               "screenshot_status": "Screenshots unavailable."}
+    if status == "success":
+        try:
+            gallery["screenshots"] = [
+                dict(entry, url=f"/screenshots/{entry['id']}")
+                for entry, _ in screenshots.console_artifacts(
+                    row["project"], row["pr"], head)]
+            gallery["screenshot_status"] = ""
+        except (OSError, ValueError):
+            pass
+    return gallery
+
+
+def screenshot_image(cfg, led, identifier):
+    """Resolve an opaque ID only through enabled projects' shipment metadata."""
+    if not re.fullmatch(r"[0-9a-f]{64}", identifier):
+        return None
+    for policy in config.enabled_projects(cfg):
+        for row in led.shipment_history(policy["name"]):
+            capture = _shipment_capture(led, row, policy)
+            if capture is None or capture[1] != "success":
+                continue
+            try:
+                for entry, data in screenshots.console_artifacts(
+                        row["project"], row["pr"], capture[0]):
+                    if entry["id"] == identifier:
+                        return data
+            except (OSError, ValueError):
+                continue
+    return None
+
+
 def _uat(cfg, led, projects):
     """Newest shipments, with optional hints and failure-report status."""
     pols = {p["name"]: p for p in projects}
@@ -841,6 +901,7 @@ def _uat(cfg, led, projects):
             link, link_label = None, None
         shared = bool(uat_url and "{number}" not in uat_url and "{pr}" not in uat_url)
         out.append({
+            **_shipment_gallery(led, row, pols[project]),
             "shared_link": link if shared else None,
             "pr_link": _pr_url(cfg, project, row["pr"]) if row["pr"] else None,
             "pr_label": f"PR #{row['pr']}" if row["pr"] else None,
