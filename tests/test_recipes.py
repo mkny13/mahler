@@ -10,7 +10,7 @@ class SortRecipeTests(unittest.TestCase):
     def setUp(self):
         self.values = dict(number=238, repo="example/project", title="Sort safeguards",
                            worktree="/tmp/example-worktree", rules="Sample project rules",
-                           sizing="")
+                           sizing="", scope_rules="")
         self.rendered = prompt.render("sort", **self.values)
         self.text = " ".join(self.rendered.split())
 
@@ -65,8 +65,8 @@ class SortRecipeTests(unittest.TestCase):
     def test_template_values_and_status_contract(self):
         for name, value in self.values.items():
             with self.subTest(variable=name):
-                # We skip checking $sizing since it is explicitly empty for self.rendered
-                if name == "sizing":
+                # We skip checking $sizing and $scope_rules since they are explicitly empty for self.rendered
+                if name in ("sizing", "scope_rules"):
                     continue
                 self.assertNotIn(f"${name}", self.rendered)
                 self.assertIn(str(value), self.rendered)
@@ -132,6 +132,97 @@ class SizeTargetTests(unittest.TestCase):
                 with self.subTest(pr=pr, role=role):
                     self.assertIn("a/b", prompt.build(DummyCtx(), "p", item, role, "claude", prep))
         con.close()
+
+
+class SortPromptScopeTests(unittest.TestCase):
+    """Planner-created issues in label-scoped projects must carry the project scope label (#774)."""
+
+    def setUp(self):
+        class DummyCtx:
+            def __init__(self, policy_fn):
+                self._policy_fn = policy_fn
+
+            def policy(self, proj):
+                return self._policy_fn(proj)
+
+        self.DummyCtx = DummyCtx
+        self.item = {"number": 10, "title": "Sort follow-ups", "pr": None}
+        self.prep = {"worktree": "/tmp/w", "branch": "b", "replayed": False, "kept": None}
+
+    def test_sort_prompt_requires_configured_scope_label(self):
+        ctx = self.DummyCtx(lambda p: {
+            "repo": "phish-in/couch-tour",
+            "scope": "label",
+            "scope_label": "couch-tour",
+            "rules": "",
+        })
+        rendered = prompt.build(ctx, "couch-tour", self.item, "sort", "claude", self.prep)
+        self.assertIn("Project scope (`couch-tour`)", rendered)
+        self.assertIn("When filing follow-up or split issues in this project (including prerequisites)", rendered)
+        self.assertIn("you must apply the `couch-tour` label at creation (`--label couch-tour`)", rendered)
+        self.assertIn("so Mahler sees the new issue on the next sync", rendered)
+        self.assertNotIn("$scope_rules", rendered)
+        self.assertNotIn("$", rendered)
+
+    def test_sort_prompt_names_configured_scope_label_without_hardcoding_mahler(self):
+        ctx = self.DummyCtx(lambda p: {
+            "repo": "example/project",
+            "scope": "label",
+            "scope_label": "custom-scope",
+            "rules": "",
+        })
+        rendered = prompt.build(ctx, "example", self.item, "sort", "claude", self.prep)
+        self.assertIn("custom-scope", rendered)
+        self.assertIn("apply the `custom-scope` label at creation (`--label custom-scope`)", rendered)
+        self.assertNotIn("apply the `mahler` label", rendered)
+        self.assertNotIn("Project scope (`mahler`)", rendered)
+        self.assertNotIn("$scope_rules", rendered)
+        self.assertNotIn("$", rendered)
+
+    def test_sort_prompt_defaults_scope_label_to_mahler(self):
+        ctx = self.DummyCtx(lambda p: {
+            "repo": "example/project",
+            "scope": "label",
+            "rules": "",
+        })
+        rendered = prompt.build(ctx, "example", self.item, "sort", "claude", self.prep)
+        self.assertIn("Project scope (`mahler`)", rendered)
+        self.assertIn("apply the `mahler` label at creation (`--label mahler`)", rendered)
+        self.assertNotIn("$scope_rules", rendered)
+        self.assertNotIn("$", rendered)
+
+    def test_sort_prompt_preserves_scope_all_behavior_unchanged(self):
+        ctx = self.DummyCtx(lambda p: {
+            "repo": "example/project",
+            "scope": "all",
+            "rules": "",
+        })
+        rendered = prompt.build(ctx, "example", self.item, "sort", "claude", self.prep)
+        self.assertNotIn("Project scope (", rendered)
+        self.assertNotIn("When filing follow-up or split issues", rendered)
+        self.assertIn("this repo's scope label if it uses one", rendered)
+        self.assertNotIn("$scope_rules", rendered)
+        self.assertNotIn("$", rendered)
+
+    def test_sort_recipe_contract_fails_if_scope_instruction_weakened(self):
+        ctx = self.DummyCtx(lambda p: {
+            "repo": "org/repo",
+            "scope": "label",
+            "scope_label": "test-label",
+            "rules": "",
+        })
+        rendered = prompt.build(ctx, "proj", self.item, "sort", "claude", self.prep)
+        for fragment in (
+            "Project scope (`test-label`)",
+            "this project manages only issues carrying the `test-label` label",
+            "When filing follow-up or split issues in this project (including prerequisites)",
+            "you must apply the `test-label` label at creation",
+            "`--label test-label`",
+            "so Mahler sees the new issue on the next sync",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, rendered)
+
 
 class BuildRecipeTests(unittest.TestCase):
     def setUp(self):
