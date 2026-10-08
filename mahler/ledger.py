@@ -697,11 +697,11 @@ class Ledger:
     def q1(self, sql, args=()):
         return self.con.execute(sql, args).fetchone()
 
-    def event(self, kind, project=None, number=None, detail=None, passes=None):
+    def event(self, kind, project=None, number=None, detail=None, passes=None, at=None):
         selected_passes = passes
         self.con.execute(
             "INSERT INTO events (at, project, number, kind, detail) VALUES (?,?,?,?,?)",
-            (iso(self.now()), project, number, kind,
+            (at or iso(self.now()), project, number, kind,
              detail if isinstance(detail, str) or detail is None else json.dumps(detail)))
         if kind == "shipped" and project:
             self.record_shipped(project, MAINTENANCE_PASSES if selected_passes is None

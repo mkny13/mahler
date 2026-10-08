@@ -343,6 +343,22 @@ class QuietWindowTests(unittest.TestCase):
         self.after(days=20)
         self.assertEqual(self.state(), "shipped")
 
+    def test_reopen_updated_before_boundary_blocks_late_poll_completion(self):
+        reopened_at = self.MERGED + timedelta(days=13, hours=23, minutes=59)
+        self.now = self.MERGED + timedelta(days=14, minutes=1)
+        issue = dict(number=5, title="Wired", body="",
+                     labels=[{"name": "mahler:shipped"}], comments=[],
+                     createdAt=iso(self.MERGED), updatedAt=iso(reopened_at))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
+                mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
+            sync.sync(self.ctx, "x")
+
+        event = self.led.q("SELECT at FROM events WHERE kind='source_reopened'")[0]
+        self.assertEqual(event["at"], iso(reopened_at))
+        self.assertEqual(self.state(), "shipped")
+        self.assertEqual(self.led.q("SELECT * FROM completion_evidence"), [])
+
     def test_source_reopen_detected_when_shipped_label_write_failed(self):
         self.led.upsert_item("x", 5, mirror=None)
         item = self.led.item("x", 5)

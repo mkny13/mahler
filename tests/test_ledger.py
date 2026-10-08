@@ -32,6 +32,11 @@ class LeaseTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_event_can_preserve_observed_timestamp(self):
+        observed = "2026-09-01T11:59:00+00:00"
+        self.led.event("source_reopened", "p", 1, {}, at=observed)
+        self.assertEqual(self.led.q("SELECT at FROM events")[0]["at"], observed)
+
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
         with self.assertRaisesRegex(ValueError, "requires verification evidence"):

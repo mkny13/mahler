@@ -132,7 +132,7 @@ def sync(ctx, project):
                     and planned_child(iss, labels, led, project)):
                 _born_ready(led, project, n, iss)
                 item = led.item(project, n)
-            _note_source_reopen(ctx, project, item)
+            _note_source_reopen(ctx, project, item, iss.get("updatedAt"))
             _adopt_label_edits(ctx, project, item, labels)
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
 
@@ -183,7 +183,7 @@ def sync(ctx, project):
 QUIET_BATCH = 25   # legacy rows migrate in bounded ticks
 
 
-def _note_source_reopen(ctx, project, item):
+def _note_source_reopen(ctx, project, item, updated_at=None):
     """An open shipment is reopen evidence only after confirmed closure."""
     led = ctx.led
     n = item["number"]
@@ -196,7 +196,10 @@ def _note_source_reopen(ctx, project, item):
     key = f"source_reopened:{project}:{n}"
     if closed and (shipped or early) and led.get_kv(key) != "1":
         led.set_kv(key, "1")
-        led.event("source_reopened", project, n, {})
+        # The issue may have reopened between polls. GitHub's open-issue payload
+        # timestamps that change; using detection time could move an in-window
+        # reopen past the quiet-period boundary.
+        led.event("source_reopened", project, n, {}, at=updated_at)
 
 
 def adverse_evidence(led, row):
