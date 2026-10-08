@@ -667,7 +667,7 @@ class DesignRecipeTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, compact)
-        self.assertNotIn('"disposition":"followups"', compact)
+        self.assertIn('"disposition":"followups"', compact)
         for value in ("714", "mkny13/mahler", "42", "a" * 40,
                       "complete review history", "effective project rules"):
             self.assertIn(value, rendered)

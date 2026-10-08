@@ -531,14 +531,18 @@ class RunTests(unittest.TestCase):
             {"head": head, "disposition": "fix", "plan": plan}
             for plan in (None, 1, "plan", [], [{}])
         ] + [
-            {"head": head, "disposition": "followups", "rationale": "Internal surface",
-             "followups": [{"finding": finding, "category": "behavior",
-                            "reason": "Commands are confined to the owner's checkout."}]}
-            for finding in (
-                "Minor copy issue",
-                "Untrusted issue text is concatenated into a shell command, so a title can run an additional command",
-                "PII is written to debug logs",
-                "silent unrecoverable data loss",
+            {"head": head, "disposition": "followups", "justification": justification, "findings": findings}
+            for justification, findings in (
+                (None, [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "c"}]),
+                ("", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "c"}]),
+                ("justification", None),
+                ("justification", []),
+                ("justification", [{"severity": "low"}]),
+                ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": ""}]),
+                ("justification dismisses security concern", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "c"}]),
+                ("justification", [{"severity": "low", "category": "security", "location": "l", "scenario": "s", "consequence": "c"}]),
+                ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "silent normal-flow data loss", "consequence": "c"}]),
+                ("justification", [{"severity": "low", "category": "c", "location": "l", "scenario": "s", "consequence": "a quoted unsatisfied Done-when line"}]),
             )
         ]
         for malformed in malformed_payloads:
@@ -570,57 +574,35 @@ class RunTests(unittest.TestCase):
                 self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
                 snapshot.assert_not_called()
 
-    def test_followup_disposition_is_never_accepted(self):
+    def test_followup_disposition_is_accepted_when_valid(self):
         head = "a" * 40
         self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
         self.led.update_run(self.run_id, role="design")
         self.run["role"] = "design"
-        for followup in (
-                {"finding": "Minor copy issue", "category": "behavior",
-                 "reason": "The surface is internal-only."},
-                {"finding": "Untrusted issue text is concatenated into a shell command, so a title can run an additional command",
-                 "category": "behavior",
-                 "reason": "Commands are confined to the owner's checkout."},
-                {"finding": "PII is written to debug logs", "category": "behavior",
-                 "reason": "The logs stay on the owner's device."},
-                {"finding": "An acceptance check is deferred", "category": "behavior",
-                 "reason": "The acceptance check is deferred: - [ ] all checks pass"}):
-            with self.subTest(followup=followup):
-                payload = {"head": head, "disposition": "followups",
-                           "rationale": "Not needed in this project",
-                           "followups": [followup]}
-                ending = finalize.Ending(
-                    self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
-                    {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
-                self.gh.head = head
-                self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
-                                json.dumps({"head": head, "evidence": "prior review"}))
-                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                        mock.patch.object(runner, "git", return_value=head):
-                    self.assertIsNone(finalize._prepare_design(ending))
-
-    def test_followup_rationale_cannot_claim_prior_findings_are_resolved(self):
-        head = "a" * 40
-        self.led.upsert_item("x", 5, state="working", pr=88, branch="mahler/5-x")
-        self.led.update_run(self.run_id, role="design")
-        self.run["role"] = "design"
-        followup = {"finding": "Minor copy issue", "category": "behavior",
-                    "reason": "The surface is internal-only."}
-        for rationale in (
-                "The prior security finding was fixed; only a minor copy issue remains.",
-                "The remaining concern is acceptable even though ALL CHECKS PASS is unmet."):
-            with self.subTest(rationale=rationale):
-                payload = {"head": head, "disposition": "followups",
-                           "rationale": rationale, "followups": [followup]}
-                ending = finalize.Ending(
-                    self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
-                    {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
-                self.gh.head = head
-                self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
-                                json.dumps({"head": head, "evidence": "prior review"}))
-                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                        mock.patch.object(runner, "git", return_value=head):
-                    self.assertIsNone(finalize._prepare_design(ending))
+        payload = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "This is acceptable because it is an internal tool.",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "user clicks button",
+                "consequence": "button does nothing"
+            }]
+        }
+        ending = finalize.Ending(
+            self.ctx, self.run, self.led.item("x", 5), self.ctx.policy("x"),
+            {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
+        self.gh.head = head
+        self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
+                        json.dumps({"head": head, "evidence": "prior review"}))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "git", return_value=head):
+            result = finalize._prepare_design(ending)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["data"]["disposition"], "followups")
+            self.assertEqual(result["data"]["findings"], payload["findings"])
 
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40

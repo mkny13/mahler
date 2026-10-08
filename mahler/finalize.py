@@ -124,29 +124,56 @@ def _design_record_key(project, number, pr, sha):
 
 
 def _design_payload(rest):
-    """Validate the finite plan emitted by recipes/design.md."""
+    """Validate the finite plan or followups emitted by recipes/design.md."""
     try:
         data = json.loads(rest)
     except (TypeError, ValueError):
         return None
     if not isinstance(data, dict) or not isinstance(data.get("head"), str):
         return None
-    if data.get("disposition") != "fix":
+    disposition = data.get("disposition")
+    if disposition not in ("fix", "followups"):
         return None
-    if set(data) != {"head", "disposition", "plan"}:
-        return None
-    plan = data["plan"]
-    if not isinstance(plan, dict) or set(plan) != {"summary", "files", "steps", "tests"}:
-        return None
-    if (not isinstance(plan["summary"], str) or not plan["summary"].strip()
-            or not isinstance(plan["tests"], str) or not plan["tests"].strip()):
-        return None
-    for key in ("files", "steps"):
-        values = plan[key]
-        if (not isinstance(values, list) or not values or len(values) > 40
-                or any(not isinstance(value, str) or not value.strip() for value in values)):
+        
+    if disposition == "fix":
+        if set(data) != {"head", "disposition", "plan"}:
             return None
-    return data
+        plan = data["plan"]
+        if not isinstance(plan, dict) or set(plan) != {"summary", "files", "steps", "tests"}:
+            return None
+        if (not isinstance(plan["summary"], str) or not plan["summary"].strip()
+                or not isinstance(plan["tests"], str) or not plan["tests"].strip()):
+            return None
+        for key in ("files", "steps"):
+            values = plan[key]
+            if (not isinstance(values, list) or not values or len(values) > 40
+                    or any(not isinstance(value, str) or not value.strip() for value in values)):
+                return None
+        return data
+
+    if disposition == "followups":
+        if set(data) != {"head", "disposition", "justification", "findings"}:
+            return None
+        justification = data["justification"]
+        if not isinstance(justification, str) or not justification.strip():
+            return None
+        findings = data["findings"]
+        if not isinstance(findings, list) or not findings:
+            return None
+            
+        text_to_check = justification.lower()
+        for finding in findings:
+            if not isinstance(finding, dict) or set(finding) != {"severity", "category", "location", "scenario", "consequence"}:
+                return None
+            if any(not isinstance(v, str) or not v.strip() for v in finding.values()):
+                return None
+            text_to_check += " " + " ".join(str(v).lower() for v in finding.values())
+            
+        if "security" in text_to_check or "done-when" in text_to_check or "data loss" in text_to_check:
+            return None
+        return data
+        
+    return None
 
 
 def _prepare_design(e):
@@ -181,8 +208,13 @@ def _design_result(e, prepared):
         "pr": e.item["pr"], "head": prepared["head"], "run_id": e.run["id"],
         "source_review_evidence": prepared["evidence"],
         "disposition": data["disposition"],
-        "plan": data["plan"],
     }
+    if data["disposition"] == "fix":
+        result["plan"] = data["plan"]
+    elif data["disposition"] == "followups":
+        result["justification"] = data["justification"]
+        result["findings"] = data["findings"]
+        
     e.led.set_kv(_design_record_key(e.project, e.number, e.item["pr"], prepared["head"]),
                  json.dumps(result, sort_keys=True))
     e.set_state("verifying", "design result recorded — conductor can consume it")

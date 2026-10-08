@@ -21,18 +21,15 @@ $rules
 Complete supplied review history:
 $handoff
 
-Produce one coherent `fix` result: a bounded, finite plan for the next fix run. Name
-every affected file, give ordered implementation steps, and state the
-test/verification command or observable check. Do not implement anything. This
-contract intentionally has no follow-up disposition: review prose can describe a
-security or data-loss finding without recognizable keywords, so every design result
-must direct review work to a fix run. Any security finding, an unsatisfied
-Done-when criterion, or silent unrecoverable data loss in normal flow always
-requires `fix`.
+Produce one coherent `fix` or `followups` result:
+- `fix`: a bounded, finite plan for the next fix run. Name every affected file, give ordered implementation steps, and state the test/verification command or observable check. Do not implement anything. Any security finding, an unsatisfied Done-when criterion, or silent unrecoverable data loss in normal flow always requires `fix`.
+- `followups`: conclude that the remaining findings are acceptable and record them. Provide a nonempty project-context justification and a list of classified findings (severity, category, location, scenario, consequence). You cannot use this to demote security, an unsatisfied Done-when line, or silent normal-flow data loss.
 
 End with exactly one line in this JSON contract (no markdown fence, no extra STATUS line):
 
 `STATUS: DESIGNED {"head":"$head","disposition":"fix","plan":{"summary":"...","files":["path"],"steps":["..."],"tests":"..."}}`
-
+or
+`STATUS: DESIGNED {"head":"$head","disposition":"followups","justification":"...","findings":[{"severity":"...","category":"...","location":"...","scenario":"...","consequence":"..."}]}`
 
 For `fix`, `files` and `steps` must be nonempty finite lists; each step must be actionable.
+For `followups`, `findings` must be a nonempty finite list.
