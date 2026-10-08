@@ -746,7 +746,9 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
 def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     """Route non-converging blocking reviews through a single design pass (issue #715).
 
-    Returns True if a design run was started or capacity wait recorded, False otherwise.
+    Returns True if design routing handled the current gate pass (a run was started,
+    capacity wait was recorded, or launch was attempted and will be retried),
+    False if design routing was not applicable.
     """
     led = ctx.led
     n = item["number"]
@@ -823,8 +825,7 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     if ok:
         led.set_kv(wait_key, "")
         ctx.say(f"{project}#{n}: started design pass on {platform} for non-converging review")
-        return True
-    return False
+    return True
 
 
 def _review_gate(ctx, project, item, pr, view):
