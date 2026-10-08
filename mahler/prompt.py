@@ -177,6 +177,16 @@ def build(ctx, project, item, role, platform, prep, context=None):
                   "Such an item waits for a larger builder. When you split a size:l item, prefer size:s "
                   "sub-issues too.\n")
 
+    scope_rules = ""
+    if role == "sort" and pol.get("scope") == "label":
+        scope_label = pol.get("scope_label") or "mahler"
+        scope_rules = (
+            f"\n   Project scope (`{scope_label}`): this project manages only issues carrying the "
+            f"`{scope_label}` label (`scope = \"label\"`). When filing follow-up or split issues in "
+            f"this project (including prerequisites), you must apply the `{scope_label}` label at "
+            f"creation (`--add-label {scope_label}`) so Mahler sees the new issue on the next sync."
+        )
+
     # mahler#569: only builds whose issue explicitly asks for a What's New
     # surface or release feed carry the contract; the build recipe consumes
     # `$whats_new` (other recipes don't have the placeholder, and ignore it).
@@ -195,6 +205,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
                   platform=platform, pr=row_get(item, "pr", ""),
                   verify=pol.get("verify") or "the project's tests (see CLAUDE.md)",
                   mahler=config.MAHLER_BIN, handoff=handoff, sizing=sizing,
+                  scope_rules=scope_rules,
                   whats_new=whats_new,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"
                          + pol["rules"].strip() + "\n") if pol.get("rules") else "")

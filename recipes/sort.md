@@ -83,7 +83,7 @@ become the console's answer buttons.
    Don't add it defensively — only on real, confident behavioral overlap that isn't already a
    shared file. Create the label first if needed: `gh label create area:<name> --color 0052cc
    --force -R $repo`, then `gh issue edit --add-label area:<name>` on both/all the colliding
-   issues.
+   issues.$scope_rules
 5. If it is `size:l`, split it into 2–5 sub-issues, each small enough for one
    agent run and one mergeable PR with its own test. Never split below that. Give
    each sub-issue the full body shape above, including a concrete `## Plan` and
