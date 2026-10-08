@@ -22,7 +22,9 @@ separate optional console process.
   isolation, snapshots, retries, and cross-platform handoffs.
 - Conductor-owned PR creation, CI watching, merge confirmation, and revert PRs.
 - A phone and desktop console for status, backlog, capture, needs-you answers,
-  live logs, stop-and-handoff, quota controls, merge reverts, and UAT pass/fail.
+  live logs, stop-and-handoff, quota controls, merge reverts, What changed, and optional failure reports.
+  Shipments complete on automated evidence or after 14 quiet days; adverse evidence
+  within that window reopens early automated completions and creates fix work.
 - Phone notifications via ntfy for questions, handoffs, shipped work, and
   quota exhaustion alerts.
 - A small local MCP server for queue and lease operations.

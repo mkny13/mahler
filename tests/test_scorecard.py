@@ -51,6 +51,34 @@ class AttemptTests(unittest.TestCase):
         self.advance(30)
         self.assert_result(rid, 'success')
 
+    def test_historical_pass_does_not_resolve_pending_plan(self):
+        rid = self.run_attempt(role='plan', outcome='READY')
+        self.assert_result(rid, 'pending')
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Historical checklist')
+        self.advance()
+        self.led.set_uat_verdict('p', 1, 'pass')
+        self.assert_result(rid, 'pending')
+
+    def test_completion_kind_does_not_override_adverse_attempt_evidence(self):
+        for kind in ('smoke', 'quiet'):
+            with self.subTest(kind=kind):
+                self.setUp()
+                rid = self.run_attempt()
+                self.ship()
+                self.led.set_state('p', 1, 'shipped')
+                self.led.add_uat('p', 1, 50, 'sha', 'Title', '')
+                merged = iso(self.now)
+                self.advance(14 if kind == 'quiet' else 1)
+                if kind == 'quiet':
+                    self.assertTrue(self.led.complete_quiet('p', 1, merged))
+                else:
+                    self.assertTrue(self.led.accept_evidence('p', 1, dict(
+                        source='report:1', author='bot', created_at=iso(self.now),
+                        kind='smoke', body='Smoke: PASS report=1')))
+                self.assert_result(rid, 'success')
+                self.led.event('revert_requested', 'p', 1, {'pr': 50})
+                self.assert_result(rid, 'failure', 'revert')
+
     def test_later_fix_including_running_fix(self):
         rid = self.run_attempt()
         self.advance()
@@ -219,7 +247,7 @@ class AttemptTests(unittest.TestCase):
         self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check')
         self.advance()
         self.led.set_uat_verdict('p', 1, 'fail')
-        self.assert_result(builder_id, 'failure', 'UAT fail')
+        self.assert_result(builder_id, 'failure', 'reported failure')
 
     def test_builder_failed_for_linked_bug_despite_false_review(self):
         builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
@@ -262,7 +290,7 @@ class AttemptTests(unittest.TestCase):
         self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check')
         self.advance()
         self.led.set_uat_verdict('p', 1, 'fail')
-        self.assert_result(rid, 'failure', 'UAT fail')
+        self.assert_result(rid, 'failure', 'reported failure')
 
     def test_bug_window_and_whole_tokens(self):
         for days, body, project, labels, expected in (

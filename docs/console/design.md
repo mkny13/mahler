@@ -1,7 +1,6 @@
-<!-- The Phase 2 console design, as handed off from Claude Design on 2026-09-15.
-     Everything above "Implementation (D27)" is the designer's README, verbatim:
-     its copy is final. The prototype HTML and its runtime are not in the repo;
-     screens/ holds JPEG copies of the reference screenshots. -->
+<!-- The Phase 2 console design was handed off on 2026-09-15.
+     Historical prototype details and screenshots are identified below;
+     current shipment behavior follows DESIGN D10/D27 (2026-10-06). -->
 
 # Handoff: Mahler console (Phase 2 UI)
 
@@ -12,7 +11,7 @@ The operator console for Mahler, the autonomous conductor that runs coding agent
 GitHub-issue backlog. Two form factors, one state model:
 
 - **Phone** — triage from a Pixel in under a minute: what needs a decision, what
-  is running, what is waiting for UAT, and fast capture into the backlog.
+  is running, what changed recently, and fast capture into the backlog.
 - **Desktop** — a single pane of glass: a left rail of views, a dense main
   column, and a right sidebar of standing status.
 
@@ -140,7 +139,7 @@ rename freely, but the transitions matter.
 | `dtab` | `"now" \| "needs" \| "test" \| "capture" \| "backlog" \| "history"` | desktop view |
 | `answers` | `{ [itemId]: string }` | needs-you answer, optimistic, undoable |
 | `drafts` | `{ [itemId]: string }` | typed reply in progress |
-| `uat` | `{ [itemId]: "pass" \| "fail" }` | UAT verdict |
+| `uat` | `{ [itemId]: "pass" \| "fail" }` | Historical prototype verdict state; retired |
 | `capture` / `project` / `attached` | string / string\|null / bool | capture composer |
 | `open` | `{ [project]: bool }` | backlog group expansion |
 | `digestOpen` / `digestSeen` | bool | "3 new" filter chip |
@@ -163,7 +162,7 @@ keep that, or use SSE if `serve.py` grows it.
   marks the soft line. Hard/backed-off platforms fill 100% in `--bad` and label
   `off`; unmetered platforms fill 0% and label `unmetered`.
 - **Badge counts** — Triage badge = needs-you items with no answer yet. Rail
-  "Ready to test" = items with no verdict. Rail "Event stream" = `3 new` until
+  "What changed" = recent shipments, with no attention count. Rail "Event stream" = `3 new` until
   `digestSeen`.
 
 ---
@@ -188,7 +187,7 @@ Two rows inside a `1px --line` bottom border:
    inactive), with a small mono count beside it: `Now` + run count in `--acc`,
    `Triage` + needs-you count in `--bad`, `Browse` (no count).
 
-**Landing tab:** open on `Triage` if anything is in needs-you or awaiting UAT,
+**Landing tab:** open on `Triage` if anything is in needs-you,
 otherwise `Now`.
 
 ### Now
@@ -243,14 +242,10 @@ The health view. Sections top to bottom:
    `--acc`, second outlined) at 44px, and below them a 44px text input
    (*"or say something…"*) with a 44×44 send button. Answering collapses the
    card to `You said: <answer>` + an `Undo` link.
-3. **`READY TO TEST · N`** — expanded test sessions grouped like the desktop
-   view, with at most 10 changes per session. Each session header has its title,
-   pending count and a two-tap **Pass all**; each inline change has ref + meta,
-   title, a one-line *what to check* in `--mut`, a staging/PR link, then **Pass**
-   (filled `--accq`, `--acc` text and border) and **Fail** (outlined `--bad`) at
-   44px. Pass →
-   *"Passed — issue closed, UAT recorded."* Fail → bug sheet, then
-   *"Failed — p1 bug filed and routed. The revert is one tap away in History."*
+3. **`WHAT CHANGED`** — recent shipments with evidence and staging/PR links.
+   Optional **This is broken** opens the bug sheet and files linked p1 fix work.
+   No verdict count or pass control: automated evidence or 14 quiet days completes
+   work; adverse evidence inside that window reopens an early automated completion.
 4. **`CAPTURE`** — 3-row textarea (*"Type or dictate. Goes to the inbox — no
    project needed."*), a wrapping row of pill project chips
    (`inbox (no project)` selected by default, then `mahler`, `groundwork`,
@@ -308,7 +303,7 @@ active, transparent otherwise; active row also flips to `--bg` and 600 weight),
 each with a right-aligned mono count:
 
 `Now` (run count, `--acc`) · `Needs you` (open count, `--bad`) ·
-`Ready to test` (count) · `Capture` · `Backlog` (total items) ·
+`What changed` (no attention count) · `Capture` · `Backlog` (total items) ·
 `Capacity` · `Event stream` (`3 new` until seen).
 
 **The event stream is a rail item on purpose.** The user does not want a live
@@ -345,14 +340,11 @@ Header row: current view title, and right-aligned a bordered peak-hours button
 - **Needs you** — banners first, then one row per item: question + meta (+ a
   34px inline reply input) on the left, answer buttons right-aligned, `Undo`
   after answering.
-- **Ready to test** — expanded test sessions, grouped by project and area (or parent,
-  then `Other changes`), with at most 10 changes per session and numbered parts for
-  larger groups. Each session header shows its title, pending count, shared staging
-  link when applicable, and a two-tap **Pass all** control; sessions are ordered by
-  pending count and are not collapsible. Each inline change row keeps its title,
-  ref/meta, what-to-check and staging/PR link on the left, with **Pass** / **Fail**
-  right-aligned at 36px. **Pass all** passes the still-undecided rows in sequence;
-  **Fail** remains per change.
+- **What changed** — recent shipments with evidence, staging/PR links and optional
+  **This is broken** reporting through the bug sheet. No pending-verdict count,
+  bulk pass action or owner testing queue. The phone uses the same history and
+  failure flow. D10 retains historical evidence while completion uses automated
+  evidence or a 14-day quiet period, with early adverse reopening.
 - **Capture** — same composer at `max-width: 560px`, plus an explicit target
   line: *"Opens a GitHub issue in mkny13/&lt;project&gt; · labels type:feature, p2,
   mahler:inbox"* (reads *"the inbox repo"* with no project selected).
@@ -427,7 +419,7 @@ deep-link to that item in Triage / Needs you.
   the same control.
 - **Needs-you answers** apply optimistically with an inline `Undo`; the typed
   reply and the buttons write the same field.
-- **UAT fail** always goes through the bug sheet — never a bare fail.
+- **This is broken** always goes through the bug sheet — never a bare fail.
 - **Undo a merge** always confirms first.
 - **Capture** never blocks on project selection; unassigned captures create the
   `inbox` group.
@@ -444,7 +436,7 @@ tail, and a structured "why is nothing running" answer (the scheduler knows all
 four reasons; it needs to expose them).
 
 Write: pause/resume; peak-hours override; answer a needs-you item (comment +
-state transition); UAT pass (close) / fail (file p1 bug, link, route); create an
+state transition); optional failure report (file p1 bug, link, route); create an
 issue from capture with labels `type:*`, `p2`, `mahler:inbox`; stop-and-hand-off
 a run; open a revert PR; clear a platform backoff; mark digest seen; in-app settings
 (mahler#353).
@@ -472,7 +464,7 @@ Platforms, models and thresholds are current as of the last rescan of
 Mock runs: `mahler#41` on agy-claude (18m of ~26m), `groundwork#83` on
 cline-free (34m, 12m over). Mock needs-you: `couch-tour#9` (API key, p1),
 `groundwork#81` (date format, p2), `mahler#36` (watchdog test, p1, 3 attempts).
-Mock UAT: `mahler#39`, `groundwork#87`. Projects: mahler, groundwork,
+Historical prototype UAT fixtures: `mahler#39`, `groundwork#87`. Projects: mahler, groundwork,
 couch-tour.
 
 ## Assets
@@ -510,11 +502,11 @@ opinion — but it needs none.
   - `desktop-02-now.jpg` — active runs, dense rows
   - `desktop-03-now-zero-runs.jpg` — the idle explanation with countdowns and
     overrides
-  - `desktop-04-ready-to-test.jpg` — UAT queue
+  - `desktop-04-ready-to-test.jpg` — historical prototype UAT queue (superseded)
   - `desktop-05-capture.jpg` — composer with the GitHub issue target line
   - `desktop-06-backlog.jpg` — collapsible project groups
   - `desktop-07-event-stream.jpg` — history with inline Undo
-  - `phone-01-triage.jpg` — banner, needs-you cards, UAT, capture
+  - `phone-01-triage.jpg` — historical prototype banner, needs-you cards, UAT, capture
   - `phone-02-now.jpg` — peak-hours line, digest chip, run cards
   - `phone-03-now-zero-runs.jpg` — the idle explanation on a phone
   - `phone-04-run-detail.jpg` — full-screen live log + Stop
@@ -528,18 +520,26 @@ How the design maps onto Mahler. The decision and its reasons are DESIGN.md D27.
 The code is `mahler/console/` (state, page, actions, CSS, JS), served by
 `mahler/serve.py`.
 
+### Shipment contract (owner, 2026-10-06)
+
+The historical manual queue accumulated 277 pending changes versus 5 verdicts,
+all passes (last 2026-09-27). It is retired: What changed is history, not an owner
+inbox. Automated evidence or exactly 14 days with no defect reported completes a
+shipment. Adverse evidence inside that window reopens early automated completion;
+optional reports create fix work. Historical `uat` storage remains intact (D10).
+The separate console walkthrough remains a software testing practice.
+
 ### Shipped implementation
 
 - Both layouts (`3a` desktop, `2a` phone) in one server-rendered document, both
   themes, the 1100px and 760px breakpoints, the 30-second refresh.
 - Now (runs, live status/logs, the 0-runs explanation), Needs you,
-  Backlog and the desktop dependency graph, Event stream, Ready to test, quota
+  Backlog and the desktop dependency graph, Event stream, What changed, quota
   gauges, the right sidebar, banners, the unread-digest chip, and run detail.
 - Writes that only touch the ledger: Pause all / Resume, the peak-hours override,
   Clear backoff, and marking the digest seen.
 - Tick-applied writes: structured needs-you answers with a 60-second Undo,
-  Capture with image attachments, Stop & hand off, UAT Pass/Fail with a p1 bug
-  on failure, and confirmed merge reverts through the normal CI-gated pipeline.
+  Capture with image attachments, Stop & hand off, optional This is broken reports with a linked p1 bug, and confirmed merge reverts through the normal CI-gated pipeline.
 - Scheduler-recorded structured holds, automatic console restart after a code
   update, and ntfy needs-you deep links.
 

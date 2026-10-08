@@ -27,10 +27,11 @@ If a platform runs low on quota mid-task, the agent saves its work and leaves a 
 the issue, and the next platform picks up exactly where it stopped. If *you* start working on
 the same item in a chat, your session wins: the agent steps aside and hands you its work.
 
-When a change has something only a human can verify, it appears in the console's Ready to test
-queue. You can pass it or fail it with a note or screenshot; a failure becomes a p1 bug. The
-console can also request a CI-gated revert PR. Platform rollback, in-app UAT panels, and the
-full pre-migration backup guarantees below remain planned rather than universally enforced.
+Confirmed shipments complete on automated evidence or after 14 days with no defect
+reported. The console's What changed view shows recent work and offers optional
+“This is broken” reporting; a failure becomes fix work. No owner verdict is required.
+The console can also request a CI-gated revert PR. Platform rollback and the full
+pre-migration backup guarantees below remain planned rather than universally enforced.
 
 The rest of this document is the reasoning behind each of those sentences, written for the
 agents that will build it.
@@ -48,9 +49,9 @@ agents that will build it.
 4. **Safety through isolation, reversibility and backups, not approval gates.** (Standing
    preference: gates are friction. Work pauses only for decisions only you can make.)
 5. **Agents must see the results of their own changes.** A change isn't done because an agent
-   says so. It's done when tests, CI, preview/smoke checks and, eventually, your UAT agree.
+   says so. It's done when automated evidence or a 14-day quiet period supports completion (D10).
 6. **Borrow the commodity, build the glue.** Build only what nobody else provides: quota-aware
-   routing across subscription and free-tier CLIs, the lease model, and the UAT loop.
+   routing across subscription and free-tier CLIs, the lease model, and fix-on-failure.
 7. **Deterministic control plane.** Mahler's scheduler never calls an LLM. LLMs run only inside
    runs. This keeps the core free, fast and debuggable, the same principle `thread` had.
 
@@ -69,7 +70,7 @@ table are retired (D2); the system as built is in [ARCHITECTURE.md](ARCHITECTURE
 | Cline Kanban | `kanban`, `127.0.0.1:3484` | Per-card worktrees for phish-in-app, groundwork | **Retired.** A second board recreates the lost-threads problem |
 | TASKS.md | each repo | Session continuity *and* (accidentally) backlog | **Session continuity only**, as its own header says in phish-in-app |
 | ROADMAP.md | some repos | Vision + "suggested build order" | Vision stays; build order becomes issue priority |
-| UAT.md + `uat-server.py` | phish-in-app | Manual-verification checklist | **The prototype for the UAT loop** (D10); migrated into it |
+| UAT.md + `uat-server.py` | phish-in-app | Manual-verification checklist | **Historical manual-UAT prototype**, superseded by D10 |
 | In-app Feedback buttons | phish-in-app (Android, macOS) | Prefilled GitHub-issue URL | Kept; later posts to Mahler with the GitHub URL as fallback |
 | `ci-wait.sh`, `cut-beta.sh` | phish-in-app/scripts | CI wait + log tail; beta release | Generalised into the verify/release contract (D11) |
 | Claude Remote Control | launchd `com.mike.claude-remote-control` | Phone → Claude sessions on the Mac mini | Kept. It's how phone chats reach Mahler's MCP tools |
@@ -119,7 +120,7 @@ durable store for explicit pins.
 
 ### D1 — Scope: one system, top to bottom
 
-Mahler covers intake → planning → routing → execution → verification → release → UAT →
+Mahler covers intake → planning → routing → execution → verification → release → automated evidence / quiet completion →
 rollback → backups, for every project you opt in. Some of this goes beyond "orchestration." It's
 included because each missing piece is a place where a thread gets lost, or where an agent
 can't see its own results.
@@ -174,7 +175,7 @@ can't see its own results.
 | Playwright, git worktrees, Backblaze, `gh` | **Adopt** | Verification, isolation, offsite backup, GitHub plumbing |
 
 What Mahler builds: the ledger and lease protocol, the quota-aware router, runners, the
-handoff protocol, the console, the MCP server, the UAT contract, and backup orchestration.
+handoff protocol, the console, the MCP server, the shipment-evidence contract, and backup orchestration.
 All of it is glue between adopted parts.
 
 ### D4 — GitHub Issues are the backlog
@@ -194,14 +195,13 @@ All of it is glue between adopted parts.
   100 hops; unproven dependencies remain enforced.
 - **Labels** (created at onboarding):
   - `type:` `bug` · `feature` · `chore` · `goal` · `uat` · `anomaly`
-  - `p1` · `p2` · `p3` (default p2; UAT failures default to p1)
+  - `p1` · `p2` · `p3` (default p2; reported shipment failures default to p1)
   - `size:` `s` · `m` · `l`
   - `mahler:` `<state>` (a single display label mirroring the ledger)
   - optional `area:<name>` (serialises items that touch the same area, D6)
   - optional `platform:<name>` (you pinned it to a platform)
 - **Body template** (the sorting step writes this and keeps your original words quoted at the
-  top): *Problem/goal · Done when (acceptance checks) · Needs a human to check (becomes UAT
-  items) · Context · Out of scope.*
+  top): *Problem/goal · Done when (acceptance checks) · Needs a human to check (remaining coverage, not a shipment gate) · Context · Out of scope.*
 - **Project goals and vision** stay in-repo (`ROADMAP.md` top section, or `PROJECT.md`) so every
   run reads them. The "suggested build order" is migrated into issue priority.
 - **Scope**: a project joins Mahler only when it has a GitHub repo and an enabled entry in the
@@ -368,7 +368,7 @@ matching dirty files, untouched.
 #### Item state machine
 
 ```
-inbox ─sort─▶ ready ─claim─▶ working ─PR─▶ verifying ─merge─▶ shipped ─UAT─▶ done
+inbox ─sort─▶ ready ─claim─▶ working ─PR─▶ verifying ─merge─▶ shipped ─evidence/14 days quiet─▶ done
   │             ▲  ▲            │                                  │
   │             │  └─handoff────┤ (quota · pre-empted · hung ·     │
   │             │               │  crashed · partial)              │
@@ -380,12 +380,15 @@ parked (you said "not now")
 On GitHub, `shipped` and `done` are closed issues. Everything else is open, with a
 `mahler:<state>` label. Confirmed merges retain `mahler:shipped` on the closed
 issue, replacing `mahler:verifying`. Shipped items release leases and capacity,
-and satisfy `Depends on:` targets — merged code is enough to build on, and UAT
-catches up after the fact rather than gating the next build (mahler#683). They do
+and satisfy `Depends on:` targets — merged code is enough to build on; post-merge
+evidence does not gate the next build (mahler#683). They do
 not satisfy parent completion until `done`. Release snapshots,
-UAT entries and shipped events are recorded at merge time. Startup preserves both
+historical-table (`uat`) shipment entries and shipped events are recorded at merge time. Startup preserves both
 shipped rows and historical done rows. Only accepted D10 evidence promotes a
-shipment to done, removes its lifecycle label, and lets its parent close.
+shipment to done, removes its lifecycle label, and lets its parent close. D10 accepts
+automated evidence or exactly 14 days without adverse evidence. An early automated
+completion reopens to ready/p1 on adverse evidence inside that window; optional
+failure reports create linked fix work. Historical storage is retained.
 
 ### D7 — Staleness: activity clocks, not a calendar
 
@@ -587,7 +590,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   `tailscale serve`). Designed phone-first. Screens:
   - **Capture** (text, voice through the keyboard, photo or screenshot)
   - **Needs you** (one-tap answers)
-  - **Ready to test**
+  - **What changed**
   - **Now** (running work and quota gauges)
   - **Backlog** (per project, reorderable)
   - **History** (with **Undo**)
@@ -605,7 +608,7 @@ doesn't rely on that and stops on its own thresholds regardless.
   sees the same queue.
 - **`/mahler` skill** for Claude Code, plus a short Mahler section in each repo's
   `CLAUDE.md`/`AGENTS.md` (read by Claude, Cline and agy), with the claim/heartbeat/handoff rules.
-- **ntfy** pings: *needs you* · *ready to test* · *handoff happened* · *failed and parked* ·
+- **ntfy** pings: *needs you* · *shipped work* · *handoff happened* · *failed and parked* ·
   *daily digest* · *Codex quota exhausted* (high-priority on quota probe, cleared on recovery).
   Messages carry a title and a console link only, never secrets or personal
   data. The POC uses ntfy.sh with an unguessable topic; self-hosting on the Mac mini is an
@@ -614,53 +617,44 @@ doesn't rely on that and stops on its own thresholds regardless.
   - `/mahler go` · `/mahler park` · `/mahler platform <name|auto>`
   - Any reply on a `needs-you` item is taken as the answer.
 
-#### Shipment evidence (mahler#616)
+#### Shipment evidence and optional failure reports (mahler#741, #749–#751)
 
-Every confirmed merge enters Ready to test, with its PR, merge SHA and elapsed
-age. A custom human checklist is preserved; otherwise the console asks for
-verification evidence. Closed shipped issues are polled independently of the
-open-issue ETag, without reopening them. Historical done issues are not backfilled.
+Owner decision, 2026-10-06: manual UAT as a shipment step is retired. The historical
+`uat` table held **277 changes awaiting a verdict**, shipped 2026-09-15 through
+2026-10-06 (phish-in 103, mahler 81, groundwork 31, hockey 29, others 33), against
+**5 verdicts ever, all passes**, last recorded 2026-09-27. Mike is the sole user of
+these personal apps and discovers problems through ordinary use. Ship, verify
+automatically, and fix on failure; do not create a manual pass queue or backlog nag.
 
-Accepted comments must have a GitHub author login, comment ID or URL, and a
-creation timestamp strictly newer than the merge (or its first confirmed observation
-when GitHub omits the timestamp). The complete trimmed comment must be one of:
+Every confirmed merge records its PR, merge SHA and merge time. A shipment completes
+with attributable automated evidence or at the end of exactly **14 days** without
+adverse evidence. Quiet completion means “quiet period, no defect reported”, not a
+claim that a person tested it. Closed shipments are polled independently of the
+open-issue ETag; failed lookups cannot establish a clean window. Legacy shipments
+complete in bounded batches; historical done rows are not backfilled.
 
-- The console-generated `✅ **UAT passed** (from the console).`
-- `Smoke: PASS <reference>`, where reference is an HTTP(S) report URL, or
-  `report=<path/id>`, `tag=<tag>`, or `artifact=<path/id>` (`:` also separates the
-  reference kind from its value). The reference is required and contains no spaces.
-- `Verified: <affirmative note>` on one line, with GitHub `authorAssociation=OWNER`.
-  The explicit prefix is the owner's affirmation; unmarked discussion is not evidence.
+Automated comments use `Smoke: PASS <reference>` with an HTTP(S) report URL or
+`report=<path/id>`, `tag=<tag>` or `artifact=<path/id>` (`:` is also accepted).
+They require author, durable comment ID/URL and a creation time strictly after the
+merge (or first confirmed observation if its time is unavailable). Evidence and
+completion are atomic; label updates retry separately. Existing legacy console and
+owner evidence remain compatible in storage/ingestion, but are not requested and
+manual passes are not scorecard success signals.
 
-The first accepted comment is stored once with its author, timestamp, kind, body
-and durable source. Recording evidence, the passing verdict and the transition to
-`done` is atomic; label removal retries separately. Ordinary discussion, agent
-summaries, malformed smoke lines, failures and pre-merge comments cannot complete
-work. Console Pass uses this same fetched-comment path, recovering an existing
-comment before posting another. A UAT failure files a linked p1 bug and leaves the
-source shipped and visible until later passing evidence; its bug and note survive
-completion. Repeated polls and double taps do not repeat the completion event.
+A linked bug, completed revert, source reopening, or console failure recorded inside
+[merge, merge + 14 days] prevents quiet completion. Such evidence reopens an early
+automated completion to ready/p1 once, retaining its audit history. Later reports
+still create ordinary fix work. D33 also retains later fixes and failed reviews as
+adverse attempt evidence. Reporting “This is broken” is optional: it files one
+linked p1 bug with the note, attachment and shipment identity. No pass is needed.
 
-#### The in-app UAT panel
+#### Historical in-app panel proposal — superseded
 
-- Every deploy or release **registers a build** with Mahler: project, version, SHA, channel,
-  URL or APK link, and the UAT items it contains.
-- Every shipment is a UAT item. Its "Needs a human to check" section supplies the
-  checklist when present; otherwise the default evidence request applies.
-- **Web apps:** a drop-in `mahler-uat.js` panel, loaded only in preview builds or when a UAT
-  cookie is set, so your normal use stays clean. It shows "what's new in this build", with
-  pass / fail / note per item, plus "report a problem here". A report captures the URL,
-  a screenshot, console errors and the build SHA.
-- **Android and macOS:** the existing Feedback buttons evolve into the same panel for
-  debug/beta builds (shake or bubble on Android, a menu item on macOS).
-- **Scripts:** the checklist lives in the console only.
-- **Transport:** posts to the Mahler API over Tailscale (the phone is on the tailnet). When
-  it's unreachable, the panel queues and retries, or falls back to the prefilled GitHub-issue
-  URL the Feedback buttons use today.
-- **A fail is new work:** it reopens the issue, or opens a linked `type:bug p1` with your note
-  and screenshot, ready to route. Tapping "fails" is the whole bug report.
-- phish-in-app's `UAT.md` and `uat-server.py` are the working prototype of this flow.
-  Their item ids and status marks carry over.
+The proposed `mahler-uat.js` web panel, Android/macOS verdict panels and console
+checklist gate are superseded by automated post-merge evidence plus ordinary
+failure capture. phish-in-app's `UAT.md` and `uat-server.py` were prototypes of that
+manual loop. Their history and the `uat` table are retained, not deleted or renamed.
+The separate console walkthrough remains a software test practice, not a shipment gate.
 
 ### D11 — The agents' feedback loop
 
@@ -806,7 +800,7 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     A deployment failure does not reopen or complete the source issue here.
 - **Command runner enforcement (mahler#745).** The post-merge foundation above
   is now executed by `post_merge.advance`, after shipping on unpaused ticks.
-  Enabled contracts register only confirmed merge SHAs; durable UAT merge rows
+  Enabled contracts register only confirmed merge SHAs; durable shipment rows in the historical `uat` table
   recover a registration interrupted after shipping. Each check takes at most
   one phase launch or poll per tick. Private, exclusive phase directories fence
   launches; workers atomically publish identity/token-bound results. A crash in
@@ -958,7 +952,7 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   work is now allowed only through the idle gate, D40, which supersedes "never"). Agents
   did not originally get click-through automation of macOS apps. macOS UI is verified by headless tests
   (package tests, plus offscreen SwiftUI snapshot rendering if a spike shows it works while
-  the screen is locked) and by your UAT. That's what phish-in-app already learned the hard way
+  the screen is locked) and optional reports from ordinary use. That's what phish-in-app already learned the hard way
   (D208).
 - **Review by a different platform** (shipped, mahler#395; `recipes/review.md`). Before merge,
   a short review run on a *different*
@@ -1122,7 +1116,7 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   unless it hits a question only you can answer. Then the item goes to `needs-you` with that
   specific question, and you get a ping.
 - **Default tier for every project: `autonomous`.** Merge on green verify + review, deploy or
-  release to your devices, UAT afterwards. You confirmed no app has users besides you, so
+  release to your devices, automated evidence and optional failure reports afterwards. You confirmed no app has users besides you, so
   phish-in-app's `gated` setting (premised on "ships to real users") is lifted when it
   onboards. Its manual beta → production *promotion* goes too (D16), but its test
   *environment* stays.
@@ -1172,7 +1166,7 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
     `.mahler/project.toml` (verify, data, release), checked in so agents can read it
 - **Recipes** (after Gas City's formulas): the shipped agent roles are `sort`, `build`,
   `fix` and `review`, plus the manually triggered `console_walkthrough`. Releases are
-  conductor code (D31), not a recipe. A UAT-author role remains planned.
+  conductor code (D31), not a recipe. The former UAT-author proposal is superseded by D10.
 
 ### D16 — Environments: testing never touches your real data
 
@@ -1184,12 +1178,12 @@ promotion) but keeps the second wherever testing would pollute real use.
   own D1/Neon database or branch, and its own API keys. It also means a **side-by-side
   install** where the platform allows it: a different Android `applicationId` suffix and a
   different macOS bundle id, so the test app and the real app coexist on your devices.
-- **Agents' automated tests and your UAT builds always run against staging.** Merges ship to
+- **Agents' automated tests and exploratory test builds always run against staging.** Merges ship to
   prod automatically, with no promotion step.
 - **Staging is seeded from the latest prod backup** (D12). So you test against realistic data
   without writing into the real thing, and every seed is also a free restore drill.
 - **Couch Tour** (your call, 2026-09-12): a single release channel, with no beta → production
-  promotion. But a staging sync backend and a separately-installed test app, so UAT listening
+  promotion. But a staging sync backend and a separately-installed test app, so exploratory listening
   never lands in your real listening history.
 - Projects where testing can't pollute anything (a read-only script, a static page) just
   declare `prod`.
@@ -1784,33 +1778,20 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
   - Writes that only touch the ledger apply at once, as `mahler pause` and `mahler peak --off`
     already do from outside the tick: pause and resume, the peak override, clearing a
     backoff, marking the digest seen.
-  - Writes that reach GitHub or a running agent (answering a needs-you item, UAT pass and
-    fail, capture, stop-and-hand-off, a revert) are queued in the ledger and applied by the
+  - Writes that reach GitHub or a running agent (answering a needs-you item, failure reports,
+    capture, stop-and-hand-off, a revert) are queued in the ledger and applied by the
     tick. Every GitHub call keeps the project's own login (D25), and only the tick touches
     runs and leases.
 - **An answer is a GitHub comment.** The tick posts it on the issue after a 60-second grace,
   which is what Undo cancels, and the existing reply-means-answer path re-sorts the item.
   No second state machine.
-- **Ready to test** lists every shipment awaiting passing evidence (D10), including
-  failed checks. Pass records evidence and completes the item. Fail files a linked
-  `type:bug p1` with your note and the SHA, which routes like any other bug.
-- Ready-to-test changes are shown in bounded, expanded **test sessions**, not as one
-  unstructured queue. Mahler groups them by project and then by the first alphabetically
-  sorted `area:*` label, or by `Part of #<parent>` when there is no area label, or by
-  `Other changes` when neither applies. A session contains at most 10 changes; larger
-  groups split into numbered parts. Sessions with the most changes still awaiting a
-  verdict appear first, and each change remains an inline row. The header includes the
-  session title, pending count, shared staging link when applicable, and **Pass all**;
-  sessions are not collapsible. **Pass all** is a two-tap confirmation bound to the
-  exact changes in the rendered session: it passes every change with no verdict yet.
-  **Fail** remains per change and opens the ordinary failure flow. This bounds a review
-  session to something one person can check in a sitting, since one row per change
-  outgrew that limit.
-- **Pass all** deliberately sends one ordinary `uat_pass` request per change from the
-  browser, in sequence. If a request fails partway through, earlier passes remain
-  recorded and the remaining changes keep no verdict; tapping **Pass all** again
-  finishes the remainder. That partial-progress trade-off is accepted instead of
-  introducing a separate all-or-nothing UAT write.
+- **What changed** on desktop and phone shows recent shipments with their evidence,
+  links and optional **This is broken** capture. It is history, not an owner inbox:
+  no pending-verdict count, pass control or backlog reminder. D10's 2026-10-06
+  decision (277 pending changes versus 5 historical passes) retires manual verdicts.
+  Automated evidence or a 14-day quiet period completes work; adverse evidence
+  inside that window reopens an early automated completion. Reports file linked
+  p1 fix work, while shipment and historical verdict storage remain intact.
 - **Undo a merge goes through the normal pipeline.** The tick makes the revert commit,
   files the issue and hands it to the conductor, so CI gates a revert like any change. The
   console always asks first.
@@ -1992,7 +1973,7 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
 - **A variant is a model at a reasoning effort, on one platform slot.** GPT-6 Luna at low, medium and high are three variants. So are Opus 5 and Opus 5.5. Effort moves cost and quality as much as the model does, and every CLI Mahler drives exposes it (`claude --effort`, `codex -c model_reasoning_effort=`, `copilot --reasoning-effort`, `agy --effort`, `cline --thinking`, `kilo run --variant`).
 - **Newer isn't assumed better or cheaper.** A new model or version enters as a candidate beside the incumbent, and replaces it only when the numbers say so. Some releases use fewer tokens than their predecessor and some use more (Opus 5 vs 4.8). So slots pin exact model IDs. Aliases like `opus`, which silently follow the latest release, aren't used for routing.
 - **Cost is tokens × list price, per run.** Every CLI already logs tokens. Mahler prices them from `[prices]` in the config ("API-equivalent dollars"), multiplied by an optional per-quota-group `cost_weight` (default 1). It's the one currency that compares a free pool, a subscription and a pay-per-token model, and it captures a verbose model's extra tokens. Mahler still never spends real money: D8's quota lines and "never extra usage" are unchanged.
-- **"Gets the job done" is measured.** A build or fix succeeds on the first attempt when its item merges with no fix round, no failed review, no revert and no bug filed against it within 14 days of the merge. Only a confirmed merge counts: a PR closed without merging opens no window, and is no release note or UAT item either. A plan or sort succeeds when its sub-issues do: they build on the first attempt, aren't split again, don't escalate, and don't go to needs-you.
+- **"Gets the job done" is measured.** A build or fix succeeds on the first attempt when its item merges with no fix round, no failed review, no revert and no bug filed against it within 14 days of the merge. Only a confirmed merge opens the 14-day linked-bug window; a PR closed without merging creates no shipment or release note. The scorecard provisionally credits a DONE run with no adverse evidence immediately; this is distinct from D10’s automated-or-quiet item completion. Later fixes, failed reviews, reverts, linked bugs inside the inclusive 14-day window and optional console “This is broken” reports remain adverse. Historical UAT passes never add positive evidence or resolve pending attempts. This follows the 2026-10-06 decision in D10 (277 pending versus 5 passes); early automated completion can reopen within that window. A plan or sort succeeds when its sub-issues do: they build on the first attempt, aren't split again, don't escalate, and don't go to needs-you.
 - **Cost per success** = average cost per attempt ÷ first-attempt success rate. A cheap variant that fails half the time can cost more than a mid-priced one that rarely fails.
 - **Measurement ranks within free-first precedence (D8), never across it.** Free pools always come before paid quota; D33 picks among them. Platforms may explicitly declare `cost_class = "free" | "paid"`; otherwise personal-account Claude slots default to paid and everything else, including work-account slots, defaults to free. Variants inherit their slot's class. D23 burst promotion remains the deliberate exception because that Claude quota is about to expire.
 - **Good enough** means at least 8 attempts at that role and size, and the lower end of an 80% Wilson interval on first-attempt success at or above the bar: build/fix 70%, sort 80%, plan 75%. Among good-enough variants, the router takes the lowest cost per success that has headroom. Unproven and below-bar variants stay eligible as fallbacks, in that order.
@@ -2041,7 +2022,7 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
    lost either. Items live in GitHub, code is pushed, and data is backed up.
 8. **macOS UI automation is gated.** The locked-screen assumption is superseded by D40:
    agents drive the GUI only via `mahler desktop run` when the mini is idle; otherwise macOS UI
-   regressions are caught by headless tests, CI and your UAT (D11).
+   regressions are caught by headless tests, CI and optional failure reports (D11).
 9. **A self-modifying conductor:** a bad merge to Mahler could stop the daemon that would fix
    it. The known-good launcher and rollback (D17) are the mitigation. The launcher itself is
    deliberately tiny, and it's updated only by hand.
@@ -2056,7 +2037,7 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
 - **Handoff:** checkpoint + note + release. It's how every run ends.
 - **Recipe:** a per-role prompt template.
 - **Verify contract:** a repo's declared checks and release steps.
-- **Build:** a registered deploy or release carrying UAT items.
+- **Build:** a registered deploy or release carrying shipment records.
 - **Hot hold:** a pause on new autonomous starts in a project while untracked activity is seen.
 - **Reserve:** the share of Claude quota kept for your own chats.
 

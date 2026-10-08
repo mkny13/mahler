@@ -1,6 +1,6 @@
 """Daily digest ping (mahler#6): one ntfy message a day, first tick after 08:00.
 
-A roll-up of the last 24h — items shipped, items waiting on the owner
+A roll-up of the last 24h — items completed, items waiting on the owner
 (needs_you / failed), handoffs, and current quota per platform — sent from the
 tick like the backups are: informational, so it runs even while paused. The
 send is gated by a kv key (`last_digest_date`), so restarts never double-send,
@@ -33,14 +33,14 @@ def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
     datetime; event `at` stamps are ISO UTC strings."""
     now = now or led.now()
 
-    shipped, handoffs = [], []
+    completed, handoffs = [], []
     for ev in led.q("SELECT * FROM events WHERE kind='state' AND at>=? ORDER BY id",
                     (iso(since),)):
         detail = ev["detail"] or ""
         if "-> done" in detail:
             item = led.item(ev["project"], ev["number"]) if ev["project"] else None
-            shipped.append({"project": ev["project"], "number": ev["number"],
-                            "title": item["title"] if item else None})
+            completed.append({"project": ev["project"], "number": ev["number"],
+                              "title": item["title"] if item else None})
         if "handoff" in detail or detail.startswith("handed to your session"):
             handoffs.append({"project": ev["project"], "number": ev["number"],
                              "detail": detail})
@@ -61,7 +61,7 @@ def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
         })
 
     weekly = weekly_models(led, cfg, scorecard_rows) if (local_now or now.astimezone()).weekday() == 0 else None
-    return {"models": weekly, "shipped": shipped, "waiting": waiting, "handoffs": handoffs,
+    return {"models": weekly, "completed": completed, "waiting": waiting, "handoffs": handoffs,
             "usage": usage, "since": since, "now": now,
             "missing_scope_counts": missing_scope_counts(led, cfg)}
 
@@ -83,10 +83,10 @@ def _pct(v):
 def format_digest(data):
     """Turn gathered stats into the digest body. Pure: no clock, no I/O."""
     lines = []
-    shipped = data["shipped"]
-    lines.append(f"Shipped in the last 24h ({len(shipped)}):")
-    if shipped:
-        for s in shipped:
+    completed = data["completed"]
+    lines.append(f"Completed in the last 24h ({len(completed)}):")
+    if completed:
+        for s in completed:
             lines.append(f"- {_label(s['project'], s['number'])} {_title_of(s)}")
     else:
         lines.append("- none")
