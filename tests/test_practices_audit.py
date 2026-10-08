@@ -1429,6 +1429,99 @@ class TestPracticesAudit(unittest.TestCase):
             self.assertEqual(f.state, "gap")
             self.assertEqual(f.reason, "Verify command is absent from literal PR CI commands.")
 
+        # 13. step-level continue-on-error on verify
+        with self.subTest(case="step-level continue-on-error on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - continue-on-error: true\n"
+                "        run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("continue-on-error", f.reason)
+            self.assertTrue(any(".github/workflows/ci.yml:8: continue-on-error: true" in e for e in f.evidence))
+
+        # 14. job-level continue-on-error on verify
+        with self.subTest(case="job-level continue-on-error on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    continue-on-error: true\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("continue-on-error", f.reason)
+            self.assertTrue(any(".github/workflows/ci.yml:6: continue-on-error: true" in e for e in f.evidence))
+
+        # 15. step-level continue-on-error false on verify (control)
+        with self.subTest(case="step-level continue-on-error false on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - continue-on-error: false\n"
+                "        run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "pass")
+            self.assertEqual(f.reason, "Documented effective verify command is invoked by PR CI.")
+
+        # 16. job-level continue-on-error false on verify (control)
+        with self.subTest(case="job-level continue-on-error false on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    continue-on-error: false\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "pass")
+            self.assertEqual(f.reason, "Documented effective verify command is invoked by PR CI.")
+
+        # 17. step-level continue-on-error true after run on verify
+        with self.subTest(case="step-level continue-on-error true after run on verify"):
+            wf = (
+                "name: CI\n"
+                "on:\n"
+                "  pull_request:\n"
+                "jobs:\n"
+                "  test:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: python3 -m unittest discover -s tests\n"
+                "        continue-on-error: true\n"
+            )
+            self.write(".github/workflows/ci.yml", wf)
+            f = self.results()["verify-command"]
+            self.assertEqual(f.state, "unknown")
+            self.assertIn("continue-on-error", f.reason)
+            self.assertTrue(any(".github/workflows/ci.yml:9: continue-on-error: true" in e for e in f.evidence))
+
     def test_proposal_body_includes_false_positive_resolution_contract(self):
         self.write("CLAUDE.md", "Diverged\n")
         result = audit.scan_project(self.pol, self.gh)
