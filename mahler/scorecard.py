@@ -77,6 +77,24 @@ def attempts(led, since, until=None):
     releases = {(r['project'], r['number']): dict(r)
                 for r in led.q('SELECT * FROM release_items')}
 
+    latest_adjudications = {}
+    fix_triggers = defaultdict(set)
+    for key, ev_list in events.items():
+        for e in ev_list:
+            if e['kind'] == 'review_adjudication':
+                r_id = e['detail'].get('review_run')
+                classification = e['detail'].get('classification')
+                if r_id is not None and classification:
+                    latest_adjudications[key, r_id] = classification
+                for f_id in e['detail'].get('fix_runs', []):
+                    if r_id is not None:
+                        fix_triggers[key, f_id].add(r_id)
+            elif e['kind'] == 'review_fix_trigger':
+                f_id = e['detail'].get('fix_run')
+                r_id = e['detail'].get('review_run')
+                if f_id is not None and r_id is not None:
+                    fix_triggers[key, f_id].add(r_id)
+
     def later(run, other):
         return (_time(other['started_at']), other['id']) > (
             _time(run['ended_at'] or run['started_at']), run['id'])
@@ -88,14 +106,34 @@ def attempts(led, since, until=None):
         if not review:
             # Needing a fix is adverse evidence even if that fix's own attempt
             # is excluded (for example, it later stops for quota).
-            if any(r['role'] == 'fix' and later(run, r)
-                   for r in by_item[key]):
-                return 'later fix run'
-            if (any(e['kind'] == 'review_verdict' and e['detail'].get('verdict') == 'fail'
-                    for e in history)
-                    or any(r['role'] == 'review' and r['outcome'] == 'REVIEW-FAIL'
-                           and later(run, r) for r in by_item[key])):
-                return 'failed review'
+            # Disregard a later fix only when its exact durable trigger links
+            # solely to a false review verdict.
+            later_fixes = [r for r in by_item[key] if r['role'] == 'fix' and later(run, r)]
+            for f in later_fixes:
+                triggers = fix_triggers.get((key, f['id']))
+                if not triggers:
+                    return 'later fix run'
+                if not all(latest_adjudications.get((key, r_id)) == 'false' for r_id in triggers):
+                    return 'later fix run'
+
+            # Disregard a failed review verdict only when its latest valid
+            # adjudication is false, in both the event path and legacy fallback.
+            fail_verdict_events = [
+                e for e in history
+                if e['kind'] == 'review_verdict' and e['detail'].get('verdict') == 'fail'
+            ]
+            for e in fail_verdict_events:
+                r_id = e['detail'].get('review_run')
+                if r_id is None or latest_adjudications.get((key, r_id)) != 'false':
+                    return 'failed review'
+
+            legacy_fail_reviews = [
+                r for r in by_item[key]
+                if r['role'] == 'review' and r['outcome'] == 'REVIEW-FAIL' and later(run, r)
+            ]
+            for r in legacy_fail_reviews:
+                if latest_adjudications.get((key, r['id'])) != 'false':
+                    return 'failed review'
         if any(e['kind'] == 'revert_requested' for e in history):
             return 'revert'
         check = uat.get(key, {})
@@ -287,3 +325,89 @@ def summary(row):
     return (f'{row["model"] or "Unknown model"} · {row["effort"] or "default effort"} '
             f'({row["platform"]}) — {row["successes"]} of {row["n"]} done first try · '
             f'{cost} · {success} · {mins} · {tokens} · {flags}')
+
+
+def review_precision(led, cfg=None, project=None, since=None, until=None):
+    """Aggregate review precision over ended failed review runs in [since, until).
+
+    Grouped by recorded platform, model, effort. Each failed verdict is counted
+    once despite duplicate finalization events.
+    """
+    since, until = _time(since), _time(until)
+    events = defaultdict(list)
+    for row in led.q("SELECT * FROM events ORDER BY at, id"):
+        e = dict(row)
+        e["detail"] = _json(e["detail"], {})
+        events[e["project"], e["number"]].append(e)
+
+    latest_adjudications = {}
+    for key, ev_list in events.items():
+        for e in ev_list:
+            if e["kind"] == "review_adjudication":
+                r_id = e["detail"].get("review_run")
+                classification = e["detail"].get("classification")
+                if r_id is not None and classification:
+                    latest_adjudications[key, r_id] = classification
+
+    runs = [dict(r) for r in led.q(
+        "SELECT * FROM runs WHERE role='review' AND outcome='REVIEW-FAIL' AND status='ended' ORDER BY started_at, id"
+    )]
+
+    groups = defaultdict(lambda: {"justified": 0, "false": 0, "unresolved": 0, "unadjudicated": 0})
+    for run in runs:
+        end = _time(run["ended_at"] or run["started_at"])
+        if project is not None and run["project"] != project:
+            continue
+        if since and end < since:
+            continue
+        if until and end >= until:
+            continue
+
+        key = (run["project"], run["number"])
+        classification = latest_adjudications.get((key, run["id"]), "unadjudicated")
+        grp_key = (run["platform"], run["model"], run["effort"])
+        if classification in ("justified", "false", "unresolved"):
+            groups[grp_key][classification] += 1
+        else:
+            groups[grp_key]["unadjudicated"] += 1
+
+    rows = []
+    for grp_key in sorted(groups.keys(), key=lambda k: tuple(v or "" for v in k)):
+        counts = groups[grp_key]
+        denom = counts["justified"] + counts["false"]
+        precision = (counts["justified"] / denom) if denom > 0 else None
+        false_fail_share = (counts["false"] / denom) if denom > 0 else None
+        rows.append({
+            "platform": grp_key[0],
+            "model": grp_key[1],
+            "effort": grp_key[2],
+            "justified": counts["justified"],
+            "false": counts["false"],
+            "unresolved": counts["unresolved"],
+            "unadjudicated": counts["unadjudicated"],
+            "precision": precision,
+            "false_fail_share": false_fail_share,
+        })
+    return rows
+
+
+def format_review_precision(rows):
+    if not rows:
+        return "No failed reviews in this window."
+    lines = ["Reviewer precision · failed verdict adjudications"]
+    for r in rows:
+        model_str = r["model"] or "Unknown model"
+        effort_str = r["effort"] or "default effort"
+        denom = r["justified"] + r["false"]
+        if denom > 0:
+            prec_str = f"precision {r['justified']}/{denom} ({r['precision']:.1%})"
+            share_str = f"false-fail {r['false']}/{denom} ({r['false_fail_share']:.1%})"
+        else:
+            prec_str = "precision unknown"
+            share_str = "false-fail unknown"
+        lines.append(
+            f"{r['platform']} · {model_str} · {effort_str}: "
+            f"{prec_str} · {share_str} "
+            f"({r['unresolved']} unresolved, {r['unadjudicated']} unadjudicated)"
+        )
+    return "\n".join(lines)

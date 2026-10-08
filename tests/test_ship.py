@@ -1291,6 +1291,97 @@ class ShipTests(unittest.TestCase):
         self.assertIn("auth.py: missing null check on session token", context)
         self.assertEqual(self.item()["attempts"], 1)
 
+    def test_review_fix_trigger_links_verdict_and_distinguishes_cases(self):
+        # 1. Successful launch records review_fix_trigger with exact verdict and fix ID
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        rev1 = self.led.create_run(project="x", number=5, role="review",
+                                   platform="agy-claude", epoch=1, status="ended",
+                                   outcome="REVIEW-FAIL")
+        self.led.set_kv("review:x#5", json.dumps({
+            "pr": 88, "sha": "head-sha-1", "run_id": rev1, "verdict": "fail",
+            "findings": "blocking finding 1"}))
+        view = {"headRefOid": "head-sha-1", "headRefName": "feat", "baseRefName": "main",
+                "statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+
+        fix_runs_created = []
+        def fake_start(ctx, project, item, role, platform, **kwargs):
+            frid = self.led.create_run(project=project, number=item["number"],
+                                       role=role, platform=platform, epoch=1,
+                                       status="running")
+            fix_runs_created.append(frid)
+            return True
+
+        with mock.patch.object(ship, "start", side_effect=fake_start), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking finding 1")
+
+        triggers = [dict(r) for r in self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")]
+        self.assertEqual(len(triggers), 1)
+        t1 = json.loads(triggers[0]["detail"])
+        self.assertEqual(t1["fix_run"], fix_runs_created[0])
+        self.assertEqual(t1["review_run"], rev1)
+        self.assertEqual(t1["reviewed_sha"], "head-sha-1")
+        self.assertEqual(t1["pr"], 88)
+
+        # 2. Retry with same fix run does not duplicate link
+        with mock.patch.object(ship, "start", return_value=True), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking finding 1")
+
+        triggers_after_retry = self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")
+        self.assertEqual(len(triggers_after_retry), 1)
+
+        # 3. Failed launch does not record review_fix_trigger
+        with mock.patch.object(ship, "start", return_value=False), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking finding 1")
+
+        triggers_after_fail = self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")
+        self.assertEqual(len(triggers_after_fail), 1)
+
+        # 4. Same-SHA different reviewer links to that reviewer's run ID
+        rev2 = self.led.create_run(project="x", number=5, role="review",
+                                   platform="claude", epoch=1, status="ended",
+                                   outcome="REVIEW-FAIL")
+        self.led.set_kv("review:x#5", json.dumps({
+            "pr": 88, "sha": "head-sha-1", "run_id": rev2, "verdict": "fail",
+            "findings": "blocking finding 2"}))
+        self.led.set_kv("reviewdup:x#5", None)
+        with mock.patch.object(ship, "start", side_effect=fake_start), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking finding 2")
+
+        triggers_after_rev2 = [dict(r) for r in self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger' ORDER BY id")]
+        self.assertEqual(len(triggers_after_rev2), 2)
+        t2 = json.loads(triggers_after_rev2[1]["detail"])
+        self.assertEqual(t2["fix_run"], fix_runs_created[1])
+        self.assertEqual(t2["review_run"], rev2)
+        self.assertEqual(t2["reviewed_sha"], "head-sha-1")
+
+        # 5. Base-conflict fix does not record review_fix_trigger
+        with mock.patch.object(ship, "start", side_effect=fake_start), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "conflict", base_conflict=True)
+
+        triggers_after_conflict = self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")
+        self.assertEqual(len(triggers_after_conflict), 2)
+
+        # 6. CI fix does not record review_fix_trigger
+        ci_view = {"headRefOid": "head-sha-1", "headRefName": "feat", "baseRefName": "main",
+                   "statusCheckRollup": [{"name": "ci", "status": "COMPLETED", "conclusion": "FAILURE"}]}
+        with mock.patch.object(ship, "start", side_effect=fake_start), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            ship._red_ci(self.ctx, "x", self.item(), 88, ci_view)
+
+        triggers_after_ci = self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")
+        self.assertEqual(len(triggers_after_ci), 2)
+
     def same_head_setup(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
         self.cfg["routing"]["review"] = ["agy-claude", "claude", "agy-gemini"]

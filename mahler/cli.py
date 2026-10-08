@@ -1097,10 +1097,17 @@ def _scorecard_days(value):
 def cmd_scorecard(a, cfg, led):
     from . import scorecard
     since = led.now() - timedelta(days=a.since) if a.since else None
+    if getattr(a, "review_precision", False):
+        rows = scorecard.review_precision(led, cfg=cfg, project=a.project, since=since)
+        if a.raw or getattr(a, "json", False):
+            print(json.dumps(rows, indent=2))
+        else:
+            print(scorecard.format_review_precision(rows))
+        return 0
     rows = scorecard.table(led, cfg, project=a.project, since=since)
     rows = [r for r in rows if (not a.role or r["role"] == a.role)
             and (not a.size or r["size"] == a.size)]
-    if a.raw:
+    if a.raw or getattr(a, "json", False):
         print(json.dumps([attempt for row in rows for attempt in row["attempts"]], indent=2))
     else:
         print("Model scorecard · API-equivalent dollars (weighted)")
@@ -1108,6 +1115,29 @@ def cmd_scorecard(a, cfg, led):
             print(f'{row["role"]} / {row["size"] or "unknown size"}: {scorecard.summary(row)}')
         if not rows:
             print("No attempts in this window.")
+
+
+def cmd_review_adjudicate(a, cfg, led):
+    from . import review
+    project, number = a.item
+    try:
+        created = review.adjudicate(
+            led, project, number,
+            review_run=a.review_run,
+            sha=a.sha,
+            classification=a.classification,
+            evidence=a.evidence,
+            reason=a.reason,
+            fix_runs=a.fix_runs,
+        )
+    except ValueError as exc:
+        print(f"mahler review-adjudicate: {exc}", file=sys.stderr)
+        return 2
+    if created:
+        print(f"Recorded review adjudication for {project}#{number} (run {a.review_run}, {a.classification}).")
+    else:
+        print(f"Adjudication already recorded for {project}#{number} (run {a.review_run}, {a.classification}).")
+    return 0
 
 
 def _capacity_days(value):
@@ -1127,14 +1157,7 @@ def cmd_capacity(a, cfg, led):
     return 0
 
 
-def main(argv=None):
-    argv = sys.argv[1:] if argv is None else list(argv)
-    if argv[:1] == ["desktop"]:  # needs no ledger; a bad config must exit 2 (D40)
-        try:
-            return desktop.main(argv[1:])
-        except ValueError as e:
-            print(f"mahler desktop: {e}", file=sys.stderr)
-            return desktop.EX_INVALID
+def build_parser(cfg=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -1166,7 +1189,21 @@ def main(argv=None):
     s.add_argument("--size")
     s.add_argument("--since", type=_scorecard_days, metavar="30d")
     s.add_argument("--raw", action="store_true")
+    s.add_argument("--json", action="store_true", help="output JSON")
+    s.add_argument("--review-precision", action="store_true", help="reviewer precision over failed verdicts")
     s.set_defaults(fn=cmd_scorecard)
+
+    s = sub.add_parser("review-adjudicate", help="record an operator review adjudication")
+    s.add_argument("item", type=ref, help="project#number, e.g. mahler#12")
+    s.add_argument("--review-run", type=int, required=True, help="review run ID")
+    s.add_argument("--sha", required=True, help="reviewed commit SHA")
+    s.add_argument("--classification", required=True, choices=["false", "justified", "unresolved"],
+                   help="verdict classification")
+    s.add_argument("--evidence", required=True, help="evidence URL")
+    s.add_argument("--reason", required=True, help="reason text")
+    s.add_argument("--fix-run", action="append", type=int, dest="fix_runs", default=[],
+                   help="attested fix run ID (repeatable)")
+    s.set_defaults(fn=cmd_review_adjudicate)
 
     s = sub.add_parser("capacity", help="historical free-capacity report (mahler#736)")
     s.add_argument("--days", type=_capacity_days, default=30,
@@ -1290,6 +1327,19 @@ def main(argv=None):
     s.add_argument("platform", nargs="?", default="agy-gemini", help="platform to run on (e.g. agy-gemini)")
     s.set_defaults(fn=cmd_console_walkthrough)
 
+    return ap
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["desktop"]:  # needs no ledger; a bad config must exit 2 (D40)
+        try:
+            return desktop.main(argv[1:])
+        except ValueError as e:
+            print(f"mahler desktop: {e}", file=sys.stderr)
+            return desktop.EX_INVALID
+
+    ap = build_parser()
     a = ap.parse_args(argv)
     cfg = config.load()
     led = RoutedLedger(Ledger(config.DB_PATH), cfg)

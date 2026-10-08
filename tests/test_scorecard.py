@@ -74,6 +74,182 @@ class AttemptTests(unittest.TestCase):
         self.run_attempt(role='review', outcome='REVIEW-FAIL')
         self.assert_result(rid, 'failure', 'failed review')
 
+    def test_false_review_adjudication_recomputes_builder_without_mutating_runs(self):
+        start_time = self.now
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev_id = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {
+            'verdict': 'fail', 'review_run': rev_id, 'reviewed_sha': 'sha123',
+        })
+        self.advance()
+        fix_id = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {
+            'fix_run': fix_id, 'review_run': rev_id, 'reviewed_sha': 'sha123', 'pr': 50,
+        })
+
+        score_window_end = self.now + timedelta(days=1)
+
+        # Observes failure before adjudication
+        self.assert_result(builder_id, 'failure', 'later fix run')
+
+        # Snapshot builder run row and operational counters
+        builder_row_before = dict(self.led.run(builder_id))
+        item_before = dict(self.led.item('p', 1))
+        counters_before = (item_before['attempts'], item_before['esc_tier'], item_before['esc_fails'])
+
+        # Advance after score window and append false adjudication
+        self.now = score_window_end + timedelta(days=5)
+        self.led.event('review_adjudication', 'p', 1, {
+            'version': 1, 'review_run': rev_id, 'sha': 'sha123',
+            'classification': 'false', 'evidence': 'https://example.com/issue/1',
+            'reason': 'false positive blocker',
+        })
+
+        # Observes corrected builder score inside original score window
+        window_attempts = attempts(self.led, since=start_time, until=score_window_end)
+        builder_attempt = next(r for r in window_attempts if r['run'] == builder_id)
+        self.assertEqual(builder_attempt['result'], 'success')
+        self.assertEqual(builder_attempt['why'], 'DONE with no adverse evidence')
+
+        # Byte-for-byte equivalent run-row values
+        builder_row_after = dict(self.led.run(builder_id))
+        self.assertEqual(builder_row_before, builder_row_after)
+
+        # Unchanged operational counters
+        item_after = dict(self.led.item('p', 1))
+        counters_after = (item_after['attempts'], item_after['esc_tier'], item_after['esc_fails'])
+        self.assertEqual(counters_before, counters_after)
+
+    def test_builder_failed_for_separate_justified_review(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev1 = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev1, 'reviewed_sha': 'sha1'})
+        self.advance()
+        fix1 = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {'fix_run': fix1, 'review_run': rev1})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev1, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.advance()
+        rev2 = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev2, 'reviewed_sha': 'sha2'})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev2, 'sha': 'sha2', 'classification': 'justified',
+        })
+        self.assert_result(builder_id, 'failure', 'failed review')
+
+    def test_builder_failed_for_unresolved_adjudication(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'unresolved',
+        })
+        self.assert_result(builder_id, 'failure', 'failed review')
+
+    def test_builder_failed_for_unlinked_legacy_fix(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.advance()
+        # Fix without review_fix_trigger
+        self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.assert_result(builder_id, 'failure', 'later fix run')
+
+    def test_builder_failed_for_ci_or_base_conflict_fix(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.advance()
+        fix1 = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {'fix_run': fix1, 'review_run': rev})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.advance()
+        # Second fix run, unlinked (e.g. CI fix or base conflict fix)
+        self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.assert_result(builder_id, 'failure', 'later fix run')
+
+    def test_builder_failed_for_nonzero_exit_despite_false_review(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE', exit_code=1)
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.assert_result(builder_id, 'failure', 'nonzero exit')
+
+    def test_builder_failed_for_revert_despite_false_review(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.advance()
+        fix = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {'fix_run': fix, 'review_run': rev})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.advance()
+        self.led.event('revert_requested', 'p', 1, {'pr': 50})
+        self.assert_result(builder_id, 'failure', 'revert')
+
+    def test_builder_failed_for_uat_failure_despite_false_review(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.advance()
+        fix = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {'fix_run': fix, 'review_run': rev})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.ship()
+        self.led.add_uat('p', 1, 50, 'sha', 'Title', 'Check')
+        self.advance()
+        self.led.set_uat_verdict('p', 1, 'fail')
+        self.assert_result(builder_id, 'failure', 'UAT fail')
+
+    def test_builder_failed_for_linked_bug_despite_false_review(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        rev = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev, 'reviewed_sha': 'sha1'})
+        self.advance()
+        fix = self.run_attempt(number=1, role='fix', outcome='DONE')
+        self.led.event('review_fix_trigger', 'p', 1, {'fix_run': fix, 'review_run': rev})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.ship()
+        self.bug(days=2, body='Breaks #1.')
+        self.assert_result(builder_id, 'failure', 'bug within 14 days')
+
+    def test_false_verdict_cannot_suppress_legacy_fallback_for_another_review_run(self):
+        builder_id = self.run_attempt(number=1, role='build', outcome='DONE')
+        self.advance()
+        # Review 1 has verdict event and false adjudication
+        rev1 = self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.led.event('review_verdict', 'p', 1, {'verdict': 'fail', 'review_run': rev1, 'reviewed_sha': 'sha1'})
+        self.led.event('review_adjudication', 'p', 1, {
+            'review_run': rev1, 'sha': 'sha1', 'classification': 'false',
+        })
+        self.advance()
+        # Review 2 is a legacy review run with outcome REVIEW-FAIL and no adjudication
+        self.run_attempt(number=1, role='review', outcome='REVIEW-FAIL')
+        self.assert_result(builder_id, 'failure', 'failed review')
+
     def test_revert(self):
         rid = self.run_attempt()
         self.advance()
