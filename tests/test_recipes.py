@@ -707,10 +707,6 @@ class CodingScopeRecipeTests(unittest.TestCase):
                 ])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DesktopGateRecipeTests(unittest.TestCase):
     """D40: build, fix and review route GUI-driving work through the desktop gate."""
 
@@ -779,3 +775,7 @@ class DesignRecipeTests(unittest.TestCase):
             self.assertIn(value, text)
         with self.assertRaisesRegex(ValueError, "review history"):
             prompt.build(DummyCtx(), "mahler", item, "design", "claude", prep)
+
+
+if __name__ == "__main__":
+    unittest.main()
