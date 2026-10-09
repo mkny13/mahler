@@ -1095,16 +1095,109 @@ class RunTests(unittest.TestCase):
 
     def test_blocked_counts_attempt_and_preserves_reason(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: BLOCKED needs a database password\n")
+            fh.write("STATUS: BLOCKED flaky CI\n")
         self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual(item["attempts"], 1)
         self.assertEqual(item["state"], "ready")
-        outcome = "BLOCKED needs a database password"
+        outcome = "BLOCKED flaky CI"
         self.assertIn(outcome, self.last_event())
         run = self.led.q("SELECT outcome, status FROM runs WHERE id=?", (self.run_id,))[0]
         self.assertEqual((run["outcome"], run["status"]), (outcome, "ended"))
         self.assertIn(outcome, self.gh.comments[-1])
+
+    def test_access_blocked_routes_build_and_fix_without_retry(self):
+        reasons = (
+            "Vercel deployment protection prevents the required live Groundwork Preview "
+            "capture and console-card proof.",  # #727, run 11582 verbatim
+            "LoGiN ReQuIrEd for live capture", "missing credential for live capture",
+            "missing token for live capture", "needs a database password",
+            "access denied for live capture",
+        )
+        for role in ("build", "fix"):
+            for reason in reasons:
+                with self.subTest(role=role, reason=reason):
+                    case = RunTests()
+                    case.setUp()
+                    try:
+                        case.run["role"] = role
+                        case.led.update_run(case.run_id, role=role)
+                        case.led.upsert_item("x", 5, attempts=0, esc_fails=1, esc_tier=1)
+                        Path(case.log).write_text("STATUS: BLOCKED " + reason + "\n")
+                        with mock.patch.object(case.ctx, "ping") as ping:
+                            snap, _ = case.finalize()
+                            case.finalize()
+                        item = case.led.item("x", 5)
+                        self.assertEqual((item["state"], item["attempts"], item["esc_fails"],
+                                          item["esc_tier"]), ("needs_you", 0, 1, 1))
+                        self.assertIsNone(case.led.lease("x", 5))
+                        self.assertEqual(item["branch"], "mahler/snapshot/5-run7")
+                        snap.assert_called_once()
+                        row = case.led.run(case.run_id)
+                        self.assertEqual((row["status"], row["outcome"]),
+                                         ("ended", "BLOCKED " + reason))
+                        self.assertIn("BLOCKED " + reason, case.gh.comments[0])
+                        self.assertIn("Work saved", case.gh.comments[0])
+                        for phrase in ("authorized access", "blocked operation", "handoff",
+                                       "outside GitHub", "secret file or environment variable"):
+                            self.assertIn(phrase, item["question"])
+                        ping.assert_called_once()
+                        self.assertEqual(ping.call_args.args[1], item["question"])
+                        self.assertEqual(ping.call_args.kwargs["priority"], "high")
+                    finally:
+                        case.doCleanups()
+
+    def test_access_question_does_not_copy_supplied_secret(self):
+        Path(self.log).write_text("STATUS: BLOCKED missing token: arbitrary-sensitive-value\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        self.assertNotIn("arbitrary-sensitive-value", self.led.item("x", 5)["question"])
+        self.assertNotIn("arbitrary-sensitive-value", str(ping.call_args))
+
+    def test_non_access_blockers_still_retry_for_build_and_fix(self):
+        for role in ("build", "fix"):
+            for reason in ("flaky CI", "tokenization failure", "memory access violation",
+                           "branch protection test failure"):
+                with self.subTest(role=role, reason=reason):
+                    case = RunTests()
+                    case.setUp()
+                    try:
+                        case.run["role"] = role
+                        Path(case.log).write_text("STATUS: BLOCKED " + reason + "\n")
+                        with mock.patch.object(case.ctx, "ping"):
+                            case.finalize()
+                        item = case.led.item("x", 5)
+                        self.assertEqual((item["state"], item["attempts"]), ("ready", 1))
+                    finally:
+                        case.doCleanups()
+
+    def test_access_blocker_respects_lifecycle_and_stale_lease(self):
+        for role in ("build", "fix"):
+            for reason in ("parked", "preempted", "quota", "no_credit",
+                           "model_unavailable", "lost-lease", "handoff", "stale"):
+                with self.subTest(role=role, reason=reason):
+                    case = RunTests()
+                    case.setUp()
+                    try:
+                        case.run["role"] = role
+                        if reason == "stale":
+                            case.led.claim("x", 5, "owner", "interactive", 60)
+                        else:
+                            case.run["stop_reason"] = reason
+                        Path(case.log).write_text("STATUS: BLOCKED missing token\n")
+                        with mock.patch.object(case.ctx, "ping") as ping:
+                            case.finalize()
+                        item = case.led.item("x", 5)
+                        expected = "working" if reason == "stale" else (
+                            "parked" if reason == "parked" else "ready")
+                        self.assertEqual(item["state"], expected)
+                        self.assertEqual(item["attempts"], 0)
+                        self.assertFalse(any("needs you" in call.args[0]
+                                             for call in ping.call_args_list))
+                        if reason == "stale":
+                            self.assertEqual(case.led.lease("x", 5)["holder"], "owner")
+                    finally:
+                        case.doCleanups()
 
     def test_handoff_sets_ready_and_drops_lease_atomically(self):
         with open(self.log, "w") as fh:

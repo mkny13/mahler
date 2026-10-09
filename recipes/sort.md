@@ -61,6 +61,16 @@ become the console's answer buttons.
      can be satisfied together. A smoke-journey target requiring new app accessibility
      identifiers contradicts "no app source changes"; do not pass that conflict to a builder.
      If resolving it requires changing owner intent, end NEEDS-YOU with concise options.
+   - [ ] Access available: for required live/protected Done-when checks (token, login,
+     bypass), Never invent accounts or credentials or silently waive acceptance. Honor existing
+     owner answers and restrictions. Identify the authorized access provider, the named external
+     secret file or environment variable (names only), and the runtime that consumes it.
+     A hypothetical variable name does not establish available access. Existing authorized
+     access may be used only within its documented consumer and scope. Never put secret values
+     in GitHub issues, logs, argv, or commits.
+     If access is missing or conflicts with an owner constraint, ask one actionable
+     NEEDS-YOU question naming the required operation and safe provisioning channel
+     before READY; do not send the unresolved requirement to a builder.
    - [ ] Prerequisites explicit: split needed prerequisite work into its own mergeable
      issue with a test, and add an unquoted `Depends on: #N` line to the dependent issue.
      Do not use a dependency to silently override an owner's constraint.
