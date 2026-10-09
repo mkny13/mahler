@@ -1106,10 +1106,34 @@ def _protection(gh, jobs, ci_unknown):
 
 _EXEMPTION_KW = re.compile(
     r"\b(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
-    r"scanner|accepted(?:[ -]limitation)?|known[ -]limitation|decision[s]?|decided|"
-    r"practice[s]?|audit[s]?|mkny13/mahler|mahler#\d+|rationale)\b",
+    r"waiv(?:e|er|ers|ed)?)\b",
     re.I
 )
+_NEGATED_EXEMPTION_KW = re.compile(
+    r"\b(?:"
+    r"(?:no|without)\s+(?:an?\s+)?(?:(?:explicit|documented|approved|granted)\s+)?"
+    r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
+    r"(?:not|never)\s+(?:(?:explicitly|currently)\s+)?(?:be\s+)?"
+    r"(?:exempt(?:ion|ions|ed)?|exception[s]?|false[ -]positive[s]?|"
+    r"waiv(?:e|er|ers|ed)?)|"
+    r"(?:(?:does|do|did|will|would|can|could|should|must|may|shall)\s*(?:not|n't)|"
+    r"doesn't|don't|didn't|won't|wouldn't|can't|cannot|shouldn't|mustn't|never)"
+    r"(?:\s+[\w`-]+){0,3}?\s+"
+    r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
+    r"(?:prohibit(?:s|ed|ing)?|forbid(?:s|den|ding)?|disallow(?:s|ed|ing)?|den(?:y|ies|ied)|reject(?:s|ed)?|ban(?:s|ned)?)"
+    r"\s+(?:all\s+|any\s+)?(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)|"
+    r"(?:exemption[s]?|exception[s]?|false[ -]positive[s]?|waiver[s]?)"
+    r"(?:\s+(?:for|to|of|from)\s+[\w`-]+(?:\s+[\w`-]+)?)?\s+"
+    r"(?:(?:are|is|were|was|will\s+be|must\s+be|shall\s+be|may\s+not\s+be|cannot\s+be|can\s+not\s+be|"
+    r"aren't|isn't)\s+)?(?:\w+\s+)?"
+    r"(?:prohibited|forbidden|disallowed|denied|rejected|banned|not\s+(?:allowed|permitted|granted|accepted|approved))"
+    r")\b",
+    re.I,
+)
+
+
+def _has_exemption_language(text):
+    return bool(_EXEMPTION_KW.search(_NEGATED_EXEMPTION_KW.sub("", text)))
 
 
 def _extract_toml_rationale(val):
@@ -1185,7 +1209,6 @@ def _scan_markdown_exemptions(tree, rel_path):
 
     lines = text.splitlines()
     current_heading = ""
-    is_decision_file = "decision" in rel_path.lower()
 
     for idx, raw_line in enumerate(lines, 1):
         line = raw_line.strip()
@@ -1204,7 +1227,7 @@ def _scan_markdown_exemptions(tree, rel_path):
 
             if matches_check or matches_heading_check:
                 context_text = f"{current_heading} {line}"
-                if is_decision_file or _EXEMPTION_KW.search(context_text):
+                if _has_exemption_language(context_text):
                     rationale = line.lstrip("-*# \t")
                     colon_idx = rationale.find(":")
                     if colon_idx != -1 and colon_idx < len(check) + 5:

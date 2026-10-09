@@ -1554,6 +1554,53 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn("DECISIONS.md", resolved["agent-instructions"].evidence[0])
         self.assertIn("mkny13/mahler#806", resolved["agent-instructions"].reason)
 
+    def test_incidental_decision_mention_does_not_suppress_tracked_secrets(self):
+        self.write("credentials.env", 'PASSWORD: "very-private-password"\n')
+        self.write("DECISIONS.md", (
+            "# Architectural Decisions\n\n"
+            "### D39 — Cross-project practices audit: evidence and proposals only\n"
+            "#### Known gaps\n"
+            "The tracked-secrets check does not inspect Git history.\n"
+        ))
+        findings = self.results()
+        self.assertEqual(findings["tracked-secrets"].state, "gap")
+
+        self.write("DECISIONS.md", (
+            "# Architectural Decisions\n\n"
+            "### No exemption for tracked-secrets\n"
+            "The tracked-secrets check remains enforced.\n"
+        ))
+        enforced = self.results()
+        self.assertEqual(enforced["tracked-secrets"].state, "gap")
+
+        self.write("DECISIONS.md", (
+            "# Architectural Decisions\n\n"
+            "### tracked-secrets policy\n"
+            "Exemptions for tracked-secrets are prohibited.\n"
+        ))
+        prohibited = self.results()
+        self.assertEqual(prohibited["tracked-secrets"].state, "gap")
+
+        for line in ("The tracked-secrets check does not support exemptions.",
+                     "The tracked-secrets check doesn't allow exemptions.",
+                     "The tracked-secrets check does not permit any exemptions."):
+            self.write("DECISIONS.md", (
+                "# Architectural Decisions\n\n### tracked-secrets policy\n" + line + "\n"))
+            self.assertEqual(self.results()["tracked-secrets"].state, "gap", line)
+
+        # Explicit exemption or false-positive wording in DECISIONS.md still resolves the finding
+        self.write("DECISIONS.md", (
+            "# Architectural Decisions\n\n"
+            "### D40 — tracked-secrets exemption\n"
+            "Exempt: credentials.env contains synthetic test tokens; "
+            "scanner false positive tracked in mkny13/mahler#837.\n"
+        ))
+        resolved = self.results()
+        self.assertEqual(resolved["tracked-secrets"].state, "pass")
+        self.assertIn("Documented architectural decision or exemption",
+                      resolved["tracked-secrets"].reason)
+        self.assertIn("DECISIONS.md", resolved["tracked-secrets"].evidence[0])
+
     def test_project_toml_exemption_resolves_finding_cleanly(self):
         self.gh.settings["allow_squash_merge"] = False
         findings = self.results()
