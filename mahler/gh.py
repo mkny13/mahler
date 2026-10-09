@@ -444,7 +444,8 @@ class GH:
                     or sum(r.get("workflow_id") == run["workflow_id"] for r in head_runs) != 1):
                 continue
             failed_jobs = [j for j in jobs(run) if j.get("conclusion") in {"failure", "timed_out"}]
-            if not failed_jobs:
+            names = [j.get("name") for j in failed_jobs]
+            if not names or not all(names) or len(set(names)) != len(names):
                 continue
             if not reported:
                 matches = [r for r in baseline if r.get("workflow_id") == run["workflow_id"]
@@ -452,8 +453,8 @@ class GH:
                 if len(matches) != 1 or matches[0].get("conclusion") != "success":
                     continue
                 good = jobs(matches[0])
-                if not all(len([j for j in good if j.get("name") == bad.get("name")
-                                and j.get("conclusion") == "success"]) == 1 for bad in failed_jobs):
+                if not all([j.get("conclusion") for j in good
+                            if j.get("name") == name] == ["success"] for name in names):
                     continue
             selected.append({"id": run["id"], "attempt": run["run_attempt"]})
         return selected

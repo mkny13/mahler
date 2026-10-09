@@ -36,7 +36,7 @@ class TestGH(unittest.TestCase):
         head = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
                 "status": "completed", "conclusion": "failure"}
         base = {**head, "id": 20, "head_sha": "tip", "event": "push", "conclusion": "success"}
-        for case in ("missing", "ambiguous", "job", "pagination", "non-actions"):
+        for case in ("missing", "ambiguous", "job", "pagination", "non-actions", "duplicate-job"):
             with self.subTest(case=case):
                 rows = [] if case == "non-actions" else [head]
                 bases = [] if case == "missing" else [base, base] if case == "ambiguous" else [base]
@@ -47,6 +47,9 @@ class TestGH(unittest.TestCase):
                     {"total_count": 2 if case == "pagination" else 1,
                      "jobs": [{"name": "other" if case == "job" else "verify", "conclusion": "success"}]},
                 ]
+                if case == "duplicate-job":
+                    replies[-1]["jobs"].append({"name": "verify", "conclusion": "failure"})
+                    replies[-1]["total_count"] = 2
                 with patch.object(self.gh, "_api_json", side_effect=replies), \
                         patch.object(self.gh, "branch_sha", return_value="tip"):
                     self.assertEqual(self.gh.ci_retry_runs("head", "main"), [])
