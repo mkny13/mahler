@@ -678,7 +678,6 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
     led, n = ctx.led, item["number"]
     findings = design_record.get("findings", [])
     justification = design_record.get("justification", "")
-    review_findings = info.get("findings", "")
 
     # Rule 6: Never accept followups for security, unsatisfied Done-when, or data loss
     if any(_is_protected_blocker(f) for f in findings if isinstance(f, dict)):
@@ -694,12 +693,6 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
                     "(security, Done-when, or data loss); remaining on fix path")
             return False
 
-    if isinstance(review_findings, str):
-        if (re.search(r"\[blocking/(?:security|data[-_ ]loss)\]", review_findings, re.IGNORECASE)
-                or re.search(r"\[blocking/(?:scope|spec)\][^(]*\(Done when:", review_findings, re.IGNORECASE)):
-            ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
-                    "(security, Done-when, or data loss); remaining on fix path")
-            return False
 
     # Ingest findings into reviewresults for deduplicated follow-up filing
     key = f"reviewresults:{project}#{n}"
