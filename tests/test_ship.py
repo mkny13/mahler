@@ -38,6 +38,9 @@ class FakeGH:
         self.fail_view = set()
         self.queue = False    # simulate a merge queue: pr_merge only enqueues
 
+    def ci_retry_runs(self, head, base, *, reported=False):
+        return []
+
     def issue_labels(self, number):
         return getattr(self, "labels", ["mahler:verifying", "type:feature"])
 
@@ -720,6 +723,135 @@ class ShipTests(unittest.TestCase):
         started = patcher.start()
         self.addCleanup(patcher.stop)
         return started
+
+    def test_ci_fix_records_its_exact_charge_for_finalize(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=1, esc_fails=1)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        def launch(ctx, project, item, role, platform, **kwargs):
+            self.fix_id = self.led.create_run(project=project, number=5, role=role,
+                                             platform=platform, epoch=1, status="running")
+            return True
+        with mock.patch.object(ship, "start", side_effect=launch):
+            self.ship()
+        info = json.loads(self.led.get_kv(f"ci-fix:{self.fix_id}"))
+        self.assertEqual(info["cycle"], "red:x#5:88:abc123")
+        self.assertEqual(info["before"], {"attempts": 1, "esc_tier": 0, "esc_fails": 1})
+        self.assertEqual(info["after"], {k: self.item()[k] for k in info["before"]})
+        self.assertEqual(info["after"]["attempts"], 2)
+
+    def retry_setup(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"conclusion": "FAILURE",
+                           "detailsUrl": f"https://github.com/o/r/actions/runs/{run}/job/100"}
+                          for run in (10, 11)]
+        self.gh.ci_retry_runs = mock.Mock(side_effect=lambda *a: [{"id": 10, "attempt": 1}, {"id": 11, "attempt": 2}])
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value={"head_sha": "abc123", "run_attempt": 2,
+                                                      "status": "completed", "conclusion": "failure"})
+        return "ci-rerun:x#5:88:abc123"
+
+    def test_ci_rerun_stale_pending_green_keeps_review_gate(self):
+        key = self.retry_setup()
+        start = self.patch_start()
+        self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)  # restart: only durable state survives
+        self.ship()  # second workflow still has its old attempt
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
+        self.ship()
+        self.gh.actions_run.return_value.update(status="completed", conclusion="success")
+        self.ship()  # old rollup must not launch a fix
+        start.assert_not_called()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (0, 0))
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.gh.merged, [])
+
+    def assert_unmatched_failure_starts_fix(self, unmatched):
+        key = self.retry_setup()
+        self.gh.rollup.append(unmatched)
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.gh.rollup = [unmatched]
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (1, 1))
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_ci_rerun_success_with_unmatched_workflow_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "conclusion": "FAILURE",
+            "detailsUrl": "https://github.com/o/r/actions/runs/12/job/101"})
+
+    def test_ci_rerun_success_with_external_failure_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "state": "FAILURE", "targetUrl": "https://external.example/check"})
+
+    def test_ci_rerun_terminal_red_dedup_and_new_head(self):
+        key = self.retry_setup()
+        start = self.patch_start()
+        self.ship()
+        self.gh.actions_run.return_value.update(run_attempt=3)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (1, 1))
+        self.led.release("x", 5)
+        self.led.set_state("x", 5, "verifying", "re-shipped")
+        self.led.set_kv("red:x#5:88:abc123", None)
+        self.led.set_kv("red:x#5:88:abc123:charged", None)
+        with mock.patch.object(ship, "_red_ci"):
+            self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.head_sha = "new-head"
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 4)
+
+    def test_ci_rerun_uncertain_post_reconciles_and_times_out(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.gh.rerun_failed_jobs.side_effect = None
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.led.clock = lambda: NOW + timedelta(days=1)
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_ci_rerun_lost_response_then_completed_attempt_is_not_reposted(self):
+        key = self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh.rerun_failed_jobs.side_effect = None
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.ship()  # reconcile first request; request second workflow
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.gh.rerun_failed_jobs.call_args_list, [mock.call(10), mock.call(11)])
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_ci_rerun_dry_run_has_no_mutation(self):
+        key = self.retry_setup()
+        self.ctx.dry_run = True
+        self.ship()
+        self.gh.rerun_failed_jobs.assert_not_called()
+        self.assertIsNone(self.led.get_kv(key))
 
     def test_red_ci_pings_once_and_starts_a_fix_run(self):
         self.led.upsert_item("x", 5, pr=88)

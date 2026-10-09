@@ -412,6 +412,53 @@ class GH:
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
                                    "headRefOid,baseRefName,mergeCommit,title,mergedAt"))
 
+    def actions_run(self, run_id):
+        return self._api_json("GET", f"actions/runs/{int(run_id)}")
+
+    def rerun_failed_jobs(self, run_id):
+        self._api_json("POST", f"actions/runs/{int(run_id)}/rerun-failed-jobs")
+
+    def ci_retry_runs(self, head, base, *, reported=False):
+        """Fail closed on incomplete/ambiguous exact-head workflow/job evidence."""
+        def runs(sha):
+            data = self._api_json("GET", "actions/runs?head_sha=" + quote(sha, safe="") + "&per_page=100")
+            rows = data.get("workflow_runs", [])
+            if data.get("total_count") != len(rows):
+                return []
+            return [r for r in rows if r.get("head_sha") == sha]
+
+        def jobs(run):
+            data = self._api_json("GET", f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs?per_page=100")
+            rows = data.get("jobs", [])
+            return rows if data.get("total_count") == len(rows) else []
+
+        if not head or not base:
+            return []
+        head_runs = runs(head)
+        failed = [r for r in head_runs if r.get("status") == "completed"
+                  and r.get("conclusion") in {"failure", "timed_out"}]
+        baseline = [] if reported else runs(self.branch_sha(base))
+        selected = []
+        for run in failed:
+            if (not run.get("workflow_id") or not run.get("run_attempt")
+                    or sum(r.get("workflow_id") == run["workflow_id"] for r in head_runs) != 1):
+                continue
+            failed_jobs = [j for j in jobs(run) if j.get("conclusion") in {"failure", "timed_out"}]
+            names = [j.get("name") for j in failed_jobs]
+            if not names or not all(names) or len(set(names)) != len(names):
+                continue
+            if not reported:
+                matches = [r for r in baseline if r.get("workflow_id") == run["workflow_id"]
+                           and r.get("event") == "push"]
+                if len(matches) != 1 or matches[0].get("conclusion") != "success":
+                    continue
+                good = jobs(matches[0])
+                if not all([j.get("conclusion") for j in good
+                            if j.get("name") == name] == ["success"] for name in names):
+                    continue
+            selected.append({"id": run["id"], "attempt": run["run_attempt"]})
+        return selected
+
     def exact_preview(self, sha, environment, *, timeout=5):
         """Two bounded lookups; incomplete/ambiguous observations never prove live.
 
