@@ -450,6 +450,8 @@ def _watch_pr(ctx, project, item, pr):
         return
     if _ci_rerun(ctx, project, item, pr, view):
         return
+    if not _ship_lease(ctx, project, item):
+        return
     state = checks_state(view.get("statusCheckRollup"))
     # Keep the console's explanation in step with the state this watcher saw.
     # The timestamp for a pending head is initialized by _ci_pending; recording
@@ -1582,6 +1584,7 @@ def _ci_rerun(ctx, project, item, pr, view):
             if not run.get("requested"):
                 fresh = gh.pr_view(pr)
                 if (fresh.get("state") != "OPEN" or fresh.get("headRefOid") != sha
+                        or fresh.get("baseRefName") != view.get("baseRefName")
                         or not _ship_lease(ctx, project, item)):
                     return True
                 # Reserve before POST: a crash or lost response cannot duplicate it.
