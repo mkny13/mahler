@@ -34,6 +34,10 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 - **The daemon must never break itself.** Keep `mahler tick` exception-safe per project.
   Don't add a dependency outside the standard library until the MCP phase introduces
   `uv` deliberately. The console stays standard library (DESIGN D27).
+- **GUI-driving work on the Mac mini must use the desktop gate.** Run it through
+  `mahler desktop run -- <command>`; the plain `mahler desktop` check is advisory and
+  reserves nothing. If the gate defers, report the outstanding coverage rather than a pass
+  (DESIGN D40).
 - `max_parallel = 1` for this repo: one change to the conductor at a time.
 
 ## Verify
@@ -41,19 +45,21 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
 ```bash
 python3 -m mahler.repo_guard
 python3 -m unittest discover -s tests
+python3 tests/run_random.py
 python3 -X dev tests/run_strict.py
 ```
 
 Python 3.12+, standard library only. The lease rules (`tests/test_ledger.py`) are the
 part that must stay right. Extend those tests whenever you touch `ledger.py`.
 
-CI runs all three commands. The repository guard rejects tracked browser-profile state;
-the strict runner turns resource leaks and unraisable exceptions into failures.
+CI runs all four commands. The repository guard rejects tracked browser-profile state;
+the randomized runner detects order dependencies, and the strict runner turns resource
+leaks and unraisable exceptions into failures.
 
 Tests must be fully isolated (mahler#93): no test may leak env vars, module globals,
 files, or SQLite state that another test depends on, and no test may touch the real
-`~/.mahler` state — use `Ledger(':memory:')` or temp dirs. Check order-independence
-with `python3 tests/run_random.py <seed>` (omit the seed for a random one).
+`~/.mahler` state — use `Ledger(':memory:')` or temp dirs. Pass the randomized runner's
+printed seed back to `python3 tests/run_random.py <seed>` to reproduce a failure.
 
 ## Working on an issue by hand (interactive sessions)
 
