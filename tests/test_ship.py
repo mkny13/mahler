@@ -741,7 +741,9 @@ class ShipTests(unittest.TestCase):
 
     def retry_setup(self):
         self.led.upsert_item("x", 5, pr=88)
-        self.gh.rollup = [{"state": "FAILURE"}]
+        self.gh.rollup = [{"conclusion": "FAILURE",
+                           "detailsUrl": f"https://github.com/o/r/actions/runs/{run}/job/100"}
+                          for run in (10, 11)]
         self.gh.ci_retry_runs = mock.Mock(side_effect=lambda *a: [{"id": 10, "attempt": 1}, {"id": 11, "attempt": 2}])
         self.gh.rerun_failed_jobs = mock.Mock()
         self.gh.actions_run = mock.Mock(return_value={"head_sha": "abc123", "run_attempt": 2,
@@ -767,6 +769,33 @@ class ShipTests(unittest.TestCase):
         gate.assert_called_once()
         self.assertTrue(json.loads(self.led.get_kv(key))["done"])
         self.assertEqual(self.gh.merged, [])
+
+    def assert_unmatched_failure_starts_fix(self, unmatched):
+        key = self.retry_setup()
+        self.gh.rollup.append(unmatched)
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.gh.rollup = [unmatched]
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (1, 1))
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_ci_rerun_success_with_unmatched_workflow_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "conclusion": "FAILURE",
+            "detailsUrl": "https://github.com/o/r/actions/runs/12/job/101"})
+
+    def test_ci_rerun_success_with_external_failure_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "state": "FAILURE", "targetUrl": "https://external.example/check"})
 
     def test_ci_rerun_terminal_red_dedup_and_new_head(self):
         key = self.retry_setup()

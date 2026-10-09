@@ -1600,9 +1600,20 @@ def _ci_rerun(ctx, project, item, pr, view):
                 pending = True
             conclusions.append(observed.get("conclusion"))
         rollup = checks_state(view.get("statusCheckRollup"))
+        selected_ids = {str(run["id"]) for run in record["runs"]}
+        unmatched_red = False
+        for check in view.get("statusCheckRollup") or []:
+            if checks_state([check]) != "red":
+                continue
+            match = re.search(r"/actions/runs/(\d+)(?:/|$)", check.get("detailsUrl") or "")
+            if not match or match[1] not in selected_ids:
+                unmatched_red = True
+        # Only red results belonging to the rerun workflows can be stale.
+        # Other failures (including external checks) still need a normal fix.
         if not pending and (any(c not in {"success", "failure", "timed_out", "cancelled"}
                                     for c in conclusions)
-                            or (all(c == "success" for c in conclusions) and rollup == "red")
+                            or (all(c == "success" for c in conclusions)
+                                and rollup == "red" and not unmatched_red)
                             or (any(c != "success" for c in conclusions) and rollup != "red")):
             pending = True
         if not pending:
