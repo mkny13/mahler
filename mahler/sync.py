@@ -595,7 +595,7 @@ def _parent_children(body, repo):
     children = set()
     active = False
     for section, line in _parent_sections(body):
-        if section in {"children", "child issues", "sub-issues", "sub issues", "steps"}:
+        if section in {"children", "child issues", "sub-issues", "sub issues", "steps", "plan steps"}:
             active = True
         elif section == "plan":
             if line.lower().strip("*:") in {"steps", "children", "child issues", "sub-issues"}:
@@ -606,7 +606,7 @@ def _parent_children(body, repo):
             active = False
         if not active:
             continue
-        entry = re.match(r"^(?:[-*+] |\d+[.)] )\s*(?:\[[ xX]\]\s*)?(.*)$", line)
+        entry = re.match(r"^(?:[-*+]\s+(?:\d+[.)]\s+)?|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(.*)$", line)
         if not entry:
             continue
         ref = re.match(r"(?:https://github.com/([^/]+/[^/]+)/issues/|([\w.-]+/[\w.-]+)#|#)(\d+)\b", entry[1])
@@ -655,11 +655,8 @@ def _close_finished_parents_project(ctx, project):
             state = gh.issue_state(n)
             key = f"parent_complete:{project}:{n}"
             pending = f"parent_pending:{project}:{n}"
-            if state == "CLOSED" and led.get_kv(key):
-                if not ctx.dry_run:
-                    led.set_state(project, n, "done", "verified parent completion")
-                    led.set_kv(pending, "")
-                continue
+            if state not in {"OPEN", "CLOSED"}:
+                raise GHError("unknown parent issue state")
             children = _parent_children(body, repo) | set(gh.sub_issues(n))
             children.update(it["number"] for it in items if it["parent"] == n)
             children.update(it["number"] for it in inventory

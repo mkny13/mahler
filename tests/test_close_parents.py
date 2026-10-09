@@ -62,14 +62,35 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.ctx.ping.assert_called_once()
 
+    def test_all_done_children_with_merge_evidence(self):
+        self.led.upsert_item("mahler", 11, state="done")
+        self.led.upsert_item("mahler", 12, parent=10, state="done")
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_closed_unmerged_recorded_pr_is_not_shipment(self):
+        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+        self.gh.closing_prs.return_value = [{"number": 99, "state": "CLOSED"}]
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertIn("closed without confirmed merged PR", self.comments[10][0]["body"])
+
+    def test_supported_list_syntax_and_cross_repository_unknown(self):
+        body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
+        body += "- mkny13/mahler#15 child\n- https://github.com/mkny13/mahler/issues/16 child"
+        self.assertEqual(sync._parent_children(body, "mkny13/mahler"), set(range(11, 17)))
+        with self.assertRaises(GHError):
+            sync._parent_children(body + "\n- other/repo#12", "mkny13/mahler")
+
     def test_open_or_reopened_child_waits_silently(self):
         self.states[11] = "OPEN"
+        self.led.upsert_item("mahler", 12, parent=10, state="done")
         self.run_pass()
         self.gh.close_issue.assert_not_called()
         self.ctx.ping.assert_not_called()
 
     def test_relationship_union_and_exclusions(self):
-        self.bodies[10] += "\n## Plan\nSteps:\n1. #12: native overlap\n- #13: historical\n" + \
+        self.bodies[10] += "\n## Plan\nSteps:\n- 1. #12: native overlap\n- 2. #13: historical\n" + \
             "- #10: self\n> - #90: original\n## Context\n- #91 incidental\n## Dependencies\n- #92 dep"
         self.gh.sub_issues.return_value = [12]
         self.gh.parent_issue_inventory.return_value = [
@@ -127,6 +148,45 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.ctx.ping.assert_called_once()
         self.bodies[10] = "## Done when\n- [x] different criterion"
         self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_deduplication_survives_ledger_reopen(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "ledger.db")
+            self.led.con.backup((disk := Ledger(path)).con)
+            disk.close()
+            self.led = Ledger(path, clock=lambda: NOW)
+            self.ctx.led = self.led
+            self.bodies[10] = "## Done when\n- [ ] not yet"
+            self.run_pass()
+            self.led.close()
+            self.led = Ledger(path, clock=lambda: NOW)
+            self.ctx.led = self.led
+            try:
+                self.run_pass()
+                self.gh.comment.assert_called_once()
+                self.ctx.ping.assert_called_once()
+            finally:
+                self.led.close()
+
+    def test_failure_before_local_state_write_reconciles(self):
+        with mock.patch.object(self.led, "set_state", side_effect=RuntimeError("write failed")):
+            self.run_pass()
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.gh.comment.assert_called_once()
+        self.gh.close_issue.assert_called_once()
+
+    def test_failed_project_does_not_stop_next_project(self):
+        second = proj(name="other", repo="other/repo")
+        self.cfg["projects"]["other"] = second
+        other = mock.Mock()
+        other.parent_issue_inventory.side_effect = GHError("offline")
+        self.ctx._gh["other/repo"] = other
+        self.led.upsert_item("other", 1, state="parent")
+        sync.close_finished_parents(self.ctx, [second, proj()])
         self.assertEqual(self.led.item("mahler", 10)["state"], "done")
 
     def test_dry_run_has_no_writes(self):
