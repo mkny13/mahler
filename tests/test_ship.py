@@ -724,6 +724,21 @@ class ShipTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return started
 
+    def test_ci_fix_records_its_exact_charge_for_finalize(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=1, esc_fails=1)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        def launch(ctx, project, item, role, platform, **kwargs):
+            self.fix_id = self.led.create_run(project=project, number=5, role=role,
+                                             platform=platform, epoch=1, status="running")
+            return True
+        with mock.patch.object(ship, "start", side_effect=launch):
+            self.ship()
+        info = json.loads(self.led.get_kv(f"ci-fix:{self.fix_id}"))
+        self.assertEqual(info["cycle"], "red:x#5:88:abc123")
+        self.assertEqual(info["before"], {"attempts": 1, "esc_tier": 0, "esc_fails": 1})
+        self.assertEqual(info["after"], {k: self.item()[k] for k in info["before"]})
+        self.assertEqual(info["after"]["attempts"], 2)
+
     def retry_setup(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.rollup = [{"state": "FAILURE"}]

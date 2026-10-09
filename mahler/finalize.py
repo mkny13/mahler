@@ -691,7 +691,12 @@ def _prepare_ci_retry(e):
     if not pr or not sha or e.item["pr"] != pr or attribution.get("refunded"):
         return None
     latest = led.last_run(e.project, e.number, roles=("build", "fix"))
-    cycle = attribution["cycle"]
+    cycle = attribution.get("cycle")
+    counters = {"attempts", "esc_tier", "esc_fails"}
+    if (cycle != f"red:{e.project}#{e.number}:{pr}:{sha}"
+            or set(attribution.get("before", {})) != counters
+            or set(attribution.get("after", {})) != counters):
+        return None
     key = f"ci-rerun:{e.project}#{e.number}:{pr}:{sha}"
     if (not latest or latest["id"] != e.run["id"] or led.get_kv(key)
             or not led.get_kv(cycle) or not led.get_kv(f"{cycle}:charged")
