@@ -118,12 +118,70 @@ def _dependency_ready(view):
             and checks_state(view.get("statusCheckRollup")) == "green")
 
 
+
+DEPENDENCY_REBASE_TIMEOUT_MINUTES = 60
+
+
+def _dependency_rebase_waits(ctx, project, gh):
+    """Reconcile before admission gates; rebase waits reserve no capacity."""
+    led = ctx.led
+    prefix = f"dependency-rebase:{project}:"
+    for row in led.q("SELECT key, value FROM kv WHERE substr(key, 1, ?)=?",
+                     (len(prefix), prefix)):
+        try:
+            request = json.loads(row["value"])
+            if request.get("resolved_at") or request.get("alerted_at"):
+                continue
+            view = gh.dependency_pr_view(request["pr"])
+            if (view.get("state") in ("CLOSED", "MERGED")
+                    or (view.get("headRefOid") and view["headRefOid"] != request["sha"])):
+                request["resolved_at"] = iso(led.now())
+                led.set_kv(row["key"], json.dumps(request))
+                continue
+            elapsed = led.now() - parse(request["requested_at"])
+            if (view.get("state") != "OPEN" or view.get("headRefOid") != request["sha"]
+                    or elapsed < timedelta(minutes=DEPENDENCY_REBASE_TIMEOUT_MINUTES)):
+                continue
+            request["alerted_at"] = iso(led.now())
+            led.set_kv(row["key"], json.dumps(request))
+            led.event("dependency_rebase_stalled", project, None, request)
+            ctx.ping(f"Dependency rebase stalled — {project} PR #{request['pr']}",
+                     f"{request['url']} remains on {request['sha']} after "
+                     f"{int(elapsed.total_seconds() // 60)} minutes. "
+                     f"Request outcome: {request['outcome']}. "
+                     f"{request.get('error', '')}", tags="hourglass")
+        except Exception as exc:
+            ctx.say(f"{project}: dependency rebase reconciliation failed — {exc}")
+
+
+def _request_dependency_rebase(ctx, project, gh, view):
+    led = ctx.led
+    n, sha = view["number"], view["headRefOid"]
+    key = f"dependency-rebase:{project}:{n}:{sha}"
+    if led.get_kv(key):
+        return
+    request = dict(pr=n, sha=sha, bot=view["headRefName"].split("/")[0],
+                   target=view["baseRefName"], url=view["url"],
+                   requested_at=iso(led.now()), outcome="uncertain")
+    # Intent survives a crash or uncertain response; never retry this head.
+    led.set_kv(key, json.dumps(request))
+    try:
+        gh.request_dependency_rebase(n, request["bot"])
+        request["outcome"] = "accepted"
+    except Exception as exc:
+        request.update(outcome="failed", error=str(exc))
+        ctx.say(f"{project}: dependency PR #{n} rebase request failed — {exc}")
+    led.set_kv(key, json.dumps(request))
+    led.event("dependency_rebase_requested", project, None, request)
+
+
 def _dependency_prs(ctx, project):
     """Adopt low-risk bot PRs after ordinary work, with durable queue recovery."""
     pol, led = ctx.policy(project), ctx.led
     if ctx.dry_run or not pol.get("dependency_prs", True):
         return
     gh = ctx.gh(project)
+    _dependency_rebase_waits(ctx, project, gh)
     key = f"dependency-pending:{project}"
     pending = _kv_json(led, key)
     # A single durable outstanding request reserves the project until resolved.
@@ -203,8 +261,10 @@ def _dependency_prs(ctx, project):
                            ("headRefOid", "baseRefName", "headRefName"))):
                 continue
             sha = fresh["headRefOid"]
-            if gh.base_in_head(pol["path"], fresh["baseRefName"], sha) is not True:
-                ctx.say(f"{project}: dependency PR #{n} needs a current-base rebase")
+            ancestry = gh.base_in_head(pol["path"], fresh["baseRefName"], sha)
+            if ancestry is not True:
+                if ancestry is False:
+                    _request_dependency_rebase(ctx, project, gh, {**fresh, "number": n})
                 continue
             # Persist before the request: an uncertain API response must not allow
             # another adoption or lose a merge that succeeded before a crash.
@@ -447,6 +507,10 @@ def _watch_pr(ctx, project, item, pr):
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
+        return
+    if _ci_rerun(ctx, project, item, pr, view):
+        return
+    if not _ship_lease(ctx, project, item):
         return
     state = checks_state(view.get("statusCheckRollup"))
     # Keep the console's explanation in step with the state this watcher saw.
@@ -1554,6 +1618,75 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                     })
 
 
+def _ci_rerun(ctx, project, item, pr, view):
+    """One durable allowance; uncertain POSTs are reconciled, never replayed."""
+    if ctx.dry_run:
+        return False
+    led, gh = ctx.led, ctx.gh(project)
+    sha, n = view.get("headRefOid"), item["number"]
+    key = f"ci-rerun:{project}#{n}:{pr}:{sha}"
+    record = _kv_json(led, key)
+    if record.get("done"):
+        return False
+    try:
+        if not record:
+            if checks_state(view.get("statusCheckRollup")) != "red":
+                return False
+            selected = gh.ci_retry_runs(sha, view.get("baseRefName"))
+            if not selected:
+                return False
+            record = {"runs": selected, "since": iso(led.now())}
+            led.set_kv(key, json.dumps(record))
+            led.set_kv(f"ci:{project}#{n}:{pr}", json.dumps({"sha": sha, "since": record["since"]}))
+        pending = False
+        conclusions = []
+        for run in record["runs"]:
+            if not run.get("requested"):
+                fresh = gh.pr_view(pr)
+                if (fresh.get("state") != "OPEN" or fresh.get("headRefOid") != sha
+                        or fresh.get("baseRefName") != view.get("baseRefName")
+                        or not _ship_lease(ctx, project, item)):
+                    return True
+                # Reserve before POST: a crash or lost response cannot duplicate it.
+                run["requested"] = True
+                led.set_kv(key, json.dumps(record))
+                gh.rerun_failed_jobs(run["id"])
+                pending = True
+                continue
+            observed = gh.actions_run(run["id"])
+            if (observed.get("head_sha") != sha
+                    or observed.get("run_attempt", 0) <= run["attempt"]
+                    or observed.get("status") != "completed"):
+                pending = True
+            conclusions.append(observed.get("conclusion"))
+        rollup = checks_state(view.get("statusCheckRollup"))
+        selected_ids = {str(run["id"]) for run in record["runs"]}
+        unmatched_red = False
+        for check in view.get("statusCheckRollup") or []:
+            if checks_state([check]) != "red":
+                continue
+            match = re.search(r"/actions/runs/(\d+)(?:/|$)", check.get("detailsUrl") or "")
+            if not match or match[1] not in selected_ids:
+                unmatched_red = True
+        # Only red results belonging to the rerun workflows can be stale.
+        # Other failures (including external checks) still need a normal fix.
+        if not pending and (any(c not in {"success", "failure", "timed_out", "cancelled"}
+                                    for c in conclusions)
+                            or (all(c == "success" for c in conclusions)
+                                and rollup == "red" and not unmatched_red)
+                            or (any(c != "success" for c in conclusions) and rollup != "red")):
+            pending = True
+        if not pending:
+            record["done"] = True
+            led.set_kv(key, json.dumps(record))
+            return False
+    except (GHError, ValueError, TypeError) as exc:
+        _ci_pending(ctx, project, item, pr, view, reason=f"CI rerun lookup/request uncertain: {exc}")
+        return True
+    _ci_pending(ctx, project, item, pr, view, reason="waiting for failed-job rerun attempt")
+    return True
+
+
 def _red_ci(ctx, project, item, pr, view):
     """Red CI on a verifying item: a fix run (D18's second run role) starts on
     the PR's head branch, its prompt carrying the failing-log tail (runner
@@ -1587,6 +1720,7 @@ def _red_ci(ctx, project, item, pr, view):
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):
+        led.set_kv(f"{key}:before", json.dumps({k: item[k] for k in ("attempts", "esc_tier", "esc_fails")}))
         led.set_kv(key, iso(led.now()))
 
         cur_fails = row_get(item, "esc_fails", 0)
@@ -1674,6 +1808,12 @@ def _red_ci(ctx, project, item, pr, view):
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        launched = led.last_run(project, n, roles=("fix",))
+        if launched:
+            led.set_kv(f"ci-fix:{launched['id']}", json.dumps({
+                "cycle": key, "pr": pr, "sha": view.get("headRefOid"),
+                "before": _kv_json(led, f"{key}:before"),
+                "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
 
 
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):

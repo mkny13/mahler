@@ -464,8 +464,8 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("Diagnose before changing anything", diagnosis)
         self.assertIn("If the failure is unrelated to this PR", diagnosis)
         self.assertIn("runner, network, or infrastructure failure", diagnosis)
-        self.assertIn("end with `STATUS: BLOCKED <reason>`", diagnosis)
-        self.assertIn("concise diagnostic reason so the conductor can retry", diagnosis)
+        self.assertIn("end with `STATUS: BLOCKED CI-RETRY <evidence>`", diagnosis)
+        self.assertIn("original charge once", diagnosis)
         self.assertNotIn("NEEDS-YOU", diagnosis)
         self.assertIn("Do not make speculative changes to unrelated code or "
                       "shotgun-fix the failure", diagnosis)
@@ -779,3 +779,12 @@ class DesignRecipeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CIRetryRecipeTests(unittest.TestCase):
+    def test_fix_marker_is_bounded_and_requires_no_changes(self):
+        from pathlib import Path
+        text = (Path(__file__).resolve().parents[1] / "recipes/fix.md").read_text()
+        for phrase in ("STATUS: BLOCKED CI-RETRY <evidence>", "no code changes",
+                       "once per head SHA", "original charge once", "exhausted allowance"):
+            self.assertIn(phrase, text)

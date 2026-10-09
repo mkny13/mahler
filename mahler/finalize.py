@@ -681,6 +681,60 @@ def _mark_stale(e):
             "preserved_state": e.led.item(e.project, e.number)["state"]})
 
 
+def _prepare_ci_retry(e):
+    if (e.stale or e.reason or e.run["role"] != "fix" or e.verb != "BLOCKED"
+            or not e.rest.startswith("CI-RETRY ") or not e.rest[9:].strip()):
+        return None
+    led = e.led
+    attribution = json.loads(led.get_kv(f"ci-fix:{e.run['id']}") or "{}")
+    pr, sha = attribution.get("pr"), attribution.get("sha")
+    if not pr or not sha or e.item["pr"] != pr or attribution.get("refunded"):
+        return None
+    latest = led.last_run(e.project, e.number, roles=("build", "fix"))
+    cycle = attribution.get("cycle")
+    counters = {"attempts", "esc_tier", "esc_fails"}
+    if (cycle != f"red:{e.project}#{e.number}:{pr}:{sha}"
+            or set(attribution.get("before", {})) != counters
+            or set(attribution.get("after", {})) != counters):
+        return None
+    key = f"ci-rerun:{e.project}#{e.number}:{pr}:{sha}"
+    if (not latest or latest["id"] != e.run["id"] or led.get_kv(key)
+            or not led.get_kv(cycle) or not led.get_kv(f"{cycle}:charged")
+            or any(e.item[k] != v for k, v in attribution["after"].items())):
+        return None
+    try:
+        gh = e.ctx.gh(e.project)
+        view = gh.pr_view(pr)
+        if (view.get("state") != "OPEN" or view.get("headRefOid") != sha
+                or runner.git(e.run["worktree"], "rev-parse", "HEAD") != sha
+                or runner.git(e.run["worktree"], "status", "--porcelain", "--untracked-files=all")):
+            return None
+        runs = gh.ci_retry_runs(sha, view.get("baseRefName"), reported=True)
+        if not runs:
+            return None
+        return key, attribution, runs
+    except (GHError, runner.GitError, ValueError):
+        return None
+
+
+def _apply_ci_retry(e, prepared):
+    key, attribution, runs = prepared
+    led = e.led
+    current = led.item(e.project, e.number)
+    if (led.get_kv(key) or any(current[k] != v for k, v in attribution["after"].items())):
+        _retry(e)
+        return
+    led.set_kv(key, json.dumps({"runs": runs, "since": iso(led.now()), "fix_run": e.run["id"]}))
+    attribution["refunded"] = True
+    led.set_kv(f"ci-fix:{e.run['id']}", json.dumps(attribution))
+    led.set_kv(attribution["cycle"], None)
+    led.set_kv(attribution["cycle"] + ":charged", None)
+    led.set_kv(f"ci:{e.project}#{e.number}:{attribution['pr']}",
+               json.dumps({"sha": attribution["sha"], "since": iso(led.now())}))
+    e.set_state("verifying", "confirmed CI-RETRY; conductor reruns failed jobs",
+                branch=e.run["branch"], **attribution["before"])
+
+
 def finalize(ctx, run):
     """A run that ended passes through here exactly once."""
     led = ctx.led
@@ -748,6 +802,8 @@ def finalize(ctx, run):
         _close_the_books(ending, code)
         return
 
+    prepared_ci_retry = _prepare_ci_retry(ending)
+
     # Snapshot pushes and handoff comments can take long enough for an
     # interactive claim to replace us. Do them before taking the write lock.
     if run["role"] not in ("sort", "review", "design"):
@@ -793,6 +849,8 @@ def finalize(ctx, run):
                     REVIEW_OUTCOMES.get(verb, _review_inconclusive)(ending)
             elif run["role"] == "design":
                 _design_result(ending, prepared_design if verb == "DESIGNED" else None)
+            elif prepared_ci_retry:
+                _apply_ci_retry(ending, prepared_ci_retry)
             elif not _dispatch(ending):
                 return              # resumed; finalizes again when it ends
     ending.notify()

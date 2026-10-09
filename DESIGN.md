@@ -1251,7 +1251,16 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   base and the project's `verify` passes when Mahler runs it, the build counts as done. The PR
   goes up with a note that the agent didn't confirm it had finished; CI and review decide
   from there. Otherwise it's a failed attempt, as before.
-- Red CI starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
+- Red CI first gets one durable failed-job rerun allowance per project/issue/PR/head
+  when the exact Actions workflow/job succeeded at the actual target tip, or a current
+  CI-triggered fix reports `STATUS: BLOCKED CI-RETRY <evidence>` with a clean,
+  unchanged head. This is a retry heuristic, never merge evidence. The latter restores
+  only that fix's attributed attempt/escalation charge once, under the lease fence;
+  generic BLOCKED and exhausted allowances retain normal failure accounting.
+  Requests are reserved durably before POST; uncertain responses/restarts reconcile
+  run-attempt evidence without repeating requests. Old red results wait for the new
+  attempt, bounded by the existing CI timeout. Green retains all review/merge gates.
+  Terminal red after the rerun starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
 - **No-change build DONE** (mahler#716, #717). A clean worktree with zero commits
   ahead of the freshly fetched configured base supplies evidence; missing worktrees
