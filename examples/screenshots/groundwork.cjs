@@ -70,14 +70,15 @@ try {
 }
 
 (async () => {
-  let browser;
+  let context;
   try {
-    browser = await chromium.launch({
+    fs.mkdirSync(profileDir, { recursive: true });
+    if (fs.readdirSync(profileDir).length) {
+      throw new Error('Profile directory must be fresh and empty');
+    }
+    context = await chromium.launchPersistentContext(profileDir, {
       headless: true,
       args: ['--disable-extensions', '--no-sandbox', '--disable-dev-shm-usage'],
-      userDataDir: profileDir,
-    });
-    const context = await browser.newContext({
       viewport: { width: 390, height: 844 },
       userAgent: 'Mahler Screenshot Bot',
     });
@@ -86,13 +87,20 @@ try {
     // Validate route: only allow /sign-in
     const targetUrl = new URL('/sign-in', urlObj);
     // Preserve origin, avoid redirects to other paths
-    await page.goto(targetUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const response = await page.goto(targetUrl.toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
 
     // Treat unexpected redirects / protection pages as unavailable
     const finalUrl = new URL(page.url());
-    if (finalUrl.origin !== urlObj.origin || !finalUrl.pathname.startsWith('/sign-in')) {
-      fail('Navigation left /sign-in or redirected to unexpected origin');
+    if (finalUrl.origin !== urlObj.origin || finalUrl.pathname !== '/sign-in') {
+      throw new Error('Navigation left /sign-in or redirected to unexpected origin');
     }
+
+    if (!response || !response.ok()) {
+      throw new Error('Sign-in returned an unsuccessful HTTP response');
+    }
+    await page.getByRole('heading', {
+      name: 'Sign In to Groundwork', exact: true, level: 1,
+    }).waitFor({ state: 'visible', timeout: 10000 });
 
     const pngPath = path.join(outDir, 'sign-in.png');
     await page.screenshot({ path: pngPath, fullPage: false });
@@ -109,10 +117,10 @@ try {
     // Clean up partial output on error
     try { fs.rmSync(outDir, { recursive: true, force: true }); } catch {}
     console.error('Screenshot capture failed:', err.message);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
-    if (browser) {
-      try { await browser.close(); } catch {}
+    if (context) {
+      try { await context.close(); } catch {}
     }
   }
 })();
