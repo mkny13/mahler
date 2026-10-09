@@ -649,11 +649,12 @@ class DependencyWaitTests(unittest.TestCase):
         self.gh = FakeGH()
 
     def waiting(self, project="mahler", body="Depends on: #10", blocked_by=(),
-                state="needs_you"):
+                state="needs_you", question="Blocked on mahler#10"):
         self.gh.issues[5] = {"title": "Waiting", "labels": [f"mahler:{state}"],
                              "body": body, "blocked_by": list(blocked_by)}
         self.led.upsert_item(project, 5, state=state, attempts=3, setup_fails=2,
-                             esc_tier=2, esc_fails=3)
+                             esc_tier=2, esc_fails=3, question=question,
+                             state_changed_at=iso(NOW - timedelta(minutes=1)))
 
     def poll(self, project="mahler"):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
@@ -700,6 +701,18 @@ class DependencyWaitTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertEqual(self.led.item("app", 5)["state"], "ready")
         self.assertEqual(len(self.events("app")), 1)
+
+    def test_completed_stale_dependency_does_not_answer_later_question(self):
+        shipped = NOW - timedelta(minutes=2)
+        self.led.upsert_item("mahler", 10, state="done", state_changed_at=iso(NOW))
+        self.led.event("state", "mahler", 10, "working -> shipped", at=iso(shipped))
+        self.led.event("state", "mahler", 10, "shipped -> done", at=iso(NOW))
+        self.waiting(question="Which account should I use?")
+        self.poll()
+        item = self.led.item("mahler", 5)
+        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["question"], "Which account should I use?")
+        self.assertEqual(self.events(), [])
 
     def test_unrelated_unresolved_disabled_and_incomplete_waits_stay_put(self):
         cases = [
