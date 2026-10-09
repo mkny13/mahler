@@ -52,6 +52,7 @@ def sync(ctx, project):
     depends_key = f"depends_format:{project}"
     if not poll_changed and led.get_kv(depends_key) == "4":
         reconcile_shipped(ctx, project)
+        _resume_dependency_waits(ctx, project)
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
         return
     issues = gh.open_issues()
@@ -175,9 +176,56 @@ def sync(ctx, project):
     # Ingest this poll's linked bugs and reopen signals before evaluating the
     # quiet window. A failed fetch must never complete from stale evidence.
     reconcile_shipped(ctx, project)
+    _resume_dependency_waits(ctx, project)
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
     led.set_kv(depends_key, "4")
+
+
+def _resume_dependency_waits(ctx, project):
+    """A completed Mahler dependency releases a parked technical blocker."""
+    if ctx.dry_run:
+        return
+    enabled = config.enabled_projects(ctx.cfg)
+    if not any(p["name"] == "mahler" for p in enabled):
+        return
+    for item in ctx.led.items(project, ["needs_you"]):
+        for dep in json.loads(item["depends"] or "[]"):
+            target = dependency_target(dep, project, enabled)
+            if not target or target[0] != "mahler":
+                continue
+            blocker = ctx.led.item(*target)
+            if blocker is None or blocker["state"] not in ("shipped", "done"):
+                continue
+            wait_started = parse(item["state_changed_at"])
+            completed_at = _completion_started_at(ctx.led, *target, blocker)
+            # The dependency must have completed during this particular wait.
+            # A later run can ask an unrelated owner question while retaining
+            # the issue body's dependency, which must not answer that question.
+            if not wait_started or not completed_at or completed_at <= wait_started:
+                continue
+            reason = f"dependency {dependency_ref(dep, project)} {blocker['state']}"
+            resume_item(ctx.led, project, item["number"], why=reason)
+            ctx.say(f"{project}#{item['number']}: resuming — {reason}")
+            break
+
+
+def _completion_started_at(led, project, number, blocker):
+    """Start of the blocker's current contiguous shipped/done interval."""
+    completed_at = parse(blocker["state_changed_at"])
+    current = blocker["state"]
+    events = led.q("SELECT at, detail FROM events WHERE kind='state' "
+                   "AND project=? AND number=? ORDER BY id DESC", (project, number))
+    for event in events:
+        before, arrow, rest = (event["detail"] or "").partition(" -> ")
+        after = rest.split(" (", 1)[0]
+        if not arrow or after != current:
+            return None  # Ambiguous history must not answer an owner question.
+        completed_at = parse(event["at"]) or completed_at
+        if before not in ("shipped", "done"):
+            return completed_at
+        current = before
+    return completed_at
 
 
 QUIET_BATCH = 25   # legacy rows migrate in bounded ticks
@@ -471,9 +519,9 @@ def _process_comments(ctx, project, item, comments):
         led.upsert_item(project, item["number"], last_comment_at=iso(newest))
 
 
-def resume_item(led, project, number):
-    """Apply the same reset as ``/mahler go`` to a failed item."""
-    led.set_state(project, number, "ready", "you said go", attempts=0, setup_fails=0,
+def resume_item(led, project, number, why="you said go"):
+    """Apply the same reset as ``/mahler go`` to a waiting item."""
+    led.set_state(project, number, "ready", why, attempts=0, setup_fails=0,
                   esc_tier=0, esc_fails=0,
                   sorted_at=iso(led.now() - timedelta(days=1)))
 

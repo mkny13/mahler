@@ -632,6 +632,126 @@ class SatisfiableDependsTests(unittest.TestCase):
         item.assert_not_called()
 
 
+class DependencyWaitTests(unittest.TestCase):
+    """mahler#855: completed conductor fixes must release needs_you waits."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"] = {
+            "mahler": {"path": tmp.name, "repo": "mkny13/mahler", "enabled": True},
+            "app": {"path": tmp.name, "repo": "mkny13/app", "enabled": True},
+        }
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.gh = FakeGH()
+
+    def waiting(self, project="mahler", body="Depends on: #10", blocked_by=(),
+                state="needs_you", question="Blocked on mahler#10"):
+        self.gh.issues[5] = {"title": "Waiting", "labels": [f"mahler:{state}"],
+                             "body": body, "blocked_by": list(blocked_by)}
+        self.led.upsert_item(project, 5, state=state, attempts=3, setup_fails=2,
+                             esc_tier=2, esc_fails=3, question=question,
+                             state_changed_at=iso(NOW - timedelta(minutes=1)))
+
+    def poll(self, project="mahler"):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            sync.sync(self.ctx, project)
+
+    def events(self, project="mahler"):
+        return self.led.q("SELECT detail FROM events WHERE kind='state' "
+                          "AND project=? AND number=5", (project,))
+
+    def test_body_dependency_resumes_with_reset_and_one_event(self):
+        self.waiting()
+        self.led.upsert_item("mahler", 10, state="shipped")
+        self.poll()
+        item = self.led.item("mahler", 5)
+        self.assertEqual(item["state"], "ready")
+        for field in ("attempts", "setup_fails", "esc_tier", "esc_fails"):
+            self.assertEqual(item[field], 0)
+        self.assertEqual(item["sorted_at"], iso(NOW - timedelta(days=1)))
+        self.assertEqual([e["detail"] for e in self.events()],
+                         ["needs_you -> ready (dependency mahler#10 shipped)"])
+        self.poll()
+        self.assertEqual(len(self.events()), 1)
+
+    def test_native_blocker_closed_during_sync_resumes(self):
+        self.waiting(body="", blocked_by=[10])
+        self.led.upsert_item("mahler", 10, state="working")
+        with mock.patch.object(self.gh, "issue_state", return_value="CLOSED"):
+            self.poll()
+        self.assertEqual(json.loads(self.led.item("mahler", 5)["depends"]), [10])
+        self.assertEqual(self.led.item("mahler", 5)["state"], "ready")
+        self.assertEqual([e["detail"] for e in self.events()],
+                         ["needs_you -> ready (dependency mahler#10 done)"])
+
+    def test_cross_project_completion_resumes_even_on_304(self):
+        self.waiting("app", "Depends on: mahler#10")
+        self.led.upsert_item("mahler", 10, state="working")
+        self.poll("app")
+        self.assertEqual(self.led.item("app", 5)["state"], "needs_you")
+        self.led.set_state("mahler", 10, "done", "closed on GitHub")
+        with mock.patch.object(self.gh, "issues_changed", return_value=(False, None)), \
+                mock.patch.object(self.gh, "open_issues") as fetch:
+            self.poll("app")
+            self.poll("app")
+        fetch.assert_not_called()
+        self.assertEqual(self.led.item("app", 5)["state"], "ready")
+        self.assertEqual(len(self.events("app")), 1)
+
+    def test_completed_stale_dependency_does_not_answer_later_question(self):
+        shipped = NOW - timedelta(minutes=2)
+        self.led.upsert_item("mahler", 10, state="done", state_changed_at=iso(NOW))
+        self.led.event("state", "mahler", 10, "working -> shipped", at=iso(shipped))
+        self.led.event("state", "mahler", 10, "shipped -> done", at=iso(NOW))
+        self.waiting(question="Which account should I use?")
+        self.poll()
+        item = self.led.item("mahler", 5)
+        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["question"], "Which account should I use?")
+        self.assertEqual(self.events(), [])
+
+    def test_unrelated_unresolved_disabled_and_incomplete_waits_stay_put(self):
+        cases = [
+            ("Which account should I use?", "done", True),
+            ("Depends on: unknown#10", "done", True),
+            ("Depends on: app#10", "done", True),
+            ("Depends on: #10", "working", True),
+            ("Depends on: #99", "done", True),
+            ("Depends on: #10", "done", False),
+        ]
+        for body, state, enabled in cases:
+            with self.subTest(body=body, state=state, enabled=enabled):
+                self.cfg["projects"]["mahler"]["enabled"] = enabled
+                self.waiting(body=body)
+                self.led.upsert_item("mahler", 10, state=state)
+                self.led.upsert_item("app", 10, state="done")
+                self.poll()
+                self.assertEqual(self.led.item("mahler", 5)["state"], "needs_you")
+                self.assertEqual(self.events(), [])
+
+    def test_failed_items_are_not_retried(self):
+        self.waiting(state="failed")
+        self.led.upsert_item("mahler", 10, state="done")
+        self.poll()
+        self.assertEqual(self.led.item("mahler", 5)["state"], "failed")
+        self.assertEqual(self.events(), [])
+
+    def test_dry_run_preserves_wait_and_events_on_full_and_304_sync(self):
+        self.waiting()
+        self.led.upsert_item("mahler", 10, state="done")
+        self.ctx.dry_run = True
+        self.poll()
+        with mock.patch.object(self.gh, "issues_changed", return_value=(False, None)):
+            self.poll()
+        self.assertEqual(self.led.item("mahler", 5)["state"], "needs_you")
+        self.assertEqual(self.led.item("mahler", 5)["attempts"], 3)
+        self.assertEqual(self.events(), [])
+
+
 class MirrorLabelsTests(unittest.TestCase):
     """mirror_labels writes Mahler's state label back to GitHub each tick."""
 
