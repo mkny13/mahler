@@ -752,6 +752,7 @@ class ShipTests(unittest.TestCase):
         key = self.retry_setup()
         start = self.patch_start()
         self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)  # restart: only durable state survives
         self.ship()  # second workflow still has its old attempt
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
         self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
@@ -798,6 +799,22 @@ class ShipTests(unittest.TestCase):
         self.led.clock = lambda: NOW + timedelta(days=1)
         self.ship()
         self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_ci_rerun_lost_response_then_completed_attempt_is_not_reposted(self):
+        key = self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh.rerun_failed_jobs.side_effect = None
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.ship()  # reconcile first request; request second workflow
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.gh.rerun_failed_jobs.call_args_list, [mock.call(10), mock.call(11)])
         self.assertEqual(self.item()["attempts"], 0)
 
     def test_ci_rerun_dry_run_has_no_mutation(self):
