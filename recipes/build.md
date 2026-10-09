@@ -71,8 +71,17 @@ result is obtained, the better. Never trade verification for speed.
    with a `STATUS: NEEDS-YOU` question and two or three concise `OPTIONS:` (for example,
    allow source changes | reduce journey target). First check authoritative owner comments
    for an existing resolution; routine technical choices remain yours to make.
-6. If you genuinely cannot proceed (missing access, an environment only the owner can fix),
-   push what you have and end with `STATUS: BLOCKED <reason>`.
+6. If you genuinely cannot proceed because owner-provided access is missing, save and
+   push what you have, post one actionable question naming the required operation and
+   safe provisioning channel, and end with `STATUS: NEEDS-YOU <the question, on one line>`.
+   Never invent accounts or credentials or silently waive acceptance. Honor existing
+   owner answers and restrictions. Identify the authorized access provider, the named external
+   secret file or environment variable (names only), and the runtime that consumes it.
+   A hypothetical variable name does not establish available access. Existing authorized
+   access may be used only within its documented consumer and scope. Never put secret values
+   in GitHub issues, logs, argv, or commits.
+   For other environment blockers only the owner can fix, push what you have and end
+   with `STATUS: BLOCKED <reason>`.
 7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
 8. **GUI-driving work goes through the desktop gate** (D40). XCUITest (including any
