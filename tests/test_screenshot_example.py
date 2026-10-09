@@ -164,6 +164,22 @@ class ScreenshotExampleTests(unittest.TestCase):
         if out.exists():
             self.assertFalse(any(out.iterdir()), "output should be cleaned on error")
 
+    def test_bypass_secret_not_leaked(self):
+        # Secret should not appear in manifest, logs or output files
+        secret = "s3cr3t-bypass-token-123"
+        result = self._run(env_overrides={"MAHLER_SCREENSHOT_BYPASS_SECRET": secret})
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        manifest_path = self.tmp / "out" / "manifest.json"
+        manifest_text = manifest_path.read_text()
+        self.assertNotIn(secret, manifest_text)
+        self.assertNotIn(secret, result.stderr)
+        self.assertNotIn(secret, result.stdout)
+        # Ensure secret not written to any file under out
+        for p in (self.tmp / "out").rglob("*"):
+            if p.is_file():
+                self.assertNotIn(secret.encode(), p.read_bytes())
+
+
 
 @unittest.skipUnless(os.environ.get('MAHLER_SCREENSHOT_SMOKE_CWD'),
                      'opt-in real browser: set MAHLER_SCREENSHOT_SMOKE_CWD')

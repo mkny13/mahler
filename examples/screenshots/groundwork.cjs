@@ -84,6 +84,17 @@ try {
     });
     const page = await context.newPage();
 
+    // Optional Vercel protection bypass header
+    const bypassSecret = process.env.MAHLER_SCREENSHOT_BYPASS_SECRET;
+    if (bypassSecret && typeof page.setExtraHTTPHeaders === 'function') {
+      try {
+        await page.setExtraHTTPHeaders({
+          'x-vercel-protection-bypass': bypassSecret,
+          'x-vercel-set-bypass-cookie': 'true'
+        });
+      } catch {}
+    }
+
     // Validate route: only allow /sign-in
     const targetUrl = new URL('/sign-in', urlObj);
     // Preserve origin, avoid redirects to other paths

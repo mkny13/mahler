@@ -379,7 +379,7 @@ external scanner or dispatcher acts on Mahler refs or worktrees.
 ## Phase 6 — A deeper feedback loop
 
 - [x] Console walkthrough for Mahler (manually triggered agent UI sweep)
-- [ ] Playwright screenshot checks against preview URLs, attached to PRs and handoffs.
+- [x] Playwright screenshot checks against preview URLs, attached to PRs and handoffs.
 - [ ] Android emulator + `adb` screencaps; Maestro flows.
 - [ ] Runtime error capture → auto-filed issues.
 - [ ] **Spike:** can offscreen SwiftUI snapshot tests render while the Mac mini is locked?

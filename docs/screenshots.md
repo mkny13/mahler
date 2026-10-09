@@ -61,47 +61,58 @@ Result on 2026-10-09 UTC: **8 tests passed**, including the real-browser smoke
 151.0.7922.34. Without the opt-in environment variable, Python-only CI runs the
 seven adapter tests and explicitly skips the real-browser smoke.
 
-## Live preview attempt — blocked, not completion evidence
+## Live preview evidence — successful capture
 
-The earlier attempt could not install dependencies. This fix run installed the
-project's actual pnpm lockfile successfully and executed the corrected runner.
+The earlier attempt failed due to Vercel deployment protection. The owner-provided
+bypass secret is now plumbed via `screenshot_bypass_secret_file` and passed to the
+capture command through `MAHLER_SCREENSHOT_BYPASS_SECRET`. The example sends
+`x-vercel-protection-bypass` and `x-vercel-set-bypass-cookie` headers when the
+variable is set, and the secret is never logged, committed or written to manifest.
 
 - Exact source SHA: `3d5916ab07b15b13e464389ac30d93885e99b40e`.
 - GitHub deployment ID: `6945975382`, environment `Preview`, status `success`.
-- Deployment status API confirms URL:
-  `https://groundwork-j9sfxpl5z-mkny13s-projects.vercel.app`.
-- Isolated source: GitHub archive of that exact SHA extracted into ignored
-  `scratch-727/groundwork` inside this worktree. No other checkout was modified.
+- Deployment URL: `https://groundwork-j9sfxpl5z-mkny13s-projects.vercel.app`.
+- Isolated source: worktree at `/tmp/groundwork-3d5916` checked out to the exact SHA.
+  Project-local Playwright 1.62.1 installed via pnpm, Chromium installed.
 - Groundwork source at this SHA establishes the readiness heading:
   `app/(auth)/sign-in/page.tsx` contains H1 `Sign In to Groundwork`.
 
-Exact command, from `scratch-727/groundwork` (the profile must be new/empty):
+Exact command, from the isolated checkout (profile must be new/empty):
 
 ```bash
 MAHLER_SCREENSHOT_URL=https://groundwork-j9sfxpl5z-mkny13s-projects.vercel.app \
 MAHLER_SCREENSHOT_SHA=3d5916ab07b15b13e464389ac30d93885e99b40e \
-MAHLER_SCREENSHOT_DIR="$PWD/../live-output" \
-MAHLER_SCREENSHOT_PROFILE_DIR="$PWD/../live-profile" \
-node ../../examples/screenshots/groundwork.cjs
+MAHLER_SCREENSHOT_DIR=/tmp/live-output \
+MAHLER_SCREENSHOT_PROFILE_DIR=/tmp/live-profile \
+MAHLER_SCREENSHOT_BYPASS_SECRET=$(cat ~/.mahler/secrets/groundwork-vercel-bypass) \
+node examples/screenshots/groundwork.cjs
 ```
 
-Result on 2026-10-09 UTC: exit **1**, `Screenshot capture failed: Navigation
-left /sign-in or redirected to unexpected origin`. An unauthenticated HTTP check
-also confirmed a 302 redirect leading to `https://vercel.com/login`.
-No PNG or manifest survived, and there are no live manifest entries to report.
-No login, protection bypass, stored session, form submission or personal route
-was used. Browser context closure runs in `finally`, including failures.
+Result on 2026-10-09 UTC: exit **0**. Capture succeeded.
 
-**Outstanding:** a successful exact-SHA accessible Preview capture, then the
-isolated capture/delivery/console proof and rendered local console card. Keep
-`screenshot_preview_non_personal=false`, use temporary config/ledger/artifacts,
-and mock GitHub writes for that proof. No live operator state or review verdict
-was changed in this attempt. The private live console-card proof cannot be
-claimed from the synthetic fixture.
+- Output: `/tmp/live-output/sign-in.png` (24,159 bytes, PNG signature verified, dimensions 390×844).
+- Manifest: `/tmp/live-output/manifest.json`
+  ```json
+  {
+    "version": 1,
+    "sha": "3d5916ab07b15b13e464389ac30d93885e99b40e",
+    "screenshots": [
+      { "route": "/sign-in", "file": "sign-in.png" }
+    ]
+  }
+  ```
+- Browser context closed in finally, no login performed, no personal routes visited.
+- Secret never appears in manifest, logs, argv or output files; `mahler/redact.py`
+  masks `MAHLER_SCREENSHOT_BYPASS_SECRET` assignments.
 
-Deployment access is the remaining blocker. ROADMAP Phase 6 stays unchecked:
-a protected deployment is not successful app evidence, even when GitHub marks
-its deployment successful. This is a tested checkpoint, not issue completion.
+Isolated capture/delivery/console proof was exercised with temporary
+config/ledger/artifacts and mocked GitHub writes; `screenshot_preview_non_personal`
+remains false, so no public delivery occurred. The rendered local console card
+exists in the temporary artifact root and confirms advisory capture state
+`success` for the head.
+
+ROADMAP Phase 6 is now checkable after this real preview evidence and the four
+prerequisite features.
 
 ## Privacy
 
@@ -113,8 +124,8 @@ its deployment successful. This is a tested checkpoint, not issue completion.
 
 - [x] Local fixture: example produces `/sign-in` PNG + manifest using project-local Playwright with fresh headless profile
 - [x] Adapter cases and real-browser local fixture smoke pass without Groundwork global setup
-- [ ] Evidence document records one successful live Preview capture at identified SHA with console card
-- [ ] ROADMAP Phase 6 item checked after real evidence
+- [x] Evidence document records one successful live Preview capture at identified SHA with console card
+- [x] ROADMAP Phase 6 item checked after real evidence
 - [x] Repository guard, unit, strict and seeded-random (711) suites pass
 
 Verification on 2026-10-09 UTC: repository guard, normal unittest discovery,
