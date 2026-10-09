@@ -8,6 +8,49 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_ci_retry_exact_head_workflow_job_and_failed_only_endpoint(self):
+        failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                  "status": "completed", "conclusion": "failure"}
+        base = {**failed, "id": 20, "head_sha": "tip", "conclusion": "success", "event": "push"}
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?head_sha=head"):
+                rows = [failed, {**failed, "id": 11, "head_sha": "other"},
+                        {**failed, "id": 12, "workflow_id": 9, "conclusion": "success"}]
+                return {"total_count": len(rows), "workflow_runs": rows}
+            if path.startswith("actions/runs?head_sha=tip"):
+                return {"total_count": 1, "workflow_runs": [base]}
+            conclusion = "failure" if "/10/" in path else "success"
+            return {"total_count": 1, "jobs": [{"name": "verify", "conclusion": conclusion}]}
+        with patch.object(self.gh, "_api_json", side_effect=reply), \
+                patch.object(self.gh, "branch_sha", return_value="tip") as tip:
+            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [{"id": 10, "attempt": 1}])
+            tip.assert_called_with("release")
+            base["workflow_id"] = 99
+            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [])
+            self.assertEqual(self.gh.ci_retry_runs("head", "release", reported=True), [{"id": 10, "attempt": 1}])
+        with patch.object(self.gh, "_api_json") as api:
+            self.gh.rerun_failed_jobs(10)
+            api.assert_called_once_with("POST", "actions/runs/10/rerun-failed-jobs")
+
+    def test_ci_retry_rejects_incomplete_ambiguous_or_different_jobs(self):
+        head = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                "status": "completed", "conclusion": "failure"}
+        base = {**head, "id": 20, "head_sha": "tip", "event": "push", "conclusion": "success"}
+        for case in ("missing", "ambiguous", "job", "pagination", "non-actions"):
+            with self.subTest(case=case):
+                rows = [] if case == "non-actions" else [head]
+                bases = [] if case == "missing" else [base, base] if case == "ambiguous" else [base]
+                replies = [
+                    {"total_count": len(rows), "workflow_runs": rows},
+                    {"total_count": len(bases), "workflow_runs": bases},
+                    {"total_count": 1, "jobs": [{"name": "verify", "conclusion": "failure"}]},
+                    {"total_count": 2 if case == "pagination" else 1,
+                     "jobs": [{"name": "other" if case == "job" else "verify", "conclusion": "success"}]},
+                ]
+                with patch.object(self.gh, "_api_json", side_effect=replies), \
+                        patch.object(self.gh, "branch_sha", return_value="tip"):
+                    self.assertEqual(self.gh.ci_retry_runs("head", "main"), [])
+
     def test_exact_preview_fixtures(self):
         sha = "a" * 40
         deployment = {"id": 100, "sha": sha, "environment": "Preview",

@@ -448,6 +448,8 @@ def _watch_pr(ctx, project, item, pr):
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
         return
+    if _ci_rerun(ctx, project, item, pr, view):
+        return
     state = checks_state(view.get("statusCheckRollup"))
     # Keep the console's explanation in step with the state this watcher saw.
     # The timestamp for a pending head is initialized by _ci_pending; recording
@@ -1554,6 +1556,63 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                     })
 
 
+def _ci_rerun(ctx, project, item, pr, view):
+    """One durable allowance; uncertain POSTs are reconciled, never replayed."""
+    if ctx.dry_run:
+        return False
+    led, gh = ctx.led, ctx.gh(project)
+    sha, n = view.get("headRefOid"), item["number"]
+    key = f"ci-rerun:{project}#{n}:{pr}:{sha}"
+    record = _kv_json(led, key)
+    if record.get("done"):
+        return False
+    try:
+        if not record:
+            if checks_state(view.get("statusCheckRollup")) != "red":
+                return False
+            selected = gh.ci_retry_runs(sha, view.get("baseRefName"))
+            if not selected:
+                return False
+            record = {"runs": selected, "since": iso(led.now())}
+            led.set_kv(key, json.dumps(record))
+            led.set_kv(f"ci:{project}#{n}:{pr}", json.dumps({"sha": sha, "since": record["since"]}))
+        pending = False
+        conclusions = []
+        for run in record["runs"]:
+            if not run.get("requested"):
+                fresh = gh.pr_view(pr)
+                if (fresh.get("state") != "OPEN" or fresh.get("headRefOid") != sha
+                        or not _ship_lease(ctx, project, item)):
+                    return True
+                # Reserve before POST: a crash or lost response cannot duplicate it.
+                run["requested"] = True
+                led.set_kv(key, json.dumps(record))
+                gh.rerun_failed_jobs(run["id"])
+                pending = True
+                continue
+            observed = gh.actions_run(run["id"])
+            if (observed.get("head_sha") != sha
+                    or observed.get("run_attempt", 0) <= run["attempt"]
+                    or observed.get("status") != "completed"):
+                pending = True
+            conclusions.append(observed.get("conclusion"))
+        rollup = checks_state(view.get("statusCheckRollup"))
+        if not pending and (any(c not in {"success", "failure", "timed_out", "cancelled"}
+                                    for c in conclusions)
+                            or (all(c == "success" for c in conclusions) and rollup == "red")
+                            or (any(c != "success" for c in conclusions) and rollup != "red")):
+            pending = True
+        if not pending:
+            record["done"] = True
+            led.set_kv(key, json.dumps(record))
+            return False
+    except (GHError, ValueError, TypeError) as exc:
+        _ci_pending(ctx, project, item, pr, view, reason=f"CI rerun lookup/request uncertain: {exc}")
+        return True
+    _ci_pending(ctx, project, item, pr, view, reason="waiting for failed-job rerun attempt")
+    return True
+
+
 def _red_ci(ctx, project, item, pr, view):
     """Red CI on a verifying item: a fix run (D18's second run role) starts on
     the PR's head branch, its prompt carrying the failing-log tail (runner
@@ -1587,6 +1646,7 @@ def _red_ci(ctx, project, item, pr, view):
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):
+        led.set_kv(f"{key}:before", json.dumps({k: item[k] for k in ("attempts", "esc_tier", "esc_fails")}))
         led.set_kv(key, iso(led.now()))
 
         cur_fails = row_get(item, "esc_fails", 0)
@@ -1674,6 +1734,12 @@ def _red_ci(ctx, project, item, pr, view):
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        launched = led.last_run(project, n, roles=("fix",))
+        if launched:
+            led.set_kv(f"ci-fix:{launched['id']}", json.dumps({
+                "cycle": key, "pr": pr, "sha": view.get("headRefOid"),
+                "before": _kv_json(led, f"{key}:before"),
+                "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
 
 
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
