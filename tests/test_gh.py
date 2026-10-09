@@ -8,6 +8,34 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_dependency_rebase_requests_use_project_credentials(self):
+        env = {"GH_CONFIG_DIR": "/test/work-account"}
+        client = GH("work/repo", env=env)
+        with patch("mahler.gh._gh", return_value="") as call:
+            client.request_dependency_rebase(10, "dependabot")
+            self.assertEqual(call.call_args.args,
+                             ("issue", "comment", "10", "-R", "work/repo", "--body-file", "-"))
+            self.assertTrue(call.call_args.kwargs["input"].startswith("<!-- mahler:agent -->"))
+            self.assertIn("@dependabot rebase", call.call_args.kwargs["input"])
+            self.assertEqual(call.call_args.kwargs["env"], env)
+            call.reset_mock()
+            call.side_effect = ['[[]]', '', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual([c.args for c in call.call_args_list], [
+                ("api", "repos/work/repo/labels?per_page=100", "--paginate", "--slurp"),
+                ("label", "create", "rebase", "-R", "work/repo"),
+                ("issue", "edit", "11", "-R", "work/repo", "--add-label", "rebase")])
+            self.assertTrue(all(c.kwargs["env"] == env for c in call.call_args_list))
+            call.reset_mock()
+            call.side_effect = ['[[{"name": "rebase", "color": "abcdef"}]]', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args.args[0:2], ("issue", "edit"))
+            call.reset_mock()
+            with self.assertRaises(ValueError):
+                client.request_dependency_rebase(12, "unknown")
+            call.assert_not_called()
+
     def test_ci_retry_exact_head_workflow_job_and_failed_only_endpoint(self):
         failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
                   "status": "completed", "conclusion": "failure"}

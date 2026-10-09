@@ -315,6 +315,20 @@ class GH:
     def add_label(self, number, label):
         self._gh("issue", "edit", str(number), "-R", self.repo, "--add-label", label)
 
+    def request_dependency_rebase(self, number, bot):
+        """Ask the owning bot to regenerate its branch using this project's login."""
+        if bot == "dependabot":
+            self.comment(number, "@dependabot rebase")
+        elif bot == "renovate":
+            pages = json.loads(self._gh(
+                "api", f"repos/{self.repo}/labels?per_page=100", "--paginate", "--slurp"))
+            if not any(label["name"].casefold() == "rebase" for page in pages for label in page):
+                # Never --force: even a concurrent creation must preserve metadata.
+                self._gh("label", "create", "rebase", "-R", self.repo)
+            self.add_label(number, "rebase")
+        else:
+            raise ValueError(f"Unsupported dependency bot: {bot}")
+
     def ensure_labels(self):
         for name, color in LABEL_COLORS.items():
             self._gh("label", "create", name, "-R", self.repo, "--color", color, "--force")

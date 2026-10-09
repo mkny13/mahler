@@ -118,12 +118,70 @@ def _dependency_ready(view):
             and checks_state(view.get("statusCheckRollup")) == "green")
 
 
+
+DEPENDENCY_REBASE_TIMEOUT_MINUTES = 60
+
+
+def _dependency_rebase_waits(ctx, project, gh):
+    """Reconcile before admission gates; rebase waits reserve no capacity."""
+    led = ctx.led
+    prefix = f"dependency-rebase:{project}:"
+    for row in led.q("SELECT key, value FROM kv WHERE substr(key, 1, ?)=?",
+                     (len(prefix), prefix)):
+        try:
+            request = json.loads(row["value"])
+            if request.get("resolved_at") or request.get("alerted_at"):
+                continue
+            view = gh.dependency_pr_view(request["pr"])
+            if (view.get("state") in ("CLOSED", "MERGED")
+                    or (view.get("headRefOid") and view["headRefOid"] != request["sha"])):
+                request["resolved_at"] = iso(led.now())
+                led.set_kv(row["key"], json.dumps(request))
+                continue
+            elapsed = led.now() - parse(request["requested_at"])
+            if (view.get("state") != "OPEN" or view.get("headRefOid") != request["sha"]
+                    or elapsed < timedelta(minutes=DEPENDENCY_REBASE_TIMEOUT_MINUTES)):
+                continue
+            request["alerted_at"] = iso(led.now())
+            led.set_kv(row["key"], json.dumps(request))
+            led.event("dependency_rebase_stalled", project, None, request)
+            ctx.ping(f"Dependency rebase stalled — {project} PR #{request['pr']}",
+                     f"{request['url']} remains on {request['sha']} after "
+                     f"{int(elapsed.total_seconds() // 60)} minutes. "
+                     f"Request outcome: {request['outcome']}. "
+                     f"{request.get('error', '')}", tags="hourglass")
+        except Exception as exc:
+            ctx.say(f"{project}: dependency rebase reconciliation failed — {exc}")
+
+
+def _request_dependency_rebase(ctx, project, gh, view):
+    led = ctx.led
+    n, sha = view["number"], view["headRefOid"]
+    key = f"dependency-rebase:{project}:{n}:{sha}"
+    if led.get_kv(key):
+        return
+    request = dict(pr=n, sha=sha, bot=view["headRefName"].split("/")[0],
+                   target=view["baseRefName"], url=view["url"],
+                   requested_at=iso(led.now()), outcome="uncertain")
+    # Intent survives a crash or uncertain response; never retry this head.
+    led.set_kv(key, json.dumps(request))
+    try:
+        gh.request_dependency_rebase(n, request["bot"])
+        request["outcome"] = "accepted"
+    except Exception as exc:
+        request.update(outcome="failed", error=str(exc))
+        ctx.say(f"{project}: dependency PR #{n} rebase request failed — {exc}")
+    led.set_kv(key, json.dumps(request))
+    led.event("dependency_rebase_requested", project, None, request)
+
+
 def _dependency_prs(ctx, project):
     """Adopt low-risk bot PRs after ordinary work, with durable queue recovery."""
     pol, led = ctx.policy(project), ctx.led
     if ctx.dry_run or not pol.get("dependency_prs", True):
         return
     gh = ctx.gh(project)
+    _dependency_rebase_waits(ctx, project, gh)
     key = f"dependency-pending:{project}"
     pending = _kv_json(led, key)
     # A single durable outstanding request reserves the project until resolved.
@@ -203,8 +261,10 @@ def _dependency_prs(ctx, project):
                            ("headRefOid", "baseRefName", "headRefName"))):
                 continue
             sha = fresh["headRefOid"]
-            if gh.base_in_head(pol["path"], fresh["baseRefName"], sha) is not True:
-                ctx.say(f"{project}: dependency PR #{n} needs a current-base rebase")
+            ancestry = gh.base_in_head(pol["path"], fresh["baseRefName"], sha)
+            if ancestry is not True:
+                if ancestry is False:
+                    _request_dependency_rebase(ctx, project, gh, {**fresh, "number": n})
                 continue
             # Persist before the request: an uncertain API response must not allow
             # another adoption or lose a merge that succeeded before a crash.
