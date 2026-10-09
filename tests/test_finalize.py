@@ -69,6 +69,71 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def ci_retry_fixture(self):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 5, pr=88, attempts=1, esc_fails=1)
+        cycle = "red:x#5:88:" + self.gh.head
+        self.led.set_kv(cycle, iso(NOW))
+        self.led.set_kv(cycle + ":charged", "1")
+        self.led.set_kv(f"ci-fix:{self.run_id}", json.dumps({
+            "cycle": cycle, "pr": 88, "sha": self.gh.head,
+            "before": {"attempts": 0, "esc_tier": 0, "esc_fails": 0},
+            "after": {"attempts": 1, "esc_tier": 0, "esc_fails": 1}}))
+        self.gh.ci_retry_runs = mock.Mock(return_value=[{"id": 10, "attempt": 1}])
+        Path(self.log).write_text("STATUS: BLOCKED CI-RETRY verify hit unrelated fd flake\n")
+        return "ci-rerun:x#5:88:" + self.gh.head
+
+    def test_ci_retry_refunds_own_charge_once_and_returns_to_verification(self):
+        key = self.ci_retry_fixture()
+        with mock.patch.object(runner, "git", side_effect=[self.gh.head, ""]):
+            self.finalize()
+        self.assertEqual((self.led.item("x", 5)["state"], self.led.item("x", 5)["attempts"],
+                          self.led.item("x", 5)["esc_fails"]), ("verifying", 0, 0))
+        self.assertEqual(json.loads(self.led.get_kv(key))["fix_run"], self.run_id)
+        self.finalize()
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
+    def test_ci_retry_rejects_changed_dirty_generic_interrupted_or_spent(self):
+        for case in ("head", "dirty", "generic", "interrupted", "spent", "cycle"):
+            with self.subTest(case=case):
+                key = self.ci_retry_fixture()
+                self.run["stop_reason"] = None
+                git = [self.gh.head, ""]
+                if case == "head":
+                    git[0] = "changed"
+                elif case == "dirty":
+                    git[1] = " M file"
+                elif case == "generic":
+                    Path(self.log).write_text("STATUS: BLOCKED flaky CI\n")
+                elif case == "interrupted":
+                    self.run["stop_reason"] = "timeout"
+                elif case == "spent":
+                    self.led.set_kv(key, '{"done": true}')
+                else:
+                    self.led.set_kv("red:x#5:88:" + self.gh.head + ":charged", None)
+                item = self.led.item("x", 5)
+                e = finalize.Ending(self.ctx, self.run, item, self.ctx.policy("x"), {}, "cline",
+                    "BLOCKED", "flaky CI" if case == "generic" else "CI-RETRY fd flake",
+                    self.run["stop_reason"], "BLOCKED")
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(runner, "git", side_effect=git):
+                    self.assertIsNone(finalize._prepare_ci_retry(e))
+                self.led.set_kv(key, None)
+
+    def test_ci_retry_fence_after_evidence_prevents_refund(self):
+        key = self.ci_retry_fixture()
+        def snapshot(*args, **kwargs):
+            self.led.claim("x", 5, "session:human", "interactive", 30)
+            return None
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "git", side_effect=[self.gh.head, ""]), \
+                mock.patch.object(runner, "snapshot", side_effect=snapshot), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        self.assertIsNone(self.led.get_kv(key))
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+
     def test_missing_resume_is_uncharged_fenced_and_replay_safe(self):
         self.run.update(role="fix", platform="claude")
         self.led.update_run(self.run_id, role="fix", platform="claude")
@@ -697,6 +762,63 @@ class RunTests(unittest.TestCase):
             }],
         }
         self.assertIsNone(finalize._design_payload(json.dumps(payload_done_when_finding)))
+
+        # False-rejection regression: substrings that contain the canonical phrases should be accepted
+        payload_data_lossy = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "data-lossy behavior observed",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_data_lossy)))
+
+        payload_done_whenever = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "done-whenever handling",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_done_whenever)))
+
+        payload_insecurity = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "insecurity finding noted",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_insecurity)))
+
+        payload_data_lossiness = {
+            "head": head,
+            "disposition": "followups",
+            "justification": "data-lossiness is acceptable",
+            "findings": [{
+                "severity": "low",
+                "category": "behavior",
+                "location": "src/main.py",
+                "scenario": "scenario",
+                "consequence": "consequence",
+            }],
+        }
+        self.assertIsNotNone(finalize._design_payload(json.dumps(payload_data_lossiness)))
 
     def test_design_record_write_is_idempotent(self):
         head = "a" * 40

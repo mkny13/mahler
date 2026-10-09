@@ -156,7 +156,11 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(self.led.item("p", 1)["mirror"], "mahler:shipped")
         self.assertEqual(self.led.uat("p", 1)["bug"], 3)
         self.assertEqual(self.led.uat("p", 1)["note"], "broken")
-        self.assertEqual(self.led.pending_uat(), [])
+        evidence_row = self.led.q1(
+            "SELECT * FROM completion_evidence WHERE project=? AND number=?",
+            ("p", 1))
+        self.assertEqual(evidence_row["kind"], "owner")
+        self.assertEqual(self.led.uat("p", 1)["verdict"], "pass")
         self.assertEqual(len(self.led.q("SELECT * FROM completion_evidence")), 1)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
 
@@ -1024,7 +1028,7 @@ class SchemaDriftTests(unittest.TestCase):
             cols = self._cols(led.con, "uat")
             for col in self.MIGRATED_UAT_COLS:
                 self.assertIn(col, cols)
-            rows = led.pending_uat()
+            rows = led.shipment_history("p")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["title"], "Legacy UAT")
             self.assertIsNone(rows[0]["verdict_at"])
@@ -1446,21 +1450,15 @@ class UatTests(unittest.TestCase):
                           '- the new ping arrives'))
         self.assertEqual(row['shipped_at'], iso(self.clock()))
         self.assertIsNone(row['verdict'])
-        self.assertEqual([r['number'] for r in self.led.pending_uat()], [5])
+        history = self.led.shipment_history('x')
+        self.assertEqual([r['number'] for r in history], [5])
+        self.assertIsNone(history[0]['completion_kind'])
 
     def test_add_is_idempotent(self):
         self.led.add_uat('x', 5, 88, 'a', 't', 'n')
         self.led.add_uat('x', 5, 88, 'a', 'other', 'other')
         row = self.led.uat('x', 5)
         self.assertEqual((row['pr'], row['title']), (88, 't'))
-
-    def test_pending_uat_is_newest_first(self):
-        for n in (5, 6, 7):
-            self.led.add_uat('x', n, n * 10, 'a', f't{n}', 'n')
-        self.assertEqual([r['number'] for r in self.led.pending_uat()], [7, 6, 5])
-        # a decided item stops being pending
-        self.led.set_uat_verdict('x', 6, 'pass')
-        self.assertEqual([r['number'] for r in self.led.pending_uat()], [7, 5])
 
     def test_set_verdict_records_pass_and_fail(self):
         self.led.add_uat('x', 5, 88, 'a', 't', 'n')

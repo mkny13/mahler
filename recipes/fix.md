@@ -30,8 +30,12 @@ result is obtained, the better. Never trade verification for speed.
    production code solely to satisfy a different or older toolchain than base CI uses.
    Do not loosen tests or timeouts as a guess. If the failure is unrelated to this PR
    (for example, a runner, network, or infrastructure failure), end with
-   `STATUS: BLOCKED <reason>` and give a concise diagnostic reason so the conductor can
-   retry. Do not make speculative changes to unrelated code or shotgun-fix the failure.
+   `STATUS: BLOCKED CI-RETRY <evidence>` only when there are no code changes and the
+   worktree is clean at the original PR head. Include the failing job and evidence of
+   the unrelated intermittent failure. The conductor validates the triggering CI fix,
+   restores only its original charge once, and reruns failed jobs once per head SHA.
+   An exhausted allowance resumes normal bounded failure accounting. Other blockers
+   retain `STATUS: BLOCKED <reason>`. Do not make speculative changes to unrelated code or shotgun-fix the failure.
 2. **Verify before every push:** `$verify`. Fix what fails.
    Run a check that exercises the change, such as the project's tests, type-checker,
    build, or changed command. Neither a syntax-only check nor a command that failed

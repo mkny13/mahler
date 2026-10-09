@@ -38,6 +38,9 @@ class FakeGH:
         self.fail_view = set()
         self.queue = False    # simulate a merge queue: pr_merge only enqueues
 
+    def ci_retry_runs(self, head, base, *, reported=False):
+        return []
+
     def issue_labels(self, number):
         return getattr(self, "labels", ["mahler:verifying", "type:feature"])
 
@@ -720,6 +723,135 @@ class ShipTests(unittest.TestCase):
         started = patcher.start()
         self.addCleanup(patcher.stop)
         return started
+
+    def test_ci_fix_records_its_exact_charge_for_finalize(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=1, esc_fails=1)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        def launch(ctx, project, item, role, platform, **kwargs):
+            self.fix_id = self.led.create_run(project=project, number=5, role=role,
+                                             platform=platform, epoch=1, status="running")
+            return True
+        with mock.patch.object(ship, "start", side_effect=launch):
+            self.ship()
+        info = json.loads(self.led.get_kv(f"ci-fix:{self.fix_id}"))
+        self.assertEqual(info["cycle"], "red:x#5:88:abc123")
+        self.assertEqual(info["before"], {"attempts": 1, "esc_tier": 0, "esc_fails": 1})
+        self.assertEqual(info["after"], {k: self.item()[k] for k in info["before"]})
+        self.assertEqual(info["after"]["attempts"], 2)
+
+    def retry_setup(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"conclusion": "FAILURE",
+                           "detailsUrl": f"https://github.com/o/r/actions/runs/{run}/job/100"}
+                          for run in (10, 11)]
+        self.gh.ci_retry_runs = mock.Mock(side_effect=lambda *a: [{"id": 10, "attempt": 1}, {"id": 11, "attempt": 2}])
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value={"head_sha": "abc123", "run_attempt": 2,
+                                                      "status": "completed", "conclusion": "failure"})
+        return "ci-rerun:x#5:88:abc123"
+
+    def test_ci_rerun_stale_pending_green_keeps_review_gate(self):
+        key = self.retry_setup()
+        start = self.patch_start()
+        self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)  # restart: only durable state survives
+        self.ship()  # second workflow still has its old attempt
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
+        self.ship()
+        self.gh.actions_run.return_value.update(status="completed", conclusion="success")
+        self.ship()  # old rollup must not launch a fix
+        start.assert_not_called()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (0, 0))
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.gh.merged, [])
+
+    def assert_unmatched_failure_starts_fix(self, unmatched):
+        key = self.retry_setup()
+        self.gh.rollup.append(unmatched)
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.gh.rollup = [unmatched]
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (1, 1))
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.assertEqual(self.gh.merged, [])
+
+    def test_ci_rerun_success_with_unmatched_workflow_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "conclusion": "FAILURE",
+            "detailsUrl": "https://github.com/o/r/actions/runs/12/job/101"})
+
+    def test_ci_rerun_success_with_external_failure_starts_normal_fix(self):
+        self.assert_unmatched_failure_starts_fix({
+            "state": "FAILURE", "targetUrl": "https://external.example/check"})
+
+    def test_ci_rerun_terminal_red_dedup_and_new_head(self):
+        key = self.retry_setup()
+        start = self.patch_start()
+        self.ship()
+        self.gh.actions_run.return_value.update(run_attempt=3)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (1, 1))
+        self.led.release("x", 5)
+        self.led.set_state("x", 5, "verifying", "re-shipped")
+        self.led.set_kv("red:x#5:88:abc123", None)
+        self.led.set_kv("red:x#5:88:abc123:charged", None)
+        with mock.patch.object(ship, "_red_ci"):
+            self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.head_sha = "new-head"
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 4)
+
+    def test_ci_rerun_uncertain_post_reconciles_and_times_out(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.gh.rerun_failed_jobs.side_effect = None
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.ship()
+        self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.led.clock = lambda: NOW + timedelta(days=1)
+        self.ship()
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_ci_rerun_lost_response_then_completed_attempt_is_not_reposted(self):
+        key = self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh.rerun_failed_jobs.side_effect = None
+        self.gh.actions_run.return_value.update(run_attempt=3, conclusion="success")
+        self.ship()  # reconcile first request; request second workflow
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        self.assertEqual(self.gh.rerun_failed_jobs.call_args_list, [mock.call(10), mock.call(11)])
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_ci_rerun_dry_run_has_no_mutation(self):
+        key = self.retry_setup()
+        self.ctx.dry_run = True
+        self.ship()
+        self.gh.rerun_failed_jobs.assert_not_called()
+        self.assertIsNone(self.led.get_kv(key))
 
     def test_red_ci_pings_once_and_starts_a_fix_run(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -3261,6 +3393,36 @@ class TestGreenReviewRounds(unittest.TestCase):
         fix.assert_called_once()
         self.assertIsNone(self.led.get_kv("design:x#5:88:head-1"))
 
+    def test_design_starts_only_at_threshold_after_drift_is_established(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 4
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+
+        for number in range(1, 4):
+            finding = {**self.finding("blocking"),
+                       "location": f"file-{number}.py:{number * 10}"}
+            self.complete_head(f"head-{number}", [finding], number)
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_called_once()
+            self.assertIsNone(self.led.get_kv(f"design:x#5:88:head-{number}"))
+
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        finding = {**self.finding("blocking"), "location": "file-4.py:40"}
+        self.complete_head("head-4", [finding], 4)
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            design_calls = [call for call in start_mock.call_args_list
+                            if len(call.args) > 3 and call.args[3] == "design"]
+            self.assertEqual(len(design_calls), 1)
+            self.assertFalse(any(call.args[3] == "fix"
+                                 for call in start_mock.call_args_list
+                                 if len(call.args) > 3))
+
     def test_threshold_with_disjoint_location_drift_starts_one_design_run_and_no_simultaneous_fix(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         later = NOW + timedelta(hours=2)
@@ -3431,6 +3593,41 @@ class TestGreenReviewRounds(unittest.TestCase):
             merge.assert_not_called()
             fix.assert_called_once()
 
+    def test_design_result_followups_refuses_blocking_classified_blocker(self):
+        for category in ("security", "data-loss"):
+            for severity in ("blocking", "follow-up"):
+                with self.subTest(category=category, severity=severity):
+                    self.led.set_kv("reviewresults:x#5", None)
+                    sha = f"head-{category}-{severity}"
+                    findings = [{
+                        "severity": severity, "category": category,
+                        "location": "a.py:10", "scenario": "Retry after interruption",
+                        "consequence": "Stored information is exposed or lost",
+                    }]
+                    # Keep the review failing for the nonblocking control, too.
+                    findings.append(self.finding("blocking"))
+                    self.complete_head(sha, findings, 3)
+                    info = json.loads(self.led.get_kv("review:x#5"))
+                    self.assertEqual(info["classified"], findings)
+                    self.assertEqual(info["verdict"], "fail")
+                    # Isolate the classified guard from the redundant prose guard.
+                    info["findings"] = "Review requires a fix."
+                    self.led.set_kv("review:x#5", json.dumps(info))
+                    self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+                        "head": sha, "run_id": 42, "disposition": "followups",
+                        "justification": "Minor edge case acceptable for v1",
+                        "findings": [self.finding("follow-up")],
+                    }))
+                    self.gh.issue_by_marker = mock.Mock(return_value=None)
+                    self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/101")
+                    merge, fix, _ = self.gate()
+                    if severity == "blocking":
+                        merge.assert_not_called()
+                        fix.assert_called_once()
+                    else:
+                        merge.assert_called_once()
+                        fix.assert_not_called()
+
     def test_design_result_followups_accepts_incidental_prose_mentions(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         for idx, keyword in enumerate(("security", "Done-when", "data loss"), 1):
@@ -3460,6 +3657,30 @@ class TestGreenReviewRounds(unittest.TestCase):
                 fix.assert_not_called()
                 self.gh.create_issue.assert_called_once()
                 self.assertTrue(any(f"issues/10{idx}" in c for c in self.gh.comments))
+
+    def test_design_result_followups_ignores_legacy_review_findings_marker(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.led.set_kv("reviewresults:x#5", None)
+        sha = "head-legacy-marker"
+        findings = [{
+            "severity": "follow-up", "category": "behavior",
+            "location": "a.py:10", "scenario": "Minor", "consequence": "None"
+        }]
+        self.complete_head(sha, [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        info = json.loads(self.led.get_kv("review:x#5"))
+        info["findings"] = "[blocking/security] Something bad\n[blocking/spec](Done when: must verify)"
+        info["classified"] = []
+        self.led.set_kv("review:x#5", json.dumps(info))
+        self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+            "head": sha, "run_id": 99, "disposition": "followups",
+            "justification": "Acceptable",
+            "findings": findings
+        }))
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/200")
+        merge, fix, _ = self.gate()
+        merge.assert_called_once()
+        fix.assert_not_called()
 
     def test_overlapping_findings_reset_drift_and_missing_locations_inconclusive(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
@@ -3686,6 +3907,160 @@ class DependencyPRTests(unittest.TestCase):
     def events(self):
         return self.led.q("SELECT * FROM events WHERE kind='dependency_adopted'")
 
+    def reopen(self):
+        self.led.close()
+        self.led = Ledger(self.tmp.name + '/ledger.db', clock=lambda: self.now)
+        self.ctx.led = self.led
+
+    def requests(self):
+        return [json.loads(r['value']) for r in self.led.q(
+            "SELECT value FROM kv WHERE key LIKE 'dependency-rebase:x:%'")]
+
+    def test_rebase_transition_to_confirmed_adoption(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once_with(10, 'dependabot')
+        self.gh.pr_merge.assert_not_called()
+        self.assertIsNone(self.led.get_kv('dependency-pending:x'))
+        self.assertFalse(self.events())
+        self.views[10].update(headRefOid='b' * 40, statusCheckRollup=[{'state': 'PENDING'}])
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
+        self.gh.base_in_head.return_value = True
+        self.views[10]['statusCheckRollup'] = [{'state': 'SUCCESS'}]
+        self.run_pass()
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(10, 'b' * 40)
+        self.assertEqual(len(self.events()), 1)
+        self.assertTrue(self.requests()[0]['resolved_at'])
+
+    def test_rebase_once_per_head_across_restart_and_base_movement(self):
+        for n, bot in ((10, 'dependabot'), (11, 'renovate')):
+            self.add(n, bot=bot)
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.run_pass()
+        self.reopen()
+        self.views[10]['baseRefName'] = 'other'
+        self.run_pass()
+        self.assertEqual(self.gh.request_dependency_rebase.call_args_list,
+                         [mock.call(10, 'dependabot'), mock.call(11, 'renovate')])
+        self.views[10]['headRefOid'] = 'b' * 40
+        self.run_pass()
+        self.assertEqual(self.gh.request_dependency_rebase.call_count, 3)
+
+    def test_rebase_timeout_boundary_dedup_and_admission_holds(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.led.upsert_item('x', 5, state='working')
+        self.led.claim('x', 5, 'session', 'interactive', 120)
+        self.cfg['projects']['x']['dependency_prs_daily_cap'] = 0
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.now += timedelta(minutes=59, seconds=59)
+            self.run_pass()
+            ping.assert_not_called()
+            self.now += timedelta(seconds=1)
+            self.run_pass()
+            ping.assert_called_once()
+            self.assertIn(self.views[10]['url'], ping.call_args.args[1])
+            self.assertIn(self.views[10]['headRefOid'], ping.call_args.args[1])
+            self.run_pass()
+            self.run_pass()
+            self.reopen()
+            self.run_pass()
+            ping.assert_called_once()
+
+    def test_rebase_admission_and_timeout_during_each_hold(self):
+        self.gh.base_in_head.return_value = False
+        for hold in ('disabled', 'dry-run', 'cap', 'ordinary', 'capacity', 'merge'):
+            with self.subTest(hold=hold):
+                self.cfg['projects']['x'].update(dependency_prs=hold != 'disabled',
+                                                dependency_prs_daily_cap=0 if hold == 'cap' else 3)
+                self.ctx.dry_run = hold == 'dry-run'
+                self.led.upsert_item('x', 5, state='verifying' if hold == 'ordinary' else 'ready')
+                if hold == 'capacity':
+                    self.led.claim('x', 5, 'session', 'interactive', 120)
+                self.ctx.merge_requested = hold == 'merge'
+                ship._dependency_prs(self.ctx, 'x')
+                self.gh.request_dependency_rebase.assert_not_called()
+                self.led.release('x', 5)
+        self.ctx.merge_requested = False
+        self.run_pass()
+        self.now += timedelta(hours=1)
+        for hold in ('cap', 'ordinary', 'merge'):
+            with self.subTest(timeout_hold=hold), mock.patch.object(self.ctx, 'ping') as ping:
+                request = self.requests()[0]
+                request.pop('alerted_at', None)
+                self.led.set_kv(f"dependency-rebase:x:10:{request['sha']}", json.dumps(request))
+                self.cfg['projects']['x']['dependency_prs_daily_cap'] = 0 if hold == 'cap' else 3
+                self.led.set_state('x', 5, 'verifying' if hold == 'ordinary' else 'ready')
+                self.ctx.merge_requested = hold == 'merge'
+                ship._dependency_prs(self.ctx, 'x')
+                ping.assert_called_once()
+
+    def test_rebase_resolution_suppresses_stale_alert(self):
+        self.gh.base_in_head.return_value = False
+        self.add(11)
+        self.add(12)
+        self.run_pass()
+        self.views[10]['state'] = 'CLOSED'
+        self.views[11]['state'] = 'MERGED'
+        self.views[12].update(headRefOid='b' * 40, statusCheckRollup=[{'state': 'PENDING'}])
+        self.now += timedelta(hours=1)
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+            ping.assert_not_called()
+        self.assertTrue(all(r.get('resolved_at') for r in self.requests()))
+
+    def test_rebase_error_is_durable_and_does_not_block_other_pr(self):
+        self.add(11)
+        self.gh.base_in_head.side_effect = lambda path, base, sha: sha != '10'.zfill(40)
+        def fail(n, bot):
+            self.assertEqual(self.requests()[0]['outcome'], 'uncertain')
+            raise gh_module.GHError('response lost')
+        self.gh.request_dependency_rebase.side_effect = fail
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(11, '11'.zfill(40))
+        self.reopen()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once()
+        self.assertEqual(self.requests()[0]['error'], 'response lost')
+        self.now += timedelta(hours=1)
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+            self.assertIn('response lost', ping.call_args.args[1])
+            self.run_pass()
+            ping.assert_called_once()
+
+    def test_rebase_reconciliation_api_and_notification_failures(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.now += timedelta(hours=1)
+        self.led.upsert_item('x', 5, state='verifying')
+        with mock.patch.object(self.ctx, 'ping', side_effect=RuntimeError('offline')) as ping:
+            self.gh.dependency_pr_view.side_effect = gh_module.GHError('unavailable')
+            self.run_pass()
+            ping.assert_not_called()
+            self.gh.dependency_pr_view.side_effect = lambda n: copy.deepcopy(self.views[n])
+            self.run_pass()
+            self.reopen()
+            self.run_pass()
+            ping.assert_called_once()
+        self.gh.request_dependency_rebase.assert_called_once()
+
+    def test_interrupted_rebase_intent_is_not_retried(self):
+        self.gh.base_in_head.return_value = False
+        self.gh.request_dependency_rebase.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_pass()
+        self.reopen()
+        self.gh.request_dependency_rebase.side_effect = None
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once()
+        self.assertEqual(self.requests()[0]['outcome'], 'uncertain')
+
     def test_patch_minor_and_actions(self):
         for bot in ('dependabot', 'renovate'):
             for after in ('1.2.4', '1.3.0'):
@@ -3831,14 +4206,15 @@ class DependencyPRTests(unittest.TestCase):
                 self.views[10] = {**original, **changes}
                 self.run_pass()
                 self.gh.pr_merge.assert_not_called()
+                self.gh.request_dependency_rebase.assert_not_called()
         self.views[10] = original
-        for ancestry in (False, None):
-            self.gh.base_in_head.return_value = ancestry
-            self.run_pass()
-            self.gh.pr_merge.assert_not_called()
+        self.gh.base_in_head.return_value = None
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
         self.gh.base_in_head.side_effect = gh_module.GHError('fetch failed')
         self.run_pass()
         self.gh.pr_merge.assert_not_called()
+        self.gh.request_dependency_rebase.assert_not_called()
 
     def test_changed_exact_head_base_checks_and_metadata(self):
         original = self.views[10]
@@ -3849,6 +4225,7 @@ class DependencyPRTests(unittest.TestCase):
                 self.gh.dependency_pr_view.side_effect = [original, {**original, **changes}]
                 self.run_pass()
                 self.gh.pr_merge.assert_not_called()
+        self.gh.request_dependency_rebase.assert_not_called()
 
     def test_major_dedup_and_scope(self):
         self.cfg['projects']['x'].update(scope='label', scope_label='custom')

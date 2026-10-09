@@ -1,12 +1,113 @@
 import json
 import unittest
 from unittest.mock import patch, MagicMock
-from mahler.gh import GH, pr_body, HELP_FOOTER, AGENT_NOTE
+from mahler.gh import GH, GHError, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
 
 class TestGH(unittest.TestCase):
     def setUp(self):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
+
+    def test_dependency_rebase_requests_use_project_credentials(self):
+        env = {"GH_CONFIG_DIR": "/test/work-account"}
+        client = GH("work/repo", env=env)
+        with patch("mahler.gh._gh", return_value="") as call:
+            client.request_dependency_rebase(10, "dependabot")
+            self.assertEqual(call.call_args.args,
+                             ("issue", "comment", "10", "-R", "work/repo", "--body-file", "-"))
+            self.assertTrue(call.call_args.kwargs["input"].startswith("<!-- mahler:agent -->"))
+            self.assertIn("@dependabot rebase", call.call_args.kwargs["input"])
+            self.assertEqual(call.call_args.kwargs["env"], env)
+            call.reset_mock()
+            call.side_effect = ['[[]]', '', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual([c.args for c in call.call_args_list], [
+                ("api", "repos/work/repo/labels?per_page=100", "--paginate", "--slurp"),
+                ("label", "create", "rebase", "-R", "work/repo"),
+                ("issue", "edit", "11", "-R", "work/repo", "--add-label", "rebase")])
+            self.assertTrue(all(c.kwargs["env"] == env for c in call.call_args_list))
+            call.reset_mock()
+            call.side_effect = ['[[{"name": "rebase", "color": "abcdef"}]]', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args.args[0:2], ("issue", "edit"))
+            call.reset_mock()
+            with self.assertRaises(ValueError):
+                client.request_dependency_rebase(12, "unknown")
+            call.assert_not_called()
+
+    def test_dependabot_rebase_bypasses_app_using_project_user(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/test/key.pem"}}
+        for env in (None, {"GH_CONFIG_DIR": "/test/work-account",
+                           "GH_TOKEN": "test-user-token"}):
+            with self.subTest(env=env), \
+                    patch("mahler.gh.config.run_env", return_value=env), \
+                    patch("mahler.github_app.Installation") as installation, \
+                    patch("mahler.gh._gh", return_value="") as call:
+                app = installation.return_value
+                app.token.return_value = "test-app-token"
+                client = project_client(cfg, {"repo": "owner/repo"})
+                client.request_dependency_rebase(10, "dependabot")
+                app.token.assert_not_called()
+                self.assertEqual(call.call_args.kwargs["env"], env)
+                self.assertEqual(call.call_args.kwargs["input"],
+                                 AGENT_NOTE + "\n@dependabot rebase" + HELP_FOOTER)
+                # Other conductor comments still use the configured App.
+                client.comment(10, "ordinary comment")
+                self.assertEqual(call.call_args.kwargs["env"]["GH_TOKEN"],
+                                 "test-app-token")
+                app.token.reset_mock()
+                call.side_effect = GHError("user login unavailable")
+                with self.assertRaisesRegex(GHError, "user login unavailable"):
+                    client.request_dependency_rebase(10, "dependabot")
+                app.token.assert_not_called()
+
+    def test_ci_retry_exact_head_workflow_job_and_failed_only_endpoint(self):
+        failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                  "status": "completed", "conclusion": "failure"}
+        base = {**failed, "id": 20, "head_sha": "tip", "conclusion": "success", "event": "push"}
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?head_sha=head"):
+                rows = [failed, {**failed, "id": 11, "head_sha": "other"},
+                        {**failed, "id": 12, "workflow_id": 9, "conclusion": "success"}]
+                return {"total_count": len(rows), "workflow_runs": rows}
+            if path.startswith("actions/runs?head_sha=tip"):
+                return {"total_count": 1, "workflow_runs": [base]}
+            conclusion = "failure" if "/10/" in path else "success"
+            return {"total_count": 1, "jobs": [{"name": "verify", "conclusion": conclusion}]}
+        with patch.object(self.gh, "_api_json", side_effect=reply), \
+                patch.object(self.gh, "branch_sha", return_value="tip") as tip:
+            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [{"id": 10, "attempt": 1}])
+            tip.assert_called_with("release")
+            base["workflow_id"] = 99
+            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [])
+            self.assertEqual(self.gh.ci_retry_runs("head", "release", reported=True), [{"id": 10, "attempt": 1}])
+        with patch.object(self.gh, "_api_json") as api:
+            self.gh.rerun_failed_jobs(10)
+            api.assert_called_once_with("POST", "actions/runs/10/rerun-failed-jobs")
+
+    def test_ci_retry_rejects_incomplete_ambiguous_or_different_jobs(self):
+        head = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                "status": "completed", "conclusion": "failure"}
+        base = {**head, "id": 20, "head_sha": "tip", "event": "push", "conclusion": "success"}
+        for case in ("missing", "ambiguous", "job", "pagination", "non-actions", "duplicate-job"):
+            with self.subTest(case=case):
+                rows = [] if case == "non-actions" else [head]
+                bases = [] if case == "missing" else [base, base] if case == "ambiguous" else [base]
+                replies = [
+                    {"total_count": len(rows), "workflow_runs": rows},
+                    {"total_count": len(bases), "workflow_runs": bases},
+                    {"total_count": 1, "jobs": [{"name": "verify", "conclusion": "failure"}]},
+                    {"total_count": 2 if case == "pagination" else 1,
+                     "jobs": [{"name": "other" if case == "job" else "verify", "conclusion": "success"}]},
+                ]
+                if case == "duplicate-job":
+                    replies[-1]["jobs"].append({"name": "verify", "conclusion": "failure"})
+                    replies[-1]["total_count"] = 2
+                with patch.object(self.gh, "_api_json", side_effect=replies), \
+                        patch.object(self.gh, "branch_sha", return_value="tip"):
+                    self.assertEqual(self.gh.ci_retry_runs("head", "main"), [])
 
     def test_exact_preview_fixtures(self):
         sha = "a" * 40
