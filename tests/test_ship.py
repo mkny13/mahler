@@ -3261,6 +3261,36 @@ class TestGreenReviewRounds(unittest.TestCase):
         fix.assert_called_once()
         self.assertIsNone(self.led.get_kv("design:x#5:88:head-1"))
 
+    def test_design_starts_only_at_threshold_after_drift_is_established(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 4
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+
+        for number in range(1, 4):
+            finding = {**self.finding("blocking"),
+                       "location": f"file-{number}.py:{number * 10}"}
+            self.complete_head(f"head-{number}", [finding], number)
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_called_once()
+            self.assertIsNone(self.led.get_kv(f"design:x#5:88:head-{number}"))
+
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        finding = {**self.finding("blocking"), "location": "file-4.py:40"}
+        self.complete_head("head-4", [finding], 4)
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            merge, fix, _ = self.gate()
+            merge.assert_not_called()
+            fix.assert_not_called()
+            design_calls = [call for call in start_mock.call_args_list
+                            if len(call.args) > 3 and call.args[3] == "design"]
+            self.assertEqual(len(design_calls), 1)
+            self.assertFalse(any(call.args[3] == "fix"
+                                 for call in start_mock.call_args_list
+                                 if len(call.args) > 3))
+
     def test_threshold_with_disjoint_location_drift_starts_one_design_run_and_no_simultaneous_fix(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         later = NOW + timedelta(hours=2)
