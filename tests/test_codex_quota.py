@@ -404,14 +404,18 @@ class CodexRefreshTests(unittest.TestCase):
         self.led.set_kv("codex:unsupported-shape:first:work", started.isoformat())
         self.led.set_kv("codex:unsupported-shape:shape:work", "10m")
         self.led.set_kv("codex:unsupported-shape:last:work", (self.now - timedelta(minutes=15)).isoformat())
+        notified = (self.now - timedelta(minutes=15)).isoformat()
+        self.led.set_kv("notified:codex-unsupported:work", notified)
         with mock.patch("mahler.notify.send") as notify_send, \
                 mock.patch.object(platforms, "probe_codex", return_value=unsupported):
             run()
-            self.assertEqual(notify_send.call_count, 1)
+            self.assertEqual(notify_send.call_count, 0)
             self.assertEqual(self.led.get_kv("codex:unsupported-shape:first:work"), "")
+            migrated = json.loads(self.led.get_kv("codex:unsupported-shape:work"))
+            self.assertEqual(migrated["notified"], notified)
             self.now += timedelta(minutes=15)
             run()
-            self.assertEqual(notify_send.call_count, 1)
+            self.assertEqual(notify_send.call_count, 0)
 
 
 class CodexResetSpendTests(unittest.TestCase):
@@ -629,4 +633,3 @@ time.sleep(5)
         detail = router.codex_detail(self.led, "codex-work",
                                      self.cfg["platforms"]["codex-work"])
         self.assertIn("1 banked reset (next expires 1d 0h)", detail)
-
