@@ -67,7 +67,7 @@ Two themes as CSS custom properties on a wrapper class. Light is the reference.
 | `--mut` | `#4a5158` | `#a7aeb5` | secondary text, metadata |
 | `--line` | `#d6dadd` | `#2b3135` | 1px rules, gauge tracks, button borders |
 | `--acc` | `#1256c4` | `#7cb0ff` | running state, links, primary actions |
-| `--accq` | `#e8f0fd` | `#16243a` | accent-quiet fill (Pass button, chips) |
+| `--accq` | `#e8f0fd` | `#16243a` | accent-quiet fill (historical prototype, chips) |
 | `--warn` | `#8f4a06` | `#e59a5c` | paused, past estimate, over soft limit |
 | `--warnq` | `#fcf0e6` | `#2b1d14` | warning banner ground |
 | `--bad` | `#a8180f` | `#f4918a` | needs-you, p1, hard limit, Fail |
@@ -502,7 +502,7 @@ opinion — but it needs none.
   - `desktop-02-now.jpg` — active runs, dense rows
   - `desktop-03-now-zero-runs.jpg` — the idle explanation with countdowns and
     overrides
-  - `desktop-04-ready-to-test.jpg` — historical prototype UAT queue (superseded)
+  - `desktop-04` — historical prototype UAT screenshot (superseded; filename retained)
   - `desktop-05-capture.jpg` — composer with the GitHub issue target line
   - `desktop-06-backlog.jpg` — collapsible project groups
   - `desktop-07-event-stream.jpg` — history with inline Undo
