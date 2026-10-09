@@ -313,6 +313,17 @@ def capture(ctx, project, item, pr, view):
                            "MAHLER_SCREENSHOT_DIR": output,
                            "MAHLER_SCREENSHOT_PROFILE_DIR": profile,
                            "MAHLER_SCREENSHOT_SHA": sha, "MAHLER_SCREENSHOT_PR": str(pr)}
+                    # Optional bypass secret for protected previews; never log value.
+                    bypass_file = policy.get("screenshot_bypass_secret_file", "")
+                    bypass_secret = ""
+                    if bypass_file:
+                        try:
+                            with open(bypass_file, "r", encoding="utf-8") as f:
+                                bypass_secret = f.read().strip()
+                        except Exception:
+                            bypass_secret = ""
+                    if bypass_secret:
+                        env["MAHLER_SCREENSHOT_BYPASS_SECRET"] = bypass_secret
                     result.update(state="failed", reason="command_failed")
                     code = _command(policy["screenshot"], profile, env,
                                     policy.get("screenshot_timeout_seconds", 45))

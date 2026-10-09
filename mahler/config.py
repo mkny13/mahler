@@ -170,6 +170,7 @@ DEFAULTS = {
         "screenshot_environment": "",
         "screenshot_preview_non_personal": False,
         "screenshot_timeout_seconds": 45,
+        "screenshot_bypass_secret_file": "",
         "post_merge": DEFAULT_POST_MERGE,
         "smoke": "",                  # optional post-release command; schema only (D11)
         "gui_idle_minutes": 15,        # D40: GUI-driving work needs this much keyboard/mouse idle
@@ -1160,7 +1161,7 @@ def validate_accounts(cfg):
             raise ValueError(f"{scope}: routing_mode must be list or measured")
     for scope, conf in [("defaults", cfg.get("defaults", {})),
                         *cfg.get("projects", {}).items()]:
-        for key in ("screenshot", "screenshot_environment"):
+        for key in ("screenshot", "screenshot_environment", "screenshot_bypass_secret_file"):
             if not isinstance(conf.get(key, ""), str):
                 raise ValueError(f"{scope}: {key} must be a string")
         paths = conf.get("screenshot_path", [])
