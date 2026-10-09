@@ -253,6 +253,64 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def _parent_pages(self, endpoint):
+        """Bounded, exhaustive REST reads; truncation is never an empty relation."""
+        rows = []
+        for page in range(1, 1001):
+            batch = json.loads(self._gh("api", f"{endpoint}&per_page=100&page={page}"))
+            if not isinstance(batch, list):
+                raise GHError("invalid parent relationship page")
+            rows.extend(batch)
+            if len(batch) < 100:
+                return rows
+        raise GHError("parent relationship pagination incomplete")
+
+    def parent_issue_inventory(self):
+        return [row for row in self._parent_pages(
+            f"repos/{self.repo}/issues?state=all") if "pull_request" not in row]
+
+    def sub_issues(self, number):
+        rows = self._parent_pages(f"repos/{self.repo}/issues/{number}/sub_issues?")
+        for row in rows:
+            if row.get("repository_url", "").lower() != f"https://api.github.com/repos/{self.repo}".lower():
+                raise GHError("unsupported cross-repository sub-issue")
+        return [row["number"] for row in rows]
+
+    def closing_prs(self, number):
+        """Include historical closed PRs and prove connection exhaustion."""
+        owner, repo = self.repo.split("/")
+        query = """query($owner:String!, $repo:String!, $number:Int!, $cursor:String) {
+          repository(owner:$owner,name:$repo) { issue(number:$number) {
+            closedByPullRequestsReferences(first:100,after:$cursor,includeClosedPrs:true) {
+              nodes { number state mergedAt url repository { nameWithOwner } }
+              pageInfo { hasNextPage endCursor }
+            }
+          } }
+        }"""
+        rows, seen = [], set()
+        cursor = None
+        for _ in range(1000):
+            args = ["api", "graphql", "-f", f"query={query}", "-f", f"owner={owner}",
+                    "-f", f"repo={repo}", "-F", f"number={number}"]
+            if cursor:
+                args += ["-f", f"cursor={cursor}"]
+            result = json.loads(self._gh(*args))
+            if result.get("errors"):
+                raise GHError("closing PR lookup failed")
+            connection = result["data"]["repository"]["issue"]["closedByPullRequestsReferences"]
+            for row in connection["nodes"]:
+                if row["repository"]["nameWithOwner"].lower() != self.repo.lower():
+                    raise GHError("unsupported cross-repository closing PR")
+                rows.append(row)
+            page = connection["pageInfo"]
+            if page["hasNextPage"] is False:
+                return rows
+            cursor = page["endCursor"]
+            if not cursor or cursor in seen:
+                raise GHError("closing PR pagination incomplete")
+            seen.add(cursor)
+        raise GHError("closing PR pagination incomplete")
+
     def issue_reopens(self, number):
         """Actual reopen timestamps; issue updatedAt also changes on later edits."""
         pages = json.loads(self._gh(

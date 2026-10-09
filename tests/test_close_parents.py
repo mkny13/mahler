@@ -23,117 +23,231 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
-        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
-        self.gh_mock = mock.Mock()
-        self.ctx._gh["mkny13/mahler"] = self.gh_mock
-
-    def test_closes_parent_when_all_children_done(self):
-        """Parent with two children, both done, is closed and becomes done."""
-        # Parent issue
-        self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")
-        # Children
-        self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
-        self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="done")
-
-        sync.close_finished_parents(self.ctx, [proj()])
-
-        # Verify close_issue was called with correct comment
-        self.gh_mock.close_issue.assert_called_once()
-        args, kwargs = self.gh_mock.close_issue.call_args
-        self.assertEqual(args[0], 10)
-        self.assertIn("Sub-issues: #11, #12", kwargs["comment"])
-
-        # Verify parent state is now done
-        parent = self.led.item("mahler", 10)
-        self.assertEqual(parent["state"], "done")
-
-    def test_does_not_close_when_child_not_done(self):
-        """With one child still ready, nothing happens."""
-        self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")
-        self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
-        self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="ready")
-
-        sync.close_finished_parents(self.ctx, [proj()])
-
-        self.gh_mock.close_issue.assert_not_called()
-        parent = self.led.item("mahler", 10)
-        self.assertEqual(parent["state"], "parent")
-
-    def test_shipped_child_does_not_complete_parent(self):
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.ping = mock.Mock()
+        self.gh = mock.Mock()
+        self.ctx._gh["mkny13/mahler"] = self.gh
+        self.bodies = {10: "## Done when\n- [x] Works"}
+        self.states = {10: "OPEN", 11: "CLOSED", 12: "CLOSED"}
+        self.comments = {}
+        self.gh.issue_body.side_effect = lambda n: self.bodies[n]
+        self.gh.issue_state.side_effect = lambda n: self.states[n]
+        self.gh.issue_comments.side_effect = lambda n: self.comments.get(n, [])
+        self.gh.comment.side_effect = lambda n, body: self.comments.setdefault(n, []).append({"body": body})
+        self.gh.close_issue.side_effect = lambda n: self.states.update({n: "CLOSED"})
+        self.gh.parent_issue_inventory.return_value = []
+        self.gh.sub_issues.return_value = []
+        self.gh.closing_prs.return_value = [{"number": 99, "state": "MERGED"}]
+        self.gh.pr_merge_info.return_value = {"state": "MERGED"}
         self.led.upsert_item("mahler", 10, state="parent")
-        self.led.upsert_item("mahler", 11, parent=10, state="shipped")
-        sync.close_finished_parents(self.ctx, [proj()])
-        self.gh_mock.close_issue.assert_not_called()
-        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+        self.led.upsert_item("mahler", 11, parent=10, state="shipped", pr=99)
 
-    def test_does_not_close_when_no_children(self):
-        """With no children, nothing happens."""
-        self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")
-
+    def run_pass(self):
         sync.close_finished_parents(self.ctx, [proj()])
 
-        self.gh_mock.close_issue.assert_not_called()
-        parent = self.led.item("mahler", 10)
-        self.assertEqual(parent["state"], "parent")
-
-    def test_dry_run_only_reports(self):
-        """In dry_run mode, only reports what it would do."""
-        self.ctx.dry_run = True
-        self.led.upsert_item("mahler", 10, title="Parent goal", state="parent")
-        self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
-        self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="done")
-
-        sync.close_finished_parents(self.ctx, [proj()])
-
-        self.gh_mock.close_issue.assert_not_called()
-        self.assertIn("would close", self.ctx.lines[0])
-
-    def test_multiple_parents_handled_independently(self):
-        """Multiple parents are handled independently."""
-        self.led.upsert_item("mahler", 10, title="Parent 1", state="parent")
-        self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
-        self.led.upsert_item("mahler", 12, title="Child 2", parent=10, state="done")
-
-        self.led.upsert_item("mahler", 20, title="Parent 2", state="parent")
-        self.led.upsert_item("mahler", 21, title="Child 3", parent=20, state="done")
-        self.led.upsert_item("mahler", 22, title="Child 4", parent=20, state="ready")  # not done
-
-        sync.close_finished_parents(self.ctx, [proj()])
-
-        # Only parent 10 should be closed
-        self.assertEqual(self.gh_mock.close_issue.call_count, 1)
-        args, _ = self.gh_mock.close_issue.call_args
-        self.assertEqual(args[0], 10)
-
+    def test_merged_shipped_child_completes_checked_parent(self):
+        before = dict(self.led.item("mahler", 11))
+        self.run_pass()
         self.assertEqual(self.led.item("mahler", 10)["state"], "done")
-        self.assertEqual(self.led.item("mahler", 20)["state"], "parent")
+        self.assertEqual(dict(self.led.item("mahler", 11)), before)
+        self.assertIn("#11: merged PR #99", self.comments[10][0]["body"])
+        self.run_pass()
+        self.gh.comment.assert_called_once()
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE number=10 AND kind='state'")), 1)
 
-    def test_ignores_non_parent_items(self):
-        """Items not in 'parent' state are ignored."""
-        self.led.upsert_item("mahler", 10, title="Not a parent", state="ready")
-        self.led.upsert_item("mahler", 11, title="Child", parent=10, state="done")
+    def test_done_child_also_requires_merge(self):
+        self.led.upsert_item("mahler", 11, state="done", pr=None)
+        self.gh.closing_prs.return_value = []
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.ctx.ping.assert_called_once()
 
-        sync.close_finished_parents(self.ctx, [proj()])
+    def test_all_done_children_with_merge_evidence(self):
+        self.led.upsert_item("mahler", 11, state="done")
+        self.led.upsert_item("mahler", 12, parent=10, state="done")
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
 
-        self.gh_mock.close_issue.assert_not_called()
+    def test_closed_unmerged_recorded_pr_is_not_shipment(self):
+        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+        self.gh.closing_prs.return_value = [{"number": 99, "state": "CLOSED"}]
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertIn("closed without confirmed merged PR", self.comments[10][0]["body"])
 
-    def test_gh_error_does_not_break_other_parents(self):
-        """GHError on one parent doesn't stop processing others."""
-        self.led.upsert_item("mahler", 10, title="Parent 1", state="parent")
-        self.led.upsert_item("mahler", 11, title="Child 1", parent=10, state="done")
+    def test_supported_list_syntax_and_cross_repository_unknown(self):
+        body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
+        body += "- mkny13/mahler#15 child\n- https://github.com/mkny13/mahler/issues/16 child"
+        self.assertEqual(sync._parent_children(body, "mkny13/mahler"), set(range(11, 17)))
+        with self.assertRaises(GHError):
+            sync._parent_children(body + "\n- other/repo#12", "mkny13/mahler")
 
-        self.led.upsert_item("mahler", 20, title="Parent 2", state="parent")
-        self.led.upsert_item("mahler", 21, title="Child 2", parent=20, state="done")
+    def test_open_or_reopened_child_waits_silently(self):
+        self.states[11] = "OPEN"
+        self.led.upsert_item("mahler", 12, parent=10, state="done")
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.ctx.ping.assert_not_called()
 
-        self.gh_mock.close_issue.side_effect = [GHError("fail"), None]
+    def test_relationship_union_and_exclusions(self):
+        self.bodies[10] += "\n## Plan\nSteps:\n- 1. #12: native overlap\n- 2. #13: historical\n" + \
+            "- #10: self\n> - #90: original\n## Context\n- #91 incidental\n## Dependencies\n- #92 dep"
+        self.gh.sub_issues.return_value = [12]
+        self.gh.parent_issue_inventory.return_value = [
+            {"number": 13, "body": "Part of #10"},
+            {"number": 90, "body": "> Part of #10"}]
+        self.states[13] = "CLOSED"
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        comment = self.comments[10][0]["body"]
+        for n in (11, 12, 13):
+            self.assertEqual(comment.count(f"#{n}:"), 1)
+        self.assertNotIn("#90", comment)
 
-        sync.close_finished_parents(self.ctx, [proj()])
+    def test_part_of_only_historical_child(self):
+        self.led.upsert_item("mahler", 11, parent=None)
+        self.gh.parent_issue_inventory.return_value = [{"number": 12, "body": "Part of #10"}]
+        self.run_pass()
+        self.assertIn("#12: merged", self.comments[10][0]["body"])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
 
-        # Both should be attempted
-        self.assertEqual(self.gh_mock.close_issue.call_count, 2)
-        # First failed, second succeeded
-        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+    def test_native_only_child(self):
+        self.led.upsert_item("mahler", 11, parent=None)
+        self.gh.sub_issues.return_value = [12]
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_goal_label_candidate(self):
+        self.led.upsert_item("mahler", 10, state="ready", labels=json.dumps(["type:goal"]))
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_checklist_and_empty_set_blockers(self):
+        for body in ("", "## Done when\n- prose", "## Done when\n- [ ] Works"):
+            with self.subTest(body=body):
+                self.bodies[10] = body
+                self.run_pass()
+                self.gh.close_issue.assert_not_called()
+        self.bodies[10] = "## Done when\n- [x] Works"
+        self.led.upsert_item("mahler", 11, parent=None)
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertIn("No child relationships", self.comments[10][-1]["body"])
+
+    def test_blockers_deduplicate_after_restart_and_resolve(self):
+        self.bodies[10] = "## Done when\n- [ ] exact criterion"
+        self.run_pass()
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx._gh["mkny13/mahler"] = self.gh
+        self.ctx.ping = mock.Mock()
+        self.run_pass()
+        self.gh.comment.assert_called_once()
+        self.ctx.ping.assert_not_called()
+        self.bodies[10] = "## Done when\n- [ ] different criterion"
+        self.run_pass()
+        self.ctx.ping.assert_called_once()
+        self.bodies[10] = "## Done when\n- [x] different criterion"
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_deduplication_survives_ledger_reopen(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "ledger.db")
+            self.led.con.backup((disk := Ledger(path)).con)
+            disk.close()
+            self.led = Ledger(path, clock=lambda: NOW)
+            self.ctx.led = self.led
+            self.bodies[10] = "## Done when\n- [ ] not yet"
+            self.run_pass()
+            self.led.close()
+            self.led = Ledger(path, clock=lambda: NOW)
+            self.ctx.led = self.led
+            try:
+                self.run_pass()
+                self.gh.comment.assert_called_once()
+                self.ctx.ping.assert_called_once()
+            finally:
+                self.led.close()
+
+    def test_failure_before_local_state_write_reconciles(self):
+        with mock.patch.object(self.led, "set_state", side_effect=RuntimeError("write failed")):
+            self.run_pass()
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.gh.comment.assert_called_once()
+        self.gh.close_issue.assert_called_once()
+
+    def test_failed_project_does_not_stop_next_project(self):
+        second = proj(name="other", repo="other/repo")
+        self.cfg["projects"]["other"] = second
+        other = mock.Mock()
+        other.parent_issue_inventory.side_effect = GHError("offline")
+        self.ctx._gh["other/repo"] = other
+        self.led.upsert_item("other", 1, state="parent")
+        sync.close_finished_parents(self.ctx, [second, proj()])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_dry_run_has_no_writes(self):
+        self.ctx.dry_run = True
+        before = list(self.led.con.iterdump())
+        self.run_pass()
+        self.bodies[10] = ""
+        self.run_pass()
+        self.assertEqual(list(self.led.con.iterdump()), before)
+        self.gh.comment.assert_not_called()
+        self.gh.close_issue.assert_not_called()
+        self.ctx.ping.assert_not_called()
+
+    def test_discovery_failures_are_not_success(self):
+        for method in ("parent_issue_inventory", "sub_issues", "issue_body", "issue_state"):
+            with self.subTest(method=method):
+                with mock.patch.object(self.gh, method, side_effect=GHError("incomplete")):
+                    self.run_pass()
+                self.gh.close_issue.assert_not_called()
+
+    def test_partial_writes_recover_once(self):
+        for operation in ("comment", "close_issue", "set_state"):
+            with self.subTest(operation=operation):
+                self.setUp()
+                obj = self.led if operation == "set_state" else self.gh
+                original = getattr(obj, operation)
+                def ambiguous(*args, **kwargs):
+                    original(*args, **kwargs)
+                    raise GHError("response lost")
+                with mock.patch.object(obj, operation, side_effect=ambiguous):
+                    self.run_pass()
+                self.run_pass()
+                self.run_pass()
+                self.assertEqual(len(self.comments[10]), 1)
+                self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+                self.assertEqual(len(self.led.q("SELECT * FROM events WHERE number=10 AND kind='state'")), 1)
+
+    def test_failed_parent_does_not_stop_second_parent(self):
+        self.led.upsert_item("mahler", 20, state="parent")
+        self.led.upsert_item("mahler", 12, parent=20, state="done")
+        self.bodies[20] = self.bodies.pop(10)
+        self.states[20] = "OPEN"
+        self.run_pass()
         self.assertEqual(self.led.item("mahler", 20)["state"], "done")
+        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+
+    def test_nested_and_cyclic_trackers_are_bounded(self):
+        self.led.upsert_item("mahler", 20, state="parent", parent=10)
+        self.led.upsert_item("mahler", 11, parent=20)
+        self.bodies[20] = self.bodies[10]
+        self.states[20] = "OPEN"
+        self.run_pass()
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.assertIn("#20: recorded parent completion", self.comments[10][0]["body"])
+        self.led.upsert_item("mahler", 10, state="parent", parent=20)
+        self.led.upsert_item("mahler", 20, state="parent", parent=10)
+        self.states.update({10: "OPEN", 20: "OPEN"})
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+        self.assertEqual(self.led.item("mahler", 20)["state"], "parent")
 
 
 class SyncStoresParentTests(unittest.TestCase):

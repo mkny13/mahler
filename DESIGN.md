@@ -381,11 +381,20 @@ On GitHub, `shipped` and `done` are closed issues. Everything else is open, with
 `mahler:<state>` label. Confirmed merges retain `mahler:shipped` on the closed
 issue, replacing `mahler:verifying`. Shipped items release leases and capacity,
 and satisfy `Depends on:` targets — merged code is enough to build on; post-merge
-evidence does not gate the next build (mahler#683). They do
-not satisfy parent completion until `done`. Release snapshots,
+evidence does not gate the next build (mahler#683). Parent completion accepts
+closed children with confirmed merged PRs, including `shipped`, when the parent
+has a nonempty, fully checked Done-when checklist (mahler#897). Relationships
+combine ledger links, unquoted `Part of #N`, native sub-issues and leading issue
+references in numbered/bulleted Plan Steps or named Children/Sub-issues lists.
+Unknown relationships, missing merge evidence and unchecked criteria never
+prove completion; terminal blockers receive deduplicated explanations and pings.
+Nested trackers use recorded parent-completion evidence; cycles remain waiting.
+Completion comments and local state reconcile safely after partial failures.
+Release snapshots,
 historical-table (`uat`) shipment entries and shipped events are recorded at merge time. Startup preserves both
 shipped rows and historical done rows. Only accepted D10 evidence promotes a
-shipment to done, removes its lifecycle label, and lets its parent close. D10 accepts
+shipment to done and removes its lifecycle label. Parent closure does not change
+that child evidence clock. D10 accepts
 automated evidence or exactly 14 days without adverse evidence. An early automated
 completion reopens to ready/p1 on adverse evidence inside that window; optional
 failure reports create linked fix work. Historical storage is retained.
