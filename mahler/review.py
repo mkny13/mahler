@@ -16,6 +16,96 @@ from . import screenshot_delivery
 from .gh import GHError
 
 
+def _strings(value, keys):
+    return isinstance(value, dict) and all(
+        isinstance(value.get(k), str) and value[k].strip() for k in keys)
+
+
+def validate_convergence(evidence):
+    """Validate reviewer attestations; legacy findings without them stay blocking."""
+    if not _strings(evidence, ("relation", "prior_sha", "prior_scenario")):
+        raise ValueError("incomplete convergence reference")
+    relation = evidence["relation"]
+    if relation not in {"new-edge-case", "unresolved", "regression", "acceptance-failure"}:
+        raise ValueError("unknown convergence relation")
+    tests = evidence.get("acceptance_tests")
+    if not isinstance(tests, list) or not tests or any(
+            not _strings(t, ("test", "result", "evidence")) or t["result"] not in {"pass", "fail"}
+            for t in tests):
+        raise ValueError("convergence needs named acceptance-test results and evidence")
+    if relation == "new-edge-case":
+        if (not _strings(evidence.get("fixed"), ("location", "evidence"))
+                or not _strings(evidence, ("outside_tests",))):
+            raise ValueError("new edge case needs prior-fix and outside-tests evidence")
+    elif not _strings(evidence.get("defect"), ("location", "test", "evidence")):
+        raise ValueError("protected defect needs concrete source and test evidence")
+
+
+def effective_dispositions(rounds, info, threshold):
+    """Pure, bounded policy: exact criterion/reference, same file, distinct green heads.
+
+    Semantic claims come from independent review; no text-similarity inference.
+    The original verdict/findings remain immutable evidence.
+    """
+    findings = info.get("classified")
+    if not isinstance(findings, list):
+        return []
+    current = next((i for i, r in enumerate(rounds) if r["sha"] == info.get("sha")), None)
+    result = []
+    for f in findings:
+        disposition = {"severity": f["severity"], "reason": "Independent reviewer classification"}
+        result.append(disposition)
+        if (current is None or current + 1 < threshold or f["severity"] != "blocking"
+                or f["category"] not in {"scope", "spec"} or not f.get("done_when")):
+            continue
+        e = f.get("convergence")
+        try:
+            validate_convergence(e)
+        except ValueError:
+            continue
+        if (e["relation"] != "new-edge-case" or e.get("defect")
+                or any(t["result"] != "pass" for t in e["acceptance_tests"])):
+            continue
+        path = lambda location: re.sub(r":\d+(?::\d+)?$", "", location)
+        prior = [old for r in rounds[:current] if r["sha"] == e["prior_sha"]
+                 for verdict in r["reviews"] for old in (verdict.get("classified") or [])
+                 if old.get("severity") == "blocking" and old.get("category") in {"scope", "spec"}
+                 and old.get("done_when") == f["done_when"]
+                 and old.get("scenario") == e["prior_scenario"]
+                 and path(old["location"]) == path(f["location"])]
+        if not prior or f["scenario"] == e["prior_scenario"]:
+            continue
+        disposition.update(severity="follow-up", reason=(
+            f"Conductor convergence: green round {current + 1} >= {threshold}; "
+            f"same exact criterion and file as {e['prior_sha']}. Prior blocker fixed: "
+            f"{e['fixed']['location']}: {e['fixed']['evidence']}. "
+            f"Named acceptance tests pass; new scenario outside those tests: {e['outside_tests']}"))
+    return result
+
+
+def apply_dispositions(ctx, project, item, info):
+    """Persist effective intake separately; return routing evidence without rewriting verdict."""
+    rounds = window(ctx.led, project, item["number"], item["pr"])
+    dispositions = effective_dispositions(rounds, info, ctx.policy(project)["review_green_rounds"])
+    if not any(d["severity"] != f["severity"] for d, f in zip(dispositions, info.get("classified") or [])):
+        return info
+    key = f"reviewresults:{project}#{item['number']}"
+    records = json.loads(ctx.led.get_kv(key) or "{}")
+    record = records.get(str(info.get("run_id")))
+    # No archived intake means no durable, reviewable handoff: retain the blocker.
+    if (not record or record.get("sha") != info.get("sha") or record.get("pr") != item["pr"]
+            or len(record["findings"]) != len(dispositions) or ctx.dry_run):
+        return info
+    effective_findings = []
+    for original, archived, disposition in zip(info["classified"], record["findings"], dispositions):
+        archived.update(effective_severity=disposition["severity"], disposition_reason=disposition["reason"])
+        effective_findings.append({**original, "severity": disposition["severity"]})
+    ctx.led.set_kv(key, json.dumps(records))
+    blockers = [f for f in effective_findings if f["severity"] == "blocking"]
+    return {**info, "verdict": "fail" if blockers else "pass",
+            "classified": effective_findings, "findings": render(blockers)}
+
+
 def parse(verdict, text, issue_body=""):
     text = (text or "").strip()
     if not text:
@@ -43,6 +133,8 @@ def parse(verdict, text, issue_body=""):
             if (not isinstance(f.get("done_when"), str) or not f["done_when"].strip()
                     or f["done_when"] not in criteria):
                 raise ValueError("scope/spec blocker needs an exact Done-when line")
+        if "convergence" in f:
+            validate_convergence(f["convergence"])
     if (verdict == "fail") != any(f["severity"] == "blocking" for f in findings):
         raise ValueError("verdict contradicts findings")
     return findings
@@ -92,6 +184,9 @@ def start_context(ctx, project, item, pr, sha):
                if operating_context else
                "Project operating context: unspecified (review_context is empty); "
                "do not assume the personal-project context.\n")
+    archived = json.loads(ctx.led.get_kv(f"reviewresults:{project}#{item['number']}") or "{}")
+    dispositions = [r for r in archived.values() if r.get("pr") == pr
+                    and any(f.get("effective_severity") for f in r.get("findings", []))]
     return (context + f"Green review round: {number}; review_green_rounds: {threshold} "
             "(inclusive; provisional until this head has a usable verdict and green CI).\n"
             + ("Convergence threshold reached: only new substantiated blockers or still-"
@@ -103,6 +198,8 @@ def start_context(ctx, project, item, pr, sha):
             "findings are follow-ups; explain their nonblocking consequence.\n"
             + "Prior green review evidence (old findings are not proof of a current defect):\n"
             + json.dumps(rounds) + "\n"
+            + "Prior conductor dispositions (original evidence retained):\n"
+            + json.dumps(dispositions) + "\n"
             + screenshot_delivery.review_context(ctx, project, pr, sha))
 
 
@@ -148,17 +245,19 @@ def file_followups(ctx, project, item):
         if record["pr"] != item["pr"]:
             continue
         for f in record["findings"]:
-            if f["severity"] != "follow-up" or f.get("linked"):
+            if f.get("effective_severity", f["severity"]) != "follow-up" or f.get("linked"):
                 continue
+            effective_finding = {**f, "severity": f.get("effective_severity", f["severity"])}
+            reason = f.get("disposition_reason", record.get("reason", "Classified as nonblocking by the independent reviewer."))
             try:
                 if not f.get("url"):
                     url = gh.issue_by_marker(f["marker"])
                     if not url:
                         repo = pol["repo"]
-                        body = (f"{f['marker']}\n\n## Problem / goal\n\n{render([f])}\n\n"
+                        body = (f"{f['marker']}\n\n## Problem / goal\n\n{render([effective_finding])}\n\n"
                                 f"Source issue: https://github.com/{repo}/issues/{item['number']}\n"
                                 f"Source PR: https://github.com/{repo}/pull/{record['pr']}\n"
-                                f"Review run: {record['run_id']}; reviewed head: {record['sha']}\n")
+                                f"Review run: {record['run_id']}; reviewed head: {record['sha']}\n\n{reason}\n")
                         labels = ["mahler:inbox", "type:chore", "p2"]
                         if pol.get("scope") == "label":
                             labels.append(pol["scope_label"])
@@ -167,8 +266,8 @@ def file_followups(ctx, project, item):
                             raise GHError("follow-up creation returned no URL")
                     f["url"] = url
                     ctx.led.set_kv(key, json.dumps(records))
-                gh.comment(record["pr"], f"Review follow-up: {f['url']}\n\n{render([f])}\n\n"
-                           + record.get("reason", "Classified as nonblocking by the independent reviewer."))
+                gh.comment(record["pr"], f"Review follow-up: {f['url']}\n\n{render([effective_finding])}\n\n"
+                           + reason)
                 f["linked"] = True
                 ctx.led.set_kv(key, json.dumps(records))
             except GHError as err:

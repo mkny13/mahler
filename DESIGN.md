@@ -975,6 +975,21 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   intake before merge, with their classification reason in PR evidence. Security, data
   loss, regressions and unsatisfied acceptance checks retain the normal bounded fix flow.
   Current-head independent review, fresh CI and merge/base safety gates remain required.
+  **Conductor disposition (mahler#895).** At inclusive N, an incoming scope/spec blocker
+  becomes a follow-up when structured independent-review evidence references an earlier
+  green head's exact criterion and scenario in the same file (ignoring moved line numbers),
+  demonstrates the earlier blocker is fixed, cites passing named acceptance tests, and
+  identifies a new scenario outside those tests. Broad negative criteria are bounded by
+  the stated acceptance tests. No substring or file-overlap-only inference is used.
+  Unresolved defects, named acceptance failures, regressions of first-fix tests, demonstrated
+  behavior regressions, security and normal-flow data loss remain blocking; protected
+  relation evidence names a source location, test and concrete result. Missing or invalid
+  evidence never authorizes demotion. Legacy reviews retain their meaning.
+  Original findings/verdicts and effective dispositions/reasons remain separate in existing
+  KV records, survive restarts and appear in subsequent review context. The gate applies
+  dispositions after head/CI validation and before fix/design routing; mixed reviews fix
+  remaining blockers. Demoted findings must complete durable follow-up creation and PR
+  linking before entry to the normal merge gate. The disjoint-file design path is unchanged.
 - **Design pass for non-converging reviews** (mahler#715): at or after the
   `review_green_rounds` threshold, the existing disjoint-location convergence signal
   replaces serial local patching with exactly one plan-only `design` run.

@@ -911,6 +911,8 @@ def _review_gate(ctx, project, item, pr, view):
     status = review.effective_for_item(led, project, n, pr=pr, sha=sha)
     if status in {"pass", "fail"}:
         review.record_green(ctx, project, item, pr, info)
+        info = review.apply_dispositions(ctx, project, item, info)
+        status = info["verdict"]
         _review_not_converging(ctx, project, item, pr, view)
     if status == "pass":
         if not review.file_followups(ctx, project, item):
