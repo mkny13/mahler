@@ -3496,6 +3496,30 @@ class TestGreenReviewRounds(unittest.TestCase):
                 self.gh.create_issue.assert_called_once()
                 self.assertTrue(any(f"issues/10{idx}" in c for c in self.gh.comments))
 
+    def test_design_result_followups_ignores_legacy_review_findings_marker(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.led.set_kv("reviewresults:x#5", None)
+        sha = "head-legacy-marker"
+        findings = [{
+            "severity": "follow-up", "category": "behavior",
+            "location": "a.py:10", "scenario": "Minor", "consequence": "None"
+        }]
+        self.complete_head(sha, [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        info = json.loads(self.led.get_kv("review:x#5"))
+        info["findings"] = "[blocking/security] Something bad\n[blocking/spec](Done when: must verify)"
+        info["classified"] = []
+        self.led.set_kv("review:x#5", json.dumps(info))
+        self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+            "head": sha, "run_id": 99, "disposition": "followups",
+            "justification": "Acceptable",
+            "findings": findings
+        }))
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/200")
+        merge, fix, _ = self.gate()
+        merge.assert_called_once()
+        fix.assert_not_called()
+
     def test_overlapping_findings_reset_drift_and_missing_locations_inconclusive(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         self.complete_head("head-1", [{**self.finding("blocking"), "location": "a.py:10"}], 1)
