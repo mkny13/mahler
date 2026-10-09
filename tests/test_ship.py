@@ -3907,6 +3907,160 @@ class DependencyPRTests(unittest.TestCase):
     def events(self):
         return self.led.q("SELECT * FROM events WHERE kind='dependency_adopted'")
 
+    def reopen(self):
+        self.led.close()
+        self.led = Ledger(self.tmp.name + '/ledger.db', clock=lambda: self.now)
+        self.ctx.led = self.led
+
+    def requests(self):
+        return [json.loads(r['value']) for r in self.led.q(
+            "SELECT value FROM kv WHERE key LIKE 'dependency-rebase:x:%'")]
+
+    def test_rebase_transition_to_confirmed_adoption(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once_with(10, 'dependabot')
+        self.gh.pr_merge.assert_not_called()
+        self.assertIsNone(self.led.get_kv('dependency-pending:x'))
+        self.assertFalse(self.events())
+        self.views[10].update(headRefOid='b' * 40, statusCheckRollup=[{'state': 'PENDING'}])
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
+        self.gh.base_in_head.return_value = True
+        self.views[10]['statusCheckRollup'] = [{'state': 'SUCCESS'}]
+        self.run_pass()
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(10, 'b' * 40)
+        self.assertEqual(len(self.events()), 1)
+        self.assertTrue(self.requests()[0]['resolved_at'])
+
+    def test_rebase_once_per_head_across_restart_and_base_movement(self):
+        for n, bot in ((10, 'dependabot'), (11, 'renovate')):
+            self.add(n, bot=bot)
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.run_pass()
+        self.reopen()
+        self.views[10]['baseRefName'] = 'other'
+        self.run_pass()
+        self.assertEqual(self.gh.request_dependency_rebase.call_args_list,
+                         [mock.call(10, 'dependabot'), mock.call(11, 'renovate')])
+        self.views[10]['headRefOid'] = 'b' * 40
+        self.run_pass()
+        self.assertEqual(self.gh.request_dependency_rebase.call_count, 3)
+
+    def test_rebase_timeout_boundary_dedup_and_admission_holds(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.led.upsert_item('x', 5, state='working')
+        self.led.claim('x', 5, 'session', 'interactive', 120)
+        self.cfg['projects']['x']['dependency_prs_daily_cap'] = 0
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.now += timedelta(minutes=59, seconds=59)
+            self.run_pass()
+            ping.assert_not_called()
+            self.now += timedelta(seconds=1)
+            self.run_pass()
+            ping.assert_called_once()
+            self.assertIn(self.views[10]['url'], ping.call_args.args[1])
+            self.assertIn(self.views[10]['headRefOid'], ping.call_args.args[1])
+            self.run_pass()
+            self.run_pass()
+            self.reopen()
+            self.run_pass()
+            ping.assert_called_once()
+
+    def test_rebase_admission_and_timeout_during_each_hold(self):
+        self.gh.base_in_head.return_value = False
+        for hold in ('disabled', 'dry-run', 'cap', 'ordinary', 'capacity', 'merge'):
+            with self.subTest(hold=hold):
+                self.cfg['projects']['x'].update(dependency_prs=hold != 'disabled',
+                                                dependency_prs_daily_cap=0 if hold == 'cap' else 3)
+                self.ctx.dry_run = hold == 'dry-run'
+                self.led.upsert_item('x', 5, state='verifying' if hold == 'ordinary' else 'ready')
+                if hold == 'capacity':
+                    self.led.claim('x', 5, 'session', 'interactive', 120)
+                self.ctx.merge_requested = hold == 'merge'
+                ship._dependency_prs(self.ctx, 'x')
+                self.gh.request_dependency_rebase.assert_not_called()
+                self.led.release('x', 5)
+        self.ctx.merge_requested = False
+        self.run_pass()
+        self.now += timedelta(hours=1)
+        for hold in ('cap', 'ordinary', 'merge'):
+            with self.subTest(timeout_hold=hold), mock.patch.object(self.ctx, 'ping') as ping:
+                request = self.requests()[0]
+                request.pop('alerted_at', None)
+                self.led.set_kv(f"dependency-rebase:x:10:{request['sha']}", json.dumps(request))
+                self.cfg['projects']['x']['dependency_prs_daily_cap'] = 0 if hold == 'cap' else 3
+                self.led.set_state('x', 5, 'verifying' if hold == 'ordinary' else 'ready')
+                self.ctx.merge_requested = hold == 'merge'
+                ship._dependency_prs(self.ctx, 'x')
+                ping.assert_called_once()
+
+    def test_rebase_resolution_suppresses_stale_alert(self):
+        self.gh.base_in_head.return_value = False
+        self.add(11)
+        self.add(12)
+        self.run_pass()
+        self.views[10]['state'] = 'CLOSED'
+        self.views[11]['state'] = 'MERGED'
+        self.views[12].update(headRefOid='b' * 40, statusCheckRollup=[{'state': 'PENDING'}])
+        self.now += timedelta(hours=1)
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+            ping.assert_not_called()
+        self.assertTrue(all(r.get('resolved_at') for r in self.requests()))
+
+    def test_rebase_error_is_durable_and_does_not_block_other_pr(self):
+        self.add(11)
+        self.gh.base_in_head.side_effect = lambda path, base, sha: sha != '10'.zfill(40)
+        def fail(n, bot):
+            self.assertEqual(self.requests()[0]['outcome'], 'uncertain')
+            raise gh_module.GHError('response lost')
+        self.gh.request_dependency_rebase.side_effect = fail
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(11, '11'.zfill(40))
+        self.reopen()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once()
+        self.assertEqual(self.requests()[0]['error'], 'response lost')
+        self.now += timedelta(hours=1)
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+            self.assertIn('response lost', ping.call_args.args[1])
+            self.run_pass()
+            ping.assert_called_once()
+
+    def test_rebase_reconciliation_api_and_notification_failures(self):
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.now += timedelta(hours=1)
+        self.led.upsert_item('x', 5, state='verifying')
+        with mock.patch.object(self.ctx, 'ping', side_effect=RuntimeError('offline')) as ping:
+            self.gh.dependency_pr_view.side_effect = gh_module.GHError('unavailable')
+            self.run_pass()
+            ping.assert_not_called()
+            self.gh.dependency_pr_view.side_effect = lambda n: copy.deepcopy(self.views[n])
+            self.run_pass()
+            self.reopen()
+            self.run_pass()
+            ping.assert_called_once()
+        self.gh.request_dependency_rebase.assert_called_once()
+
+    def test_interrupted_rebase_intent_is_not_retried(self):
+        self.gh.base_in_head.return_value = False
+        self.gh.request_dependency_rebase.side_effect = KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_pass()
+        self.reopen()
+        self.gh.request_dependency_rebase.side_effect = None
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once()
+        self.assertEqual(self.requests()[0]['outcome'], 'uncertain')
+
     def test_patch_minor_and_actions(self):
         for bot in ('dependabot', 'renovate'):
             for after in ('1.2.4', '1.3.0'):
@@ -4052,14 +4206,15 @@ class DependencyPRTests(unittest.TestCase):
                 self.views[10] = {**original, **changes}
                 self.run_pass()
                 self.gh.pr_merge.assert_not_called()
+                self.gh.request_dependency_rebase.assert_not_called()
         self.views[10] = original
-        for ancestry in (False, None):
-            self.gh.base_in_head.return_value = ancestry
-            self.run_pass()
-            self.gh.pr_merge.assert_not_called()
+        self.gh.base_in_head.return_value = None
+        self.run_pass()
+        self.gh.pr_merge.assert_not_called()
         self.gh.base_in_head.side_effect = gh_module.GHError('fetch failed')
         self.run_pass()
         self.gh.pr_merge.assert_not_called()
+        self.gh.request_dependency_rebase.assert_not_called()
 
     def test_changed_exact_head_base_checks_and_metadata(self):
         original = self.views[10]
@@ -4070,6 +4225,7 @@ class DependencyPRTests(unittest.TestCase):
                 self.gh.dependency_pr_view.side_effect = [original, {**original, **changes}]
                 self.run_pass()
                 self.gh.pr_merge.assert_not_called()
+        self.gh.request_dependency_rebase.assert_not_called()
 
     def test_major_dedup_and_scope(self):
         self.cfg['projects']['x'].update(scope='label', scope_label='custom')

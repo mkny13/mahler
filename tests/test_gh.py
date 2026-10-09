@@ -1,12 +1,67 @@
 import json
 import unittest
 from unittest.mock import patch, MagicMock
-from mahler.gh import GH, pr_body, HELP_FOOTER, AGENT_NOTE
+from mahler.gh import GH, GHError, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
 
 class TestGH(unittest.TestCase):
     def setUp(self):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
+
+    def test_dependency_rebase_requests_use_project_credentials(self):
+        env = {"GH_CONFIG_DIR": "/test/work-account"}
+        client = GH("work/repo", env=env)
+        with patch("mahler.gh._gh", return_value="") as call:
+            client.request_dependency_rebase(10, "dependabot")
+            self.assertEqual(call.call_args.args,
+                             ("issue", "comment", "10", "-R", "work/repo", "--body-file", "-"))
+            self.assertTrue(call.call_args.kwargs["input"].startswith("<!-- mahler:agent -->"))
+            self.assertIn("@dependabot rebase", call.call_args.kwargs["input"])
+            self.assertEqual(call.call_args.kwargs["env"], env)
+            call.reset_mock()
+            call.side_effect = ['[[]]', '', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual([c.args for c in call.call_args_list], [
+                ("api", "repos/work/repo/labels?per_page=100", "--paginate", "--slurp"),
+                ("label", "create", "rebase", "-R", "work/repo"),
+                ("issue", "edit", "11", "-R", "work/repo", "--add-label", "rebase")])
+            self.assertTrue(all(c.kwargs["env"] == env for c in call.call_args_list))
+            call.reset_mock()
+            call.side_effect = ['[[{"name": "rebase", "color": "abcdef"}]]', '']
+            client.request_dependency_rebase(11, "renovate")
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args.args[0:2], ("issue", "edit"))
+            call.reset_mock()
+            with self.assertRaises(ValueError):
+                client.request_dependency_rebase(12, "unknown")
+            call.assert_not_called()
+
+    def test_dependabot_rebase_bypasses_app_using_project_user(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/test/key.pem"}}
+        for env in (None, {"GH_CONFIG_DIR": "/test/work-account",
+                           "GH_TOKEN": "test-user-token"}):
+            with self.subTest(env=env), \
+                    patch("mahler.gh.config.run_env", return_value=env), \
+                    patch("mahler.github_app.Installation") as installation, \
+                    patch("mahler.gh._gh", return_value="") as call:
+                app = installation.return_value
+                app.token.return_value = "test-app-token"
+                client = project_client(cfg, {"repo": "owner/repo"})
+                client.request_dependency_rebase(10, "dependabot")
+                app.token.assert_not_called()
+                self.assertEqual(call.call_args.kwargs["env"], env)
+                self.assertEqual(call.call_args.kwargs["input"],
+                                 AGENT_NOTE + "\n@dependabot rebase" + HELP_FOOTER)
+                # Other conductor comments still use the configured App.
+                client.comment(10, "ordinary comment")
+                self.assertEqual(call.call_args.kwargs["env"]["GH_TOKEN"],
+                                 "test-app-token")
+                app.token.reset_mock()
+                call.side_effect = GHError("user login unavailable")
+                with self.assertRaisesRegex(GHError, "user login unavailable"):
+                    client.request_dependency_rebase(10, "dependabot")
+                app.token.assert_not_called()
 
     def test_ci_retry_exact_head_workflow_job_and_failed_only_endpoint(self):
         failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
