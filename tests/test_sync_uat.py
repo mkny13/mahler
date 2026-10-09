@@ -149,14 +149,19 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='uat_verdict'")), 1)
         self.assertEqual(self.gh.state, "CLOSED")
 
-    def test_parent_and_dependent_unblock_only_after_evidence(self):
+    def test_parent_completes_before_child_post_merge_evidence(self):
         self.sync()
         self.led.upsert_item("x", 10, state="parent")
         self.led.upsert_item("x", 5, parent=10)
         self.gh.close_issue = mock.Mock()
+        self.gh.parent_issue_inventory = mock.Mock(return_value=[])
+        self.gh.sub_issues = mock.Mock(return_value=[])
+        self.gh.issue_body = mock.Mock(return_value="## Done when\n- [x] Works")
+        self.gh.pr_merge_info = mock.Mock(return_value={"state": "MERGED"})
         with mock.patch.object(self.ctx, "gh", return_value=self.gh):
             sync.close_finished_parents(self.ctx, [self.ctx.policy("x")])
-        self.assertEqual(self.led.item("x", 10)["state"], "parent")
+        self.assertEqual(self.led.item("x", 10)["state"], "done")
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
         self.gh.comments = [dict(body="Verified: works", author={"login": "owner"},
                                  authorAssociation="OWNER", id=12,
                                  createdAt="2026-09-15T12:01:00Z")]

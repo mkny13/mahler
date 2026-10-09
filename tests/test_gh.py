@@ -8,6 +8,42 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_parent_inventory_paginates_and_excludes_prs(self):
+        self.gh._gh.side_effect = [json.dumps([{"number": n} for n in range(100)]),
+                                  json.dumps([{"number": 101}, {"number": 102, "pull_request": {}}])]
+        self.assertEqual(len(self.gh.parent_issue_inventory()), 101)
+        self.assertIn("page=2", self.gh._gh.call_args.args[1])
+
+    def test_native_children_pagination_and_cross_repository_guard(self):
+        def row(n, repo="mkny13/mahler"):
+            return {"number": n, "repository_url": f"https://api.github.com/repos/{repo}"}
+        self.gh._gh.side_effect = [json.dumps([row(n) for n in range(100)]), json.dumps([row(101)])]
+        self.assertEqual(self.gh.sub_issues(10), [*range(100), 101])
+        self.gh._gh.side_effect = None
+        self.gh._gh.return_value = json.dumps([row(1, "other/repo")])
+        with self.assertRaises(GHError):
+            self.gh.sub_issues(10)
+        self.gh._gh.side_effect = [json.dumps([row(n) for n in range(100)]), GHError("offline")]
+        with self.assertRaises(GHError):
+            self.gh.sub_issues(10)
+
+    def test_closing_prs_include_historical_and_exhaust_pagination(self):
+        def page(more, cursor, state):
+            return json.dumps({"data": {"repository": {"issue": {"closedByPullRequestsReferences": {
+                "nodes": [{"number": 9, "state": state, "repository": {"nameWithOwner": "mkny13/mahler"}}],
+                "pageInfo": {"hasNextPage": more, "endCursor": cursor}}}}}})
+        self.gh._gh.side_effect = [page(True, "next", "CLOSED"), page(False, None, "MERGED")]
+        rows = self.gh.closing_prs(10)
+        self.assertEqual([r["state"] for r in rows], ["CLOSED", "MERGED"])
+        self.assertIn("includeClosedPrs:true", self.gh._gh.call_args.args[3])
+        self.assertIn("cursor=next", self.gh._gh.call_args.args)
+        self.gh._gh.side_effect = [page(True, "next", "CLOSED"), page(True, "next", "MERGED")]
+        with self.assertRaisesRegex(GHError, "incomplete"):
+            self.gh.closing_prs(10)
+        self.gh._gh.side_effect = [json.dumps({"errors": [{"message": "failed"}]})]
+        with self.assertRaises(GHError):
+            self.gh.closing_prs(10)
+
     def test_dependency_rebase_requests_use_project_credentials(self):
         env = {"GH_CONFIG_DIR": "/test/work-account"}
         client = GH("work/repo", env=env)

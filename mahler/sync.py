@@ -6,6 +6,8 @@ all done is the same kind of work, so it lives here too.
 """
 
 import json
+import hashlib
+import re
 from datetime import timedelta
 
 from . import config, releases
@@ -566,46 +568,167 @@ def _set_pin(ctx, project, n, platform):
     ctx.led.upsert_item(project, n, pin=platform)
 
 
-def close_finished_parents(ctx, projects):
-    """Close parent issues when all their sub-issues are done.
-    
-    For each item in state 'parent', find children (items with parent == number).
-    If there is at least one child and every child is in state 'done':
-    post a comment listing the children, close the issue, and set state to 'done'.
+def _parent_sections(body):
+    """Ignore quoted originals and fenced examples; retain section boundaries."""
+    section, fenced = "", False
+    for line in body.splitlines():
+        if line.lstrip().startswith(">"):
+            continue
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+?)\s*$", line)
+        if heading:
+            section = heading[1].strip(" *:").lower()
+        else:
+            yield section, line.strip()
+
+
+def _parent_children(body, repo):
+    """Leading refs in Plan/Steps or named Children/Sub-issues list entries.
+
+    Entries are `- #12: title`, `1. #12 title`, or their checkbox variants.
+    Qualified refs/URLs must name this repository. Prose refs are not children.
     """
-    led = ctx.led
+    children = set()
+    active = False
+    for section, line in _parent_sections(body):
+        if section in {"children", "child issues", "sub-issues", "sub issues", "steps"}:
+            active = True
+        elif section == "plan":
+            if line.lower().strip("*:") in {"steps", "children", "child issues", "sub-issues"}:
+                active = True
+            elif re.match(r"^[A-Za-z][^:]*:$", line):
+                active = False
+        else:
+            active = False
+        if not active:
+            continue
+        entry = re.match(r"^(?:[-*+] |\d+[.)] )\s*(?:\[[ xX]\]\s*)?(.*)$", line)
+        if not entry:
+            continue
+        ref = re.match(r"(?:https://github.com/([^/]+/[^/]+)/issues/|([\w.-]+/[\w.-]+)#|#)(\d+)\b", entry[1])
+        if ref:
+            if (ref[1] or ref[2] or repo).lower() != repo.lower():
+                raise GHError("unsupported cross-repository child reference")
+            children.add(int(ref[3]))
+    return children
+
+
+def _parent_checklist(body):
+    lines = [line for section, line in _parent_sections(body)
+             if section in {"done when", "done-when"} and line]
+    checks = [re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", line) for line in lines]
+    if not checks or not all(checks):
+        return ["Done-when checklist absent or unparseable"]
+    return [f"Unchecked criterion: {check[2]}" for check in checks if check[1] == " "]
+
+
+def close_finished_parents(ctx, projects):
+    """Reconcile tracking parents, independently of child verification clocks."""
     for p in projects:
         try:
             _close_finished_parents_project(ctx, p["name"])
-        except Exception as e:                  # noqa: BLE001 — one project can't stop the rest
+        except Exception as e:  # one project cannot stop the tick
             ctx.say(f"{p['name']}: close_finished_parents failed — {e}")
 
 
 def _close_finished_parents_project(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
-    for parent_item in led.items(project, ["parent"]):
-        parent_num = parent_item["number"]
-        # Find children: items of the same project with parent == parent_num
-        children = [it for it in led.items(project) if it["parent"] == parent_num]
-        if not children:
-            continue  # no children, nothing to do
-        # Check if all children are done
-        if all(child["state"] == "done" for child in children):
-            child_nums = [str(c["number"]) for c in children]
-            comment = (
-                f"<!-- mahler:agent -->\n"
-                f"All sub-issues done — closing.\n\n"
-                f"Sub-issues: {', '.join(f'#{n}' for n in child_nums)}"
-            )
+    items = led.items(project)
+    parents = [it for it in items if it["state"] == "parent" or (
+        it["state"] not in {"done", "shipped"} and
+        set(json.loads(it["labels"] or "[]")) & {"type:goal", "mahler:parent"})
+        or led.get_kv(f"parent_pending:{project}:{it['number']}")]
+    if not parents:
+        return
+    inventory = gh.parent_issue_inventory()
+    repo = ctx.policy(project)["repo"]
+    # One finite pass: nested parents completed later become eligible next tick.
+    # No recursion means cycles remain waiting without manufacturing evidence.
+    for parent in parents:
+        n = parent["number"]
+        try:
+            body = gh.issue_body(n)
+            state = gh.issue_state(n)
+            key = f"parent_complete:{project}:{n}"
+            pending = f"parent_pending:{project}:{n}"
+            if state == "CLOSED" and led.get_kv(key):
+                if not ctx.dry_run:
+                    led.set_state(project, n, "done", "verified parent completion")
+                    led.set_kv(pending, "")
+                continue
+            children = _parent_children(body, repo) | set(gh.sub_issues(n))
+            children.update(it["number"] for it in items if it["parent"] == n)
+            children.update(it["number"] for it in inventory
+                            if part_of("\n".join(line for section, line in
+                                       _parent_sections(it.get("body") or "")
+                                       if section not in {"original request", "context", "dependencies"})) == n)
+            children.discard(n)
+            blockers = _parent_checklist(body)
+            evidence, waiting = [], False
+            if not children:
+                blockers.append("No child relationships found")
+            for child in sorted(children):
+                child_state = gh.issue_state(child)
+                if child_state == "OPEN":
+                    waiting = True
+                    continue
+                if child_state != "CLOSED":
+                    blockers.append(f"#{child}: unknown issue state")
+                    continue
+                if led.get_kv(f"parent_complete:{project}:{child}"):
+                    evidence.append(f"#{child}: recorded parent completion")
+                    continue
+                item = led.item(project, child)
+                prs = []
+                if item and item["pr"]:
+                    view = gh.pr_merge_info(item["pr"])
+                    if pr_merged(view):
+                        prs = [dict(view, number=item["pr"])]
+                if not prs:
+                    prs = [pr for pr in gh.closing_prs(child) if pr_merged(pr)]
+                if prs:
+                    evidence.append(f"#{child}: merged " + ", ".join(
+                        f"PR #{pr['number']}" for pr in prs))
+                else:
+                    blockers.append(f"#{child}: closed without confirmed merged PR evidence")
+            if waiting:
+                continue
+            comments = gh.issue_comments(n)
+            if blockers:
+                explanation = "Parent completion blocked:\n" + "\n".join(f"- {b}" for b in blockers)
+                fingerprint = hashlib.sha256(json.dumps([blockers, evidence], sort_keys=True).encode()).hexdigest()
+                marker = f"<!-- mahler:parent-blocked:{fingerprint} -->"
+                notify_key = f"parent_blocked:{project}:{n}:{fingerprint}"
+                ctx.say(f"{project}#{n}: {explanation}")
+                if not ctx.dry_run:
+                    if not any(marker in c.get("body", "") for c in comments):
+                        gh.comment(n, f"{AGENT_MARK}\n{marker}\n{explanation}")
+                    if not led.get_kv(notify_key):
+                        ctx.ping(f"{project}#{n}: parent completion blocked", explanation, project, n)
+                        led.set_kv(notify_key, "1")
+                continue
+            fingerprint = hashlib.sha256(json.dumps([body, evidence]).encode()).hexdigest()
+            marker = f"<!-- mahler:parent-complete:{fingerprint} -->"
+            ctx.say(f"{project}#{n}: would close — verified children" if ctx.dry_run
+                    else f"{project}#{n}: closing — verified children")
             if ctx.dry_run:
-                ctx.say(f"{project}#{parent_num}: would close — all {len(children)} sub-issue(s) done")
-            else:
-                try:
-                    gh.close_issue(parent_num, comment=comment)
-                    led.set_state(project, parent_num, "done", "all sub-issues done")
-                    ctx.say(f"{project}#{parent_num}: closed — all sub-issues done")
-                except GHError as e:
-                    ctx.say(f"{project}#{parent_num}: failed to close — {e}")
+                continue
+            led.set_kv(pending, fingerprint)
+            if not any(marker in c.get("body", "") for c in comments):
+                gh.comment(n, f"{AGENT_MARK}\n{marker}\n"
+                           "Parent checklist checked; all children completed:\n" +
+                           "\n".join(f"- {line}" for line in evidence))
+            if state != "CLOSED":
+                gh.close_issue(n)
+            led.set_kv(key, fingerprint)
+            led.set_state(project, n, "done", "verified parent completion")
+            led.set_kv(pending, "")
+        except Exception as e:  # reads and partially successful writes retry next tick
+            ctx.say(f"{project}#{n}: parent completion unresolved — {e}")
 
 
 def mirror_labels(ctx, project):
