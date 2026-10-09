@@ -547,6 +547,17 @@ class ReviewOperatingContextTests(unittest.TestCase):
 
 
 class ReviewEvidenceTests(unittest.TestCase):
+    def test_convergence_evidence_contract(self):
+        text = " ".join(prompt.render("review", handoff="").split())
+        for fragment in (
+            "Broad negative Done-when criteria are bounded by the issue's stated acceptance tests",
+            "cannot demand successive new edge cases", "`convergence`", "`prior_sha`",
+            "`prior_scenario`", "`acceptance_tests`", "`outside_tests`", "`fixed`",
+            "`unresolved`", "`regression`", "`acceptance-failure`", "`defect`",
+            "first-fix test regressions", "Missing evidence does not authorize conductor demotion",
+        ):
+            self.assertIn(fragment, text)
+
     def test_description_only_evidence_is_nonblocking(self):
         text = " ".join(prompt.render("review", handoff="").split())
         for fragment in (

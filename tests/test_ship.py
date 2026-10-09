@@ -3259,6 +3259,139 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.finish(ending, "fail" if any(f["severity"] == "blocking" for f in findings) else "pass")
         return ending
 
+    def convergence_case(self, threshold=2, line=12):
+        self.cfg["projects"]["x"]["review_green_rounds"] = threshold
+        criterion = "- [ ] Unrelated human questions remain parked"
+        self.gh.issue_body = mock.Mock(return_value="## Done when\n" + criterion)
+        first = {**self.finding("blocking"), "category": "spec", "done_when": criterion}
+        for number in range(1, threshold):
+            self.complete_head(f"head-{number}", [first], number)
+            self.gate()[1].assert_called_once()
+        current = {**first, "location": f"app.py:{line}", "scenario": "A new timing edge case",
+                   "convergence": {
+                       "relation": "new-edge-case", "prior_sha": "head-1",
+                       "prior_scenario": first["scenario"],
+                       "fixed": {"location": "app.py:12", "evidence": "Original retry now preserves the question"},
+                       "acceptance_tests": [{"test": "tests/test_app.py::test_parked", "result": "pass",
+                                             "evidence": "Ran on current head: original retry remains parked"}],
+                       "outside_tests": "Concurrent timing scenario outside the stated retry case"}}
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/99")
+        return current
+
+    def test_same_file_incoming_blocker_converges(self):
+        for threshold, line in ((2, 12), (2, 192), (3, 12), (3, 192)):
+            with self.subTest(threshold=threshold, line=line):
+                self.led.set_kv("reviewrounds:x#5:88", None)
+                self.led.set_kv("reviewresults:x#5", None)
+                finding = self.convergence_case(threshold, line)
+                self.complete_head(f"head-{threshold}", [finding], threshold)
+                with mock.patch.object(ship, "_maybe_start_design") as design:
+                    merge, fix, start = self.gate()
+                merge.assert_called_once()
+                fix.assert_not_called()
+                start.assert_not_called()
+                design.assert_not_called()
+                self.gh.create_issue.assert_called_once()
+                self.assertTrue(any("Conductor convergence" in c for c in self.gh.comments))
+                records = json.loads(self.led.get_kv("reviewresults:x#5"))
+                row = records[str(threshold)]["findings"][0]
+                self.assertEqual(row["severity"], "blocking")
+                self.assertEqual(row["effective_severity"], "follow-up")
+                self.assertTrue(row["linked"])
+                self.ctx = scheduler.Ctx(self.cfg, self.led)
+                self.gate()[0].assert_called_once()
+                self.gh.create_issue.assert_called_once()
+                self.assertEqual(len(self.rounds()), threshold)
+
+    def test_same_file_protected_controls_and_mixed_review(self):
+        import copy
+        current = self.convergence_case()
+        for control in ("unresolved", "regression", "acceptance-failure", "security",
+                        "data-loss", "behavior", "different-criterion", "missing-evidence",
+                        "failed-test", "unknown-head", "different-file", "same-scenario", "mixed"):
+            with self.subTest(control=control):
+                f = copy.deepcopy(current)
+                if control in {"unresolved", "regression", "acceptance-failure"}:
+                    f["convergence"].update(relation=control, defect={
+                        "location": "app.py:12", "test": "tests/test_app.py::test_parked",
+                        "evidence": "First-fix test now fails: question disappears"})
+                elif control in {"security", "data-loss", "behavior"}:
+                    f["category"] = control
+                elif control == "different-criterion":
+                    f["done_when"] = "- [ ] Other criterion"
+                    self.gh.issue_body.return_value += "\n" + f["done_when"]
+                elif control == "missing-evidence":
+                    del f["convergence"]
+                elif control == "failed-test":
+                    f["convergence"]["acceptance_tests"][0]["result"] = "fail"
+                elif control == "unknown-head":
+                    f["convergence"]["prior_sha"] = "unreviewed"
+                elif control == "different-file":
+                    f["location"] = "other.py:12"
+                elif control == "same-scenario":
+                    f["scenario"] = f["convergence"]["prior_scenario"]
+                findings = [f]
+                if control == "mixed":
+                    findings.append({**self.finding("blocking"), "category": "security"})
+                self.complete_head("head-2", findings, 100 + len(self.rounds()[0]["reviews"]))
+                # Isolate archived run identity between control fixtures.
+                self.led.set_kv("reviewresults:x#5", None)
+                info = json.loads(self.led.get_kv("review:x#5"))
+                from mahler import review
+                ending = SimpleNamespace(project="x", number=5, led=self.led,
+                    run={"id": info["run_id"]}, item=self.item(), rest=json.dumps(findings))
+                review.remember(ending, info, findings)
+                merge, fix, _ = self.gate()
+                merge.assert_not_called()
+                fix.assert_called_once()
+                if control == "mixed":
+                    self.assertNotIn("new timing edge case", fix.call_args.args[-1])
+                self.gh.create_issue.assert_not_called()
+
+    def test_demoted_followup_failures_retry_durably(self):
+        f = self.convergence_case()
+        self.complete_head("head-2", [f], 2)
+        self.gh.create_issue.side_effect = gh_module.GHError("offline")
+        self.gate()[0].assert_not_called()
+        self.gh.create_issue.side_effect = None
+        with mock.patch.object(self.gh, "comment", side_effect=gh_module.GHError("offline")):
+            self.gate()[0].assert_not_called()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.gate()[0].assert_called_once()
+        self.gate()[0].assert_called_once()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+        self.assertEqual(len(self.rounds()), 2)
+
+    def test_demoted_path_requires_current_green_head_and_threshold(self):
+        f = self.convergence_case()
+        self.complete_head("head-2", [f], 2)
+        for state in ("FAILURE", "PENDING"):
+            self.gh.rollup = [{"state": state}]
+            self.gate()[0].assert_not_called()
+        self.gh.rollup = [{"state": "SUCCESS"}]
+        self.gh.head_sha = "stale"
+        self.gate()[0].assert_not_called()
+        self.gh.head_sha = "head-2"
+        self.cfg["projects"]["x"]["review_green_rounds"] = 3
+        self.gate()[1].assert_called_once()
+        self.gh.create_issue.assert_not_called()
+        # A different PR cannot borrow the old criterion evidence.
+        self.led.upsert_item("x", 5, pr=89)
+        info = json.loads(self.led.get_kv("review:x#5"))
+        info["pr"] = 89
+        self.led.set_kv("review:x#5", json.dumps(info))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_review_triggered_fix") as fix, \
+                mock.patch.object(ship, "_merge_queued") as merge:
+            ship._review_gate(self.ctx, "x", self.item(), 89, self.gh.pr_view(89))
+        fix.assert_called_once()
+        merge.assert_not_called()
+
     def test_inclusive_threshold_and_different_file_followups_merge(self):
         from mahler import review
         for threshold in (2, 3):

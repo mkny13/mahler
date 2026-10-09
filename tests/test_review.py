@@ -500,3 +500,40 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         text = state.capacity_wait_text(self.led, "x", self.led.item("x", 5), NOW)
         self.assertEqual(text, "")
 
+
+
+class TestConvergencePayload(unittest.TestCase):
+    def test_evidence_validation_and_legacy_readability(self):
+        import copy
+        criterion = "- [ ] Questions remain parked"
+        finding = dict(severity="blocking", category="spec", location="app.py:12",
+                       scenario="New timing case", consequence="Question changes", done_when=criterion)
+        body = "## Done when\n" + criterion
+        def parse(f):
+            return review.parse("fail", json.dumps({"findings": [f]}), body)
+        self.assertEqual(parse(finding), [finding])
+        evidence = dict(relation="new-edge-case", prior_sha="head-1", prior_scenario="Original case",
+                        fixed=dict(location="app.py:12", evidence="Original case now passes"),
+                        acceptance_tests=[dict(test="tests/test_app.py::test_parked", result="pass",
+                                               evidence="Current head passes stated case")],
+                        outside_tests="New timing not in stated cases")
+        finding["convergence"] = evidence
+        self.assertEqual(parse(finding), [finding])
+        for key in evidence:
+            bad = copy.deepcopy(finding)
+            del bad["convergence"][key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                parse(bad)
+        for relation in ("unresolved", "regression", "acceptance-failure"):
+            protected = copy.deepcopy(finding)
+            protected["convergence"]["relation"] = relation
+            with self.assertRaises(ValueError):
+                parse(protected)
+            protected["convergence"]["defect"] = dict(location="app.py:12",
+                test="tests/test_app.py::test_parked", evidence="First-fix test fails again")
+            self.assertEqual(parse(protected), [protected])
+        for bad_evidence in (None, [], {}, {**evidence, "relation": "guess"},
+                             {**evidence, "acceptance_tests": []},
+                             {**evidence, "acceptance_tests": [dict(test="case", result="maybe", evidence="unknown")]}):
+            with self.subTest(evidence=bad_evidence), self.assertRaises(ValueError):
+                parse({**finding, "convergence": bad_evidence})

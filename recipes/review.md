@@ -102,6 +102,24 @@ Rules:
    blockers can fail. Compare the scenario and consequence, not file names alone. A fixed
    finding cannot be revived without new evidence. File drift alone never justifies either
    failing review or demoting security, data loss, regressions or acceptance failures.
+   Broad negative Done-when criteria are bounded by the issue's stated acceptance tests;
+   when those tests remain satisfied, the criterion cannot demand successive new edge cases.
+   For scope/spec re-review findings include `convergence` with `relation` (`new-edge-case`,
+   `unresolved`, `regression`, or `acceptance-failure`), `prior_sha` (a supplied prior green
+   reviewed head), `prior_scenario` (the exact prior finding's scenario), and
+   `acceptance_tests` (a nonempty list of objects with `test` naming a stated acceptance
+   case, `result` = `pass` or `fail`, and `evidence` describing the current-head result).
+   For `new-edge-case`, also include `fixed` with `location` and `evidence` demonstrating
+   the referenced blocker is fixed, and `outside_tests` explaining the new scenario outside
+   those stated tests. Keep `done_when` identical to the exact previously reviewed criterion.
+   At the inclusive threshold the conductor treats this same-file/same-criterion case as
+   follow-up even if you marked it blocking. Line-number movement does not change the file.
+   Unresolved defects, named acceptance-case failures, first-fix test regressions and
+   demonstrated behavior regressions remain blocking: use the corresponding relation and
+   a `defect` object with concrete `location`, `test`, and `evidence`. A prose regression
+   label or repeated broad negative criterion alone is insufficient evidence. Security and
+   normal-flow data loss remain blocking. Never describe a demonstrated regression as a
+   new edge case. Missing evidence does not authorize conductor demotion.
    Everything actionable below the blocking bar is a follow-up, with its reason explained.
    A new finding in code the fix didn't touch must clear the bar in rule 4 with room to
    spare; the previous reviewer already read that code. Don't re-raise a note as a blocker.
