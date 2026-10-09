@@ -318,7 +318,10 @@ class GH:
     def request_dependency_rebase(self, number, bot):
         """Ask the owning bot to regenerate its branch using this project's login."""
         if bot == "dependabot":
-            self.comment(number, "@dependabot rebase")
+            # Dependabot rejects commands authored by GitHub Apps even when
+            # posting the comment succeeds. Use the project's existing user
+            # credentials, as git writes do, without minting an App token.
+            GH(self.repo, env=self.env).comment(number, "@dependabot rebase")
         elif bot == "renovate":
             pages = json.loads(self._gh(
                 "api", f"repos/{self.repo}/labels?per_page=100", "--paginate", "--slurp"))
