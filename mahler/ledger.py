@@ -580,14 +580,6 @@ class Ledger:
     def uat(self, project, number):
         return self.q1("SELECT * FROM uat WHERE project=? AND number=?", (project, number))
 
-    def pending_uat(self):
-        """Unverified shipments (including failed checks), newest first."""
-        return self.q("SELECT * FROM uat WHERE verdict IS NULL OR ("
-                      "verdict='fail' AND EXISTS (SELECT 1 FROM items i "
-                      "WHERE i.project=uat.project AND i.number=uat.number "
-                      "AND i.state='shipped')) "
-                      "ORDER BY shipped_at DESC, number DESC")
-
     def shipment_history(self, project, limit=20):
         """Newest retained shipments; display retention never deletes evidence."""
         return self.q("SELECT u.*, e.kind AS completion_kind FROM uat u "
