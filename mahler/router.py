@@ -543,6 +543,8 @@ def cap_escalation(cfg, pol, tier, size=None, *, role="fix", pin=None):
     tiers = []
     for name in names:
         pconf = cfg["platforms"][name]
+        if pconf.get("approval") and name != pin:
+            continue
         candidate_tier = min(tier, tier_of(pconf))
         effective_size = "m" if (role == "fix" and size == "l"
                                   or candidate_tier >= 2 and size == "s") else size
@@ -676,6 +678,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]
+        if pconf.get("approval") and name != pin:
+            reasons.append(f"{name}: requires owner approval via a platform pin")
+            continue
         # Escalation tier (DESIGN D8 rule 4): build and fix skip platforms below min_tier
         if min_tier and not pin and role in ("build", "fix"):
             t = tier_of(pconf)
@@ -769,6 +774,8 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
         limit = pconf.get("max_size")
         rank = SIZES.get(size or "m", 2)
         if not is_pin:
+            if pconf.get("approval"):
+                why.append("approval")
             if role == "sort":
                 if size and limit and SIZES.get(size, 2) > SIZES[limit]:
                     why.append("size")
@@ -832,7 +839,7 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
 
 
 def preferred_for_project(cfg, led, pol, role, preferred, pin=None, busy=(),
-                          size=None, burst_lines=None, min_tier=0):
+                          size=None, burst_lines=None, min_tier=0, exclude=()):
     """Check a preference through ordinary gates, without making it a pin."""
     role = route_role(role)
     accts = accounts_of(pol)
@@ -842,7 +849,7 @@ def preferred_for_project(cfg, led, pol, role, preferred, pin=None, busy=(),
     if preferred not in names:
         return None
     return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                min_tier=min_tier, accounts=accts, candidate_order=[preferred])[0]
+                min_tier=min_tier, accounts=accts, candidate_order=[preferred], exclude=exclude)[0]
 
 
 def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
@@ -865,6 +872,8 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
     for name in names:
         pc = cfg["platforms"][name]
         rank = SIZES.get(size or "m", 2)
+        if pc.get("approval") and name != pin:
+            continue
         if platform_slot(cfg, name) in excluded:
             continue
         if not pin and role == "fix" and (tier_of(pc) < min_tier

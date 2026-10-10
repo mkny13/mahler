@@ -393,6 +393,54 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [])           # CI is watched from the next tick
         ping.assert_not_called()
 
+    def test_pr_open_resets_pre_pr_failures_once(self):
+        self.led.upsert_item("x", 5, attempts=3, esc_fails=2, esc_tier=2)
+        self.ship()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"],
+                          self.item()["esc_tier"]), (0, 0, 2))
+        self.test_review_fail_verdict_starts_a_fix_round_with_findings()
+
+    def test_review_excludes_all_pr_authors(self):
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.create_run(project="x", number=5, role="build", platform="agy-claude",
+                            epoch=1, status="ended", outcome="DONE")
+        self.led.event("pr_opened", "x", 5, {"pr": 88})
+        self.led.create_run(project="x", number=5, role="fix", platform="claude",
+                            epoch=2, status="ended", outcome="DONE", started_at=iso(NOW))
+        self.cfg["routing"]["review"] = ["agy-claude", "claude", "agy-gemini"]
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(calls[0][1], "agy-gemini")
+
+    def test_risk_preference_does_not_approve_gated_reviewer(self):
+        self.cfg["platforms"]["claude"]["approval"] = True
+        self.led.upsert_item("x", 5, pr=88, title="Fix credentials handling", labels='["size:m"]')
+        calls = []
+        self.patch_review_start(calls)
+        self.ship()
+        self.assertEqual(len(calls), 1)
+        self.assertNotEqual(calls[0][1], "claude")
+
+    def test_same_head_running_or_unaccounted_fix_cannot_duplicate(self):
+        self.same_head_setup()
+        self.ship()
+        fix = self.led.last_run("x", 5, roles=("fix",))
+        self.assertEqual(len(self.same_head_calls), 1)
+        self.ship()
+        self.assertEqual(len(self.same_head_calls), 1)
+        self.led.update_run(fix["id"], status="ended", outcome=None)
+        self.ship()
+        self.assertEqual(len(self.same_head_calls), 1)
+        self.led.update_run(fix["id"], outcome="failed")
+        self.ship()
+        self.assertEqual(len(self.same_head_calls), 2)
+        self.assertEqual(self.item()["attempts"], 2)
+        self.assertIn("pushed nothing", self.same_head_calls[-1][2]["context"])
+        self.ship()
+        self.assertEqual(len(self.same_head_calls), 2)
+        self.assertEqual(self.item()["attempts"], 2)
+
     def test_pr_opening_is_idempotent(self):
         """A tick that died after `gh pr create` must not open a second PR."""
         self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")
@@ -1663,6 +1711,8 @@ class ShipTests(unittest.TestCase):
         triggers_after_retry = self.led.q("SELECT * FROM events WHERE kind='review_fix_trigger'")
         self.assertEqual(len(triggers_after_retry), 1)
 
+        self.led.update_run(fix_runs_created[-1], status="ended", outcome="failed")
+
         # 3. Failed launch does not record review_fix_trigger
         with mock.patch.object(ship, "start", return_value=False), \
                 mock.patch.object(self.ctx, "gh", return_value=self.gh), \
@@ -1691,6 +1741,8 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(t2["fix_run"], fix_runs_created[1])
         self.assertEqual(t2["review_run"], rev2)
         self.assertEqual(t2["reviewed_sha"], "head-sha-1")
+
+        self.led.update_run(fix_runs_created[-1], status="ended", outcome="failed")
 
         # 5. Base-conflict fix does not record review_fix_trigger
         with mock.patch.object(ship, "start", side_effect=fake_start), \

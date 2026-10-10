@@ -174,6 +174,7 @@ def prepare(ctx, project, item, role, platform, run_id):
     config.ensure_private_dir(os.path.dirname(wt))
 
     git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
+    push_branch = None
     branch, start = None, f"origin/{base}"
     claim_sha = row_get(item, "claim_base_sha") if role == "review" else None
     if claim_sha:
@@ -200,14 +201,21 @@ def prepare(ctx, project, item, role, platform, run_id):
         # review and design inspect that same head without handoff edits (D11).
         branch = (item["branch"] if role in ("fix", "design") and item["branch"]
                   else f"mahler/{item['number']}-{slug(item['title'])}")
+        push_branch = branch
         start = start_ref(repo, base, item["branch"], branch)
         try:
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
         except GitError:          # branch still checked out by a kept worktree
             if role == "fix":
                 # A fix must push the existing PR, never silently fork its head.
-                if not _fix_worktree_conflict(ctx, repo, branch, worktree_root(pol)):
+                try:
+                    freed = _fix_worktree_conflict(ctx, repo, branch, worktree_root(pol))
+                except WorktreeConflict:
                     raise
+                except GitError:
+                    freed = False  # retained dirty/locked checkout stays untouched
+                if not freed:
+                    branch = f"{branch}-r{run_id}"
             else:
                 branch = f"{branch}-r{run_id}"
             git(repo, "worktree", "add", "--quiet", "-B", branch, wt, start)
@@ -227,6 +235,7 @@ def prepare(ctx, project, item, role, platform, run_id):
         if kept:
             start = f"origin/{base}"
     return {"run_dir": run_dir, "worktree": wt, "branch": branch,
+            "push_branch": push_branch or branch,
             "base_ref": start, "replayed": replayed, "kept": kept,
             "head_sha": git(wt, "rev-parse", "HEAD")}
 

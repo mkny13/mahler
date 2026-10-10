@@ -1005,14 +1005,20 @@ def _clear_charged_if_fix_completed(led, project, number, key):
     cycle_ts = led.get_kv(key)
     if not cycle_ts:
         return
+    launched = _kv_json(led, f"{key}:run")
+    run_id = launched.get("run_id")
+    accounted = led.get_kv(f"{key}:accounted")
+    if run_id and accounted == str(run_id):
+        return
     run = led.q1(
-        "SELECT 1 FROM runs WHERE project=? AND number=? AND role='fix' "
-        "AND status='ended' AND started_at > ? "
+        "SELECT id FROM runs WHERE project=? AND number=? AND role='fix' "
+        "AND status='ended' AND ((? IS NOT NULL AND id=?) OR (? IS NULL AND started_at > ?)) "
         "AND outcome IS NOT NULL AND outcome != 'not claimed' "
         "AND outcome NOT LIKE 'launch failed:%' "
         "AND coalesce(stop_reason, '') NOT IN (?, ?, ?, 'resume_rejected') LIMIT 1",
-        (project, number, cycle_ts, *CAPACITY_STOPS))
+        (project, number, run_id, run_id, run_id, cycle_ts, *CAPACITY_STOPS))
     if run:
+        led.set_kv(f"{key}:accounted", str(run["id"]))
         led.set_kv(key, None)
         led.set_kv(f"{key}:charged", None)
         led.set_kv(f"{key}:resume", None)
@@ -1127,6 +1133,26 @@ def recover_capacity_waits(ctx, project):
             ctx.say(f"{project}#{n}: capacity recovery skipped — {exc}")
 
 
+def _pr_authors(led, project, number):
+    """Original builder and every subsequent PR author, newest first."""
+    opened = led.q1("SELECT at FROM events WHERE project=? AND number=? AND kind='pr_opened' "
+                    "ORDER BY id DESC LIMIT 1", (project, number))
+    runs = led.q("SELECT * FROM runs WHERE project=? AND number=? AND role IN ('build','fix') "
+                 "AND coalesce(outcome, '') NOT LIKE 'launch failed:%' "
+                 "AND coalesce(outcome, '') != 'not claimed' "
+                 "AND coalesce(stop_reason, '') != 'resume_rejected' ORDER BY id DESC",
+                 (project, number))
+    authors = set()
+    for run in runs:
+        authors.add(run["platform"])
+        if opened:
+            if (run["started_at"] or "") < opened["at"]:
+                break  # include the author of the head that opened the PR
+        elif run["role"] == "build":
+            break
+    return authors - {None}
+
+
 def _review_route(ctx, project, item, sha):
     """Share reviewer independence and risk routing with capacity recovery."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
@@ -1141,24 +1167,21 @@ def _review_route(ctx, project, item, sha):
                       "AND coalesce(outcome, '') != 'not claimed' ORDER BY id DESC LIMIT 1",
                       (project, n))
     builder_platform = last["platform"] if last else None
-    builder_slot = router.platform_slot(cfg, builder_platform) if builder_platform else None
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
-    # Claude reviews when the item touches a high-risk surface (D11); the free
-    # tiers otherwise lead, same order as build routing. Never pin Claude as
-    # its own reviewer — if it also built this, fall back to ordinary routing
-    # order (still excluding the builder below) rather than deadlocking on a
-    # pin that `exclude` would immediately rule back out.
+    # Risk-based preferences are selected later through ordinary routing gates.
     exclude = {builder_platform} if builder_platform else set()
     dup = _kv_json(led, f"reviewdup:{project}#{n}")
     if (dup.get("sha") == sha and dup.get("reviewer")
             and not led.get_kv(f"reviewdone:{project}#{n}:{item['pr']}:{sha}")):
         exclude.add(dup["reviewer"])     # a repeat finding needs a different reviewer
-    pin = ("claude" if router.risk_min_tier(row_get(item, "title", "")) > 0
-           and builder_slot != "claude" else None)
-    if pin and any(router.platform_slot(cfg, p) == pin for p in exclude):
-        pin = None
-    return pin, size, exclude
+    authors = _pr_authors(led, project, n) | exclude
+    # Prefer independence from every author. If the configured route cannot
+    # supply that, the latest author and any mandatory second opinion stay fenced.
+    if router.capacity_recovery(cfg, led, ctx.policy(project), "review",
+                                size=size, exclude=authors)[0]:
+        exclude = authors
+    return None, size, exclude
 
 
 def _start_review_run(ctx, project, item, pr, view, sha):
@@ -1184,10 +1207,16 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     # Prefer another reviewer for a metadata-only fix, but never turn that
     # preference into a capacity wait or weaken builder/slot independence.
     previous = _kv_json(led, f"reviewdone:{project}#{n}:{pr}:{sha}").get("reviewer")
+    preferred = None
+    if router.risk_min_tier(row_get(item, "title", "")) > 0:
+        preferred = router.preferred_for_project(
+            cfg, led, pol, "review", "claude", busy=busy, size=size,
+            burst_lines=ctx.burst_lines, exclude=exclude | ({previous} if previous else set()))
     platform, reasons = router.pick_for_project(
         cfg, led, pol, "review", pin, busy, size=size,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines,
         exclude=exclude | ({previous} if previous else set()))
+    platform = preferred or platform
     if not platform and previous:
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "review", pin, busy, size=size,
@@ -1440,6 +1469,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     perturb that already-hardened one."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     sha = view.get("headRefOid") or ""
+    # A lost lease or replayed tick must not launch alongside an existing fix.
+    if any(r["project"] == project and r["number"] == n and r["role"] == "fix"
+           for r in led.active_runs()):
+        ctx.say(f"{project}#{n}: PR #{pr} — review fix still in progress")
+        return
     dup_key = f"reviewdup:{project}#{n}"
     if (not base_conflict and _kv_json(led, dup_key).get("sha") != sha
             and not led.get_kv(f"reviewdone:{project}#{n}:{pr}:{sha}")):
@@ -1468,6 +1502,10 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    launched = _kv_json(led, f"{key}:run")
+    previous_fix = led.run(launched["run_id"]) if launched.get("run_id") else None
+    if previous_fix and (previous_fix["status"] != "ended" or not previous_fix["outcome"]):
+        return  # finalization has not accounted for this run yet
     _clear_charged_if_fix_completed(led, project, n, key)
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
@@ -1566,6 +1604,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     else:
         context = ("- an independent review of this PR found blocking issues (see the PR "
                    "comments); address them, verify, push, and end with STATUS: DONE")
+    if previous_fix:
+        context = (f"- the previous fix run (run {previous_fix['id']}) pushed nothing to `{head}`. "
+                   f"Push to the PR head with `git push origin HEAD:{head}`.\n" + context)
     if base_conflict:
         context = findings
     if start(ctx, project, {**item, "branch": head}, "fix", platform,
@@ -1861,7 +1902,8 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
     # Save it first so a crash cannot leave only the disposable PR head recorded.
     if ref.startswith("mahler/snapshot/"):
         led.set_kv(f"ship_snapshot:{project}#{n}", ref)
-    led.upsert_item(project, n, pr=pr, branch=branch)
+    led.upsert_item(project, n, pr=pr, branch=branch,
+                    **({"attempts": 0, "esc_fails": 0} if item["pr"] != pr else {}))
     led.event("pr_opened", project, n, {"pr": pr, "branch": branch, "sha": sha})
     action = f"opened PR #{pr}" if created else f"adopted PR #{pr}"
     ctx.say(f"{project}#{n}: {action} from `{branch}` (base {base}) — verifying")

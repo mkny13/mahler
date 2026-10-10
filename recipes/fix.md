@@ -3,7 +3,7 @@ CI on the pull request for this issue is red; your job is to turn it green. Work
 unattended and autonomously; never wait for approval or an owner verdict.
 Verify automatically and report remaining coverage honestly; the conductor ships and tracks post-merge evidence.
 
-Workspace: $worktree — a git worktree on branch `$branch`, which is the PR's head branch.
+Workspace: $worktree — a git worktree on branch `$branch`, with PR head `$push_branch` as its push destination.
 Work only inside it. Never touch other checkouts, and never run `git worktree add` or
 `git worktree remove`.
 
@@ -56,7 +56,7 @@ result is obtained, the better. Never trade verification for speed.
    useful additions or a deeper review in the final message before the STATUS line
    instead of undertaking them.
 4. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
-   $branch` (the branch already exists — you are pushing the PR forward) at least every
+   HEAD:$push_branch` (the branch already exists — you are pushing the PR forward) at least every
    ~10 minutes — you can be stopped at any moment, and unpushed work is lost.
 4a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
    reporting points while work is still possible: a summary that announces the next step
@@ -109,7 +109,7 @@ result is obtained, the better. Never trade verification for speed.
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
-If a yield is delivered: commit your work, push the branch, and end with STATUS: YIELDED — a handoff, not a failure.
+If a yield is delivered: commit your work, push to `$push_branch`, and end with STATUS: YIELDED — a handoff, not a failure.
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what you fixed>

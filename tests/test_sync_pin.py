@@ -18,7 +18,7 @@ from unittest import mock
 from mahler import config, releases, scheduler, sync, tick
 from mahler.gh import GHError, has_sections
 from mahler.ledger import Ledger, iso
-from mahler import prompt
+from mahler import prompt, router
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -113,6 +113,28 @@ class PinTests(unittest.TestCase):
 
     def lines(self):
         return "\n".join(self.ctx.lines)
+
+    def test_gated_route_requires_explicit_pin_even_for_preferences(self):
+        self.cfg["platforms"]["cline-free"].update(approval=True, enabled=True, metered=False)
+        self.cfg["routing"]["build"] = ["cline-free"]
+        pol = self.ctx.policy("x")
+        self.assertIsNone(router.pick_for_project(self.cfg, self.led, pol, "fix")[0])
+        self.assertIsNone(router.preferred_for_project(
+            self.cfg, self.led, pol, "fix", "cline-free"))
+        self.assertEqual(router.capacity_recovery(self.cfg, self.led, pol, "fix")[0], [])
+        self.assertEqual(router.cap_escalation(self.cfg, pol, 10), 0)
+        self.assertEqual(router.pick_for_project(
+            self.cfg, self.led, pol, "fix", pin="cline-free")[0], "cline-free")
+
+    def test_gated_pin_requires_owner_comment(self):
+        self.cfg["platforms"]["claude"]["approval"] = True
+        for i, author in enumerate(({}, {"author": {"login": "stranger"}},
+                                    {"author": {"login": "x"}})):
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                sync._process_comments(self.ctx, "x", self.led.item("x", 5), [{
+                    "createdAt": t(i + 1), "body": "/mahler platform claude", **author}])
+            self.assertEqual(self.led.item("x", 5)["pin"], "claude" if i == 2 else None)
+        self.assertEqual(len(self.gh.edits), 1)
 
     def test_platform_command_sets_the_label_and_sticks(self):
         self.command("/mahler platform agy-claude")
