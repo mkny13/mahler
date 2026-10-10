@@ -197,7 +197,7 @@ class CaptureTests(unittest.TestCase):
         ss.capture(self.ctx, 'app', {'number': 1}, 12, {'headRefOid': self.sha})
         raw = self.led.get_kv(f'screenshot:app:12:{self.sha}')
         for secret in ('signed', 'secret', 'private-route', 'https:'):
-            self.assertNotIn(secret, raw or '')
+            self.assertNotIn(secret, (raw or '').replace('bypass_secret_missing', ''))
         self.assertTrue(all(not p.exists() for p in self.paths))
         return json.loads(raw) if raw else None
 
@@ -218,6 +218,51 @@ class CaptureTests(unittest.TestCase):
             self.assertIsNone(self.capture())
             command.assert_not_called()
             self.gh.screenshot_preview.assert_not_called()
+
+    def test_bypass_file_missing_or_unreadable(self):
+        real_open = open
+        unreadable = Path(self.tmp.name) / 'unreadable'
+        unreadable.write_text('test-bypass-value')
+
+        def open_file(path, *args, **kwargs):
+            if Path(path) == unreadable:
+                raise PermissionError('test-bypass-value')
+            return real_open(path, *args, **kwargs)
+
+        cases = (('missing', str(Path(self.tmp.name) / 'missing')),
+                 ('unreadable', str(unreadable)), ('tilde', '~/missing'))
+        for index, (case, path) in enumerate(cases):
+            with self.subTest(case=case):
+                self.sha = f'{index:040x}'
+                self.policy['screenshot_bypass_secret_file'] = path
+                with patch.dict(os.environ, {'HOME': self.tmp.name}), \
+                        patch('mahler.screenshots.open', side_effect=open_file), \
+                        patch.object(ss, '_command') as command, \
+                        patch.object(self.led, 'event', wraps=self.led.event) as event:
+                    result = self.capture()
+                    self.assertEqual(result['state'], 'unavailable')
+                    self.assertEqual(result['reason'], 'bypass_secret_missing')
+                    event.assert_called_once_with('screenshot', 'app', 1, result)
+                    self.ctx.say.assert_called_with(
+                        'app PR #12: screenshots unavailable (bypass_secret_missing)')
+                    self.assertEqual(self.capture(), result)
+                    command.assert_not_called()
+
+    def test_readable_bypass_file_passes_secret_to_capture(self):
+        bypass = Path(self.tmp.name) / 'bypass'
+        bypass.write_text('test-bypass-value\n')
+        for index, path in enumerate((str(bypass), '~/bypass')):
+            with self.subTest(path=path):
+                self.sha = f'{index:040x}'
+                self.gh.pr_view.return_value = {'headRefOid': self.sha}
+                self.policy['screenshot_bypass_secret_file'] = path
+                with patch.dict(os.environ, {'HOME': self.tmp.name}), \
+                        patch.object(ss, '_command', side_effect=self.command) as command:
+                    result = self.capture()
+                    self.assertEqual(result['state'], 'success')
+                    self.assertEqual(command.call_args.args[2]['MAHLER_SCREENSHOT_BYPASS_SECRET'],
+                                     'test-bypass-value')
+                    self.assertNotIn('test-bypass-value', json.dumps(result))
 
     def test_unavailable_and_failures_are_terminal(self):
         import subprocess
