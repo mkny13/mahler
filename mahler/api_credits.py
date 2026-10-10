@@ -8,8 +8,10 @@ whole organization has left: `pool_usd - org spend this cycle - margin`.
 
 The credits do not cover Claude Code, so the `claude` CLI is never used here
 (and config.CREDENTIAL_VARS still strips ANTHROPIC_API_KEY from every other
-run). A credits platform is Cline's direct `anthropic` provider with the
-workspace API key injected into that one run's environment.
+run). A credits platform is the Agent SDK runner (`kind = "agent-sdk"`,
+sdk_runner/) pointed at the gateway through ANTHROPIC_BASE_URL, with a local
+per-run token as its ANTHROPIC_API_KEY; the real workspace key stays in the
+gateway.
 
 Fail closed (D8):
   * The allowance is measured against Mahler's own spend, the larger of its
@@ -313,9 +315,10 @@ def validate(cfg):
     for name, pconf in cfg.get("platforms", {}).items():
         if not is_credit_platform(pconf):
             continue
-        if pconf.get("kind") != "cline" or pconf.get("provider") != "anthropic":
-            raise ValueError(f"platform {name!r}: API credits run only through Cline's "
-                             "anthropic provider — Claude Code is not covered (DESIGN D41)")
+        if pconf.get("kind") != "agent-sdk":
+            raise ValueError(f"platform {name!r}: API credits run only through the Agent SDK "
+                             "runner (kind = \"agent-sdk\") — Claude Code is not covered "
+                             "(DESIGN D41)")
         if pconf.get("enabled") and account_of(pconf) != account:
             raise ValueError(f"platform {name!r}: an enabled API-credits platform must "
                              f"spend account {account!r}, not {account_of(pconf)!r} (D25)")
@@ -1062,6 +1065,8 @@ def parse_stream_usage(raw):
 
 ANTHROPIC_HOST = "api.anthropic.com"
 MESSAGES_PATH = "/v1/messages"
+# The Agent SDK's requests carry `?beta=true`; nothing else is accepted.
+MESSAGES_PATHS = (MESSAGES_PATH, MESSAGES_PATH + "?beta=true")
 
 
 def _gateway_error(kind, message):
@@ -1167,10 +1172,11 @@ class Gateway:
 
     def handle(self, method, path, headers, body):
         """-> (status, response_headers, response_body_bytes)."""
-        if method != "POST" or path != MESSAGES_PATH:
+        if method != "POST" or path not in MESSAGES_PATHS:
             return 404, {}, _gateway_error(
                 "not_found_error", "Mahler gateway: only POST /v1/messages is proxied")
-        token = headers.get("x-api-key") or headers.get("X-Api-Key") or ""
+        lower = {str(k).lower(): v for k, v in headers.items()}
+        token = lower.get("x-api-key") or ""
         run_id = self._run_for_token(token)
         if run_id is None:
             return 401, {}, _gateway_error(
@@ -1206,7 +1212,7 @@ class Gateway:
                 f"${amount:.2f} requested.)")
         model = data["model"]
         try:
-            status, resp_headers, resp_body = self._forward(data)
+            status, resp_headers, resp_body = self._forward(data, path, lower)
         except (OSError, http.client.HTTPException) as e:
             # Nothing reached (or finished talking to) Anthropic: nothing was
             # spent, so free the reservation. Cline's own retry makes a new
@@ -1248,13 +1254,22 @@ class Gateway:
         usage = parsed.get("usage") if isinstance(parsed, dict) else None
         return usage if isinstance(usage, dict) else None
 
-    def _forward(self, data):
+    def _forward(self, data, path=MESSAGES_PATH, client_headers=None):
         body = json.dumps(data).encode()
+        client_headers = client_headers or {}
+        # The client's anthropic-beta / anthropic-version / User-Agent go
+        # upstream unchanged: Anthropic tells Agent SDK traffic (covered by
+        # the credits) from Claude Code (not covered) by them. The client's
+        # own x-api-key / Authorization are never forwarded.
+        out = {"x-api-key": self.real_key,
+               "anthropic-version": client_headers.get("anthropic-version") or ANTHROPIC_VERSION,
+               "content-type": "application/json",
+               "User-Agent": client_headers.get("user-agent") or "mahler-gateway"}
+        if client_headers.get("anthropic-beta"):
+            out["anthropic-beta"] = client_headers["anthropic-beta"]
         conn = self.connect()
         try:
-            conn.request("POST", MESSAGES_PATH, body=body, headers={
-                "x-api-key": self.real_key, "anthropic-version": ANTHROPIC_VERSION,
-                "content-type": "application/json", "User-Agent": "mahler-gateway"})
+            conn.request("POST", path, body=body, headers=out)
             resp = conn.getresponse()
             raw = resp.read()
             headers = {k: v for k, v in resp.getheaders()
