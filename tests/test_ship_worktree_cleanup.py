@@ -51,12 +51,27 @@ class CleanupTests(unittest.TestCase):
             ("/primary", "rev-parse", "refs/heads/topic"),
             ("/primary", "branch", "-D", "--", "topic")])
 
-    def test_dirty_including_untracked_is_preserved(self):
-        for status in (" M file", "?? untracked"):
+    def test_dirty_untracked_and_ignored_files_are_preserved(self):
+        for status in (" M file", "?? untracked", "!! .env"):
             self.dirty = status
-            self.assertIn("uncommitted", self.cleanup())
-            self.assertIn((self.wt, "status", "--porcelain", "--untracked-files=all"), self.calls)
+            self.assertIn("uncommitted or ignored", self.cleanup())
+            self.assertIn((self.wt, "status", "--porcelain", "--untracked-files=all", "--ignored"),
+                          self.calls)
             self.assert_no_removal()
+
+    def test_git_status_reports_ignored_local_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runner.git(str(repo), "init")
+            (repo / ".gitignore").write_text(".env\n")
+            runner.git(str(repo), "add", ".gitignore")
+            runner.git(str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                       "commit", "-m", "ignore local environment")
+            (repo / ".env").write_text("local-only")
+            status = runner.git(str(repo), "status", "--porcelain", "--untracked-files=all",
+                                "--ignored")
+            self.assertIn("!! .env", status)
 
     def test_changed_head_is_preserved(self):
         self.head = "new-work"

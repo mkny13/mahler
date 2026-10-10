@@ -87,8 +87,8 @@ def cleanup_interactive_worktree(repo, wt, branch, expected_head):
         found = find_worktree_for_branch(repo, branch)
         if not found or Path(found).resolve() != Path(wt).resolve():
             return f"skipped worktree cleanup: {wt} no longer holds {branch}"
-        if git(wt, "status", "--porcelain", "--untracked-files=all"):
-            return f"skipped worktree cleanup: {wt} has uncommitted changes"
+        if git(wt, "status", "--porcelain", "--untracked-files=all", "--ignored"):
+            return f"skipped worktree cleanup: {wt} has uncommitted or ignored files"
         if git(wt, "rev-parse", "HEAD") != expected_head:
             return f"skipped worktree cleanup: {wt} HEAD differs from merged PR head"
         git(repo, "worktree", "remove", wt)
