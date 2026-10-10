@@ -49,7 +49,11 @@ async def _run(args) -> int:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
     prompt = args.prompt_file.read_text()
-    env = {}
+    # Claude Code sends side calls (titles, summaries) to its small/fast
+    # model, Haiku by default; pin them to the run's model so every request
+    # stays on the one model the credits gateway allows.
+    env = {"ANTHROPIC_SMALL_FAST_MODEL": args.model,
+           "ANTHROPIC_DEFAULT_HAIKU_MODEL": args.model}
     if args.max_output_tokens is not None:
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
     opts = ClaudeAgentOptions(

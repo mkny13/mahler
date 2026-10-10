@@ -8,3 +8,5 @@ __pycache__/
 /test_run.py
 /test_script.py
 /.calendar-*
+/sdk_runner/build/
+/sdk_runner/*.egg-info/
