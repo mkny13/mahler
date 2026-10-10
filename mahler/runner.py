@@ -276,6 +276,11 @@ def run_env(ctx, project, number, platform, run_id, epoch):
                GIT_CONFIG_VALUE_0=hooks)
     if pconf["kind"] == "vibe":
         env.update(platforms.vibe_env(pconf, run_dir, env))
+    if pconf.get("api_credits"):
+        # D41: the workspace key goes into this one child's env, read fresh
+        # from the login keychain; never argv, a file, or the admin key.
+        from . import api_credits
+        env["ANTHROPIC_API_KEY"] = api_credits.api_key_for_run(pconf)
     return env
 
 

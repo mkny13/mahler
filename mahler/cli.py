@@ -16,7 +16,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta
 
-from . import config, desktop, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
+from . import api_credits, config, desktop, holds, mcp, notify, platforms, router, scheduler, usage as usage_mod
 from .gh import project_client, GHError
 from .ledger import Ledger, RoutedLedger, iso, parse, remote_lease_operation
 
@@ -218,6 +218,10 @@ def cmd_status(a, cfg, led):
             "leases": leases,
             "missing_scope_counts": missing_scope,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
+            # D41: Team-plan API credits, one snapshot per enabled credits platform
+            "api_credits": {n: api_credits.snapshot(led, n, pc)
+                            for n, pc in cfg["platforms"].items()
+                            if pc.get("api_credits") and pc.get("enabled")},
             "estimates": {
                 "calibration": led.calibration_stats(),
                 "calibration_factor": led.calibration_factor(),
@@ -289,6 +293,31 @@ def cmd_status(a, cfg, led):
         chips = router.window_countdowns(led, name, pconf)
         tags = f"  [{' · '.join(f'{label} {cd}' for label, cd in chips)}]" if chips else ""
         print(f"  {name:<{width}} {state:<6} {detail}{tags}")
+    credit_groups = {}
+    for name, pconf in cfg["platforms"].items():
+        if pconf.get("api_credits") and pconf.get("enabled") and pconf.get("credit_pool"):
+            credit_groups.setdefault(pconf["credit_pool"]["group"], (name, pconf))
+    for group, (name, pconf) in credit_groups.items():
+        snap = api_credits.snapshot(led, name, pconf)
+        org = (f"${snap['org_spend_usd']:.2f} (read {snap['org_sampled_at']})"
+               if snap["org_spend_usd"] is not None else
+               f"unknown{' — ' + snap['org_error'] if snap.get('org_error') else ''}")
+        print(f"\nAPI credits ({group}, D41) — {snap['state']}"
+              f"{': ' + snap['blocking'] if snap.get('blocking') else ''}")
+        print(f"  cycle      {snap['cycle_start'][:16]} → {snap['cycle_end'][:16]} UTC"
+              f"{' · burst window' if snap['burst_window'] else ''}")
+        unpriced = (f" ({snap['unpriced_runs']} unpriced runs counted at the reserve)"
+                    if snap["unpriced_runs"] else "")
+        print(f"  Mahler     ${snap['mahler_spend_usd']:.2f} of ${snap['allowance_usd']:.2f} "
+              f"allowance{unpriced}")
+        print(f"  org        {org} of ${snap['pool_usd']:.2f} pool, margin ${snap['safety_margin_usd']:.2f}")
+        print(f"  line       {'burst: pool − org − margin' if snap['burst'] else 'allowance'}"
+              f" · ${snap['remaining_usd']:.2f} left")
+        for key in snap["keys"]:
+            if key["expires"]:
+                left = key["days_left"]
+                print(f"  {key['name']:<5} key  expires {key['expires']} "
+                      f"({'EXPIRED' if left < 0 else f'in {left}d'})")
     print("\nRecent")
     for e in led.q("SELECT * FROM events ORDER BY id DESC LIMIT 10")[::-1]:
         when = parse(e["at"]).astimezone().strftime("%m-%d %H:%M")
