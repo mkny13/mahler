@@ -2,6 +2,7 @@
 import copy
 import contextlib
 import io
+import py_compile
 from pathlib import Path
 import shutil
 import tempfile
@@ -55,7 +56,7 @@ class CleanupTests(unittest.TestCase):
         for status in (" M file", "?? untracked", "!! .env"):
             self.dirty = status
             self.assertIn("uncommitted or ignored", self.cleanup())
-            self.assertIn((self.wt, "status", "--porcelain", "--untracked-files=all", "--ignored"),
+            self.assertIn((self.wt, "status", "--porcelain", "--untracked-files=all", "--ignored", "-z"),
                           self.calls)
             self.assert_no_removal()
 
@@ -119,8 +120,11 @@ class ShipIntegrationTests(unittest.TestCase):
             repo.mkdir()
             wt.mkdir()
             runner.git(str(repo), "init", "--initial-branch=main")
+            (repo / ".gitignore").write_text("__pycache__/\n.env\n")
+            (repo / "example.py").write_text("value = 1\n")
+            runner.git(str(repo), "add", ".")
             runner.git(str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
-                       "commit", "--allow-empty", "-m", "initial")
+                       "commit", "-m", "initial")
             head = runner.git(str(repo), "rev-parse", "HEAD")
             runner.git(str(repo), "branch", "topic")
             # Construct a linked-worktree fixture without running worktree add/remove.
@@ -130,7 +134,16 @@ class ShipIntegrationTests(unittest.TestCase):
             (admin / "commondir").write_text("../..\n")
             (admin / "gitdir").write_text(str(wt / ".git") + "\n")
             (wt / ".git").write_text(f"gitdir: {admin}\n")
-            runner.git(str(wt), "read-tree", "HEAD")
+            runner.git(str(wt), "read-tree", "--reset", "-u", "HEAD")
+            py_compile.compile(str(wt / "example.py"), doraise=True)
+            self.assertTrue(list((wt / "__pycache__").glob("*.pyc")))
+            # Real Git must expose individual ignored paths, even inside caches.
+            for local in (wt / ".env", wt / "__pycache__" / "local-settings.json"):
+                local.write_text("local-only")
+                notice = runner.cleanup_interactive_worktree(str(repo), str(wt), "topic", head)
+                self.assertIn("uncommitted or ignored", notice)
+                self.assertTrue(local.exists())
+                local.unlink()
             cfg = copy.deepcopy(config.DEFAULTS)
             cfg["projects"]["x"] = {"repo": "x/y", "path": str(repo)}
             led.upsert_item("x", 7, title="topic")

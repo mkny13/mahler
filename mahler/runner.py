@@ -87,7 +87,17 @@ def cleanup_interactive_worktree(repo, wt, branch, expected_head):
         found = find_worktree_for_branch(repo, branch)
         if not found or Path(found).resolve() != Path(wt).resolve():
             return f"skipped worktree cleanup: {wt} no longer holds {branch}"
-        if git(wt, "status", "--porcelain", "--untracked-files=all", "--ignored"):
+        status = git(wt, "status", "--porcelain", "--untracked-files=all", "--ignored", "-z")
+        for entry in status.split("\0"):
+            if not entry:
+                continue
+            path = Path(entry[3:])
+            # Verification creates disposable bytecode. Keep every other ignored
+            # file (including local credentials and non-bytecode cache contents).
+            if (entry.startswith("!! ") and path.parent.name == "__pycache__"
+                    and path.suffix == ".pyc" and (Path(wt) / path).is_file()
+                    and not (Path(wt) / path).is_symlink()):
+                continue
             return f"skipped worktree cleanup: {wt} has uncommitted or ignored files"
         if git(wt, "rev-parse", "HEAD") != expected_head:
             return f"skipped worktree cleanup: {wt} HEAD differs from merged PR head"
