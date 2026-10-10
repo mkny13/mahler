@@ -640,6 +640,28 @@ class GatewayTests(unittest.TestCase):
             conn.close()
 
 
+    def test_a_second_connection_is_served_while_the_first_stays_open(self):
+        """The Agent SDK keeps one connection idle and opens another: a
+        single-threaded server never accepted the second (mahler#918)."""
+        led = Ledger(":memory:", thread_safe=True, clock=self.led.now)
+        self.addCleanup(led.close)
+        gw = api_credits.Gateway(led, "g3", lambda: None, api_credits.MODEL_PRICING,
+                                 ["claude-sonnet-5-5"], 8192, "sk-ant-api03-x")
+        gw.start()
+        self.addCleanup(gw.stop)
+        idle = http.client.HTTPConnection("127.0.0.1", gw.port, timeout=5)
+        second = http.client.HTTPConnection("127.0.0.1", gw.port, timeout=5)
+        try:
+            for conn in (idle, second):
+                conn.request("POST", "/v1/messages", body=json.dumps(MESSAGE).encode(),
+                            headers={"x-api-key": "wrong"})
+                resp = conn.getresponse()
+                self.assertEqual(resp.status, 401)
+                resp.read()
+        finally:
+            idle.close()
+            second.close()
+
 class CycleTests(unittest.TestCase):
     def test_mid_cycle(self):
         start, end = api_credits.cycle_bounds(datetime(2026, 10, 20, tzinfo=UTC), 15)

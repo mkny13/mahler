@@ -1144,7 +1144,13 @@ class Gateway:
                 status, headers, resp = gateway.handle("GET", self.path, dict(self.headers), b"")
                 self._respond(status, headers, resp)
 
-        self._server = http.server.HTTPServer((host, 0), _Handler)
+        # Threaded: HTTP/1.1 keeps connections alive, and the Agent SDK opens
+        # a second connection while its first sits idle. A single-threaded
+        # server blocks on the idle one and never accepts the next — every
+        # run hangs (mahler#918). Reservations are already transactional
+        # (BEGIN IMMEDIATE), so concurrent handlers are safe.
+        self._server = http.server.ThreadingHTTPServer((host, 0), _Handler)
+        self._server.daemon_threads = True
         self.port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever,
                                         name=f"credit-gateway-{self.group}", daemon=True)
@@ -1264,7 +1270,8 @@ class Gateway:
             resp = conn.getresponse()
             raw = resp.read()
             headers = {k: v for k, v in resp.getheaders()
-                      if k.lower() not in ("content-length", "transfer-encoding", "connection")}
+                      if k.lower() not in ("content-length", "transfer-encoding", "connection",
+                                           "server", "date")}
             return resp.status, headers, raw
         finally:
             conn.close()
