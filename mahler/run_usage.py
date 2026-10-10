@@ -138,7 +138,7 @@ def collect(res, ev, kind):
     additive = False
     fields = {}
     model = None
-    if kind == "claude":
+    if kind in ("claude", "agent-sdk"):
         if t == "system":
             model = ev.get("model")
         if t == "result":

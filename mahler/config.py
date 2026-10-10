@@ -35,7 +35,7 @@ SETTING_TIMERS = (
     "yield_grace_seconds",
 )
 SETTING_ROLES = ("sort", "plan", "build")
-PLATFORM_KINDS = ("agy", "claude", "cline", "codex", "copilot", "kilo", "kiro", "vibe")
+PLATFORM_KINDS = ("agent-sdk", "agy", "claude", "cline", "codex", "copilot", "kilo", "kiro", "vibe")
 
 
 def ensure_private_dir(path, mode=0o700):
@@ -400,16 +400,16 @@ DEFAULTS["platforms"]["jetstream"] = {
     "stale_minutes": 60,
 }
 
-# Team-plan Claude API credits (DESIGN D41, mahler#903) through Cline's direct
-# Anthropic provider — the credits cover the API, not Claude Code, so this is
-# never the `claude` CLI. A base definition only: disabled, in no route, and
+# Team-plan Claude API credits (DESIGN D41, mahler#903) through the Agent SDK
+# runner (sdk_runner/, `kind = "agent-sdk"`) — the credits cover the API, not
+# Claude Code, so this is never the `claude` CLI. A base definition only: disabled, in no route, and
 # validation refuses to enable it on any account but `[api_credits] account`
 # (work). Live config defines `work-claude-api` (`from = "claude-api"`,
 # `account = "work"`). The key comes from the login keychain per run
 # (api_credits.api_key_for_run), never from config. Pool, allowance, cycle and
 # burst settings live in `[api_credits]` (api_credits.DEFAULT_API_CREDITS).
 DEFAULTS["platforms"]["claude-api"] = {
-    "enabled": False, "kind": "cline", "provider": "anthropic",
+    "enabled": False, "kind": "agent-sdk",
     "model": "claude-sonnet-5-5", "plan": "Team plan API credits",
     "api_credits": True, "metered": True, "windows": ["cycle"],
     "soft": {"cycle": 100}, "hard": {"cycle": 100},

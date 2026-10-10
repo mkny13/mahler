@@ -293,7 +293,7 @@ screenshot_path = []              # inherited operator absolute executable direc
 # pool_usd = 260
 #
 # [platforms.work-claude-api]
-# from = "claude-api"            # kind cline, provider anthropic, claude-sonnet-5-5
+# from = "claude-api"            # kind agent-sdk, claude-sonnet-5-5
 # account = "work"
 # enabled = true
 # [accounts.work]

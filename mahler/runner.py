@@ -363,7 +363,8 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep,
     pconf = ctx.cfg["platforms"][platform]
     wt, run_dir = prep["worktree"], prep["run_dir"]
     platform_role = "sort" if role == "design" else role
-    argv = platforms.argv_for(pconf, prompt, wt, platform_role, pol["run_timeout_minutes"])
+    argv = platforms.argv_for(pconf, prompt, wt, platform_role, pol["run_timeout_minutes"],
+                          **({"run_dir": run_dir} if pconf["kind"] == "agent-sdk" else {}))
     env = run_env(ctx, project, item["number"], platform, run_id, epoch)
     if resume_from is not None:
         check_account(ctx, project, platform)

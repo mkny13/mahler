@@ -222,6 +222,10 @@ def codex_exe():
                            "/Applications/Codex.app/Contents/Resources"])
 
 
+def sdk_run_exe():
+    return which("mahler-sdk-run", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
+
+
 def kilo_exe():
     return which("kilo", [os.path.join(HOME, ".local/bin"), "/opt/homebrew/bin"])
 
@@ -247,6 +251,7 @@ EFFORTS = {
     "copilot": {"none", "minimal", "low", "medium", "high", "xhigh", "max"},
     "agy": {"low", "medium", "high"},
     "cline": {"none", "low", "medium", "high", "xhigh"},
+    "agent-sdk": set(),           # no effort flag
     "kilo": None,                 # provider-specific free-form variants
     "kiro": {"low", "medium", "high", "xhigh", "max"},
     "vibe": set(),                # no effort flag: thinking is per-model in config.toml
@@ -372,6 +377,21 @@ def kilo_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     return argv
 
 
+def agent_sdk_argv(pconf, prompt, worktree, role, timeout_minutes=60, run_dir=None):
+    # The Agent SDK runner (sdk_runner/, DESIGN D41) reads its prompt from a
+    # file: runner.launch writes `prompt.md` in the run's dir before spawning.
+    # Claude Code's own Bash(<stem>:*) deny syntax is what the SDK takes.
+    prompt_file = os.path.join(run_dir, "prompt.md") if run_dir else "prompt.md"
+    argv = [sdk_run_exe(), "--prompt-file", prompt_file, "--cwd", worktree,
+            "--model", pconf["model"], "--project-settings"]
+    max_out = (pconf.get("credit_pool") or {}).get("max_output_tokens")
+    if max_out:
+        argv += ["--max-output-tokens", str(max_out)]
+    for rule in CLAUDE_DENY:
+        argv += ["--disallowed-tool", rule]
+    return argv
+
+
 def kiro_argv(pconf, prompt, worktree, role, timeout_minutes=60):
     # Verified 2026-10-01 (mahler#622): kiro-cli 2.26.1, `kiro-cli chat <prompt>
     # --output-format stream-json --no-interactive`. The CLI runs in its cwd —
@@ -436,7 +456,9 @@ def vibe_env(pconf, run_dir, base_env=None):
     return out
 
 
-def argv_for(pconf, prompt, worktree, role, timeout_minutes):
+def argv_for(pconf, prompt, worktree, role, timeout_minutes, run_dir=None):
+    if pconf["kind"] == "agent-sdk":
+        return agent_sdk_argv(pconf, prompt, worktree, role, timeout_minutes, run_dir)
     if pconf["kind"] == "claude":
         return claude_argv(pconf, prompt, worktree, role)
     if pconf["kind"] == "agy":
@@ -528,7 +550,7 @@ def resume_argv_for(pconf, prompt, worktree, role, timeout_minutes, session_id=N
 
 
 def available(pconf):
-    exe = {"claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
+    exe = {"agent-sdk": sdk_run_exe, "claude": claude_exe, "agy": agy_exe, "cline": cline_exe,
            "copilot": copilot_exe, "codex": codex_exe,
            "kilo": kilo_exe, "kiro": kiro_exe, "vibe": vibe_exe}[pconf["kind"]]()
     return exe is not None
@@ -1119,6 +1141,26 @@ def _read_codex_event(res, ev, texts, first_quota):
         _note_log_error(res, ev)
 
 
+def _read_agent_sdk_event(res, ev, texts, first_quota):
+    t = ev.get("type")
+    if t == "AssistantMessage":
+        for block in ev.get("content") or []:
+            if isinstance(block, dict) and block.get("text"):
+                res["final"] = block["text"]
+                texts.append(block["text"])
+    elif t == "result":
+        res["ok"] = not ev.get("is_error")
+        if isinstance(ev.get("total_cost_usd"), (int, float)):
+            res["cost_usd"] = float(ev["total_cost_usd"])
+        credit = ev.get("credit_error")
+        if credit:
+            _note_credit_exhausted(res, credit)
+            res["last_error"] = str(credit)
+        elif ev.get("is_error"):
+            errs = ev.get("errors") or []
+            _note_log_error(res, {"error": "; ".join(map(str, errs)) or ev.get("result") or "error"})
+
+
 def _read_kilo_event(res, ev, texts, first_quota):
     _note_session_id(res, ev.get("sessionID"))
     if ev.get("type") == "error":
@@ -1216,6 +1258,7 @@ def _finish_log(res, texts, kind):
 
 _LOG_HANDLERS = {
     "claude": _read_claude_event,
+    "agent-sdk": _read_agent_sdk_event,
     "cline": _read_cline_event,
     "copilot": _read_copilot_event,
     "codex": _read_codex_event,
