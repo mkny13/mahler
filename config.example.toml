@@ -249,6 +249,56 @@ screenshot_path = []              # inherited operator absolute executable direc
 # [routing]
 # build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "vibe", "claude"]
 
+# Team-plan Claude API credits (DESIGN D41, mahler#903). Work account only:
+# validation refuses an enabled credits platform on any other account. The
+# credits do NOT cover Claude Code, so the real key never goes to a run
+# directly: a standard-library gateway (mahler/api_credits.py Gateway) is the
+# only thing that holds it, forwarding only approved models/token bounds
+# after reserving each request's worst-case cost against the ledger.
+# NOT YET WIRED TO A WORKING HARNESS (live-tried 2026-10-10, see D41): Cline's
+# direct anthropic provider cannot reach the gateway at all. Leave enabled =
+# false until D41's harness rework lands. Both keys live only in the mini's
+# login keychain:
+#   security add-generic-password -s mahler-anthropic-api   -a work -w   # workspace key
+#   security add-generic-password -s mahler-anthropic-admin -a work -w   # sk-ant-admin… (Cost API)
+# The daemon (a LaunchAgent in the GUI session) reads them per run/probe; over
+# ssh the keychain is locked and reads fail closed with a "keychain locked" ping.
+#
+# Spending is authorized only inside a confirmed grant (D41 step 3) — never
+# inferred from cycle_anchor_day/time, which are forecast-only (display: where
+# the *next* grant is expected). Add one [[api_credits.grants]] entry per
+# confirmed grant Console shows; an expired or not-yet-confirmed window simply
+# refuses spending, allowance included.
+# [api_credits]
+# enabled = true
+# account = "work"
+# pool_usd = 260                 # the org's grant size; edit as seats change
+# allowance_usd = 20             # Mahler's at-will share per grant
+# cycle_anchor_day = 15          # forecast only — the next grant is expected around this UTC day
+# cycle_anchor_time = "00:00"    # UTC
+# burst_lead_hours = 48          # then the line is pool − org spend − margin
+# safety_margin_usd = 10
+# run_reserve_usd = 5            # per-run bound: needed to start, held while live
+# workspace_id = "wrkspc_…"      # Mahler's Console workspace (its own spend)
+# api_key_expires = "2027-10-16T20:00:00-04:00"
+# admin_key_expires = "2027-10-16"
+# allowed_models = ["claude-sonnet-5-5"]   # the gateway refuses any other model
+# max_output_tokens = 8192                # the gateway refuses a higher max_tokens
+# gateway_host = "127.0.0.1"               # loopback only — validated
+# base_url_env = "ANTHROPIC_BASE_URL"      # how the harness is pointed at the gateway
+#
+# [[api_credits.grants]]                   # one entry per confirmed grant (Mike/Console)
+# granted_at = "2026-10-09"
+# expires_at = "2026-10-15T00:00:00Z"      # a conservative cutoff if no exact instant is exposed
+# pool_usd = 260
+#
+# [platforms.work-claude-api]
+# from = "claude-api"            # kind cline, provider anthropic, claude-sonnet-5-5
+# account = "work"
+# enabled = true
+# [accounts.work]
+# routing = { build = ["…", "work-claude-api"] }
+
 # Optional per-platform reasoning effort. Supported values depend on the CLI;
 # invalid values are ignored and reported by `mahler status`.
 # [platforms.work-codex-gpt1-low]

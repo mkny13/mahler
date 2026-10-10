@@ -426,6 +426,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do), **and** `"small_model": "kilo/kilo-auto/free"` set in `~/.config/kilo/kilo.jsonc` — Kilo's background tasks (session titling, context-window summarization) read `small_model`, not the `-m` flag, so without it they fall through to a paid default model and fail on a $0 balance. The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | **Kiro** (`kiro-cli`, Kiro CLI, model `auto`) | `kiro-cli chat <prompt> --output-format stream-json --no-interactive --trust-tools read,write,glob,grep` (cwd = worktree) | Metered through a zero-cost `/usage` probe: `kiro-cli chat /usage --output-format stream-json` parses Kiro's credit-line text ("Credits (X of Y covered in plan), Z.Z%", "resets on YYYY-MM-DD"). KIRO FREE = 50 credits/month, single `monthly` window. No deny-list flag — the `--trust-tools` allow-list omits `shell`, so DENY_STEMS are unreachable (mahler#77). Auth-failure prints a plaintext `error:` line to stderr; model-rejection surfaces as a `runError` event whose message contains "is not available". Verified 2026-10-01 (mahler#622) | **Opt-in only** — disabled by default (`enabled: false`), absent from default routes. Size `s` only, tier 2, monthly window with 80/95% soft/hard lines. A project must explicitly enable it to spend Kiro credits. |
 | **Mistral Vibe** (`vibe`, `mistral-vibe` 2.25.8, model `codestral-latest`) | `vibe --prompt <p> --workdir <wt> --output streaming --trust --auto-approve --max-price 0 --max-turns N`; resume with `--resume <sessionId>`. Model has no flag: a per-run `VIBE_HOME/config.toml` pins it, and `MISTRAL_API_KEY` comes from the env or `~/.vibe/.env` | Unmetered: chat responses carry only per-minute `x-ratelimit-*` headers, so 429 triggers a 60-minute backoff (as Kilo/Cline). On the free plan only `codestral-latest` (125 req/min) and open models work; the default `mistral-medium-3.5` 429s with a 0 req/min limit. Streaming NDJSON carries `sessionId`. No bash deny-list under `--auto-approve`: accepted guardrail gap (mahler#77). Verified 2026-10-01 (mahler#623) | **Opt-in only** — disabled by default, absent from default routes. Builder, size `s` only. Never enable pay-as-you-go on the Mistral workspace. |
+| **Team API credits** (`claude-api` / `work-claude-api`; `api_credits.Gateway`, a standard-library proxy that reserves each request's worst-case cost before forwarding with the real key) | Not yet wired to a working harness: Cline's direct `anthropic` provider was live-tried 2026-10-10 and cannot reach the gateway (no `baseUrl` in its provider settings). `openai-compatible` (confirmed to accept `baseUrl`) plus a translation layer in the gateway is the next step, run through `cline auth --data-dir`, not env vars | Dollars, not percentages: the ledger's reservation exposure, Mahler's priced runs and the Admin Cost API's org/workspace spend, against the current *confirmed grant* (never a forecast cycle). A stale org reading means allowance only; no confirmed grant means nothing spends | **Work account only, opt-in**: disabled, in no default route, and not reachable by any run yet. $20 per confirmed grant, then the org pool's rest in the last 48h before it expires, once the harness exists (D41) |
 | OpenCode | — | — | Later backend (Phase 8) |
 
 **MiMo Code investigation: free MiMo Auto retired (mahler#721, 2026-10-07).**
@@ -2370,3 +2371,161 @@ in the risks list): agents may now drive the GUI, but only through the gate.
 - **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
   job only with evidence it covers the skipped work. A skip is never a pass.
 - Scheduling a weekly smoke inside the window (using `--scheduled`) stays in couch-tour#358.
+
+### D41 — Team-plan API credits: a $20 allowance, then the pool's rest before it expires (mahler#903)
+
+Decided 2026-10-09 (owner policy in mahler#903); confirmed 2026-10-10 as D41 against the
+shared counter (`mahler next-id mahler D` → 42, i.e. 41 was already spent on this decision).
+
+**The funding-source question is answered: "Yes, credits only."** The linked Console org
+holds no purchased credits, auto-reload or invoiced overage, so an exhausted promotional
+balance fails the request instead of spending real money. This is a confirmed account fact
+(D13), not a code-review gate — it is not re-asked, and the enforcement below does not depend
+on it holding forever: the gateway's hard per-request ceiling, not this answer, is what keeps
+a bug from spending real money if the org's funding ever changed without Mahler being told.
+
+The work Team plan comes with a pooled Claude API credit balance granted each billing cycle
+($260 today; it follows seat count). Mahler may spend `allowance_usd` ($20) of it per grant at
+will. The credits expire at the end of each grant and don't roll over, so in the last
+`burst_lead_hours` (48) before a grant expires Mahler may spend whatever the whole
+organization has left. This is D23 and D35 again: quota about to expire unused turns into
+work.
+
+- **Spending requires a confirmed grant — never a forecast (step 3).** `[[api_credits.grants]]`
+  is a list of grants Mike has actually seen in Console: `granted_at`, a conservative
+  `expires_at` cutoff, and that grant's own `pool_usd`. `current_grant(pool, now)`
+  (`api_credits.py`) returns the one entry whose window contains `now`, or `None`. With no
+  confirmed grant, the state is `hard` — "no confirmed grant covers now" — even for the plain
+  $20 allowance. `cycle_anchor_day`/`cycle_anchor_time` still exist, but only to forecast
+  where the *next* grant is expected, for display; they never open the line. The first grant
+  (`granted_at = "2026-10-09"`, `expires_at = "2026-10-15T00:00:00Z"`) is modeled exactly this
+  way: a conservative UTC-day cutoff, not an inferred exact instant or a minted recurrence.
+  Each grant gets a stable id (its own `granted_at`), and every reservation and settlement
+  below is keyed by that id — a new grant never erases an old one's unresolved charges, and a
+  late settlement after a grant's boundary still resolves against the grant it was reserved
+  under, not whichever grant happens to be current when it finally arrives.
+- **The harness's enforceable hook is a gateway, not Cline itself (step 2).** A post-request
+  cost report or a watchdog kill cannot establish a hard cap — Cline has no per-run dollar cap
+  and reports usage only at the end of a run. So `api_credits.Gateway` (standard library only:
+  `http.server` + `http.client`) sits between the harness and `api.anthropic.com`. It is the
+  only thing that ever holds the real workspace key; a run's environment gets a random local
+  token (`gw.register(run_id)`) good only for that gateway, plus `ANTHROPIC_BASE_URL` (the
+  configurable `base_url_env`) pointed at `http://127.0.0.1:<port>`. The `claude` CLI keeps its
+  own ANTHROPIC_API_KEY stripped (D25's `CREDENTIAL_VARS`, which now also strips
+  `ANTHROPIC_BASE_URL` from every other run's inherited environment). The gateway:
+  1. Refuses anything but `POST /v1/messages` (`404` on any other path or method) and an
+     unrecognized local token (`401`) — denying unsupported endpoints and credential reuse.
+  2. Refuses a model outside `allowed_models` or `max_tokens` over `max_output_tokens`
+     (`400`) — the model/token bound.
+  3. **Reserves before forwarding**: `estimate_request_cost` prices the worst case — every
+     character sent as an uncached input token plus a fixed overhead, every output token up
+     to the request's own `max_tokens` — against the current grant's pricing table
+     (`model_pricing`, overridable per model). `Ledger.reserve_credit` keys the reservation by
+     `(group, grant_id, attempt_key)` inside one `BEGIN IMMEDIATE` transaction, so two
+     concurrent requests competing for the last of the ceiling serialize instead of both
+     clearing. A refusal (`402`) uses the same "credit balance is too low" phrasing the real
+     API uses, so existing log-based detection (`platforms.is_credit_exhausted`) still fires
+     downstream. Each HTTP attempt mints its own `attempt_key` (`secrets.token_hex`), so a
+     retry or an auxiliary call reserves separately rather than sharing one budget.
+  4. Forwards with the real key, fully buffering the (possibly streamed) response before
+     replying — one local hop makes that latency cost negligible, and it lets one synchronous
+     handler settle the reservation before the client ever sees the response. A client
+     wanting true token-by-token delivery would see it arrive all at once instead; accepted
+     for a headless, non-interactive build harness.
+  5. **Settles or releases, never guesses.** A parsed `usage` (JSON body, or accumulated from
+     `message_start`/`message_delta` SSE events) settles the reservation at its actual cost.
+     A non-2xx response with no usage — "credit balance too low", an auth rejection, or any
+     other pre-usage error — releases it: nothing was spent. A 2xx with *no* parseable usage
+     is logged as `credit_ambiguous` and the reservation is left `reserved`: an ambiguous
+     outcome keeps counting against the ceiling rather than being assumed free (step 4). The
+     same is true of a crash: a reservation nothing ever resolves just stays `reserved`,
+     visible via `Ledger.unresolved_credit_reservations` and surfaced in `mahler status` and
+     the console as a stuck-exposure warning.
+  6. Reacts to exhaustion/auth-rejection in real time with the same kv keys and pings as the
+     post-run log scan (`api_credits.mark_exhausted`/`mark_auth_parked`, shared by both paths
+     so whichever notices first pings once).
+  - **Live trial 1 (2026-10-10, synthetic, $0.10 cap, zero actual spend): Cline's direct
+    `anthropic` provider cannot be redirected to the gateway at all — ruled out.** `cline auth
+    -p anthropic -b <url>` refuses outright: *"error: base URL is only supported for OpenAI
+    and OpenAI-compatible providers."* This isn't a CLI-validation quirk: the provider's own
+    stored settings schema (`settings/providers.json`) has no `baseUrl` field for `anthropic`
+    at all, confirmed by inspecting a real (dummy-keyed, no-cost) config write. The trial's
+    in-memory gateway recorded zero reservations and zero events — the request never had
+    anywhere to go. `ANTHROPIC_BASE_URL` was never going to work either: this provider's
+    settings are per-provider JSON, not env-driven. The `openai-compatible` provider *does*
+    accept `-b`/`baseUrl` (verified the same way, no real key or cost involved) — so the
+    harness choice for D41 step 2 has to become Cline's `openai-compatible` provider with the
+    gateway speaking OpenAI's chat-completions wire format and translating to/from the real
+    Anthropic Messages API, not the direct `anthropic` provider this decision originally
+    assumed. The wiring mechanism needs rework too, not just the provider choice: Cline stores
+    provider settings (including `baseUrl`) in `settings/providers.json` under its data dir,
+    set by `cline auth -b <url> -k <key> --data-dir <dir>` — not read from `ANTHROPIC_BASE_URL`
+    or any other env var at request time. `runner.run_env`'s current env-var injection
+    (`ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`) is itself based on the disproven assumption and
+    would need to become a `cline auth --data-dir <per-run dir>` call before each launch.
+    That translation layer is unbuilt. Until it exists and passes its own live trial,
+    `[api_credits] enabled` stays `false`, `work-claude-api`'s `from = "claude-api"` keeps
+    `provider = "anthropic"` as dead config (not wired to anything that can reach it), and
+    this is the next concrete step for whoever picks mahler#903 back up — not a config flip.
+    Passing unit tests on faked transports was never going to be that evidence, which is
+    exactly why this trial ran before claiming the harness was enforceable.
+  - Trial 1 also corrected the pricing table: `MODEL_PRICING["claude-sonnet-5-5"]` was a guess
+    before this trial; Cline's own model registry reported `input:2, output:10, cacheRead:0.1,
+    cacheWrite:2.5` (USD/MTok), now the confirmed values. `claude-opus-5` and `claude-haiku-4-5`
+    remain unverified estimates.
+- **Work account only (D25/D26).** `claude-api` is a disabled base in DEFAULTS and in no
+  default route. Live config defines `work-claude-api` (`from = "claude-api"`,
+  `account = "work"`). Validation refuses to enable a credits platform on any account other
+  than `[api_credits] account`, and that account can't be personal. Routing, pins and the
+  runner's account check work as for every work platform. `gateway_host` is validated to be
+  loopback-only (`127.0.0.1` / `localhost` / `::1`) — the gateway holding the real key must
+  never bind a routable interface.
+- **The lines, in dollars, scoped to the current grant.** `Ledger.credit_exposure(group,
+  grant_id)` is the authoritative total for gateway-mediated spend: every reservation's
+  amount (its settled cost once known, else its worst-case estimate while still `reserved`)
+  that isn't `released`. Mahler's own priced runs (`runs.cost_usd`, an unpriced run counting
+  as `run_reserve_usd`) and the Admin Cost API's workspace figure are independent cross-checks
+  that can only push the displayed `mahler_spend_usd` up, never down (D8) — whatever either
+  sees beyond what the reservation ledger already covers shrinks a *new* reservation's room by
+  the same amount (`reservation_ceiling_usd`), so the gateway's atomic check and the displayed
+  "remaining" figure always agree. Outside the burst, the remaining headroom is `allowance −
+  Mahler's spend`. When a fresh org reading exists it is capped at `pool − org spend − margin`,
+  so teammates' spend can close the allowance too. Inside the burst window, with a fresh org
+  reading, headroom is `pool − org spend − safety_margin_usd`. A new run starts only if
+  headroom minus `run_reserve_usd` for each live run still covers another reserve (soft). At
+  zero, running work yields (hard, via the watchdog).
+- **The org reading** comes from `GET /v1/organizations/cost_report` with the admin key
+  (`mahler-anthropic-admin`, conductor-only, never in a run's env). Daily buckets start from
+  the current grant's `granted_at` floored to its UTC day, so it can only overcount. Amounts
+  are decimal strings in cents, paginated with `has_more`/`next_page`, and grouped by
+  `workspace_id` to split out Mahler's own. It is cached 15 minutes (5 while a credits run is
+  live), never polled more than once a minute, and older than 60 minutes it counts as unknown.
+  Only aggregate amounts are kept, nothing per person. This is a narrow, deliberate exception
+  to D25's "no colleagues' usage is queried": the pool is shared, so a burst needs the org
+  total.
+- **Fail closed (D8).** No confirmed grant, a stale or unknown org reading (never enables the
+  burst: the line stays at the allowance), or a key the daemon can't read (makes the platform
+  unavailable) — all hard. A locked login keychain (`security`: "User interaction is not
+  allowed", -25308; this is what an ssh session on the mini sees) gets its own ping saying so,
+  and is rechecked once every 15 minutes, never with a prompt. "Your credit balance is too
+  low" marks the pool exhausted until the grant resets. An authentication failure (expired or
+  revoked key) parks the pool and pings. While parked, one free `GET /v1/models` every 6 hours
+  is the only retry. Neither counts as an item attempt.
+- **Known limitation: a daemon restart drops the gateway.** The gateway is long-lived in the
+  daemon's own process, bound to a port chosen at start. A daemon restart (D17 rollback,
+  self-update) loses it; an in-flight credits run's next request then gets connection-refused
+  from its baked-in `ANTHROPIC_BASE_URL` rather than reaching a live gateway. This fails the
+  run, not the money: no reservation is left dangling by a dead gateway process (it was either
+  settled/released already, or stays `reserved` and visible as stuck exposure, same as any
+  other crash). Accepted for now rather than engineering fixed-port cross-restart recovery;
+  revisit if credits runs become long enough, or common enough, for this to bite often.
+- **Key expiry, including the two credentials' different precision.** The inference key's
+  exact expiry is known (2027-10-16T20:00-04:00); the admin key's is date-only, so its
+  warnings use the same conservative start-of-day cutoff pattern as a grant boundary. Mahler
+  pings 14 days before each, then daily from 3 days before (and daily after expiry),
+  deduplicated by stage and date so a restart never repeats a day's ping. `mahler status` and
+  the console show both expiries within 30 days, alongside spend so far, the line in force,
+  org spend and its age, and the grant's end. `mahler status --json` carries the same snapshot
+  under `api_credits`.
+- In a burst, the pool's platforms move to the front of their account's build route, as
+  D23's Claude platforms do.

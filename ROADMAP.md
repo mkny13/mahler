@@ -410,6 +410,17 @@ still open is tuning: keep it only where it pays for itself.
     so the free tier runs on a stored `kiro-cli login`.
   - Meta Muse Code was evaluated on 2026-10-01 and not pursued: it has a headless `muse exec` and
     API-key auth, but no bundled free quota was found, and D8 never spends real money.
+- Team-plan Claude API credits (mahler#903, DESIGN D41): `api_credits.Gateway`, confirmed
+  grants, transactional reservations, crash/retry accounting and confirmed-grant rollover are
+  built and tested, account question answered ("Yes, credits only"). The live trial (gated on
+  Mike's go-ahead, 2026-10-10) ruled out the originally assumed harness: Cline's direct
+  `anthropic` provider cannot be redirected to the gateway at all (no `baseUrl` in its
+  provider-settings schema; `cline auth -p anthropic -b <url>` refuses outright). The viable
+  path is Cline's `openai-compatible` provider (confirmed to accept `baseUrl`) plus an
+  OpenAI-chat-completions↔Anthropic-Messages translation layer in the gateway, wired through
+  `cline auth --data-dir <per-run dir>` rather than env vars. That translation layer, the
+  runner wiring rework, and a fresh live trial are unbuilt — the next concrete step before
+  `claude-api`/`work-claude-api` can ever reach `enabled = true`.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.

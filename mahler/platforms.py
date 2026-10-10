@@ -80,6 +80,9 @@ CREDIT_EXHAUSTED_WORDS = (
     "insufficient balance",
     "add credits to continue",
     "credits balance is $-",
+    # Anthropic API (D41): "Your credit balance is too low to access the
+    # Anthropic API". Team-plan credits are exhausted until the cycle resets.
+    "credit balance is too low",
 )
 
 

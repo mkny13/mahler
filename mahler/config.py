@@ -15,6 +15,8 @@ import tempfile
 import tomllib
 from datetime import date, datetime, time
 
+from . import api_credits
+
 HOME = os.path.expanduser("~")
 STATE = os.environ.get("MAHLER_HOME", os.path.join(HOME, ".mahler"))
 CONFIG_PATH = os.path.join(STATE, "config.toml")
@@ -398,6 +400,23 @@ DEFAULTS["platforms"]["jetstream"] = {
     "stale_minutes": 60,
 }
 
+# Team-plan Claude API credits (DESIGN D41, mahler#903) through Cline's direct
+# Anthropic provider — the credits cover the API, not Claude Code, so this is
+# never the `claude` CLI. A base definition only: disabled, in no route, and
+# validation refuses to enable it on any account but `[api_credits] account`
+# (work). Live config defines `work-claude-api` (`from = "claude-api"`,
+# `account = "work"`). The key comes from the login keychain per run
+# (api_credits.api_key_for_run), never from config. Pool, allowance, cycle and
+# burst settings live in `[api_credits]` (api_credits.DEFAULT_API_CREDITS).
+DEFAULTS["platforms"]["claude-api"] = {
+    "enabled": False, "kind": "cline", "provider": "anthropic",
+    "model": "claude-sonnet-5-5", "plan": "Team plan API credits",
+    "api_credits": True, "metered": True, "windows": ["cycle"],
+    "soft": {"cycle": 100}, "hard": {"cycle": 100},
+    "max_size": "m", "tier": 3, "cost_class": "paid",
+    "quota_group": "claude-api", "stale_minutes": 15, "backoff_minutes": 60,
+}
+
 # Kilo (kilo.ai account, needs `kilo auth login` once) reports no account-wide
 # quota (mahler#25): "unmetered", backed off for an hour after a
 # rate-limit/quota error. Its default model needs an explicit `:free` route
@@ -693,6 +712,8 @@ def load(path=None):
     validate_post_merge(cfg)
     validate_github_app(cfg)
     validate_gui_gate(cfg)
+    api_credits.validate(cfg)
+    api_credits.attach(cfg)
     configure_warmup(cfg, user)
     for name, project in cfg["projects"].items():
         project["maintenance"] = maintenance_policy(cfg, name)
@@ -1065,7 +1086,7 @@ DEFAULT_ACCOUNT = "personal"
 # Variables that can carry a login. A run on another account never inherits
 # them from the daemon's own environment, only from its account's `env`.
 CREDENTIAL_VARS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR", "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN",
     "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_HOST", "OPENAI_API_KEY", "CODEX_API_KEY",
     "CODEX_HOME",

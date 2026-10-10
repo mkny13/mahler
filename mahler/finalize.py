@@ -784,6 +784,10 @@ def finalize(ctx, run):
     model = run_dict.get("model") or pconf.get("sort_model" if run_dict.get("role") == "sort" else "build_model") or pconf.get("model")
     log = platforms.read_log(run["log_path"], kind, model=model)
     _record_run_usage(ctx, run, kind, log)
+    if pconf.get("api_credits") and not ctx.dry_run:
+        from . import api_credits
+        api_credits.after_run(ctx, run, pconf, log)    # D41: exhausted / key rejected
+        api_credits.revoke_run_token(pconf, run["id"])  # the gateway forgets this run's token
     session_id = log.get("session_id")
     if not ctx.dry_run and isinstance(session_id, str) and session_id.strip():
         led.update_run(run["id"], session_id=session_id)
@@ -791,7 +795,8 @@ def finalize(ctx, run):
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
-    reason = run["stop_reason"] or ("no_credit" if log.get("credit_exhausted") else
+    reason = run["stop_reason"] or ("no_credit" if log.get("credit_exhausted")
+                                     or log.get("auth_failed") else
                                      "quota" if log["quota_hit"] else None) or \
              ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
              ("setup-failed" if setup_failed else None)
@@ -1043,8 +1048,11 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
     """
     if kind not in ("cline", "kilo"):
         return False
-    if log.get("quota_hit"):
+    if log.get("quota_hit") or log.get("auth_failed"):
         return False
+    pconf = ctx.cfg["platforms"].get(run["platform"]) or {}
+    if pconf.get("api_credits") and router.usage_state(ctx.led, run["platform"], pconf)[0] != "ok":
+        return False            # D41: a nudge spends credits too; only within the line
     nudged = int(dict(run).get("nudged") or 0)
     if nudged >= RESUME_CAP:
         return False

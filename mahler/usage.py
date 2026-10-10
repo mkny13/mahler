@@ -261,6 +261,10 @@ def refresh_codex(cfg, led, name, force=False):
 
 def refresh_usage(ctx, projects):
     led, cfg = ctx.led, ctx.cfg
+    # D41: Team API credit pools — key checks, cached org spend, expiry
+    # warnings. Exception-safe per pool; costs nothing when none is enabled.
+    from . import api_credits
+    api_credits.refresh(ctx)
     wanted = set()
     for p in projects:
         queued = led.items(p["name"], ["inbox", "ready", "verifying"])
