@@ -1144,11 +1144,12 @@ def _pr_authors(led, project, number):
                  (project, number))
     authors = set()
     for run in runs:
-        if run['role'] == 'build':
-            authors.add(run['platform'])
+        authors.add(run["platform"])
+        if opened:
+            if (run["started_at"] or "") < opened["at"]:
+                break  # include the author of the head that opened the PR
+        elif run["role"] == "build":
             break
-        if not opened or (run['started_at'] or '') >= opened['at']:
-            authors.add(run['platform'])
     return authors - {None}
 
 
@@ -1166,14 +1167,9 @@ def _review_route(ctx, project, item, sha):
                       "AND coalesce(outcome, '') != 'not claimed' ORDER BY id DESC LIMIT 1",
                       (project, n))
     builder_platform = last["platform"] if last else None
-    builder_slot = router.platform_slot(cfg, builder_platform) if builder_platform else None
     size = next((l.split(":", 1)[1] for l in json.loads(row_get(item, "labels", "[]"))
                  if l.startswith("size:")), None)
-    # Claude reviews when the item touches a high-risk surface (D11); the free
-    # tiers otherwise lead, same order as build routing. Never pin Claude as
-    # its own reviewer — if it also built this, fall back to ordinary routing
-    # order (still excluding the builder below) rather than deadlocking on a
-    # pin that `exclude` would immediately rule back out.
+    # Risk-based preferences are selected later through ordinary routing gates.
     exclude = {builder_platform} if builder_platform else set()
     dup = _kv_json(led, f"reviewdup:{project}#{n}")
     if (dup.get("sha") == sha and dup.get("reviewer")

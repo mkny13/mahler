@@ -507,7 +507,11 @@ def _process_comments(ctx, project, item, comments):
             continue
         cmd = parse_command(body)
         if cmd:
-            _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd)
+            owner = ctx.policy(project)["repo"].split("/", 1)[0]
+            is_owner = (c.get("authorAssociation") == "OWNER" or
+                        (c.get("author") or {}).get("login", "").casefold() == owner.casefold())
+            _apply_instruction(ctx, project, led.item(project, item["number"]), *cmd,
+                               is_owner=is_owner)
         else:
             current = led.item(project, item["number"])
             if current["state"] == "failed":
@@ -528,7 +532,7 @@ def resume_item(led, project, number, why="you said go"):
                   sorted_at=iso(led.now() - timedelta(days=1)))
 
 
-def _apply_instruction(ctx, project, item, verb, arg):
+def _apply_instruction(ctx, project, item, verb, arg, *, is_owner=False):
     led, n = ctx.led, item["number"]
     if verb == "go":
         resume_item(led, project, n)
@@ -543,6 +547,9 @@ def _apply_instruction(ctx, project, item, verb, arg):
         if arg in ("none", "auto"):
             _set_pin(ctx, project, n, None)
         elif arg in ctx.cfg["platforms"]:
+            if ctx.cfg["platforms"][arg].get("approval") and not is_owner:
+                ctx.say(f"{project}#{n}: only the owner can approve platform {arg!r}")
+                return
             _set_pin(ctx, project, n, arg)
         else:
             ctx.say(f"{project}#{n}: unknown platform {arg!r}")
