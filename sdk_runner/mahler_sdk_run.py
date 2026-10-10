@@ -40,6 +40,8 @@ def _parse_args(argv):
     p.add_argument("--disallowed-tool", action="append", default=[], dest="disallowed")
     p.add_argument("--max-budget-usd", type=float, default=None,
                    help="hard stop once the SDK's own cost estimate reaches this")
+    p.add_argument("--no-tools", action="store_true",
+                   help="offer the model no tools at all (connectivity checks)")
     p.add_argument("--project-settings", action="store_true",
                    help="load the --cwd project's CLAUDE.md and .claude/settings (never the host user's)")
     return p.parse_args(argv)
@@ -62,6 +64,7 @@ async def _run(args) -> int:
         model=args.model,
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget_usd,
+        **({"tools": []} if args.no_tools else {}),
         disallowed_tools=list(args.disallowed),
         env=env,
         # Hermetic: never the host user's settings, plugins or MCP servers;
