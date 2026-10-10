@@ -2418,7 +2418,8 @@ work.
   2. Refuses a model outside `allowed_models` or `max_tokens` over `max_output_tokens`
      (`400`) — the model/token bound.
   3. **Reserves before forwarding**: `estimate_request_cost` prices the worst case — every
-     character sent as an uncached input token plus a fixed overhead, every output token up
+     byte of the serialized request body (system prompt, tool definitions, tool calls and
+     results, not just message text) as an uncached input token plus a fixed overhead, every output token up
      to the request's own `max_tokens` — against the current grant's pricing table
      (`model_pricing`, overridable per model). `Ledger.reserve_credit` keys the reservation by
      `(group, grant_id, attempt_key)` inside one `BEGIN IMMEDIATE` transaction, so two

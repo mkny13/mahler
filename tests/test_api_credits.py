@@ -294,6 +294,23 @@ class PricingTests(unittest.TestCase):
         self.assertGreater(pricier, cheap)
         self.assertGreater(bigger, cheap)
 
+    def test_estimate_counts_tools_and_tool_results_not_just_text(self):
+        # The Agent SDK sends ~76 KB of tool schemas, and tool results carry
+        # file contents: a text-only estimate under-reserved them (mahler#918).
+        base = api_credits.estimate_request_cost(self.MESSAGE, api_credits.MODEL_PRICING, 8192)
+        blob = "x" * 50_000
+        with_tools = {**self.MESSAGE, "tools": [{"name": "Read", "description": blob,
+                                                 "input_schema": {"type": "object"}}]}
+        with_result = {**self.MESSAGE, "messages": self.MESSAGE["messages"] + [
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                          "content": [{"type": "text", "text": blob}]}]}]}
+        floor = 50_000 * api_credits.MODEL_PRICING["claude-sonnet-5-5"]["input"] / 1_000_000
+        for body in (with_tools, with_result):
+            with self.subTest(keys=sorted(body)):
+                self.assertGreaterEqual(
+                    api_credits.estimate_request_cost(body, api_credits.MODEL_PRICING, 8192)
+                    - base, floor * 0.99)
+
     def test_estimate_rejects_missing_model(self):
         bad = {k: v for k, v in self.MESSAGE.items() if k != "model"}
         with self.assertRaises(ValueError):

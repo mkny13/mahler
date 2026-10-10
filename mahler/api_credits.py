@@ -949,8 +949,14 @@ MODEL_PRICING = {
 }
 DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-5-5"]
 
-CHARS_PER_TOKEN = 4           # an upper bound: real tokenization only ever uses fewer
-AUX_TOKEN_OVERHEAD = 256      # system prompt / tool-schema slack neither side reports upfront
+# Worst-case input: the whole serialized request body (system prompt, tool
+# definitions, tool calls and tool results, not just message text) at one
+# token per byte. BPE tokens almost always span several bytes, so this
+# overcounts, which only costs transient headroom until the request settles.
+# The Agent SDK's tool schemas alone are ~76 KB per request (mahler#918), so
+# counting message text only would under-reserve by an order of magnitude.
+BYTES_PER_TOKEN = 1
+AUX_TOKEN_OVERHEAD = 256      # framing slack neither side reports upfront
 
 
 def model_pricing(pool):
@@ -965,24 +971,9 @@ def _price_for(pricing, model):
     return pricing.get(model, DEFAULT_PRICING)
 
 
-def _message_chars(messages):
-    total = 0
-    if not isinstance(messages, list):
-        return total
-    for m in messages:
-        content = m.get("content") if isinstance(m, dict) else None
-        if isinstance(content, str):
-            total += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and isinstance(block.get("text"), str):
-                    total += len(block["text"])
-    return total
-
-
 def estimate_request_cost(body, pricing, max_output_tokens):
-    """The worst-case reservation for one /v1/messages call: every character
-    sent counts as a fresh (uncached) input token, and every output token
+    """The worst-case reservation for one /v1/messages call: every byte of
+    the request body counts as a fresh (uncached) input token, and every output token
     up to the request's own max_tokens (capped) gets produced. Covers one
     HTTP attempt; a retry or an auxiliary call reserves its own estimate
     separately — distinct attempt_keys, not a shared budget (D41 step 2/4).
@@ -999,8 +990,8 @@ def estimate_request_cost(body, pricing, max_output_tokens):
         raise ValueError(f"max_tokens {max_tokens} exceeds the approved ceiling "
                          f"({max_output_tokens})")
     price = _price_for(pricing, model)
-    input_chars = _message_chars(body.get("messages")) + len(str(body.get("system") or ""))
-    input_tokens = input_chars // CHARS_PER_TOKEN + AUX_TOKEN_OVERHEAD
+    input_bytes = len(json.dumps(body, separators=(",", ":")).encode())
+    input_tokens = input_bytes // BYTES_PER_TOKEN + AUX_TOKEN_OVERHEAD
     cost = (input_tokens * price["input"] + max_tokens * price["output"]) / 1_000_000
     return round(cost, 6)
 
