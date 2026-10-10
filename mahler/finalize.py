@@ -101,6 +101,34 @@ def _needs_you(e):
     return True
 
 
+# Match unavailable access phrases, never bare words such as token or protection.
+_ACCESS_BLOCKER = re.compile(
+    r"\bdeployment[ -]protection\b|"
+    r"\b(?:login|log[ -]in|sign[ -]in)\s+(?:is\s+)?required\b|"
+    r"\b(?:missing|unavailable|needs?|requires?)\s+(?:a\s+|an\s+)?"
+    r"(?:(?:database|api|access|auth|authentication|bypass)\s+)?"
+    r"(?:credentials?|tokens?|passwords?)\b|"
+    r"\b(?:credentials?|tokens?|passwords?)\s+(?:is\s+|are\s+)?"
+    r"(?:missing|unavailable|required)\b|"
+    r"\baccess\s+(?:is\s+)?(?:denied|required)\b", re.IGNORECASE)
+
+
+def _access_blocked(e):
+    # Do not copy arbitrary agent text into a new question: it could contain
+    # secrets unknown to the normal redactor. The preserved handoff identifies
+    # the operation; its existing redaction boundary remains unchanged.
+    question = (
+        f"Who will provide authorized access for the blocked operation in "
+        f"{e.project} #{e.number} (run {e.run['id']}'s handoff), and how will it be "
+        "supplied outside GitHub through a named secret file or environment variable "
+        "to the runtime that needs it? Share only the provider, channel name and "
+        "authorized scope, never secret values.")
+    if e.item["state"] == "needs_you" and e.item["question"] == question:
+        return True
+    e.rest = question
+    return _needs_you(e)
+
+
 def _sorted_ready(e):
     e.set_state("ready", "sorted", sorted_at=iso(e.led.now()))
     return True
@@ -488,6 +516,8 @@ ENDINGS = (
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
+    (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
+     and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),

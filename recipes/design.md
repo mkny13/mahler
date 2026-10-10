@@ -25,6 +25,19 @@ Produce one coherent `fix` or `followups` result:
 - `fix`: a bounded, finite plan for the next fix run. Name every affected file, give ordered implementation steps, and state the test/verification command or observable check. Do not implement anything. Any security finding, an unsatisfied Done-when criterion, or silent unrecoverable data loss in normal flow always requires `fix`.
 - `followups`: conclude that the remaining findings are acceptable and record them. Provide a nonempty project-context justification and a list of classified findings (severity, category, location, scenario, consequence). Each finding must be structured with its category (such as `behavior`, `hardening`, `testing`, `scope`, `spec`). Any finding classified as a protected blocker — category `security`, `done-when` (or an unsatisfied Done-when criterion), or `data-loss` — cannot be accepted as a follow-up and requires `fix`. Incidental mentions of security, done-when, or data loss in justification or finding prose do not make a finding a protected blocker unless it is structured/classified as one. You cannot use this to demote security, an unsatisfied Done-when line, or silent normal-flow data loss.
 
+Access feasibility for required live/protected Done-when checks (token, login, bypass):
+Never invent accounts or credentials or silently waive acceptance. Honor existing
+owner answers and restrictions. Identify the authorized access provider, the named external
+secret file or environment variable (names only), and the runtime that consumes it.
+A hypothetical variable name does not establish available access. Existing authorized
+access may be used only within its documented consumer and scope. Never put secret values
+in GitHub issues, logs, argv, or commits.
+If access is missing or conflicts with an owner constraint, keep it a blocking `fix`
+plan, never `followups`. Its first step must tell the fix agent to request owner
+provisioning through NEEDS-YOU, naming the required operation and safe provisioning
+channel. Remain read-only and return the same DESIGNED JSON contract; do not ask the
+owner directly or introduce a new status.
+
 End with exactly one line in this JSON contract (no markdown fence, no extra STATUS line):
 
 `STATUS: DESIGNED {"head":"$head","disposition":"fix","plan":{"summary":"...","files":["path"],"steps":["..."],"tests":"..."}}`
