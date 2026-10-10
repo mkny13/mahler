@@ -757,6 +757,7 @@ def finalize(ctx, run):
     if pconf.get("api_credits") and not ctx.dry_run:
         from . import api_credits
         api_credits.after_run(ctx, run, pconf, log)    # D41: exhausted / key rejected
+        api_credits.revoke_run_token(pconf, run["id"])  # the gateway forgets this run's token
     session_id = log.get("session_id")
     if not ctx.dry_run and isinstance(session_id, str) and session_id.strip():
         led.update_run(run["id"], session_id=session_id)

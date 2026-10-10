@@ -304,12 +304,16 @@ def cmd_status(a, cfg, led):
                f"unknown{' — ' + snap['org_error'] if snap.get('org_error') else ''}")
         print(f"\nAPI credits ({group}, D41) — {snap['state']}"
               f"{': ' + snap['blocking'] if snap.get('blocking') else ''}")
-        print(f"  cycle      {snap['cycle_start'][:16]} → {snap['cycle_end'][:16]} UTC"
+        grant = "confirmed" if snap["grant_confirmed"] else "forecast, unconfirmed"
+        print(f"  grant      {snap['cycle_start'][:16]} → {snap['cycle_end'][:16]} UTC ({grant})"
               f"{' · burst window' if snap['burst_window'] else ''}")
         unpriced = (f" ({snap['unpriced_runs']} unpriced runs counted at the reserve)"
                     if snap["unpriced_runs"] else "")
         print(f"  Mahler     ${snap['mahler_spend_usd']:.2f} of ${snap['allowance_usd']:.2f} "
-              f"allowance{unpriced}")
+              f"allowance (${snap['reserved_exposure_usd']:.2f} reserved/settled){unpriced}")
+        if snap.get("unresolved_other_grants"):
+            print(f"  WARNING    {snap['unresolved_other_grants']} reservation(s) from a past "
+                  "grant were never resolved")
         print(f"  org        {org} of ${snap['pool_usd']:.2f} pool, margin ${snap['safety_margin_usd']:.2f}")
         print(f"  line       {'burst: pool − org − margin' if snap['burst'] else 'allowance'}"
               f" · ${snap['remaining_usd']:.2f} left")

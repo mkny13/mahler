@@ -1086,7 +1086,7 @@ DEFAULT_ACCOUNT = "personal"
 # Variables that can carry a login. A run on another account never inherits
 # them from the daemon's own environment, only from its account's `env`.
 CREDENTIAL_VARS = (
-    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR", "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN",
     "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_HOST", "OPENAI_API_KEY", "CODEX_API_KEY",
     "CODEX_HOME",

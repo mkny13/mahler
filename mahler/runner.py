@@ -277,10 +277,15 @@ def run_env(ctx, project, number, platform, run_id, epoch):
     if pconf["kind"] == "vibe":
         env.update(platforms.vibe_env(pconf, run_dir, env))
     if pconf.get("api_credits"):
-        # D41: the workspace key goes into this one child's env, read fresh
-        # from the login keychain; never argv, a file, or the admin key.
+        # D41 step 2: the real workspace key never reaches a run. It lives
+        # only in the gateway process; this run's env gets a fresh local
+        # token good only for the gateway, plus the base-URL override that
+        # points the harness at it instead of api.anthropic.com directly.
         from . import api_credits
-        env["ANTHROPIC_API_KEY"] = api_credits.api_key_for_run(pconf)
+        pool = pconf["credit_pool"]
+        gw = api_credits.ensure_gateway(ctx, platform, pconf)
+        env[pool["base_url_env"]] = f"http://{pool['gateway_host']}:{gw.port}"
+        env["ANTHROPIC_API_KEY"] = gw.register(run_id)
     return env
 
 

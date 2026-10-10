@@ -3,6 +3,7 @@
 No real keychain, network or ~/.mahler: subprocess and urllib are faked, the
 ledger is in memory and config comes from a temporary TOML file.
 """
+import http.client
 import io
 import json
 import os
@@ -65,6 +66,21 @@ run_reserve_usd = 5
 workspace_id = "wrkspc_mahler"
 api_key_expires = "2027-10-16"
 admin_key_expires = "2027-10-16"
+
+[[api_credits.grants]]
+granted_at = "2026-09-15"
+expires_at = "2026-10-15T00:00:00Z"
+pool_usd = 260
+
+[[api_credits.grants]]
+granted_at = "2026-10-15"
+expires_at = "2026-11-15T00:00:00Z"
+pool_usd = 260
+
+[[api_credits.grants]]
+granted_at = "2026-11-15"
+expires_at = "2026-12-15T00:00:00Z"
+pool_usd = 260
 
 [projects.personal-only]
 enabled = false
@@ -171,6 +187,7 @@ class Base(unittest.TestCase):
         self.clock = Clock(self.NOW)
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
+        self.addCleanup(api_credits.shutdown_gateways)   # never leak a gateway thread/port
         self.ctx = Ctx(self.cfg, self.led)
         self.name = "work-claude-api"
         self.pconf = self.cfg["platforms"][self.name]
@@ -195,6 +212,379 @@ class Base(unittest.TestCase):
 
     def state(self):
         return router.usage_state(self.led, self.name, self.pconf)
+
+
+class GrantModelTests(unittest.TestCase):
+    """Confirmed grants (D41 step 3): spending is authorized only inside a
+    grant Mike has actually seen in Console — never inferred from
+    cycle_anchor_day/time, which are forecast-only."""
+
+    def test_current_grant_picks_the_window_containing_now(self):
+        pol = {"pool_usd": 100.0, "grants": [
+            {"granted_at": "2026-10-09", "expires_at": "2026-10-15T00:00:00Z"},
+            {"granted_at": "2026-10-15", "expires_at": "2026-11-15T00:00:00Z", "pool_usd": 300.0}]}
+        g = api_credits.current_grant(pol, datetime(2026, 10, 20, tzinfo=UTC))
+        self.assertEqual(g["id"], "2026-10-15")
+        self.assertEqual(g["pool_usd"], 300.0)
+        self.assertEqual(g["start"], datetime(2026, 10, 15, tzinfo=UTC))
+
+    def test_no_confirmed_grant_covers_an_unlisted_date(self):
+        pol = {"pool_usd": 100.0, "grants": [
+            {"granted_at": "2026-10-09", "expires_at": "2026-10-15T00:00:00Z"}]}
+        self.assertIsNone(api_credits.current_grant(pol, datetime(2026, 12, 1, tzinfo=UTC)))
+        self.assertIsNone(api_credits.current_grant({"pool_usd": 1.0, "grants": []},
+                                                     datetime(2026, 10, 10, tzinfo=UTC)))
+
+    def test_grant_falls_back_to_the_pool_default_price(self):
+        pol = {"pool_usd": 260.0, "grants": [
+            {"granted_at": "2026-10-09", "expires_at": "2026-10-15T00:00:00Z"}]}
+        g = api_credits.current_grant(pol, datetime(2026, 10, 10, tzinfo=UTC))
+        self.assertEqual(g["pool_usd"], 260.0)
+
+    def test_date_only_boundaries_floor_to_utc_midnight(self):
+        self.assertEqual(api_credits.parse_grant_dt("2026-10-09"),
+                         datetime(2026, 10, 9, tzinfo=UTC))
+        self.assertEqual(api_credits.parse_grant_dt("2026-10-09T20:00:00Z"),
+                         datetime(2026, 10, 9, 20, tzinfo=UTC))
+
+    def test_validate_grants_requires_a_list_of_tables(self):
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            api_credits.validate_grants({"granted_at": "x"})
+        with self.assertRaisesRegex(ValueError, "must be tables"):
+            api_credits.validate_grants(["not-a-table"])
+
+    def test_validate_grants_requires_both_dates(self):
+        with self.assertRaisesRegex(ValueError, "need granted_at and expires_at"):
+            api_credits.validate_grants([{"granted_at": "2026-10-09"}])
+
+    def test_validate_grants_rejects_bad_ordering(self):
+        with self.assertRaisesRegex(ValueError, "expires_at must be after granted_at"):
+            api_credits.validate_grants([{"granted_at": "2026-10-15", "expires_at": "2026-10-09"}])
+
+    def test_validate_grants_rejects_overlap(self):
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            api_credits.validate_grants([
+                {"granted_at": "2026-10-09", "expires_at": "2026-10-20T00:00:00Z"},
+                {"granted_at": "2026-10-15", "expires_at": "2026-11-15T00:00:00Z"}])
+
+    def test_validate_grants_accepts_back_to_back_non_overlapping_windows(self):
+        self.assertIsNone(api_credits.validate_grants([
+            {"granted_at": "2026-10-09", "expires_at": "2026-10-15T00:00:00Z"},
+            {"granted_at": "2026-10-15", "expires_at": "2026-11-15T00:00:00Z"}]))
+
+    def test_validate_grants_rejects_unknown_fields_and_bad_pool(self):
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            api_credits.validate_grants([{"granted_at": "2026-10-09", "expires_at": "2026-10-15",
+                                          "extra": 1}])
+        with self.assertRaisesRegex(ValueError, "positive number"):
+            api_credits.validate_grants([{"granted_at": "2026-10-09", "expires_at": "2026-10-15",
+                                          "pool_usd": -5}])
+
+
+class PricingTests(unittest.TestCase):
+    MESSAGE = {"model": "claude-sonnet-5-5", "max_tokens": 100,
+              "messages": [{"role": "user", "content": "hi there"}]}
+
+    def test_estimate_scales_with_model_and_max_tokens(self):
+        cheap = api_credits.estimate_request_cost(self.MESSAGE, api_credits.MODEL_PRICING, 8192)
+        pricier = api_credits.estimate_request_cost(
+            {**self.MESSAGE, "model": "claude-opus-5"}, api_credits.MODEL_PRICING, 8192)
+        bigger = api_credits.estimate_request_cost(
+            {**self.MESSAGE, "max_tokens": 10000}, api_credits.MODEL_PRICING, 20000)
+        self.assertGreater(pricier, cheap)
+        self.assertGreater(bigger, cheap)
+
+    def test_estimate_rejects_missing_model(self):
+        bad = {k: v for k, v in self.MESSAGE.items() if k != "model"}
+        with self.assertRaises(ValueError):
+            api_credits.estimate_request_cost(bad, api_credits.MODEL_PRICING, 8192)
+
+    def test_estimate_rejects_missing_or_non_positive_max_tokens(self):
+        for bad in ({k: v for k, v in self.MESSAGE.items() if k != "max_tokens"},
+                   {**self.MESSAGE, "max_tokens": 0}, {**self.MESSAGE, "max_tokens": -1},
+                   {**self.MESSAGE, "max_tokens": True}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                api_credits.estimate_request_cost(bad, api_credits.MODEL_PRICING, 8192)
+
+    def test_estimate_rejects_max_tokens_over_the_ceiling(self):
+        with self.assertRaisesRegex(ValueError, "exceeds the approved ceiling"):
+            api_credits.estimate_request_cost({**self.MESSAGE, "max_tokens": 9000},
+                                              api_credits.MODEL_PRICING, 8192)
+
+    def test_price_usage_matches_hand_computed_cost(self):
+        price = api_credits.MODEL_PRICING["claude-sonnet-5-5"]
+        usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
+                "cache_creation_input_tokens": 1_000_000, "cache_read_input_tokens": 1_000_000}
+        cost = api_credits.price_usage(usage, api_credits.MODEL_PRICING, "claude-sonnet-5-5")
+        self.assertEqual(cost, round(price["input"] + price["output"] + price["cache_write"]
+                                     + price["cache_read"], 6))
+
+    def test_price_usage_rejects_malformed_usage(self):
+        with self.assertRaises(ValueError):
+            api_credits.price_usage("nope", api_credits.MODEL_PRICING, "claude-sonnet-5-5")
+
+    def test_model_pricing_override_merges_with_builtin(self):
+        merged = api_credits.model_pricing({"model_pricing": {"claude-sonnet-5-5": {"output": 1.0}}})
+        self.assertEqual(merged["claude-sonnet-5-5"]["output"], 1.0)
+        self.assertEqual(merged["claude-sonnet-5-5"]["input"],
+                         api_credits.MODEL_PRICING["claude-sonnet-5-5"]["input"])
+
+    def test_stream_usage_takes_the_max_per_field_across_events(self):
+        raw = (b'data: {"usage": {"output_tokens": 5}}\n'
+              b'data: {"usage": {"output_tokens": 40, "input_tokens": 100}}\n'
+              b'data: [DONE]\n')
+        self.assertEqual(api_credits.parse_stream_usage(raw),
+                         {"output_tokens": 40, "input_tokens": 100})
+
+    def test_stream_usage_reads_usage_nested_under_message(self):
+        raw = b'data: {"type":"message_start","message":{"usage":{"input_tokens":500}}}\n'
+        self.assertEqual(api_credits.parse_stream_usage(raw), {"input_tokens": 500})
+
+    def test_stream_usage_with_no_usage_event_is_none(self):
+        self.assertIsNone(api_credits.parse_stream_usage(b'data: {"type":"ping"}\n'))
+        self.assertIsNone(api_credits.parse_stream_usage(b'not even sse\n'))
+
+
+class FakeUpstream:
+    """A stand-in for http.client.HTTPSConnection, scripted per test."""
+
+    def __init__(self, status, body, headers=None, raises=None):
+        self.status, self.body, self.headers, self.raises = status, body, headers or {}, raises
+        self.sent = None
+
+    def request(self, method, path, body=None, headers=None):
+        if self.raises:
+            raise self.raises
+        self.sent = {"method": method, "path": path, "body": body, "headers": headers}
+
+    def getresponse(self):
+        return self
+
+    def read(self):
+        return self.body
+
+    def getheaders(self):
+        return list(self.headers.items())
+
+    def close(self):
+        pass
+
+
+MESSAGE = {"model": "claude-sonnet-5-5", "max_tokens": 100,
+          "messages": [{"role": "user", "content": "hi there"}]}
+
+
+def make_gateway(led, grant=None, upstream=None, allowed_models=("claude-sonnet-5-5",),
+                 max_output_tokens=8192, pricing=None, real_key="sk-ant-api03-REALKEYxxxxxxxx",
+                 group="g"):
+    conn = upstream if upstream is not None else FakeUpstream(
+        200, json.dumps({"usage": {"input_tokens": 100, "output_tokens": 50}}).encode())
+    gw = api_credits.Gateway(led, group, lambda: grant, pricing or api_credits.MODEL_PRICING,
+                             allowed_models, max_output_tokens, real_key,
+                             connect=lambda: conn, ping=lambda *a, **k: gw.pings.append((a, k)))
+    gw.pings = []
+    gw.upstream = conn
+    return gw
+
+
+class GatewayTests(unittest.TestCase):
+    """The harness's enforceable hook (D41 step 2): the only thing that ever
+    holds the real workspace key, reserving before forwarding."""
+
+    def setUp(self):
+        self.led = Ledger(":memory:", clock=Clock(datetime(2026, 10, 20, tzinfo=UTC)))
+        self.addCleanup(self.led.close)
+        self.grant = {"id": "grant-a", "ceiling_usd": 20.0,
+                     "end": datetime(2026, 11, 15, tzinfo=UTC)}
+
+    def test_denies_unsupported_methods_and_paths(self):
+        gw = make_gateway(self.led, self.grant)
+        self.assertEqual(gw.handle("GET", "/v1/messages", {}, b"")[0], 404)
+        self.assertEqual(gw.handle("POST", "/v1/models", {}, b"{}")[0], 404)
+        self.assertEqual(gw.handle("POST", "/", {}, b"")[0], 404)
+
+    def test_denies_an_unrecognized_local_token(self):
+        gw = make_gateway(self.led, self.grant)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": "wrong"},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 401)
+
+    def test_revoked_token_is_refused(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+        gw.revoke(1)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 401)
+
+    def test_denies_a_model_outside_the_allow_list(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+        status, _, body = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                    json.dumps({**MESSAGE, "model": "claude-opus-5"}).encode())
+        self.assertEqual(status, 400)
+        self.assertIn(b"not an approved", body)
+        self.assertEqual(self.led.q("SELECT * FROM credit_reservations"), [])
+
+    def test_denies_max_tokens_over_the_ceiling(self):
+        gw = make_gateway(self.led, self.grant, max_output_tokens=50)
+        token = gw.register(1)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 400)
+
+    def test_denies_malformed_json(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token}, b"{not json")
+        self.assertEqual(status, 400)
+
+    def test_reserves_forwards_with_the_real_key_and_settles(self):
+        upstream = FakeUpstream(200, json.dumps(
+            {"usage": {"input_tokens": 1000, "output_tokens": 50}}).encode())
+        gw = make_gateway(self.led, self.grant, upstream=upstream,
+                          real_key="sk-ant-api03-REALWORKSPACExxxx")
+        token = gw.register(42)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(upstream.sent["headers"]["x-api-key"], "sk-ant-api03-REALWORKSPACExxxx")
+        self.assertNotEqual(token, "sk-ant-api03-REALWORKSPACExxxx")
+        rows = self.led.q("SELECT * FROM credit_reservations")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "settled")
+        self.assertEqual(rows[0]["run_id"], 42)
+        expected = api_credits.price_usage({"input_tokens": 1000, "output_tokens": 50},
+                                           api_credits.MODEL_PRICING, "claude-sonnet-5-5")
+        self.assertEqual(rows[0]["settled_usd"], expected)
+
+    def test_refuses_when_headroom_is_exhausted(self):
+        self.led.reserve_credit("g", "grant-a", "already-spent", 20.0, 20.0)
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+        status, _, body = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                    json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 402)
+        self.assertIn(b"credit balance is too low", body)
+
+    def test_refuses_with_no_confirmed_grant(self):
+        gw = make_gateway(self.led, grant=None)
+        token = gw.register(1)
+        status, _, body = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                    json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 402)
+        self.assertIn(b"no confirmed grant", body)
+
+    def test_pre_dispatch_failure_releases_the_reservation(self):
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(0, b"", raises=OSError("down")))
+        token = gw.register(1)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 502)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+
+    def test_credit_exhausted_response_releases_and_parks_the_pool(self):
+        body = json.dumps({"type": "error", "error": {
+            "message": "Your credit balance is too low to access the Anthropic API."}}).encode()
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(400, body))
+        token = gw.register(1)
+        status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 400)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        self.assertEqual(json.loads(self.led.get_kv("api_credits:exhausted:g"))["grant_id"], "grant-a")
+        self.assertEqual(len(gw.pings), 1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        self.assertEqual(len(gw.pings), 1)     # pings once, not on every subsequent hit
+
+    def test_auth_error_response_releases_and_parks_the_pool(self):
+        body = json.dumps({"type": "error", "error": {"type": "authentication_error",
+                           "message": "invalid x-api-key"}}).encode()
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(401, body))
+        token = gw.register(1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        self.assertTrue(json.loads(self.led.get_kv("api_credits:auth:g")).get("since"))
+
+    def test_generic_upstream_error_releases_without_parking(self):
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(529, b'{"type":"error"}'))
+        token = gw.register(1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        self.assertIsNone(self.led.get_kv("api_credits:exhausted:g"))
+        self.assertIsNone(self.led.get_kv("api_credits:auth:g"))
+
+    def test_ambiguous_2xx_with_no_usage_retains_exposure(self):
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(200, b'{}'))
+        token = gw.register(1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        self.assertGreater(self.led.credit_exposure("g", "grant-a"), 0.0)
+        row = self.led.q1("SELECT * FROM credit_reservations")
+        self.assertEqual(row["status"], "reserved")
+
+    def test_streaming_usage_is_accumulated_from_sse_events(self):
+        sse = (b'data: {"type":"message_start","message":{"usage":{"input_tokens":500,'
+              b'"cache_read_input_tokens":200}}}\n\n'
+              b'data: {"type":"message_delta","usage":{"output_tokens":10}}\n\n'
+              b'data: {"type":"message_delta","usage":{"output_tokens":42}}\n\n'
+              b'data: {"type":"message_stop"}\n\n')
+        gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(200, sse))
+        token = gw.register(1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                 json.dumps({**MESSAGE, "stream": True}).encode())
+        row = self.led.q1("SELECT * FROM credit_reservations")
+        self.assertEqual(row["status"], "settled")
+        expected = api_credits.price_usage(
+            {"input_tokens": 500, "cache_read_input_tokens": 200, "output_tokens": 42},
+            api_credits.MODEL_PRICING, "claude-sonnet-5-5")
+        self.assertEqual(row["settled_usd"], expected)
+
+    def test_retry_reserves_separately_not_sharing_one_budget(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        rows = self.led.q("SELECT * FROM credit_reservations")
+        self.assertEqual(len(rows), 2)
+        self.assertNotEqual(rows[0]["attempt_key"], rows[1]["attempt_key"])
+
+    def test_real_key_only_ever_goes_in_the_upstream_request_header(self):
+        secret = "sk-ant-api03-SUPERSECRETxxxxxxxxxxxxxxx"
+        for upstream in (FakeUpstream(200, json.dumps({"usage": {"output_tokens": 1}}).encode()),
+                        FakeUpstream(400, b'{"type":"error","error":{"message":"bad request"}}'),
+                        FakeUpstream(529, b'{"type":"error"}')):
+            with self.subTest(status=upstream.status):
+                led = Ledger(":memory:", clock=self.led.now)
+                gw = make_gateway(led, self.grant, real_key=secret, upstream=upstream)
+                token = gw.register(1)
+                status, headers, body = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                                  json.dumps(MESSAGE).encode())
+                self.assertEqual(upstream.sent["headers"]["x-api-key"], secret)
+                self.assertNotIn(secret.encode(), body)
+                self.assertNotIn(secret, json.dumps(headers))
+                led.close()
+
+    def test_start_stop_serves_real_http_and_enforces_the_token(self):
+        """One true socket-level test: the handler wiring (not just handle())
+        actually denies an unrecognized token over real HTTP."""
+        led = Ledger(":memory:", thread_safe=True, clock=self.led.now)
+        self.addCleanup(led.close)
+        gw = api_credits.Gateway(led, "g2", lambda: None, api_credits.MODEL_PRICING,
+                                 ["claude-sonnet-5-5"], 8192, "sk-ant-api03-x")
+        gw.start()
+        self.addCleanup(gw.stop)
+        # http.client, not urllib.request.urlopen: the module guard above
+        # patches urlopen itself (api_credits.urllib.request IS urllib.request),
+        # and this test wants a real loopback socket, not a faked one.
+        conn = http.client.HTTPConnection("127.0.0.1", gw.port, timeout=5)
+        try:
+            conn.request("POST", "/v1/messages", body=json.dumps(MESSAGE).encode(),
+                        headers={"x-api-key": "wrong"})
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 401)
+            resp.read()
+        finally:
+            conn.close()
 
 
 class CycleTests(unittest.TestCase):
@@ -259,13 +649,39 @@ class ConfigTests(unittest.TestCase):
                          ('cycle_anchor_day = 32', "1 to 31"),
                          ('cycle_anchor_time = "25:00"', "HH:MM"),
                          ('api_key_expires = "soon"', "YYYY-MM-DD"),
-                         ('api_key = "sk-ant-x"', "unknown fields")):
+                         ('api_key = "sk-ant-x"', "unknown fields"),
+                         ('allowed_models = []', "non-empty list"),
+                         ('allowed_models = [1]', "non-empty list"),
+                         ('max_output_tokens = 0', "positive integer"),
+                         ('max_output_tokens = 1.5', "positive integer"),
+                         ('gateway_host = "0.0.0.0"', "must be loopback"),
+                         ('base_url_env = ""', "non-empty string")):
             key = bad.split(" =")[0]
             text = "\n".join(line for line in BASE_TOML.splitlines()
                              if not line.startswith(key + " "))
             text = text.replace("[api_credits]", "[api_credits]\n" + bad)
             with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, msg):
                 load(base=text)
+
+    def test_bad_model_pricing(self):
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            load(extra='\n[api_credits.model_pricing.claude-sonnet-5-5]\nbogus = 1\n')
+        with self.assertRaisesRegex(ValueError, "non-negative number"):
+            load(extra='\n[api_credits.model_pricing.claude-sonnet-5-5]\ninput = -1\n')
+
+    def test_grants_validation(self):
+        with self.assertRaisesRegex(ValueError, "expires_at must be after granted_at"):
+            load(extra='\n[[api_credits.grants]]\ngranted_at = "2026-12-20"\n'
+                 'expires_at = "2026-12-01"\n')
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            load(extra='\n[[api_credits.grants]]\ngranted_at = "2026-10-20"\n'
+                 'expires_at = "2026-11-20T00:00:00Z"\n')
+        with self.assertRaisesRegex(ValueError, "unknown fields"):
+            load(extra='\n[[api_credits.grants]]\ngranted_at = "2026-12-20"\n'
+                 'expires_at = "2026-12-25"\nbogus = 1\n')
+        with self.assertRaisesRegex(ValueError, "positive number"):
+            load(extra='\n[[api_credits.grants]]\ngranted_at = "2026-12-20"\n'
+                 'expires_at = "2026-12-25"\npool_usd = 0\n')
 
     def test_credits_need_the_cline_anthropic_harness(self):
         with self.assertRaisesRegex(ValueError, "Claude Code is not covered"):
@@ -496,7 +912,7 @@ class KeychainTests(Base):
         # one key check per 15 minutes plus one admin read per minute at most
         self.assertLessEqual(len(locked.calls), 4)
 
-    def test_run_env_injects_only_the_workspace_key(self):
+    def test_run_env_injects_only_a_local_token_never_the_real_key(self):
         self.ctx.cfg["projects"]["work-only"]["path"] = "/tmp/x"
         reader = keys()
         with mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
@@ -504,10 +920,30 @@ class KeychainTests(Base):
                 mock.patch.object(api_credits.subprocess, "run", reader):
             env = runner.run_env(self.ctx, "work-only", 1, self.name, 7, 1)
             other = runner.run_env(self.ctx, "work-only", 1, "work-cline", 8, 1)
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-ant-api03-WORKSPACEKEYxxxxxxxxxxxx")
+        # D41 step 2: the real workspace key never reaches a run's environment
+        # — only the gateway holds it. The run gets a fresh local token good
+        # only for the gateway, plus its base URL.
+        self.assertNotEqual(env["ANTHROPIC_API_KEY"], "sk-ant-api03-WORKSPACEKEYxxxxxxxxxxxx")
+        self.assertRegex(env["ANTHROPIC_BASE_URL"], r"^http://127\.0\.0\.1:\d+$")
         self.assertNotIn("ANTHROPIC_API_KEY", other)
+        self.assertNotIn("ANTHROPIC_BASE_URL", other)
+        self.assertNotIn("WORKSPACEKEY", json.dumps(env))
         self.assertNotIn("ADMINKEY", json.dumps(env))
         self.assertTrue(all("mahler-anthropic-admin" not in c for c in reader.calls))
+
+    def test_run_env_each_run_gets_a_distinct_token_and_gateway_knows_the_run_id(self):
+        self.ctx.cfg["projects"]["work-only"]["path"] = "/tmp/x"
+        with mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
+                mock.patch.object(api_credits.subprocess, "run", keys()):
+            env1 = runner.run_env(self.ctx, "work-only", 1, self.name, 7, 1)
+            env2 = runner.run_env(self.ctx, "work-only", 1, self.name, 8, 1)
+        self.assertNotEqual(env1["ANTHROPIC_API_KEY"], env2["ANTHROPIC_API_KEY"])
+        gw = api_credits._GATEWAYS[self.pconf["credit_pool"]["group"]]
+        self.assertEqual(gw._run_for_token(env1["ANTHROPIC_API_KEY"]), 7)
+        self.assertEqual(gw._run_for_token(env2["ANTHROPIC_API_KEY"]), 8)
+        api_credits.revoke_run_token(self.pconf, 7)
+        self.assertIsNone(gw._run_for_token(env1["ANTHROPIC_API_KEY"]))
+        self.assertEqual(gw._run_for_token(env2["ANTHROPIC_API_KEY"]), 8)
 
     def test_run_env_fails_closed_when_the_key_is_unreadable(self):
         self.ctx.cfg["projects"]["work-only"]["path"] = "/tmp/x"

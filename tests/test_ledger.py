@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import tomllib
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -1756,3 +1757,163 @@ class CapacityMigrationTests(unittest.TestCase):
             self.assertEqual(led.lease("a", 1)["run_id"], run_id)
             led.capacity_record({("a", 2, "build"): {"signature": "s", "blockers": []}})
             self.assertEqual(len(led.capacity_intervals()), 1)
+
+
+class CreditReservationTests(unittest.TestCase):
+    """Transactional reservations for the Team-plan API credits gateway
+    (DESIGN D41, mahler#903): the part the independent review flagged as
+    unproven — concurrency, crash/retry accounting and confirmed-grant
+    rollover."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def test_reserve_settle_release_round_trip(self):
+        rid, info = self.led.reserve_credit("g", "grant-a", "attempt-1", 2.0, 20.0, run_id=7)
+        self.assertIsNotNone(rid)
+        self.assertEqual(info, {})
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 2.0)
+        row = self.led.settle_credit("g", "grant-a", "attempt-1", 1.25)
+        self.assertEqual(row["status"], "settled")
+        self.assertEqual(row["settled_usd"], 1.25)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 1.25)
+
+    def test_release_frees_the_reservation(self):
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 5.0, 20.0)
+        self.led.release_credit("g", "grant-a", "attempt-1", note="pre-dispatch failure")
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        row = self.led.q1("SELECT * FROM credit_reservations WHERE attempt_key='attempt-1'")
+        self.assertEqual(row["status"], "released")
+        self.assertEqual(row["note"], "pre-dispatch failure")
+
+    def test_ceiling_refuses_a_reservation_that_would_exceed_it(self):
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 15.0, 20.0)
+        rid, info = self.led.reserve_credit("g", "grant-a", "attempt-2", 6.0, 20.0)
+        self.assertIsNone(rid)
+        self.assertEqual(info["remaining_usd"], 5.0)
+        # exactly at the ceiling still clears
+        rid2, info2 = self.led.reserve_credit("g", "grant-a", "attempt-3", 5.0, 20.0)
+        self.assertIsNotNone(rid2)
+        self.assertEqual(info2, {})
+
+    def test_retry_gets_its_own_reservation(self):
+        """Each HTTP attempt reserves separately — a retry is not the same
+        attempt_key, so both count against the ceiling (D41 step 2/4)."""
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)
+        rid, info = self.led.reserve_credit("g", "grant-a", "attempt-1-retry", 4.0, 20.0)
+        self.assertIsNotNone(rid)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 8.0)
+
+    def test_duplicate_reserve_is_idempotent_not_double_counted(self):
+        rid1, _ = self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0, run_id=1)
+        rid2, info2 = self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0, run_id=1)
+        self.assertEqual(rid1, rid2)
+        self.assertTrue(info2["existing"])
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 4.0)
+
+    def test_duplicate_settlement_is_idempotent(self):
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)
+        first = self.led.settle_credit("g", "grant-a", "attempt-1", 2.0)
+        second = self.led.settle_credit("g", "grant-a", "attempt-1", 9.0)   # must not reopen/overwrite
+        self.assertEqual(first["settled_usd"], 2.0)
+        self.assertEqual(second["settled_usd"], 2.0)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 2.0)
+
+    def test_duplicate_release_is_idempotent(self):
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)
+        self.led.release_credit("g", "grant-a", "attempt-1")
+        row = self.led.release_credit("g", "grant-a", "attempt-1", note="second call")
+        self.assertEqual(row["status"], "released")
+        self.assertIsNone(row["note"])    # the second call never touched the already-resolved row
+
+    def test_release_or_settle_on_an_unknown_attempt_is_a_safe_no_op(self):
+        self.assertIsNone(self.led.release_credit("g", "grant-a", "never-reserved"))
+        self.assertIsNone(self.led.settle_credit("g", "grant-a", "never-reserved", 1.0))
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+
+    def test_pre_dispatch_failure_releases_without_settling(self):
+        rid, _ = self.led.reserve_credit("g", "grant-a", "attempt-1", 3.0, 20.0)
+        self.assertIsNotNone(rid)
+        self.led.release_credit("g", "grant-a", "attempt-1", note="HTTP 529 overloaded")
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        # headroom is available again for the next attempt
+        rid2, info2 = self.led.reserve_credit("g", "grant-a", "attempt-2", 20.0, 20.0)
+        self.assertIsNotNone(rid2)
+
+    def test_ambiguous_dispatch_and_crash_retain_exposure(self):
+        """A reservation nothing ever resolves (a crash, a dropped stream
+        with no final usage event) stays 'reserved' and keeps counting —
+        never silently forgotten (D41 step 4)."""
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)
+        # ... the run crashes; nothing settles or releases attempt-1 ...
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 4.0)
+        unresolved = self.led.unresolved_credit_reservations("g")
+        self.assertEqual([r["attempt_key"] for r in unresolved], ["attempt-1"])
+
+    def test_missing_usage_report_is_distinct_from_a_known_zero_cost(self):
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)
+        self.led.reserve_credit("g", "grant-a", "attempt-2", 4.0, 20.0)
+        self.led.settle_credit("g", "grant-a", "attempt-2", 0.0)   # usage arrived, cost zero
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 4.0 + 0.0)
+        self.assertEqual(len(self.led.unresolved_credit_reservations("g")), 1)
+
+    def test_confirmed_grant_rollover_does_not_erase_unresolved_old_charges(self):
+        """A new grant starting does not erase an old grant's unresolved
+        reservation — it stays visible, scoped to its own grant_id."""
+        self.led.reserve_credit("g", "grant-a", "attempt-1", 4.0, 20.0)   # never resolved
+        self.led.reserve_credit("g", "grant-b", "attempt-1", 6.0, 20.0)
+        self.led.settle_credit("g", "grant-b", "attempt-1", 5.0)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 4.0)
+        self.assertEqual(self.led.credit_exposure("g", "grant-b"), 5.0)
+        others = self.led.unresolved_credit_reservations("g", exclude_grant_id="grant-b")
+        self.assertEqual([r["grant_id"] for r in others], ["grant-a"])
+        self.assertEqual(self.led.unresolved_credit_reservations("g", exclude_grant_id="grant-a"), [])
+
+    def test_late_settlement_resolves_against_its_own_grant_after_the_boundary(self):
+        """A reservation made near the end of grant A settles against grant
+        A's own bucket even after grant B has already started — the attempt
+        was made under A, and an attempt_key + grant_id pair is immutable."""
+        self.led.reserve_credit("g", "grant-a", "attempt-last", 3.0, 20.0)
+        self.clock.advance(days=40)                 # grant A has long since expired
+        self.led.reserve_credit("g", "grant-b", "attempt-1", 1.0, 20.0)
+        self.led.settle_credit("g", "grant-a", "attempt-last", 2.5)   # arrives late
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 2.5)
+        self.assertEqual(self.led.credit_exposure("g", "grant-b"), 1.0)
+
+    def test_two_concurrent_connections_race_for_the_last_of_the_budget(self):
+        """Two separate connections to the same database both try to spend
+        the last of the ceiling. Exactly one must win: the IMMEDIATE
+        transaction in reserve_credit serializes them (D6's lease pattern,
+        applied to money), so the loser sees the winner's committed state
+        before deciding, not a stale snapshot."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "credits.db")
+            a = Ledger(path, clock=self.clock, thread_safe=True)
+            b = Ledger(path, clock=self.clock, thread_safe=True)
+            try:
+                results = []
+
+                def attempt(led, key):
+                    results.append(led.reserve_credit("g", "grant-a", key, 6.0, 10.0))
+
+                t1 = threading.Thread(target=attempt, args=(a, "attempt-1"))
+                t2 = threading.Thread(target=attempt, args=(b, "attempt-2"))
+                t1.start(); t2.start()
+                t1.join(); t2.join()
+                winners = [rid for rid, info in results if rid is not None]
+                losers = [info for rid, info in results if rid is None]
+                self.assertEqual(len(winners), 1)
+                self.assertEqual(len(losers), 1)
+                self.assertEqual(losers[0]["remaining_usd"], 4.0)
+                self.assertEqual(a.credit_exposure("g", "grant-a"), 6.0)
+            finally:
+                a.close()
+                b.close()
+
+    def test_exposure_ignores_other_groups_and_grants(self):
+        self.led.reserve_credit("g1", "grant-a", "k1", 3.0, 20.0)
+        self.led.reserve_credit("g2", "grant-a", "k1", 9.0, 20.0)
+        self.led.reserve_credit("g1", "grant-b", "k1", 9.0, 20.0)
+        self.assertEqual(self.led.credit_exposure("g1", "grant-a"), 3.0)

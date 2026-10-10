@@ -29,16 +29,20 @@ and are never logged or persisted. The admin key never enters a run's env.
 """
 
 import calendar
+import http.client
+import http.server
 import json
 import os
+import secrets
 import subprocess
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
-from . import redact
+from . import platforms, redact
 
 
 # Local copies of ledger.iso/parse: config imports this module, and ledger
@@ -84,6 +88,20 @@ DEFAULT_API_CREDITS = {
     "admin_key_service": "mahler-anthropic-admin",
     "api_key_expires": "",           # YYYY-MM-DD; warn 14 days out, daily from 3
     "admin_key_expires": "",
+    # Confirmed grants only (D41 step 3): [{"granted_at": "2026-10-09",
+    # "expires_at": "2026-10-15T00:00:00Z", "pool_usd": 260.0}, ...]. Spending
+    # is authorized only while `now` falls inside one of these windows — never
+    # inferred from cycle_anchor_day, which is forecast-only (see below).
+    "grants": [],
+    # The harness's enforceable hook (D41 step 2): a standard-library gateway
+    # between the runner and api.anthropic.com. Only these models and this
+    # output-token ceiling are approved; anything else is refused before any
+    # request is forwarded.
+    "allowed_models": ["claude-sonnet-5-5"],
+    "max_output_tokens": 8192,
+    "gateway_host": "127.0.0.1",     # loopback only — validate() refuses anything else
+    "base_url_env": "ANTHROPIC_BASE_URL",   # the harness's base-URL override
+    "model_pricing": {},             # per-model USD/MTok override of MODEL_PRICING
 }
 
 KEY_OK, KEY_LOCKED, KEY_MISSING, KEY_ERROR = "ok", "locked", "missing", "error"
@@ -146,6 +164,93 @@ def parse_expiry(value):
     return date.fromisoformat(str(value))
 
 
+def parse_grant_dt(value):
+    """A grant boundary: 'YYYY-MM-DD' floors to that UTC day (the conservative
+    cutoff when no exact instant is known); a full ISO datetime is exact."""
+    if isinstance(value, str) and len(value) == 10:
+        d = date.fromisoformat(value)
+        return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    dt = parse(value)
+    if dt is None:
+        raise ValueError("empty grant date")
+    return dt
+
+
+def grant_id(grant):
+    """A stable identity for a confirmed grant: its own granted_at, exactly
+    as configured. Reservations are keyed by this, so a rewritten pool_usd
+    or expires_at on the *same* grant still resolves prior attempts; only a
+    new granted_at starts a new bucket."""
+    return str(grant["granted_at"])
+
+
+def validate_grants(grants):
+    if not isinstance(grants, list):
+        raise ValueError("api_credits.grants must be a list")
+    seen = []
+    for g in grants:
+        if not isinstance(g, dict):
+            raise ValueError("api_credits.grants entries must be tables")
+        unknown = set(g) - {"granted_at", "expires_at", "pool_usd"}
+        if unknown:
+            raise ValueError(f"api_credits.grants: unknown fields {', '.join(sorted(unknown))}")
+        if "granted_at" not in g or "expires_at" not in g:
+            raise ValueError("api_credits.grants entries need granted_at and expires_at")
+        try:
+            start, end = parse_grant_dt(g["granted_at"]), parse_grant_dt(g["expires_at"])
+        except (ValueError, TypeError):
+            raise ValueError("api_credits.grants: granted_at/expires_at must be YYYY-MM-DD "
+                             "or an ISO UTC datetime") from None
+        if end <= start:
+            raise ValueError(f"api_credits.grants: expires_at must be after granted_at "
+                             f"({g['granted_at']!r})")
+        if "pool_usd" in g and (not _finite(g["pool_usd"]) or g["pool_usd"] <= 0):
+            raise ValueError("api_credits.grants: pool_usd must be a positive number")
+        for s2, e2 in seen:
+            if start < e2 and s2 < end:
+                raise ValueError("api_credits.grants: entries must not overlap "
+                                 f"({g['granted_at']!r})")
+        seen.append((start, end))
+
+
+def validate_model_pricing(pricing):
+    if not isinstance(pricing, dict):
+        raise ValueError("api_credits.model_pricing must be a table")
+    for model, rates in pricing.items():
+        if not isinstance(rates, dict):
+            raise ValueError(f"api_credits.model_pricing.{model} must be a table")
+        unknown = set(rates) - {"input", "output", "cache_write", "cache_read"}
+        if unknown:
+            raise ValueError(f"api_credits.model_pricing.{model}: unknown fields "
+                             f"{', '.join(sorted(unknown))}")
+        for field in ("input", "output", "cache_write", "cache_read"):
+            if field in rates and (not _finite(rates[field]) or rates[field] < 0):
+                raise ValueError(f"api_credits.model_pricing.{model}.{field} must be "
+                                 "a non-negative number")
+
+
+def _bounds(pool, now):
+    """(start, end) for whatever's active: a confirmed grant, or — with
+    none — the forecast window, for display and cache-keying only."""
+    grant = current_grant(pool, now)
+    if grant:
+        return grant["start"], grant["end"]
+    return cycle_bounds(now, pool["cycle_anchor_day"], pool["cycle_anchor_time"])
+
+
+def current_grant(pol, now):
+    """The confirmed grant covering `now`, or None. Never inferred from
+    cycle_anchor_day/time — those are forecast-only (D41 step 3): spending
+    is refused with no confirmed grant, however plausible a recurring
+    monthly anchor looks."""
+    for g in pol.get("grants") or []:
+        start, end = parse_grant_dt(g["granted_at"]), parse_grant_dt(g["expires_at"])
+        if start <= now < end:
+            return {"id": grant_id(g), "start": start, "end": end,
+                    "pool_usd": float(g.get("pool_usd", pol["pool_usd"]))}
+    return None
+
+
 def validate(cfg):
     """Fail closed on a policy that could spend the wrong account or money."""
     from .config import DEFAULT_ACCOUNT, account_of
@@ -192,6 +297,19 @@ def validate(cfg):
             parse_expiry(pol[key])
         except (ValueError, TypeError):
             raise ValueError(f"api_credits.{key} must be YYYY-MM-DD or empty") from None
+    validate_grants(pol["grants"])
+    if not isinstance(pol["allowed_models"], list) or not pol["allowed_models"] or not all(
+            isinstance(m, str) and m.strip() for m in pol["allowed_models"]):
+        raise ValueError("api_credits.allowed_models must be a non-empty list of model names")
+    if type(pol["max_output_tokens"]) is not int or pol["max_output_tokens"] <= 0:
+        raise ValueError("api_credits.max_output_tokens must be a positive integer")
+    if pol["gateway_host"] not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError("api_credits.gateway_host must be loopback (127.0.0.1, localhost or ::1) "
+                         "— the gateway holds the workspace key and must never bind a routable "
+                         "interface")
+    if not isinstance(pol["base_url_env"], str) or not pol["base_url_env"].strip():
+        raise ValueError("api_credits.base_url_env must be a non-empty string")
+    validate_model_pricing(pol["model_pricing"])
     for name, pconf in cfg.get("platforms", {}).items():
         if not is_credit_platform(pconf):
             continue
@@ -421,15 +539,24 @@ def own_spend(led, peers, since, reserve):
 def snapshot(led, name, pconf):
     """Everything known about the pool right now, computed from the ledger.
 
-    -> dict with the cycle, spends, the line in force and why. Money in USD."""
+    -> dict with the grant, spends, the line in force and why. Money in USD.
+    Authorization always keys off a confirmed grant (D41 step 3); with none,
+    cycle_anchor_day/time only forecast where the *next* one is expected, for
+    display — they never open the line."""
     pool = pconf.get("credit_pool") or {}
     now = led.now()
     if not pool:
         return {"configured": False, "state": "hard", "blocking": "not configured"}
-    start, end = cycle_bounds(now, pool["cycle_anchor_day"], pool["cycle_anchor_time"])
     group, peers = pool["group"], pool["peers"]
     reserve = float(pool["run_reserve_usd"])
+    grant = current_grant(pool, now)
+    forecast_start, forecast_end = cycle_bounds(now, pool["cycle_anchor_day"], pool["cycle_anchor_time"])
+    if grant:
+        start, end, pool_usd, gid = grant["start"], grant["end"], grant["pool_usd"], grant["id"]
+    else:
+        start, end, pool_usd, gid = forecast_start, forecast_end, float(pool["pool_usd"]), None
     settled, unpriced = own_spend(led, peers, start, reserve)
+    exposure = led.credit_exposure(group, gid) if gid else 0.0
     active = sum(1 for r in led.active_runs() if r["platform"] in peers)
     cost = _kv_json(led, _key("cost", group))
     fetched = parse(cost.get("fetched_at")) if cost.get("fetched_at") else None
@@ -437,10 +564,18 @@ def snapshot(led, name, pconf):
                  and now - fetched < timedelta(minutes=pool["cost_stale_minutes"]))
     org = cost.get("org_usd") if fresh else None
     ws = cost.get("workspace_usd") if fresh else None
-    mahler = max(settled, ws or 0.0)
-    pool_usd, allowance = float(pool["pool_usd"]), float(pool["allowance_usd"])
+    # `exposure` (the reservation ledger) is authoritative for every
+    # gateway-mediated spend; `settled`/`ws` are independent cross-checks
+    # that can only push the figure up, never down (D8). Anything they see
+    # beyond what the reservation ledger already covers ("external_only")
+    # shrinks the room left for a *new* reservation by the same amount, so
+    # the atomic per-request check (ledger.credit_exposure + the new
+    # estimate <= reservation_ceiling_usd) agrees with this display figure.
+    mahler = max(settled, exposure, ws or 0.0)
+    external_only = max(0.0, max(settled, ws or 0.0) - exposure)
+    allowance = float(pool["allowance_usd"])
     margin = float(pool["safety_margin_usd"])
-    in_window = now >= end - timedelta(hours=pool["burst_lead_hours"])
+    in_window = bool(grant) and now >= end - timedelta(hours=pool["burst_lead_hours"])
     burst = in_window and org is not None
     allowance_left = allowance - mahler
     pool_left = pool_usd - org - margin if org is not None else None
@@ -450,16 +585,21 @@ def snapshot(led, name, pconf):
         remaining = min(allowance_left, pool_left)
     else:
         remaining = allowance_left
+    line = (pool_usd - margin) if burst else allowance
+    unresolved_other = led.unresolved_credit_reservations(group, exclude_grant_id=gid)
     snap = {
         "configured": True, "enabled": bool(pool["enabled"]), "account": pool["account"],
-        "group": group, "cycle_start": iso(start), "cycle_end": iso(end),
+        "group": group, "grant_confirmed": bool(grant), "grant_id": gid,
+        "cycle_start": iso(start), "cycle_end": iso(end),
         "pool_usd": pool_usd, "allowance_usd": allowance, "safety_margin_usd": margin,
         "mahler_spend_usd": round(mahler, 4), "ledger_spend_usd": round(settled, 4),
+        "reserved_exposure_usd": round(exposure, 4),
+        "unresolved_other_grants": len(unresolved_other),
         "unpriced_runs": unpriced, "workspace_spend_usd": ws, "org_spend_usd": org,
         "org_sampled_at": cost.get("fetched_at"), "org_fresh": fresh,
         "org_error": cost.get("error") if not fresh else None,
         "burst_window": in_window, "burst": burst,
-        "line_usd": (pool_usd - margin) if burst else allowance,
+        "line_usd": line, "reservation_ceiling_usd": round(line - external_only, 4),
         "remaining_usd": round(remaining, 4), "active_runs": active,
         "run_reserve_usd": reserve,
         "keys": key_expiries(pool, now.date()),
@@ -475,8 +615,10 @@ def snapshot(led, name, pconf):
         state, why = "stale", "API key not checked yet"
     elif parked.get("since"):
         state, why = "hard", f"API key rejected (expired or revoked) since {parked['since']} — parked"
-    elif exhausted.get("cycle_end") == iso(end):
-        state, why = "no_credit", "credit balance too low — exhausted until the cycle resets"
+    elif not grant:
+        state, why = "hard", "no confirmed grant covers now — spending refused (DESIGN D41)"
+    elif exhausted.get("grant_id") == gid:
+        state, why = "no_credit", "credit balance too low — exhausted until the grant resets"
     elif remaining <= 0:
         state, why = "hard", "line reached"
     elif remaining - active * reserve < reserve:
@@ -509,7 +651,13 @@ def describe(snap, now):
             parts.append(f"org ${snap['org_spend_usd']:.2f} of ${snap['pool_usd']:.0f}")
         if snap["burst_window"]:
             parts.append("org reading stale or unknown — no burst")
-    parts.append(f"cycle resets {end:%m-%d %H:%M} UTC (in {_countdown(end - now)})")
+    if snap["grant_confirmed"]:
+        parts.append(f"grant ends {end:%m-%d %H:%M} UTC (in {_countdown(end - now)})")
+    else:
+        parts.append(f"no confirmed grant — next forecast around {end:%m-%d} UTC, unconfirmed")
+    if snap.get("unresolved_other_grants"):
+        parts.append(f"{snap['unresolved_other_grants']} reservation(s) from a past grant "
+                     "never resolved")
     for key in snap["keys"]:
         if key["days_left"] is not None and key["days_left"] <= 30:
             parts.append(f"{key['name']} key expires {key['expires']} "
@@ -601,7 +749,7 @@ def _refresh_group(ctx, group, name, run, opener):
     if not pool["enabled"] or ctx.dry_run:
         return
     now = led.now()
-    start, end = cycle_bounds(now, pool["cycle_anchor_day"], pool["cycle_anchor_time"])
+    start, end = _bounds(pool, now)
 
     # 1. Can the daemon read the workspace key? (one `security` call per 15m)
     key_state = _kv_json(led, _key("key", group))
@@ -720,23 +868,55 @@ def is_auth_error(text):
     return any(word in lower for word in AUTH_ERROR_WORDS)
 
 
+def mark_exhausted(led, ping, group, grant, run_id=None, platform=None):
+    """'credit balance is too low' — park the pool until its grant ends.
+    Shared by the post-run log scan (after_run) and the gateway's real-time
+    detection, so either path pings exactly once per grant. `grant` is
+    whatever current_grant(pool, now) already returned (or None) — this
+    function never recomputes it, so it works the same from a Ctx (which
+    has a policy to resolve) or from the gateway (which doesn't)."""
+    now = led.now()
+    gid = grant["id"] if grant else None
+    if _kv_json(led, _key("exhausted", group)).get("grant_id") != gid:
+        led.set_kv(_key("exhausted", group), json.dumps({"grant_id": gid, "since": iso(now)}))
+        led.event("api_credits_exhausted", detail=f"{group}: credit balance too low")
+        when = f"its grant ends ({iso(grant['end'])})" if grant and grant.get("end") \
+            else "a new grant is confirmed"
+        source = f"Run {run_id} on {platform} hit" if run_id else "A request hit"
+        ping(f"Mahler: Team API credits exhausted ({group})",
+             f"{source} 'credit balance too low'. No more credits spending until {when}.",
+             priority="high", tags="warning")
+
+
+def mark_auth_parked(led, ping, group, run_id=None, platform=None):
+    """An authentication failure (expired or revoked key) parks the pool
+    until a free recheck succeeds — shared by the log scan and the gateway."""
+    now = led.now()
+    if not _kv_json(led, _key("auth", group)).get("since"):
+        led.set_kv(_key("auth", group), json.dumps({"since": iso(now)}))
+        led.event("api_credits_auth", detail=f"{group}: API key rejected")
+        source = f"Run {run_id} on {platform} failed" if run_id else "A request failed"
+        ping(f"Mahler: Anthropic API key rejected ({group})",
+             f"{source} authentication — the key is expired or revoked. The pool is parked "
+             f"(no retries); Mahler checks the key for free every {AUTH_RECHECK_HOURS}h and "
+             "resumes when it works.",
+             priority="high", tags="warning,key")
+
+
 def after_run(ctx, run, pconf, log):
-    """What a credits run's ending says about the pool. Sets log['auth_failed']."""
+    """What a credits run's ending says about the pool. Sets log['auth_failed'].
+
+    This is the post-hoc fallback: the gateway (below) already reacts to
+    both conditions in real time, in-request, before this ever runs. Both
+    paths share mark_exhausted/mark_auth_parked, so whichever sees it first
+    pings once and the other is a no-op."""
     pool = pconf.get("credit_pool")
     if not pool:
         return
-    led, now = ctx.led, ctx.led.now()
     group = pool["group"]
-    _, end = cycle_bounds(now, pool["cycle_anchor_day"], pool["cycle_anchor_time"])
     if log.get("credit_exhausted"):
-        if _kv_json(led, _key("exhausted", group)).get("cycle_end") != iso(end):
-            led.set_kv(_key("exhausted", group), json.dumps({"cycle_end": iso(end),
-                                                             "since": iso(now)}))
-            led.event("api_credits_exhausted", detail=f"{group}: credit balance too low")
-            ctx.ping(f"Mahler: Team API credits exhausted ({group})",
-                     f"Run {run['id']} on {run['platform']} hit 'credit balance too low'. "
-                     f"No more credits runs until the cycle resets at {iso(end)}.",
-                     priority="high", tags="warning")
+        mark_exhausted(ctx.led, ctx.ping, group, current_grant(pool, ctx.led.now()),
+                       run_id=run["id"], platform=run["platform"])
         return
     text = " ".join(str(x) for x in (log.get("last_error"), log.get("last_text"),
                                       log.get("final")) if x)
@@ -744,11 +924,398 @@ def after_run(ctx, run, pconf, log):
         text = _log_tail(run["log_path"]) if run["log_path"] else ""
     if is_auth_error(text):
         log["auth_failed"] = True
-        if not _kv_json(led, _key("auth", group)).get("since"):
-            led.set_kv(_key("auth", group), json.dumps({"since": iso(now)}))
-            led.event("api_credits_auth", detail=f"{group}: API key rejected")
-            ctx.ping(f"Mahler: Anthropic API key rejected ({group})",
-                     f"Run {run['id']} on {run['platform']} failed authentication — the key "
-                     "is expired or revoked. The pool is parked (no retries); Mahler checks the "
-                     f"key for free every {AUTH_RECHECK_HOURS}h and resumes when it works.",
-                     priority="high", tags="warning,key")
+        mark_auth_parked(ctx.led, ctx.ping, group, run_id=run["id"], platform=run["platform"])
+
+
+# ---------- pricing: the pre-request budget contract (D41 step 2) ----------
+#
+# A conservative, static USD/MTok table — not a source of billing truth, only
+# of the reservation math below. Override per model with
+# [api_credits.model_pricing.<model>]. Rates current as of 2026-10-10.
+
+# claude-sonnet-5-5's rates are confirmed from Cline 3.0.70's own model
+# registry (mahler#903 trial 1, 2026-10-10: `pricing":{"input":2,"output":10,
+# "cacheRead":0.1,"cacheWrite":2.5}`). claude-opus-5 and claude-haiku-4-5 are
+# estimates (not independently verified) scaled at the same ratios as the
+# previous sonnet guess — update them from a verified source before relying
+# on either for a real reservation.
+MODEL_PRICING = {
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_write": 2.5, "cache_read": 0.10},
+    "claude-opus-5": {"input": 10.0, "output": 50.0, "cache_write": 12.5, "cache_read": 0.50},
+    "claude-haiku-4-5": {"input": 0.53, "output": 2.67, "cache_write": 0.67, "cache_read": 0.027},
+}
+DEFAULT_PRICING = MODEL_PRICING["claude-sonnet-5-5"]
+
+CHARS_PER_TOKEN = 4           # an upper bound: real tokenization only ever uses fewer
+AUX_TOKEN_OVERHEAD = 256      # system prompt / tool-schema slack neither side reports upfront
+
+
+def model_pricing(pool):
+    """The effective price table: built-ins plus config overrides."""
+    out = {m: dict(rates) for m, rates in MODEL_PRICING.items()}
+    for model, rates in (pool.get("model_pricing") or {}).items():
+        out[model] = {**out.get(model, DEFAULT_PRICING), **rates}
+    return out
+
+
+def _price_for(pricing, model):
+    return pricing.get(model, DEFAULT_PRICING)
+
+
+def _message_chars(messages):
+    total = 0
+    if not isinstance(messages, list):
+        return total
+    for m in messages:
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, str):
+            total += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and isinstance(block.get("text"), str):
+                    total += len(block["text"])
+    return total
+
+
+def estimate_request_cost(body, pricing, max_output_tokens):
+    """The worst-case reservation for one /v1/messages call: every character
+    sent counts as a fresh (uncached) input token, and every output token
+    up to the request's own max_tokens (capped) gets produced. Covers one
+    HTTP attempt; a retry or an auxiliary call reserves its own estimate
+    separately — distinct attempt_keys, not a shared budget (D41 step 2/4).
+    Raises ValueError on a malformed or out-of-bounds request."""
+    if not isinstance(body, dict):
+        raise ValueError("malformed request body")
+    model = body.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("request is missing a model")
+    max_tokens = body.get("max_tokens")
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+        raise ValueError("max_tokens must be a positive integer")
+    if max_tokens > max_output_tokens:
+        raise ValueError(f"max_tokens {max_tokens} exceeds the approved ceiling "
+                         f"({max_output_tokens})")
+    price = _price_for(pricing, model)
+    input_chars = _message_chars(body.get("messages")) + len(str(body.get("system") or ""))
+    input_tokens = input_chars // CHARS_PER_TOKEN + AUX_TOKEN_OVERHEAD
+    cost = (input_tokens * price["input"] + max_tokens * price["output"]) / 1_000_000
+    return round(cost, 6)
+
+
+def price_usage(usage, pricing, model):
+    """The actual cost of a completed request from its reported usage."""
+    if not isinstance(usage, dict):
+        raise ValueError("malformed usage")
+    price = _price_for(pricing, model)
+    cost = (int(usage.get("input_tokens") or 0) * price["input"]
+            + int(usage.get("output_tokens") or 0) * price["output"]
+            + int(usage.get("cache_creation_input_tokens") or 0) * price["cache_write"]
+            + int(usage.get("cache_read_input_tokens") or 0) * price["cache_read"])
+    return round(cost / 1_000_000, 6)
+
+
+def parse_stream_usage(raw):
+    """Accumulate token usage from a buffered Anthropic Messages SSE stream.
+    `message_start` carries the initial (input/cache) usage; each
+    `message_delta` carries the running output_tokens total — taking the max
+    per field across every event tracks the final total without depending on
+    event ordering. -> a usage dict, or None if no usage event ever arrived
+    (an ambiguous outcome: the caller must not guess the cost was zero)."""
+    usage = {}
+    for line in raw.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            payload = json.loads(line[len("data:"):].strip())
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidates = [payload.get("usage"), (payload.get("message") or {}).get("usage")
+                      if isinstance(payload.get("message"), dict) else None]
+        for u in candidates:
+            if not isinstance(u, dict):
+                continue
+            for k, v in u.items():
+                if isinstance(v, int) and not isinstance(v, bool):
+                    usage[k] = max(v, usage.get(k, 0))
+    return usage or None
+
+
+# ---------- the gateway (D41 step 2) ----------
+#
+# Cline has no per-run dollar cap and reports usage only at the end of a run,
+# so a post-request cost report or a watchdog kill cannot bound spend before
+# it happens. This standard-library reverse proxy is the enforceable hook
+# instead: it is the only thing that ever holds the real workspace key, every
+# run gets its own random local token good only for this gateway, and every
+# POST /v1/messages reserves its worst-case cost before forwarding and
+# settles or releases it afterward. Any other path is refused.
+#
+# It fully buffers each upstream response (even a streamed one) before
+# replying: at one local hop the latency cost is negligible, and it lets a
+# single synchronous handler compute real settlement before the client sees
+# the response, with no partial-forward edge cases. A client that wants true
+# token-by-token delivery would see it arrive all at once instead — accepted
+# for a headless, non-interactive CLI harness.
+
+ANTHROPIC_HOST = "api.anthropic.com"
+MESSAGES_PATH = "/v1/messages"
+
+
+def _gateway_error(kind, message):
+    return json.dumps({"type": "error", "error": {"type": kind, "message": message}}).encode()
+
+
+def _body_text(raw):
+    try:
+        return raw.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+class Gateway:
+    """One pool group's local proxy. Long-lived: started once, serves every
+    run of every platform in the group until stopped."""
+
+    def __init__(self, led, group, grant_fn, pricing, allowed_models, max_output_tokens,
+                 real_key, connect=None, ping=None):
+        self.led = led
+        self.group = group
+        self.grant_fn = grant_fn
+        self.pricing = pricing
+        self.allowed_models = set(allowed_models)
+        self.max_output_tokens = max_output_tokens
+        self.real_key = real_key
+        self.connect = connect or (lambda: http.client.HTTPSConnection(ANTHROPIC_HOST, timeout=600))
+        self.ping = ping or (lambda *a, **k: None)
+        self._tokens = {}
+        self._lock = threading.Lock()
+        self._server = None
+        self._thread = None
+        self.port = None
+
+    # -- run token lifecycle --
+
+    def register(self, run_id):
+        """A fresh local token for one run. Never the real key — the runner
+        puts only this in the run's environment (D41 step 2)."""
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self._tokens[token] = run_id
+        return token
+
+    def revoke(self, run_id):
+        with self._lock:
+            for token, rid in list(self._tokens.items()):
+                if rid == run_id:
+                    del self._tokens[token]
+
+    def _run_for_token(self, token):
+        with self._lock:
+            return self._tokens.get(token)
+
+    # -- serving --
+
+    def start(self, host="127.0.0.1"):
+        if self._server is not None:
+            return self.port
+        gateway = self
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass   # never the default stderr access log: it would echo headers/paths
+
+            def _respond(self, status, headers, body):
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(length) if length else b""
+                status, headers, resp = gateway.handle(
+                    "POST", self.path, dict(self.headers), body)
+                self._respond(status, headers, resp)
+
+            def do_GET(self):
+                status, headers, resp = gateway.handle("GET", self.path, dict(self.headers), b"")
+                self._respond(status, headers, resp)
+
+        self._server = http.server.HTTPServer((host, 0), _Handler)
+        self.port = self._server.server_address[1]
+        self._thread = threading.Thread(target=self._server.serve_forever,
+                                        name=f"credit-gateway-{self.group}", daemon=True)
+        self._thread.start()
+        return self.port
+
+    def stop(self):
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+            self._thread = None
+            self.port = None
+
+    # -- request handling, independent of http.server for direct testing --
+
+    def handle(self, method, path, headers, body):
+        """-> (status, response_headers, response_body_bytes)."""
+        if method != "POST" or path != MESSAGES_PATH:
+            return 404, {}, _gateway_error(
+                "not_found_error", "Mahler gateway: only POST /v1/messages is proxied")
+        token = headers.get("x-api-key") or headers.get("X-Api-Key") or ""
+        run_id = self._run_for_token(token)
+        if run_id is None:
+            return 401, {}, _gateway_error(
+                "authentication_error", "Mahler gateway: unrecognized local token")
+        try:
+            data = json.loads(body or b"{}")
+        except ValueError:
+            return 400, {}, _gateway_error("invalid_request_error",
+                                           "Mahler gateway: malformed JSON body")
+        if not isinstance(data, dict) or data.get("model") not in self.allowed_models:
+            return 400, {}, _gateway_error(
+                "invalid_request_error",
+                f"Mahler gateway: model {data.get('model') if isinstance(data, dict) else None!r} "
+                "is not an approved credits model")
+        try:
+            amount = estimate_request_cost(data, self.pricing, self.max_output_tokens)
+        except ValueError as e:
+            return 400, {}, _gateway_error("invalid_request_error", f"Mahler gateway: {e}")
+        grant = self.grant_fn()
+        if grant is None:
+            return 402, {}, _gateway_error(
+                "permission_error",
+                "Your credit balance is too low to access the Anthropic API. "
+                "(Mahler: no confirmed grant covers now.)")
+        attempt_key = secrets.token_hex(16)
+        rid, info = self.led.reserve_credit(self.group, grant["id"], attempt_key, amount,
+                                            grant["ceiling_usd"], run_id=run_id)
+        if rid is None:
+            return 402, {}, _gateway_error(
+                "permission_error",
+                "Your credit balance is too low to access the Anthropic API. "
+                f"(Mahler: ${max(info.get('remaining_usd', 0.0), 0.0):.2f} of headroom left, "
+                f"${amount:.2f} requested.)")
+        model = data["model"]
+        try:
+            status, resp_headers, resp_body = self._forward(data)
+        except (OSError, http.client.HTTPException) as e:
+            # Nothing reached (or finished talking to) Anthropic: nothing was
+            # spent, so free the reservation. Cline's own retry makes a new
+            # HTTP call to the gateway with its own attempt_key.
+            self.led.release_credit(self.group, grant["id"], attempt_key, note=repr(e)[:200])
+            return 502, {}, _gateway_error("api_error",
+                                           f"Mahler gateway: upstream request failed: {e}")
+        usage = None
+        if status < 300:
+            usage = (parse_stream_usage(resp_body) if data.get("stream")
+                     else self._json_usage(resp_body))
+        if usage is not None:
+            self.led.settle_credit(self.group, grant["id"], attempt_key,
+                                   price_usage(usage, self.pricing, model))
+        elif status < 300:
+            # A 2xx with no parseable usage: ambiguous. Keep the exposure
+            # (D41 step 4) rather than assume nothing was spent.
+            self.led.event("credit_ambiguous", detail={"group": self.group,
+                           "grant_id": grant["id"], "attempt_key": attempt_key, "status": status})
+        elif platforms.is_credit_exhausted(_body_text(resp_body)):
+            self.led.release_credit(self.group, grant["id"], attempt_key,
+                                    note="credit balance too low")
+            mark_exhausted(self.led, self.ping, self.group, grant, run_id=run_id)
+        elif is_auth_error(_body_text(resp_body)):
+            self.led.release_credit(self.group, grant["id"], attempt_key, note="auth rejected")
+            mark_auth_parked(self.led, self.ping, self.group, run_id=run_id)
+        else:
+            # A definite pre-usage error (4xx/5xx, no usage reported): safe
+            # to release — the request never produced billable output.
+            self.led.release_credit(self.group, grant["id"], attempt_key, note=f"HTTP {status}")
+        return status, resp_headers, resp_body
+
+    @staticmethod
+    def _json_usage(raw):
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            return None
+        usage = parsed.get("usage") if isinstance(parsed, dict) else None
+        return usage if isinstance(usage, dict) else None
+
+    def _forward(self, data):
+        body = json.dumps(data).encode()
+        conn = self.connect()
+        try:
+            conn.request("POST", MESSAGES_PATH, body=body, headers={
+                "x-api-key": self.real_key, "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json", "User-Agent": "mahler-gateway"})
+            resp = conn.getresponse()
+            raw = resp.read()
+            headers = {k: v for k, v in resp.getheaders()
+                      if k.lower() not in ("content-length", "transfer-encoding", "connection")}
+            return resp.status, headers, raw
+        finally:
+            conn.close()
+
+
+
+_GATEWAYS = {}
+_GATEWAYS_LOCK = threading.Lock()
+
+
+def _open_gateway_ledger(path, clock):
+    from .ledger import Ledger        # deferred: ledger imports config, config imports us
+    return Ledger(path, clock=clock, thread_safe=True)
+
+
+def ensure_gateway(ctx, name, pconf, open_ledger=None):
+    """The group's gateway, starting it on first use. Idempotent: a platform
+    sharing a quota_group with another credits platform reuses the same
+    running gateway and its registered tokens stay namespaced by run_id."""
+    pool = pconf.get("credit_pool")
+    if not pool:
+        raise RuntimeError("API credits are not configured for this platform")
+    group = pool["group"]
+    with _GATEWAYS_LOCK:
+        gw = _GATEWAYS.get(group)
+        if gw is not None:
+            return gw
+        real_key = api_key_for_run(pconf)
+        led = (open_ledger or _open_gateway_ledger)(ctx.led.path, ctx.led.now)
+
+        def grant_fn(led=led, name=name, pconf=pconf):
+            snap = snapshot(led, name, pconf)
+            if not snap.get("grant_confirmed") or snap["state"] in ("hard", "no_credit"):
+                return None
+            return {"id": snap["grant_id"], "ceiling_usd": snap["reservation_ceiling_usd"],
+                   "end": parse(snap["cycle_end"])}
+
+        gw = Gateway(led, group, grant_fn, model_pricing(pool), pool["allowed_models"],
+                    pool["max_output_tokens"], real_key, ping=ctx.ping)
+        gw.start(pool["gateway_host"])
+        _GATEWAYS[group] = gw
+        return gw
+
+
+def revoke_run_token(pconf, run_id):
+    """Forget one run's local token once it has ended (finalize.py)."""
+    pool = pconf.get("credit_pool")
+    gw = _GATEWAYS.get(pool["group"]) if pool else None
+    if gw is not None:
+        gw.revoke(run_id)
+
+
+def shutdown_gateways():
+    """Stop every running gateway: daemon shutdown, or test cleanup."""
+    with _GATEWAYS_LOCK:
+        for gw in _GATEWAYS.values():
+            gw.stop()
+            if gw.led is not None and gw.led.path != ":memory:":
+                gw.led.close()
+        _GATEWAYS.clear()
