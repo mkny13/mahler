@@ -439,6 +439,42 @@ class GatewayTests(unittest.TestCase):
         status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token}, b"{not json")
         self.assertEqual(status, 400)
 
+    def test_agent_sdk_beta_path_and_header_passthrough(self):
+        upstream = FakeUpstream(200, json.dumps(
+            {"usage": {"input_tokens": 10, "output_tokens": 5}}).encode())
+        gw = make_gateway(self.led, self.grant, upstream=upstream, real_key="sk-ant-REAL")
+        token = gw.register(7)
+        hdrs = {"X-Api-Key": token, "Authorization": "Bearer " + token,
+                "Anthropic-Beta": "claude-code-20250219", "Anthropic-Version": "2099-01-01",
+                "user-agent": "claude-agent-sdk/9.9"}
+        status, _, _ = gw.handle("POST", "/v1/messages?beta=true", hdrs,
+                                 json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 200)
+        sent = upstream.sent
+        self.assertEqual(sent["path"], "/v1/messages?beta=true")
+        self.assertEqual(sent["headers"]["anthropic-beta"], "claude-code-20250219")
+        self.assertEqual(sent["headers"]["anthropic-version"], "2099-01-01")
+        self.assertEqual(sent["headers"]["User-Agent"], "claude-agent-sdk/9.9")
+        self.assertEqual(sent["headers"]["x-api-key"], "sk-ant-REAL")
+        self.assertNotIn(token, json.dumps(sent["headers"]))
+        self.assertFalse({k.lower() for k in sent["headers"]} & {"authorization"})
+
+    def test_default_version_and_plain_path_upstream(self):
+        upstream = FakeUpstream(200, json.dumps({"usage": {"input_tokens": 1, "output_tokens": 1}}).encode())
+        gw = make_gateway(self.led, self.grant, upstream=upstream)
+        token = gw.register(7)
+        gw.handle("POST", "/v1/messages", {"x-api-key": token}, json.dumps(MESSAGE).encode())
+        self.assertEqual(upstream.sent["path"], "/v1/messages")
+        self.assertEqual(upstream.sent["headers"]["anthropic-version"], api_credits.ANTHROPIC_VERSION)
+        self.assertNotIn("anthropic-beta", upstream.sent["headers"])
+
+    def test_unknown_query_string_is_404(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(7)
+        for path in ("/v1/messages?beta=false", "/v1/messages?beta=true&x=1", "/v1/messages?"):
+            self.assertEqual(gw.handle("POST", path, {"x-api-key": token},
+                                       json.dumps(MESSAGE).encode())[0], 404)
+
     def test_reserves_forwards_with_the_real_key_and_settles(self):
         upstream = FakeUpstream(200, json.dumps(
             {"usage": {"input_tokens": 1000, "output_tokens": 50}}).encode())
@@ -626,8 +662,8 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(cfg["api_credits"]["enabled"] if "api_credits" in cfg
                          else api_credits.policy(cfg)["enabled"])
         self.assertNotIn("claude-api", json.dumps(config.DEFAULTS["routing"]))
-        self.assertEqual(cfg["platforms"]["claude-api"]["kind"], "cline")
-        self.assertEqual(cfg["platforms"]["claude-api"]["provider"], "anthropic")
+        self.assertEqual(cfg["platforms"]["claude-api"]["kind"], "agent-sdk")
+        self.assertNotIn("provider", cfg["platforms"]["claude-api"])
 
     def test_work_platform_gets_its_own_quota_group_and_pool(self):
         cfg = load()
@@ -683,7 +719,7 @@ class ConfigTests(unittest.TestCase):
             load(extra='\n[[api_credits.grants]]\ngranted_at = "2026-12-20"\n'
                  'expires_at = "2026-12-25"\npool_usd = 0\n')
 
-    def test_credits_need_the_cline_anthropic_harness(self):
+    def test_credits_need_the_agent_sdk_harness(self):
         with self.assertRaisesRegex(ValueError, "Claude Code is not covered"):
             load('\n[platforms.work-claude-api2]\nfrom = "claude"\naccount = "work"\n'
                  'api_credits = true\n')
@@ -953,12 +989,12 @@ class KeychainTests(Base):
             with self.assertRaisesRegex(RuntimeError, "keychain is locked"):
                 runner.run_env(self.ctx, "work-only", 1, self.name, 7, 1)
 
-    def test_cline_argv_uses_the_anthropic_provider(self):
-        with mock.patch.object(platforms, "cline_exe", return_value="/x/cline"):
-            argv = platforms.argv_for(self.pconf, "do it", "/wt", "build", 60)
-        self.assertEqual(argv[argv.index("-P") + 1], "anthropic")
-        self.assertEqual(argv[argv.index("-m") + 1], "claude-sonnet-5-5")
-        self.assertNotIn("-k", argv)                  # the key never goes in argv
+    def test_agent_sdk_argv_never_carries_the_key(self):
+        with mock.patch.object(platforms, "sdk_run_exe", return_value="/x/mahler-sdk-run"):
+            argv = platforms.argv_for(self.pconf, "do it", "/wt", "build", 60, run_dir="/r")
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-sonnet-5-5")
+        self.assertNotIn("-k", argv)
+        self.assertFalse(any("sk-ant" in a for a in argv))
 
 
 class CostReportTests(Base):
