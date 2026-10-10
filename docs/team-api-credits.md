@@ -12,16 +12,13 @@ current status.
   proxy (reserve-before-forward, model/token bounds, streaming usage, ambiguous-outcome and
   crash accounting), ledger reservations (transactional, idempotent, grant-scoped), key
   expiry notifications.
-- **Live trial 1 ran 2026-10-10 (synthetic, $0.10 cap, zero actual spend) and ruled out the
-  original harness plan.** Cline's direct `anthropic` provider cannot be redirected to the
-  gateway: `cline auth -p anthropic -b <url>` refuses outright ("base URL is only supported
-  for OpenAI and OpenAI-compatible providers"), and its provider-settings schema has no
-  `baseUrl` field at all for `anthropic`. The `openai-compatible` provider does accept one.
-  The next step is an OpenAI-chat-completions↔Anthropic-Messages translation layer in the
-  gateway, wired through `cline auth --data-dir <per-run dir>` (not env vars — Cline reads
-  provider settings from `settings/providers.json`, not `ANTHROPIC_BASE_URL`). See DESIGN.md
-  D41 for the full writeup. `[api_credits] enabled` stays `false` until that's built and
-  passes its own live trial.
+- **Harness: the Claude Agent SDK runner (mahler#918).** Live trial 1 (2026-10-10) ruled out
+  Cline: its `anthropic` provider has no base-URL setting. `sdk_runner/` (`mahler-sdk-run`)
+  reads `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`, which `runner.run_env` already sets to the
+  gateway and the run's local token. Install it by hand: `uv tool install ./sdk_runner`.
+  The gateway passes the SDK's `POST /v1/messages?beta=true` and its `anthropic-*` and
+  `User-Agent` headers through. See `sdk_runner/FINDINGS.md` and DESIGN.md D41. Kilo is a
+  verified fallback. `[api_credits] enabled` stays `false` until the steps below pass.
 
 ## One-time setup (Mike, in Console — claude.ai Owner role)
 
@@ -47,11 +44,10 @@ current status.
 
 1. **Done (2026-10-10, trial 1):** confirmed the direct `anthropic` provider can't reach the
    gateway. Ruled out, see Status above.
-2. **Next:** build the `openai-compatible` translation layer in the gateway, switch
-   `work-claude-api`'s provider and the runner's wiring (`cline auth --data-dir`, not env
-   vars), then re-run a synthetic trial the same way: a trivial `max_tokens`-capped prompt,
-   checking the gateway's own ledger events (`credit_reserved`/`credit_settled`) for the
-   attempt, not just Cline's own output.
+2. **Next:** `uv tool install ./sdk_runner`, then re-run a synthetic trial through the
+   gateway: a trivial `max_tokens`-capped prompt, checking the gateway's own ledger events
+   (`credit_reserved`/`credit_settled`) for the attempt, and the Anthropic console to confirm
+   which credit pool was debited.
 3. Once that passes, an end-to-end run on an enabled work-account project, still capped at
    $0.10, confirms the whole path: routing, the gateway, settlement and promotional-credit
    attribution visible in Console billing.

@@ -426,7 +426,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do), **and** `"small_model": "kilo/kilo-auto/free"` set in `~/.config/kilo/kilo.jsonc` — Kilo's background tasks (session titling, context-window summarization) read `small_model`, not the `-m` flag, so without it they fall through to a paid default model and fail on a $0 balance. The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | **Kiro** (`kiro-cli`, Kiro CLI, model `auto`) | `kiro-cli chat <prompt> --output-format stream-json --no-interactive --trust-tools read,write,glob,grep` (cwd = worktree) | Metered through a zero-cost `/usage` probe: `kiro-cli chat /usage --output-format stream-json` parses Kiro's credit-line text ("Credits (X of Y covered in plan), Z.Z%", "resets on YYYY-MM-DD"). KIRO FREE = 50 credits/month, single `monthly` window. No deny-list flag — the `--trust-tools` allow-list omits `shell`, so DENY_STEMS are unreachable (mahler#77). Auth-failure prints a plaintext `error:` line to stderr; model-rejection surfaces as a `runError` event whose message contains "is not available". Verified 2026-10-01 (mahler#622) | **Opt-in only** — disabled by default (`enabled: false`), absent from default routes. Size `s` only, tier 2, monthly window with 80/95% soft/hard lines. A project must explicitly enable it to spend Kiro credits. |
 | **Mistral Vibe** (`vibe`, `mistral-vibe` 2.25.8, model `codestral-latest`) | `vibe --prompt <p> --workdir <wt> --output streaming --trust --auto-approve --max-price 0 --max-turns N`; resume with `--resume <sessionId>`. Model has no flag: a per-run `VIBE_HOME/config.toml` pins it, and `MISTRAL_API_KEY` comes from the env or `~/.vibe/.env` | Unmetered: chat responses carry only per-minute `x-ratelimit-*` headers, so 429 triggers a 60-minute backoff (as Kilo/Cline). On the free plan only `codestral-latest` (125 req/min) and open models work; the default `mistral-medium-3.5` 429s with a 0 req/min limit. Streaming NDJSON carries `sessionId`. No bash deny-list under `--auto-approve`: accepted guardrail gap (mahler#77). Verified 2026-10-01 (mahler#623) | **Opt-in only** — disabled by default, absent from default routes. Builder, size `s` only. Never enable pay-as-you-go on the Mistral workspace. |
-| **Team API credits** (`claude-api` / `work-claude-api`; `api_credits.Gateway`, a standard-library proxy that reserves each request's worst-case cost before forwarding with the real key) | Not yet wired to a working harness: Cline's direct `anthropic` provider was live-tried 2026-10-10 and cannot reach the gateway (no `baseUrl` in its provider settings). `openai-compatible` (confirmed to accept `baseUrl`) plus a translation layer in the gateway is the next step, run through `cline auth --data-dir`, not env vars | Dollars, not percentages: the ledger's reservation exposure, Mahler's priced runs and the Admin Cost API's org/workspace spend, against the current *confirmed grant* (never a forecast cycle). A stale org reading means allowance only; no confirmed grant means nothing spends | **Work account only, opt-in**: disabled, in no default route, and not reachable by any run yet. $20 per confirmed grant, then the org pool's rest in the last 48h before it expires, once the harness exists (D41) |
+| **Team API credits** (`claude-api` / `work-claude-api`; `api_credits.Gateway`, a standard-library proxy that reserves each request's worst-case cost before forwarding with the real key) | Harness is the Agent SDK runner (`kind = "agent-sdk"`, `sdk_runner/`, hand-installed); wired in code, awaiting its live end-to-end trial. Cline was ruled out 2026-10-10 | Dollars, not percentages: the ledger's reservation exposure, Mahler's priced runs and the Admin Cost API's org/workspace spend, against the current *confirmed grant* (never a forecast cycle). A stale org reading means allowance only; no confirmed grant means nothing spends | **Work account only, opt-in**: disabled, in no default route, and not reachable by any run yet. $20 per confirmed grant, then the org pool's rest in the last 48h before it expires, once the harness exists (D41) |
 | OpenCode | — | — | Later backend (Phase 8) |
 
 **MiMo Code investigation: free MiMo Auto retired (mahler#721, 2026-10-07).**
@@ -2445,30 +2445,26 @@ work.
      post-run log scan (`api_credits.mark_exhausted`/`mark_auth_parked`, shared by both paths
      so whichever notices first pings once).
   - **Live trial 1 (2026-10-10, synthetic, $0.10 cap, zero actual spend): Cline's direct
-    `anthropic` provider cannot be redirected to the gateway at all — ruled out.** `cline auth
-    -p anthropic -b <url>` refuses outright: *"error: base URL is only supported for OpenAI
-    and OpenAI-compatible providers."* This isn't a CLI-validation quirk: the provider's own
-    stored settings schema (`settings/providers.json`) has no `baseUrl` field for `anthropic`
-    at all, confirmed by inspecting a real (dummy-keyed, no-cost) config write. The trial's
-    in-memory gateway recorded zero reservations and zero events — the request never had
-    anywhere to go. `ANTHROPIC_BASE_URL` was never going to work either: this provider's
-    settings are per-provider JSON, not env-driven. The `openai-compatible` provider *does*
-    accept `-b`/`baseUrl` (verified the same way, no real key or cost involved) — so the
-    harness choice for D41 step 2 has to become Cline's `openai-compatible` provider with the
-    gateway speaking OpenAI's chat-completions wire format and translating to/from the real
-    Anthropic Messages API, not the direct `anthropic` provider this decision originally
-    assumed. The wiring mechanism needs rework too, not just the provider choice: Cline stores
-    provider settings (including `baseUrl`) in `settings/providers.json` under its data dir,
-    set by `cline auth -b <url> -k <key> --data-dir <dir>` — not read from `ANTHROPIC_BASE_URL`
-    or any other env var at request time. `runner.run_env`'s current env-var injection
-    (`ANTHROPIC_API_KEY`/`ANTHROPIC_BASE_URL`) is itself based on the disproven assumption and
-    would need to become a `cline auth --data-dir <per-run dir>` call before each launch.
-    That translation layer is unbuilt. Until it exists and passes its own live trial,
-    `[api_credits] enabled` stays `false`, `work-claude-api`'s `from = "claude-api"` keeps
-    `provider = "anthropic"` as dead config (not wired to anything that can reach it), and
-    this is the next concrete step for whoever picks mahler#903 back up — not a config flip.
-    Passing unit tests on faked transports was never going to be that evidence, which is
-    exactly why this trial ran before claiming the harness was enforceable.
+    `anthropic` provider cannot be redirected to the gateway — Cline is ruled out.** `cline auth
+    -p anthropic -b <url>` refuses (base URL is only supported for OpenAI and OpenAI-compatible
+    providers) and its `settings/providers.json` schema has no `baseUrl` for `anthropic`. The
+    gateway recorded no reservations. Only `openai-compatible` accepts a base URL, which would
+    need an OpenAI↔Anthropic translation layer; that route was dropped.
+  - **Harness (2026-10-10, mahler#918): the Claude Agent SDK runner.** `sdk_runner/`
+    (`mahler-sdk-run`, hand-installed with `uv tool install ./sdk_runner`, like `launcher/`;
+    Mahler itself stays stdlib-only) runs the SDK, which reads `ANTHROPIC_BASE_URL` and
+    `ANTHROPIC_API_KEY` — exactly what `runner.run_env` already sets for a credits platform
+    (gateway URL and the run's local token). `sdk_runner/FINDINGS.md` records why: one real
+    call with the workspace key was accepted with no "credit balance is too low" error (which
+    pool was debited must still be confirmed in the Anthropic console), and a wire capture
+    showed every request is `POST /v1/messages?beta=true`, auth via `x-api-key`. The platform
+    kind is `agent-sdk` (`claude-api` no longer has a `provider`). The gateway accepts that
+    path (and no other query string) and forwards the client's `anthropic-beta`,
+    `anthropic-version` and `User-Agent` unchanged, because Anthropic tells covered Agent SDK
+    traffic from uncovered Claude Code by them; it still never forwards the client's key. The
+    adapter passes Mahler's deny-list as `--disallowed-tool` and has no resume. Kilo was
+    verified as a working fallback harness if the SDK route stops being covered.
+    `[api_credits] enabled` stays `false` until a live end-to-end trial passes.
   - Trial 1 also corrected the pricing table: `MODEL_PRICING["claude-sonnet-5-5"]` was a guess
     before this trial; Cline's own model registry reported `input:2, output:10, cacheRead:0.1,
     cacheWrite:2.5` (USD/MTok), now the confirmed values. `claude-opus-5` and `claude-haiku-4-5`

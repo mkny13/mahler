@@ -146,4 +146,6 @@ e.g. decision numbers — never invent one).
   review in `review.md`); their STATUS-line contracts are parsed by `platforms.status_line`.
   `console_walkthrough.md` is a manually triggered console UAT walkthrough, ending in a
   pass/fail report rather than an autonomous STATUS line.
+- `sdk_runner/`: the Agent SDK runner (`mahler-sdk-run`) behind `kind = "agent-sdk"`, the
+  API-credits harness (D41). Hand-installed: `uv tool install ./sdk_runner`.
 - `launcher/`: the stable launcher, launchd plist and installer.

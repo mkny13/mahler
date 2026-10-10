@@ -413,14 +413,10 @@ still open is tuning: keep it only where it pays for itself.
 - Team-plan Claude API credits (mahler#903, DESIGN D41): `api_credits.Gateway`, confirmed
   grants, transactional reservations, crash/retry accounting and confirmed-grant rollover are
   built and tested, account question answered ("Yes, credits only"). The live trial (gated on
-  Mike's go-ahead, 2026-10-10) ruled out the originally assumed harness: Cline's direct
-  `anthropic` provider cannot be redirected to the gateway at all (no `baseUrl` in its
-  provider-settings schema; `cline auth -p anthropic -b <url>` refuses outright). The viable
-  path is Cline's `openai-compatible` provider (confirmed to accept `baseUrl`) plus an
-  OpenAI-chat-completions↔Anthropic-Messages translation layer in the gateway, wired through
-  `cline auth --data-dir <per-run dir>` rather than env vars. That translation layer, the
-  runner wiring rework, and a fresh live trial are unbuilt — the next concrete step before
-  `claude-api`/`work-claude-api` can ever reach `enabled = true`.
+  Mike's go-ahead, 2026-10-10) ruled out Cline (no base URL for its `anthropic` provider).
+  The harness is now the Agent SDK runner (`sdk_runner/`, `kind = "agent-sdk"`, mahler#918),
+  wired into the gateway and platform adapter. Remaining before `enabled = true`: install the
+  runner by hand (`uv tool install ./sdk_runner`) and pass a live end-to-end trial.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.
