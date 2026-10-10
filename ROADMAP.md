@@ -410,6 +410,10 @@ still open is tuning: keep it only where it pays for itself.
     so the free tier runs on a stored `kiro-cli login`.
   - Meta Muse Code was evaluated on 2026-10-01 and not pursued: it has a headless `muse exec` and
     API-key auth, but no bundled free quota was found, and D8 never spends real money.
+- Team-plan Claude API credits (mahler#903, DESIGN D41): `claude-api` / `work-claude-api`
+  runs Cline's anthropic provider on the work pool — $20 allowance per billing cycle, and
+  a burst into the org's unused pool in the last 48h before it expires. Built, disabled by
+  default; enabling it, routing it and a first real run on the mini are operator steps.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.

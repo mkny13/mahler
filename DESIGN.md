@@ -426,6 +426,7 @@ With explicit leases, "nobody's picked this up in an hour" stops being a judgeme
 | **Kilo** (`@kilocode/cli`, kilo.ai account, model `kilo/kilo-auto/free`) | `kilo run <prompt> --dir <worktree> --auto --format json -m kilo/kilo-auto/free` | None: usage is per-account credits with no cheap probe, so it's **unmetered** like Cline | Builder, size `s` only, last among the free tiers — `kilo-auto` draws from a grab-bag of smaller/niche `:free` models of unverified quality. Needs `kilo auth login` (a one-time browser flow only the account owner can do), **and** `"small_model": "kilo/kilo-auto/free"` set in `~/.config/kilo/kilo.jsonc` — Kilo's background tasks (session titling, context-window summarization) read `small_model`, not the `-m` flag, so without it they fall through to a paid default model and fail on a $0 balance. The default (non-`:free`) model 402s immediately ("Add credits to continue") — no "quota" in the text, so `QUOTA_WORDS` covers "credit" and `usage_limit_exceeded` too. Verified end-to-end 2026-09-13 (mahler#29) |
 | **Kiro** (`kiro-cli`, Kiro CLI, model `auto`) | `kiro-cli chat <prompt> --output-format stream-json --no-interactive --trust-tools read,write,glob,grep` (cwd = worktree) | Metered through a zero-cost `/usage` probe: `kiro-cli chat /usage --output-format stream-json` parses Kiro's credit-line text ("Credits (X of Y covered in plan), Z.Z%", "resets on YYYY-MM-DD"). KIRO FREE = 50 credits/month, single `monthly` window. No deny-list flag — the `--trust-tools` allow-list omits `shell`, so DENY_STEMS are unreachable (mahler#77). Auth-failure prints a plaintext `error:` line to stderr; model-rejection surfaces as a `runError` event whose message contains "is not available". Verified 2026-10-01 (mahler#622) | **Opt-in only** — disabled by default (`enabled: false`), absent from default routes. Size `s` only, tier 2, monthly window with 80/95% soft/hard lines. A project must explicitly enable it to spend Kiro credits. |
 | **Mistral Vibe** (`vibe`, `mistral-vibe` 2.25.8, model `codestral-latest`) | `vibe --prompt <p> --workdir <wt> --output streaming --trust --auto-approve --max-price 0 --max-turns N`; resume with `--resume <sessionId>`. Model has no flag: a per-run `VIBE_HOME/config.toml` pins it, and `MISTRAL_API_KEY` comes from the env or `~/.vibe/.env` | Unmetered: chat responses carry only per-minute `x-ratelimit-*` headers, so 429 triggers a 60-minute backoff (as Kilo/Cline). On the free plan only `codestral-latest` (125 req/min) and open models work; the default `mistral-medium-3.5` 429s with a 0 req/min limit. Streaming NDJSON carries `sessionId`. No bash deny-list under `--auto-approve`: accepted guardrail gap (mahler#77). Verified 2026-10-01 (mahler#623) | **Opt-in only** — disabled by default, absent from default routes. Builder, size `s` only. Never enable pay-as-you-go on the Mistral workspace. |
+| **Team API credits** (`claude-api` / `work-claude-api`, Cline 3.0.70 `-P anthropic -m claude-sonnet-5-5`) | `cline_argv` as for Cline, with the workspace key in the run's env as `ANTHROPIC_API_KEY` from the login keychain (D41) | Dollars, not percentages: Mahler's priced runs and the Admin Cost API's org/workspace spend this billing cycle. A stale org reading means allowance only. No real run yet: a live trial on the mini is outstanding | **Work account only, opt-in**: disabled, in no default route. $20 per billing cycle, then the org pool's rest in the last 48h (D41) |
 | OpenCode | — | — | Later backend (Phase 8) |
 
 **MiMo Code investigation: free MiMo Auto retired (mahler#721, 2026-10-07).**
@@ -2370,3 +2371,84 @@ in the risks list): agents may now drive the GUI, but only through the gate.
 - **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
   job only with evidence it covers the skipped work. A skip is never a pass.
 - Scheduling a weekly smoke inside the window (using `--scheduled`) stays in couch-tour#358.
+
+### D41 — Team-plan API credits: a $20 allowance, then the pool's rest before it expires (mahler#903)
+
+Decided 2026-10-09 (owner policy in mahler#903). *The number was taken as the next free one
+after D40 in DESIGN.md and open PRs, because `mahler next-id mahler D` could not be run from
+the building session; confirm it against the shared counter when this merges.*
+
+The work Team plan comes with a pooled monthly Claude API credit balance ($260 today; it
+follows seat count). Mahler may spend `allowance_usd` ($20) of it per billing cycle at will.
+The credits expire at the end of each cycle and don't roll over, so in the last
+`burst_lead_hours` (48) Mahler may spend whatever the whole organization has left. This is
+D23 and D35 again: quota about to expire unused turns into work.
+
+- **The harness is Cline's direct `anthropic` provider, never Claude Code.** The credits
+  cover the Claude API and Agent SDK but not Claude Code, which fails with "credit balance
+  too low" on a credits-only org. So the `claude` CLI keeps its ANTHROPIC_API_KEY stripped
+  (D25's `CREDENTIAL_VARS`), and the new platform `claude-api` (`kind = "cline"`,
+  `provider = "anthropic"`, `claude-sonnet-5-5`) gets the workspace key in its own child
+  environment only, read fresh from the login keychain (`mahler-anthropic-api`, account
+  `work`). Never argv (`cline -k` would also save it), never a file, never logged. Cline
+  3.0.70's provider registry falls back to `ANTHROPIC_API_KEY` (`apiKeyEnv`) when no key is
+  saved for the provider (checked in its shipped code on 2026-10-09). A real run on the mini
+  is still owed. Configuring `api_credits` on anything but Cline/anthropic is refused.
+- **Work account only (D25/D26).** `claude-api` is a disabled base in DEFAULTS and in no
+  default route. Live config defines `work-claude-api` (`from = "claude-api"`,
+  `account = "work"`). Validation refuses to enable a credits platform on any account other
+  than `[api_credits] account`, and that account can't be personal. Routing, pins and the
+  runner's account check work as for every work platform.
+- **The cycle is the billing cycle, not the calendar month.** Credits arrive after each
+  plan payment. The first grant (2026-10-09) expires 2026-10-15 UTC, so the cycle ends on
+  `cycle_anchor_day = 15` at `cycle_anchor_time` UTC, and a day past a month's end clamps to
+  its last day. The org's own spend cap resets on the 1st, which is unrelated. Pool,
+  allowance, anchor, lead, margin and key expiry dates all live in `[api_credits]` because
+  they change with seats and grants. A computed rollover is a nominal date: if a grant
+  arrives late, the first runs of a cycle can hit "credit balance too low" (below), which
+  holds the pool until the next anchor.
+- **The lines, in dollars.** Mahler's spend is the larger of its own priced runs this cycle
+  (`runs.cost_usd`, where an unpriced run counts as `run_reserve_usd`, $5) and the Admin
+  Cost API's figure for Mahler's workspace. Outside the burst, the remaining headroom is
+  `allowance − Mahler's spend`. When a fresh org reading exists it is capped at
+  `pool − org spend − margin`, so teammates' spend can close the allowance too. Inside the
+  burst window, with a fresh org reading, headroom is `pool − org spend − safety_margin_usd`.
+  A new run starts only if headroom minus `run_reserve_usd` for each live run still covers
+  another reserve (soft). At zero, running work yields (hard, via the watchdog).
+- **The org reading** comes from `GET /v1/organizations/cost_report` with the admin key
+  (`mahler-anthropic-admin`, conductor-only, never in a run's env). Daily buckets start from
+  the cycle start floored to its UTC day, so it can only overcount. Amounts are decimal
+  strings in cents, paginated with `has_more`/`next_page`, and grouped by `workspace_id` to
+  split out Mahler's own. It is cached 15 minutes (5 while a credits run is live), never
+  polled more than once a minute, and older than 60 minutes it counts as unknown. Only
+  aggregate amounts are kept, nothing per person. This is a narrow, deliberate exception to
+  D25's "no colleagues' usage is queried": the pool is shared, so a burst needs the org
+  total.
+- **Fail closed (D8).** A stale or unknown org reading never enables the burst: the line
+  stays at the allowance. A key the daemon can't read makes the platform unavailable. A
+  locked login keychain (`security`: "User interaction is not allowed", -25308; this is
+  what an ssh session on the mini sees) gets its own ping saying so, and is rechecked once
+  every 15 minutes, never with a prompt. "Your credit balance is too low" marks the pool
+  exhausted until the cycle ends. An authentication failure (expired or revoked key) parks
+  the pool and pings. While parked, one free `GET /v1/models` every 6 hours is the only
+  retry. Neither counts as an item attempt.
+- **Never into paid credits.** If the org has purchased credits or auto-reload, an exhausted
+  promotional balance silently falls through to real money, and no local accounting can stop
+  teammates draining the shared pool. Mahler's own lines, the margin and the per-run reserve
+  bound what *Mahler* spends. The Mahler workspace's Console spend limit ($20 today) is the
+  server-side backstop and has to be raised by hand before a burst can spend past the
+  allowance. Keeping the org credits-only (mahler#903's open owner question) is what makes
+  "no real money" true.
+- **What the bound is and isn't.** Cline has no per-run dollar cap and reports usage only
+  at the end of a run. So a run is bounded at launch by `run_reserve_usd`, and mid-flight by
+  the watchdog's hard line against the Cost API reading. That reading lags about 5 minutes
+  plus its 5-minute live cache, so the worst overshoot is about ten minutes of one run's
+  spend beyond the line. The margin is sized to absorb it. A Cline resume nudge also spends
+  credits, so it only happens while the pool is `ok`.
+- **Key expiry.** Both keys expire (2027-10-16). Mahler pings 14 days before each, then
+  daily from 3 days before (and daily after expiry). `mahler status` and the console show
+  the expiry within 30 days, alongside spend so far, the line in force, org spend and its
+  age, and the cycle reset time. `mahler status --json` carries the same snapshot under
+  `api_credits`.
+- In a burst, the pool's platforms move to the front of their account's build route, as
+  D23's Claude platforms do.

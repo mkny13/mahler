@@ -249,6 +249,34 @@ screenshot_path = []              # inherited operator absolute executable direc
 # [routing]
 # build = ["agy-claude", "agy-gemini", "cline-free", "copilot", "kilo", "vibe", "claude"]
 
+# Team-plan Claude API credits (DESIGN D41, mahler#903). Work account only:
+# validation refuses an enabled credits platform on any other account. Runs go
+# through Cline's direct anthropic provider (the credits do NOT cover Claude
+# Code). Both keys live only in the mini's login keychain:
+#   security add-generic-password -s mahler-anthropic-api   -a work -w   # workspace key
+#   security add-generic-password -s mahler-anthropic-admin -a work -w   # sk-ant-admin… (Cost API)
+# The daemon (a LaunchAgent in the GUI session) reads them per run/probe; over
+# ssh the keychain is locked and reads fail closed with a "keychain locked" ping.
+# [api_credits]
+# enabled = true
+# account = "work"
+# pool_usd = 260                 # the org's grant per cycle; edit as seats change
+# allowance_usd = 20             # Mahler's at-will share per cycle
+# cycle_anchor_day = 15          # cycle ends/starts on this day (clamped in short months)
+# cycle_anchor_time = "00:00"    # UTC
+# burst_lead_hours = 48          # then the line is pool − org spend − margin
+# safety_margin_usd = 10
+# run_reserve_usd = 5            # per-run bound: needed to start, held while live
+# workspace_id = "wrkspc_…"      # Mahler's Console workspace (its own spend)
+# api_key_expires = "2027-10-16"
+# admin_key_expires = "2027-10-16"
+# [platforms.work-claude-api]
+# from = "claude-api"            # kind cline, provider anthropic, claude-sonnet-5-5
+# account = "work"
+# enabled = true
+# [accounts.work]
+# routing = { build = ["…", "work-claude-api"] }
+
 # Optional per-platform reasoning effort. Supported values depend on the CLI;
 # invalid values are ignored and reported by `mahler status`.
 # [platforms.work-codex-gpt1-low]
