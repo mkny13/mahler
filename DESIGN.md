@@ -2424,7 +2424,9 @@ work.
      (`model_pricing`, overridable per model). `Ledger.reserve_credit` keys the reservation by
      `(group, grant_id, attempt_key)` inside one `BEGIN IMMEDIATE` transaction, so two
      concurrent requests competing for the last of the ceiling serialize instead of both
-     clearing. A refusal (`402`) uses the same "credit balance is too low" phrasing the real
+     clearing. The gateway serves each connection on its own thread (the Agent SDK holds one
+     connection idle while opening another), and its handler threads share one ledger
+     connection through a lock, as the Ledger's `thread_safe` contract requires (mahler#918). A refusal (`402`) uses the same "credit balance is too low" phrasing the real
      API uses, so existing log-based detection (`platforms.is_credit_exhausted`) still fires
      downstream. Each HTTP attempt mints its own `attempt_key` (`secrets.token_hex`), so a
      retry or an auxiliary call reserves separately rather than sharing one budget.

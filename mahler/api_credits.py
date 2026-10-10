@@ -1071,13 +1071,36 @@ def _body_text(raw):
         return ""
 
 
+class _SerializedLedger:
+    """One ledger connection shared by the gateway's handler threads. The
+    Ledger contract (thread_safe=True) leaves serialising to the caller:
+    two handlers entering `BEGIN IMMEDIATE` on one connection at once fail
+    with "cannot start a transaction within a transaction" (mahler#918).
+    Every method call takes one re-entrant lock; none of them do network
+    I/O, so holding it is brief. Plain attributes pass straight through."""
+
+    def __init__(self, led):
+        self._led = led
+        self._lock = threading.RLock()
+
+    def __getattr__(self, name):
+        attr = getattr(self._led, name)
+        if not callable(attr):
+            return attr
+
+        def locked(*a, **k):
+            with self._lock:
+                return attr(*a, **k)
+        return locked
+
+
 class Gateway:
     """One pool group's local proxy. Long-lived: started once, serves every
     run of every platform in the group until stopped."""
 
     def __init__(self, led, group, grant_fn, pricing, allowed_models, max_output_tokens,
                  real_key, connect=None, ping=None):
-        self.led = led
+        self.led = led if isinstance(led, _SerializedLedger) else _SerializedLedger(led)
         self.group = group
         self.grant_fn = grant_fn
         self.pricing = pricing
@@ -1300,7 +1323,7 @@ def ensure_gateway(ctx, name, pconf, open_ledger=None):
         if gw is not None:
             return gw
         real_key = api_key_for_run(pconf)
-        led = (open_ledger or _open_gateway_ledger)(ctx.led.path, ctx.led.now)
+        led = _SerializedLedger((open_ledger or _open_gateway_ledger)(ctx.led.path, ctx.led.now))
 
         def grant_fn(led=led, name=name, pconf=pconf):
             snap = snapshot(led, name, pconf)

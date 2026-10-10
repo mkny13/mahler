@@ -414,6 +414,33 @@ class GatewayTests(unittest.TestCase):
         self.grant = {"id": "grant-a", "ceiling_usd": 20.0,
                      "end": datetime(2026, 11, 15, tzinfo=UTC)}
 
+    def test_concurrent_handlers_share_one_ledger_connection_safely(self):
+        """Handler threads share one connection: unserialised, two at once
+        hit "cannot start a transaction within a transaction" (mahler#918)."""
+        import threading
+        led = Ledger(":memory:", thread_safe=True, clock=self.led.now)
+        self.addCleanup(led.close)
+        gw = make_gateway(led, self.grant)
+        token = gw.register(1)
+        start, errors, statuses = threading.Barrier(8), [], []
+
+        def call():
+            start.wait()
+            try:
+                statuses.append(gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                          json.dumps(MESSAGE).encode())[0])
+            except Exception as e:      # noqa: BLE001 - the failure under test
+                errors.append(e)
+        threads = [threading.Thread(target=call) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(errors, [])
+        self.assertEqual(statuses, [200] * 8)
+        rows = led.q("SELECT status FROM credit_reservations")
+        self.assertEqual([r["status"] for r in rows], ["settled"] * 8)
+
     def test_denies_unsupported_methods_and_paths(self):
         gw = make_gateway(self.led, self.grant)
         self.assertEqual(gw.handle("GET", "/v1/messages", {}, b"")[0], 404)
