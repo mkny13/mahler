@@ -1727,7 +1727,7 @@ class RecordedIdleTests(unittest.TestCase):
                  self.hold("lease_host"), self.hold("lease_host", 2)]
         minutes = config.project_policy(self.cfg, "mahler")["settle_minutes"]
         self.assertEqual(self.idle(holds), {
-            "headline": "Nothing is running. Seven things are holding it:",
+            "headline": "Nothing is running. Several things are holding it:",
             "reasons": [
                 {"text": "mahler#4 waits — area:console already in progress."},
                 {"text": "mahler is at its limit of 2 run(s).",
@@ -1755,16 +1755,28 @@ class RecordedIdleTests(unittest.TestCase):
             "headline": "Nothing is running. One thing is holding it:",
             "reasons": [{"text": "mahler#3 waits — current.py already in progress."}]})
 
-    def test_headline_grammar_counts_reasons_including_repeated_item_holds(self):
+    def test_headline_words_count_bindings_not_rows(self):
         for count, phrase in ((0, ""), (1, " One thing is holding it:"),
                               (2, " Two things are holding it:"),
-                              (9, " Nine things are holding it:"),
-                              (10, " 10 things are holding it:")):
+                              (4, " Four things are holding it:"),
+                              (5, " A few things are holding it:"),
+                              (6, " A few things are holding it:"),
+                              (7, " Several things are holding it:"),
+                              (12, " Several things are holding it:")):
             with self.subTest(count=count):
-                result = self.idle([self.hold("area", area="console")] * count)
+                for n in range(1, count + 1):
+                    self.led.upsert_item("mahler", n, title=f"t{n}", state="ready")
+                result = self.idle([self.hold("area", n, area=f"a{n}")
+                                    for n in range(1, count + 1)])
                 self.assertEqual(result["headline"], "Nothing is running." + phrase)
-                self.assertEqual(result["reasons"], [
-                    {"text": "mahler#1 waits — area:console already in progress."}] * count)
+                self.assertEqual(len(result["reasons"]), count)
+                self.assertNotRegex(result["headline"], r"\d")
+
+    def test_facets_of_one_item_count_as_one_binding(self):
+        result = self.idle([self.hold("area", 1, area="console"),
+                            self.hold("files", 1, files=["a.py"])])
+        self.assertEqual(len(result["reasons"]), 2)
+        self.assertEqual(result["headline"], "Nothing is running. One thing is holding it:")
 
     def test_actionable_reasons_keep_payloads_and_precede_recorded_holds(self):
         now = self.led.now()
@@ -1776,7 +1788,7 @@ class RecordedIdleTests(unittest.TestCase):
                       {"name": "codex", "state": "hold", "until": now + timedelta(minutes=2)}],
         }, [{"project": "mahler", "hold_minutes": 20, "until": now + timedelta(minutes=3)}], now)
         self.assertEqual(result, {
-            "headline": "Nothing is running. Six things are holding it:",
+            "headline": "Nothing is running. A few things are holding it:",
             "reasons": [
                 {"text": "You paused everything, so nothing new starts.",
                  "action": "Resume all", "act": "resume"},
