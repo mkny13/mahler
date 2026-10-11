@@ -23,6 +23,7 @@ import socket
 import secrets
 import sqlite3
 import subprocess
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
 from .config import MAINTENANCE_PASSES, ensure_private_dir
@@ -1191,13 +1192,15 @@ class Ledger:
         rows = self.q(
             "SELECT status, amount_usd, settled_usd FROM credit_reservations "
             "WHERE group_name=? AND grant_id=? AND status<>'released'", (group, grant_id))
-        total = 0.0
+        # Decimal(str(float)) recovers each stored decimal amount, so many
+        # small reservations don't accumulate binary-float drift (#929).
+        total = Decimal(0)
         for r in rows:
             if r["status"] == "settled" and r["settled_usd"] is not None:
-                total += r["settled_usd"]
+                total += Decimal(str(r["settled_usd"]))
             else:
-                total += r["amount_usd"]
-        return total
+                total += Decimal(str(r["amount_usd"]))
+        return float(total)
 
     def unresolved_credit_reservations(self, group, exclude_grant_id=None):
         """'reserved' rows that were never settled or released — surfaced so
