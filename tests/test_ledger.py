@@ -1917,3 +1917,137 @@ class CreditReservationTests(unittest.TestCase):
         self.led.reserve_credit("g2", "grant-a", "k1", 9.0, 20.0)
         self.led.reserve_credit("g1", "grant-b", "k1", 9.0, 20.0)
         self.assertEqual(self.led.credit_exposure("g1", "grant-a"), 3.0)
+
+
+class DiscussionLedgerTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(':memory:', clock=self.clock)
+        self.addCleanup(self.led.close)
+        self.binding = dict(project='p', repo='owner/repo', account='personal', engine='claude')
+        self.sid = self.led.create_chat_session(**self.binding)['id']
+
+    def submit(self, request='one', text='Hello', **kw):
+        return self.led.submit_chat_turn(self.sid, request, text, **{**self.binding, **kw})
+
+    def test_duplicate_order_completion_and_no_build_state(self):
+        first = self.submit()
+        self.assertEqual(dict(first), dict(self.submit()))
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.submit(text='Changed')
+        with self.assertRaisesRegex(ValueError, 'active'):
+            self.submit('two')
+        token = self.led.claim_chat_turn(first['id'])
+        self.assertIsNone(self.led.claim_chat_turn(first['id']))
+        with self.assertRaisesRegex(ValueError, 'fenced'):
+            self.led.complete_chat_turn(first['id'], 'wrong', assistant_text='bad')
+        self.led.complete_chat_turn(first['id'], token, assistant_text='Done', engine_session_id='engine-id')
+        with self.assertRaisesRegex(ValueError, 'fenced'):
+            self.led.complete_chat_turn(first['id'], token, assistant_text='late')
+        second = self.submit('two')
+        self.assertEqual([r['ordinal'] for r in self.led.chat_turns(self.sid)], [1, 2])
+        self.assertGreater(second['id'], first['id'])
+        self.assertEqual(json.loads(self.led.chat_turn(first['id'])['result'])['confirmed_issue_urls'], [])
+        self.assertEqual(self.led.q('SELECT * FROM leases'), [])
+        self.assertEqual(self.led.q('SELECT * FROM runs'), [])
+
+    def test_bindings_and_limits(self):
+        for field in self.binding:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'binding_mismatch'):
+                self.submit(**{field: 'other'})
+        for text in ('', ' \n', 'x' * 8001):
+            with self.assertRaises(ValueError):
+                self.submit(text=text)
+        for n in range(100):
+            row = self.submit(str(n), '😀' * 8000)
+            token = self.led.claim_chat_turn(row['id'])
+            self.led.complete_chat_turn(row['id'], token, assistant_text='OK')
+        self.assertEqual(self.submit('99', '😀' * 8000)['ordinal'], 100)
+        with self.assertRaisesRegex(ValueError, 'session_limit'):
+            self.submit('101')
+
+    def test_recovery_heartbeat_deadline_and_explicit_retry(self):
+        first = self.submit()
+        token = self.led.claim_chat_turn(first['id'])
+        self.clock.advance(seconds=25)
+        self.led.heartbeat_chat_turn(first['id'], token)
+        self.clock.advance(seconds=25)
+        self.assertEqual(self.led.recover_chat_turns(), [])
+        self.clock.advance(seconds=6)
+        self.assertEqual(self.led.recover_chat_turns(), [first['id']])
+        self.assertEqual(json.loads(self.led.chat_turn(first['id'])['result'])['error']['code'], 'worker_lost')
+        with self.assertRaisesRegex(ValueError, 'fenced'):
+            self.led.heartbeat_chat_turn(first['id'], token)
+        row = self.submit('retry', retry_of=first['id'])
+        self.assertEqual(row['retry_of'], first['id'])
+        self.clock.advance(seconds=120)
+        self.assertIsNone(self.led.claim_chat_turn(row['id']))
+        self.assertEqual(self.led.recover_chat_turns(), [row['id']])
+        self.assertEqual(json.loads(self.led.chat_turn(row['id'])['result'])['error']['code'], 'timeout')
+        self.assertEqual(self.led.recover_chat_turns(), [])
+        other = self.led.create_chat_session(**self.binding)['id']
+        with self.assertRaisesRegex(ValueError, 'failed turn'):
+            self.led.submit_chat_turn(other, 'a', 'retry', retry_of=first['id'], **self.binding)
+
+    def test_mutations_survive_retry_and_confirmed_receipts_only(self):
+        first = self.submit()
+        token = self.led.claim_chat_turn(first['id'])
+        row, fresh = self.led.begin_chat_mutation(first['id'], token, 'create-1', 'add_item', {'title': 'A'})
+        self.assertTrue(fresh)
+        self.assertEqual(self.led.chat_receipts(first['id']), [])
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.led.begin_chat_mutation(first['id'], token, 'create-1', 'add_item', {'title': 'B'})
+        with self.assertRaises(ValueError):
+            self.led.confirm_chat_mutation(self.sid, 'create-1', 'https://github.com/other/repo/issues/1')
+        self.led.confirm_chat_mutation(self.sid, 'create-1', 'https://github.com/owner/repo/issues/1')
+        self.led.complete_chat_turn(first['id'], token, assistant_text='Partial',
+                                   error={'code': 'engine_error', 'message': 'Failed', 'retryable': True})
+        self.assertEqual(json.loads(self.led.chat_turn(first['id'])['result'])['confirmed_issue_urls'],
+                         ['https://github.com/owner/repo/issues/1'])
+        second = self.submit('retry', retry_of=first['id'])
+        token = self.led.claim_chat_turn(second['id'])
+        again, fresh = self.led.begin_chat_mutation(second['id'], token, 'create-1', 'add_item', {'title': 'A'})
+        self.assertFalse(fresh)
+        self.assertEqual(again['marker'], row['marker'])
+        self.assertEqual(self.led.chat_receipts(second['id']), ['https://github.com/owner/repo/issues/1'])
+
+    def test_old_schema_migration_preserves_leases_runs_and_two_connection_claim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'ledger.db')
+            # Build the pre-discussion schema, with live execution state.
+            old_schema = SCHEMA[SCHEMA.index('CREATE TABLE IF NOT EXISTS items'):]
+            con = sqlite3.connect(path)
+            con.executescript(old_schema)
+            con.execute("INSERT INTO leases (project,number,holder,kind,epoch,acquired_at,heartbeat_at,expires_at) "
+                        "VALUES ('p',1,'agent','auto',7,'a','b','c')")
+            con.execute("INSERT INTO runs (project,number,role,platform,epoch,status,started_at) "
+                        "VALUES ('p',1,'build','test',7,'running','a')")
+            con.commit()
+            con.close()
+            with_ledger = Ledger(path, clock=self.clock)
+            try:
+                self.assertEqual(with_ledger.lease('p', 1, live_only=False)['epoch'], 7)
+                self.assertEqual(with_ledger.q1('SELECT * FROM runs')['status'], 'running')
+                sid = with_ledger.create_chat_session(**self.binding)['id']
+                row = with_ledger.submit_chat_turn(sid, 'one', 'Hello', **self.binding)
+                barrier = threading.Barrier(2)
+                tokens, errors = [], []
+                def claim():
+                    led = Ledger(path, clock=self.clock)
+                    try:
+                        barrier.wait(timeout=5)
+                        tokens.append(led.claim_chat_turn(row['id']))
+                    except Exception as exc:
+                        errors.append(exc)
+                    finally:
+                        led.close()
+                threads = [threading.Thread(target=claim) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=10)
+                self.assertFalse(errors)
+                self.assertEqual(sum(token is not None for token in tokens), 1)
+                self.assertEqual(len(tokens), 2)
+            finally:
+                with_ledger.close()

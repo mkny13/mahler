@@ -20,6 +20,7 @@ import json
 import os
 import re
 import socket
+import secrets
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,33 @@ ESTIMATE_SAMPLE_SQL = (
 )
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY, project TEXT NOT NULL, repo TEXT NOT NULL,
+    account TEXT NOT NULL, engine TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_turns (
+    id INTEGER PRIMARY KEY, session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+    ordinal INTEGER NOT NULL, request_id TEXT NOT NULL, user_text TEXT NOT NULL,
+    retry_of INTEGER REFERENCES chat_turns(id),
+    status TEXT NOT NULL CHECK(status IN ('queued','running','success','error')),
+    accepted_at TEXT NOT NULL, deadline_at TEXT NOT NULL,
+    worker_token TEXT, heartbeat_at TEXT, completed_at TEXT, result TEXT,
+    UNIQUE(session_id, request_id), UNIQUE(session_id, ordinal)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_active ON chat_turns(session_id)
+    WHERE status IN ('queued','running');
+CREATE TABLE IF NOT EXISTS chat_mutations (
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id), operation_id TEXT NOT NULL,
+    turn_id INTEGER NOT NULL REFERENCES chat_turns(id), kind TEXT NOT NULL,
+    payload TEXT NOT NULL, marker TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK(status IN ('uncertain','confirmed')),
+    issue_url TEXT, PRIMARY KEY(session_id, operation_id)
+);
+CREATE TABLE IF NOT EXISTS chat_turn_mutations (
+    turn_id INTEGER NOT NULL REFERENCES chat_turns(id),
+    session_id TEXT NOT NULL, operation_id TEXT NOT NULL,
+    PRIMARY KEY(turn_id, operation_id)
+);
 CREATE TABLE IF NOT EXISTS items (
     project          TEXT NOT NULL,
     number           INTEGER NOT NULL,
@@ -464,6 +492,160 @@ class Ledger:
             self.close()
         except Exception:
             pass
+
+    # ---------- operator discussions (D43); never build runs or leases ----------
+
+    def chat_session(self, session_id, *, project=None, repo=None, account=None, engine=None):
+        row = self.q1("SELECT * FROM chat_sessions WHERE id=?", (session_id,))
+        if row is None:
+            raise ValueError("unknown discussion session")
+        for key, value in (("project", project), ("repo", repo),
+                           ("account", account), ("engine", engine)):
+            if value is not None and row[key] != value:
+                raise ValueError("binding_mismatch")
+        return row
+
+    def create_chat_session(self, project, repo, account, engine):
+        if not all(isinstance(v, str) and v.strip() for v in (project, repo, account, engine)):
+            raise ValueError("discussion binding must be nonempty")
+        session_id = secrets.token_hex(16)
+        self.con.execute("INSERT INTO chat_sessions VALUES (?,?,?,?,?,?)",
+                         (session_id, project, repo, account, engine, iso(self.now())))
+        return self.chat_session(session_id)
+
+    def chat_turn(self, turn_id):
+        return self.q1("SELECT * FROM chat_turns WHERE id=?", (turn_id,))
+
+    def chat_turns(self, session_id):
+        self.chat_session(session_id)
+        return self.q("SELECT * FROM chat_turns WHERE session_id=? ORDER BY ordinal", (session_id,))
+
+    def submit_chat_turn(self, session_id, request_id, user_text, *, project, repo,
+                         account, engine, retry_of=None):
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200:
+            raise ValueError("invalid client request ID")
+        if not isinstance(user_text, str) or not user_text.strip() or len(user_text) > 8000:
+            raise ValueError("message must contain 1–8000 characters")
+        with self._tx():
+            self.chat_session(session_id, project=project, repo=repo, account=account, engine=engine)
+            previous = self.q1("SELECT * FROM chat_turns WHERE session_id=? AND request_id=?",
+                               (session_id, request_id))
+            if previous:
+                if previous["user_text"] != user_text or previous["retry_of"] != retry_of:
+                    raise ValueError("client request ID reused with different content")
+                return previous
+            if self.q1("SELECT 1 FROM chat_turns WHERE session_id=? AND status IN ('queued','running')",
+                       (session_id,)):
+                raise ValueError("discussion turn already active")
+            count = self.q1("SELECT count(*) AS n FROM chat_turns WHERE session_id=?", (session_id,))["n"]
+            if count >= 100:
+                raise ValueError("session_limit")
+            if retry_of is not None:
+                old = self.chat_turn(retry_of)
+                if not old or old["session_id"] != session_id or old["status"] != "error":
+                    raise ValueError("retry must refer to a failed turn in this session")
+            now = self.now()
+            cur = self.con.execute("""INSERT INTO chat_turns
+                (session_id,ordinal,request_id,user_text,retry_of,status,accepted_at,deadline_at)
+                VALUES (?,?,?,?,?,'queued',?,?)""",
+                (session_id, count + 1, request_id, user_text, retry_of,
+                 iso(now), iso(now + timedelta(seconds=120))))
+            return self.chat_turn(cur.lastrowid)
+
+    def claim_chat_turn(self, turn_id):
+        token = secrets.token_hex(24)
+        with self._tx():
+            cur = self.con.execute("""UPDATE chat_turns SET status='running',worker_token=?,heartbeat_at=?
+                WHERE id=? AND status='queued' AND deadline_at>?""",
+                (token, iso(self.now()), turn_id, iso(self.now())))
+            return token if cur.rowcount else None
+
+    def check_chat_worker(self, turn_id, token):
+        row = self.chat_turn(turn_id)
+        if (not row or row["status"] != "running" or not token or row["worker_token"] != token
+                or parse(row["deadline_at"]) <= self.now()):
+            raise ValueError("discussion worker fenced")
+        return row
+
+    def heartbeat_chat_turn(self, turn_id, token):
+        with self._tx():
+            self.check_chat_worker(turn_id, token)
+            self.con.execute("UPDATE chat_turns SET heartbeat_at=? WHERE id=?", (iso(self.now()), turn_id))
+
+    def chat_receipts(self, turn_id):
+        return [r["issue_url"] for r in self.q("""SELECT DISTINCT m.issue_url
+            FROM chat_mutations m JOIN chat_turn_mutations t
+              ON t.session_id=m.session_id AND t.operation_id=m.operation_id
+            WHERE t.turn_id=? AND m.status='confirmed' ORDER BY m.issue_url""", (turn_id,))]
+
+    def complete_chat_turn(self, turn_id, token, *, assistant_text, engine_session_id=None, error=None):
+        if not isinstance(assistant_text, str):
+            raise ValueError("invalid assistant text")
+        if engine_session_id is not None and (not isinstance(engine_session_id, str) or not engine_session_id):
+            raise ValueError("invalid engine session ID")
+        if error is not None and (not isinstance(error, dict) or set(error) != {"code", "message", "retryable"}
+                or not isinstance(error["code"], str) or not isinstance(error["message"], str)
+                or type(error["retryable"]) is not bool):
+            raise ValueError("invalid error result")
+        with self._tx():
+            self.check_chat_worker(turn_id, token)
+            self._finish_chat_turn(turn_id, assistant_text, engine_session_id, error)
+
+    def _finish_chat_turn(self, turn_id, text, engine_session_id, error):
+        result = {"version": 1, "assistant_text": text, "engine_session_id": engine_session_id,
+                  "confirmed_issue_urls": self.chat_receipts(turn_id),
+                  "status": "error" if error else "success", "error": error}
+        self.con.execute("""UPDATE chat_turns SET status=?,result=?,completed_at=?,worker_token=NULL
+            WHERE id=? AND status IN ('queued','running')""",
+            (result["status"], json.dumps(result), iso(self.now()), turn_id))
+
+    def recover_chat_turns(self, *, stale_seconds=30):
+        """Supervisor calls after stopping dead/timed-out workers; never auto-retry.
+
+        Fences future tool calls/results. Already-sent remote writes remain uncertain
+        and are reconciled by their durable operation IDs, never blindly replayed.
+        """
+        recovered = []
+        with self._tx():
+            for row in self.q("SELECT * FROM chat_turns WHERE status IN ('queued','running')"):
+                timeout = parse(row["deadline_at"]) <= self.now()
+                stale = (row["status"] == "running" and
+                         parse(row["heartbeat_at"]) <= self.now() - timedelta(seconds=stale_seconds))
+                if timeout or stale:
+                    code = "timeout" if timeout else "worker_lost"
+                    self._finish_chat_turn(row["id"], "This turn failed. Your message is saved.", None,
+                        {"code": code, "message": "Turn exceeded 120 seconds." if timeout else "Worker heartbeat lost.",
+                         "retryable": True})
+                    recovered.append(row["id"])
+        return recovered
+
+    def begin_chat_mutation(self, turn_id, token, operation_id, kind, payload):
+        if not isinstance(operation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", operation_id):
+            raise ValueError("invalid operation ID")
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        with self._tx():
+            turn = self.check_chat_worker(turn_id, token)
+            sid = turn["session_id"]
+            row = self.q1("SELECT * FROM chat_mutations WHERE session_id=? AND operation_id=?", (sid, operation_id))
+            fresh = row is None
+            if row and (row["kind"] != kind or row["payload"] != encoded):
+                raise ValueError("operation ID reused with different content")
+            if fresh:
+                marker = "<!-- mahler:discussion:" + secrets.token_hex(24) + " -->"
+                self.con.execute("INSERT INTO chat_mutations VALUES (?,?,?,?,?,?,'uncertain',NULL)",
+                                 (sid, operation_id, turn_id, kind, encoded, marker))
+            self.con.execute("INSERT OR IGNORE INTO chat_turn_mutations VALUES (?,?,?)", (turn_id, sid, operation_id))
+            return self.q1("SELECT * FROM chat_mutations WHERE session_id=? AND operation_id=?", (sid, operation_id)), fresh
+
+    def confirm_chat_mutation(self, session_id, operation_id, url):
+        # Receipts may arrive after a deadline: retain evidence, without accepting
+        # late worker text or changing an immutable terminal result.
+        session = self.chat_session(session_id)
+        if not isinstance(url, str) or not re.fullmatch(
+                r"https://github\.com/" + re.escape(session["repo"]) + r"/issues/[1-9][0-9]*", url):
+            raise ValueError("unconfirmed or cross-repository issue URL")
+        self.con.execute("""UPDATE chat_mutations SET status='confirmed',issue_url=?
+            WHERE session_id=? AND operation_id=?""", (url, session_id, operation_id))
 
     # ---------- console outbox (D27) ----------
 
