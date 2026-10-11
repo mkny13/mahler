@@ -538,6 +538,23 @@ class GatewayTests(unittest.TestCase):
                                            api_credits.MODEL_PRICING, "claude-sonnet-5-5")
         self.assertEqual(rows[0]["settled_usd"], expected)
 
+    def test_grant_expiring_after_lookup_is_not_forwarded(self):
+        gw = make_gateway(self.led, self.grant)
+        token = gw.register(1)
+
+        def expiring_grant():
+            # Snapshot found a valid grant, then time crossed its cutoff.
+            self.led.clock.now = self.grant["end"]
+            return self.grant
+
+        gw.grant_fn = expiring_grant
+        status, _, body = gw.handle("POST", "/v1/messages", {"x-api-key": token},
+                                    json.dumps(MESSAGE).encode())
+        self.assertEqual(status, 402)
+        self.assertIn(b"credit balance is too low", body)
+        self.assertIsNone(gw.upstream.sent)
+        self.assertEqual(self.led.q("SELECT * FROM credit_reservations"), [])
+
     def test_refuses_when_headroom_is_exhausted(self):
         self.led.reserve_credit("g", "grant-a", "already-spent", 20.0, 20.0)
         gw = make_gateway(self.led, self.grant)

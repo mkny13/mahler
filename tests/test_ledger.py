@@ -1770,6 +1770,36 @@ class CreditReservationTests(unittest.TestCase):
         self.led = Ledger(":memory:", clock=self.clock)
         self.addCleanup(self.led.close)
 
+    def test_grant_expiry_is_checked_after_transaction_lock(self):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+
+        end = self.clock() + timedelta(seconds=1)
+        original_tx = self.led._tx
+
+        @contextmanager
+        def delayed_tx():
+            with original_tx():
+                self.clock.advance(seconds=1)
+                yield
+
+        with patch.object(self.led, "_tx", delayed_tx):
+            rid, info = self.led.reserve_credit(
+                "g", "grant-a", "late", 2.0, 20.0, expires_at=end)
+        self.assertIsNone(rid)
+        self.assertTrue(info["expired"])
+        self.assertEqual(self.led.q("SELECT * FROM credit_reservations"), [])
+
+    def test_reservation_before_expiry_can_settle_after_expiry(self):
+        end = self.clock() + timedelta(seconds=1)
+        rid, _ = self.led.reserve_credit(
+            "g", "grant-a", "in-time", 2.0, 20.0, expires_at=end)
+        self.assertIsNotNone(rid)
+        self.clock.advance(seconds=2)
+        row = self.led.settle_credit("g", "grant-a", "in-time", 1.0)
+        self.assertEqual(row["status"], "settled")
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 1.0)
+
     def test_reserve_settle_release_round_trip(self):
         rid, info = self.led.reserve_credit("g", "grant-a", "attempt-1", 2.0, 20.0, run_id=7)
         self.assertIsNotNone(rid)

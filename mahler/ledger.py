@@ -1109,16 +1109,20 @@ class Ledger:
     # connections competing for the last of the budget serialize instead of
     # both succeeding (D6's lease pattern, applied to money).
 
-    def reserve_credit(self, group, grant_id, attempt_key, amount_usd, ceiling_usd, run_id=None):
+    def reserve_credit(self, group, grant_id, attempt_key, amount_usd, ceiling_usd, run_id=None,
+                       *, expires_at=None):
         """Reserve `amount_usd` of headroom under `ceiling_usd` for one
         attempt. A replay of the same (group, grant_id, attempt_key) returns
-        the existing reservation instead of reserving twice.
+        the existing reservation instead of reserving twice. If expires_at is
+        supplied, refuse expired grants after acquiring the transaction lock.
 
         -> (reservation_id, info). On refusal, reservation_id is None and
         info carries 'remaining_usd'. A replay carries info['existing']=True.
         """
-        now = self.now()
         with self._tx():
+            now = self.now()
+            if expires_at is not None and now >= expires_at:
+                return None, {"remaining_usd": 0.0, "expired": True}
             existing = self.q1(
                 "SELECT * FROM credit_reservations WHERE group_name=? AND grant_id=? "
                 "AND attempt_key=?", (group, grant_id, attempt_key))
