@@ -303,12 +303,24 @@ Two rules use this:
   `interactive` lease on #12. If an autonomous run holds #12, the pre-emption rule applies.
 - **Unattributable activity** (files changing in a project, but no idea which item) puts the
   project on a **hot hold**: no *new* autonomous starts there until 20 minutes after the
-  activity stops. Running work continues. Instrumented Claude sessions that simply haven't
-  claimed anything don't trigger a hot hold. They're handled by nudges instead:
+  activity stops. Running work continues. The shipped sensor is conservative: any recent
+  Claude transcript in the project holds, claimed or not. (The earlier intent that
+  instrumented but unclaimed sessions don't trigger a hold is not implemented.) The nudges
+  below still apply:
   - `SessionStart` injects "these items are currently held by autonomous runs: … If you work on
     a backlog item, claim it (`mahler_claim`)."
   - The first `Edit`/`Write` in an unclaimed session injects a one-line reminder to claim if the
     work relates to an item.
+
+  **End session (mahler#933).** The console's End session lifts the hold for the sessions
+  that existed at the click: the action snapshots their transcript files. Those sessions keep
+  writing while they watch a run without re-arming the hold; the exemption retires once all of
+  them have been quiet for the hold window. A transcript that was not in the snapshot (a new
+  session) always counts, so a new session B holds even while A is exempt. It never overrides
+  authoritative leases. Build ordering is unchanged: priority, role, project preference, then
+  oldest `state_changed_at`; a pin constrains routing, not priority
+  (`test_equal_priority_builds_start_oldest_state_changed_first`). The historical #930 skip is
+  not claimed to be reproduced.
 
 #### Layer 3 — Isolation and optimistic merge (collisions are cheap)
 
