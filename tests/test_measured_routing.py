@@ -277,3 +277,59 @@ class MeasuredRoutingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CopilotMeasuredCandidatesTests(unittest.TestCase):
+    def test_supported_pairs_rank_explore_and_obey_account_and_free_first(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['claude_peak']['enabled'] = False
+        cfg['measure']['explore_share']['build'] = 1
+        cfg['platforms'] = {'copilot': cfg['platforms']['copilot'],
+                            'work-copilot': {'from': 'copilot', 'account': 'work',
+                                'variants': ['auto', 'gpt-6.1-sol', 'claude-sonnet-5.5']}}
+        # Supply isolated headroom, without querying either real account.
+        cfg['platforms']['copilot']['metered'] = False
+        cfg['routing'] = {'build': ['copilot']}
+        cfg['accounts'] = {'work': {'routing': {'build': ['work-copilot']}}}
+        cfg = config.resolve_platforms(cfg)
+        # Opt into the synthetic candidates in isolated measured routes;
+        # declaring variants intentionally leaves default routes alone.
+        cfg['routing']['build'] = [n for n in cfg['platforms'] if n.startswith('copilot/')]
+        cfg['accounts']['work']['routing']['build'] = [
+            n for n in cfg['platforms'] if n.startswith('work-copilot/')]
+        self.assertNotIn('copilot/gpt-6.1-sol/default', cfg['platforms'])
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        led.upsert_item('p', 1, title='Add a button', state='ready')
+        for slot, model, account in (
+                ('copilot', 'claude-sonnet-5.5', 'personal'),
+                ('work-copilot', 'gpt-6.1-sol', 'work'),
+                ('work-copilot', 'claude-sonnet-5.5', 'work')):
+            with self.subTest(slot=slot, model=model), patch('mahler.platforms.available', return_value=True):
+                name = f'{slot}/{model}/default'
+                pol = {'routing_mode': 'measured', 'accounts': [account], 'explore': True}
+                row = dict(role='build', size='s', platform=name, model=model,
+                           effort='default', status='good', cost_per_success=.01,
+                           n=10, successes=10)
+                picked, _ = router.pick_for_project(cfg, led, pol, 'build', size='s',
+                                                    scorecard_rows=[row])
+                self.assertEqual(picked, name)
+                other = 'work' if account == 'personal' else 'personal'
+                picked, _ = router.pick_for_project(cfg, led, {**pol, 'accounts': [other]},
+                                                    'build', size='s', pin=name, scorecard_rows=[row])
+                self.assertIsNone(picked)
+                # Price the other candidates higher so each supported pair gets
+                # a turn as the cheapest unproven exploration candidate.
+                trial = copy.deepcopy(cfg)
+                for price in trial['prices'].values():
+                    price.update({'in': 100, 'out': 100})
+                trial['prices'][model] = {'in': 2, 'out': 10}
+                self.assertEqual(router.explore_for_project(
+                    trial, led, pol, led.item('p', 1), 'build', size='s', scorecard_rows=[]), name)
+                # Explicit paid classification must never jump a free builder,
+                # either through proven ranking or exploration.
+                trial['platforms'][name]['cost_class'] = 'paid'
+                free = slot + '/auto/default'
+                self.assertEqual(router.measured_order(trial, [name, free], [row], 'build', 's')[0], free)
+                self.assertNotEqual(router.explore_for_project(
+                    trial, led, pol, led.item('p', 1), 'build', size='s', scorecard_rows=[]), name)
