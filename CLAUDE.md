@@ -89,8 +89,14 @@ item tracks gets you a "PR nobody is shipping" ping after 2 hours.
 often share that checkout. A `git checkout` or `reset` there carries off or wipes whatever
 another session has uncommitted. This happened on 2026-09-12 (mahler#27).
 
+Put it under the worktree root, never in the home directory. Use
+`/Volumes/ExtSSD160/.mahler-worktrees` when that volume is mounted; otherwise fall back to
+`~/.mahler/worktrees` (the runner's default, which the janitor also scans via
+`worktree_root`).
+
 ```bash
-git -C ~/Mahler worktree add ../Mahler-12 -b mahler/12-short-slug origin/main
+WT=/Volumes/ExtSSD160/.mahler-worktrees; [ -d "$WT" ] || WT=~/.mahler/worktrees
+git -C ~/Mahler worktree add "$WT/mahler-12" -b mahler/12-short-slug origin/main
 ```
 
 **Before merging by hand**, inspect the PR's actual `baseRefName`, `headRefOid`, and
