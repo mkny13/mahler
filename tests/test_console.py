@@ -1014,8 +1014,11 @@ class EndSessionTests(unittest.TestCase):
         write("a", recent)
         led.set_kv("hot_hold_end:mahler", "not a timestamp")
         self.assertEqual(act(led, "mahler", "/nonexistent/mahler", w), recent)
-        led.set_kv("hot_hold_end:mahler", iso(led.now()))   # legacy: all exempt
+        led.set_kv("hot_hold_end:mahler", iso(led.now()))   # legacy: timestamp rule
         self.assertIsNone(act(led, "mahler", "/nonexistent/mahler", w))
+        newer = led.now() + timedelta(minutes=1)
+        write("b", newer)                                   # new session still holds
+        self.assertEqual(act(led, "mahler", "/nonexistent/mahler", w), newer)
 
 
 class EventTests(unittest.TestCase):
