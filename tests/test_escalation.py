@@ -266,6 +266,27 @@ class TierEscalationTests(unittest.TestCase):
         self.assertEqual(router.cap_escalation(cfg, pol, 8, "s"), 1)
         self.assertEqual(router.cap_escalation(cfg, pol, 8, "m"), 0)
 
+    def test_cap_counts_approval_gated_tier_without_approving_selection(self):
+        cfg = self.ctx.cfg
+        cfg["platforms"] = {
+            "lower": {"enabled": True, "tier": 1},
+            "approval-high": {"enabled": True, "tier": 4, "approval": True,
+                              "min_size": "m", "max_size": "m"},
+        }
+        cfg["routing"]["build"] = ["lower", "approval-high"]
+        for role, size, expected in (("build", "m", 4), ("build", "s", 4),
+                                     ("build", "l", 1), ("fix", "l", 4)):
+            with self.subTest(role=role, size=size):
+                self.assertEqual(router.cap_escalation(cfg, {}, 8, size, role=role),
+                                 expected)
+
+        picked, reasons = router.pick_for_project(
+            cfg, self.led, {}, "build", size="m", min_tier=4)
+        self.assertIsNone(picked)
+        self.assertIn("lower: tier 1 below escalation tier 4", reasons)
+        self.assertIn("approval-high: requires owner approval via a platform pin",
+                      reasons)
+
     def test_waiting_fix_uses_capacity_backstop_without_recounting(self):
         for failure in ("review", "ci"):
             with self.subTest(failure=failure):
