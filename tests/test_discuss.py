@@ -183,6 +183,20 @@ class DiscussionTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertIn('start failed', self.led.get_kv('discussion:worker'))
 
+    def test_supervisor_gives_up_after_max_retries(self):
+        supervisor = discuss.Supervisor(self.db, max_retries=3)
+        calls = []
+        def fail(*args, **kwargs):
+            calls.append(1)
+            raise OSError('Cannot start')
+        with patch('mahler.discuss.subprocess.Popen', side_effect=fail):
+            supervisor.start()
+            supervisor.thread.join(timeout=10)
+            self.assertFalse(supervisor.thread.is_alive())
+            supervisor.close()
+        self.assertEqual(len(calls), 3)
+        self.assertIn('permanently', self.led.get_kv('discussion:worker'))
+
     def test_supervisor_shutdown_reaps_child(self):
         # Real worker on an empty temporary ledger; no engine or account probe.
         supervisor = discuss.Supervisor(self.db)

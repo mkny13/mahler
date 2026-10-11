@@ -220,8 +220,14 @@ def _worker_locked(db, load_cfg, stop, config_path, lock):
 
 class Supervisor:
     """One child per console, bounded restart backoff, no model calls here."""
-    def __init__(self, db):
+    def __init__(self, db, max_retries=None):
         self.db = str(db)
+        if max_retries is None:
+            try:
+                max_retries = int(config.load()['defaults']['max_worker_retries'])
+            except Exception:
+                max_retries = 3
+        self.max_retries = max(1, max_retries)
         self.stop = threading.Event()
         self.child = None
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -231,6 +237,7 @@ class Supervisor:
 
     def run(self):
         delay = 1
+        failures = 0
         with closing(Ledger(self.db)) as led:
             while not self.stop.is_set():
                 try:
@@ -258,6 +265,12 @@ class Supervisor:
                 except Exception:
                     led.set_kv('discussion:worker', 'Worker start failed; retrying.')
                     led.event('discussion_worker_failed', detail='Worker start failed; retrying.')
+                failures += 1
+                if failures >= self.max_retries:
+                    detail = 'Worker failed permanently; operator intervention required'
+                    led.set_kv('discussion:worker', detail)
+                    led.event('discussion_worker_failed', detail=detail)
+                    break
                 if self.stop.wait(delay):
                     break
                 delay = min(delay * 2, 30)
