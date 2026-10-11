@@ -19,7 +19,7 @@ current status.
   The gateway passes the SDK's `POST /v1/messages?beta=true` and its `anthropic-*` and
   `User-Agent` headers through. See `sdk_runner/FINDINGS.md` and DESIGN.md D41. Kilo is a
   verified fallback. Live trial 2 passed through the gateway (2026-10-10, $0.0035).
-  `[api_credits] enabled` stays `false` until the end-to-end trial below passes.
+  Live trial 3 passed (2026-10-11, below); `[api_credits] enabled = true` on the mini.
 
 ## One-time setup (Mike, in Console — claude.ai Owner role)
 
@@ -53,11 +53,15 @@ current status.
 3. **Failed (2026-10-11, trial 3, $0.136):** the gateway was a thread in the one-shot tick,
    so it died seconds after the run started (mahler#951). Fixed by running it as its own
    detached process; see D41. Needs a re-run.
-4. **Next:** an end-to-end run on an enabled work-account project, capped at the $3 trial
-   allowance, confirms the whole path: routing, the gateway, settlement and promotional-credit
-   attribution visible in Console billing.
-5. Both trials count inside the $20 allowance. Once both are sanitized and recorded, flip
-   `[api_credits] enabled = true` and add `work-claude-api` to a work project's routing.
+4. **Passed (2026-10-11, trial 3 re-run, mahler#930, run 11801):** exit DONE through the
+   gateway, 13 reservations settled, PR merged. Console billing: $1.34 spent, $0.00 purchased
+   balance, no payment method, $258.65 of $260 promotional credit left. The Console token
+   export priced with D41's table is $1.343. The gateway's settled amounts run about 2% under
+   real cost and the SDK's own `total_cost_usd` about 15% over; the allowance counts the
+   larger, so it errs toward spending less.
+5. **Live now:** `allowance_usd = 20`, `work-claude-api` enabled, in no routing list. Only an
+   item labelled `platform:work-claude-api` can use it. Adding it to a work project's routing
+   is Mike's call.
 
 ## Raising the burst cap
 
