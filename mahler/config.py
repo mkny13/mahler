@@ -1439,3 +1439,12 @@ def configure_warmup(cfg, user):
             raise ValueError(f"warmup {name}: require 00:00 <= start < end <= 24:00")
         if target["days"] not in ("weekdays", "daily", "off"):
             raise ValueError(f"warmup {name}: days must be weekdays, daily, or off")
+
+
+def discussion_env(base=None):
+    """Personal CLI login only; do not inherit agent/provider customizations."""
+    source = os.environ if base is None else base
+    env = {k: source[k] for k in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM') if k in source}
+    env['HOME'] = HOME
+    env['CLAUDE_CONFIG_DIR'] = os.path.join(HOME, '.claude')
+    return env
