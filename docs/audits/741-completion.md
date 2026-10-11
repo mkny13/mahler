@@ -30,7 +30,16 @@ All three child issues are CLOSED (#749 2026-10-08T19:57:37Z, #750 20:48:53Z, #7
 
 ## Fresh verification on the audited checkout
 
-RESULTS_PLACEHOLDER
+Run on `f1232aef33509d885571e36ad4c8e0e7e517cf29`, Python 3.14.3, from the worktree root. All four were executed (not skipped).
+
+| Command | Result | Exit |
+|---|---|---|
+| `python3 -m mahler.repo_guard` | passed (no output) | 0 |
+| `python3 -m unittest discover -s tests` | Ran 2665 tests in 179.7s, OK (skipped=1) | 0 |
+| `python3 -X dev tests/run_strict.py` | Ran 2665 tests in 197.0s, OK (skipped=1) | 0 |
+| `python3 tests/run_random.py 741` | random order seed 741, Ran 2665 tests in 170.2s, OK (skipped=1) | 0 |
+
+The single skipped test is the same in all three runs and was not investigated or counted as a pass; it is not one of the tests cited in this audit. Fresh counts (2,665) differ from the children's historical counts (2,352-2,364) because the suite has grown since. Audit-document checks: exactly eight uniquely numbered criterion rows; every cited test identifier, repository path and GitHub URL was checked to resolve (test names by `def` lookup in `tests/`, URLs by HTTP 200).
 
 ## Evidence gaps and remediation
 
