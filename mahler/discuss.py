@@ -178,11 +178,29 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
 
 def worker(db, load_cfg=config.load, stop=None, config_path=config.CONFIG_PATH):
     stop = stop or threading.Event()
-    with open(str(db) + '.discussion.lock', 'a') as lock:
+    path = str(db) + '.discussion.lock'
+    with open(path, 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 75
+        try:
+            if os.stat(path).st_ino != os.fstat(lock.fileno()).st_ino:
+                return 75  # a previous holder unlinked the file; retry later
+        except FileNotFoundError:
+            return 75
+        try:
+            return _worker_locked(db, load_cfg, stop, config_path, lock)
+        finally:
+            # Unlink while still holding the lock so waiters can detect the stale inode.
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+
+
+def _worker_locked(db, load_cfg, stop, config_path, lock):
+    if True:
         with closing(Ledger(db)) as led:
             # The exclusive lock proves the old worker and its engines are gone.
             led.recover_chat_turns(stale_seconds=0)
