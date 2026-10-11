@@ -162,7 +162,8 @@ windows below 100%. Unknown, missing or exhausted readings produce a retryable
 build thresholds; at exhaustion they stop. They record operator activity, which
 suppresses autonomous reserve bursts, and never create build runs or attempts.
 No build routing, work-credit fallback or token-spending quota probe is used.
-Work-account turns remain unavailable until the separate credits adapter ships.
+Work-account turns use the [credits adapter](../team-api-credits.md#work-discussions-926)
+after its runner installation and gateway restart; mixed-account policies fail closed.
 
 Launch flags were checked against the installed `claude --help` on 2026-10-11:
 `--restricted`, empty `--setting-sources`, explicit hook/plugin settings, empty

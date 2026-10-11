@@ -74,6 +74,7 @@ class DiscussionTests(unittest.TestCase):
     def test_work_unavailable(self):
         self.cfg['projects']['p']['account'] = 'work'
         self.binding['account'] = 'work'
+        self.binding['engine'] = 'agent-sdk'
         self.sid = self.led.create_chat_session(**self.binding)['id']
         self.assertEqual(self.run_turn(self.turn())['error']['code'], 'quota_unavailable')
         self.probe.assert_not_called()
@@ -164,10 +165,13 @@ class DiscussionTests(unittest.TestCase):
         calls = []
         def fail(*args, **kwargs):
             calls.append(1)
+            self.assertNotIn('ANTHROPIC_API_KEY', kwargs['env'])
+            self.assertNotIn('ANTHROPIC_ADMIN_KEY', kwargs['env'])
             if len(calls) == 2:
                 supervisor.stop.set()
             raise OSError('Cannot start')
-        with patch('mahler.discuss.subprocess.Popen', side_effect=fail):
+        with patch.dict(os.environ, ANTHROPIC_API_KEY='upstream-secret', ANTHROPIC_ADMIN_KEY='admin-secret'), \
+                patch('mahler.discuss.subprocess.Popen', side_effect=fail):
             supervisor.start()
             supervisor.thread.join(timeout=4)
             supervisor.close()

@@ -1146,7 +1146,35 @@ class _TokenStore:
     def lookup(self, token):
         digest = hashlib.sha256(str(token).encode()).hexdigest()
         value = self.led.get_kv(self._tok(digest))
-        return int(value) if value else None
+        if not value:
+            return None
+        if value.startswith('{'):
+            try:
+                auth = json.loads(value)
+                row = self.led.check_chat_worker(auth['turn_id'], auth['worker_token'])
+                session = self.led.chat_session(auth['session_id'])
+                if (row['session_id'] != session['id'] or session['account'] != auth['account']
+                        or session['account'] == 'personal' or session['engine'] != 'agent-sdk'):
+                    return None
+                return auth
+            except (ValueError, KeyError, TypeError):
+                return None
+        return int(value)
+
+    def register_discussion(self, session_id, turn_id, worker_token, account):
+        row = self.led.check_chat_worker(turn_id, worker_token)
+        session = self.led.chat_session(session_id)
+        if (row['session_id'] != session_id or session['account'] != account
+                or account == 'personal' or session['engine'] != 'agent-sdk'):
+            raise ValueError('invalid discussion credit binding')
+        token = secrets.token_urlsafe(24)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        self.led.set_kv(self._tok(digest), json.dumps(dict(session_id=session_id,
+            turn_id=turn_id, worker_token=worker_token, account=account)))
+        return token
+
+    def revoke_discussion(self, token):
+        self.led.set_kv(self._tok(hashlib.sha256(token.encode()).hexdigest()), '')
 
 
 class Gateway:
@@ -1165,6 +1193,7 @@ class Gateway:
         self.connect = connect or (lambda: http.client.HTTPSConnection(ANTHROPIC_HOST, timeout=600))
         self.ping = ping or (lambda *a, **k: None)
         self.tokens = _TokenStore(self.led, group)
+        self.discussion_ready = lambda auth: False
         self._server = None
         self._thread = None
         self.port = None
@@ -1251,10 +1280,15 @@ class Gateway:
                 "not_found_error", "Mahler gateway: only POST /v1/messages is proxied")
         lower = {str(k).lower(): v for k, v in headers.items()}
         token = lower.get("x-api-key") or ""
-        run_id = self._run_for_token(token)
-        if run_id is None:
+        authorization = self._run_for_token(token)
+        if authorization is None:
             return 401, {}, _gateway_error(
                 "authentication_error", "Mahler gateway: unrecognized local token")
+        discussion = authorization if isinstance(authorization, dict) else None
+        run_id = None if discussion else authorization
+        if discussion and not self.discussion_ready(discussion):
+            return 402, {}, _gateway_error('permission_error',
+                'Discussion credits unavailable; check gateway account, usage and grant status.')
         try:
             data = json.loads(body or b"{}")
         except ValueError:
@@ -1276,6 +1310,8 @@ class Gateway:
                 "Your credit balance is too low to access the Anthropic API. "
                 "(Mahler: no confirmed grant covers now.)")
         attempt_key = secrets.token_hex(16)
+        if discussion:
+            attempt_key = f"discussion:{discussion['session_id']}:{discussion['turn_id']}:{attempt_key}"
         rid, info = self.led.reserve_credit(self.group, grant["id"], attempt_key, amount,
                                             grant["ceiling_usd"], run_id=run_id,
                                             expires_at=grant["end"])
@@ -1288,13 +1324,14 @@ class Gateway:
         model = data["model"]
         try:
             status, resp_headers, resp_body = self._forward(data, path, lower)
-        except (OSError, http.client.HTTPException) as e:
-            # Nothing reached (or finished talking to) Anthropic: nothing was
-            # spent, so free the reservation. Cline's own retry makes a new
-            # HTTP call to the gateway with its own attempt_key.
-            self.led.release_credit(self.group, grant["id"], attempt_key, note=repr(e)[:200])
+        except (OSError, http.client.HTTPException):
+            # Dispatch may have reached the provider before the connection failed.
+            # Keep the worst-case reservation; retries reserve independently.
+            self.led.event("credit_ambiguous", detail={"group": self.group,
+                           "grant_id": grant["id"], "attempt_key": attempt_key,
+                           "reason": "upstream transport failed"})
             return 502, {}, _gateway_error("api_error",
-                                           f"Mahler gateway: upstream request failed: {e}")
+                                           "Mahler gateway: upstream outcome is uncertain")
         usage = None
         if status < 300:
             usage = (parse_stream_usage(resp_body) if data.get("stream")
@@ -1378,8 +1415,16 @@ def _build_gateway(led, name, pconf, ping, now=None):
         return {"id": snap["grant_id"], "ceiling_usd": snap["reservation_ceiling_usd"],
                "end": parse(snap["cycle_end"])}
 
-    return Gateway(led, pool["group"], grant_fn, model_pricing(pool), pool["allowed_models"],
-                   pool["max_output_tokens"], real_key, ping=ping)
+    gateway = Gateway(led, pool["group"], grant_fn, model_pricing(pool), pool["allowed_models"],
+                      pool["max_output_tokens"], real_key, ping=ping)
+
+    def discussion_ready(auth):
+        snap = snapshot(gateway.led, name, pconf)
+        return (auth['account'] == pool['account'] and snap['org_fresh']
+                and snap['state'] in ('ok', 'soft'))
+
+    gateway.discussion_ready = discussion_ready
+    return gateway
 
 
 def ensure_gateway(ctx, name, pconf, open_ledger=None):

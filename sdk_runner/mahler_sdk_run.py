@@ -44,13 +44,32 @@ def _parse_args(argv):
                    help="offer the model no tools at all (connectivity checks)")
     p.add_argument("--project-settings", action="store_true",
                    help="load the --cwd project's CLAUDE.md and .claude/settings (never the host user's)")
-    return p.parse_args(argv)
+    p.add_argument("--discussion-mcp", help="restricted discussion MCP configuration JSON")
+    p.add_argument("--discussion-system", type=Path)
+    p.add_argument("--resume")
+    args = p.parse_args(argv)
+    if args.discussion_mcp and (args.project_settings or not args.discussion_system):
+        p.error("discussion requires a system prompt and forbids project settings")
+    return args
 
 
 async def _run(args) -> int:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
-    prompt = args.prompt_file.read_text()
+    prompt = sys.stdin.read() if str(args.prompt_file) == '-' else args.prompt_file.read_text()
+    discussion = bool(args.discussion_mcp)
+    restricted = {}
+    if discussion:
+        servers = json.loads(args.discussion_mcp)['mcpServers']
+        if set(servers) != {'discussion'}:
+            raise ValueError('discussion requires exactly its restricted tool server')
+        names = ('read_repo_file', 'list_repo_files', 'list_items', 'get_item',
+                 'add_item', 'edit_item', 'answer_item')
+        restricted = dict(
+            tools=[], allowed_tools=['mcp__discussion__' + name for name in names],
+            system_prompt=args.discussion_system.read_text(), resume=args.resume,
+            settings=json.dumps({'disableAllHooks': True, 'enabledPlugins': {}}),
+            extra_args={'restricted': None, 'disable-slash-commands': None, 'no-chrome': None})
     # Claude Code sends side calls (titles, summaries) to its small/fast
     # model, Haiku by default; pin them to the run's model so every request
     # stays on the one model the credits gateway allows.
@@ -59,26 +78,27 @@ async def _run(args) -> int:
     if args.max_output_tokens is not None:
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
     opts = ClaudeAgentOptions(
-        permission_mode="bypassPermissions",
+        permission_mode="dontAsk" if discussion else "bypassPermissions",
         cwd=str(args.cwd),
         model=args.model,
         max_turns=args.max_turns,
         max_budget_usd=args.max_budget_usd,
-        **({"tools": []} if args.no_tools else {}),
+        **(restricted if discussion else {"tools": []} if args.no_tools else {}),
         disallowed_tools=list(args.disallowed),
         env=env,
         # Hermetic: never the host user's settings, plugins or MCP servers;
         # the worktree's own project settings only when asked.
         setting_sources=["project"] if args.project_settings else [],
         strict_mcp_config=True,
-        mcp_servers={},
+        mcp_servers=servers if discussion else {},
     )
 
     final = None
     errors: list[str] = []
     try:
         async for msg in query(prompt=prompt, options=opts):
-            _emit(_to_dict(msg))
+            if not discussion:
+                _emit(_to_dict(msg))
             if isinstance(msg, ResultMessage):
                 final = msg
     except Exception as exc:  # noqa: BLE001 - surface every failure in the result line
@@ -96,6 +116,7 @@ async def _run(args) -> int:
             "is_error": bool(final.is_error) or bool(errors),
             "subtype": final.subtype,
             "result": final.result,
+            "session_id": final.session_id,
         }
     else:
         result = {"type": "result", "usage": None, "total_cost_usd": None, "is_error": True}

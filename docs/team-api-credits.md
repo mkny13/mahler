@@ -69,3 +69,44 @@ The Mahler workspace's Console spend limit ($20 today) is a hard server-side cei
 Mahler's own accounting cannot spend past it regardless of the burst math. Raise it by hand
 in Console only when ready to let the burst actually spend past the allowance near a grant's
 expiry.
+
+
+## Work discussions (#926)
+
+`mahler.discuss` routes a single-account personal project to the personal Claude
+subscription, and a single-account work project to `mahler.discuss_credits` and the
+Agent SDK. Mixed/ambiguous or disabled project policies fail closed. Exactly one
+enabled `agent-sdk` platform must match the work account and its credit pool;
+there is no subscription or direct-provider fallback. Build routing is unchanged.
+
+Qualification is complete: [PR #928](https://github.com/mkny13/mahler/pull/928)
+merged #918, and the [owner's D41 evidence](https://github.com/mkny13/mahler/issues/903#issuecomment-6108885290)
+records the capped gateway trials, promotional-credit billing and the supersession
+of PR #913. Trial 2 used $0.0035 under a $0.10 ceiling; trial 3's successful run
+11801 used a $3 ceiling. This change makes no additional live API call.
+
+Reinstall the hand-managed runner from the merged checkout with
+`uv tool install --force ./sdk_runner`. The new `--discussion-mcp` mode disables
+native tools, hooks, plugins and project settings, attaches only the seven restricted
+issue tools, and resumes the prior SDK session. An older runner fails before dispatch.
+Restart an existing gateway after deploying this code (D41); it retains its old code
+until stopped. Start the configured gateway with `mahler gateway <platform>` before
+using work discussions. The discussion worker only attaches to an existing gateway;
+it never reads either upstream key or starts a credential consumer using a different
+configuration. Refresh missing/stale org usage through normal `mahler usage --probe`.
+
+The worker receives a random gateway token scoped to the durable session, active turn,
+worker fence and deadline. Only its hash is stored; it is revoked at turn exit. Each
+helper, main, resumed or retried HTTP request reserves independently against the same
+D41 pool and allowance. Reservation attempt keys retain the discussion/session IDs;
+`run_id` stays null. Duplicate completion cannot charge again. An uncertain transport
+outcome retains its worst-case reservation, even if the worker dies or retries.
+No build run or lease is created. Work discussions require a fresh org sample as well
+as a usable key, confirmed grant and available balance, including on each request.
+
+Responses remain buffered at the gateway. Gateway loss or replacement stops the turn
+with a retryable error within the existing 120-second deadline; retry is explicit.
+Automated evidence is in `tests/test_discuss_credits.py`, `tests/test_discuss.py` and
+`tests/test_api_credits.py`, using fake SDK/provider calls and isolated ledgers.
+The remaining post-merge check is one work-project conversation in the approved panel,
+confirming its displayed reply and issue links. No new spending authorization is needed.
