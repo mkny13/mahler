@@ -969,7 +969,15 @@ D20 periodically turns recurring escape classes into mechanical-gate proposals.
   platform than the builder. Free tiers are preferred; Claude is used when an item touches
   data or migrations, or the free tiers are exhausted. This is where the BACKLOG's
   **adversarial cross-product review** plugs in (ROADMAP Phase 7). It's agent review, not a
-  human gate.
+  human gate. Automatic risk preference waits up to six hours from the first
+  blocked Claude observation (mahler#911), durably scoped to project/issue/PR/head.
+  Claude returning remains preferred; after six hours normal routing may choose an
+  independent tier-2+ reviewer. Builder/repeat-reviewer slot exclusions bypass the
+  preference immediately. Global concurrency alone does not start the clock.
+  Unknown or missing Claude is probed each tick without an early owner escalation;
+  known retries are capped at the preference deadline. Failed launches retain the
+  clock; successful fallback records durable reviewer/reason/wait evidence. Explicit
+  pins, account permissions, quota gates and independent review remain unchanged.
 - **Review convergence** (mahler#679): `review_green_rounds` is a positive integer,
   default 2 in `[defaults]`, overridable per project. Round N is inclusive. A round is
   one distinct PR head with green CI (or no configured checks) and a usable completed
