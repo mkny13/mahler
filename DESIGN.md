@@ -1815,7 +1815,9 @@ is [docs/console/design.md](docs/console/design.md): desktop `3a`, phone `2a`, c
   - Writes that reach GitHub or a running agent (answering a needs-you item, failure reports,
     capture, stop-and-hand-off, a revert) are queued in the ledger and applied by the
     tick. Every GitHub call keeps the project's own login (D25), and only the tick touches
-    runs and leases.
+    runs and leases. D43 adds a narrow exception: operator-started discussion
+    workers may write project-bound issues directly through restricted tools, never
+    builds, leases or merges; the HTTP server and tick still make no model calls.
 - **An answer is a GitHub comment.** The tick posts it on the issue after a 60-second grace,
   which is what Undo cancels, and the existing reply-means-answer path re-sorts the item.
   No second state machine.
@@ -2027,7 +2029,8 @@ Decided 2026-09-23 (your call). Amends D8's fixed build order, D21's "planning w
 - No code-review UI. You don't review code, and the verify contract and cross-platform review
   stand in.
 - Not replacing GitHub's issue UI. The console is a simpler window onto it.
-- No LLM calls in the control plane.
+- No LLM calls in the control plane. D43 permits only operator-started discussion
+  workers outside the HTTP server and tick, with project-bound issue-only writes.
 - No cloud execution and no public endpoints in the POC.
 
 ---
@@ -2546,3 +2549,36 @@ work.
   under `api_credits`.
 - In a burst, the pool's platforms move to the front of their account's build route, as
   D23's Claude platforms do.
+
+
+### D43 — Operator-started discussions: issue-only workers (mahler#921, #922)
+
+Owner-approved scope 2026-10-10 in #921; decision ID allocated with
+`mahler next-id mahler D` for #922. This is a design contract, not shipped execution.
+
+D15 and D27 permit a supervised discussion worker beside the console, independent
+of the 60-second tick. Only an operator starts a turn. The HTTP server and tick make
+no model calls. Discussion workers may read bounded repository/backlog context and
+file, edit or answer issues using the project's GitHub identity; they cannot manipulate
+builds, leases or merges. A restricted tool server enforces the allow-list in code,
+with native engine bypass tools disabled; a recipe alone is not the boundary.
+Existing console origin/header/network checks continue to apply to discussion POSTs.
+
+Funding follows the immutable project/account binding (D25/D26): personal projects
+use only the personal Claude subscription, counted as operator usage against the
+Claude reserve; work projects use only the Agent SDK via the D41 gateway. Its atomic
+reservations, grant checks and allowance caps apply unchanged. No paid fallback, no
+cross-account fallback and no real-money spend (D8). Work enablement waits for the
+existing gateway/SDK prerequisites and capped trial evidence; personal can ship first.
+
+The [v1 contract](docs/console/discuss.md) specifies terminal assistant text, engine
+session ID, confirmed issue URLs and success/error, explicit retries, a 120-second
+turn deadline, 8,000-character input and 100-turn session limits, with one active turn
+per session. Project and account are immutable on resume. Confirmed tool receipts,
+not model claims, establish issue writes; durable mutation IDs reconcile retry ambiguity.
+Owner answers and issue relationships survive edits. Worker failure cannot crash tick.
+
+The [phone](docs/console/screens/discuss-phone.svg) and
+[desktop](docs/console/screens/discuss-desktop.svg) mockups are proposals. Artifact
+work may merge independently; #925 must have Mike's explicit approval of the artifact
+commit revision before production panel code. Silence or closing #922 is not approval.
