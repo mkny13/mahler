@@ -958,34 +958,62 @@ class HotHoldTests(unittest.TestCase):
             lines = plan(ctx, led)
         return lines, ctx.lines
 
-    def test_end_session_survives_watching_writes_until_quiet_window(self):
-        for offset, expected in ((-1, ["a#1: would build on agy-claude"]),
-                                 (0, ["a#1: would build on agy-claude"]),
-                                 (1, ["a#1: would build on agy-claude"])):
-            with self.subTest(activity_offset=offset):
-                ctx, led = mk_ctx({"a": proj(hot_hold=True)})
-                self.addCleanup(led.close)
-                seed(led, **{"agy-claude": (10, 10)})
-                item(led, "a", 1)
-                ended = NOW - timedelta(minutes=2)
-                led.set_kv("hot_hold_end:a", iso(ended))
-                with mock.patch.object(presence, "last_claude_activity",
-                                       return_value=ended + timedelta(seconds=offset)):
-                    self.assertEqual(plan(ctx, led), expected)
-
-    def test_end_session_retires_after_quiet_window(self):
-        led = Ledger(":memory:", clock=lambda: NOW)
+    def test_end_session_action_to_scheduler_journey(self):
+        """Click End session, then A keeps writing (+1s, >20 min past the
+        click) without re-arming; a new session B still holds."""
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from mahler.console import actions
+        now = [NOW]
+        ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+        led.now = lambda: now[0]
         self.addCleanup(led.close)
-        led.set_kv("hot_hold_end:a", iso(NOW - timedelta(minutes=40)))
-        w = timedelta(minutes=20)
-        self.assertTrue(presence.hot_hold_overridden(
-            led, "a", NOW - timedelta(minutes=1), window=w, retire=True))
-        self.assertIsNotNone(led.get_kv("hot_hold_end:a"))
-        self.assertFalse(presence.hot_hold_overridden(
-            led, "a", NOW - timedelta(minutes=30), window=w, retire=True))
-        self.assertIsNone(led.get_kv("hot_hold_end:a"))
-        self.assertFalse(presence.hot_hold_overridden(
-            led, "a", NOW - timedelta(minutes=1), window=w, retire=True))
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1)
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        d = os.path.join(root, presence.encode("/tmp/x"))
+        os.makedirs(d)
+
+        def write(name, when):
+            f = Path(d, name + ".jsonl")
+            f.write_text("{}")
+            os.utime(f, (when.timestamp(), when.timestamp()))
+
+        def run():
+            ctx.lines.clear()
+            seed(led, **{"agy-claude": (10, 10)})            # keep usage fresh
+            return plan(ctx, led)
+
+        built = ["a#1: would build on agy-claude"]
+        with mock.patch.object(presence, "CLAUDE_PROJECTS", root):
+            write("A", NOW - timedelta(minutes=2))
+            self.assertEqual(run(), [])                      # hold is on
+            actions.run(ctx.cfg, led, "end_session", {"project": "a"})
+            self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(seconds=1)
+            write("A", now[0])                                # +1s write
+            self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(minutes=25)
+            write("A", now[0] - timedelta(minutes=1))         # >20 min, still watching
+            self.assertEqual(run(), built)
+            write("B", now[0] - timedelta(minutes=1))         # new session B holds
+            self.assertEqual(run(), [])
+            now[0] = NOW + timedelta(minutes=60)              # everything quiet
+            self.assertEqual(run(), built)
+
+    def test_equal_priority_builds_start_oldest_state_changed_first(self):
+        """Same project, equal priority: oldest state_changed_at wins, not the
+        lower issue number and not a pin preference."""
+        ctx, led = mk_ctx({"a": proj()}, total=1, max_runs=1)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, age_minutes=5)
+        item(led, "a", 2, age_minutes=60)
+        led.upsert_item("a", 1, pin="agy-claude")
+        self.assertEqual(plan(ctx, led), ["a#2: would build on agy-claude"])
 
     def test_recent_activity_holds_new_builds(self):
         lines, said = self.hold(minutes_ago=5)

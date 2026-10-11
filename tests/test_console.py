@@ -951,6 +951,22 @@ class BannerTests(unittest.TestCase):
 
 
 class EndSessionTests(unittest.TestCase):
+    def transcripts(self):
+        root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, root, True)
+        patch = mock.patch.object(state.presence, "CLAUDE_PROJECTS", root)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for proj in ("mahler", "groundwork"):
+            os.makedirs(os.path.join(root, state.presence.encode("/nonexistent/" + proj)))
+
+        def write(name, when, proj="mahler"):
+            f = os.path.join(root, state.presence.encode("/nonexistent/" + proj),
+                             name + ".jsonl")
+            Path(f).write_text("{}")
+            os.utime(f, (when.timestamp(), when.timestamp()))
+        return write
+
     def test_hold_surfaces_clear_and_return_on_new_activity(self):
         cfg = make_cfg(projects={"mahler": {"hot_hold": True},
                                  "groundwork": {"hot_hold": True}})
@@ -958,28 +974,27 @@ class EndSessionTests(unittest.TestCase):
         self.addCleanup(led.close)
         all_fresh(led)
         led.upsert_item("mahler", 1, title="waiting", state="ready")
-        with mock.patch.object(state.presence, "last_claude_activity",
-                               return_value=led.now() - timedelta(minutes=4)) as activity:
-            before = state.build(cfg, led)
-            button = 'data-act="end_session" data-project="mahler">End session</button>'
-            self.assertIn(button, page._banners(before))
-            for phone in (False, True):
-                self.assertIn(button, page._idle(before, phone))
-            actions.run(cfg, led, "end_session", {"project": "mahler"})
-            self.assertEqual(led.get_kv("hot_hold_end:mahler"), iso(led.now()))
-            event = led.q1("SELECT * FROM events WHERE kind='hot_hold_end'")
-            self.assertEqual(event["project"], "mahler")
-            after = state.build(cfg, led)
-            self.assertNotIn(button, page._banners(after))
-            self.assertNotIn(button, page._idle(after, False))
-            self.assertIn('data-project="groundwork">End session', page._banners(after))
-            activity.return_value = led.now() + timedelta(microseconds=1)
-            self.assertNotIn(button, page._banners(state.build(cfg, led)))
-            activity.return_value = led.now() - timedelta(minutes=30)
-            state.presence.hot_hold_overridden(
-                led, "mahler", activity.return_value, window=timedelta(minutes=20), retire=True)
-            activity.return_value = led.now() - timedelta(minutes=1)
-            self.assertIn(button, page._banners(state.build(cfg, led)))
+        write = self.transcripts()
+        write("a", led.now() - timedelta(minutes=4))
+        write("g", led.now() - timedelta(minutes=4), "groundwork")
+        before = state.build(cfg, led)
+        button = 'data-act="end_session" data-project="mahler">End session</button>'
+        self.assertIn(button, page._banners(before))
+        for phone in (False, True):
+            self.assertIn(button, page._idle(before, phone))
+        actions.run(cfg, led, "end_session", {"project": "mahler"})
+        event = led.q1("SELECT * FROM events WHERE kind='hot_hold_end'")
+        self.assertEqual(event["project"], "mahler")
+        after = state.build(cfg, led)
+        self.assertNotIn(button, page._banners(after))
+        self.assertNotIn(button, page._idle(after, False))
+        self.assertIn('data-project="groundwork">End session', page._banners(after))
+        # the ended session keeps writing while it watches: still lifted
+        write("a", led.now() + timedelta(seconds=1))
+        self.assertNotIn(button, page._banners(state.build(cfg, led)))
+        # a different, new session is not exempt
+        write("b", led.now() - timedelta(minutes=1))
+        self.assertIn(button, page._banners(state.build(cfg, led)))
 
     def test_rejects_unknown_disabled_and_malformed_projects(self):
         cfg, led = make_cfg(), make_led()
@@ -989,20 +1004,18 @@ class EndSessionTests(unittest.TestCase):
                 actions.run(cfg, led, "end_session", {"project": project})
         self.assertIsNone(led.q1("SELECT * FROM events WHERE kind='hot_hold_end'"))
 
-    def test_override_boundaries_and_invalid_timestamp(self):
+    def test_invalid_marker_and_legacy_timestamp(self):
         led = make_led()
         self.addCleanup(led.close)
-        overridden = state.presence.hot_hold_overridden
-        self.assertFalse(overridden(led, "mahler", None))
-        led.set_kv("hot_hold_end:mahler", "not a timestamp")
-        self.assertFalse(overridden(led, "mahler", led.now()))
-        led.set_kv("hot_hold_end:mahler", iso(led.now()))
-        self.assertTrue(overridden(led, "mahler", None))
-        self.assertTrue(overridden(led, "mahler", led.now()))
-        self.assertTrue(overridden(led, "mahler", led.now() + timedelta(microseconds=1)))
+        write = self.transcripts()
+        act = state.presence.hot_hold_activity
         w = timedelta(minutes=20)
-        self.assertTrue(overridden(led, "mahler", led.now() - timedelta(minutes=5), window=w))
-        self.assertFalse(overridden(led, "mahler", led.now() - timedelta(minutes=20), window=w))
+        recent = led.now() - timedelta(minutes=5)
+        write("a", recent)
+        led.set_kv("hot_hold_end:mahler", "not a timestamp")
+        self.assertEqual(act(led, "mahler", "/nonexistent/mahler", w), recent)
+        led.set_kv("hot_hold_end:mahler", iso(led.now()))   # legacy: all exempt
+        self.assertIsNone(act(led, "mahler", "/nonexistent/mahler", w))
 
 
 class EventTests(unittest.TestCase):

@@ -72,9 +72,11 @@ def resume(cfg, led, body):
 def end_session(cfg, led, body):
     """Lift this project's advisory hold until transcript activity resumes."""
     project = body.get("project")
-    if not isinstance(project, str) or project not in {p["name"] for p in config.enabled_projects(cfg)}:
+    projects = {p["name"]: p for p in config.enabled_projects(cfg)}
+    if not isinstance(project, str) or project not in projects:
         raise ActionError("project must be enabled")
-    led.set_kv(presence.HOT_HOLD_END_PREFIX + project, iso(led.now()))
+    led.set_kv(presence.HOT_HOLD_END_PREFIX + project,
+               presence.end_marker(led, project, projects[project].get("path") or ""))
     led.event("hot_hold_end", project, detail="session ended from the console")
 
 

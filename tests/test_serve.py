@@ -424,8 +424,16 @@ class TestWrites(_Served):
         for run in self.led.active_runs():
             self.led.update_run(run["id"], status="done")
         self.led.upsert_item("mahler", 10, title="Waiting", state="ready")
-        with mock.patch("mahler.presence.last_claude_activity",
-                        return_value=self.led.now() - timedelta(minutes=4)) as activity:
+        from pathlib import Path
+        root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, root, True)
+        d = os.path.join(root, "-nonexistent-mahler")
+        os.makedirs(d)
+        f = Path(d, "a.jsonl")
+        f.write_text("{}")
+        t = (self.led.now() - timedelta(minutes=4)).timestamp()
+        os.utime(f, (t, t))
+        with mock.patch("mahler.presence.CLAUDE_PROJECTS", root):
             before = json.loads(self.request("/api/state")[2])
             self.assertIn('"end_session"', json.dumps(before["banners"]))
             self.assertIn('"end_session"', json.dumps(before["idle"]))
@@ -438,7 +446,7 @@ class TestWrites(_Served):
             self.assertNotIn('"end_session"', json.dumps(after["banners"]))
             self.assertNotIn('"end_session"', json.dumps(after["idle"]))
             self.assertNotIn('data-act="end_session"', self.request("/fragment")[2])
-            activity.return_value = self.led.now() + timedelta(seconds=1)
+            os.utime(f, (t + 300, t + 300))      # the ended session keeps writing
             self.assertNotIn('data-act="end_session"', self.request("/fragment")[2])
         self.assertEqual(self.post("end_session", {"project": "unknown"})[0], 400)
 
