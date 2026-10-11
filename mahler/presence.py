@@ -20,13 +20,29 @@ HOT_HOLD_END_PREFIX = "hot_hold_end:"
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 
 
-def hot_hold_overridden(led, project, last_activity):
-    """A human ended this session, and no newer transcript activity followed."""
+def hot_hold_overridden(led, project, last_activity, now=None, window=None,
+                        retire=False):
+    """A human ended this session (End session), so the hold is lifted.
+
+    The exemption is durable: a session that keeps watching the run keeps
+    writing its transcript, and that must not re-arm the hold. It retires
+    once a full quiet window (`window`, a timedelta) has been observed, i.e.
+    the last transcript is at least that old; `retire=True` also clears the
+    stored marker then (tick only; the console reads without writing).
+    """
     try:
         ended = parse(led.get_kv(HOT_HOLD_END_PREFIX + project))
     except (TypeError, ValueError):
         return False
-    return bool(ended and (last_activity is None or last_activity <= ended))
+    if not ended:
+        return False
+    if window is not None:
+        now = now or led.now()
+        if last_activity is None or now - last_activity >= window:
+            if retire:
+                led.set_kv(HOT_HOLD_END_PREFIX + project, None)
+            return False
+    return True
 
 
 def encode(path):

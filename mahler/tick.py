@@ -424,9 +424,11 @@ def _init_schedule_state(ctx, projects):
         hot[p["name"]] = False
         if p.get("hot_hold") and ctx.hot_hold:
             last = presence.last_claude_activity(p["path"])
+            window = timedelta(minutes=p["hot_hold_minutes"])
+            overridden = presence.hot_hold_overridden(
+                led, p["name"], last, window=window, retire=not ctx.dry_run)
             hot[p["name"]] = bool(
-                last and not presence.hot_hold_overridden(led, p["name"], last)
-                and led.now() - last < timedelta(minutes=p["hot_hold_minutes"]))
+                last and not overridden and led.now() - last < window)
 
     burst_lines = compute_burst(ctx, projects)
     return {"total": len(active), "in_project": in_project, "per_group": per_group,

@@ -1440,7 +1440,9 @@ def _hot_holds(led, projects, now):
         if not p.get("hot_hold") or not p.get("path"):
             continue
         last = presence.last_claude_activity(p["path"])
-        if presence.hot_hold_overridden(led, p["name"], last):
+        if presence.hot_hold_overridden(
+                led, p["name"], last, now=now,
+                window=timedelta(minutes=p["hot_hold_minutes"])):
             continue
         if last and now - last < timedelta(minutes=p["hot_hold_minutes"]):
             out.append({"project": p["name"], "ago": _mins(now - last),

@@ -439,7 +439,7 @@ class TestWrites(_Served):
             self.assertNotIn('"end_session"', json.dumps(after["idle"]))
             self.assertNotIn('data-act="end_session"', self.request("/fragment")[2])
             activity.return_value = self.led.now() + timedelta(seconds=1)
-            self.assertIn('data-act="end_session"', self.request("/fragment")[2])
+            self.assertNotIn('data-act="end_session"', self.request("/fragment")[2])
         self.assertEqual(self.post("end_session", {"project": "unknown"})[0], 400)
 
     def test_same_origin_is_allowed(self):
