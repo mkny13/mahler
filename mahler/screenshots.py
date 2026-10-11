@@ -317,11 +317,11 @@ def capture(ctx, project, item, pr, view):
                     bypass_file = policy.get("screenshot_bypass_secret_file", "")
                     bypass_secret = ""
                     if bypass_file:
-                        try:
-                            with open(bypass_file, "r", encoding="utf-8") as f:
-                                bypass_secret = f.read().strip()
-                        except Exception:
-                            bypass_secret = ""
+                        # The advisory boundary persists this reason if reading fails,
+                        # without invoking capture or exposing the path/error text.
+                        result["reason"] = "bypass_secret_missing"
+                        with open(os.path.expanduser(bypass_file), "r", encoding="utf-8") as f:
+                            bypass_secret = f.read().strip()
                     if bypass_secret:
                         env["MAHLER_SCREENSHOT_BYPASS_SECRET"] = bypass_secret
                     result.update(state="failed", reason="command_failed")

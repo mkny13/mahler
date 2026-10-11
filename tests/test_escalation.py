@@ -164,16 +164,21 @@ class TierEscalationTests(unittest.TestCase):
                     else:
                         ship._review_triggered_fix(*args, "blocking findings")
 
+                def launch_fix(*args, **kwargs):
+                    now[0] += timedelta(seconds=1)
+                    self.led.create_run(project="p", number=number, role="fix",
+                                        platform="kilo", epoch=1, status="running")
+                    return True
+
                 def complete_fix():
                     now[0] += timedelta(minutes=1)
-                    self.led.create_run(
-                        project="p", number=number, role="fix", platform="kilo",
-                        epoch=1, status="ended", stop_reason="timeout",
-                        outcome="exit 1")
+                    run = self.led.last_run("p", number, roles=("fix",))
+                    self.led.update_run(run["id"], status="ended", stop_reason="timeout",
+                                        outcome="exit 1")
                     now[0] += timedelta(minutes=1)
 
                 with mock.patch.object(self.led, "now", side_effect=lambda: now[0]), \
-                     mock.patch("mahler.ship.start", return_value=True), \
+                     mock.patch("mahler.ship.start", side_effect=launch_fix), \
                      mock.patch("mahler.router.pick_for_project",
                                 return_value=("agy-claude", [])):
                     attempt()

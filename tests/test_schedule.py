@@ -875,6 +875,7 @@ class TierBudgetScheduleTests(unittest.TestCase):
         """Regression guard: with no by_tier configured, two active
         cline-free (tier 1) runs don't stop a third from starting."""
         ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        self.addCleanup(led.close)
         led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
         led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
         led.upsert_item("a", 3, state="ready", priority=2, labels='["size:s"]',
@@ -886,6 +887,7 @@ class TierBudgetScheduleTests(unittest.TestCase):
         """by_tier = {1: 3}: two active tier-1 runs (cline-free) leave room
         for a third — the budget isn't reached yet."""
         ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        self.addCleanup(led.close)
         ctx.cfg["concurrency"]["by_tier"] = {1: 3}
         led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
         led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
@@ -899,6 +901,7 @@ class TierBudgetScheduleTests(unittest.TestCase):
         block a fourth, even though each platform's own max_runs has
         headroom left."""
         ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=6, max_runs=5)
+        self.addCleanup(led.close)
         ctx.cfg["concurrency"]["by_tier"] = {1: 3}
         led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
         led.create_run(project="a", number=2, role="build", platform="cline-free", epoch=2)
@@ -914,6 +917,7 @@ class TierBudgetScheduleTests(unittest.TestCase):
         claude-opus (the only size:l-fitting platform seeded here) is
         blocked while one claude-opus run is already active."""
         ctx, led = mk_ctx({"a": proj(max_parallel=4)}, total=4, max_runs=5)
+        self.addCleanup(led.close)
         ctx.cfg["concurrency"]["by_tier"] = {4: 1}
         seed(led, **{"claude": (10, 10), "claude-opus": (10, 10)})
         led.create_run(project="a", number=1, role="build", platform="claude-opus", epoch=1)
@@ -926,6 +930,7 @@ class TierBudgetScheduleTests(unittest.TestCase):
         """concurrency.total stays the hard outer ceiling: a generous
         by_tier budget (10) doesn't let a second run start past total=2."""
         ctx, led = mk_ctx({"a": proj(max_parallel=6)}, total=2, max_runs=5)
+        self.addCleanup(led.close)
         ctx.cfg["concurrency"]["by_tier"] = {1: 10}
         led.create_run(project="a", number=1, role="build", platform="cline-free", epoch=1)
         led.upsert_item("a", 2, state="ready", priority=2, labels='["size:s"]',
@@ -1221,6 +1226,7 @@ class ScheduleStateUpdateTests(unittest.TestCase):
         """A dry-run 'would build' still counts toward totals so later
         candidates see accurate headroom within the same schedule pass."""
         ctx, led = mk_ctx({"a": proj(max_parallel=1)}, total=2)
+        self.addCleanup(led.close)
         seed(led, **{"agy-claude": (10, 10)})
         item(led, "a", 1, age_minutes=30)
         item(led, "a", 2, age_minutes=10)
@@ -1259,6 +1265,7 @@ class ScheduleStateUpdateTests(unittest.TestCase):
         """An ineligible candidate (e.g. area collision) must not add its
         area to busy_areas — only successful starts update collision sets."""
         ctx, led = mk_ctx({"a": proj(max_parallel=2)}, total=2, max_runs=2)
+        self.addCleanup(led.close)
         seed(led, **{"agy-claude": (10, 10)})
         # Item 1 is running with area:router → seeds busy_areas
         led.upsert_item("a", 1, state="working", labels='["area:router"]')

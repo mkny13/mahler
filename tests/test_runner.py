@@ -641,6 +641,25 @@ class PrepareAccountEnvTests(unittest.TestCase):
         self.assertFalse(os.path.exists(old["worktree"]))
         self.assertEqual(prep["branch"], "pr-head")
 
+    def test_fix_retained_checkout_fallback_pushes_to_pr_head(self):
+        sh(self.repo, "git", "branch", "pr-head")
+        sh(self.repo, "git", "push", "-q", "origin", "pr-head")
+        item = {"number": 3, "title": "t", "branch": "pr-head"}
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")):
+            old = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 1)
+            with mock.patch.object(runner, "_fix_worktree_conflict", return_value=False):
+                prep = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+        self.assertEqual(prep["branch"], "pr-head-r2")
+        self.assertEqual(prep["push_branch"], "pr-head")
+        rendered = prompt.render("fix", branch=prep["branch"], push_branch=prep["push_branch"])
+        self.assertIn("git push origin HEAD:pr-head", " ".join(rendered.split()))
+        sh(prep["worktree"], "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
+           "commit", "--allow-empty", "-qm", "fix")
+        sh(prep["worktree"], "git", "push", "origin", "HEAD:" + prep["push_branch"])
+        self.assertEqual(sh(self.repo, "git", "ls-remote", "origin", "refs/heads/pr-head").split()[0],
+                         sh(prep["worktree"], "git", "rev-parse", "HEAD"))
+        self.assertTrue(os.path.isdir(old["worktree"]))
+
     def test_fix_preserves_pr_branch_without_replaying_saved_work(self):
         self.git_branch = "mahler/3-reviewed"
         sh(self.repo, "git", "branch", self.git_branch)
@@ -652,11 +671,13 @@ class PrepareAccountEnvTests(unittest.TestCase):
             self.assertEqual(prep["branch"], self.git_branch)
             self.assertFalse(prep["replayed"])
             replay.assert_not_called()
-            # An active checkout must fail rather than give the fix a new branch.
+            # An active checkout stays intact; the fallback still targets the PR.
             self.ctx.led = mock.Mock()
             self.ctx.led.active_runs.return_value = [{"worktree": prep["worktree"]}]
-            with self.assertRaises(runner.GitError):
-                runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+            other = runner.prepare(self.ctx, "acme", item, "fix", "claude-work", 2)
+            self.assertEqual(other["push_branch"], self.git_branch)
+            self.assertEqual(other["branch"], self.git_branch + "-r2")
+            self.assertTrue(os.path.isdir(prep["worktree"]))
 
     def test_design_checks_out_pr_head_without_replaying_and_uses_planning_model(self):
         branch = "mahler/3-reviewed"

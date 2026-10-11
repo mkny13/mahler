@@ -78,6 +78,33 @@ class SortRecipeTests(unittest.TestCase):
                                     for line in self.rendered.splitlines()))
 
 
+class AccessRecipeTests(unittest.TestCase):
+    def test_access_feasibility_in_all_four_rendered_recipes(self):
+        for role in ("sort", "design", "build", "fix"):
+            with self.subTest(role=role):
+                text = " ".join(prompt.render(role).split())
+                for fragment in (
+                    "Never invent accounts or credentials or silently waive acceptance",
+                    "Honor existing owner answers and restrictions",
+                    "authorized access provider", "named external secret file or environment variable",
+                    "names only", "runtime that consumes it",
+                    "hypothetical variable name does not establish available access",
+                    "documented consumer and scope", "GitHub issues, logs, argv, or commits",
+                    "required operation", "safe provisioning channel", "NEEDS-YOU",
+                ):
+                    self.assertIn(fragment, text)
+                if role == "sort":
+                    self.assertIn("before READY", text)
+                    self.assertIn("do not send the unresolved requirement to a builder", text)
+                elif role == "design":
+                    self.assertIn("blocking `fix` plan, never `followups`", text)
+                    self.assertIn("first step must tell the fix agent", text)
+                    self.assertIn("same DESIGNED JSON contract", text)
+                else:
+                    self.assertIn("save and push what you have", text)
+                    self.assertNotIn("(missing access, an environment only the owner can fix)", text)
+
+
 class SizeTargetTests(unittest.TestCase):
     def test_size_target_of(self):
         # returns "s" for account = "work"
@@ -707,7 +734,7 @@ class CodingScopeRecipeTests(unittest.TestCase):
                         self.assertIn(fragment, scope)
                 owner_rule = text.split(f"{blocker}. If you genuinely cannot proceed", 1)[1]
                 self.assertTrue(owner_rule.startswith(
-                    " (missing access, an environment only the owner can fix)"))
+                    " because owner-provided access is missing"))
                 summary = "changed" if role == "build" else "you fixed"
                 self.assertEqual(rendered.splitlines()[-4:], [
                     f"STATUS: DONE <one-line summary of what {summary}>",
