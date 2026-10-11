@@ -419,8 +419,8 @@ class ShipTests(unittest.TestCase):
         calls = []
         self.patch_review_start(calls)
         self.ship()
-        self.assertEqual(len(calls), 1)
-        self.assertNotEqual(calls[0][1], "claude")
+        self.assertEqual(calls, [])
+        self.assertEqual(self.item()["state"], "verifying")
 
     def test_same_head_running_or_unaccounted_fix_cannot_duplicate(self):
         self.same_head_setup()
@@ -4499,3 +4499,185 @@ class DependencyPRTests(unittest.TestCase):
         for change in (body.replace('patch', 'minor'), body + '| other | deps | minor | unknown |\n'):
             self.views[10]['body'] = change
             self.assertIsNone(ship._dependency_update(self.views[10]))
+
+
+class ReviewPinFallbackTests(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+
+    def prepare(self):
+        self.now = NOW
+        self.led.clock = lambda: self.now
+        self.led.upsert_item('x', 5, pr=88, title='database migration', labels='["size:m"]')
+        self.cfg['routing']['review'] = ['claude', 'agy-gemini']
+        self.cfg['platforms']['agy-gemini']['tier'] = 2
+        self.refresh()
+
+    def refresh(self, claude=100):
+        for name, used in [('claude', claude), ('agy-gemini', 10)]:
+            for window in ('5h', 'weekly'):
+                self.led.record_usage(name, window, used, iso(NOW + timedelta(days=3)))
+
+    def tick(self, success=True):
+        with mock.patch.object(ship, 'start', return_value=success) as launch, \
+                mock.patch.object(self.ctx, 'gh', return_value=self.gh), \
+                mock.patch.object(self.ctx, 'ping') as ping:
+            ship.ship(self.ctx, [{'name': 'x'}])
+        ping.assert_not_called()
+        return launch
+
+    def events(self):
+        return self.led.q("SELECT * FROM events WHERE kind='review_pin_fallback'")
+
+    def test_six_hour_shipping_deadline_and_evidence(self):
+        self.prepare()
+        self.tick().assert_not_called()
+        wait = ship._kv_json(self.led, 'review-wait:x#5')
+        self.assertEqual(wait['retry_at'], iso(NOW + timedelta(hours=6)))
+        self.now += timedelta(hours=6, seconds=-1)
+        self.refresh()
+        self.tick().assert_not_called()
+        self.now += timedelta(seconds=1)
+        self.refresh()
+        launch = self.tick()
+        self.assertEqual(launch.call_args.args[4], 'agy-gemini')
+        evidence = json.loads(self.events()[0]['detail'])
+        self.assertEqual(evidence['wait_seconds'], 21600)
+        self.assertEqual((evidence['pr'], evidence['sha'], evidence['pin']), (88, 'abc123', 'claude'))
+        self.assertIn('quota', evidence['reason'])
+        self.tick().assert_not_called()
+        self.assertEqual(len(self.events()), 1)
+
+    def test_claude_returns_before_or_after_expiry(self):
+        for hours in (2, 7):
+            with self.subTest(hours=hours):
+                self.led.set_kv('review:x#5', '')
+                self.prepare()
+                self.tick().assert_not_called()
+                self.now += timedelta(hours=hours)
+                self.refresh(claude=10)
+                self.assertEqual(self.tick().call_args.args[4], 'claude')
+                self.assertEqual(self.events(), [])
+
+    def test_missing_stale_and_hold_preserve_window(self):
+        for kind in ('missing', 'stale', 'hold'):
+            with self.subTest(kind=kind):
+                self.prepare()
+                self.led.set_kv('review:x#5', '')
+                if kind == 'missing':
+                    self.cfg['platforms']['claude']['enabled'] = False
+                elif kind == 'stale':
+                    self.led.clear_usage('claude', ['5h', 'weekly'])
+                else:
+                    self.led.record_usage('claude', router.HOLD, 100, iso(NOW + timedelta(days=3)))
+                self.tick().assert_not_called()
+                wait = ship._kv_json(self.led, 'review-wait:x#5')
+                self.assertLessEqual(router._ts(wait['recovery_at']), NOW + timedelta(hours=6))
+                self.now += timedelta(hours=6)
+                self.refresh()
+                self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
+                self.cfg['platforms']['claude']['enabled'] = True
+
+    def test_restart_failed_launch_and_new_pr_head(self):
+        self.prepare()
+        self.tick().assert_not_called()
+        self.now += timedelta(hours=6)
+        self.refresh()
+        # A fresh context uses only ledger evidence, including after a failed start.
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.assertEqual(self.tick(success=False).call_args.args[4], 'agy-gemini')
+        self.assertEqual(self.events(), [])
+        self.assertEqual(self.tick(success=False).call_args.args[4], 'agy-gemini')
+        self.gh.head_sha = 'new-head'
+        self.tick().assert_not_called()
+        self.assertEqual(ship._kv_json(self.led, 'review-pin:x#5:88:new-head')['at'], iso(self.now))
+        self.led.upsert_item('x', 5, pr=89)
+        self.tick().assert_not_called()
+        self.assertEqual(ship._kv_json(self.led, 'review-pin:x#5:89:new-head')['at'], iso(self.now))
+
+    def test_dry_run_and_diagnostics_do_not_start_clock(self):
+        self.prepare()
+        self.ctx.dry_run = True
+        self.tick().assert_not_called()
+        ship._observe_wait(self.ctx, 'x', self.item(), 'review', 0)
+        self.assertIsNone(self.led.get_kv('review-pin:x#5:88:abc123'))
+        self.ctx.dry_run = False
+        self.tick().assert_not_called()
+        before = self.led.get_kv('review-pin:x#5:88:abc123')
+        self.now += timedelta(hours=7)
+        self.refresh()
+        ship._observe_wait(self.ctx, 'x', self.item(), 'review', 2)
+        self.assertEqual(self.led.get_kv('review-pin:x#5:88:abc123'), before)
+
+    def test_global_full_does_not_age_available_claude_or_launch_fallback(self):
+        self.prepare()
+        self.cfg['concurrency']['total'] = 0
+        self.refresh(claude=10)
+        self.tick().assert_not_called()
+        self.assertIsNone(self.led.get_kv('review-pin:x#5:88:abc123'))
+        self.refresh()
+        self.tick().assert_not_called()
+        self.now += timedelta(hours=6)
+        self.refresh()
+        self.tick().assert_not_called()
+        self.cfg['concurrency']['total'] = 1
+        self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
+
+    def test_fallback_obeys_gates(self):
+        self.prepare()
+        self.tick().assert_not_called()
+        self.now += timedelta(hours=6)
+        self.refresh()
+        original = copy.deepcopy(self.cfg['platforms']['agy-gemini'])
+        for gate in ('tier', 'account', 'disabled', 'quota', 'hold', 'unavailable', 'builder', 'repeat'):
+            with self.subTest(gate=gate):
+                self.cfg['platforms']['agy-gemini'] = copy.deepcopy(original)
+                pc = self.cfg['platforms']['agy-gemini']
+                self.led.set_state('x', 5, 'verifying', 'test retry')
+                self.refresh()
+                self.led.clear_usage('agy-gemini', [router.HOLD])
+                self.led.set_kv('reviewdup:x#5', '')
+                if gate == 'tier': pc['tier'] = 1
+                if gate == 'account': pc['account'] = 'other'
+                if gate == 'disabled': pc['enabled'] = False
+                if gate == 'quota': self.led.record_usage('agy-gemini', 'weekly', 100, iso(self.now + timedelta(days=1)))
+                if gate == 'hold': self.led.record_usage('agy-gemini', router.HOLD, 100, iso(self.now + timedelta(hours=1)))
+                if gate == 'repeat':
+                    self.led.set_kv('reviewdup:x#5', json.dumps({'sha': 'abc123', 'reviewer': 'agy-gemini'}))
+                if gate == 'builder':
+                    self.cfg['platforms']['builder-alias'] = dict(pc, slot='agy-gemini')
+                    rid = self.led.create_run(project='x', number=5, role='build', platform='builder-alias', epoch=1, status='ended', outcome='DONE')
+                with mock.patch.object(ship, 'start') as launch, mock.patch.object(self.ctx, 'ping'), \
+                        mock.patch.object(platforms, 'available', side_effect=lambda conf: gate != 'unavailable' or conf is not pc):
+                    ship._start_review_run(self.ctx, 'x', self.item(), 88, self.gh.pr_view(88), 'abc123')
+                launch.assert_not_called()
+                self.assertEqual(self.events(), [])
+                if gate == 'builder': self.led.con.execute('DELETE FROM runs WHERE id=?', (rid,))
+
+    def test_disk_reopen_retains_wait(self):
+        self.led.close()
+        path = os.path.join(self.tmp, 'ledger.db')
+        self.led = Ledger(path, clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.now = NOW
+        self.led.upsert_item('x', 5, state='verifying', branch='mahler/5-x')
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.prepare()
+        self.tick().assert_not_called()
+        self.led.close()
+        self.now += timedelta(hours=6)
+        self.led = Ledger(path, clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.refresh()
+        self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
+
+    def test_risk_wait_releases_capacity_for_second_item(self):
+        self.prepare()
+        self.led.claim('x', 5, 'conductor', 'auto', 10)
+        self.tick().assert_not_called()
+        self.assertEqual(self.led.lease('x', 5)['capacity'], 0)
+        self.led.upsert_item('x', 6, state='ready', title='another item')
+        lease, _ = self.led.claim('x', 6, 'run:99', 'auto', 10, max_parallel=1)
+        self.assertIsNotNone(lease)
