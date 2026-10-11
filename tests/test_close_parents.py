@@ -31,6 +31,9 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.states = {10: "OPEN", 11: "CLOSED", 12: "CLOSED"}
         self.comments = {}
         self.gh.issue_body.side_effect = lambda n: self.bodies[n]
+        self.gh.edit_issue_body.side_effect = lambda n, body: self.bodies.update({n: body})
+        self.gh.issue_by_marker.return_value = None
+        self.gh.create_issue.return_value = "https://github.com/mkny13/mahler/issues/30"
         self.gh.issue_state.side_effect = lambda n: self.states[n]
         self.gh.issue_comments.side_effect = lambda n: self.comments.get(n, [])
         self.gh.comment.side_effect = lambda n, body: self.comments.setdefault(n, []).append({"body": body})
@@ -54,6 +57,110 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.run_pass()
         self.gh.comment.assert_called_once()
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE number=10 AND kind='state'")), 1)
+
+    def test_child_criteria_tick_and_close_in_one_pass(self):
+        for criterion in ("#11 closed", "#11 is merged", "#11 merged"):
+            with self.subTest(criterion=criterion):
+                self.setUp()
+                self.bodies[10] = f"## Done when\n- [ ] {criterion}\n"
+                self.run_pass()
+                self.assertEqual(self.bodies[10], f"## Done when\n- [x] {criterion}\n")
+                self.assertEqual(self.led.get_kv("parent_tick:mahler:10#11"), "1")
+                self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+                self.ctx.ping.assert_not_called()
+                self.gh.create_issue.assert_not_called()
+                self.run_pass()
+                self.gh.edit_issue_body.assert_called_once()
+                self.gh.comment.assert_called_once()
+
+    def test_mixed_criteria_tick_and_file_one_verify_issue(self):
+        self.bodies[10] = "## Done when\n- [ ] #11 closed\n- [ ] approve security review"
+        self.run_pass()
+        self.assertIn("- [x] #11 closed", self.bodies[10])
+        self.assertIn("- [ ] approve security review", self.bodies[10])
+        self.gh.close_issue.assert_not_called()
+        self.run_pass()
+        self.gh.edit_issue_body.assert_called_once()
+        self.gh.comment.assert_called_once()
+        self.ctx.ping.assert_called_once()
+        self.gh.create_issue.assert_called_once()
+        _, body, labels = self.gh.create_issue.call_args.args
+        self.assertIn("approve security review", body)
+        self.assertIn("pass:verify", labels)
+        # A different merged PR must not change the free-text dedupe identity.
+        self.led.upsert_item("mahler", 11, pr=100)
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.ctx.ping.assert_called_once()
+        self.gh.comment.assert_called_once()
+
+    def test_child_criterion_requires_closed_merged_relationship(self):
+        for condition in ("open", "unmerged", "unrelated", "unknown"):
+            with self.subTest(condition=condition):
+                self.setUp()
+                self.bodies[10] = "## Done when\n- [ ] #11 closed"
+                if condition == "open":
+                    self.states[11] = "OPEN"
+                elif condition == "unknown":
+                    self.states[11] = "UNKNOWN"
+                elif condition == "unrelated":
+                    self.led.upsert_item("mahler", 11, parent=None)
+                else:
+                    self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+                    self.gh.closing_prs.return_value = []
+                self.run_pass()
+                self.gh.edit_issue_body.assert_not_called()
+                self.gh.close_issue.assert_not_called()
+                self.gh.create_issue.assert_not_called()
+
+    def test_ticks_preserve_other_sections_quotes_and_fences(self):
+        self.bodies[10] = ("## Context\n- [ ] #11 closed\n## Done when\n"
+                           "> - [ ] #11 closed\n```\n- [ ] #11 closed\n```\n"
+                           "  * [ ] #11 closed\n")
+        expected = self.bodies[10].replace("  * [ ]", "  * [x]")
+        self.run_pass()
+        self.assertEqual(self.bodies[10], expected)
+        self.gh.close_issue.assert_called_once()
+
+    def test_qualified_or_extended_criteria_are_not_ticked(self):
+        for criterion in ("other/repo#11 closed", "#11 closed and deployed"):
+            with self.subTest(criterion=criterion):
+                self.bodies[10] = f"## Done when\n- [ ] {criterion}"
+                self.run_pass()
+                self.gh.edit_issue_body.assert_not_called()
+                self.gh.close_issue.assert_not_called()
+
+    def test_body_edit_failure_and_readback_fail_closed(self):
+        self.bodies[10] = "## Done when\n- [ ] #11 closed"
+        with mock.patch.object(self.gh, "edit_issue_body", side_effect=GHError("offline")):
+            self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertIsNone(self.led.get_kv("parent_tick:mahler:10#11"))
+        # An edit that is not reflected in the readback cannot prove completion.
+        with mock.patch.object(self.gh, "edit_issue_body"):
+            self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.run_pass()
+        self.gh.close_issue.assert_called_once()
+
+    def test_ambiguous_verify_creation_reuses_marker(self):
+        self.bodies[10] = "## Done when\n- [ ] approve security review"
+        def created_but_response_lost(*args):
+            self.gh.issue_by_marker.return_value = "https://github.com/mkny13/mahler/issues/30"
+            raise GHError("response lost")
+        self.gh.create_issue.side_effect = created_but_response_lost
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.comment.assert_called_once()
+        self.ctx.ping.assert_called_once()
+
+    def test_verify_lookup_failure_does_not_create(self):
+        self.bodies[10] = "## Done when\n- [ ] approve security review"
+        self.gh.issue_by_marker.side_effect = GHError("offline")
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.gh.close_issue.assert_not_called()
 
     def test_done_child_also_requires_merge(self):
         self.led.upsert_item("mahler", 11, state="done", pr=None)
@@ -159,7 +266,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
             disk.close()
             self.led = Ledger(path, clock=lambda: NOW)
             self.ctx.led = self.led
-            self.bodies[10] = "## Done when\n- [ ] not yet"
+            self.bodies[10] = "## Done when\n- [ ] #11 closed\n- [ ] not yet"
             self.run_pass()
             self.led.close()
             self.led = Ledger(path, clock=lambda: NOW)
@@ -168,6 +275,9 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.run_pass()
                 self.gh.comment.assert_called_once()
                 self.ctx.ping.assert_called_once()
+                self.gh.edit_issue_body.assert_called_once()
+                self.gh.create_issue.assert_called_once()
+                self.assertEqual(self.led.get_kv("parent_tick:mahler:10#11"), "1")
             finally:
                 self.led.close()
 
@@ -193,8 +303,10 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.ctx.dry_run = True
         before = list(self.led.con.iterdump())
         self.run_pass()
-        self.bodies[10] = ""
+        self.bodies[10] = "## Done when\n- [ ] #11 closed\n- [ ] review"
         self.run_pass()
+        self.gh.edit_issue_body.assert_not_called()
+        self.gh.create_issue.assert_not_called()
         self.assertEqual(list(self.led.con.iterdump()), before)
         self.gh.comment.assert_not_called()
         self.gh.close_issue.assert_not_called()
