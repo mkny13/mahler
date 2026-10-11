@@ -974,6 +974,11 @@ class EndSessionTests(unittest.TestCase):
             self.assertNotIn(button, page._idle(after, False))
             self.assertIn('data-project="groundwork">End session', page._banners(after))
             activity.return_value = led.now() + timedelta(microseconds=1)
+            self.assertNotIn(button, page._banners(state.build(cfg, led)))
+            activity.return_value = led.now() - timedelta(minutes=30)
+            state.presence.hot_hold_overridden(
+                led, "mahler", activity.return_value, window=timedelta(minutes=20), retire=True)
+            activity.return_value = led.now() - timedelta(minutes=1)
             self.assertIn(button, page._banners(state.build(cfg, led)))
 
     def test_rejects_unknown_disabled_and_malformed_projects(self):
@@ -994,7 +999,10 @@ class EndSessionTests(unittest.TestCase):
         led.set_kv("hot_hold_end:mahler", iso(led.now()))
         self.assertTrue(overridden(led, "mahler", None))
         self.assertTrue(overridden(led, "mahler", led.now()))
-        self.assertFalse(overridden(led, "mahler", led.now() + timedelta(microseconds=1)))
+        self.assertTrue(overridden(led, "mahler", led.now() + timedelta(microseconds=1)))
+        w = timedelta(minutes=20)
+        self.assertTrue(overridden(led, "mahler", led.now() - timedelta(minutes=5), window=w))
+        self.assertFalse(overridden(led, "mahler", led.now() - timedelta(minutes=20), window=w))
 
 
 class EventTests(unittest.TestCase):

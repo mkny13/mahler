@@ -958,9 +958,10 @@ class HotHoldTests(unittest.TestCase):
             lines = plan(ctx, led)
         return lines, ctx.lines
 
-    def test_end_session_lifts_hold_until_new_activity(self):
+    def test_end_session_survives_watching_writes_until_quiet_window(self):
         for offset, expected in ((-1, ["a#1: would build on agy-claude"]),
-                                 (0, ["a#1: would build on agy-claude"]), (1, [])):
+                                 (0, ["a#1: would build on agy-claude"]),
+                                 (1, ["a#1: would build on agy-claude"])):
             with self.subTest(activity_offset=offset):
                 ctx, led = mk_ctx({"a": proj(hot_hold=True)})
                 self.addCleanup(led.close)
@@ -971,6 +972,20 @@ class HotHoldTests(unittest.TestCase):
                 with mock.patch.object(presence, "last_claude_activity",
                                        return_value=ended + timedelta(seconds=offset)):
                     self.assertEqual(plan(ctx, led), expected)
+
+    def test_end_session_retires_after_quiet_window(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.set_kv("hot_hold_end:a", iso(NOW - timedelta(minutes=40)))
+        w = timedelta(minutes=20)
+        self.assertTrue(presence.hot_hold_overridden(
+            led, "a", NOW - timedelta(minutes=1), window=w, retire=True))
+        self.assertIsNotNone(led.get_kv("hot_hold_end:a"))
+        self.assertFalse(presence.hot_hold_overridden(
+            led, "a", NOW - timedelta(minutes=30), window=w, retire=True))
+        self.assertIsNone(led.get_kv("hot_hold_end:a"))
+        self.assertFalse(presence.hot_hold_overridden(
+            led, "a", NOW - timedelta(minutes=1), window=w, retire=True))
 
     def test_recent_activity_holds_new_builds(self):
         lines, said = self.hold(minutes_ago=5)
