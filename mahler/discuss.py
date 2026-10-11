@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import time
 
 from . import config, platforms, usage
@@ -123,7 +124,9 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
         if session['engine'] != expected_engine:
             raise TurnError('binding_mismatch', 'Discussion engine changed. Start a new discussion.', False)
         if not work:
-            platform = usage.discussion_capacity(cfg, led)
+            platform, samples = usage.discussion_capacity(cfg, led)
+            if platform:
+                usage.record_discussion_probe_usage(SimpleNamespace(cfg=cfg, led=led), samples, platform)
             executable = platforms.claude_exe()
             if not platform or not executable:
                 raise TurnError('quota_unavailable', 'Personal subscription login or quota is unavailable.')
