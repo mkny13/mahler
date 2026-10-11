@@ -229,6 +229,74 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.run_pass()
         self.assertEqual(self.led.item("mahler", 10)["state"], "done")
 
+    def test_goal_directly_built_no_children_not_a_parent(self):
+        self.led.upsert_item("mahler", 11, parent=None)
+        for state in ("ready", "working", "verifying", "needs_you"):
+            with self.subTest(state=state):
+                self.led.upsert_item("mahler", 10, state=state,
+                                     labels=json.dumps(["type:goal"]))
+                before = dict(self.led.item("mahler", 10))
+                self.run_pass()
+                self.assertEqual(dict(self.led.item("mahler", 10)), before)
+                self.gh.comment.assert_not_called()
+                self.gh.close_issue.assert_not_called()
+                self.gh.create_issue.assert_not_called()
+                self.ctx.ping.assert_not_called()
+
+    def test_explicit_goal_parent_without_children_is_processed(self):
+        for marker in ("state", "label", "pending"):
+            with self.subTest(marker=marker):
+                self.setUp()
+                self.led.upsert_item("mahler", 11, parent=None)
+                labels = ["type:goal"]
+                if marker == "label":
+                    labels.append("mahler:parent")
+                self.led.upsert_item("mahler", 10,
+                                     state="parent" if marker == "state" else "ready",
+                                     labels=json.dumps(labels))
+                if marker == "pending":
+                    self.led.set_kv("parent_pending:mahler:10", "pending")
+                self.run_pass()
+                self.gh.comment.assert_called_once()
+                self.ctx.ping.assert_called_once()
+                self.assertIn("No child relationships", self.comments[10][0]["body"])
+
+    def test_goal_child_relationship_sources(self):
+        for source in ("body", "native", "ledger", "part_of"):
+            with self.subTest(source=source):
+                self.setUp()
+                self.led.upsert_item("mahler", 10, state="ready",
+                                     labels=json.dumps(["type:goal"]))
+                self.led.upsert_item("mahler", 11, parent=None)
+                if source == "body":
+                    self.bodies[10] += "\n## Children\n- #11: child"
+                elif source == "native":
+                    self.gh.sub_issues.return_value = [11]
+                elif source == "ledger":
+                    self.led.upsert_item("mahler", 11, parent=10)
+                else:
+                    self.gh.parent_issue_inventory.return_value = [
+                        {"number": 11, "body": "Part of #10"}]
+                self.run_pass()
+                self.gh.close_issue.assert_called_once_with(10)
+                self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_goal_with_children_blocked_pings_once(self):
+        self.led.upsert_item("mahler", 10, state="ready",
+                             labels=json.dumps(["type:goal"]))
+        self.bodies[10] = "## Done when\n- [ ] exact criterion"
+        # A second child without merge evidence exercises the non-free-text branch.
+        self.led.upsert_item("mahler", 12, parent=10, state="done")
+        self.gh.closing_prs.return_value = []
+        self.run_pass()
+        self.ctx.ping.assert_called_once()
+        self.bodies[10] += "\n## Context\nReworded explanation"
+        self.led.upsert_item("mahler", 11, pr=100)
+        self.run_pass()
+        self.ctx.ping.assert_called_once()
+        self.gh.close_issue.assert_not_called()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "ready")
+
     def test_checklist_and_empty_set_blockers(self):
         for body in ("", "## Done when\n- prose", "## Done when\n- [ ] Works"):
             with self.subTest(body=body):
@@ -249,6 +317,9 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.ctx.ping = mock.Mock()
         self.run_pass()
         self.gh.comment.assert_called_once()
+        self.ctx.ping.assert_not_called()
+        self.bodies[10] += "\n## Context\nReworded explanation"
+        self.run_pass()
         self.ctx.ping.assert_not_called()
         self.bodies[10] = "## Done when\n- [ ] different criterion"
         self.run_pass()
