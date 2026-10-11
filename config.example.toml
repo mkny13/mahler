@@ -157,6 +157,10 @@ screenshot_path = []              # inherited operator absolute executable direc
 # verify = "./scripts/build_app.sh"
 # accounts = ["personal", "work"]
 
+# Worktree location: `worktree_root` defaults to ~/.mahler/worktrees. On this machine
+# the external volume is preferred when mounted:
+# worktree_root = "/Volumes/ExtSSD160/.mahler-worktrees"
+
 # Only on a second machine that shares this project (DESIGN D24). The Mac mini
 # remains canonical and does not set this table. Authorize this machine's SSH
 # public key on the Mini and accept its host key before enabling the daemon.
