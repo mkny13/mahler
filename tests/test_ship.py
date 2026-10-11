@@ -1306,6 +1306,40 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertIn("Stuck", ping.call_args[0][0])
 
+    def test_max_tier_retries_for_review_and_red_ci(self):
+        """A capped escalation still gets a fix attempt in either path.
+
+        Size ``m`` makes tier 3 the highest eligible configured fix tier;
+        reaching it must not turn the second failure into an immediate Stuck
+        result while the attempt budget still has room.
+        """
+        max_attempts = self.cfg["defaults"]["max_attempts"]
+        for trigger, n in (("ci", 5), ("review", 6)):
+            with self.subTest(trigger=trigger):
+                self.led.upsert_item(
+                    "x", n, pr=88, state="verifying", attempts=max_attempts - 2,
+                    esc_tier=3, esc_fails=1, labels='["size:m"]',
+                    branch=f"mahler/{n}-change")
+                view = {"headRefName": f"mahler/{n}-change",
+                        "headRefOid": f"max-tier-{trigger}-{n}"}
+                with mock.patch.object(ship, "start", return_value=True) as start, \
+                        mock.patch.object(ship.router, "explore_for_project",
+                                           return_value="agy-gemini"), \
+                        mock.patch.object(ship, "_repeat_finding", return_value=None), \
+                        mock.patch.object(self.ctx, "ping") as ping:
+                    item = self.led.item("x", n)
+                    if trigger == "ci":
+                        ship._red_ci(self.ctx, "x", item, 88, view)
+                    else:
+                        ship._review_triggered_fix(
+                            self.ctx, "x", item, 88, view, "blocking finding")
+
+                item = self.led.item("x", n)
+                self.assertEqual((item["state"], item["esc_tier"], item["esc_fails"]),
+                                 ("verifying", 3, 0))
+                start.assert_called_once()
+                self.assertNotIn("Stuck", ping.call_args.args[0])
+
     def test_deferred_exploration_failures_preserve_retry_and_escalation_budgets(self):
         """DONE is provisional: later CI/review failure is still the explored
         attempt's failure and must leave room for a normal fix at the cap."""

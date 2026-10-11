@@ -1518,6 +1518,9 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         last_platform = last["platform"] if last else None
         run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
         if not explore_failure and new_fails >= 2:
+            # At the highest eligible tier cap_escalation returns the same
+            # tier.  Keep the ordinary retry path: max_attempts, not the
+            # escalation cap, decides when this becomes Stuck.
             new_tier = router.cap_escalation(cfg, pol, max(cur_tier, run_tier) + 1,
                                               size, pin=item["pin"])
             new_fails = 0
@@ -1772,6 +1775,8 @@ def _red_ci(ctx, project, item, pr, view):
         last_platform = last["platform"] if last else None
         run_tier = router.tier_of(cfg.get("platforms", {}).get(last_platform, {})) if last_platform else 1
         if not explore_failure and new_fails >= 2:
+            # Reaching the highest eligible tier does not end retries; the
+            # normal max_attempts guard below remains the stopping condition.
             new_tier = router.cap_escalation(cfg, pol, max(cur_tier, run_tier) + 1,
                                               size, pin=item["pin"])
             new_fails = 0
