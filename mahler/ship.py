@@ -1096,8 +1096,13 @@ def recover_capacity_waits(ctx, project):
             role = marker["role"]
             if role == "review":
                 view = ctx.gh(project).pr_view(item["pr"])
-                route, _, _, _ = _review_preference(
+                route, _, waiting, _ = _review_preference(
                     ctx, project, item, view.get("headRefOid") or "", busy)
+                if waiting and route["pin"] and not router.preferred_for_project(
+                        cfg, led, pol, "review", route["pin"], busy=busy,
+                        size=route["size"], exclude=route["exclude"],
+                        burst_lines=ctx.burst_lines):
+                    continue
             elif role == "design":
                 size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
                              if l.startswith("size:")), None)
@@ -1336,17 +1341,14 @@ def _observe_wait(ctx, project, item, role, required_tier):
                      if l.startswith("size:")), None)
         effective_size = size
         pin, exclude, tier = item["pin"], (), required_tier or 0
-        if role in ("review", "design"):
-            pin, effective_size, exclude = (
-                _review_route(ctx, project, item, "") if role == "review"
-                else (None, size, ()))
-            tier = 0
-            if role == "review":
-                wait = _kv_json(led, f"review-wait:{project}#{item['number']}")
-                route, _, _, _ = _review_preference(
-                    ctx, project, item, wait.get("sha", ""), busy)
-                pin, effective_size, exclude, tier = (route[k] for k in
-                                                     ("pin", "size", "exclude", "min_tier"))
+        if role == "review":
+            wait = _kv_json(led, f"review-wait:{project}#{item['number']}")
+            route, _, _, _ = _review_preference(
+                ctx, project, item, wait.get("sha", ""), busy)
+            pin, effective_size, exclude, tier = (route[k] for k in
+                                                 ("pin", "size", "exclude", "min_tier"))
+        elif role == "design":
+            pin, tier = None, 0
         elif size == "l" or (tier >= 2 and size == "s"):
             effective_size = "m"
         diag = router.diagnose(cfg, led, pol, role, pin, busy, size=effective_size,
