@@ -2458,8 +2458,9 @@ work.
     Mahler itself stays stdlib-only) runs the SDK, which reads `ANTHROPIC_BASE_URL` and
     `ANTHROPIC_API_KEY` — exactly what `runner.run_env` already sets for a credits platform
     (gateway URL and the run's local token). `sdk_runner/FINDINGS.md` records why: one real
-    call with the workspace key was accepted with no "credit balance is too low" error (which
-    pool was debited must still be confirmed in the Anthropic console), and a wire capture
+    call with the workspace key was accepted with no "credit balance is too low" error. The
+    org holds only these promotional credits, where uncovered traffic (Claude Code) fails
+    outright, so acceptance means the credits cover it. A wire capture
     showed every request is `POST /v1/messages?beta=true`, auth via `x-api-key`. The platform
     kind is `agent-sdk` (`claude-api` no longer has a `provider`). The gateway accepts that
     path (and no other query string) and forwards the client's `anthropic-beta`,
@@ -2468,6 +2469,16 @@ work.
     adapter passes Mahler's deny-list as `--disallowed-tool` and has no resume. Kilo was
     verified as a working fallback harness if the SDK route stops being covered.
     `[api_credits] enabled` stays `false` until a live end-to-end trial passes.
+  - **Live trial 2 (2026-10-10, mahler#918, $0.10 ceiling): passed, $0.0035 spent.**
+    `sdk_runner/bootstrap/trial-918.py` ran one no-tools Sonnet call through a real
+    `Gateway` with the workspace key. The gateway's own ledger shows two requests (Claude
+    Code's side call and the turn), each reserved before forwarding ($0.0093, $0.0050) and
+    settled at actual cost ($0.0025, $0.0010). The pair overlapped in flight, on real
+    traffic. The no-cost dry runs before it found three gateway defects, all fixed with
+    regression tests: a single-threaded server that hung on the SDK's second keep-alive
+    connection, unserialised handler threads on one ledger connection, and a worst-case
+    estimate that ignored tool definitions and tool results (~76 KB per SDK request). What's
+    left is the end-to-end trial through a real Mahler run.
   - Trial 1 also corrected the pricing table: `MODEL_PRICING["claude-sonnet-5-5"]` was a guess
     before this trial; Cline's own model registry reported `input:2, output:10, cacheRead:0.1,
     cacheWrite:2.5` (USD/MTok), now the confirmed values. `claude-opus-5` and `claude-haiku-4-5`

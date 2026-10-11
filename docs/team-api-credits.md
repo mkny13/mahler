@@ -18,7 +18,8 @@ current status.
   gateway and the run's local token. Install it by hand: `uv tool install ./sdk_runner`.
   The gateway passes the SDK's `POST /v1/messages?beta=true` and its `anthropic-*` and
   `User-Agent` headers through. See `sdk_runner/FINDINGS.md` and DESIGN.md D41. Kilo is a
-  verified fallback. `[api_credits] enabled` stays `false` until the steps below pass.
+  verified fallback. Live trial 2 passed through the gateway (2026-10-10, $0.0035).
+  `[api_credits] enabled` stays `false` until the end-to-end trial below passes.
 
 ## One-time setup (Mike, in Console — claude.ai Owner role)
 
@@ -44,11 +45,12 @@ current status.
 
 1. **Done (2026-10-10, trial 1):** confirmed the direct `anthropic` provider can't reach the
    gateway. Ruled out, see Status above.
-2. **Next:** `uv tool install ./sdk_runner`, then re-run a synthetic trial through the
-   gateway: a trivial `max_tokens`-capped prompt, checking the gateway's own ledger events
-   (`credit_reserved`/`credit_settled`) for the attempt, and the Anthropic console to confirm
-   which credit pool was debited.
-3. Once that passes, an end-to-end run on an enabled work-account project, still capped at
+2. **Done (2026-10-10, trial 2): passed, $0.0035.** `mahler-sdk-run` installed on the mini
+   with `uv tool install ./sdk_runner`. One no-tools Sonnet call through a real gateway
+   (`python3.14 sdk_runner/bootstrap/trial-918.py`, keychain unlocked; `--fake-upstream
+   host:port` does it for free) left two `credit_reserved`/`credit_settled` pairs in the
+   gateway's ledger.
+3. **Next:** an end-to-end run on an enabled work-account project, still capped at
    $0.10, confirms the whole path: routing, the gateway, settlement and promotional-credit
    attribution visible in Console billing.
 4. Both trials count inside the $20 allowance. Once both are sanitized and recorded, flip

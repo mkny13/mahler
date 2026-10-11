@@ -415,8 +415,9 @@ still open is tuning: keep it only where it pays for itself.
   built and tested, account question answered ("Yes, credits only"). The live trial (gated on
   Mike's go-ahead, 2026-10-10) ruled out Cline (no base URL for its `anthropic` provider).
   The harness is now the Agent SDK runner (`sdk_runner/`, `kind = "agent-sdk"`, mahler#918),
-  wired into the gateway and platform adapter. Remaining before `enabled = true`: install the
-  runner by hand (`uv tool install ./sdk_runner`) and pass a live end-to-end trial.
+  wired into the gateway and platform adapter, installed on the mini, and through the gateway
+  in live trial 2 (2026-10-10, $0.0035). Remaining before `enabled = true`: the end-to-end
+  trial through a real Mahler run on a work project.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.
