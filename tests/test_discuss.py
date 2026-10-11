@@ -74,6 +74,7 @@ class DiscussionTests(unittest.TestCase):
     def test_work_unavailable(self):
         self.cfg['projects']['p']['account'] = 'work'
         self.binding['account'] = 'work'
+        self.binding['engine'] = 'agent-sdk'
         self.sid = self.led.create_chat_session(**self.binding)['id']
         self.assertEqual(self.run_turn(self.turn())['error']['code'], 'quota_unavailable')
         self.probe.assert_not_called()

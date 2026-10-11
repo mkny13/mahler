@@ -572,13 +572,13 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(status, 402)
         self.assertIn(b"no confirmed grant", body)
 
-    def test_pre_dispatch_failure_releases_the_reservation(self):
+    def test_uncertain_transport_failure_keeps_the_reservation(self):
         gw = make_gateway(self.led, self.grant, upstream=FakeUpstream(0, b"", raises=OSError("down")))
         token = gw.register(1)
         status, _, _ = gw.handle("POST", "/v1/messages", {"x-api-key": token},
                                  json.dumps(MESSAGE).encode())
         self.assertEqual(status, 502)
-        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 0.0)
+        self.assertGreater(self.led.credit_exposure("g", "grant-a"), 0.0)
 
     def test_credit_exhausted_response_releases_and_parks_the_pool(self):
         body = json.dumps({"type": "error", "error": {

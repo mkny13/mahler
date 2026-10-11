@@ -1,4 +1,4 @@
-"""D43 personal discussion worker and console-owned process supervisor.
+"""D43 account-bound discussion worker and console-owned process supervisor.
 
 No scheduler entry point: only already accepted operator turns are processed.
 The worker owns its SQLite connection and flock; each engine process
@@ -116,16 +116,17 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
         session = led.chat_session(turn['session_id'])
         pol = config.project_policy(cfg, session['project'])
         if (session['project'] not in cfg['projects'] or not pol.get('enabled', True)
-                or pol['repo'] != session['repo'] or session['account'] not in config.accounts_of(pol)):
+                or pol['repo'] != session['repo'] or config.accounts_of(pol) != [session['account']]):
             raise TurnError('binding_mismatch', 'Project/account configuration changed. Start a new discussion.', False)
-        if session['account'] != config.DEFAULT_ACCOUNT:
-            raise TurnError('quota_unavailable', 'Work discussion execution is not available yet.')
-        if session['engine'] != 'claude':
+        work = session['account'] != config.DEFAULT_ACCOUNT
+        expected_engine = 'agent-sdk' if work else 'claude'
+        if session['engine'] != expected_engine:
             raise TurnError('binding_mismatch', 'Discussion engine changed. Start a new discussion.', False)
-        platform = usage.discussion_capacity(cfg, led)
-        executable = platforms.claude_exe()
-        if not platform or not executable:
-            raise TurnError('quota_unavailable', 'Personal subscription login or quota is unavailable.')
+        if not work:
+            platform = usage.discussion_capacity(cfg, led)
+            executable = platforms.claude_exe()
+            if not platform or not executable:
+                raise TurnError('quota_unavailable', 'Personal subscription login or quota is unavailable.')
         prior = [json.loads(t['result']) for t in led.chat_turns(session['id']) if t['result']]
         engine_id = next((r['engine_session_id'] for r in reversed(prior) if r['engine_session_id']), None)
         mutations = led.q('SELECT operation_id,kind,payload,status FROM chat_mutations WHERE session_id=?',
@@ -144,10 +145,21 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
         remaining = (parse(turn['deadline_at']) - led.now()).total_seconds()
         if remaining <= 0:
             raise TurnError('timeout', 'No reply within 2 minutes.')
-        usage.record_discussion_usage(cfg, led, platform, turn['id'])
-        text, engine_id = runner(launch_args(executable, mcp, engine_id), config.discussion_env(),
-            directory, prompt, time.monotonic() + remaining,
-            lambda: led.heartbeat_chat_turn(turn['id'], token), lock_fd)
+        if work:
+            from . import discuss_credits
+            with discuss_credits.authorization(cfg, led, session, turn, token) as (executable, pconf, env, heartbeat):
+                # Gateway setup also consumes the accepted turn's deadline.
+                remaining = (parse(turn['deadline_at']) - led.now()).total_seconds()
+                if remaining <= 0:
+                    raise TurnError('timeout', 'No reply within 2 minutes.')
+                text, engine_id = runner(discuss_credits.launch_args(executable, pconf, mcp, directory, engine_id),
+                    env, directory, prompt, time.monotonic() + remaining, heartbeat, lock_fd)
+                heartbeat(force=True)
+        else:
+            usage.record_discussion_usage(cfg, led, platform, turn['id'])
+            text, engine_id = runner(launch_args(executable, mcp, engine_id), config.discussion_env(),
+                directory, prompt, time.monotonic() + remaining,
+                lambda: led.heartbeat_chat_turn(turn['id'], token), lock_fd)
         led.complete_chat_turn(turn['id'], token, assistant_text=text, engine_session_id=engine_id)
     except Exception as exc:
         error = exc.error if isinstance(exc, TurnError) else dict(
