@@ -98,6 +98,11 @@ def cleanup_interactive_worktree(repo, wt, branch, expected_head):
                     and path.suffix == ".pyc" and (Path(wt) / path).is_file()
                     and not (Path(wt) / path).is_symlink()):
                 continue
+            # node_modules/ is gitignored by Groundwork's pnpm install; exempt its contents
+            if (entry.startswith("!! ") and "node_modules" in path.parts
+                    and (Path(wt) / path).is_file()
+                    and not (Path(wt) / path).is_symlink()):
+                continue
             return f"skipped worktree cleanup: {wt} has uncommitted or ignored files"
         if git(wt, "rev-parse", "HEAD") != expected_head:
             return f"skipped worktree cleanup: {wt} HEAD differs from merged PR head"

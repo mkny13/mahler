@@ -112,6 +112,37 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(runner.find_worktree_for_branch("/primary", "topic"), path)
             self.assertIsNone(runner.find_worktree_for_branch("/primary", "main"))
 
+    def test_node_modules_ignored_files_are_exempted(self):
+        # node_modules/ contents are gitignored by pnpm; they should not block cleanup
+        nm = Path(self.wt) / "node_modules"
+        (nm / "package").mkdir(parents=True)
+        (nm / "package" / "file.js").write_text("content")
+        (nm / ".package-lock.json").write_text("lock")
+        scope = nm / "@scope" / "pkg"
+        scope.mkdir(parents=True)
+        (scope / "index.ts").write_text("content")
+        self.dirty = "\0".join([
+            "!! node_modules/package/file.js",
+            "!! node_modules/.package-lock.json",
+            "!! node_modules/@scope/pkg/index.ts",
+        ]) + "\0"
+        self.assertIn("removed interactive", self.cleanup())
+        self.assertEqual(self.calls[-3:], [
+            ("/primary", "worktree", "remove", self.wt),
+            ("/primary", "rev-parse", "refs/heads/topic"),
+            ("/primary", "branch", "-D", "--", "topic")])
+
+    def test_other_ignored_files_still_block_cleanup(self):
+        # Non-node_modules ignored files should still block cleanup
+        self.dirty = "!! .env.local\0"
+        self.assertIn("uncommitted or ignored", self.cleanup())
+        self.assert_no_removal()
+
+        # Mix of node_modules and other ignored files should block
+        self.dirty = "!! node_modules/pkg/file.js\0!! .env.local\0"
+        self.assertIn("uncommitted or ignored", self.cleanup())
+        self.assert_no_removal()
+
 
 class ShipIntegrationTests(unittest.TestCase):
     def test_ship_records_and_confirmed_merge_cleans_recorded_checkout(self):
