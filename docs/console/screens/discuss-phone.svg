@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="3900" viewBox="0 0 390 3900" role="img" aria-labelledby="title desc">
+<title id="title">Talk it through — 390px phone</title><desc id="desc">Unapproved discussion design. Six annotated snapshots: Triage context, Capture draft/project selection, waiting, reply with issue links, quota unavailable, failure/retry. Example data only.</desc>
+<rect width="390" height="3900" fill="#f4f5f6"/>
+<g font-family="Arial, Helvetica, sans-serif">
+<g id="triage">
+<text x="16" y="25" font-size="17" fill="#0d1013" font-weight="600">Triage context</text>
+<rect x="8" y="40" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="72" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="72" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="103" font-size="13" fill="#4a5158">From Needs you · mahler #42</text>
+<rect x="24" y="122" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="148" font-size="14" fill="#0d1013">What should happen when a turn fails?</text>
+<text x="36" y="171" font-size="14" fill="#0d1013">The issue needs your product decision.</text>
+<text x="24" y="235" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="267" font-size="15" fill="#0d1013">Should we keep the draft so you can</text>
+<text x="24" y="294" font-size="15" fill="#0d1013">retry without typing it again?</text>
+<rect x="24" y="402" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="431" font-size="13" fill="#4a5158">Keep my draft after a failed turn.</text>
+<text x="24" y="507" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="527" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="557" font-size="16" fill="#ffffff" font-weight="600">Send</text>
+<text x="16" y="629" font-size="12" fill="#4a5158">01 · Existing issue and blocker travel with you.</text>
+</g>
+<g id="capture">
+<text x="16" y="675" font-size="17" fill="#0d1013" font-weight="600">Capture draft/project selection</text>
+<rect x="8" y="690" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="722" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="722" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="753" font-size="13" fill="#4a5158">Capture · New discussion</text>
+<rect x="24" y="772" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="798" font-size="14" fill="#0d1013">Project: mahler  ▾</text>
+<text x="36" y="821" font-size="14" fill="#0d1013">Personal · Claude subscription</text>
+<text x="24" y="885" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="917" font-size="15" fill="#0d1013">Tell me what you would like to change.</text>
+<text x="24" y="944" font-size="15" fill="#0d1013">I can turn the idea into an issue.</text>
+<rect x="24" y="1052" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="1081" font-size="13" fill="#4a5158">I want to discuss ideas from my phone.</text>
+<text x="24" y="1157" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="1177" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="1207" font-size="16" fill="#ffffff" font-weight="600">Send</text>
+<text x="16" y="1279" font-size="12" fill="#4a5158">02 · Choose project before the first Send.</text>
+</g>
+<g id="waiting">
+<text x="16" y="1325" font-size="17" fill="#0d1013" font-weight="600">Waiting</text>
+<rect x="8" y="1340" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="1372" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="1372" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="1403" font-size="13" fill="#4a5158">mahler · Personal · Project locked</text>
+<rect x="24" y="1422" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="1448" font-size="14" fill="#0d1013">You · Keep my draft after a failed turn.</text>
+<text x="24" y="1535" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="1567" font-size="15" fill="#0d1013">Thinking…  12 seconds</text>
+<text x="24" y="1594" font-size="15" fill="#0d1013">Up to 2 minutes. You can close this.</text>
+<rect x="24" y="1702" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="1731" font-size="13" fill="#4a5158">Waiting for this turn…</text>
+<text x="24" y="1807" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="1827" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="1857" font-size="16" fill="#ffffff" font-weight="600">Send disabled</text>
+<text x="16" y="1929" font-size="12" fill="#4a5158">03 · One active turn. Replies arrive together.</text>
+</g>
+<g id="reply">
+<text x="16" y="1975" font-size="17" fill="#0d1013" font-weight="600">Reply with issue links</text>
+<rect x="8" y="1990" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="2022" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="2022" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="2053" font-size="13" fill="#4a5158">mahler · Personal · Project locked</text>
+<rect x="24" y="2072" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="2098" font-size="14" fill="#0d1013">You · Keep my draft after a failed turn.</text>
+<text x="24" y="2185" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="2217" font-size="15" fill="#0d1013">I saved your answer. A failed turn will</text>
+<text x="24" y="2244" font-size="15" fill="#0d1013">keep its message for an explicit retry.</text>
+<text x="24" y="2271" font-size="15" fill="#0d1013">Confirmed issues</text>
+<text x="24" y="2298" font-size="15" fill="#1256c4">Updated · mahler #42 ↗</text>
+<rect x="24" y="2352" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="2381" font-size="13" fill="#4a5158">Add another detail…</text>
+<text x="24" y="2457" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="2477" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="2507" font-size="16" fill="#ffffff" font-weight="600">Send</text>
+<text x="16" y="2579" font-size="12" fill="#4a5158">04 · Links appear only after confirmed writes.</text>
+</g>
+<g id="quota">
+<text x="16" y="2625" font-size="17" fill="#0d1013" font-weight="600">Quota unavailable</text>
+<rect x="8" y="2640" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="2672" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="2672" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="2703" font-size="13" fill="#4a5158">mahler · Personal · Project locked</text>
+<rect x="24" y="2722" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="2748" font-size="14" fill="#0d1013">Your message is saved.</text>
+<text x="24" y="2835" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="2867" font-size="15" fill="#0d1013">Discussion quota is unavailable.</text>
+<text x="24" y="2894" font-size="15" fill="#0d1013">Your draft is saved.</text>
+<text x="24" y="2921" font-size="15" fill="#0d1013">Try again when quota is available.</text>
+<rect x="24" y="3002" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="3031" font-size="13" fill="#4a5158">Keep my draft after a failed turn.</text>
+<text x="24" y="3107" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="3127" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="3157" font-size="16" fill="#ffffff" font-weight="600">Try again</text>
+<text x="16" y="3229" font-size="12" fill="#4a5158">05 · No paid or cross-account fallback.</text>
+</g>
+<g id="failure">
+<text x="16" y="3275" font-size="17" fill="#0d1013" font-weight="600">Failure/retry</text>
+<rect x="8" y="3290" width="374" height="564" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="24" y="3322" font-size="20" fill="#0d1013" font-weight="600">Talk it through</text>
+<text x="322" y="3322" font-size="14" fill="#1256c4">Close</text>
+<text x="24" y="3353" font-size="13" fill="#4a5158">mahler · Personal · Project locked</text>
+<rect x="24" y="3372" width="342" height="80" rx="8" fill="#f4f5f6" stroke="#d6dadd"/>
+<text x="36" y="3398" font-size="14" fill="#0d1013">Your message is saved.</text>
+<text x="24" y="3485" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
+<text x="24" y="3517" font-size="15" fill="#0d1013">No reply within 2 minutes.</text>
+<text x="24" y="3544" font-size="15" fill="#0d1013">Your message is saved.</text>
+<text x="24" y="3571" font-size="15" fill="#0d1013">Confirmed issues</text>
+<text x="24" y="3598" font-size="15" fill="#1256c4">Updated · mahler #42 ↗</text>
+<rect x="24" y="3652" width="342" height="82" rx="8" fill="#ffffff" stroke="#d6dadd"/>
+<text x="36" y="3681" font-size="13" fill="#4a5158">Keep my draft after a failed turn.</text>
+<text x="24" y="3757" font-size="12" fill="#4a5158">Project locked after first Send · 0 / 8,000</text>
+<rect x="24" y="3777" width="342" height="48" rx="8" fill="#1256c4" stroke="#d6dadd"/>
+<text x="40" y="3807" font-size="16" fill="#ffffff" font-weight="600">Retry</text>
+<text x="16" y="3879" font-size="12" fill="#4a5158">06 · Reconcile partial writes before retry.</text>
+</g>
+</g></svg>

@@ -24,6 +24,16 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 ---
 
+## Talk it through (#921; design artifacts 2026-10-11)
+
+- #922: D43, the [discussion contract](docs/console/discuss.md), recipe and static
+  [phone](docs/console/screens/discuss-phone.svg) /
+  [desktop](docs/console/screens/discuss-desktop.svg) mockups are committed design artifacts.
+  Mike's approval of an exact revision remains pending; this does not ship a chat panel.
+- Planned: #923 durable sessions/restricted tools; #924 personal subscription worker;
+  #925 approved console panel; #926 gateway-only work credits after prerequisite and
+  capped trial evidence. Personal delivery can proceed independently of work credits.
+
 ## Current state (2026-09-23)
 
 Phases 0, B and 1 are done and the project has been running past the original phase
