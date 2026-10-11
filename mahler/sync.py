@@ -575,10 +575,10 @@ def _set_pin(ctx, project, n, platform):
     ctx.led.upsert_item(project, n, pin=platform)
 
 
-def _parent_sections(body):
+def _parent_sections(body, *, numbered=False):
     """Ignore quoted originals and fenced examples; retain section boundaries."""
     section, fenced = "", False
-    for line in body.splitlines():
+    for index, line in enumerate(body.splitlines()):
         if line.lstrip().startswith(">"):
             continue
         if line.lstrip().startswith(("```", "~~~")):
@@ -590,7 +590,7 @@ def _parent_sections(body):
         if heading:
             section = heading[1].strip(" *:").lower()
         else:
-            yield section, line.strip()
+            yield (section, line.strip(), index) if numbered else (section, line.strip())
 
 
 def _parent_children(body, repo):
@@ -624,13 +624,51 @@ def _parent_children(body, repo):
     return children
 
 
+def _parent_checks(body):
+    """Return source positions, checkboxes and exact local child criteria."""
+    checks = []
+    for section, line, index in _parent_sections(body, numbered=True):
+        if section not in {"done when", "done-when"} or not line:
+            continue
+        check = re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", line)
+        if not check:
+            return []
+        ref = re.fullmatch(r"#(\d+) (?:closed|(?:is )?merged)", check[2])
+        checks.append((index, check, int(ref[1]) if ref else None))
+    return checks
+
+
 def _parent_checklist(body):
-    lines = [line for section, line in _parent_sections(body)
-             if section in {"done when", "done-when"} and line]
-    checks = [re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", line) for line in lines]
-    if not checks or not all(checks):
+    checks = _parent_checks(body)
+    if not checks:
         return ["Done-when checklist absent or unparseable"]
-    return [f"Unchecked criterion: {check[2]}" for check in checks if check[1] == " "]
+    return [f"Unchecked criterion: {check[2]}" for _, check, _ in checks if check[1] == " "]
+
+
+def _parent_verify(ctx, project, number, blockers, fingerprint):
+    """Give free-text criteria an owner; recover ambiguous creates via GitHub."""
+    led, gh = ctx.led, ctx.gh(project)
+    key = f"parent_verify:{project}:{number}:{fingerprint}"
+    if led.get_kv(key):
+        return
+    marker = f"<!-- mahler:parent-verify:{number}:{fingerprint} -->"
+    url = gh.issue_by_marker(marker)
+    if not url:
+        policy = ctx.policy(project)
+        labels = ["type:chore", "size:m", "p2", "pass:verify"]
+        if policy.get("scope") == "label":
+            labels.append(policy["scope_label"])
+        gh.ensure_pass_label("verify")
+        url = gh.create_issue(
+            f"Verify remaining completion criteria for #{number}",
+            f"{marker}\n\n## Problem / goal\n"
+            f"Parent #{number} has completed children but still needs evidence for:\n" +
+            "\n".join(f"- {b}" for b in blockers) +
+            "\n\n## Plan\nCollect and record evidence for each criterion on the parent. "
+            "Tick only criteria supported by that evidence; identify any owner-only decision."
+            "\n\n## Done when\n- [ ] Each remaining parent criterion has recorded evidence "
+            "or an explicit actionable owner question.\n\n## Needs a human to check\nNothing", labels)
+    led.set_kv(key, url)
 
 
 def close_finished_parents(ctx, projects):
@@ -671,8 +709,9 @@ def _close_finished_parents_project(ctx, project):
                                        _parent_sections(it.get("body") or "")
                                        if section not in {"original request", "context", "dependencies"})) == n)
             children.discard(n)
-            blockers = _parent_checklist(body)
-            evidence, waiting = [], False
+            checks = _parent_checks(body)
+            blockers = []
+            evidence, waiting, completed = [], False, set()
             if not children:
                 blockers.append("No child relationships found")
             for child in sorted(children):
@@ -684,6 +723,7 @@ def _close_finished_parents_project(ctx, project):
                     blockers.append(f"#{child}: unknown issue state")
                     continue
                 if led.get_kv(f"parent_complete:{project}:{child}"):
+                    completed.add(child)
                     evidence.append(f"#{child}: recorded parent completion")
                     continue
                 item = led.item(project, child)
@@ -695,20 +735,43 @@ def _close_finished_parents_project(ctx, project):
                 if not prs:
                     prs = [pr for pr in gh.closing_prs(child) if pr_merged(pr)]
                 if prs:
+                    completed.add(child)
                     evidence.append(f"#{child}: merged " + ", ".join(
                         f"PR #{pr['number']}" for pr in prs))
                 else:
                     blockers.append(f"#{child}: closed without confirmed merged PR evidence")
+            lines = body.splitlines(keepends=True)
+            ticked = set()
+            for index, check, child in checks:
+                if check[1] == " " and child in completed:
+                    lines[index] = lines[index].replace("[ ]", "[x]", 1)
+                    ticked.add(child)
+            if ticked:
+                if ctx.dry_run:
+                    body = "".join(lines)
+                else:
+                    gh.edit_issue_body(n, "".join(lines))
+                    for child in ticked:
+                        led.set_kv(f"parent_tick:{project}:{n}#{child}", "1")
+                    body = gh.issue_body(n)
+            checklist_blockers = _parent_checklist(body)
+            free_text_only = bool(checklist_blockers) and not blockers and all(
+                child is None for _, check, child in _parent_checks(body) if check[1] == " "
+            ) and bool(_parent_checks(body))
+            blockers = checklist_blockers + blockers
             if waiting:
                 continue
             comments = gh.issue_comments(n)
             if blockers:
                 explanation = "Parent completion blocked:\n" + "\n".join(f"- {b}" for b in blockers)
-                fingerprint = hashlib.sha256(json.dumps([blockers, evidence], sort_keys=True).encode()).hexdigest()
+                fingerprint = hashlib.sha256(json.dumps(
+                    blockers if free_text_only else [blockers, evidence], sort_keys=True).encode()).hexdigest()
                 marker = f"<!-- mahler:parent-blocked:{fingerprint} -->"
                 notify_key = f"parent_blocked:{project}:{n}:{fingerprint}"
                 ctx.say(f"{project}#{n}: {explanation}")
                 if not ctx.dry_run:
+                    if free_text_only:
+                        _parent_verify(ctx, project, n, blockers, fingerprint)
                     if not any(marker in c.get("body", "") for c in comments):
                         gh.comment(n, f"{AGENT_MARK}\n{marker}\n{explanation}")
                     if not led.get_kv(notify_key):
