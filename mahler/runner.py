@@ -65,6 +65,53 @@ def git(repo, *args, env=None, check=True):
     return r.stdout.strip()
 
 
+def find_worktree_for_branch(repo, branch):
+    """Find a linked checkout, excluding the primary checkout."""
+    if not branch:
+        return None
+    listing = git(repo, "worktree", "list", "--porcelain", "-z")
+    for record in listing.split("\0\0")[1:]:
+        fields = dict(field.split(" ", 1) for field in record.split("\0") if " " in field)
+        if fields.get("branch") == f"refs/heads/{branch}":
+            return fields.get("worktree")
+    return None
+
+
+def cleanup_interactive_worktree(repo, wt, branch, expected_head):
+    """Remove only the recorded, unchanged checkout; return an operator notice."""
+    try:
+        if not Path(wt).is_dir():
+            return f"skipped worktree cleanup: {wt} no longer exists"
+        if not branch or not expected_head:
+            return f"skipped worktree cleanup: missing branch or merged PR head for {wt}"
+        found = find_worktree_for_branch(repo, branch)
+        if not found or Path(found).resolve() != Path(wt).resolve():
+            return f"skipped worktree cleanup: {wt} no longer holds {branch}"
+        status = git(wt, "status", "--porcelain", "--untracked-files=all", "--ignored", "-z")
+        for entry in status.split("\0"):
+            if not entry:
+                continue
+            path = Path(entry[3:])
+            # Verification creates disposable bytecode. Keep every other ignored
+            # file (including local credentials and non-bytecode cache contents).
+            if (entry.startswith("!! ") and path.parent.name == "__pycache__"
+                    and path.suffix == ".pyc" and (Path(wt) / path).is_file()
+                    and not (Path(wt) / path).is_symlink()):
+                continue
+            return f"skipped worktree cleanup: {wt} has uncommitted or ignored files"
+        if git(wt, "rev-parse", "HEAD") != expected_head:
+            return f"skipped worktree cleanup: {wt} HEAD differs from merged PR head"
+        git(repo, "worktree", "remove", wt)
+        # Squash merges do not make the topic commits ancestors of the base.
+        # Recheck the ref after removal before deleting it.
+        if git(repo, "rev-parse", f"refs/heads/{branch}") != expected_head:
+            return f"removed {wt}; skipped branch cleanup: {branch} changed"
+        git(repo, "branch", "-D", "--", branch)
+        return f"removed interactive worktree {wt} and local branch {branch}"
+    except (GitError, OSError, subprocess.SubprocessError) as e:
+        return f"skipped worktree cleanup for {wt}: {e}"
+
+
 def slug(title, n=40):
     s = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
     return s[:n].rstrip("-") or "item"

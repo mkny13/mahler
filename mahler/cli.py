@@ -672,6 +672,14 @@ def cmd_ship(a, cfg, led):
     except (GHError, ValueError, subprocess.SubprocessError, OSError) as e:
         print(f"mahler ship: {e}")
         return 1
+    from . import runner
+    wt = None
+    try:
+        wt = runner.find_worktree_for_branch(pol["path"], branch)
+    except (runner.GitError, OSError, subprocess.SubprocessError) as e:
+        print(f"mahler ship: couldn't record worktree for cleanup — {e}")
+    led.set_kv(f"ship_worktree:{project}#{n}", wt)
+    led.set_kv(f"ship_worktree_branch:{project}#{n}", branch if wt else None)
     fields = {"branch": branch, "pr": pr, "title": title or f"{project} #{n}"}
     if a.summary:
         fields["summary"] = a.summary

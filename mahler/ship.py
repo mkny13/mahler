@@ -1952,12 +1952,26 @@ def record_release_item_if_needed(ctx, project, n, pr, item, view):
         ctx.say(f"{project}#{n}: couldn't snapshot release item — {e}")
 
 
+def _cleanup_interactive_worktree(ctx, project, n, view):
+    key = f"ship_worktree:{project}#{n}"
+    branch_key = f"ship_worktree_branch:{project}#{n}"
+    wt = ctx.led.get_kv(key)
+    if wt:
+        notice = runner.cleanup_interactive_worktree(
+            ctx.policy(project)["path"], wt, ctx.led.get_kv(branch_key),
+            view.get("headRefOid"))
+        ctx.say(f"{project}#{n}: {notice}")
+    ctx.led.set_kv(key, None)
+    ctx.led.set_kv(branch_key, None)
+
+
 def _shipped(ctx, project, n, pr, item, view, merged=True):
     """Close the loop: comment the summary plus the issue's 'Needs a human to
     check' list, ping, and mark the item shipped."""
     if not pr_merged(view):
         raise ValueError(f"PR #{pr} has not been confirmed merged")
     led = ctx.led
+    _cleanup_interactive_worktree(ctx, project, n, view)
     how = "squash-merged" if merged else "merged"
     lines = [f"**Shipped** — PR #{pr} {how}.", "",
              item["summary"] or pr_summary_of(view.get("body")) or ""]
