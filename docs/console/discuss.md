@@ -145,3 +145,33 @@ HTTP protections, 390px/1440px fake-worker journeys and quota-routing tests belo
 those children. This artifact suite checks the JSON examples, finite limits, recipe
 boundary and SVG state coverage. It does not prove those future runtime properties.
 Mike's visual approval of the linked revision remains outstanding for #925.
+
+## Personal worker (#924)
+
+The console supervises `python3 -m mahler.discuss`, with its own SQLite connection
+and a process lock beside the database. Queued turns are polled once a second;
+worker-start failures appear in `discussion_worker` in `/api/state` and the event
+stream, with restart delays capped at 30 seconds. Shutdown stops and reaps the
+worker and engine; restart fences interrupted turns as errors, never resubmits them.
+No launcher installation changes are needed.
+
+Personal execution uses the existing `~/.claude` subscription login. A fresh,
+zero-token OAuth quota reading must contain both unexpired 5-hour and weekly
+windows below 100%. Unknown, missing or exhausted readings produce a retryable
+`quota_unavailable` result. Operator turns can spend the reserve above autonomous
+build thresholds; at exhaustion they stop. They record operator activity, which
+suppresses autonomous reserve bursts, and never create build runs or attempts.
+No build routing, work-credit fallback or token-spending quota probe is used.
+Work-account turns remain unavailable until the separate credits adapter ships.
+
+Launch flags were checked against the installed `claude --help` on 2026-10-11:
+`--restricted`, empty `--setting-sources`, explicit hook/plugin settings, empty
+`--tools`, `--disable-slash-commands`, `--no-chrome`, `--strict-mcp-config` and
+an explicit seven-tool allow-list. Each session runs in its own empty directory beside the database, preserving
+Claude’s project-scoped resume storage.
+`--bare` is deliberately excluded because it disables subscription OAuth login.
+The adapter accepts only a successful CLI result envelope, bounds output to
+256 KiB and assistant text to 64,000 characters, and derives confirmed links
+from durable tool receipts. The deadline includes queue and quota-check time.
+Real-login interaction remains manual coverage once the panel is available;
+automated tests use fake engines and local child processes, never paid calls.

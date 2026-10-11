@@ -845,3 +845,17 @@ class TestScreenshotImages(_Served):
     def test_disabled_project_cannot_serve_existing_capture(self):
         self.cfg["projects"]["mahler"]["enabled"] = False
         self.assertEqual(self.request(self.path)[0], 404)
+
+
+class DiscussionSupervisorTests(unittest.TestCase):
+    def test_console_owns_supervisor_lifetime(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        with mock.patch('mahler.discuss.Supervisor') as supervisor, \
+                mock.patch('mahler.serve.ThreadingHTTPServer') as server:
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            serve.serve(make_cfg(), led, port=0, get_head=lambda: None)
+        supervisor.assert_called_once_with(led.path)
+        supervisor.return_value.start.assert_called_once()
+        supervisor.return_value.close.assert_called_once()
+        server.return_value.server_close.assert_called_once()

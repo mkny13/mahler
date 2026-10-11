@@ -102,6 +102,7 @@ def build(cfg, led, stats_range="week", section=None):
     briefs = _briefs(cfg, led, projects, now)
     s = {
         "paused": paused,
+        "discussion_worker": led.get_kv("discussion:worker"),
         "system": ({"label": "PAUSED", "tone": "warn"} if paused else
                    {"label": f"RUNNING · {len(runs)}", "tone": "acc"} if runs else
                    {"label": "IDLE", "tone": "mut"}),

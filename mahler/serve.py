@@ -444,10 +444,14 @@ def serve(cfg, led, host="127.0.0.1", port=8787,
             daemon=True,
         )
         t.start()
+    from .discuss import Supervisor
+    discussion = Supervisor(led.path)
+    discussion.start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        discussion.close()
         httpd.server_close()
     return 0
