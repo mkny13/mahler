@@ -418,6 +418,32 @@ class GH:
             args += ["--label", l]
         return self._gh(*args, input=body).strip()
 
+    def discussion_issue(self, number):
+        """Current issue and exhaustive comments, with a content revision token."""
+        import hashlib
+        issue = json.loads(self._gh("api", f"repos/{self.repo}/issues/{int(number)}"))
+        if "pull_request" in issue:
+            raise GHError("discussion tools accept issues, not pull requests")
+        comments = self.issue_comments(number)
+        result = {"number": issue["number"], "title": issue["title"],
+                  "body": issue.get("body") or "", "labels": label_names(issue),
+                  "url": issue["html_url"], "updated_at": issue["updated_at"],
+                  "comments": comments}
+        result["version"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
+        return result
+
+    def discussion_edit(self, number, expected_version, refinement, marker, *, before_write=None):
+        # Re-read immediately before writing. GitHub issue edits have no atomic
+        # compare-and-swap API; this detects observed drift, not a later remote race.
+        issue = self.discussion_issue(number)
+        if issue["version"] != expected_version:
+            raise GHError("conflict: issue changed; read it again before refining")
+        if before_write is not None:
+            before_write(issue)
+        self.edit_issue_body(number, issue["body"] + "\n\n## Discussion refinement\n"
+                             + refinement + "\n\n" + marker)
+        return issue["url"]
+
     def edit_issue_body(self, number, body):
         self._gh("issue", "edit", str(number), "-R", self.repo,
                  "--body-file", "-", input=body)

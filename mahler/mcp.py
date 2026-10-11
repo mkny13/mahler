@@ -212,3 +212,44 @@ def serve(cfg, led):
                 })
         elif req.get("method") == "notifications/initialized":
             pass
+
+
+def serve_discussion(cfg, led, session_id, turn_id, worker_token):
+    """Restricted stdio entry point, called with the trusted worker's binding.
+
+    Deliberately separate from serve(): no fallback to the unrestricted dispatcher.
+    The execution adapter owns process setup and native-tool disabling (#924).
+    """
+    from .discuss_tools import DiscussionTools, tool_definitions
+
+    discussion = DiscussionTools(cfg, led, session_id, turn_id, worker_token)
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(req, dict) or 'id' not in req:
+            continue
+        response = {'jsonrpc': '2.0', 'id': req['id']}
+        try:
+            method = req.get('method')
+            if method == 'initialize':
+                result = {'protocolVersion': '2024-11-05', 'capabilities': {'tools': {}},
+                          'serverInfo': {'name': 'mahler-discussion-mcp', 'version': '1.0.0'}}
+            elif method == 'tools/list':
+                result = {'tools': tool_definitions()}
+            elif method == 'tools/call':
+                params = req.get('params', {})
+                value = discussion.call(params.get('name'), params.get('arguments', {}))
+                result = {'content': [{'type': 'text', 'text': json.dumps(value, ensure_ascii=False)}]}
+            else:
+                response['error'] = {'code': -32601, 'message': 'Method not found'}
+                result = None
+            if result is not None:
+                response['result'] = result
+        except Exception as exc:
+            from .redact import redact
+            response['result'] = {'isError': True, 'content': [
+                {'type': 'text', 'text': redact(str(exc))}]}
+        sys.stdout.write(json.dumps(response) + '\n')
+        sys.stdout.flush()
