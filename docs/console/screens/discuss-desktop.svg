@@ -25,7 +25,7 @@
 <text x="880" y="198" font-size="14" fill="#0d1013" font-weight="600">You</text>
 <text x="880" y="233" font-size="15" fill="#0d1013">Keep my draft after a failed turn.</text>
 <text x="880" y="298" font-size="14" fill="#0d1013" font-weight="600">Mahler</text>
-<text x="880" y="333" font-size="15" fill="#0d1013">Should retry keep the same project and account?</text>
+<text x="880" y="333" font-size="15" fill="#0d1013">Should a failed turn keep your draft for retry?</text>
 <text x="880" y="365" font-size="15" fill="#0d1013">I can save your answer on the issue.</text>
 <rect x="880" y="648" width="520" height="80" rx="8" fill="#ffffff" stroke="#d6dadd"/>
 <text x="896" y="680" font-size="16" fill="#4a5158">Write your reply…</text>
