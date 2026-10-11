@@ -105,3 +105,39 @@ class TestMCP(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiscussionMCPTests(unittest.TestCase):
+    @patch('mahler.discuss_tools.project_client')
+    def test_separate_entrypoint_allowlist_and_no_unrestricted_fallback(self, client):
+        from mahler.mcp import serve_discussion
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        cfg = {'defaults': {}, 'projects': {'p': {'repo': 'owner/repo', 'account': 'personal'}}}
+        binding = dict(project='p', repo='owner/repo', account='personal', engine='claude')
+        sid = led.create_chat_session(**binding)['id']
+        turn = led.submit_chat_turn(sid, 'request', 'Hello', **binding)['id']
+        token = led.claim_chat_turn(turn)
+        requests = [{'id': 1, 'method': 'initialize'}, {'id': 2, 'method': 'tools/list'}]
+        for tool in ('claim', 'release', 'handoff', 'next_id', 'shell', 'write_file', 'merge'):
+            requests.append({'id': len(requests) + 1, 'method': 'tools/call',
+                             'params': {'name': tool, 'arguments': {'project': 'p'}}})
+        requests.append({'id': 20, 'method': 'tools/call', 'params': {'name': 'list_items',
+                          'arguments': {'project': 'other'}}})
+        requests.append({'id': 21, 'method': 'tools/call', 'params': {'name': 'add_item',
+                          'arguments': {'operation_id': 'a', 'title': 'New', 'body': ''}}})
+        client.return_value.create_issue.return_value = 'https://github.com/owner/repo/issues/1'
+        output = StringIO()
+        with patch.object(sys, 'stdin', StringIO('\n'.join(json.dumps(r) for r in requests))), \
+                patch.object(sys, 'stdout', output):
+            serve_discussion(cfg, led, sid, turn, token)
+        results = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(results[0]['result']['serverInfo']['name'], 'mahler-discussion-mcp')
+        self.assertEqual({t['name'] for t in results[1]['result']['tools']},
+                         {'read_repo_file', 'list_repo_files', 'list_items', 'get_item',
+                          'add_item', 'edit_item', 'answer_item'})
+        for result in results[2:-1]:
+            self.assertTrue(result['result']['isError'])
+        self.assertTrue(json.loads(results[-1]['result']['content'][0]['text'])['confirmed'])
+        self.assertEqual(led.q('SELECT * FROM leases'), [])
+        self.assertEqual(led.q('SELECT * FROM runs'), [])
