@@ -287,6 +287,26 @@ class TierEscalationTests(unittest.TestCase):
         self.assertIn("approval-high: requires owner approval via a platform pin",
                       reasons)
 
+    def test_approval_gated_tier_ignored_when_otherwise_ineligible(self):
+        base = {"lower": {"enabled": True, "tier": 1}}
+        gated = {"enabled": True, "tier": 4, "approval": True}
+        cases = {
+            "disabled": ({**gated, "enabled": False}, {}, ["lower", "gated"], "s"),
+            "unrouted": (gated, {}, ["lower"], "s"),
+            "wrong-account": ({**gated, "account": "work"},
+                              {"accounts": ["personal"], "account_mode": "priority",
+                               "routing": {"build": ["lower", "gated"]}},
+                              ["lower", "gated"], "s"),
+            "size-ineligible": ({**gated, "min_size": "l"}, {}, ["lower", "gated"], "s"),
+        }
+        for name, (plat, pol, route, size) in cases.items():
+            with self.subTest(case=name):
+                cfg = self.ctx.cfg
+                cfg["platforms"] = {**base, "gated": plat}
+                cfg["routing"]["build"] = route
+                self.assertEqual(
+                    router.cap_escalation(cfg, pol, 8, size, role="build"), 1)
+
     def test_waiting_fix_uses_capacity_backstop_without_recounting(self):
         for failure in ("review", "ci"):
             with self.subTest(failure=failure):
