@@ -2521,14 +2521,21 @@ work.
   low" marks the pool exhausted until the grant resets. An authentication failure (expired or
   revoked key) parks the pool and pings. While parked, one free `GET /v1/models` every 6 hours
   is the only retry. Neither counts as an item attempt.
-- **Known limitation: a daemon restart drops the gateway.** The gateway is long-lived in the
-  daemon's own process, bound to a port chosen at start. A daemon restart (D17 rollback,
-  self-update) loses it; an in-flight credits run's next request then gets connection-refused
-  from its baked-in `ANTHROPIC_BASE_URL` rather than reaching a live gateway. This fails the
-  run, not the money: no reservation is left dangling by a dead gateway process (it was either
-  settled/released already, or stays `reserved` and visible as stuck exposure, same as any
-  other crash). Accepted for now rather than engineering fixed-port cross-restart recovery;
-  revisit if credits runs become long enough, or common enough, for this to bite often.
+- **The gateway is its own process (mahler#951).** It was first a thread in the daemon, and
+  trial 3 (2026-10-11, run 11765) showed why that cannot work: `mahler tick` is a one-shot
+  process and a run outlives it, so the gateway vanished seconds after launch. The run made
+  five requests, then every request was refused until the SDK gave up (exit 1), and the
+  verify-green fallback hid the failure. Now a launch starts a detached `mahler gateway
+  <platform>` (no launchd change: the tick spawns it with `start_new_session`). It publishes
+  its port in `gateway-<group>.json` under `~/.mahler/`, answers `GET /_mahler/health` so a
+  recycled port is not mistaken for it, and exits after 15 minutes with no active credits run
+  and no request. Run tokens live in the ledger (hashed) so the tick can register one and the
+  gateway honour it. A launch that cannot bring the gateway up fails at once, before the run
+  starts. A run that still ends on a refused connection is flagged, pinged once and retried;
+  the verify-green fallback never accepts it. A daemon restart no longer drops the gateway,
+  but a long-lived gateway keeps its old code and config until it idles out or is stopped:
+  after changing `[api_credits]` or self-updating onto a gateway fix, `kill` the process named
+  in the state file.
 - **Key expiry, including the two credentials' different precision.** The inference key's
   exact expiry is known (2027-10-16T20:00-04:00); the admin key's is date-only, so its
   warnings use the same conservative start-of-day cutoff pattern as a grant boundary. Mahler

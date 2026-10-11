@@ -330,6 +330,17 @@ def cmd_status(a, cfg, led):
         print(f"  {when} {e['kind']:<8} {where:<14} {(e['detail'] or '')[:80]}{url}")
     return 0
 
+def cmd_gateway(a, cfg, led):
+    """The detached credits gateway a launch starts (mahler#951); not for hand use."""
+    from . import api_credits
+    pconf = cfg["platforms"].get(a.platform)
+    if not pconf or not pconf.get("credit_pool"):
+        print(f"mahler gateway: {a.platform} is not a credits platform", file=sys.stderr)
+        return 2
+    api_credits.run_gateway_process(cfg, a.platform)
+    return 0
+
+
 def cmd_serve(a, cfg, led):
     from . import serve
     host = a.host or cfg.get("serve", {}).get("host", "127.0.0.1")
@@ -1250,6 +1261,10 @@ def build_parser(cfg=None):
     s.add_argument("--days", type=_capacity_days, default=30,
                    help="reporting window in days (1–90, default 30)")
     s.set_defaults(fn=cmd_capacity)
+
+    s = sub.add_parser("gateway", help=argparse.SUPPRESS)   # started by a launch, mahler#951
+    s.add_argument("platform")
+    s.set_defaults(fn=cmd_gateway)
 
     s = sub.add_parser("serve", help="the operator console (D27)")
     s.add_argument("--host", type=str, default=None,
