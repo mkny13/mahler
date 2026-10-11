@@ -50,10 +50,13 @@ current status.
    (`python3.14 sdk_runner/bootstrap/trial-918.py`, keychain unlocked; `--fake-upstream
    host:port` does it for free) left two `credit_reserved`/`credit_settled` pairs in the
    gateway's ledger.
-3. **Next:** an end-to-end run on an enabled work-account project, still capped at
-   $0.10, confirms the whole path: routing, the gateway, settlement and promotional-credit
+3. **Failed (2026-10-11, trial 3, $0.136):** the gateway was a thread in the one-shot tick,
+   so it died seconds after the run started (mahler#951). Fixed by running it as its own
+   detached process; see D41. Needs a re-run.
+4. **Next:** an end-to-end run on an enabled work-account project, capped at the $3 trial
+   allowance, confirms the whole path: routing, the gateway, settlement and promotional-credit
    attribution visible in Console billing.
-4. Both trials count inside the $20 allowance. Once both are sanitized and recorded, flip
+5. Both trials count inside the $20 allowance. Once both are sanitized and recorded, flip
    `[api_credits] enabled = true` and add `work-claude-api` to a work project's routing.
 
 ## Raising the burst cap

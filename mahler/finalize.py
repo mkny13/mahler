@@ -787,7 +787,7 @@ def finalize(ctx, run):
     if pconf.get("api_credits") and not ctx.dry_run:
         from . import api_credits
         api_credits.after_run(ctx, run, pconf, log)    # D41: exhausted / key rejected
-        api_credits.revoke_run_token(pconf, run["id"])  # the gateway forgets this run's token
+        api_credits.revoke_run_token(pconf, run["id"], led=ctx.led)  # the gateway forgets this run's token
     session_id = log.get("session_id")
     if not ctx.dry_run and isinstance(session_id, str) and session_id.strip():
         led.update_run(run["id"], session_id=session_id)
@@ -855,7 +855,7 @@ def finalize(ctx, run):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review", "design"):
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
-            if handler is _ended_unconfirmed:
+            if handler is _ended_unconfirmed and not log.get("gateway_failed"):
                 ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item)
 
     # Claim uses BEGIN IMMEDIATE too: checking the epoch and applying the

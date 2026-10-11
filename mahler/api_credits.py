@@ -31,13 +31,19 @@ and are never logged or persisted. The admin key never enters a run's env.
 """
 
 import calendar
+import hashlib
 import http.client
 import http.server
 import json
 import os
+import re
 import secrets
+import signal
+import socket
 import subprocess
+import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -906,6 +912,10 @@ def mark_auth_parked(led, ping, group, run_id=None, platform=None):
              priority="high", tags="warning,key")
 
 
+def is_gateway_unreachable(text):
+    return bool(re.search(r"ECONNREFUSED|Connection refused", text or "", re.I))
+
+
 def after_run(ctx, run, pconf, log):
     """What a credits run's ending says about the pool. Sets log['auth_failed'].
 
@@ -923,8 +933,18 @@ def after_run(ctx, run, pconf, log):
         return
     text = " ".join(str(x) for x in (log.get("last_error"), log.get("last_text"),
                                       log.get("final")) if x)
+    refused = is_gateway_unreachable(text)
     if not is_auth_error(text):
         text = _log_tail(run["log_path"]) if run["log_path"] else ""
+    if refused or is_gateway_unreachable(text):
+        # The gateway process is gone: the run's API calls were refused until
+        # it gave up. Its half-done work is not "verify-green" (mahler#951);
+        # the retry starts a fresh gateway.
+        log["gateway_failed"] = True
+        ctx.led.event("api_credits_gateway", detail=f"{group}: run {run['id']} lost its gateway")
+        ctx.ping(f"Mahler: credits gateway unreachable ({group})",
+                 f"Run {run['id']} on {run['platform']} could not reach the credits gateway "
+                 "and was retried, not accepted as done.", priority="high", tags="warning")
     if is_auth_error(text):
         log["auth_failed"] = True
         mark_auth_parked(ctx.led, ctx.ping, group, run_id=run["id"], platform=run["platform"])
@@ -1058,6 +1078,7 @@ ANTHROPIC_HOST = "api.anthropic.com"
 MESSAGES_PATH = "/v1/messages"
 # The Agent SDK's requests carry `?beta=true`; nothing else is accepted.
 MESSAGES_PATHS = (MESSAGES_PATH, MESSAGES_PATH + "?beta=true")
+HEALTH_PATH = "/_mahler/health"      # GET: is this port really this group's gateway (mahler#951)
 
 
 def _gateway_error(kind, message):
@@ -1094,6 +1115,40 @@ class _SerializedLedger:
         return locked
 
 
+class _TokenStore:
+    """Run tokens live in the ledger, not in a process's memory: the tick that
+    launches a run registers the token, and the gateway process (which
+    outlives that tick, mahler#951) looks it up. Only a hash is stored."""
+
+    def __init__(self, led, group):
+        self.led, self.group = led, group
+
+    def _tok(self, digest):
+        return f"api_credits:gw-token:{self.group}:{digest}"
+
+    def _run(self, run_id):
+        return f"api_credits:gw-run:{self.group}:{run_id}"
+
+    def register(self, run_id):
+        token = secrets.token_urlsafe(24)
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        self.led.set_kv(self._tok(digest), str(run_id))
+        known = [d for d in (self.led.get_kv(self._run(run_id)) or "").split(",") if d]
+        self.led.set_kv(self._run(run_id), ",".join(known + [digest]))
+        return token
+
+    def revoke(self, run_id):
+        for digest in (self.led.get_kv(self._run(run_id)) or "").split(","):
+            if digest:
+                self.led.set_kv(self._tok(digest), "")
+        self.led.set_kv(self._run(run_id), "")
+
+    def lookup(self, token):
+        digest = hashlib.sha256(str(token).encode()).hexdigest()
+        value = self.led.get_kv(self._tok(digest))
+        return int(value) if value else None
+
+
 class Gateway:
     """One pool group's local proxy. Long-lived: started once, serves every
     run of every platform in the group until stopped."""
@@ -1109,31 +1164,24 @@ class Gateway:
         self.real_key = real_key
         self.connect = connect or (lambda: http.client.HTTPSConnection(ANTHROPIC_HOST, timeout=600))
         self.ping = ping or (lambda *a, **k: None)
-        self._tokens = {}
-        self._lock = threading.Lock()
+        self.tokens = _TokenStore(self.led, group)
         self._server = None
         self._thread = None
         self.port = None
+        self.last_request = time.monotonic()
 
     # -- run token lifecycle --
 
     def register(self, run_id):
         """A fresh local token for one run. Never the real key — the runner
         puts only this in the run's environment (D41 step 2)."""
-        token = secrets.token_urlsafe(24)
-        with self._lock:
-            self._tokens[token] = run_id
-        return token
+        return self.tokens.register(run_id)
 
     def revoke(self, run_id):
-        with self._lock:
-            for token, rid in list(self._tokens.items()):
-                if rid == run_id:
-                    del self._tokens[token]
+        self.tokens.revoke(run_id)
 
     def _run_for_token(self, token):
-        with self._lock:
-            return self._tokens.get(token)
+        return self.tokens.lookup(token)
 
     # -- serving --
 
@@ -1164,6 +1212,11 @@ class Gateway:
                 self._respond(status, headers, resp)
 
             def do_GET(self):
+                if self.path == HEALTH_PATH:
+                    gateway.last_request = time.monotonic()
+                    self._respond(200, {"Content-Type": "application/json"},
+                                  json.dumps({"mahler_gateway": gateway.group}).encode())
+                    return
                 status, headers, resp = gateway.handle("GET", self.path, dict(self.headers), b"")
                 self._respond(status, headers, resp)
 
@@ -1192,6 +1245,7 @@ class Gateway:
 
     def handle(self, method, path, headers, body):
         """-> (status, response_headers, response_body_bytes)."""
+        self.last_request = time.monotonic()
         if method != "POST" or path not in MESSAGES_PATHS:
             return 404, {}, _gateway_error(
                 "not_found_error", "Mahler gateway: only POST /v1/messages is proxied")
@@ -1310,10 +1364,29 @@ def _open_gateway_ledger(path, clock):
     return Ledger(path, clock=clock, thread_safe=True)
 
 
+def _build_gateway(led, name, pconf, ping, now=None):
+    """A Gateway wired to its pool, grant lookup and the real key. The key is
+    read here, in the gateway's own process; it never goes to a run."""
+    pool = pconf["credit_pool"]
+    real_key = api_key_for_run(pconf)
+
+    def grant_fn(led=led, name=name, pconf=pconf):
+        snap = snapshot(led, name, pconf)
+        if not snap.get("grant_confirmed") or snap["state"] in ("hard", "no_credit"):
+            return None
+        return {"id": snap["grant_id"], "ceiling_usd": snap["reservation_ceiling_usd"],
+               "end": parse(snap["cycle_end"])}
+
+    return Gateway(led, pool["group"], grant_fn, model_pricing(pool), pool["allowed_models"],
+                   pool["max_output_tokens"], real_key, ping=ping)
+
+
 def ensure_gateway(ctx, name, pconf, open_ledger=None):
-    """The group's gateway, starting it on first use. Idempotent: a platform
-    sharing a quota_group with another credits platform reuses the same
-    running gateway and its registered tokens stay namespaced by run_id."""
+    """The group's gateway *in this process*, starting it on first use.
+    Idempotent: a platform sharing a quota_group with another credits platform
+    reuses the same running gateway and its registered tokens stay namespaced
+    by run_id. Only for processes that outlive their runs (tests, the trial
+    scripts); `gateway_for_run` is what a launch uses (mahler#951)."""
     pool = pconf.get("credit_pool")
     if not pool:
         raise RuntimeError("API credits are not configured for this platform")
@@ -1322,29 +1395,191 @@ def ensure_gateway(ctx, name, pconf, open_ledger=None):
         gw = _GATEWAYS.get(group)
         if gw is not None:
             return gw
-        real_key = api_key_for_run(pconf)
         led = _SerializedLedger((open_ledger or _open_gateway_ledger)(ctx.led.path, ctx.led.now))
-
-        def grant_fn(led=led, name=name, pconf=pconf):
-            snap = snapshot(led, name, pconf)
-            if not snap.get("grant_confirmed") or snap["state"] in ("hard", "no_credit"):
-                return None
-            return {"id": snap["grant_id"], "ceiling_usd": snap["reservation_ceiling_usd"],
-                   "end": parse(snap["cycle_end"])}
-
-        gw = Gateway(led, group, grant_fn, model_pricing(pool), pool["allowed_models"],
-                    pool["max_output_tokens"], real_key, ping=ctx.ping)
+        gw = _build_gateway(led, name, pconf, ctx.ping)
         gw.start(pool["gateway_host"])
         _GATEWAYS[group] = gw
         return gw
 
 
-def revoke_run_token(pconf, run_id):
+# -- the out-of-process gateway (mahler#951) --
+#
+# `mahler tick` is a one-shot process and a run outlives it, so a gateway
+# thread inside the tick dies seconds after the run starts (trial 3, run
+# 11765: five requests, then ECONNREFUSED). A launch instead starts a
+# detached `mahler gateway` process, which serves every credits run of its
+# group and exits on its own once none has been active for a while. Run
+# tokens are stored in the ledger so the tick can register one for the
+# gateway to honour.
+
+GATEWAY_IDLE_EXIT_SECONDS = 900      # no credits run and no request for this long: exit
+GATEWAY_POLL_SECONDS = 5
+GATEWAY_START_TIMEOUT_SECONDS = 20
+
+
+def _gateway_files(group):
+    from . import config
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in group)
+    return (os.path.join(config.STATE, f"gateway-{safe}.json"),
+            os.path.join(config.STATE, f"gateway-{safe}.log"))
+
+
+def _read_state(path):
+    try:
+        with open(path) as fh:
+            st = json.load(fh)
+        return st if isinstance(st, dict) and isinstance(st.get("port"), int) else None
+    except (OSError, ValueError):
+        return None
+
+
+def gateway_healthy(host, port, group, timeout=2):
+    """True only if `port` answers as this group's gateway: a recycled port
+    or someone else's server on it does not count."""
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request("GET", HEALTH_PATH)
+            resp = conn.getresponse()
+            body = json.loads(resp.read() or b"{}")
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    return resp.status == 200 and body.get("mahler_gateway") == group
+
+
+class RemoteGateway:
+    """What a launch holds for a gateway running in another process: its port,
+    and the right to mint and revoke run tokens in the shared ledger."""
+
+    def __init__(self, port, tokens):
+        self.port = port
+        self.tokens = tokens
+
+    def register(self, run_id):
+        return self.tokens.register(run_id)
+
+    def revoke(self, run_id):
+        self.tokens.revoke(run_id)
+
+
+def _spawn_gateway(name, log_path):
+    """Start `mahler gateway <platform>` detached from this process."""
+    mahler = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                          "bin", "mahler")
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        subprocess.Popen([sys.executable, mahler, "gateway", name], stdin=subprocess.DEVNULL,
+                         stdout=fd, stderr=fd, start_new_session=True, close_fds=True)
+    finally:
+        os.close(fd)
+
+
+def ensure_gateway_process(ctx, name, pconf, spawn=None, healthy=None, sleep=time.sleep,
+                           timeout=GATEWAY_START_TIMEOUT_SECONDS):
+    """A RemoteGateway for the group's running gateway process, starting one if
+    none answers. Raises RuntimeError if it does not come up, so the launch
+    fails now, not minutes into a run that cannot reach its API."""
+    pool = pconf.get("credit_pool")
+    if not pool:
+        raise RuntimeError("API credits are not configured for this platform")
+    group, host = pool["group"], pool["gateway_host"]
+    state_path, log_path = _gateway_files(group)
+    healthy = healthy or gateway_healthy
+    tokens = _TokenStore(ctx.led, group)
+    st = _read_state(state_path)
+    if st and healthy(host, st["port"], group):
+        return RemoteGateway(st["port"], tokens)
+    old_started = st.get("started") if st else None
+    (spawn or _spawn_gateway)(name, log_path)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        st = _read_state(state_path)
+        if st and st.get("started") != old_started and healthy(host, st["port"], group):
+            return RemoteGateway(st["port"], tokens)
+        sleep(0.25)
+    raise RuntimeError(f"the credits gateway for {group} did not start within {timeout}s "
+                       f"(see {log_path})")
+
+
+def gateway_for_run(ctx, name, pconf):
+    """The gateway a launch should point its run at. An in-memory ledger (the
+    unit tests) cannot be shared with another process, so it keeps the
+    in-process gateway; everything real uses the detached one."""
+    if ctx.led.path == ":memory:":
+        return ensure_gateway(ctx, name, pconf)
+    return ensure_gateway_process(ctx, name, pconf)
+
+
+def _group_has_active_run(led, cfg, group):
+    for run in led.active_runs():
+        pconf = cfg["platforms"].get(run["platform"]) or {}
+        if (pconf.get("credit_pool") or {}).get("group") == group:
+            return True
+    return False
+
+
+def run_gateway_process(cfg, name, idle_seconds=GATEWAY_IDLE_EXIT_SECONDS,
+                        poll=GATEWAY_POLL_SECONDS, open_ledger=None, stop_event=None):
+    """Body of `mahler gateway <platform>`: serve until nothing has used the
+    gateway for `idle_seconds` and no credits run is active, then exit."""
+    from . import config, notify
+    pconf = cfg["platforms"][name]
+    pool = pconf["credit_pool"]
+    group = pool["group"]
+    state_path, _log = _gateway_files(group)
+    def default_ledger():
+        from .ledger import utcnow
+        return _open_gateway_ledger(config.DB_PATH, utcnow)
+    ledger_factory = open_ledger or default_ledger
+    gw_led = _SerializedLedger(ledger_factory())
+    gw = _build_gateway(
+        gw_led, name, pconf,
+        lambda title, message="", **kw: notify.send(cfg, title, message, **kw))
+    stop = stop_event or threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, lambda *_: stop.set())
+        except ValueError:
+            pass                      # not the main thread (tests)
+    port = gw.start(pool["gateway_host"])
+    started = secrets.token_hex(8)
+    tmp = state_path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"pid": os.getpid(), "port": port, "started": started, "group": group}, fh)
+    os.replace(tmp, state_path)
+    try:
+        while not stop.wait(poll):
+            st = _read_state(state_path)
+            if not st or st.get("started") != started:
+                break                 # a newer gateway took over
+            if _group_has_active_run(gw_led, cfg, group):
+                gw.last_request = time.monotonic()
+            elif time.monotonic() - gw.last_request >= idle_seconds:
+                break
+    finally:
+        gw.stop()
+        st = _read_state(state_path)
+        if st and st.get("started") == started:
+            try:
+                os.unlink(state_path)
+            except OSError:
+                pass
+        gw_led.close()
+
+
+def revoke_run_token(pconf, run_id, led=None):
     """Forget one run's local token once it has ended (finalize.py)."""
     pool = pconf.get("credit_pool")
-    gw = _GATEWAYS.get(pool["group"]) if pool else None
+    if not pool:
+        return
+    gw = _GATEWAYS.get(pool["group"])
     if gw is not None:
         gw.revoke(run_id)
+    elif led is not None:
+        _TokenStore(led, pool["group"]).revoke(run_id)
 
 
 def shutdown_gateways():

@@ -339,7 +339,7 @@ def run_env(ctx, project, number, platform, run_id, epoch):
         # points the harness at it instead of api.anthropic.com directly.
         from . import api_credits
         pool = pconf["credit_pool"]
-        gw = api_credits.ensure_gateway(ctx, platform, pconf)
+        gw = api_credits.gateway_for_run(ctx, platform, pconf)
         env[pool["base_url_env"]] = f"http://{pool['gateway_host']}:{gw.port}"
         env["ANTHROPIC_API_KEY"] = gw.register(run_id)
     return env
