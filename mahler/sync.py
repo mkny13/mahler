@@ -709,6 +709,14 @@ def _close_finished_parents_project(ctx, project):
                                        _parent_sections(it.get("body") or "")
                                        if section not in {"original request", "context", "dependencies"})) == n)
             children.discard(n)
+            # A goal may be built directly after planning. Its type alone does
+            # not make it a tracker; explicit markers still permit recovery.
+            if not children and not (
+                parent["state"] == "parent"
+                or "mahler:parent" in json.loads(parent["labels"] or "[]")
+                or led.get_kv(pending)
+            ):
+                continue
             checks = _parent_checks(body)
             blockers = []
             evidence, waiting, completed = [], False, set()
@@ -765,7 +773,7 @@ def _close_finished_parents_project(ctx, project):
             if blockers:
                 explanation = "Parent completion blocked:\n" + "\n".join(f"- {b}" for b in blockers)
                 fingerprint = hashlib.sha256(json.dumps(
-                    blockers if free_text_only else [blockers, evidence], sort_keys=True).encode()).hexdigest()
+                    blockers, sort_keys=True).encode()).hexdigest()
                 marker = f"<!-- mahler:parent-blocked:{fingerprint} -->"
                 notify_key = f"parent_blocked:{project}:{n}:{fingerprint}"
                 ctx.say(f"{project}#{n}: {explanation}")
