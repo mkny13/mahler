@@ -158,6 +158,7 @@ DEFAULTS = {
         "dependency_prs_daily_cap": 3,
         "settle_minutes": 10,          # sorted -> eligible to build (DESIGN D7)
         "max_attempts": 3,             # failed runs before needs-you
+        "max_worker_retries": 3,       # discussion worker start failures before the supervisor gives up
         "review_context": ("Personal project: a single user owns and controls all devices "
                            "and upgrades them together."),
         "review_green_rounds": 2,      # inclusive convergence threshold per PR
