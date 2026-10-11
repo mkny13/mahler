@@ -407,33 +407,37 @@ def compute_burst(ctx, projects):
 def discussion_capacity(cfg, led):
     """Operator turns may spend the reserve, but never unknown/exhausted quota.
 
-    Refresh the personal subscription without a token-spending probe. No build
-    route, burst policy, API credits or build-run statistics participate.
+    Read-only: returns (platform_name, samples), or (None, None). It records
+    nothing; call record_discussion_probe_usage to fan the samples out.
+    No build route, burst policy, API credits or build-run statistics participate.
     """
     import math
-    from types import SimpleNamespace
     candidates = [(name, pc) for name, pc in cfg['platforms'].items()
                   if pc.get('kind') == 'claude' and config.account_of(pc) == config.DEFAULT_ACCOUNT
                   and not pc.get('api_credits') and pc.get('enabled', True)]
     if not candidates:
-        return None
+        return None, None
     name, pc = candidates[0]
     try:
         samples = platforms.oauth_usage(**claude_oauth_source(cfg, pc))
     except Exception:
-        return None
+        return None, None
     by_window = {w: (pct, reset) for w, pct, reset in samples}
     for window in ('5h', 'weekly'):
         pct, reset = by_window.get(window, (None, None))
         try:
             resets = parse(reset) if reset else None
         except (ValueError, TypeError):
-            return None
+            return None, None
         if (not isinstance(pct, (int, float)) or not math.isfinite(pct)
                 or not 0 <= pct < 100 or not resets or resets <= led.now()):
-            return None
-    record_claude_usage(SimpleNamespace(cfg=cfg, led=led), samples, platform=name)
-    return name
+            return None, None
+    return name, samples
+
+
+def record_discussion_probe_usage(ctx, samples, platform):
+    """Explicitly record a discussion OAuth probe for every quota peer of `platform`."""
+    record_claude_usage(ctx, samples, check_human=False, platform=platform)
 
 
 def record_discussion_usage(cfg, led, platform, turn_id):

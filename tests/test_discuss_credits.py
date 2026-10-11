@@ -176,7 +176,7 @@ class WorkDiscussionTests(unittest.TestCase):
                         self.assertNotIn('ANTHROPIC_API_KEY', args[1])
                         self.assertNotIn('--discussion-mcp', args[0])
                         return 'Personal', 'personal-session'
-                with patch('mahler.usage.discussion_capacity', return_value='claude'), patch(
+                with patch('mahler.usage.discussion_capacity', return_value=('claude', [])), patch('mahler.usage.record_discussion_probe_usage'), patch(
                         'mahler.platforms.claude_exe', return_value='/fake/claude'):
                     result = self.run_turn(self.turn(str(i)), runner)
                 self.assertEqual(result['status'] if not result['error'] else result['error']['code'], expected)

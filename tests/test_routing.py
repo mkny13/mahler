@@ -965,6 +965,21 @@ class ClaudeUsageSharingTests(unittest.TestCase):
         self.assertEqual(c_5h, 35.0)
         self.assertEqual(o_5h, 35.0)
 
+    def test_discussion_capacity_is_read_only_and_probe_usage_fans_out(self):
+        sample = [("5h", 35.0, iso(NOW + timedelta(hours=3))),
+                  ("weekly", 55.0, iso(NOW + timedelta(days=5)))]
+        with mock.patch("mahler.platforms.oauth_usage", return_value=sample):
+            name, samples = usage.discussion_capacity(self.cfg, self.led)
+        self.assertIn(name, usage.quota_peers(self.cfg, name))
+        self.assertEqual(samples, sample)
+        self.assertEqual(self.led.q("SELECT * FROM usage"), [])
+        usage.record_discussion_probe_usage(self.ctx, samples, name)
+        peers = usage.quota_peers(self.cfg, name)
+        self.assertGreater(len(peers), 1)
+        for peer in peers:
+            row = self.led.q("SELECT used_pct FROM usage WHERE platform=? AND window='5h'", (peer,))
+            self.assertEqual(row[0]["used_pct"], 35.0)
+
     def test_refresh_usage_mirrors_probe_to_both_and_sets_kv(self):
         sample = [("5h", 42.0, iso(NOW + timedelta(hours=2)))]
         with mock.patch("mahler.platforms.oauth_usage", return_value=[]), \
