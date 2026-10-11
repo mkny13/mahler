@@ -1800,6 +1800,12 @@ class CreditReservationTests(unittest.TestCase):
         self.assertEqual(row["status"], "settled")
         self.assertEqual(self.led.credit_exposure("g", "grant-a"), 1.0)
 
+    def test_credit_exposure_sums_without_float_drift(self):
+        for i in range(10):
+            rid, _ = self.led.reserve_credit("g", "grant-a", f"k{i}", 0.1, 100.0)
+            self.assertIsNotNone(rid)
+        self.assertEqual(self.led.credit_exposure("g", "grant-a"), 1.0)
+
     def test_reserve_settle_release_round_trip(self):
         rid, info = self.led.reserve_credit("g", "grant-a", "attempt-1", 2.0, 20.0, run_id=7)
         self.assertIsNotNone(rid)
