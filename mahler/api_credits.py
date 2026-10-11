@@ -1277,7 +1277,8 @@ class Gateway:
                 "(Mahler: no confirmed grant covers now.)")
         attempt_key = secrets.token_hex(16)
         rid, info = self.led.reserve_credit(self.group, grant["id"], attempt_key, amount,
-                                            grant["ceiling_usd"], run_id=run_id)
+                                            grant["ceiling_usd"], run_id=run_id,
+                                            expires_at=grant["end"])
         if rid is None:
             return 402, {}, _gateway_error(
                 "permission_error",
