@@ -689,7 +689,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         if pconf.get("approval") and name != pin:
             reasons.append(f"{name}: requires owner approval via a platform pin")
             continue
-        # Escalation tier (DESIGN D8 rule 4): build and fix skip platforms below min_tier
+        # Explicit tier floors apply to build, fix and review; pins retain their override.
         if min_tier and not pin and role in ("build", "fix", "review"):
             t = tier_of(pconf)
             if t < min_tier:

@@ -4715,3 +4715,32 @@ class ReviewPinFallbackTests(unittest.TestCase):
         self.led.upsert_item('x', 6, state='ready', title='another item')
         lease, _ = self.led.claim('x', 6, 'run:99', 'auto', 10, max_parallel=1)
         self.assertIsNotNone(lease)
+
+    def test_capacity_recovery_preserves_preference_and_tier(self):
+        self.prepare()
+        self.tick().assert_not_called()
+        self.led.set_state('x', 5, 'needs_you', 'old capacity pause')
+        ship._mark_capacity_wait(self.led, 'x', self.item(), 'review')
+        with mock.patch.object(self.ctx, 'gh', return_value=self.gh):
+            ship.recover_capacity_waits(self.ctx, 'x')
+            self.assertEqual(self.item()['state'], 'needs_you')
+            self.now += timedelta(hours=6)
+            self.refresh()
+            self.cfg['platforms']['agy-gemini']['tier'] = 1
+            ship.recover_capacity_waits(self.ctx, 'x')
+            self.assertEqual(self.item()['state'], 'needs_you')
+            self.cfg['platforms']['agy-gemini']['tier'] = 2
+            ship.recover_capacity_waits(self.ctx, 'x')
+            self.assertEqual(self.item()['state'], 'verifying')
+        self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
+
+    def test_busy_claude_waits_then_uses_free_reviewer(self):
+        self.prepare()
+        self.cfg['concurrency']['total'] = 2
+        self.led.create_run(project='x', number=6, role='build', platform='claude',
+                            epoch=1, status='running')
+        self.refresh(claude=10)
+        self.tick().assert_not_called()
+        self.now += timedelta(hours=6)
+        self.refresh(claude=10)
+        self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
