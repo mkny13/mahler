@@ -539,6 +539,7 @@ def cap_escalation(cfg, pol, tier, size=None, *, role="fix", pin=None):
 
     Match the scheduler's size promotion and fix sizing. Pins retain their
     normal size override, but never cross the project's account boundary.
+    Approval-gated platforms count toward the cap; selection still needs a pin.
     An empty route has no escalation tier; routing still refuses to start.
     """
     accts = accounts_of(pol)
@@ -548,8 +549,6 @@ def cap_escalation(cfg, pol, tier, size=None, *, role="fix", pin=None):
     tiers = []
     for name in names:
         pconf = cfg["platforms"][name]
-        if pconf.get("approval") and name != pin:
-            continue
         candidate_tier = min(tier, tier_of(pconf))
         effective_size = "m" if (role == "fix" and size == "l"
                                   or candidate_tier >= 2 and size == "s") else size
