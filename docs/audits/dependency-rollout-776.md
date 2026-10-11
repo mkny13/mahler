@@ -35,15 +35,15 @@ Default branch SHAs were read on 2026-10-11. GitHub acceptance means Dependabot 
 
 | Repo | Issue / PR | Merge SHA, time (UTC) | Config on default branch | Verification and GitHub acceptance |
 |---|---|---|---|---|
-| mahler | #869 / #881 | `8217d5f0`, 2026-10-09T01:00:48Z | github-actions, weekly, minor/patch group; majors ungrouped. Manifests: workflows, `sdk_runner/pyproject.toml` (out of scope; actions-only per goal). Default `a9427f69`. | `test` SUCCESS. Accepted: #882 and #883 opened 01:01Z, merged by the conductor. |
-| groundwork | #208 / #209 | `8bbb7b87`, 2026-10-08T18:40:39Z | npm + actions, weekly, minor/patch groups. `package.json`, workflows. Default `43c863c6`. | `checks`, `cleanup` SUCCESS. Accepted: #210-#212 opened 18:41Z. |
-| couch-tour | #576 / #577 | `9c1a4515`, 2026-10-08T18:40:51Z | gradle + actions, weekly, `non-major` groups. Also has `sync/package.json` and `Package.swift`, not covered (gap). Default `2bcde215`. | `mockup-data`, `test`, `workflow-permissions` SUCCESS. Accepted: #582-#588 opened. |
-| movebreak | #99 / #100 | `599e9fc7`, 2026-10-09T11:49:43Z | actions only, weekly, minor/patch. Only workflows found. Default `70809486`. | `verify` SUCCESS. Accepted: #101, #102 opened 11:50Z (still open). |
-| hockey-draft-copilot | #88 / #89 | `b85c433c`, 2026-10-08T18:49:52Z | npm + actions, weekly, `non-major` groups. Default `9ce3e890`. | `test` SUCCESS. Accepted: #90-#94 opened 18:50Z. |
-| mental-jukebox | #20 / #21 | `976be3e9`, 2026-10-08T18:57:04Z | pip + actions, weekly, minor/patch. `requirements.txt`. Default `7e0cfd29`. | `verify` SUCCESS. Accepted: #22-#25 opened 18:58Z. |
-| crate-cataloger | #19 / #20 | `e46b3a0a`, 2026-10-08T18:53:33Z | actions only, weekly, minor/patch. Only workflow found. Default `e7007008`. | `test` SUCCESS. Accepted: #21, #22 opened 18:54Z. |
+| mahler | #869 / #881 | `8217d5f0`, 2026-10-09T01:00:48Z | github-actions, weekly, minor/patch group; majors ungrouped. Manifests: workflows, `sdk_runner/pyproject.toml` (out of scope; actions-only per goal). Default `a9427f69`. | Pre-handoff (issue #869 comment): repo_guard, 2367 unit tests and strict runner passed. PR `test` SUCCESS. Accepted: #882 and #883 opened 01:01Z, merged by the conductor. |
+| groundwork | #208 / #209 | `8bbb7b87`, 2026-10-08T18:40:39Z | npm + actions, weekly, minor/patch groups. `package.json`, workflows. Default `43c863c6`. | Pre-handoff (#208 comment): `pnpm typecheck && pnpm lint && pnpm test` passed (88 files, 956 tests). PR `checks`, `cleanup` SUCCESS. Accepted: #210-#212 opened 18:41Z. |
+| couch-tour | #576 / #577 | `9c1a4515`, 2026-10-08T18:40:51Z | gradle + actions, weekly, `non-major` groups. Also has `sync/package.json` and `Package.swift`, not covered (gap). Default `2bcde215`. | Pre-handoff (#576 comment): Android `testDebugUnitTest` BUILD SUCCESSFUL; `swift test` 572 tests, 0 failures. PR `mockup-data`, `test`, `workflow-permissions` SUCCESS. Accepted: #582-#588 opened. |
+| movebreak | #99 / #100 | `599e9fc7`, 2026-10-09T11:49:43Z | actions only, weekly, minor/patch. Only workflows found. Default `70809486`. | Pre-handoff (#99 comment): `./scripts/build_app.sh` passed. CI first hit an unrelated intermittent file-descriptor self-test failure (7 to 8) and was retried; final PR `verify` SUCCESS. Accepted: #101, #102 opened 11:50Z (still open). |
+| hockey-draft-copilot | #88 / #89 | `b85c433c`, 2026-10-08T18:49:52Z | npm + actions, weekly, `non-major` groups. Default `9ce3e890`. | Pre-handoff (#88 comment): `npm test` passed (7 suites). PR `test` SUCCESS. Accepted: #90-#94 opened 18:50Z. |
+| mental-jukebox | #20 / #21 | `976be3e9`, 2026-10-08T18:57:04Z | pip + actions, weekly, minor/patch. `requirements.txt`. Default `7e0cfd29`. | Pre-handoff (#20 comment): `scripts/verify.sh full` passed. PR `verify` SUCCESS. Accepted: #22-#25 opened 18:58Z. |
+| crate-cataloger | #19 / #20 | `e46b3a0a`, 2026-10-08T18:53:33Z | actions only, weekly, minor/patch. Only workflow found. Default `e7007008`. | Pre-handoff (#19 comment): `python3 -m py_compile crate.py` and `python3 -m unittest discover -s tests` (14 tests) passed. PR `test` SUCCESS. Accepted: #21, #22 opened 18:54Z. |
 
-Not verified: each repository's own pre-handoff verification command output (only the PR CI results above were read). All six external issues are CLOSED.
+Pre-handoff verification results are taken from the agents' reports in each rollout issue's comments (agent-reported, not re-run here). All six external issues are CLOSED.
 
 ## Ordering (#778 instruction: parser fix first, then per-repo rollout; #777 live adoption before enabling more repos)
 
