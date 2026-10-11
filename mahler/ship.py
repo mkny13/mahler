@@ -1096,8 +1096,13 @@ def recover_capacity_waits(ctx, project):
             role = marker["role"]
             if role == "review":
                 view = ctx.gh(project).pr_view(item["pr"])
-                pin, size, exclude = _review_route(ctx, project, item, view.get("headRefOid") or "")
-                route = dict(pin=pin, size=size, exclude=exclude)
+                route, _, waiting, _ = _review_preference(
+                    ctx, project, item, view.get("headRefOid") or "", busy)
+                if waiting and route["pin"] and not router.preferred_for_project(
+                        cfg, led, pol, "review", route["pin"], busy=busy,
+                        size=route["size"], exclude=route["exclude"],
+                        burst_lines=ctx.burst_lines):
+                    continue
             elif role == "design":
                 size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
                              if l.startswith("size:")), None)
@@ -1184,6 +1189,39 @@ def _review_route(ctx, project, item, sha):
     return None, size, exclude
 
 
+REVIEW_PIN_WAIT = timedelta(hours=6)
+
+
+def _review_preference(ctx, project, item, sha, busy=(), *, persist=False):
+    """Resolve the automatic risk preference; diagnostics only read its clock."""
+    led, cfg = ctx.led, ctx.cfg
+    pin, size, exclude = _review_route(ctx, project, item, sha)
+    route = dict(pin=pin, size=size, exclude=exclude, min_tier=0)
+    key = f"review-pin:{project}#{item['number']}:{item['pr']}:{sha}"
+    if (not router.risk_min_tier(row_get(item, "title", ""))
+            or router.platform_slot(cfg, "claude") in
+            {router.platform_slot(cfg, name) for name in exclude}):
+        return route, key, {}, False
+    # Do not turn a preference into approval, or bypass account/route gates.
+    preferred = router.preferred_for_project(
+        cfg, led, ctx.policy(project), "review", "claude", busy=busy,
+        size=size, burst_lines=ctx.burst_lines, exclude=exclude)
+    if preferred:
+        route["pin"] = preferred
+        return route, key, _kv_json(led, key), False
+    wait = _kv_json(led, key)
+    if not wait:
+        diag = router.diagnose(cfg, led, ctx.policy(project), "review",
+                               busy=busy, size=size, exclude=exclude,
+                               burst_lines=ctx.burst_lines)
+        wait = {"at": iso(led.now()), "reason": ", ".join(diag.get("claude", ["missing"]))}
+        if persist and not ctx.dry_run:
+            led.set_kv(key, json.dumps(wait))
+    expired = led.now() - parse(wait["at"]) >= REVIEW_PIN_WAIT
+    route.update(pin=None if expired else "claude", min_tier=2 if expired else 0)
+    return route, key, wait, expired
+
+
 def _start_review_run(ctx, project, item, pr, view, sha):
     """Start DESIGN D11's review run: a different platform from whichever
     one produced this PR's last build/fix run, so the review is a genuine
@@ -1193,38 +1231,47 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     head = view.get("headRefName") or item["branch"]
     active = led.active_runs()
     busy = busy_platforms(cfg, active)
-    pin, size, exclude = _review_route(ctx, project, item, sha)
+    if ctx.dry_run or any(r["project"] == project and r["number"] == n for r in active):
+        return
+    route, pin_key, pin_wait, fallback = _review_preference(
+        ctx, project, item, sha, busy, persist=True)
+    pin, size, exclude = route["pin"], route["size"], route["exclude"]
+    tier = route["min_tier"]
     wait_key, ping_key = f"review-wait:{project}#{n}", f"review-pinged:{project}#{n}"
     capacity = router.capacity_recovery(
-        cfg, led, pol, "review", pin, busy, size=size,
+        cfg, led, pol, "review", pin, busy, size=size, min_tier=tier,
         burst_lines=ctx.burst_lines, exclude=exclude)
     full = len(active) >= cfg["concurrency"]["total"]
+    if pin_wait and pin and not router.preferred_for_project(
+            cfg, led, pol, "review", "claude", busy=busy, size=size,
+            burst_lines=ctx.burst_lines, exclude=exclude):
+        deadline = parse(pin_wait["at"]) + REVIEW_PIN_WAIT
+        recovery = min(capacity[1], deadline) if capacity[1] else deadline
+        retry = min(capacity[2], deadline) if capacity[2] else None
+        # Missing/unknown Claude is still a bounded preference, not an owner gate.
+        _capacity_wait(ctx, project, item, wait_key, sha, pin_wait["reason"],
+                       "review", (["claude"], recovery, retry))
+        return
     if full or not capacity[0] or capacity[2]:
         _capacity_wait(ctx, project, item, wait_key, sha,
                        "every run slot is busy" if full else "no eligible platform for review",
-                       "review", (capacity[0], None, None) if full else capacity)
+                       "review", (capacity[0], None, None) if full else capacity, tier)
         return
     # Prefer another reviewer for a metadata-only fix, but never turn that
     # preference into a capacity wait or weaken builder/slot independence.
     previous = _kv_json(led, f"reviewdone:{project}#{n}:{pr}:{sha}").get("reviewer")
-    preferred = None
-    if router.risk_min_tier(row_get(item, "title", "")) > 0:
-        preferred = router.preferred_for_project(
-            cfg, led, pol, "review", "claude", busy=busy, size=size,
-            burst_lines=ctx.burst_lines, exclude=exclude | ({previous} if previous else set()))
     platform, reasons = router.pick_for_project(
-        cfg, led, pol, "review", pin, busy, size=size,
+        cfg, led, pol, "review", pin, busy, size=size, min_tier=tier,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines,
         exclude=exclude | ({previous} if previous else set()))
-    platform = preferred or platform
     if not platform and previous:
         platform, reasons = router.pick_for_project(
-            cfg, led, pol, "review", pin, busy, size=size,
+            cfg, led, pol, "review", pin, busy, size=size, min_tier=tier,
             scorecard_rows=getattr(ctx, "scorecard_rows", None),
             burst_lines=ctx.burst_lines, exclude=exclude)
     if not platform:
         detail = "; ".join(reasons) or "no eligible platform for review"
-        _capacity_wait(ctx, project, item, wait_key, sha, detail, "review", capacity)
+        _capacity_wait(ctx, project, item, wait_key, sha, detail, "review", capacity, tier)
         return
     conductor = led.lease(project, n)
     handoff_from = ((CONDUCTOR, conductor["epoch"])
@@ -1235,6 +1282,16 @@ def _start_review_run(ctx, project, item, pr, view, sha):
              context=review.start_context(ctx, project, item, pr, sha)):
         led.set_kv(f"review:{project}#{n}", json.dumps({"sha": sha, "pr": pr,
             "run_id": row_get(led.last_run(project, n, roles=("review",)) or {}, "id")}))
+        if fallback:
+            evidence_key = pin_key + ":launched"
+            if not led.get_kv(evidence_key):
+                led.event("review_pin_fallback", project, n, json.dumps({
+                    "pr": pr, "sha": sha, "pin": "claude", "reason": pin_wait["reason"],
+                    "wait_seconds": (led.now() - parse(pin_wait["at"])).total_seconds(),
+                    "reviewer": platform,
+                }))
+                led.set_kv(evidence_key, "1")
+        led.set_kv(pin_key, "")
         led.set_kv(wait_key, "")
         led.set_kv(ping_key, "")
 
@@ -1243,7 +1300,6 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
                    capacity, required_tier=None):
     """Persist a retryable wait; only configuration or unknown backstop escalates."""
     led, n = ctx.led, item["number"]
-    _observe_wait(ctx, project, item, role, required_tier)
     if role == "fix":
         led.release(project, n, holder=CONDUCTOR)
     previous = _kv_json(led, status_key)
@@ -1259,6 +1315,7 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
         "tier": required_tier, "retry_at": iso(retry) if retry else None,
         "recovery_at": iso(recovery) if recovery else None,
     }))
+    _observe_wait(ctx, project, item, role, required_tier)
     ctx.say(f"{project}#{n}: PR #{item['pr']} — {role} waiting: {reason}")
     if state == "capacity_wait":
         return
@@ -1284,11 +1341,14 @@ def _observe_wait(ctx, project, item, role, required_tier):
                      if l.startswith("size:")), None)
         effective_size = size
         pin, exclude, tier = item["pin"], (), required_tier or 0
-        if role in ("review", "design"):
-            pin, effective_size, exclude = (
-                _review_route(ctx, project, item, "") if role == "review"
-                else (None, size, ()))
-            tier = 0
+        if role == "review":
+            wait = _kv_json(led, f"review-wait:{project}#{item['number']}")
+            route, _, _, _ = _review_preference(
+                ctx, project, item, wait.get("sha", ""), busy)
+            pin, effective_size, exclude, tier = (route[k] for k in
+                                                 ("pin", "size", "exclude", "min_tier"))
+        elif role == "design":
+            pin, tier = None, 0
         elif size == "l" or (tier >= 2 and size == "s"):
             effective_size = "m"
         diag = router.diagnose(cfg, led, pol, role, pin, busy, size=effective_size,
