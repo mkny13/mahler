@@ -394,6 +394,11 @@ def usage_state(led, name, pconf, burst_lines=None):
                                   f"(in {fmt_countdown(until - now)})")
         return "soft", (f"on hold until {until.astimezone():%H:%M} "
                         f"(in {fmt_countdown(until - now)}) ({hold_label(led, name)})")
+    if pconf.get("api_credits"):
+        # D41: dollars against the cycle's allowance or burst line, not a
+        # percentage window; holds above still apply first.
+        from . import api_credits
+        return api_credits.usage_state(led, name, pconf)
     if not is_metered(led, name, pconf):
         # no meter: fine unless a quota error put it in the penalty box
         for u in usage.values():
@@ -672,6 +677,10 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             if accounts is not None else candidates(cfg, role, pin, route_burst, account))
     if not pin and measured:
         cand = measured_order(cfg, cand, scorecard_rows or [], role, size, burst_lines)
+    if not pin and role == "build":
+        # D41: Team API credits about to expire go first, like a D23 burst.
+        from . import api_credits
+        cand = api_credits.promote(cfg, led, cand)
     excluded_slots = {platform_slot(cfg, name) for name in exclude}
     for name in cand:
         if name in busy or platform_slot(cfg, name) in excluded_slots:

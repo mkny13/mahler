@@ -45,6 +45,7 @@ PLATFORM_ALIASES = {
     "codex-low": ["codex cli", "codex-low", "gpt-5.6-luna"],
     "codex": ["codex cli", "codex"],
     "codex-high": ["codex-high"],
+    "claude-api": ["claude-api", "team api credits"],
 }
 
 

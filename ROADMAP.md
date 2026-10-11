@@ -410,6 +410,14 @@ still open is tuning: keep it only where it pays for itself.
     so the free tier runs on a stored `kiro-cli login`.
   - Meta Muse Code was evaluated on 2026-10-01 and not pursued: it has a headless `muse exec` and
     API-key auth, but no bundled free quota was found, and D8 never spends real money.
+- Team-plan Claude API credits (mahler#903, DESIGN D41): `api_credits.Gateway`, confirmed
+  grants, transactional reservations, crash/retry accounting and confirmed-grant rollover are
+  built and tested, account question answered ("Yes, credits only"). The live trial (gated on
+  Mike's go-ahead, 2026-10-10) ruled out Cline (no base URL for its `anthropic` provider).
+  The harness is now the Agent SDK runner (`sdk_runner/`, `kind = "agent-sdk"`, mahler#918),
+  wired into the gateway and platform adapter, installed on the mini, and through the gateway
+  in live trial 2 (2026-10-10, $0.0035). Remaining before `enabled = true`: the end-to-end
+  trial through a real Mahler run on a work project.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.

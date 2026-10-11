@@ -201,6 +201,78 @@ class StatusCliTests(unittest.TestCase):
         self.assertIn("D23", output)
         self.assertIn("burst", output)
 
+    def test_status_shows_api_credits_detail_without_secrets(self):
+        """D41/mahler#903: text and JSON status show the confirmed grant,
+        reserved/settled spend and blocking reason, never key material."""
+        from mahler import config as config_mod
+        from mahler.ledger import iso as iso_
+        toml_text = """
+[accounts.work]
+env = {}
+routing = { build = ["work-claude-api"] }
+
+[platforms.work-claude-api]
+from = "claude-api"
+account = "work"
+enabled = true
+
+[api_credits]
+enabled = true
+workspace_id = "wrkspc_mahler"
+api_key_expires = "2027-10-16"
+admin_key_expires = "2027-10-16"
+
+[[api_credits.grants]]
+granted_at = "2026-10-09"
+expires_at = "2026-10-15T00:00:00Z"
+pool_usd = 260
+
+[projects.work-only]
+enabled = false
+account = "work"
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w") as fh:
+                fh.write(toml_text)
+            cfg = config_mod.load(path)
+        clock = lambda: datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp:
+            led = Ledger(os.path.join(tmp, "status.db"), clock=clock)
+            try:
+                led.set_kv("api_credits:key:claude-api@work",
+                          json.dumps({"status": "ok", "at": iso_(clock())}))
+                led.reserve_credit("claude-api@work", "2026-10-09", "attempt-1", 2.5, 20.0, run_id=1)
+
+                class Args:
+                    json = False
+                    project = None
+
+                buf = io.StringIO()
+                with patch("sys.stdout", buf):
+                    cli.cmd_status(Args(), cfg, led)
+                output = buf.getvalue()
+                self.assertIn("API credits (claude-api@work, D41)", output)
+                self.assertIn("confirmed", output)
+                self.assertIn("reserved/settled", output)
+                self.assertNotIn("sk-ant", output)
+
+                class JsonArgs:
+                    json = True
+                    project = None
+
+                buf2 = io.StringIO()
+                with patch("sys.stdout", buf2):
+                    cli.cmd_status(JsonArgs(), cfg, led)
+                payload = json.loads(buf2.getvalue())
+                snap = payload["api_credits"]["work-claude-api"]
+                self.assertTrue(snap["grant_confirmed"])
+                self.assertEqual(snap["grant_id"], "2026-10-09")
+                self.assertGreaterEqual(snap["reserved_exposure_usd"], 2.5)
+                self.assertNotIn("sk-ant", buf2.getvalue())
+            finally:
+                led.close()
+
 
 class DaemonUpdateStatusTests(unittest.TestCase):
     def setUp(self):

@@ -1,5 +1,6 @@
 import console_snapshot
 """Models state from synthetic run history."""
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -285,3 +286,61 @@ class WeeklyQuotaTests(unittest.TestCase):
         self.led.record_usage('dst', 'weekly', 42, '2026-03-08T05:00:00Z')
         self.assertEqual(self.view()['lines'], [
             {'day': 'Sun', 'time': '01:00', 'names': ['dst']}])
+
+
+class ApiCreditsRowTests(unittest.TestCase):
+    """D41/mahler#903: the console's quota row for a credits platform shows
+    the confirmed grant and spend, built from the same api_credits.snapshot
+    used by `mahler status`."""
+
+    def setUp(self):
+        from mahler import config as config_mod
+        import os
+        import tempfile
+        toml_text = """
+[accounts.work]
+env = {}
+routing = { build = ["work-claude-api"] }
+
+[platforms.work-claude-api]
+from = "claude-api"
+account = "work"
+enabled = true
+
+[api_credits]
+enabled = true
+workspace_id = "wrkspc_mahler"
+
+[[api_credits.grants]]
+granted_at = "2026-10-09"
+expires_at = "2026-10-15T00:00:00Z"
+pool_usd = 260
+
+[projects.work-only]
+enabled = false
+account = "work"
+"""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "config.toml")
+        with open(path, "w") as fh:
+            fh.write(toml_text)
+        self.cfg = config_mod.load(path)
+        self.now = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        self.led.set_kv("api_credits:key:claude-api@work",
+                        json.dumps({"status": "ok", "at": iso(self.now)}))
+
+    def test_row_shows_grant_and_spend_without_secrets(self):
+        self.led.reserve_credit("claude-api@work", "2026-10-09", "attempt-1", 3.0, 20.0, run_id=1)
+        row = state._quota_row(self.cfg, self.led, {}, "work-claude-api",
+                               ["work-claude-api"], {"work-claude-api"}, {})
+        self.assertIn("grant ends", row["detail"])
+        self.assertNotIn("sk-ant", row["detail"])
+
+    def test_row_flags_no_confirmed_grant(self):
+        self.now = datetime(2026, 12, 1, tzinfo=timezone.utc)
+        row = state._quota_row(self.cfg, self.led, {}, "work-claude-api",
+                               ["work-claude-api"], {"work-claude-api"}, {})
+        self.assertIn("no confirmed grant", row["detail"])

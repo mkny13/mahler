@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import config, presence, review, router, screenshots, warmup
+from .. import api_credits, config, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -495,6 +495,13 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
     codex = router.codex_detail(led, name, pconf)
     if codex:
         row["detail"] += " · " + codex
+    if pconf.get("api_credits") and pconf.get("credit_pool"):
+        # D41: spend so far, the line in force and the cycle reset, in dollars
+        snap = api_credits.snapshot(led, name, pconf)
+        tone = {"ok": "acc", "soft": "warn", "stale": "mut"}.get(snap["state"], "bad")
+        row.update(detail=api_credits.describe(snap, now), tone=tone,
+                   label="burst" if snap["burst"] else row.get("label", "—"),
+                   until=parse(snap["cycle_end"]))
     if worst:
         row["soft_pct"] = worst["soft"]
     row["windows"] = [{"window": x["window"], "pct": x["pct"], "soft": x["soft"],

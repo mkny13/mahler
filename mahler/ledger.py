@@ -201,6 +201,22 @@ CREATE TABLE IF NOT EXISTS completion_evidence (
     PRIMARY KEY (project, number)
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS credit_reservations (
+    id          INTEGER PRIMARY KEY,
+    group_name  TEXT NOT NULL,        -- the spend pool's quota group (D41)
+    grant_id    TEXT NOT NULL,        -- the confirmed grant this attempt draws against
+    attempt_key TEXT NOT NULL,        -- idempotency key: one per HTTP attempt, retries get their own
+    run_id      INTEGER,
+    amount_usd  REAL NOT NULL,        -- the pre-request worst-case reservation
+    settled_usd REAL,                 -- the actual cost, once known
+    status      TEXT NOT NULL,        -- reserved | settled | released
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    note        TEXT,
+    UNIQUE (group_name, grant_id, attempt_key)
+);
+CREATE INDEX IF NOT EXISTS idx_credit_reservations_group
+    ON credit_reservations(group_name, grant_id, status);
 CREATE TABLE IF NOT EXISTS releases (
     id             INTEGER PRIMARY KEY,
     project        TEXT NOT NULL,
@@ -899,6 +915,115 @@ class Ledger:
 
     def paused(self):
         return self.get_kv("paused") == "1"
+
+    # ---------- credit reservations (D41, mahler#903) ----------
+    #
+    # A transactional ceiling on a shared money pool: before a run's HTTP
+    # request is forwarded, it reserves its worst-case cost; afterward it
+    # settles to the actual cost or releases an attempt that never spent.
+    # Every call is keyed by (group, grant, attempt) so a retry reserves
+    # separately and a duplicate settle/release is a no-op, and every
+    # mutation runs inside one IMMEDIATE transaction so two concurrent
+    # connections competing for the last of the budget serialize instead of
+    # both succeeding (D6's lease pattern, applied to money).
+
+    def reserve_credit(self, group, grant_id, attempt_key, amount_usd, ceiling_usd, run_id=None):
+        """Reserve `amount_usd` of headroom under `ceiling_usd` for one
+        attempt. A replay of the same (group, grant_id, attempt_key) returns
+        the existing reservation instead of reserving twice.
+
+        -> (reservation_id, info). On refusal, reservation_id is None and
+        info carries 'remaining_usd'. A replay carries info['existing']=True.
+        """
+        now = self.now()
+        with self._tx():
+            existing = self.q1(
+                "SELECT * FROM credit_reservations WHERE group_name=? AND grant_id=? "
+                "AND attempt_key=?", (group, grant_id, attempt_key))
+            if existing is not None:
+                return existing["id"], {"existing": True}
+            used = self.credit_exposure(group, grant_id)
+            if used + amount_usd > ceiling_usd + 1e-9:
+                return None, {"remaining_usd": round(ceiling_usd - used, 4)}
+            cur = self.con.execute(
+                "INSERT INTO credit_reservations (group_name, grant_id, attempt_key, run_id, "
+                "amount_usd, status, created_at, updated_at) VALUES (?,?,?,?,?,'reserved',?,?)",
+                (group, grant_id, attempt_key, run_id, amount_usd, iso(now), iso(now)))
+            rid = cur.lastrowid
+            self.event("credit_reserved", detail={"group": group, "grant_id": grant_id,
+                                                   "attempt_key": attempt_key,
+                                                   "amount_usd": amount_usd, "run_id": run_id})
+            return rid, {}
+
+    def settle_credit(self, group, grant_id, attempt_key, settled_usd):
+        """Resolve a reservation to its actual cost. Idempotent: settling an
+        already-settled or already-released attempt leaves it unchanged — a
+        duplicate settle (a re-run watchdog pass, a retried finalize) never
+        double-counts or reopens a resolved reservation."""
+        now = self.now()
+        with self._tx():
+            row = self.q1(
+                "SELECT * FROM credit_reservations WHERE group_name=? AND grant_id=? "
+                "AND attempt_key=?", (group, grant_id, attempt_key))
+            if row is None or row["status"] != "reserved":
+                return row
+            self.con.execute(
+                "UPDATE credit_reservations SET status='settled', settled_usd=?, updated_at=? "
+                "WHERE id=?", (settled_usd, iso(now), row["id"]))
+            self.event("credit_settled", detail={"group": group, "grant_id": grant_id,
+                                                 "attempt_key": attempt_key,
+                                                 "settled_usd": settled_usd})
+            return self.q1("SELECT * FROM credit_reservations WHERE id=?", (row["id"],))
+
+    def release_credit(self, group, grant_id, attempt_key, note=None):
+        """Free a reservation that never spent anything (refused before
+        dispatch, a pre-usage error). Idempotent and safe on an unknown or
+        already-resolved attempt_key: a missing usage report or an ambiguous
+        outcome must never be released by accident, so this only ever moves
+        a 'reserved' row — it is the caller's job to decide that nothing was
+        spent before calling it."""
+        now = self.now()
+        with self._tx():
+            row = self.q1(
+                "SELECT * FROM credit_reservations WHERE group_name=? AND grant_id=? "
+                "AND attempt_key=?", (group, grant_id, attempt_key))
+            if row is None or row["status"] != "reserved":
+                return row
+            self.con.execute(
+                "UPDATE credit_reservations SET status='released', settled_usd=0, updated_at=?, "
+                "note=? WHERE id=?", (iso(now), note, row["id"]))
+            self.event("credit_released", detail={"group": group, "grant_id": grant_id,
+                                                   "attempt_key": attempt_key, "note": note})
+            return self.q1("SELECT * FROM credit_reservations WHERE id=?", (row["id"],))
+
+    def credit_exposure(self, group, grant_id):
+        """Worst-case Mahler spend against this grant right now: settled
+        actuals plus every reservation still unresolved. A crash or an
+        ambiguous dispatch leaves its reservation 'reserved', so it keeps
+        counting against the ceiling until something settles or releases
+        it — never silently forgotten (D41 step 4)."""
+        rows = self.q(
+            "SELECT status, amount_usd, settled_usd FROM credit_reservations "
+            "WHERE group_name=? AND grant_id=? AND status<>'released'", (group, grant_id))
+        total = 0.0
+        for r in rows:
+            if r["status"] == "settled" and r["settled_usd"] is not None:
+                total += r["settled_usd"]
+            else:
+                total += r["amount_usd"]
+        return total
+
+    def unresolved_credit_reservations(self, group, exclude_grant_id=None):
+        """'reserved' rows that were never settled or released — surfaced so
+        a stuck attempt from a past grant isn't silently dropped on rollover
+        (D41 step 4: a confirmed new grant does not erase unresolved old
+        charges)."""
+        sql = "SELECT * FROM credit_reservations WHERE group_name=? AND status='reserved'"
+        args = [group]
+        if exclude_grant_id is not None:
+            sql += " AND grant_id<>?"
+            args.append(exclude_grant_id)
+        return self.q(sql + " ORDER BY created_at", args)
 
     # ---------- items ----------
 

@@ -882,3 +882,58 @@ class KiroFixtureTests(unittest.TestCase):
         res = platforms.read_log(self.FIXTURE, "kiro")
         self.assertEqual(res["usage"], [])
         self.assertEqual(res["quota_used"], {})
+
+
+class AgentSdkTests(unittest.TestCase):
+    CONF = {"kind": "agent-sdk", "model": "claude-sonnet-5-5",
+            "credit_pool": {"max_output_tokens": 4096}}
+
+    def _log(self, lines):
+        fd, path = tempfile.mkstemp()
+        self.addCleanup(os.unlink, path)
+        with os.fdopen(fd, "w") as fh:
+            fh.write("\n".join(json.dumps(x) if not isinstance(x, str) else x for x in lines))
+        return platforms.read_log(path, "agent-sdk")
+
+    def test_argv(self):
+        with mock.patch.object(platforms, "sdk_run_exe", return_value="/bin/mahler-sdk-run"):
+            argv = platforms.argv_for(self.CONF, "p", "/wt", "build", 60, run_dir="/runs/1")
+        self.assertEqual(argv[:9], ["/bin/mahler-sdk-run", "--prompt-file", "/runs/1/prompt.md",
+                                    "--cwd", "/wt", "--model", "claude-sonnet-5-5",
+                                    "--project-settings", "--max-output-tokens"])
+        self.assertEqual(argv[9], "4096")
+        denied = [argv[i + 1] for i, a in enumerate(argv) if a == "--disallowed-tool"]
+        self.assertEqual(denied, platforms.CLAUDE_DENY)
+
+    def test_no_max_tokens_and_not_resumable(self):
+        conf = {"kind": "agent-sdk", "model": "m"}
+        with mock.patch.object(platforms, "sdk_run_exe", return_value="x"):
+            self.assertNotIn("--max-output-tokens", platforms.argv_for(conf, "p", "/wt", "build", 60))
+        self.assertFalse(platforms.supports_resume(conf)) if hasattr(platforms, "supports_resume") else None
+        with self.assertRaises(ValueError):
+            platforms.resume_argv_for(conf, "p", "/wt", "build", 60)
+
+    def test_read_log_text_status_and_cost(self):
+        log = self._log([
+            {"type": "AssistantMessage", "content": [{"text": "working"}]},
+            {"type": "AssistantMessage", "content": [{"text": "STATUS: DONE"}, {"id": "tool"}]},
+            {"type": "result", "usage": {"input_tokens": 10, "output_tokens": 5},
+             "total_cost_usd": 0.12, "is_error": False}])
+        self.assertTrue(log["ok"])
+        self.assertEqual(log["final"], "STATUS: DONE")
+        self.assertEqual(log["cost_usd"], 0.12)
+        self.assertEqual(log["tokens"]["out"], 5)
+        self.assertFalse(log["credit_exhausted"])
+
+    def test_read_log_credit_error(self):
+        log = self._log([{"type": "result", "usage": None, "total_cost_usd": None,
+                          "is_error": True,
+                          "credit_error": "Your credit balance is too low to access the API"}])
+        self.assertFalse(log["ok"])
+        self.assertTrue(log["credit_exhausted"])
+
+    def test_config_default(self):
+        conf = config.load("/nonexistent/config.toml")["platforms"]["claude-api"]
+        self.assertEqual(conf["kind"], "agent-sdk")
+        self.assertFalse(conf["enabled"])
+        self.assertNotIn("provider", conf)
