@@ -3,6 +3,7 @@ import copy
 import io
 from pathlib import Path
 import tempfile
+import tomllib
 import unittest
 from contextlib import closing, redirect_stdout
 from types import SimpleNamespace
@@ -497,6 +498,7 @@ class PlatformVariantTests(unittest.TestCase):
             "codex-low/gpt-6-luna/medium", "codex-low/gpt-6-luna/high",
             "codex/gpt-5.6-terra/default", "codex/gpt-6-luna/high",
             "codex/gpt-6-sol/low",
+            "copilot/auto/default", "copilot/claude-sonnet-5.5/default",
         })
         self.assertEqual(before - after, set())
 
@@ -601,3 +603,56 @@ class BuiltInVariantCandidatesTests(unittest.TestCase):
         self.assertEqual(router.candidates(cfg, "sort"),
                          ["claude", "agy-gemini", "agy-claude"])
         self.assertEqual(router.candidates(cfg, "plan"), ["claude-opus"])
+
+
+class CopilotCandidatesTests(unittest.TestCase):
+    def test_documented_overrides_and_inheritance(self):
+        example = (Path(__file__).resolve().parents[1] / "config.example.toml").read_text()
+        block = example.split('# [platforms.copilot]\n', 1)[1].split('# metered = false', 1)[0]
+        documented = tomllib.loads('[platforms.copilot]\n' + '\n'.join(
+            line.removeprefix('# ') for line in block.splitlines()
+            if line.startswith(('# variants', '# [platforms.', '# from', '# account'))))
+        personal = ["auto", "claude-sonnet-5.5"]
+        work = ["auto", "gpt-6.1-sol", "claude-sonnet-5.5"]
+        self.assertEqual(documented['platforms']['copilot']['variants'], personal)
+        self.assertEqual(documented['platforms']['work-copilot']['variants'], work)
+        self.assertNotIn('work-copilot', config.DEFAULTS['platforms'])
+        for override in (False, True):
+            cfg = copy.deepcopy(config.DEFAULTS)
+            declaration = copy.deepcopy(documented['platforms']['work-copilot'])
+            if not override:
+                declaration.pop('variants')
+            cfg['platforms']['work-copilot'] = declaration
+            cfg = config.resolve_platforms(cfg)
+            for slot, models, account, group in (
+                    ('copilot', personal, 'personal', 'copilot'),
+                    ('work-copilot', work if override else personal, 'work', 'copilot@work')):
+                base = cfg['platforms'][slot]
+                self.assertEqual(base['variants'], models)
+                self.assertEqual(base['model'], 'auto')
+                self.assertEqual(base['auto_tier'], 'balance')
+                self.assertEqual([name for name in cfg['platforms'] if name.startswith(slot + '/')],
+                                 [f'{slot}/{model}/default' for model in models])
+                for model in models:
+                    name = f'{slot}/{model}/default'
+                    variant = cfg['platforms'][name]
+                    self.assertEqual(variant['model'], model)
+                    self.assertEqual(platforms.effort_value(variant, 'build') or 'default', 'default')
+                    self.assertEqual(config.account_of(variant), account)
+                    self.assertEqual(variant['quota_group'], group)
+                    self.assertEqual(router.platform_slot(cfg, name), slot)
+                    for key, value in dict(tier=2, max_size='s', metered=True,
+                                           monthly_cap_credits=1500, windows=['monthly'],
+                                           soft={'monthly': 80}, hard={'monthly': 95},
+                                           stale_minutes=360, backoff_minutes=60).items():
+                        self.assertEqual(variant[key], value)
+
+    def test_dotted_scoring_prices_match_example(self):
+        path = Path(__file__).resolve().parents[1] / 'config.example.toml'
+        prices = tomllib.loads(path.read_text())['prices']
+        for model, cached in [('gpt-6.1-sol', .10), ('claude-sonnet-5.5', .20)]:
+            expected = {'in': 2., 'cached_in': cached, 'out': 10.}
+            self.assertEqual(config.DEFAULTS['prices'][model], expected)
+            self.assertEqual(prices[model], expected)
+        self.assertIn('claude-sonnet-5-5', prices)
+        self.assertIn('claude-sonnet-5-5', config.DEFAULTS['prices'])

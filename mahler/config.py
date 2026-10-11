@@ -138,6 +138,11 @@ DEFAULTS = {
     # their prices are listed here too. `cached_in` defaults to `in`;
     # reasoning tokens use `out`.
     "prices": {
+        # API-equivalent scoring, not Copilot billing. Evidence 2026-10-10 (#908).
+        # https://developers.openai.com/api/docs/changelog
+        "gpt-6.1-sol": {"in": 2.00, "cached_in": 0.10, "out": 10.00},
+        # https://www.anthropic.com/claude-sonnet-5-5
+        "claude-sonnet-5.5": {"in": 2.00, "cached_in": 0.20, "out": 10.00},
         "gpt-6-luna": {"in": 0.10, "out": 0.50},
         "gpt-6-sol": {"in": 2.00, "out": 10.00},
         "claude-opus-5-5": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
@@ -450,6 +455,8 @@ DEFAULTS["platforms"]["kilo"] = {
 # turns, not a capability guarantee — copilot-high below stays pinned instead.
 DEFAULTS["platforms"]["copilot"] = {
     "enabled": True, "kind": "copilot", "model": "auto", "auto_tier": "balance",
+    # Verified personal/work 2026-10-10; GPT-6.1 Sol needs the work override (#908).
+    "variants": ["auto", "claude-sonnet-5.5"],
     "metered": True, "windows": ["monthly"], "monthly_cap_credits": 1500,
     "backoff_minutes": 60, "max_size": "s", "tier": 2,
     "soft": {"monthly": 80}, "hard": {"monthly": 95},

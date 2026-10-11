@@ -368,9 +368,17 @@ screenshot_path = []              # inherited operator absolute executable direc
 # account = "work"
 # model = "gpt-6-astra"
 # tier = 5
+# After merge, the owner applies these overrides to ~/.mahler/config.toml,
+# including installations with existing variant overrides. Candidates only:
+# auto stays incumbent; default list-order routes are unchanged.
+# [platforms.copilot]
+# variants = ["auto", "claude-sonnet-5.5"]
+# Without the explicit work override, work inherits only auto and Sonnet.
+# GPT-6.1 Sol was accepted only on work (Copilot CLI 1.0.84-6, 2026-10-10).
 # [platforms.work-copilot]
 # from = "copilot"
 # account = "work"
+# variants = ["auto", "gpt-6.1-sol", "claude-sonnet-5.5"]
 # metered = false                   # manual override for an org seat or no work gh login
 # With metering enabled, an empty personal AI-credits report automatically shows
 # no quota signal and is retried after stale_minutes (Copilot default 360). It cannot
@@ -445,6 +453,19 @@ screenshot_path = []              # inherited operator absolute executable direc
 # prices are listed here too. Unknown prices stay NULL, never zero.
 # cached_in defaults to in; reasoning tokens use out. Quota cost weights are
 # applied by scorecard readers, never to the raw run cost stored in the ledger.
+# API-equivalent scoring prices, not Copilot billing; evidence 2026-10-10 (#908).
+# https://developers.openai.com/api/docs/changelog
+[prices."gpt-6.1-sol"]
+in = 2.00
+cached_in = 0.10
+out = 10.00
+
+# https://www.anthropic.com/claude-sonnet-5-5 (evidence 2026-10-10)
+[prices."claude-sonnet-5.5"]
+in = 2.00
+cached_in = 0.20
+out = 10.00
+
 [prices."gpt-6-luna"]
 in = 0.10
 out = 0.50
