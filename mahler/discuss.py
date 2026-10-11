@@ -210,7 +210,7 @@ class Supervisor:
         with closing(Ledger(self.db)) as led:
             while not self.stop.is_set():
                 try:
-                    env = dict(os.environ, MAHLER_DISCUSSION_PROCESS_FILE=self.db + '.discussion-process')
+                    env = dict(config.discussion_env(), MAHLER_DISCUSSION_PROCESS_FILE=self.db + '.discussion-process')
                     self.child = subprocess.Popen([sys.executable, '-m', 'mahler.discuss', '--db', self.db, '--config', config.CONFIG_PATH],
                         cwd=config.REPO_ROOT, env=env, start_new_session=True)
                     led.set_kv('discussion:worker', 'Running')
