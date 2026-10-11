@@ -1855,11 +1855,29 @@ def _hot_idle_reasons(hot, pending, now):
     return reasons
 
 
+_ITEM_REASON = re.compile(r"^([\w.-]+#\d+) waits\b")
+_COUNT_WORDS = ("", "One", "Two", "Three", "Four")
+
+
+def _binding_reasons(reasons):
+    """Collapse reasons that are facets of one binding (several per-item
+    reasons for the same item, e.g. area and files) into one entry each."""
+    seen, out = set(), []
+    for r in reasons:
+        m = _ITEM_REASON.match(r.get("text", ""))
+        if m:
+            if m.group(1) in seen:
+                continue
+            seen.add(m.group(1))
+        out.append(r)
+    return out
+
+
 def _idle_headline(reasons):
-    n = len(reasons)
+    n = len(_binding_reasons(reasons))
     if not n:
         return "Nothing is running."
-    word = NUMBER_WORDS[n] if n < len(NUMBER_WORDS) else str(n)
+    word = _COUNT_WORDS[n] if n < len(_COUNT_WORDS) else "A few" if n < 7 else "Several"
     return (f"Nothing is running. {word} thing{'s are' if n != 1 else ' is'} "
             "holding it:")
 
