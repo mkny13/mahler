@@ -131,6 +131,11 @@ class DiscussionTests(unittest.TestCase):
                              (iso(self.led.now() - timedelta(seconds=1)), turn['id']))
         self.assertEqual(self.run_turn(turn)['error']['code'], 'timeout')
 
+    def test_lock_file_removed_on_clean_exit(self):
+        stopped = threading.Event(); stopped.set()
+        self.assertEqual(discuss.worker(self.db, lambda: self.cfg, stopped), 0)
+        self.assertFalse(os.path.exists(self.db + '.discussion.lock'))
+
     def test_duplicate_lock(self):
         with open(self.db + '.discussion.lock', 'a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
