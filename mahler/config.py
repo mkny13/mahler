@@ -1446,5 +1446,6 @@ def discussion_env(base=None):
     source = os.environ if base is None else base
     env = {k: source[k] for k in ('PATH', 'LANG', 'LC_ALL', 'TMPDIR', 'TERM') if k in source}
     env['HOME'] = HOME
-    env['CLAUDE_CONFIG_DIR'] = os.path.join(HOME, '.claude')
+    # Leave CLAUDE_CONFIG_DIR unset so the CLI uses its default personal
+    # directory and default keychain service, rather than a named profile.
     return env

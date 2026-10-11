@@ -93,7 +93,7 @@ class DiscussionTests(unittest.TestCase):
         base.update(HOME='/work', CLAUDE_CODE_USE_BEDROCK='1', AWS_SECRET_ACCESS_KEY='secret',
                     CLAUDE_CODE_SIMPLE='1', PATH='/bin')
         env = config.discussion_env(base)
-        self.assertEqual(env, {'HOME': config.HOME, 'CLAUDE_CONFIG_DIR': config.HOME + '/.claude', 'PATH': '/bin'})
+        self.assertEqual(env, {'HOME': config.HOME, 'PATH': '/bin'})
         self.run_turn(self.turn())
         argv = self.calls[0][0]
         self.assertEqual(argv[argv.index('--tools') + 1], '')
