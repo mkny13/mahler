@@ -1106,6 +1106,16 @@ class CostReportTests(Base):
             api_credits.fetch_cost("k", self.NOW, max_pages=2,
                                    opener=opener_for([page([], True, "a"), page([], True, "b")]))
 
+    def test_default_page_bound_covers_31_pages(self):
+        pages = [page([("100", None)], True, f"p{i}") for i in range(30)] + [page([("100", None)])]
+        calls = []
+        reading = api_credits.fetch_cost("k", self.NOW, opener=opener_for(pages, calls))
+        self.assertEqual(len(calls), 31)
+        self.assertEqual(reading["org_usd"], 31.0)
+        with self.assertRaises(api_credits.CostError):
+            api_credits.fetch_cost("k", self.NOW, opener=opener_for(
+                [page([], True, f"p{i}") for i in range(32)]))
+
     def test_refresh_caches_and_rate_limits(self):
         calls = []
         api_credits.refresh(self.ctx, run=keys(), opener=opener_for([page([("2000", "wrkspc_mahler")])], calls))

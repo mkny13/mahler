@@ -446,7 +446,7 @@ def parse_cost_page(body, workspace_id=""):
     return org, ws
 
 
-def fetch_cost(admin_key, since, workspace_id="", opener=None, timeout=20, max_pages=20):
+def fetch_cost(admin_key, since, workspace_id="", opener=None, timeout=20, max_pages=31):
     """Org-wide (and Mahler workspace) spend since `since`, in USD.
 
     `since` is floored to its UTC day, because the report's buckets are daily:
