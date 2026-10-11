@@ -60,10 +60,14 @@ def hot_hold_activity(led, project, project_path, window, now=None,
     marker = _marker(led, project)
     if marker is None:
         return last_claude_activity(project_path)
-    _ended, exempt = marker
+    ended, exempt = marker
     overall = last_claude_activity(project_path)
-    if exempt is None:                      # legacy marker: all sessions exempt
-        exempt_last, counting = overall, None
+    if exempt is None:                      # legacy marker: old timestamp rule
+        if overall is None or overall <= ended:
+            if retire and (overall is None or now - overall >= window):
+                led.set_kv(HOT_HOLD_END_PREFIX + project, None)
+            return None
+        return overall
     else:
         files = transcripts(project_path)
         mt = [files[f] for f in exempt if f in files]
