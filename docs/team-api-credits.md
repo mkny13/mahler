@@ -41,7 +41,7 @@ current status.
 5. Set both keys' expiry dates in `[api_credits]` (`api_key_expires`, `admin_key_expires`)
    so Mahler can warn before they lapse.
 
-## Qualifying the harness (capped at $0.10 per trial, gated on Mike's go-ahead)
+## Qualifying the harness (each trial capped, gated on Mike's go-ahead)
 
 1. **Done (2026-10-10, trial 1):** confirmed the direct `anthropic` provider can't reach the
    gateway. Ruled out, see Status above.
@@ -50,11 +50,32 @@ current status.
    (`python3.14 sdk_runner/bootstrap/trial-918.py`, keychain unlocked; `--fake-upstream
    host:port` does it for free) left two `credit_reserved`/`credit_settled` pairs in the
    gateway's ledger.
-3. **Next:** an end-to-end run on an enabled work-account project, still capped at
-   $0.10, confirms the whole path: routing, the gateway, settlement and promotional-credit
-   attribution visible in Console billing.
-4. Both trials count inside the $20 allowance. Once both are sanitized and recorded, flip
-   `[api_credits] enabled = true` and add `work-claude-api` to a work project's routing.
+3. **Next (after #928 merges and the daemon self-updates): trial 3, end to end, on
+   mahler#909, capped at $3.** A $0.10 cap can't work for a real run: every request carries
+   Claude Code's ~76 KB of tool definitions plus a growing context, so the gateway's
+   worst-case reservation is $0.20–0.80 per request and a $0.10 ceiling refuses the first
+   one. The trial's live config:
+   - `[api_credits]`: `enabled = true`, `account = "work"`, `allowance_usd = 3` (the trial
+     cap; raise to 20 after), `run_reserve_usd = 1` (the default 5 exceeds a $3 allowance,
+     so no run could start), and the confirmed grant (`granted_at = "2026-10-09"`,
+     `expires_at = "2026-10-15T00:00:00Z"`, `pool_usd = 260`).
+   - `[platforms.work-claude-api]`: `from = "claude-api"`, `account = "work"`,
+     `enabled = true`. Not added to any routing list: #909 carries the
+     `platform:work-claude-api` pin label, so it is the only item that can use it.
+
+   It passes when #909's build run finishes through the gateway with its reservations
+   settled, the run's priced cost and the ledger agree, and Console billing shows the spend
+   against the promotional credits.
+4. Then set `allowance_usd = 20` and `run_reserve_usd` back to its default, and add
+   `work-claude-api` to work projects' routing. Until then the harness isn't in general use.
+
+## Watching spend without the Console
+
+- `mahler status` and the operator console show Mahler's credit spend this grant, the
+  remaining headroom and when the grant expires, once `[api_credits]` is enabled.
+- The third-party Claude Usage Tracker (macOS menu bar) can show Console API spend after
+  signing in to the Console in its settings. Turn on its **API** menu-bar metric; its
+  multi-profile layout shows only session/week. It may not break out promotional credits.
 
 ## Raising the burst cap
 

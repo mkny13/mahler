@@ -2478,7 +2478,10 @@ work.
     regression tests: a single-threaded server that hung on the SDK's second keep-alive
     connection, unserialised handler threads on one ledger connection, and a worst-case
     estimate that ignored tool definitions and tool results (~76 KB per SDK request). What's
-    left is the end-to-end trial through a real Mahler run.
+    left is the end-to-end trial through a real Mahler run: trial 3, mahler#909 pinned to
+    `work-claude-api` with a $3 allowance as its cap. $0.10 can't cover one real request:
+    with tools and context, a worst-case reservation runs $0.20–0.80. `docs/team-api-credits.md`
+    has the trial's config.
   - Trial 1 also corrected the pricing table: `MODEL_PRICING["claude-sonnet-5-5"]` was a guess
     before this trial; Cline's own model registry reported `input:2, output:10, cacheRead:0.1,
     cacheWrite:2.5` (USD/MTok), now the confirmed values. `claude-opus-5` and `claude-haiku-4-5`

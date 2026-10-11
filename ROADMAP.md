@@ -416,8 +416,9 @@ still open is tuning: keep it only where it pays for itself.
   Mike's go-ahead, 2026-10-10) ruled out Cline (no base URL for its `anthropic` provider).
   The harness is now the Agent SDK runner (`sdk_runner/`, `kind = "agent-sdk"`, mahler#918),
   wired into the gateway and platform adapter, installed on the mini, and through the gateway
-  in live trial 2 (2026-10-10, $0.0035). Remaining before `enabled = true`: the end-to-end
-  trial through a real Mahler run on a work project.
+  in live trial 2 (2026-10-10, $0.0035). Remaining before general use: trial 3, the end-to-end
+  build of mahler#909 pinned to `work-claude-api` with a $3 cap, then the $20 allowance and
+  routing.
 - Goals → automatic breakdown into sub-issues.
 - Quota analytics.
 - Self-hosted ntfy.
