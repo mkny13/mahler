@@ -147,6 +147,9 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
             raise TurnError('timeout', 'No reply within 2 minutes.')
         if work:
             from . import discuss_credits
+            # The trusted issue server resolves account identity paths against
+            # the worker's home, independently of the SDK's empty session HOME.
+            mcp['mcpServers']['discussion']['env'] = {'HOME': config.HOME}
             with discuss_credits.authorization(cfg, led, session, turn, token) as (executable, pconf, env, heartbeat):
                 # Gateway setup also consumes the accepted turn's deadline.
                 remaining = (parse(turn['deadline_at']) - led.now()).total_seconds()

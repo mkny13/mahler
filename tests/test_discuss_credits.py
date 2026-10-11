@@ -7,14 +7,16 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from mahler import api_credits, discuss, discuss_credits
+from mahler import api_credits, config, discuss, discuss_credits
 from mahler.ledger import Ledger, iso
-from test_api_credits import load, FakeUpstream, MESSAGE
+from test_api_credits import BASE_TOML, load, FakeUpstream, MESSAGE
 
 
 class WorkDiscussionTests(unittest.TestCase):
@@ -95,6 +97,66 @@ class WorkDiscussionTests(unittest.TestCase):
             for secret in ('upstream-secret', 'admin-secret', 'personal-secret'):
                 self.assertNotIn(secret, repr((argv, env, prompt)) + stored)
             self.assertNotIn(env['ANTHROPIC_API_KEY'], repr(argv) + stored)
+
+    def test_mcp_resolves_work_github_identity_outside_sdk_home(self):
+        home = self.root / 'worker-home'
+        identity = home / '.config' / 'gh-work'
+        identity.mkdir(parents=True)
+        (identity / 'hosts.yml').write_text('fake work login')
+        config_path = self.root / 'config.toml'
+        config_path.write_text(BASE_TOML.replace(
+            'env = {}', 'env = { GH_CONFIG_DIR = "~/.config/gh-work" }') +
+            '\n[projects.p]\nrepo = "o/r"\naccount = "work"\nenabled = true\n')
+        fake_bin = self.root / 'bin'
+        fake_bin.mkdir()
+        gh = fake_bin / 'gh'
+        gh.write_text(f'#!{sys.executable}\n' +
+                      'import os\nfrom pathlib import Path\n' +
+                      f'assert os.environ["GH_CONFIG_DIR"] == {str(identity)!r}\n' +
+                      'assert (Path(os.environ["GH_CONFIG_DIR"]) / "hosts.yml").read_text() == "fake work login"\n' +
+                      'assert "ANTHROPIC_API_KEY" not in os.environ\n' +
+                      'print("[]")\n')
+        gh.chmod(0o700)
+        calls = []
+
+        def runner(argv, env, cwd, prompt, deadline, heartbeat, lock_fd):
+            self.assertNotEqual(env['HOME'], str(home))
+            server = json.loads(argv[argv.index('--discussion-mcp') + 1])['mcpServers']['discussion']
+            # Keep the real MCP process on the parent ledger's test clock.
+            server['args'][1] = server['args'][1].replace('; main()',
+                '; from mahler.ledger import Ledger, parse; '
+                f'Ledger.now = lambda self: parse({iso(self.now)!r}); main()')
+            child_env = {**env, **server.get('env', {})}
+            child_env['PATH'] = str(fake_bin)
+            result = subprocess.run([server['command'], *server['args']],
+                env=child_env, cwd=cwd, input=json.dumps({
+                    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                    'params': {'name': 'list_items', 'arguments': {}}}) + '\n',
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            response = json.loads(result.stdout)['result']
+            self.assertFalse(response.get('isError'), response)
+            self.assertEqual(json.loads(response['content'][0]['text']), [])
+            calls.append(response)
+            return 'Reply', 'sdk-session'
+
+        failures = []
+
+        def checked_runner(*args):
+            try:
+                return runner(*args)
+            except Exception as exc:
+                failures.append(exc)
+                raise
+
+        with patch.object(config, 'HOME', str(home)):
+            for key in ('first', 'resumed'):
+                turn = self.turn(key)
+                discuss.process_turn(self.cfg, self.led, turn, runner=checked_runner, config_path=config_path)
+                if failures:
+                    raise failures[0]
+                self.assertEqual(json.loads(self.led.chat_turn(turn['id'])['result'])['status'], 'success')
+        self.assertEqual(len(calls), 2)
 
     def test_project_policy_matrix(self):
         for i, (accounts, enabled, account, engine, expected) in enumerate([
