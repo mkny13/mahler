@@ -57,14 +57,21 @@ def _version_pair(before, after):
         return tuple(map(int, v.lstrip("v").split("."))) + (0,) * (3 - v.lstrip("v").count(".") - 1)
     if all(re.fullmatch(r"v?\d+\.\d+\.\d+", v) for v in (before, after)):
         return parts(before), parts(after)
-    ranges = [re.fullmatch(rf"\s*>=\s*({_VERSION})\s*(?:,\s*<\s*(\d+(?:\.\d+)*)\s*)?", v)
-              for v in (before, after)]
-    if all(ranges) and ranges[0].group(2) == ranges[1].group(2):
-        return parts(ranges[0].group(1)), parts(ranges[1].group(1))
+    def bounds(v):
+        specs = [x.strip() for x in v.split(",")]
+        lows = [re.fullmatch(rf">=\s*({_VERSION})", x) for x in specs]
+        caps = [re.fullmatch(r"<\s*(\d+(?:\.\d+)*)", x) for x in specs]
+        if len(specs) not in (1, 2) or sum(map(bool, lows)) != 1 \
+                or sum(map(bool, lows)) + sum(map(bool, caps)) != len(specs):
+            return None
+        return next(m.group(1) for m in lows if m), next((m.group(1) for m in caps if m), None)
+    ranges = [bounds(v) for v in (before, after)]
+    if all(ranges) and ranges[0][1] == ranges[1][1]:
+        return parts(ranges[0][0]), parts(ranges[1][0])
     return None, None
 
 
-def _grouped_dependabot_updates(opening, body):
+def _grouped_dependabot_updates(opening, body, title=""):
     """Collect (dep, from, to, None) from a grouped/range Dependabot body.
 
     Reads the `| Package | From | To |` table and `Updates X from A to B` lines.
@@ -99,6 +106,13 @@ def _grouped_dependabot_updates(opening, body):
             names.add(m.group(1))
     except ValueError:
         return []
+    tm = re.fullmatch(r"(?:Bump|Update)s? (\S+) requirement from (.+?) to (.+)", title.strip())
+    if tm and opening.startswith("Updates the requirements on"):
+        try:
+            names.add(tm.group(1))
+            add(tm.group(1), unwrap(tm.group(2)), unwrap(tm.group(3)))
+        except ValueError:
+            return []
     count = re.search(r"with (\d+) updates?\b", opening)
     if (not found or names != set(found) or "" in names
             or (count and len(found) < int(count.group(1)))):
@@ -133,7 +147,7 @@ def _dependency_update(view):
             break
         match = re.fullmatch(r"Bumps (\[[^\]\n]+\]\([^\s]+\)|[^\s]+) from `?([^`\s]+)`? to `?([^`\s]+?)`?\.?", opening)
         if not match:
-            updates = _grouped_dependabot_updates(opening, body)
+            updates = _grouped_dependabot_updates(opening, body, view.get("title") or "")
             if not updates:
                 return None
         else:
@@ -162,6 +176,7 @@ def _dependency_update(view):
                 return None
             updates.append((row["Package"], *versions.groups(), row["Update"]))
     kinds = []
+    skipped = False
     for dep, before, after, declared in updates:
         if declared == "github-actions":
             kinds.append(declared)
@@ -170,12 +185,15 @@ def _dependency_update(view):
         if old is None:
             return None
         if new <= old:
+            if len(updates) > 1:
+                skipped = True
+                continue
             return None
         kind = "major" if new[0] != old[0] else "minor" if new[1] != old[1] else "patch"
         if declared and declared != kind:
             return None
         kinds.append(kind)
-    if not kinds:
+    if not kinds or (skipped and "major" not in kinds):
         return None
     kind = next((k for k in ("major", "minor", "patch", "github-actions") if k in kinds))
     return {"classification": kind, "dependencies": [u[0] for u in updates]}

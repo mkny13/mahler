@@ -4646,6 +4646,27 @@ class DependencyPRTests(unittest.TestCase):
                     'Updates `flask` from ~=3.0 to ~=3.1\n'):
             self.assertIsNone(self.update(self.PIP_RANGE.splitlines()[0] + '\n' + bad))
 
+    def test_real_pip_range_title_only_evidence(self):
+        body = ("Updates the requirements on [flask](https://github.com/pallets/flask) "
+                "to permit the latest version.\n<details>notes</details>\n")
+        t = lambda title: ship._dependency_update(dict(self.views[10], body=body, title=title))
+        self.assertEqual(t('Update flask requirement from <4,>=3.0 to >=3.1.3,<4'),
+                         {'classification': 'minor', 'dependencies': ['flask']})
+        self.assertIsNone(t('Update flask requirement from <4,>=3.0 to >=3.1.3,<5'))
+        self.assertIsNone(t('Update flask requirement from ~=3.0 to ~=3.1'))
+        self.assertIsNone(t('Update flask requirement'))
+
+    def test_group_with_non_increasing_row_keeps_major(self):
+        body = ("Bumps the npm group with 3 updates in the / directory: "
+                "[dotenv](https://x.io/d), [a](https://x.io/a) and [b](https://x.io/b).\n\n"
+                "| Package | From | To |\n| --- | --- | --- |\n"
+                "| [dotenv](https://x.io/d) | `18.0.6` | `18.0.5` |\n"
+                "| [a](https://x.io/a) | `1.40.0` | `2.52.0` |\n"
+                "| [b](https://x.io/b) | `2.0.0` | `2.0.1` |\n")
+        self.assertEqual(self.update(body),
+                         {'classification': 'major', 'dependencies': ['dotenv', 'a', 'b']})
+        self.assertIsNone(self.update(body.replace('2.52.0', '1.52.0')))
+
     def test_grouped_major_enters_tracked_item_path(self):
         self.views[10]['body'] = self.GROUPED_TABLE
         self.run_pass()
