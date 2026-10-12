@@ -32,7 +32,7 @@ a { color: var(--acc); text-decoration: none; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
 .lbl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px;
        letter-spacing: .1em; line-height: 1; color: var(--mut); text-transform: uppercase; }
-.t-acc { color: var(--acc); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
+.t-ok { color: var(--good); } .t-acc { color: var(--acc); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
 .t-good { color: var(--good); } .t-mut { color: var(--mut); } .t-ink { color: var(--ink); }
 .f-acc { background: var(--acc); } .f-warn { background: var(--warn); }
 .f-bad { background: var(--bad); } .f-mut { background: var(--mut); }
@@ -696,3 +696,6 @@ a { color: var(--acc); text-decoration: none; }
 .weekly-list { list-style: none; padding: 0; margin-block: 8px; color: var(--mut); font-size: 13px; }
 .weekly-list li { padding-block: 3px; line-height: 1.5; overflow-wrap: anywhere; }
 .weekly-list .mono { white-space: nowrap; }
+
+.pm { display: flex; flex-direction: column; gap: 2px; align-self: center; font-size: 13px; }
+.pm-label { font-weight: 600; }
