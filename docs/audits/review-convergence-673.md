@@ -23,7 +23,7 @@
 | `python3 -X dev tests/run_strict.py` | 0 | Ran 2672 tests, OK (skipped=1) |
 | Targeted: `python3 -m unittest -v <named tests below>` | 0 | Ran 30 tests, OK |
 
-The one skip is a Node-dependent console browser regression (`skipTest`/`skipUnless` on `node` in `tests/test_console_state.py` and `tests/test_console_selection.py`); it is unrelated to review convergence. Unittest discovery/imports were used, so classes below `test_ship.py`'s `__main__` block are included.
+The one skip in each run is `ScreenshotBrowserSmokeTests` (`tests/test_screenshot_example.py`), an opt-in real-browser test skipped unless `MAHLER_SCREENSHOT_SMOKE_CWD` is set; it is unrelated to review convergence and was not exercised, so it provides no coverage here. Unittest discovery/imports were used, so classes below `test_ship.py`'s `__main__` block are included.
 
 ## Owner's 2026-10-09 report and #895
 
