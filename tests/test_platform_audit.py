@@ -2,11 +2,12 @@
 
 import copy
 import json
+import subprocess
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, platform_audit, scheduler, tick
+from mahler import config, model_availability, platform_audit, scheduler, tick
 from mahler.gh import GHError
 from mahler.ledger import Ledger, iso
 
@@ -696,14 +697,132 @@ class ModelCandidatesTests(unittest.TestCase):
         self.assertIn("Models seen in runs that no slot or variant pins", body)
 
     def test_cli_models_off_by_default(self):
-        cfg = self._cfg(claude={"kind": "claude", "sort_model": "claude-sonnet-5",
-                                "build_model": "claude-sonnet-5", "tier": 3,
-                                "quota_group": "claude"})
-        self.assertIsNone(platform_audit._optional_cli_models(
-            cfg, config.platform_audit_policy(cfg)))
-        cfg["platform_audit"] = {"model_list_cli": True}
-        self.assertIsNone(platform_audit._optional_cli_models(
-            cfg, config.platform_audit_policy(cfg)))
+        cfg = self._cfg()
+        calls = []
+        pol = config.platform_audit_policy(cfg)
+        self.assertEqual(platform_audit.agy_catalog(pol, run=calls.append)["status"], "off")
+        self.assertIsNone(platform_audit._optional_cli_models(cfg, pol))
+        self.assertEqual(calls, [])
+
+
+AGY_CATALOG = (
+    "Fetching available models...\n"
+    "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
+    "claude-opus-5-5-medium\tClaude Opus 5.5 (Medium)\n"
+    "claude-opus-5-5-high\tClaude Opus 5.5 (High)\n"
+    "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n")
+
+
+def _proc(out="", code=0):
+    return subprocess.CompletedProcess(["agy", "models"], code, stdout=out, stderr="")
+
+
+def _raise(exc):
+    def run(*a, **k):
+        raise exc
+    return run
+
+
+class AgyCatalogAudit(unittest.TestCase):
+    POL = {"model_list_cli": True}
+
+    def _cfg(self, **platforms):
+        cfg = config.load(path="/nonexistent")
+        cfg["platforms"].update(platforms)
+        return cfg
+
+    def _catalog(self, run):
+        return platform_audit.agy_catalog(self.POL, run=run, exe="/bin/agy")
+
+    def test_parse_ignores_banner(self):
+        ids = platform_audit.parse_agy_models(AGY_CATALOG)
+        self.assertIn("claude-opus-5-5-medium", ids)
+        self.assertEqual(len(ids), 4)
+
+    def test_retired_pin_flagged_present_pin_not(self):
+        cfg = self._cfg(**{
+            "agy-old": {"enabled": True, "kind": "agy", "model": "claude-opus-4-6-thinking"},
+            "agy-new": {"enabled": True, "kind": "agy", "model": "claude-opus-5-5-medium"},
+            "agy-off": {"enabled": False, "kind": "agy", "model": "retired-disabled"},
+            "agy-old/v/default": {"enabled": True, "kind": "agy", "slot": "agy-old",
+                                  "model": "claude-opus-4-5-thinking"}})
+        cat = self._catalog(lambda *a, **k: _proc(AGY_CATALOG))
+        missing, skipped = platform_audit.missing_pins(cfg, cat)
+        flagged = {(n, m) for n, m, _ in missing}
+        self.assertIn(("agy-old", "claude-opus-4-6-thinking"), flagged)
+        self.assertIn(("agy-old/v/default", "claude-opus-4-5-thinking"), flagged)
+        self.assertNotIn(("agy-new", "claude-opus-5-5-medium"), flagged)
+        self.assertFalse([f for f in flagged if f[0] == "agy-off"])
+
+    def test_other_account_context_skipped(self):
+        cfg = self._cfg(**{"agy-work": {"enabled": True, "kind": "agy",
+                                        "model": "retired", "account": "work"}})
+        cat = self._catalog(lambda *a, **k: _proc(AGY_CATALOG))
+        missing, skipped = platform_audit.missing_pins(cfg, cat)
+        self.assertFalse([m for m in missing if m[0] == "agy-work"])
+        self.assertTrue([s for s in skipped if s[0] == "agy-work"])
+
+    def test_failed_probes_are_unknown_never_empty_catalog(self):
+        cases = {"timeout": _raise(subprocess.TimeoutExpired("agy", 30)),
+                 "nonzero": lambda *a, **k: _proc(AGY_CATALOG, 2),
+                 "empty": lambda *a, **k: _proc(""),
+                 "malformed": lambda *a, **k: _proc("garbage\nno tabs\n"),
+                 "oserror": _raise(OSError("x"))}
+        cfg = self._cfg(**{"agy-old": {"enabled": True, "kind": "agy", "model": "retired"}})
+        for label, run in cases.items():
+            with self.subTest(label):
+                cat = self._catalog(run)
+                self.assertEqual(cat["status"], "unknown")
+                self.assertEqual(platform_audit.missing_pins(cfg, cat), ([], []))
+                led = Ledger(":memory:", clock=lambda: NOW)
+                self.addCleanup(led.close)
+                with mock.patch.object(platform_audit.platforms, "agy_exe",
+                                       return_value="/bin/agy"), \
+                        mock.patch.object(platform_audit.subprocess, "run", run):
+                    body = platform_audit.build_body(cfg, led, dict(
+                        config.platform_audit_policy(cfg), model_list_cli=True))
+                self.assertNotIn("absent from", body)
+                self.assertIn("agy catalog check: **unknown**", body)
+
+    def test_probe_not_run_when_disabled(self):
+        calls = []
+        cat = platform_audit.agy_catalog({}, run=lambda *a, **k: calls.append(a), exe="/bin/agy")
+        self.assertEqual(cat["status"], "off")
+        self.assertEqual(calls, [])
+
+    def test_body_lists_rejection_evidence_with_probing_off(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        pconf = {"enabled": True, "kind": "agy", "model": "claude-opus-4-6-thinking"}
+        cfg = self._cfg(**{"agy-old": pconf})
+        model_availability.reject(led, "agy-old", pconf, {"role": "build"},
+                                  {"model_diagnostic": "no such model"})
+        with mock.patch.object(platform_audit.subprocess, "run") as run:
+            body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        run.assert_not_called()
+        self.assertIn("CLI rejected this selection", body)
+        self.assertIn("claude-opus-4-6-thinking", body)
+        self.assertNotIn("absent from", body)
+        # A superseded fingerprint is ignored.
+        cfg["platforms"]["agy-old"]["model"] = "claude-opus-5-5-medium"
+        body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
+        self.assertNotIn("CLI rejected this selection", body)
+
+    def test_enabled_probe_in_body(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = self._cfg(**{"agy-old": {"enabled": True, "kind": "agy",
+                                       "model": "claude-opus-4-6-thinking"}})
+        pol = dict(config.platform_audit_policy(cfg), model_list_cli=True)
+        before = copy.deepcopy(cfg)
+        with mock.patch.object(platform_audit.platforms, "agy_exe", return_value="/bin/agy"), \
+                mock.patch.object(platform_audit.subprocess, "run",
+                                  return_value=_proc(AGY_CATALOG)) as run:
+            body = platform_audit.build_body(cfg, led, pol)
+        self.assertEqual(run.call_args[0][0], ["/bin/agy", "models"])
+        self.assertEqual(cfg, before)
+        self.assertIn("absent from `agy models`", body)
+        self.assertIn("claude-opus-4-6-thinking", body)
 
 
 if __name__ == "__main__":
