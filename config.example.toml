@@ -479,6 +479,14 @@ in = 4.00
 cached_in = 0.20
 out = 20.00
 
+# agy-claude defaults to this explicit ID (agy models, 2026-10-11).
+# Alias of the claude-opus-5-5 API-equivalent basis above; accounting metadata
+# only, not authorization for paid inference. Antigravity keeps its free pool.
+[prices."claude-opus-5-5-medium"]
+in = 4.00
+cached_in = 0.20
+out = 20.00
+
 [prices."claude-haiku-4-5-20251001"]
 in = 0.80
 out = 4.00

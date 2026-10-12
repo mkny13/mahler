@@ -14,6 +14,38 @@ from mahler.console import actions, page, state
 from mahler.ledger import Ledger
 
 
+# Claude rows captured from `agy models` on 2026-10-11 (exit 0, no inference).
+# A dated catalog snapshot; recurring availability detection belongs to #972.
+AGY_CLAUDE_MODELS = """\
+claude-opus-5-5-low	Claude Opus 5.5 (Low)
+claude-opus-5-5-medium	Claude Opus 5.5 (Medium)
+claude-opus-5-5-high	Claude Opus 5.5 (High)
+claude-sonnet-5-5-low	Claude Sonnet 5.5 (Low)
+claude-sonnet-5-5-medium	Claude Sonnet 5.5 (Medium)
+claude-sonnet-5-5-high	Claude Sonnet 5.5 (High)
+"""
+
+
+class AgyClaudeDefaultTests(unittest.TestCase):
+    def test_default_in_captured_catalog_and_price_basis(self):
+        model = config.DEFAULTS["platforms"]["agy-claude"]["model"]
+        self.assertEqual(model, "claude-opus-5-5-medium")
+        self.assertIn(model, {row.split("\t")[0]
+                              for row in AGY_CLAUDE_MODELS.splitlines()})
+        basis = config.DEFAULTS["prices"]["claude-opus-5-5"]
+        self.assertEqual(config.DEFAULTS["prices"][model], basis)
+        example = Path(__file__).resolve().parents[1] / "config.example.toml"
+        self.assertEqual(tomllib.loads(example.read_text())["prices"][model], basis)
+
+    def test_operator_model_override_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text('[platforms.agy-claude]\nmodel = "claude-sonnet-5-5-high"\n')
+            cfg = config.load(path)
+        self.assertEqual(cfg["platforms"]["agy-claude"]["model"],
+                         "claude-sonnet-5-5-high")
+
+
 class SmokePolicyTests(unittest.TestCase):
     def load(self, user):
         with tempfile.TemporaryDirectory() as tmp:

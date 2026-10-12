@@ -146,6 +146,8 @@ DEFAULTS = {
         "gpt-6-luna": {"in": 0.10, "out": 0.50},
         "gpt-6-sol": {"in": 2.00, "out": 10.00},
         "claude-opus-5-5": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
+        # Antigravity alias of the Opus 5.5 API-equivalent price basis (#985).
+        "claude-opus-5-5-medium": {"in": 4.00, "cached_in": 0.20, "out": 20.00},
         "claude-haiku-4-5-20251001": {"in": 0.80, "out": 4.00},
         "claude-sonnet-5": {"in": 3.00, "cached_in": 0.30, "out": 15.00},
         "claude-sonnet-5-5": {"in": 2.00, "cached_in": 0.20, "out": 10.00},
@@ -286,7 +288,7 @@ DEFAULTS = {
         },
         "agy-claude": {
             "enabled": True, "kind": "agy", "pool": "Claude and GPT models",
-            "model": "claude-opus-4-6-thinking",
+            "model": "claude-opus-5-5-medium",
             "max_size": "m", "tier": 2,
             "soft": {"5h": 85, "weekly": 85},
             "hard": {"5h": 90, "weekly": 90},
