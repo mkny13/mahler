@@ -375,14 +375,22 @@ def hold_label(led, name):
 
 
 def usage_state(led, name, pconf, burst_lines=None, role=None):
+    block = model_availability.blocked(led, name, pconf, role)
+    state, detail = _quota_usage_state(led, name, pconf, burst_lines)
+    if block:
+        # Block new launches without stopping productive siblings. Genuine
+        # hard quota limits still apply to already-running work (D8).
+        return ("hard" if state == "hard" else "soft"), model_availability.GUIDANCE
+    return state, detail
+
+
+def _quota_usage_state(led, name, pconf, burst_lines=None):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins.
 
     During an active D23 burst, `burst_lines` overrides the soft/hard lines for
     the windows in the burst — but only for Claude platforms (kind == "claude"),
     so free-tier platforms are never affected.
     """
-    if model_availability.blocked(led, name, pconf, role):
-        return "soft", model_availability.GUIDANCE
     now = led.now()
     usage = led.usage(name)
     hold = usage.pop(HOLD, None)

@@ -48,7 +48,7 @@ def blocked(led, name, pconf, role=None, *, migrate=True):
     # rejected run; without metadata retire the hold once and allow ordinary
     # routing to classify the next launch. A rejection then persists normally.
     if led.get_kv(f"hold_reason:{name}") == "model_unavailable":
-        run = led.q1("SELECT * FROM runs WHERE platform=? AND outcome='model_unavailable' "
+        run = led.q1("SELECT * FROM runs WHERE platform=? AND stop_reason='model_unavailable' "
                      "ORDER BY id DESC LIMIT 1", (name,))
         if run and (run["configured_model"] is not None or run["model"]):
             if migrate:

@@ -77,7 +77,7 @@ class ModelAvailabilityTests(unittest.TestCase):
 
     def test_legacy_migration_and_no_metadata_one_classification(self):
         self.led.create_run(project="x", number=1, platform=self.name, role="build",
-                            epoch=1, status="ended", outcome="model_unavailable",
+                            epoch=1, status="ended", stop_reason="model_unavailable",
                             configured_model="retired", effort="high")
         self.led.record_usage(self.name, "hold", 100, iso(NOW + timedelta(hours=24)))
         self.led.record_usage(self.name, "weekly", 42, iso(NOW + timedelta(days=7)))
@@ -104,6 +104,23 @@ class ModelAvailabilityTests(unittest.TestCase):
                 cli.cmd_unhold(SimpleNamespace(platform=self.name, dry_run=dry), self.cfg, self.led)
             self.assertIn("configuration block remains", output.getvalue())
             self.assertTrue(models.blocked(self.led, self.name, self.pc))
+
+    def test_running_work_keeps_genuine_hard_quota_protection(self):
+        self.reject()
+        self.led.record_usage(self.name, "5h", 100, iso(NOW + timedelta(hours=1)))
+        self.assertEqual(router.usage_state(self.led, self.name, self.pc)[0], "hard")
+
+    def test_role_specific_selection_and_console_guidance(self):
+        from mahler.console import state
+        self.pc["build_model"] = "build-only"
+        self.pc["sort_model"] = "sort-only"
+        run = dict(self.run, role="sort", configured_model="sort-only")
+        models.reject(self.led, self.name, self.pc, run, {})
+        self.assertFalse(models.blocked(self.led, self.name, self.pc, "build"))
+        self.assertTrue(models.blocked(self.led, self.name, self.pc, "plan"))
+        row = state._quota_row(self.cfg, self.led, False, self.name, [self.name], [], {})
+        self.assertIn("configuration needs repair", row["detail"])
+        self.assertIsNone(row["until"])
 
     def test_agy_plaintext_and_structured_diagnostics_keep_advertised_models(self):
         message = "Error: Invalid model: retired. Available models: replacement-low, replacement-high"

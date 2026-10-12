@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import api_credits, config, presence, review, router, screenshots, warmup
+from .. import api_credits, config, model_availability, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -461,7 +461,10 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
            # max_size is otherwise the routing contract's exact ceiling.
            "route_size": ROUTE_SIZE_NAMES.get(pconf.get("max_size"), "large"),
            "until": None, "over": [], "soft_pct": 100}
-    if state == "no_credit" and hold_until and hold_until > now:
+    if model_availability.blocked(led, name, pconf):
+        row.update(label="model config", tone="warn", width=100,
+                   detail=model_availability.GUIDANCE)
+    elif state == "no_credit" and hold_until and hold_until > now:
         row.update(state="no_credit", until=hold_until, label="credits", tone="bad", width=100,
                    detail=f"out of credits, next try {_hhmm(hold_until)}")
     elif state == "soft" and hold_until and hold_until > now:
