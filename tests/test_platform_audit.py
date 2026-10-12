@@ -800,13 +800,13 @@ class AgyCatalogAudit(unittest.TestCase):
         with mock.patch.object(platform_audit.subprocess, "run") as run:
             body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
         run.assert_not_called()
-        self.assertIn("rejection record", body)
+        self.assertIn("CLI rejected this selection", body)
         self.assertIn("claude-opus-4-6-thinking", body)
         self.assertNotIn("absent from", body)
         # A superseded fingerprint is ignored.
         cfg["platforms"]["agy-old"]["model"] = "claude-opus-5-5-medium"
         body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
-        self.assertNotIn("rejection record", body)
+        self.assertNotIn("CLI rejected this selection", body)
 
     def test_enabled_probe_in_body(self):
         led = Ledger(":memory:", clock=lambda: NOW)
