@@ -437,6 +437,14 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertIn("No child relationships", self.comments[10][-1]["body"])
 
+    def test_wrapped_checklist_item_is_parsed(self):
+        body = "## Done when\n- [ ] A long criterion that\n  wraps onto a second line"
+        self.assertEqual(sync._parent_checklist(body),
+                         ["Unchecked criterion: A long criterion that wraps onto a second line"])
+        self.assertEqual(sync._parent_checklist("## Done when\n- [x] wrapped\n  more"), [])
+        self.assertEqual(sync._parent_checklist("## Done when\n- prose\n- [ ] x"),
+                         ["Done-when checklist absent or unparseable"])
+
     def test_blockers_deduplicate_after_restart_and_resolve(self):
         self.bodies[10] = "## Done when\n- [ ] exact criterion"
         self.run_pass()

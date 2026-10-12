@@ -632,6 +632,14 @@ def _parent_checks(body):
             continue
         check = re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", line)
         if not check:
+            # A wrapped item: a plain continuation line joins the previous checkbox.
+            if checks and not re.match(r"[-*+]\s|\d+[.)]\s", line):
+                idx, prev, _ = checks[-1]
+                text = f"{prev[2]} {line}"
+                joined = re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", f"- [{prev[1]}] {text}")
+                ref = re.fullmatch(r"#(\d+) (?:closed|(?:is )?merged)", text)
+                checks[-1] = (idx, joined, int(ref[1]) if ref else None)
+                continue
             return []
         ref = re.fullmatch(r"#(\d+) (?:closed|(?:is )?merged)", check[2])
         checks.append((index, check, int(ref[1]) if ref else None))
