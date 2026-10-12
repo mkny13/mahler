@@ -10,6 +10,7 @@ import json
 import re
 import shlex
 import subprocess
+import tempfile
 import tomllib
 import uuid
 from dataclasses import dataclass
@@ -1418,16 +1419,40 @@ def _details(finding, *, evidence_limit=40, evidence_char_limit=1000):
     return f"**{finding.check}: {finding.state}** — {finding.reason}\n\n" + "\n".join(evidence)
 
 
+def proposal_checks(project, body):
+    """Recognize only finite, stable proposal identities, never issue commands."""
+    if not isinstance(body, str):
+        raise ValueError("unreadable practices proposal")
+    return [check for check in config.PRACTICES_AUDIT_CHECKS
+            if proposal_marker(project, check) in body]
+
+
+def verify_proposal(ctx, project, body, check, sha):
+    """Scan an isolated detached base with the installed scanner/project identity."""
+    from . import runner
+    pol = ctx.policy(project)
+    gh = ctx.gh(project)
+    if (pol.get("name") != project or not pol.get("repo")
+            or gh.repo != pol["repo"] or check not in proposal_checks(project, body)):
+        raise ValueError("practices proposal does not match configured project/check")
+    env = config.run_env(ctx.cfg, config.gh_account_of(pol))
+    with tempfile.TemporaryDirectory(prefix="mahler-practices-") as temp:
+        root = str(Path(temp) / "repo")
+        runner.git(temp, "clone", "--quiet", "--no-checkout", "--no-hardlinks",
+                   pol["path"], root, env=env)
+        runner.git(root, "checkout", "--quiet", "--detach", sha, env=env)
+        if runner.git(root, "rev-parse", "HEAD") != sha:
+            raise ValueError("practices checkout differs from reviewed base")
+        result = scan_project({**pol, "path": root}, gh)
+        return next(f for f in result.findings if f.check == check)
+
+
 def _acceptance(pol, check):
-    # This invokes the installed scanner only; it never runs repository commands.
-    policy = {k: pol.get(k, "") for k in ("name", "repo", "verify")}
-    code = ("import json; from mahler.practices_audit import scan_project; "
-            "from mahler.gh import GH; from pathlib import Path; "
-            f"p=json.loads({json.dumps(policy)!r}); "
-            "p['path']=str(Path.cwd()); r=scan_project(p, GH(p['repo'])); "
-            f"f=next(f for f in r.findings if f.check == {check!r}); "
-            "print(f); assert f.state == 'pass', f.reason")
-    return "python3 -c " + shlex.quote(code)
+    return (f"The conductor must verify `{check}` with its installed practices scanner "
+            "on the reviewed configured base before a no-change claim can close. "
+            "No Mahler installation is required in this repository. Builders report this "
+            "deferred check; independent reviewers list it in `pending_practices_checks` "
+            "and provide evidence for every other acceptance requirement.")
 
 
 def _report(results, proposals, errors, skips, marker=""):
@@ -1509,9 +1534,8 @@ def file_audit(cfg, results, client, *, report_url=None, report_marker=None,
                 f"{marker}\n\nAudit report: {report_url}\n\n## Evidence\n\n{_details(finding)}"
                 f"\n\n## Recommended repository change\n\n{_CHANGES[finding.check]}"
                 "\n\n## Done when\n\nThe read-only check passes; review heuristic candidates "
-                "locally without publishing credential values. Run from the root of the "
-                "worktree containing your changes, with Mahler installed.\n\n"
-                f"```sh\n{_acceptance(project, finding.check)}\n```\n\n"
+                "locally without publishing credential values.\n\n"
+                f"{_acceptance(project, finding.check)}\n\n"
                 "### Resolving verified scanner false positives\n\n"
                 "If investigation confirms the repository satisfies the practice in substance "
                 "or the finding is a scanner limitation/false positive:\n"

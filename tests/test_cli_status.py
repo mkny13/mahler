@@ -59,6 +59,34 @@ class StatusCliTests(unittest.TestCase):
                         self.assertEqual("b: 3 (mahler)" in buf.getvalue(), project is None)
                         self.assertNotIn("proj: 99", buf.getvalue())
 
+    def test_parked_blocker_dependents_reason_and_filter(self):
+        self.cfg["projects"]["other"] = {"enabled": True, "repo": "owner/other"}
+        self.led.upsert_item("proj", 1, state="ready")
+        self.led.set_state("proj", 1, "parked", "manual legacy reason")
+        for n, state in ((2, "ready"), (3, "working"), (4, "done")):
+            self.led.upsert_item("proj", n, state=state, depends="[1]")
+        self.led.upsert_item("other", 1, state="parked")
+        self.led.upsert_item("other", 2, state="ready", depends="[1]")
+        for project in (None, "proj", "other"):
+            for as_json in (True, False):
+                with self.subTest(project=project, json=as_json):
+                    buf = io.StringIO()
+                    with patch("sys.stdout", buf):
+                        cli.cmd_status(SimpleNamespace(json=as_json, project=project), self.cfg, self.led)
+                    if as_json:
+                        blockers = json.loads(buf.getvalue())["parked_blockers"]
+                        self.assertEqual(len(blockers), 2 if project is None else 1)
+                        if project != "other":
+                            blocker = next(b for b in blockers if b["project"] == "proj")
+                            self.assertEqual(blocker["dependents"], ["proj#2", "proj#3"])
+                            self.assertIn("manual legacy reason", blocker["reason"])
+                    elif project != "other":
+                        self.assertIn("Parked blocker proj#1", buf.getvalue())
+                        self.assertIn("waiting: proj#2, proj#3", buf.getvalue())
+                        self.assertIn("manual legacy reason", buf.getvalue())
+                    else:
+                        self.assertNotIn("Parked blocker proj#1", buf.getvalue())
+
     def test_status_item_urls_with_sqlite_row(self):
         # Insert an item without PR
         self.led.upsert_item("proj", 1, title="Test Issue 1", state="ready")

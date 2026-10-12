@@ -24,6 +24,7 @@ class ClaimTests(unittest.TestCase):
         self.comments = []
         self.closed = False
         self.gh = mock.Mock()
+        self.gh.issue_body.return_value = ""
         self.gh.issue_comments.side_effect = lambda n: [{"body": c} for c in self.comments]
         self.gh.comment.side_effect = lambda n, body: self.comments.append(body)
         self.gh.issue_state.side_effect = lambda n: "CLOSED" if self.closed else "OPEN"
@@ -84,15 +85,15 @@ class ClaimTests(unittest.TestCase):
         self.assertIn("module.py:12", self.comments[0])
         self.gh.close_issue.assert_not_called()
 
-    def test_manual_pass_parks_durable_checks(self):
+    def test_optional_observation_is_durable_and_non_gating(self):
         self.verdict(checks=["Verify on owner's phone"])
         self.advance()
         self.advance()
         self.assertEqual(self.read()["human_checks"], ["Verify on owner's phone"])
-        self.assertEqual(self.read()["phase"], "manual")
-        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(self.read()["phase"], "done")
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
-        self.gh.close_issue.assert_not_called()
+        self.gh.close_issue.assert_called_once()
 
     def test_invalid_verdicts_are_bounded_without_build_attempts(self):
         for text in ('', 'no findings', '{}', '[]', '{"mode":"claim","evidence":[],"human_checks":[]}',
@@ -212,3 +213,147 @@ class ClaimTests(unittest.TestCase):
             self.advance()
             self.advance()
         self.assertEqual(self.read()["inconclusive"], 1)
+
+    def practices(self, state="pass", question=None):
+        from mahler import practices_audit as audit
+        self.verdict()
+        self.record.update(pending_practices_checks=["ci-tests"], owner_question=question)
+        self.save()
+        self.gh.issue_body.return_value = audit.proposal_marker("x", "ci-tests")
+        patch = mock.patch.object(audit, "verify_proposal", return_value=
+                                 audit.Finding("ci-tests", state, "scanner evidence", ()))
+        scanner = patch.start()
+        self.addCleanup(patch.stop)
+        return scanner
+
+    def test_mechanical_pass_and_mixed_owner_question(self):
+        for question in (None, "Which account should own this integration?"):
+            with self.subTest(question=question):
+                self.closed = False
+                self.comments.clear()
+                self.led.set_state("x", 5, "verifying", "test")
+                scanner = self.practices(question=question)
+                self.advance()
+                self.advance()
+                scanner.assert_called_once()
+                self.assertEqual(self.led.item("x", 5)["state"],
+                                 "needs_you" if question else "done")
+                self.assertIn("Practices ci-tests: pass at base", self.comments[0])
+                if question:
+                    self.assertEqual(self.led.item("x", 5)["question"], question)
+                    self.assertFalse(self.closed)
+                    self.ctx.ping.assert_called_once()
+
+    def test_owner_question_without_mechanical_check(self):
+        self.verdict()
+        self.record["owner_question"] = "Which account should own this integration?"
+        self.save()
+        self.advance()
+        self.advance()
+        self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
+        self.ctx.ping.assert_called_once()
+        self.gh.close_issue.assert_not_called()
+
+    def test_mechanical_gap_rejects_once(self):
+        self.practices("gap")
+        self.advance()
+        self.advance()
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+        self.assertEqual(self.read()["phase"], "rejected")
+        self.assertIn("ci-tests: gap", self.comments[0])
+        self.gh.close_issue.assert_not_called()
+
+    def test_mechanical_unknown_and_exception_are_inconclusive(self):
+        for error in (None, GHError("API unavailable")):
+            with self.subTest(error=error):
+                scanner = self.practices("unknown")
+                scanner.side_effect = error
+                self.advance()
+                self.assertEqual(self.read()["phase"], "waiting")
+                self.assertTrue(self.read()["practices_error"])
+                self.gh.close_issue.assert_not_called()
+        self.record = self.read()
+        self.record["inconclusive"] = self.ctx.policy("x")["max_attempts"]
+        self.save()
+        self.advance()
+        self.assertEqual(self.read()["phase"], "exhausted")
+
+    def test_scan_lease_loss_and_base_drift_never_close(self):
+        scanner = self.practices()
+        with mock.patch.object(no_change, "fetched_base", side_effect=["base", "new"]):
+            self.advance()
+        self.gh.close_issue.assert_not_called()
+        result = scanner.return_value
+        def preempt(*args):
+            self.led.claim("x", 5, "human", "interactive", 10)
+            return result
+        scanner.side_effect = preempt
+        self.advance()
+        self.gh.close_issue.assert_not_called()
+
+    def test_legacy_scheduler_recovery_and_confirmed_closure(self):
+        scanner = self.practices()
+        self.record.update(phase="manual", human_checks=["Run unavailable Mahler command"])
+        self.save()
+        self.led.set_state("x", 5, "parked", "legacy manual")
+        with mock.patch.object(no_change.router, "capacity_recovery", return_value=(True, None, None)), \
+                mock.patch.object(no_change.router, "pick_for_project", return_value=("reviewer", [])), \
+                mock.patch.object(ship, "start") as start, \
+                mock.patch.object(ship, "_open_pr") as pr:
+            ship._ship_project(self.ctx, "x")
+            start.assert_called_once()
+            self.assertNotIn("verdict", self.read())
+            self.assertEqual(self.read()["legacy_evidence"]["human_checks"],
+                             ["Run unavailable Mahler command"])
+            payload = json.dumps({"mode": "claim", "evidence": ["All other criteria satisfied"],
+                                  "human_checks": [], "pending_practices_checks": ["ci-tests"]})
+            no_change.finish(self.ending(payload))
+            action = self.gh.close_issue.side_effect
+            def lost_response(n):
+                action(n)
+                raise GHError("response lost")
+            self.gh.close_issue.side_effect = lost_response
+            ship._ship_project(self.ctx, "x")
+            self.assertEqual(self.read()["phase"], "verdict")
+            self.gh.close_issue.side_effect = action
+            ship._ship_project(self.ctx, "x")
+            ship._ship_project(self.ctx, "x")
+            pr.assert_not_called()
+        self.assertEqual(self.read()["phase"], "done")
+        self.gh.close_issue.assert_called_once()
+        self.assertEqual(len(self.comments), 1)
+        self.assertEqual(self.led.con.execute("SELECT count(*) FROM release_items").fetchone()[0], 0)
+
+    def test_recovery_skips_dry_run_active_human_and_unrelated(self):
+        for skip in ("dry", "active", "human", "unrelated", "pr"):
+            with self.subTest(skip=skip):
+                self.verdict()
+                self.record["phase"] = "other" if skip == "unrelated" else "manual"
+                self.save()
+                self.led.set_state("x", 5, "parked", "test")
+                self.ctx.dry_run = skip == "dry"
+                if skip == "active":
+                    rid = self.led.create_run(project="x", number=5, role="review", platform="claude", epoch=1)
+                if skip == "human":
+                    self.led.claim("x", 5, "human", "interactive", 10)
+                if skip == "pr":
+                    self.led.upsert_item("x", 5, pr=10)
+                ship._ship_project(self.ctx, "x")
+                self.assertEqual(self.led.item("x", 5)["state"], "parked")
+                if skip == "active":
+                    self.led.update_run(rid, status="ended")
+                if skip == "human":
+                    self.led.release("x", 5, holder="human")
+
+    def test_optional_fields_are_validated_and_unmatched_checks_do_not_close(self):
+        base = {"mode": "claim", "evidence": ["source"], "human_checks": []}
+        for extra in ({"pending_practices_checks": ["unknown"]},
+                      {"pending_practices_checks": "ci-tests"}, {"owner_question": ""},
+                      {"owner_question": []}):
+            with self.assertRaises(ValueError):
+                no_change.parse_payload(json.dumps({**base, **extra}))
+        self.practices()
+        self.gh.issue_body.return_value = "unmatched"
+        self.advance()
+        self.assertEqual(self.read()["phase"], "waiting")
+        self.gh.close_issue.assert_not_called()

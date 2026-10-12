@@ -2,7 +2,7 @@
 
 import json
 
-from . import config, router, runner
+from . import config, practices_audit, redact, router, runner
 from .ledger import CONDUCTOR
 
 
@@ -40,6 +40,13 @@ def parse_payload(text):
             raise ValueError(f"invalid {field}")
     if not payload["evidence"]:
         raise ValueError("missing evidence")
+    pending = payload.get("pending_practices_checks", [])
+    if (not isinstance(pending, list) or any(
+            not isinstance(c, str) or c not in config.PRACTICES_AUDIT_CHECKS for c in pending)):
+        raise ValueError("invalid pending_practices_checks")
+    question = payload.get("owner_question")
+    if question is not None and (not isinstance(question, str) or not question.strip()):
+        raise ValueError("invalid owner_question")
     return payload
 
 
@@ -59,7 +66,9 @@ def finish(e):
         record["phase"] = "waiting"
     else:
         record.update(phase="verdict", verdict="pass" if e.verb == "REVIEW-PASS" else "fail",
-                      review_evidence=payload["evidence"], human_checks=payload["human_checks"])
+                      review_evidence=payload["evidence"], human_checks=payload["human_checks"],
+                      pending_practices_checks=payload.get("pending_practices_checks", []),
+                      owner_question=payload.get("owner_question"))
     save(e.led, e.project, e.number, record)
     e.set_state("verifying", "no-change claim review awaiting conductor")
 
@@ -89,7 +98,7 @@ def advance(ctx, project, item):
         return False
     if ctx.dry_run:
         return True
-    if record["phase"] in ("rejected", "manual", "done", "exhausted"):
+    if record["phase"] in ("rejected", "manual", "owner", "done", "exhausted"):
         return True
     # The same rules as PR review: an active reviewer owns its lease until finalize.
     if any(r["project"] == project and r["number"] == n for r in led.active_runs()):
@@ -111,6 +120,32 @@ def advance(ctx, project, item):
         save(led, project, n, record)
     if record["phase"] == "verdict":
         gh = ctx.gh(project)
+        if record["verdict"] == "pass":
+            try:
+                body = gh.issue_body(n)
+                checks = practices_audit.proposal_checks(project, body)
+                pending = record.get("pending_practices_checks", [])
+                if any(c not in checks for c in pending):
+                    raise ValueError("deferred check lacks matching proposal marker")
+                results = []
+                for check in checks:
+                    finding = practices_audit.verify_proposal(ctx, project, body, check, sha)
+                    results.append(f"Practices {check}: {finding.state} at {sha}: {finding.reason}")
+                    if finding.state == "gap":
+                        record["verdict"] = "fail"
+                    elif finding.state != "pass":
+                        raise ValueError("; ".join(results))
+                record["practices_evidence"] = results
+            except Exception as exc:  # evidence collection is retryable, never approval
+                if not _owned(ctx, project, n, epoch):
+                    return True
+                record.update(phase="waiting", inconclusive=record["inconclusive"] + 1,
+                              practices_error=redact.redact(str(exc)))
+                save(led, project, n, record)
+                return True
+            if not _owned(ctx, project, n, epoch):
+                return True
+            save(led, project, n, record)
         marker = f"<!-- mahler:no-change claim={record['claim_run']} review={record['run_id']} -->"
         if not any(marker in c["body"] for c in gh.issue_comments(n)):
             if not _owned(ctx, project, n, epoch):
@@ -118,8 +153,8 @@ def advance(ctx, project, item):
             gh.comment(n, "<!-- mahler:agent -->\n" + marker
                        + f"\n**Independent no-change review: {record['verdict']}**\n\n"
                        + f"Configured base: `{sha}`.\n\n"
-                       + "\n".join(f"- {e}" for e in record["review_evidence"])
-                       + "\n\nRemaining manual checks:\n"
+                       + "\n".join(f"- {e}" for e in record["review_evidence"] + record.get("practices_evidence", []))
+                       + "\n\nOptional observations:\n"
                        + ("\n".join(f"- {c}" for c in record["human_checks"]) or "None."))
         # Recheck after slow GitHub calls; never accept an observed base drift.
         if fetched_base(ctx, project) != sha or not _owned(ctx, project, n, epoch):
@@ -131,16 +166,18 @@ def advance(ctx, project, item):
                 record["phase"] = "rejected"
                 save(led, project, n, record)
                 retry_or_fail(ctx, project, n, led.item(project, n), None,
-                              "no-change claim rejected: " + " | ".join(record["review_evidence"]),
+                              "no-change claim rejected: " + " | ".join(record["review_evidence"] + record.get("practices_evidence", [])),
                               run=led.run(record["run_id"]))
             led.release(project, n, holder=CONDUCTOR)
-        elif record["human_checks"]:
-            record["phase"] = "manual"
+        elif record.get("owner_question"):
+            record["phase"] = "owner"
             with led._tx():
                 if not _owned(ctx, project, n, epoch):
                     return True
                 save(led, project, n, record)
-                led.set_state(project, n, "parked", "verified no-change claim awaiting manual checks")
+                led.set_state(project, n, "needs_you", record["owner_question"],
+                              question=record["owner_question"], options="[]")
+            ctx.ping(f"Decision needed — {project} #{n}", record["owner_question"], project, n)
             led.release(project, n, holder=CONDUCTOR)
         else:
             if gh.issue_state(n) != "CLOSED":
@@ -183,3 +220,36 @@ def advance(ctx, project, item):
         ship.start(ctx, project, {**item, "claim_base_sha": sha}, "review", platform,
                    handoff_from=(CONDUCTOR, epoch), size=size)
     return True
+
+
+def recover_legacy(ctx, project):
+    """Re-review only passed legacy manual claims; never interpret old prose."""
+    if ctx.dry_run:
+        return
+    led = ctx.led
+    for item in led.items(project, ["parked"]):
+        n = item["number"]
+        record = read(led, project, n)
+        if item["pr"] or record.get("phase") != "manual" or record.get("verdict") != "pass":
+            continue
+        if any(r["project"] == project and r["number"] == n for r in led.active_runs()):
+            continue
+        lease = led.lease(project, n)
+        if lease and lease["holder"] != CONDUCTOR:
+            continue
+        lease, _ = led.claim(project, n, CONDUCTOR, "auto",
+                             ctx.policy(project)["auto_lease_minutes"], capacity=False)
+        if not lease:
+            continue
+        sha = fetched_base(ctx, project)
+        with led._tx():
+            if not _owned(ctx, project, n, lease["epoch"]):
+                continue
+            record["legacy_evidence"] = {k: record.get(k) for k in
+                                         ("review_evidence", "human_checks", "base_sha")}
+            record.update(phase="waiting", base_sha=sha, run_id=None, epoch=None,
+                          inconclusive=0, human_checks=[], pending_practices_checks=[],
+                          owner_question=None)
+            record.pop("verdict", None)
+            save(led, project, n, record)
+            led.set_state(project, n, "verifying", "legacy no-change claim requires fresh review")
