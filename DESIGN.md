@@ -2422,6 +2422,13 @@ balance fails the request instead of spending real money. This is a confirmed ac
 (D13), not a code-review gate — it is not re-asked, and the enforcement below does not depend
 on it holding forever: the gateway's hard per-request ceiling, not this answer, is what keeps
 a bug from spending real money if the org's funding ever changed without Mahler being told.
+The Console workspace spend limit is *not* counted among the enforced bounds. On 2026-10-11 its
+meter read $0.00 of $20.00 while the Admin Cost API attributed $1.031 to that workspace, so its
+effect on credit-covered spend is unverified (and will not be tested by spending past it). The
+enforced bounds are Mahler's own allowance and per-request reservation ceiling, the credit
+balance, and the absence of any payment method or purchased balance ($0.00 purchased, no payment
+method, Console 2026-10-11). The workspace limit is kept as a belt-and-braces setting. The burst
+runs on the org-level Cost API reading and does not need the limit raised.
 
 The work Team plan comes with a pooled Claude API credit balance granted each billing cycle
 ($260 today; it follows seat count). Mahler may spend `allowance_usd` ($20) of it per grant at
