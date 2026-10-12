@@ -457,7 +457,7 @@ def completion_rate(led, cfg, project=None, since=None, until=None):
     items = {(r['project'], r['number']): dict(r) for r in led.items(project)}
     leases = {(r['project'], r['number']): dict(r) for r in led.q('SELECT * FROM leases')}
     counts = dict(autonomous=0, human_assisted=0, unknown=0)
-    transition = re.compile(r'^(None|\w+) -> (\w+)(?: \(.*\))?$', re.DOTALL)
+    transition = re.compile(r'^(None|\w+) -> (\w+)(?: \((.*)\))?$', re.DOTALL)
     for key in items.keys() | histories.keys():
         events = histories[key]
         states = [(e, transition.fullmatch(e['detail'] or ''))
@@ -490,7 +490,11 @@ def completion_rate(led, cfg, project=None, since=None, until=None):
                 if not m:
                     valid = False
                     continue
-                assisted |= 'needs_you' in (m[1], m[2]) or 'you answered' in (e['detail'] or '')
+                # GitHub replies on failed items resume with this reason, without
+                # an answered event. Automated retries use their own reasons.
+                assisted |= ('needs_you' in (m[1], m[2])
+                             or m[3] == 'you said go'
+                             or 'you answered' in (m[3] or ''))
                 valid &= m[1] in {'None', 'inbox'} if previous is None else m[1] == previous
                 previous = m[2]
         lease = leases.get(key)

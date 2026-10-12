@@ -1,5 +1,6 @@
 """Synthetic history tests: no production state or external services."""
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import unittest
 
 from mahler.ledger import Ledger, iso
@@ -701,6 +702,37 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(self.result(until=self.now)['completed'], 0)
         self.assertEqual(self.result(since=self.now + timedelta(seconds=1))['completed'], 0)
         self.assertEqual(self.result(since=first)['completed'], 2)
+
+    def test_github_answer_resuming_failed_item_counts_as_assistance(self):
+        from mahler.sync import _process_comments
+
+        self.start(1)
+        self.led.set_state('p', 1, 'failed', attempts=3)
+        ctx = SimpleNamespace(led=self.led, say=lambda message: None)
+        _process_comments(ctx, 'p', self.led.item('p', 1), [{
+            'createdAt': iso(self.now), 'body': 'The PR is ready to retry',
+            'authorAssociation': 'OWNER',
+        }])
+        self.assertEqual(self.led.item('p', 1)['state'], 'ready')
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='answered'"), [])
+        self.now += timedelta(hours=1)
+        self.led.claim('p', 1, 'next agent', 'auto', 30, platform='other')
+        self.led.set_state('p', 1, 'working')
+        self.finish(1)
+
+        # An automated retry and platform handoff remain hands-off.
+        self.start(2)
+        self.led.set_state('p', 2, 'failed')
+        self.led.set_state('p', 2, 'ready', 'automatic retry')
+        self.now += timedelta(hours=1)
+        self.led.claim('p', 2, 'next agent', 'auto', 30, platform='other')
+        self.led.set_state('p', 2, 'working')
+        self.finish(2)
+        result = self.result()
+        self.assertEqual({k: result[k] for k in (
+            'autonomous', 'human_assisted', 'unknown', 'denominator', 'completed', 'percentage')},
+            dict(autonomous=1, human_assisted=1, unknown=0, denominator=2,
+                 completed=2, percentage=50))
 
     def test_incomplete_history_and_empty_denominator(self):
         self.led.upsert_item('p', 1, state='working')
