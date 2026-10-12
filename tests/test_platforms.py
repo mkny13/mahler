@@ -26,6 +26,19 @@ def provider_error_events(message):
     )
 
 
+class AgyClaudeArgvTests(unittest.TestCase):
+    def test_exact_default_model_without_conflicting_effort(self):
+        pconf = config.DEFAULTS["platforms"]["agy-claude"]
+        for role in ("plan", "sort", "build", "fix", "review"):
+            with self.subTest(role=role):
+                argv = platforms.argv_for(pconf, "prompt", "/worktree", role, 60)
+                self.assertEqual(argv.count("--model"), 1)
+                self.assertEqual(argv[argv.index("--model") + 1],
+                                 "claude-opus-5-5-medium")
+                self.assertEqual(argv.count("claude-opus-5-5-medium"), 1)
+                self.assertNotIn("--effort", argv)
+
+
 class ResumeRejectionTests(unittest.TestCase):
     def test_explicit_session_errors_across_supported_protocols(self):
         for message in ("Session saved-123 not found", "Conversation has expired",
