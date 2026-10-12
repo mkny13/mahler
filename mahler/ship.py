@@ -30,6 +30,10 @@ def ship(ctx, projects):
         except Exception as e:                  # one project must not stop the tick
             ctx.say(f"{p['name']}: dependency-PR pass failed — {e}")
         try:
+            _close_superseded_bot_prs(ctx, p["name"])
+        except Exception as e:                  # noqa: BLE001 — a tick must not break
+            ctx.say(f"{p['name']}: superseded bot-PR closure failed — {e}")
+        try:
             _unowned_prs(ctx, p["name"])
         except Exception as e:                  # noqa: BLE001 — a tick must not break
             ctx.say(f"{p['name']}: unowned-PR check failed — {e}")
@@ -278,6 +282,41 @@ def _dependency_prs(ctx, project):
             ctx.say(f"{project}: dependency PR #{n} adoption failed — {exc}")
             if ctx.merge_requested:
                 return
+
+
+def _close_superseded_bot_prs(ctx, project):
+    """Close a major-update bot PR once its tracked item shipped with a merged
+    PR (mahler#979). Idempotent: a durable marker records each closure."""
+    if ctx.dry_run:
+        return
+    led = ctx.led
+    prefix = f"dependency-issue:{project}:"
+    rows = led.q("SELECT key, value FROM kv WHERE key LIKE ?", (prefix + "%",))
+    gh = None
+    for row in rows:
+        try:
+            bot = int(row["key"][len(prefix):])
+            issue = int(str(row["value"]).rstrip("/").rsplit("/", 1)[-1])
+        except (ValueError, TypeError):
+            continue
+        done_key = f"dependency-closed:{project}:{bot}"
+        if led.get_kv(done_key):
+            continue
+        item = led.item(project, issue)
+        if not item or item["state"] != "shipped" or not item["pr"]:
+            continue
+        try:
+            gh = gh or ctx.gh(project)
+            if not pr_merged(gh.pr_merge_info(item["pr"])):
+                continue
+            if gh.dependency_pr_view(bot).get("state") == "OPEN":
+                gh.pr_close(bot, f"Superseded by #{item['pr']}, which shipped the tracked "
+                                 f"update ({project}#{issue}). Closing this bot PR.")
+            led.set_kv(done_key, iso(led.now()))
+            led.event("dependency_pr_closed", project, issue, {"bot_pr": bot, "pr": item["pr"]})
+            ctx.say(f"{project}: closed superseded bot PR #{bot} (shipped via #{item['pr']})")
+        except Exception as exc:  # isolate per-PR API failures; retried next tick
+            ctx.say(f"{project}: closing bot PR #{bot} failed — {exc}")
 
 
 def _unowned_prs(ctx, project):

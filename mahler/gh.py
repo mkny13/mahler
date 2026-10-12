@@ -868,6 +868,11 @@ class GH:
             args += ["--comment", comment]
         self._gh(*args)
 
+    def pr_close(self, number, comment):
+        """Close a pull request with a conductor-marked comment."""
+        body = comment if comment.startswith(AGENT_MARK) else AGENT_NOTE + "\n" + comment
+        self._gh("pr", "close", str(number), "-R", self.repo, "--comment", body)
+
     def reopen_issue(self, number):
         self._gh("issue", "reopen", str(number), "-R", self.repo)
 

@@ -4079,6 +4079,67 @@ class ShipCapacityTests(unittest.TestCase):
         self.assertEqual(self.rows(), {})
 
 
+class SupersededBotPRTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(':memory:', clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg['projects']['x'] = {'path': '/tmp', 'repo': 'x/y'}
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.gh = mock.Mock()
+        self.gh.pr_merge_info.return_value = {'state': 'MERGED', 'mergedAt': '2026-01-01T00:00:00Z'}
+        self.gh.dependency_pr_view.return_value = {'state': 'OPEN'}
+        patcher = mock.patch.object(self.ctx, 'gh', return_value=self.gh)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.led.set_kv('dependency-issue:x:10', 'https://github.com/x/y/issues/20')
+
+    def run_pass(self):
+        ship._close_superseded_bot_prs(self.ctx, 'x')
+
+    def test_no_close_before_shipped(self):
+        self.led.upsert_item('x', 20, pr=30, state='verifying')
+        self.run_pass()
+        self.gh.pr_close.assert_not_called()
+
+    def test_no_close_without_merge_evidence(self):
+        self.led.upsert_item('x', 20, pr=30, state='shipped')
+        self.gh.pr_merge_info.return_value = {'state': 'CLOSED', 'mergedAt': None}
+        self.run_pass()
+        self.gh.pr_close.assert_not_called()
+        self.assertIsNone(self.led.get_kv('dependency-closed:x:10'))
+
+    def test_untracked_bot_pr_is_not_closed(self):
+        self.led.upsert_item('x', 21, pr=31, state='shipped')
+        self.run_pass()
+        self.gh.pr_close.assert_not_called()
+
+    def test_closes_once_with_link_and_is_idempotent(self):
+        self.led.upsert_item('x', 20, pr=30, state='shipped')
+        self.run_pass()
+        self.run_pass()
+        self.gh.pr_close.assert_called_once()
+        args = self.gh.pr_close.call_args.args
+        self.assertEqual(args[0], 10)
+        self.assertIn('#30', args[1])
+
+    def test_already_closed_bot_pr_is_only_recorded(self):
+        self.led.upsert_item('x', 20, pr=30, state='shipped')
+        self.gh.dependency_pr_view.return_value = {'state': 'CLOSED'}
+        self.run_pass()
+        self.gh.pr_close.assert_not_called()
+        self.assertTrue(self.led.get_kv('dependency-closed:x:10'))
+
+    def test_failure_retries_next_pass(self):
+        self.led.upsert_item('x', 20, pr=30, state='shipped')
+        self.gh.pr_close.side_effect = [gh_module.GHError('boom'), None]
+        self.run_pass()
+        self.assertIsNone(self.led.get_kv('dependency-closed:x:10'))
+        self.run_pass()
+        self.assertEqual(self.gh.pr_close.call_count, 2)
+        self.assertTrue(self.led.get_kv('dependency-closed:x:10'))
+
+
 class DependencyPRTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
