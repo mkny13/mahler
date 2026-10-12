@@ -13,7 +13,7 @@
 | 3 | `_unowned_prs` still excludes `dependabot/` and `renovate/` branches | **PASS** | `tests.test_ship.ShipTests.test_young_draft_and_bot_prs_are_left_alone` passes in the 257-test run. | None. |
 | 4 | Seven separate rollout PRs, each default branch has an accepted weekly config matching its manifests | **PARTIAL, left unchecked** | Seven PRs merged (matrix below) and Dependabot opened PRs from every config, so GitHub accepted them. Fit gaps: couch-tour has `sync/package.json` and `macos/.../Package.swift` but the config covers only gradle and actions; mahler/crate-cataloger/movebreak are actions-only. | File a follow-up for couch-tour (npm in `/sync`, optionally swift) via existing issue #576 or a new item. Re-check manifests of movebreak. |
 | 5 | No write to google-chat-nav, sit-stand-walk or another non-personal repo | **PASS, bounded** | Bounded to the seven rollout PR diffs, which touch only mkny13 repos. movebreak #100 also changed `ARCHITECTURE.md` and `scripts/check_security_surface.sh`. This is not a global account audit. | None; do not extend the claim. |
-| 6 | #777 and #778 closed by merged implementation work with test and rollout evidence | **PARTIAL, left unchecked** | #777 closed 2026-10-07T18:06:33Z by PR #817. #778 closed 2026-10-08T19:06:36Z by PR #868, which shipped only the parser repair (`mahler/ship.py`, `tests/test_ship.py`). Rollout delivery came from separate PRs. The ordering was not respected (see below). | Tick only if the owner accepts the ordering deviation as satisfied. That is a judgement on the sequencing requirement, not a technical gap. |
+| 6 | #777 and #778 closed by merged implementation work with test and rollout evidence | **PARTIAL, left unchecked** | #777 closed 2026-10-07T18:06:33Z by PR #817. #778 closed 2026-10-08T19:06:36Z by PR #868, which shipped only the parser repair (`mahler/ship.py`, `tests/test_ship.py`). Rollout delivery came from separate PRs. The ordering was not respected (see below). | The sequencing requirement is evidenced as not met. The deviation is recorded as a historical finding and is not treated as satisfied. No approval is sought or needed. |
 
 ### Test coverage map
 
@@ -55,4 +55,4 @@ Pre-handoff verification results are taken from the agents' reports in each roll
 
 ## Summary
 
-PASS: 1, 2, 3, 5 (bounded). Left unchecked: 4 (couch-tour ecosystem fit gap) and 6 (ordering deviation; owner's judgement). No new work was created.
+PASS: 1, 2, 3, 5 (bounded). Left unchecked: 4 (couch-tour ecosystem fit gap) and 6 (ordering deviation; evidenced as not met, recorded as a historical deviation, not satisfied). No new work was created.
