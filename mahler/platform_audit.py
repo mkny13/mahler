@@ -15,6 +15,8 @@ import json
 import os
 import re
 import subprocess
+import tempfile
+import time
 from datetime import datetime, timedelta
 
 from . import config, model_availability, platforms, router
@@ -470,6 +472,43 @@ def parse_agy_models(text):
     return ids
 
 
+class ProbeOutputTooLarge(Exception):
+    """A probed process wrote more than the allowed bytes to a stream."""
+
+
+def bounded_run(cmd, timeout, max_bytes, **kw):
+    """subprocess.run lookalike that caps stdout and stderr at `max_bytes` each.
+
+    Output goes to temp files (never into memory) that are polled while the
+    process runs; the process is killed on overflow (ProbeOutputTooLarge) or
+    timeout (subprocess.TimeoutExpired). Returns a CompletedProcess with at
+    most max_bytes of stdout text.
+    """
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        proc = subprocess.Popen(cmd, stdout=fo, stderr=fe, **kw)
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                if (os.fstat(fo.fileno()).st_size > max_bytes
+                        or os.fstat(fe.fileno()).st_size > max_bytes):
+                    raise ProbeOutputTooLarge()
+                if proc.poll() is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                time.sleep(0.02)
+            if (os.fstat(fo.fileno()).st_size > max_bytes
+                    or os.fstat(fe.fileno()).st_size > max_bytes):
+                raise ProbeOutputTooLarge()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+        fo.seek(0)
+        out = fo.read(max_bytes).decode("utf-8", "replace")
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, "")
+
+
 def agy_catalog(pol, run=None, exe=None):
     """Bounded, noninteractive `agy models` probe for the personal agy login.
 
@@ -482,13 +521,15 @@ def agy_catalog(pol, run=None, exe=None):
     if not pol.get("model_list_cli"):
         return result
     exe = exe or platforms.agy_exe()
-    run = run or subprocess.run
+    run = run or (lambda cmd, **k: bounded_run(
+        cmd, k.pop("timeout"), AGY_PROBE_MAX_BYTES, **k))
     if not exe:
         return dict(result, status="skipped", detail="agy executable not found")
     try:
-        r = run([exe, "models"], capture_output=True, text=True,
-                timeout=AGY_PROBE_TIMEOUT, cwd=platforms.HOME,
+        r = run([exe, "models"], timeout=AGY_PROBE_TIMEOUT, cwd=platforms.HOME,
                 stdin=subprocess.DEVNULL)
+    except ProbeOutputTooLarge:
+        return dict(result, status="unknown", detail="`agy models` output exceeded the size limit")
     except subprocess.TimeoutExpired:
         return dict(result, status="unknown",
                     detail=f"`agy models` timed out after {AGY_PROBE_TIMEOUT}s")
