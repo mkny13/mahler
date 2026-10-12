@@ -437,6 +437,42 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertIn("No child relationships", self.comments[10][-1]["body"])
 
+    def test_wrapped_checklist_item_is_parsed(self):
+        body = "## Done when\n- [ ] A long criterion that\n  wraps onto a second line"
+        self.assertEqual(sync._parent_checklist(body),
+                         ["Unchecked criterion: A long criterion that wraps onto a second line"])
+        self.assertEqual(sync._parent_checklist("## Done when\n- [x] wrapped\n  more"), [])
+        self.assertEqual(sync._parent_checklist("## Done when\n- prose\n- [ ] x"),
+                         ["Done-when checklist absent or unparseable"])
+
+    def test_357_shape_wrapped_items_nested_bullets_and_trailing_section(self):
+        body = ("## Done when\n"
+                "- [x] First criterion that is long and\n  wraps onto a second line\n"
+                "- [x] Second criterion with lazy\ncontinuation\n"
+                "  - nested detail bullet\n"
+                "- [x] #11 closed\n\n"
+                "## Needs a human to check\n- [ ] eyeball the console\n")
+        self.assertEqual(len(sync._parent_checks(body)), 3)
+        self.assertEqual(sync._parent_checklist(body), [])
+        self.assertEqual(sync._parent_checklist(body.replace("[x]", "[ ]", 1)),
+                         ["Unchecked criterion: First criterion that is long and wraps onto a second line"])
+
+    def test_unparseable_done_when_files_one_verify_item(self):
+        self.bodies[10] = "## Done when\n- just prose, no checkbox\n"
+        self.run_pass()
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.gh.create_issue.assert_called_once()
+
+    def test_357_shape_completes_parent(self):
+        self.bodies[10] = ("## Done when\n- [ ] #11 closed\n"
+                           "- [x] Wrapped criterion that\n  continues here\n"
+                           "  - nested detail\n\n"
+                           "## Needs a human to check\n- [ ] eyeball it\n")
+        self.run_pass()
+        self.assertIn("- [x] #11 closed", self.bodies[10])
+        self.gh.close_issue.assert_called_once()
+
     def test_blockers_deduplicate_after_restart_and_resolve(self):
         self.bodies[10] = "## Done when\n- [ ] exact criterion"
         self.run_pass()
