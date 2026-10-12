@@ -54,8 +54,10 @@ def _version_pair(before, after):
     released version. Anything else (other operators, changed caps) is unsafe.
     """
     def parts(v):
-        return tuple(map(int, v.lstrip("v").split("."))) + (0,) * (3 - v.lstrip("v").count(".") - 1)
-    if all(re.fullmatch(r"v?\d+\.\d+\.\d+", v) for v in (before, after)):
+        core, _, tail = v.lstrip("v").partition("-")
+        nums = tuple(map(int, core.split(".")))
+        return nums + (0,) * (3 - len(nums)) + tuple(map(int, tail.split(".")) if tail else ())
+    if all(re.fullmatch(r"v?\d+\.\d+(?:\.\d+)?(?:-\d+(?:\.\d+)*)?", v) for v in (before, after)):
         return parts(before), parts(after)
     def bounds(v):
         specs = [x.strip() for x in v.split(",")]
@@ -82,6 +84,7 @@ def _grouped_dependabot_updates(opening, body, title=""):
         return []
     found = {}
     names = set()
+    rows = lines = 0
 
     def add(dep, before, after):
         if found.setdefault(dep, (before, after)) != (before, after):
@@ -97,10 +100,12 @@ def _grouped_dependabot_updates(opening, body, title=""):
                 if len(cells) != 3 or not all(cells):
                     return []
                 dep = link(cells[0])
+                rows += 1
                 names.add(dep)
                 add(dep, unwrap(cells[1]), unwrap(cells[2]))
         for m in re.finditer(r"(?m)^Updates `([^`\n]+)` from (.+?) to (.+?)\s*$", body):
             names.add(m.group(1))
+            lines += 1
             add(m.group(1), unwrap(m.group(2)), unwrap(m.group(3)))
         for m in re.finditer(r"(?m)^Updates `([^`\n]+)` to \S.*$", body):
             names.add(m.group(1))
@@ -115,7 +120,7 @@ def _grouped_dependabot_updates(opening, body, title=""):
             return []
     count = re.search(r"with (\d+) updates?\b", opening)
     if (not found or names != set(found) or "" in names
-            or (count and len(found) < int(count.group(1)))):
+            or (count and max(len(found), rows, lines) < int(count.group(1)))):
         return []
     return [(dep, before, after, None) for dep, (before, after) in found.items()]
 
@@ -176,7 +181,6 @@ def _dependency_update(view):
                 return None
             updates.append((row["Package"], *versions.groups(), row["Update"]))
     kinds = []
-    skipped = False
     for dep, before, after, declared in updates:
         if declared == "github-actions":
             kinds.append(declared)
@@ -186,14 +190,13 @@ def _dependency_update(view):
             return None
         if new <= old:
             if len(updates) > 1:
-                skipped = True
                 continue
             return None
         kind = "major" if new[0] != old[0] else "minor" if new[1] != old[1] else "patch"
         if declared and declared != kind:
             return None
         kinds.append(kind)
-    if not kinds or (skipped and "major" not in kinds):
+    if not kinds:
         return None
     kind = next((k for k in ("major", "minor", "patch", "github-actions") if k in kinds))
     return {"classification": kind, "dependencies": [u[0] for u in updates]}
