@@ -1224,7 +1224,7 @@ class ActionTests(unittest.TestCase):
         for window in (router.HOLD, "5h", "weekly"):
             led.record_usage("cline-free", window, 100, until)
         led.record_usage("kilo", router.HOLD, 100, until)
-        led.set_kv("hold_reason:cline-free", "model_unavailable")
+        led.set_kv("hold_reason:cline-free", "silent")
         led.set_kv("credit_state:cline-free", '{"failures": 1}')
 
         actions.run(cfg, led, "unhold", {"platform": "cline-free"})
@@ -1238,7 +1238,7 @@ class ActionTests(unittest.TestCase):
         cfg, led = make_cfg(), make_led()
         until = iso(led.now() + timedelta(hours=24))
         led.record_usage("cline-free", router.HOLD, 100, until)
-        led.set_kv("hold_reason:cline-free", "model_unavailable")
+        led.set_kv("hold_reason:cline-free", "silent")
         snapshot = state.build(cfg, led)
 
         desktop = page._d_capacity(snapshot)
