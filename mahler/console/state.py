@@ -881,7 +881,7 @@ _PM_CODES = {"timeout": "timed out", "command_failed": "command failed",
              "command_missing": "command not configured"}
 
 
-def _dur(seconds):
+def _pm_dur(seconds):
     seconds = max(0, int(seconds))
     return (f"{seconds // 3600}h {seconds % 3600 // 60}m" if seconds >= 3600 else
             f"{seconds // 60}m" if seconds >= 60 else f"{seconds}s")
@@ -904,7 +904,7 @@ def _post_merge(cfg, led, row):
     elapsed = (end - parse(pm["created_at"])).total_seconds()
     artifact = pm["artifact_ref"] if re.match(r"https?://\S+$", pm["artifact_ref"] or "") else None
     out = {"phase": pm["phase"], "artifact": artifact, "bug": None, "bug_url": None,
-           "timing": f"{_dur(elapsed)} of {_dur(timeout)}"}
+           "timing": f"{_pm_dur(elapsed)} of {_pm_dur(timeout)}"}
     if pm["status"] == "PASS":
         out.update(status="live", label="Live", tone="ok",
                    detail="Exact version live; smoke passed")
