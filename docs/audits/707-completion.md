@@ -112,4 +112,11 @@ Gaps 2–7 above are resolved. Verdicts for criteria 2, 4 and 5 are now **SUPPOR
 | 6 Recipe/finalize | `recipes/design.md` now says any such mention in a `followups` payload is rejected. The ship-layer incidental-prose test is annotated as ship-layer only. | `tests.test_recipes.DesignRecipeTests` |
 | 7 Read-only | `finalize._prepare_design` rejects the result when `git status --porcelain` in the design worktree is non-empty (the HEAD check already rejects new commits). Per-platform sandboxing stays out of scope. | `tests.test_finalize.RunTests.test_design_result_rejected_when_worktree_dirty` |
 
-Gate results on the #1009 branch: GATES_PLACEHOLDER
+Gate results on the #1009 branch (Python 3.14.3):
+
+| Command | Result | Exit |
+|---|---|---|
+| `python3 -m mahler.repo_guard` | passed, no output | 0 |
+| `python3 -m unittest discover -s tests` | Ran 2762 tests in 167.3s, OK (skipped=1) | 0 |
+| `python3 tests/run_random.py 1009` | random order seed 1009, Ran 2762 tests in 172.3s, OK (skipped=1) | 0 |
+| `python3 -X dev tests/run_strict.py` | Ran 2762 tests in 184.3s, OK (skipped=1) | 0 |
