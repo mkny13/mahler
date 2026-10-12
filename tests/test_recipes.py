@@ -826,3 +826,14 @@ class CIRetryRecipeTests(unittest.TestCase):
         for phrase in ("STATUS: BLOCKED CI-RETRY <evidence>", "no code changes",
                        "once per head SHA", "original charge once", "exhausted allowance"):
             self.assertIn(phrase, text)
+
+
+class ClaimContractTests(unittest.TestCase):
+    def test_claim_deferrals_are_finite_and_uat_is_not_a_gate(self):
+        from pathlib import Path
+        text = (Path(__file__).resolve().parents[1] / "recipes/review.md").read_text()
+        claim = text.split("<!-- normal-pr-review -->")[0]
+        for required in ("pending_practices_checks", "owner_question", "inconclusive",
+                         "all unrelated acceptance", "Optional observations do not gate closure"):
+            self.assertIn(required, claim)
+        self.assertNotIn("parked for a later human", claim)

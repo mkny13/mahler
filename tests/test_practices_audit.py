@@ -1,7 +1,6 @@
 import copy
 import hashlib
 import json
-import shlex
 import subprocess
 import tempfile
 import unittest
@@ -899,7 +898,7 @@ class TestPracticesAudit(unittest.TestCase):
             self.assertTrue(set(["custom", "type:chore", "size:m", "p2"]) <= set(issue["labels"]))
         self.assertIn("pass:practices-audit", self.gh.issues[first.report_url]["labels"])
         self.assertNotIn("pass:practices-audit", self.gh.issues[proposal]["labels"])
-        self.assertIn("python3 -c", self.gh.issues[proposal]["body"])
+        self.assertIn("pending_practices_checks", self.gh.issues[proposal]["body"])
         self.assertIn(audit.proposal_marker("demo", "agent-instructions"), self.gh.issues[proposal]["body"])
         for state in ("open", "closed"):
             with self.subTest(state=state):
@@ -912,27 +911,15 @@ class TestPracticesAudit(unittest.TestCase):
                 self.assertIn(first.report_url, self.gh.comments[-1][1])
         self.assertIn(proposal, self.gh.issues[first.report_url]["body"])
 
-    def test_proposal_acceptance_scans_current_worktree(self):
+    def test_proposal_acceptance_names_conductor_check(self):
         self.write("CLAUDE.md", "Diverged\n")
-        result = audit.scan_project(self.pol, self.gh)
-        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
+        filing = audit.file_audit(self.cfg(), (audit.scan_project(self.pol, self.gh),),
+                                  lambda _: self.gh)
         body = self.gh.issues[filing.proposals["demo/agent-instructions"]]["body"]
-        command = body.split("```sh\n", 1)[1].split("\n```", 1)[0]
-        executable, flag, code = shlex.split(command)
-        self.assertEqual((executable, flag), ("python3", "-c"))
-        with tempfile.TemporaryDirectory() as worktree:
-            root = Path(worktree)
-            (root / "AGENTS.md").write_text(GUIDANCE)
-            (root / "CLAUDE.md").write_text("Diverged\n")
-            with patch("pathlib.Path.cwd", return_value=root), \
-                    patch("mahler.gh.GH", return_value=self.gh) as client, \
-                    patch("builtins.print"):
-                with self.assertRaises(AssertionError):
-                    exec(code, {})
-                (root / "CLAUDE.md").write_text("See AGENTS.md\n")
-                exec(code, {})
-                client.assert_called_with(self.pol["repo"])
-        self.assertEqual(self.results()["agent-instructions"].state, "gap")
+        self.assertIn("pending_practices_checks", body)
+        self.assertIn("reviewed configured base", body)
+        self.assertNotIn("python3 -c", body)
+        self.assertEqual(audit.proposal_checks("demo", body), ["agent-instructions"])
 
     def test_lookup_failure_never_creates_duplicate_and_other_projects_proceed(self):
         self.write("CLAUDE.md", "Diverged\n")
@@ -1159,12 +1146,6 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(cfg, before)
         self.assertEqual(settings, self.gh.settings)
         self.assertEqual(protection, self.gh.protection)
-
-    def test_executable_acceptance_check(self):
-        command = audit._acceptance(self.pol, "agent-instructions")
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("state='pass'", result.stdout)
 
     def test_mahler_shaped_fixture_passes_and_cites_workflow_command(self):
         mahler_workflow = (
@@ -1630,28 +1611,6 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn("AGENTS.md", resolved["ci-tests"].evidence[0])
         self.assertIn("external builder", resolved["ci-tests"].reason)
 
-    def test_proposal_acceptance_passes_with_documented_decision(self):
-        self.write("CLAUDE.md", "Diverged\n")
-        result = audit.scan_project(self.pol, self.gh)
-        filing = audit.file_audit(self.cfg(), (result,), lambda _: self.gh)
-        body = self.gh.issues[filing.proposals["demo/agent-instructions"]]["body"]
-        command = body.split("```sh\n", 1)[1].split("\n```", 1)[0]
-        executable, flag, code = shlex.split(command)
-        self.assertEqual((executable, flag), ("python3", "-c"))
-
-        with tempfile.TemporaryDirectory() as worktree:
-            root = Path(worktree)
-            (root / "AGENTS.md").write_text(GUIDANCE)
-            (root / "CLAUDE.md").write_text("Diverged\n")
-            (root / "DECISIONS.md").write_text(
-                "# Decisions\n\n### D42 — agent-instructions exemption\n"
-                "Exempt due to custom tool requirements (mkny13/mahler#806).\n"
-            )
-            with patch("pathlib.Path.cwd", return_value=root), \
-                    patch("mahler.gh.GH", return_value=self.gh), \
-                    patch("builtins.print"):
-                exec(code, {})
-
     def test_audit_rerun_cleanly_reconciles_resolved_proposals(self):
         self.write("CLAUDE.md", "Diverged\n")
         first_result = audit.scan_project(self.pol, self.gh)
@@ -1848,3 +1807,55 @@ class FilingIdentityTests(unittest.TestCase):
         self.assertIn(("personal/mahler", "lookup"), operations)
         self.assertIn(("work/app", "lookup"), operations)
         self.assertIn(("work/app", "comment"), operations)
+
+
+class DetachedProposalTests(unittest.TestCase):
+    def test_scans_requested_commit_with_project_client_and_cleans_up(self):
+        from types import SimpleNamespace
+        from mahler import runner
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            def git(*args):
+                return runner.git(tmp, *args)
+            git("init", "--quiet")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            (root / "AGENTS.md").write_text("instructions")
+            (root / "CLAUDE.md").write_text("See AGENTS.md")
+            git("add", ".")
+            git("commit", "--quiet", "-m", "reviewed")
+            sha = git("rev-parse", "HEAD")
+            (root / "CLAUDE.md").write_text("diverged")
+            git("commit", "--quiet", "-am", "different primary")
+            pol = {"name": "demo", "repo": "owner/demo", "path": tmp, "verify": ""}
+            gh = MagicMock(repo="owner/demo")
+            cfg = copy.deepcopy(config.DEFAULTS)
+            ctx = SimpleNamespace(cfg=cfg, policy=lambda _: pol, gh=lambda _: gh)
+            body = audit.proposal_marker("demo", "agent-instructions")
+            paths = []
+            scan = audit.scan_project
+            def inspect(policy, client):
+                paths.append(policy["path"])
+                self.assertIs(client, gh)
+                self.assertEqual(runner.git(policy["path"], "rev-parse", "HEAD"), sha)
+                self.assertFalse((Path(policy["path"]) / "mahler").exists())
+                return scan(policy, client)
+            with patch.object(audit, "scan_project", side_effect=inspect):
+                finding = audit.verify_proposal(ctx, "demo", body, "agent-instructions", sha)
+            self.assertEqual(finding.state, "pass")
+            self.assertFalse(Path(paths[-1]).exists())
+            self.assertEqual((root / "CLAUDE.md").read_text(), "diverged")
+            def fail(policy, client):
+                paths.append(policy["path"])
+                raise GHError("unavailable")
+            with patch.object(audit, "scan_project", side_effect=fail):
+                with self.assertRaises(GHError):
+                    audit.verify_proposal(ctx, "demo", body, "agent-instructions", sha)
+            self.assertFalse(Path(paths[-1]).exists())
+            for check, marker in (("unknown", body), ("ci-tests", body),
+                                  ("agent-instructions", "unmatched")):
+                with self.assertRaises(ValueError):
+                    audit.verify_proposal(ctx, "demo", marker, check, sha)
+            gh.repo = "wrong/repo"
+            with self.assertRaises(ValueError):
+                audit.verify_proposal(ctx, "demo", body, "agent-instructions", sha)

@@ -1307,7 +1307,13 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   max_attempts. An evidenced failure charges one normal build retry with actionable
   findings. The repeated identical base/explanation guard remains after rejection.
   An evidenced pass posts a deduplicated comment and closes only after GitHub confirms
-  closure. Remaining manual checks instead park a durable handoff for the UAT follow-on.
+  closure. Optional `human_checks` observations remain evidence, not UAT gates (#741).
+  `pending_practices_checks` defers only finite matching proposal checks to the installed
+  conductor scanner in an isolated checkout of the reviewed base, using project identity.
+  Scanner gaps reject the claim; unknowns use bounded inconclusive retries. All unrelated
+  acceptance criteria still require independent evidence. An explicit D13 `owner_question`
+  becomes a persisted needs_you decision with one notification. Legacy passed manual/parked
+  claims re-enter fresh independent review, excluding active runs and human leases.
   This path records no merge, release or shipping success. Builds retain DONE and report
   concrete evidence and explicit remaining manual steps.
 - **Unchanged-head fix DONE** (mahler#706). One persisted allowance per project/issue/PR/head

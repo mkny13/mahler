@@ -181,11 +181,34 @@ def _daemon_update_stall(now):
     }
 
 
+def _parked_blockers(cfg, led, project_filter=None):
+    from .gh import dependency_target
+    projects = list(config.enabled_projects(cfg))
+    items = list(led.items())
+    blockers = []
+    for item in items:
+        project, n = item["project"], item["number"]
+        if item["state"] != "parked" or (project_filter and project != project_filter):
+            continue
+        dependents = sorted(f"{i['project']}#{i['number']}" for i in items
+                            if i["state"] != "done" and any(
+                                dependency_target(d, i["project"], projects) == (project, n)
+                                for d in json.loads(i["depends"])))
+        if dependents:
+            event = led.q1("SELECT detail FROM events WHERE project=? AND number=? "
+                           "AND kind='state' ORDER BY id DESC LIMIT 1", (project, n))
+            blockers.append({"project": project, "number": n,
+                             "reason": event["detail"] if event else "parked",
+                             "dependents": dependents})
+    return blockers
+
+
 def cmd_status(a, cfg, led):
     from .console.state import capacity_wait_text
     from .sync import missing_scope_counts
 
     missing_scope = missing_scope_counts(led, cfg, getattr(a, "project", None))
+    blockers = _parked_blockers(cfg, led, getattr(a, "project", None))
     now = led.now()
     update_stall = _daemon_update_stall(now)
     if not a.json:
@@ -217,6 +240,7 @@ def cmd_status(a, cfg, led):
             "items": items,
             "leases": leases,
             "missing_scope_counts": missing_scope,
+            "parked_blockers": blockers,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
             # D41: Team-plan API credits, one snapshot per enabled credits platform
             "api_credits": {n: api_credits.snapshot(led, n, pc)
@@ -273,6 +297,9 @@ def cmd_status(a, cfg, led):
         wait = f"  — {capacity}" if capacity else ""
         print(f"  {i['state']:<10} {i['project']}#{i['number']:<5} p{i['priority']}  "
               f"{(i['title'] or '')[:60]}{held}{tries}{setup}{est_str}{url}{wait}")
+    for blocker in blockers:
+        print(f"  Parked blocker {blocker['project']}#{blocker['number']}: "
+              f"{blocker['reason']}; waiting: {', '.join(blocker['dependents'])}")
     if missing_scope:
         print("\nOpen issues older than 24h missing scope label (latest full sync)")
         for project, count in missing_scope.items():

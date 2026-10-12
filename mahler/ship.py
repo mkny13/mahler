@@ -313,6 +313,7 @@ def _unowned_prs(ctx, project):
 
 
 def _ship_project(ctx, project):
+    no_change.recover_legacy(ctx, project)
     migrate_capacity_waits(ctx, project)
     recover_capacity_waits(ctx, project)
     ctx.merge_requested = False

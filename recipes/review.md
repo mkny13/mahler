@@ -14,15 +14,25 @@ $claim_evidence
 Do not edit files, commit, push, post comments, or run live/prohibited checks.
 Do not run GUI-driving checks (XCUITest, smoke runners, computer-use) here, and avoid protected
 folders such as ~/Documents. Never
-print secrets. Examine source and existing evidence; list any remaining manual
-or live verification in human_checks. Do not invent successful checks. A concrete
+print secrets. Examine source and existing evidence; human_checks contains only
+optional usability/UAT observations, never missing required technical evidence. Do not invent successful checks. A concrete
 source/acceptance mismatch fails with actionable evidence. Missing evidence is
 inconclusive: return an empty evidence list, never an unsupported pass.
 
 Return one JSON object on one status line. Use mode "claim", evidence as a list
 of nonempty strings citing source locations, commands/results or concrete failures,
-and human_checks as a list of explicit remaining manual steps (empty if none).
-A pass with manual checks is parked for a later human handoff, not closed.
+and human_checks as a list of optional non-gating observations (empty if none).
+Optional pending_practices_checks is a list of known practices check IDs from the
+proposal: ci-tests, agent-instructions, mahler-guidance, verify-command,
+tracked-secrets, branch-protection. Only a matching practices proposal may defer
+its named scanner check to the conductor, which scans the exact reviewed base.
+This also applies to historical proposals containing a bare Mahler Python command.
+REVIEW-PASS still requires evidence for all unrelated acceptance requirements;
+missing technical evidence is inconclusive, not a human task or optional hint.
+Optional owner_question is one actionable question only for a D13 owner decision
+(product intent, credentials/accounts/payment, or guarded destructive actions).
+The conductor preserves it as needs_you even when a deferred scanner check passes.
+Optional observations do not gate closure or create a UAT queue.
 $rules
 STATUS: REVIEW-PASS {"mode":"claim","evidence":["concrete cited evidence"],"human_checks":[]}
 or
