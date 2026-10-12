@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import capacity, config, launch_health, platforms, presence, prompt, router, runner
+from . import capacity, config, model_availability, launch_health, platforms, presence, prompt, router, runner
 from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
@@ -384,6 +384,7 @@ def _init_schedule_state(ctx, projects):
         group = cfg["platforms"].get(r["platform"], {}).get("quota_group", r["platform"])
         per_group[group] = per_group.get(group, 0) + 1
     busy = busy_platforms(cfg, active)
+    busy |= {r["platform"] for r in active if model_availability.probe_pending(led, r["platform"])}
     # concurrency.by_tier (mahler#200): a finer-grained cap layered under
     # `total` — tracked as a running list of tiers so it can be recomputed
     # after each start this pass, same as the quota-group busy set below.
@@ -431,7 +432,7 @@ def _init_schedule_state(ctx, projects):
     return {"total": len(active), "in_project": in_project, "per_group": per_group,
             "busy": busy, "tiers": tiers, "busy_areas": busy_areas,
             "busy_files": busy_files, "in_flight": in_flight, "hot": hot,
-            "burst_lines": burst_lines}
+            "burst_lines": burst_lines, "probe_led": led}
 
 
 def _order_candidates(ctx, work, st, projects):
@@ -610,6 +611,8 @@ def _account_start(cfg, platform, name, area, item_files, st):
         for pname in cfg["platforms"]:
             if cfg["platforms"][pname].get("quota_group", pname) == group:
                 st["busy"].add(pname)
+    if st.get("probe_led") is not None and model_availability.probe_pending(st["probe_led"], platform):
+        st["busy"].add(platform)  # one classification launch after a legacy hold
     st["tiers"].append(router.tier_of(cfg["platforms"][platform]))
     st["busy"] |= tier_budget_busy(cfg, st["tiers"])
 

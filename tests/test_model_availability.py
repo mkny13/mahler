@@ -94,6 +94,22 @@ class ModelAvailabilityTests(unittest.TestCase):
         models.reject(self.led, other, self.pc, {}, {})
         self.assertEqual(router.usage_state(self.led, other, self.pc)[0], "soft")
 
+    def test_no_metadata_fallback_bounds_to_one_launch(self):
+        from mahler import tick
+        self.led.record_usage(self.name, "hold", 100, iso(NOW + timedelta(hours=24)))
+        self.led.set_kv(f"hold_reason:{self.name}", "model_unavailable")
+        self.assertFalse(models.blocked(self.led, self.name, self.pc))
+        self.assertTrue(models.probe_pending(self.led, self.name))
+        self.cfg["platforms"][self.name]["max_runs"] = 3
+        st = {"total": 0, "in_project": {}, "busy_areas": {"x": set(), self.name: set()},
+              "busy_files": {self.name: set()}, "per_group": {}, "busy": set(),
+              "tiers": [], "probe_led": self.led}
+        tick._account_start(self.cfg, self.name, self.name, None, [], st)
+        self.assertIn(self.name, st["busy"])
+        self.led.create_run(project="x", number=2, platform=self.name, role="build",
+                            epoch=1, status="ended", stop_reason="model_unavailable")
+        self.assertFalse(models.probe_pending(self.led, self.name))
+
     def test_unhold_explains_preserved_block_and_missing_list(self):
         finalize._hold_model_unavailable(self.ctx, self.run)
         self.assertIn("Available models: unavailable", self.ctx.ping.call_args.args[1])

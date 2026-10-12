@@ -59,6 +59,10 @@ def blocked(led, name, pconf, role=None, *, migrate=True):
                 if fingerprint(selected) == fingerprint(current):
                     return dict(selected, platform=name)
         if migrate:
+            # No identity to recover: allow one classification launch, then
+            # keep the platform busy until that launch ends (probe_pending).
+            last = led.q1("SELECT MAX(id) AS n FROM runs WHERE platform=?", (name,))
+            led.set_kv(f"model_probe:{name}", str((last and last["n"]) or 0))
             led.clear_usage(name, ["hold"])
             led.set_kv(f"hold_reason:{name}", None)
     for key in json.loads(led.get_kv(f"model_rejections:{name}") or "[]"):
@@ -67,3 +71,15 @@ def blocked(led, name, pconf, role=None, *, migrate=True):
         if fingerprint(current) == fingerprint(record):
             return record
     return None
+
+
+def probe_pending(led, name):
+    """True while a legacy-migration classification launch is unresolved."""
+    baseline = led.get_kv(f"model_probe:{name}")
+    if baseline is None:
+        return False
+    if led.q1("SELECT 1 FROM runs WHERE platform=? AND id>? AND status='ended'",
+              (name, int(baseline))):
+        led.set_kv(f"model_probe:{name}", None)
+        return False
+    return True
