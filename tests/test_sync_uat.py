@@ -462,6 +462,23 @@ class QuietWindowTests(unittest.TestCase):
         self.after(days=5)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
 
+    def test_revert_inside_window_after_smoke_reopens_once(self):
+        self.smoke(self.MERGED + timedelta(minutes=5))
+        self.after(hours=1)
+        self.assertEqual(self.state(), "done")
+        self.now = self.MERGED + timedelta(days=3)
+        self.led.event("revert_requested", "x", 5, {"pr": 88})
+        self.after(days=4)
+        self.after(days=4, hours=1)
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["priority"]), ("ready", 1))
+        self.assertEqual(self.gh.opened, [5])
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
+        self.led.set_state("x", 5, "done", "again")
+        self.after(days=5)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='shipment_reopened'")), 1)
+        self.assertEqual(self.gh.opened, [5])
+
     def test_replacement_shipment_requires_fresh_evidence_and_can_reopen(self):
         self.smoke(self.MERGED + timedelta(minutes=5))
         self.after(hours=1)
