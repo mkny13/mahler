@@ -1121,6 +1121,19 @@ def _uat_left(u):
             f'{hint}{_uat_link(u)}{_uat_gallery(u)}</div>')
 
 
+def _post_merge_html(u):
+    pm = u.get("post_merge")
+    if not pm:
+        return ""
+    extra = f' · {e(pm["timing"])}'
+    if pm["artifact"]:
+        extra += f' · <a href="{e(pm["artifact"])}" target="_blank" rel="noopener">Artifact</a>'
+    if pm["bug_url"]:
+        extra += f' · <a href="{e(pm["bug_url"])}" target="_blank" rel="noopener">Bug #{pm["bug"]}</a>'
+    return (f'<div class="pm pm-{pm["status"]}"><span class="pm-label t-{pm["tone"]}">'
+            f'{e(pm["label"])}</span><span class="meta">{e(pm["detail"])}{extra}</span></div>')
+
+
 def _uat_buttons(u):
     return (f'<div class="uatbtns"><button class="btn uat-fail" '
             f'data-open-bug="{e(u["ref"])}">Fail</button></div>')
@@ -1144,7 +1157,7 @@ def _uat_cards(s, phone=False):
             if session["link"]:
                 row["link"] = None
             out.append(f'<div class="{"puat" if phone else "uat"}{_edge(u)}" data-uat="{e(u["ref"])}">'
-                       f'{_uat_left(row)}{_uat_done(u) or _uat_buttons(u)}</div>')
+                       f'{_uat_left(row)}{_post_merge_html(u)}{_uat_done(u) or _uat_buttons(u)}</div>')
         out.append('</article>')
     return "".join(out)
 
