@@ -31,19 +31,42 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.states = {10: "OPEN", 11: "CLOSED", 12: "CLOSED"}
         self.comments = {}
         self.gh.issue_body.side_effect = lambda n: self.bodies[n]
-        self.gh.edit_issue_body.side_effect = lambda n, body: self.bodies.update({n: body})
-        self.gh.issue_by_marker.return_value = None
-        self.gh.create_issue.return_value = "https://github.com/mkny13/mahler/issues/30"
+        self.remote = []
+        self.next_issue = 30
+        self.gh.create_issue.side_effect = self.fake_create
+        self.gh.edit_issue_body.side_effect = self.fake_edit
         self.gh.issue_state.side_effect = lambda n: self.states[n]
         self.gh.issue_comments.side_effect = lambda n: self.comments.get(n, [])
         self.gh.comment.side_effect = lambda n, body: self.comments.setdefault(n, []).append({"body": body})
         self.gh.close_issue.side_effect = lambda n: self.states.update({n: "CLOSED"})
-        self.gh.parent_issue_inventory.return_value = []
+        self.gh.parent_issue_inventory.return_value = self.remote
         self.gh.sub_issues.return_value = []
         self.gh.closing_prs.return_value = [{"number": 99, "state": "MERGED"}]
         self.gh.pr_merge_info.return_value = {"state": "MERGED"}
         self.led.upsert_item("mahler", 10, state="parent")
         self.led.upsert_item("mahler", 11, parent=10, state="shipped", pr=99)
+
+    def fake_create(self, title, body, labels=()):
+        n = self.next_issue
+        self.next_issue += 1
+        self.remote.append({"number": n, "state": "open", "title": title, "body": body,
+                            "labels": [{"name": l} for l in labels],
+                            "html_url": f"https://github.com/mkny13/mahler/issues/{n}"})
+        return f"https://github.com/mkny13/mahler/issues/{n}"
+
+    def fake_edit(self, n, body):
+        self.bodies[n] = body
+        for row in self.remote:
+            if row["number"] == n:
+                row["body"] = body
+
+    def add_remote(self, n, state="open", body="sorted plan", parent=10, title=None, label=True):
+        row = {"number": n, "state": state, "body": body,
+               "title": title or f"Verify remaining completion criteria for #{parent}",
+               "labels": [{"name": "pass:verify"}] if label else [],
+               "html_url": f"https://github.com/mkny13/mahler/issues/{n}"}
+        self.remote.append(row)
+        return row
 
     def run_pass(self):
         sync.close_finished_parents(self.ctx, [proj()])
@@ -125,6 +148,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
     def test_qualified_or_extended_criteria_are_not_ticked(self):
         for criterion in ("other/repo#11 closed", "#11 closed and deployed"):
             with self.subTest(criterion=criterion):
+                self.setUp()
                 self.bodies[10] = f"## Done when\n- [ ] {criterion}"
                 self.run_pass()
                 self.gh.edit_issue_body.assert_not_called()
@@ -143,24 +167,128 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.run_pass()
         self.gh.close_issue.assert_called_once()
 
-    def test_ambiguous_verify_creation_reuses_marker(self):
-        self.bodies[10] = "## Done when\n- [ ] approve security review"
+    FREE = "## Done when\n- [ ] approve security review"
+
+    def test_ambiguous_verify_creation_reuses_open_item(self):
+        self.bodies[10] = self.FREE
+        real = self.fake_create
         def created_but_response_lost(*args):
-            self.gh.issue_by_marker.return_value = "https://github.com/mkny13/mahler/issues/30"
+            real(*args)
             raise GHError("response lost")
         self.gh.create_issue.side_effect = created_but_response_lost
         self.run_pass()
         self.run_pass()
         self.gh.create_issue.assert_called_once()
-        self.gh.comment.assert_called_once()
-        self.ctx.ping.assert_called_once()
+        self.assertEqual(len(self.remote), 1)
 
     def test_verify_lookup_failure_does_not_create(self):
-        self.bodies[10] = "## Done when\n- [ ] approve security review"
-        self.gh.issue_by_marker.side_effect = GHError("offline")
+        self.bodies[10] = self.FREE
+        self.gh.parent_issue_inventory.side_effect = GHError("offline")
         self.run_pass()
         self.gh.create_issue.assert_not_called()
         self.gh.close_issue.assert_not_called()
+
+    def test_markerless_open_item_reused_across_fingerprint_change(self):
+        for labels in ((), ("needs_you",)):
+            with self.subTest(labels=labels):
+                self.setUp()
+                self.bodies[10] = self.FREE
+                row = self.add_remote(40, body="> **Original request:** x\n\n## Plan\nsorted")
+                row["labels"] += [{"name": l} for l in labels]
+                before_labels = list(row["labels"])
+                self.run_pass()
+                self.gh.create_issue.assert_not_called()
+                self.assertIn("approve security review", row["body"])
+                self.assertIn("## Plan\nsorted", row["body"])
+                self.assertEqual(row["labels"], before_labels)
+                edits = self.gh.edit_issue_body.call_count
+                self.run_pass()
+                self.assertEqual(self.gh.edit_issue_body.call_count, edits)
+                # Blockers change: same item updated, still no new issue.
+                self.bodies[10] = self.FREE + "\n- [ ] confirm rollout"
+                self.run_pass()
+                self.gh.create_issue.assert_not_called()
+                self.assertIn("confirm rollout", row["body"])
+                self.assertEqual(row["body"].count("mahler:verify-blockers:start"), 1)
+                self.assertIn("## Plan\nsorted", row["body"])
+
+    def test_two_legacy_open_items_create_no_third(self):
+        self.bodies[10] = self.FREE
+        a = self.add_remote(41)
+        b = self.add_remote(42)
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.assertIn("approve security review", a["body"])
+        self.assertEqual(b["body"], "sorted plan")
+        self.assertEqual(self.led.get_kv("parent_verify_dups:mahler:10"), "41,42")
+
+    def test_closed_original_with_stale_kv_gets_one_followup(self):
+        self.bodies[10] = self.FREE
+        self.add_remote(43, state="closed")
+        self.led.set_kv("parent_verify:mahler:10:stale", "x")
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        body = self.gh.create_issue.call_args.args[1]
+        self.assertIn("#43", body)
+        self.assertIn("approve security review", body)
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        # Restart: a fresh ledger sees the open follow-up in the inventory.
+        self.ctx.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.ctx.led.close)
+        self.ctx.led.upsert_item("mahler", 10, state="parent")
+        self.ctx.led.upsert_item("mahler", 11, parent=10, state="shipped", pr=99)
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+
+    def test_closed_followup_same_blockers_diagnoses_once(self):
+        self.bodies[10] = self.FREE
+        self.add_remote(43, state="closed")
+        self.run_pass()
+        self.remote[-1]["state"] = "closed"
+        for _ in range(3):
+            self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        diag = [c for c in self.comments[10] if "parent-verify-diagnostic" in c["body"]]
+        self.assertEqual(len(diag), 1)
+        self.assertIn("#43", diag[0]["body"])
+        self.assertIn("#30", diag[0]["body"])
+        self.assertEqual(sum("verification closed" in c.args[0]
+                             for c in self.ctx.ping.call_args_list), 1)
+
+    def test_checked_parent_closes_without_followup(self):
+        self.add_remote(43, state="closed")
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_update_failure_retries_and_dry_run_writes_nothing(self):
+        self.bodies[10] = self.FREE
+        row = self.add_remote(44)
+        with mock.patch.object(self.gh, "edit_issue_body", side_effect=GHError("offline")):
+            self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.assertEqual(row["body"], "sorted plan")
+        self.run_pass()
+        self.assertIn("approve security review", row["body"])
+        self.setUp()
+        self.bodies[10] = self.FREE
+        self.add_remote(43, state="closed")
+        self.ctx.dry_run = True
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.gh.edit_issue_body.assert_not_called()
+
+    def test_verify_identity_is_exact_parent_number(self):
+        self.bodies[10] = self.FREE
+        self.add_remote(45, parent=100)
+        self.add_remote(46, parent=1, body="<!-- mahler:parent-verify:1:abc -->")
+        self.add_remote(47, label=False)
+        self.add_remote(48, title="Verify remaining completion criteria for #10 extra")
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.assertEqual(self.remote[0]["body"], "sorted plan")
 
     def test_done_child_also_requires_merge(self):
         self.led.upsert_item("mahler", 11, state="done", pr=None)

@@ -645,30 +645,128 @@ def _parent_checklist(body):
     return [f"Unchecked criterion: {check[2]}" for _, check, _ in checks if check[1] == " "]
 
 
-def _parent_verify(ctx, project, number, blockers, fingerprint):
-    """Give free-text criteria an owner; recover ambiguous creates via GitHub."""
+VERIFY_START = "<!-- mahler:verify-blockers:start -->"
+VERIFY_END = "<!-- mahler:verify-blockers:end -->"
+
+
+def _verify_title(number):
+    return f"Verify remaining completion criteria for #{number}"
+
+
+def _verify_matches(inventory, number):
+    """Verification items for one parent in this repository, lowest number first.
+
+    Identity is the parent number: the marker when sort kept it, else the
+    generated title plus the pass:verify label (sort strips the marker).
+    """
+    marker = re.compile(rf"<!-- mahler:parent-verify:{number}:[0-9a-f]+ -->")
+    out = []
+    for row in inventory:
+        labels = {(l.get("name") if isinstance(l, dict) else l) for l in row.get("labels") or []}
+        if marker.search(row.get("body") or "") or (
+                "pass:verify" in labels and row.get("title") == _verify_title(number)):
+            out.append(row)
+    return sorted(out, key=lambda r: r["number"])
+
+
+def _verify_managed(number, blockers, fingerprint):
+    return (f"{VERIFY_START}\n<!-- mahler:parent-verify:{number}:{fingerprint} -->\n"
+            f"Current unresolved criteria for parent #{number}:\n" +
+            "\n".join(f"- {b}" for b in blockers) + f"\n{VERIFY_END}")
+
+
+def _verify_refresh(gh, row, number, blockers, fingerprint):
+    """Update only the managed blocker section (and marker); no-op when current."""
+    body = row.get("body") or ""
+    block = _verify_managed(number, blockers, fingerprint)
+    marker_re = re.compile(rf"<!-- mahler:parent-verify:{number}:[0-9a-f]+ -->")
+    managed_re = re.compile(re.escape(VERIFY_START) + r".*?" + re.escape(VERIFY_END), re.S)
+    if managed_re.search(body):
+        new = managed_re.sub(lambda _: block, body, count=1)
+    else:
+        new = marker_re.sub("", body).rstrip() + "\n\n" + block + "\n"
+    if new != body:
+        gh.edit_issue_body(row["number"], new)
+
+
+def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comments=()):
+    """Give free-text criteria one verification owner per parent.
+
+    Reuse any open item for the parent (updating its blocker section). If only
+    closed ones remain and the same blockers stand, file one linked follow-up;
+    if that also closes unresolved, raise one diagnostic instead of a chain.
+    """
     led, gh = ctx.led, ctx.gh(project)
-    key = f"parent_verify:{project}:{number}:{fingerprint}"
-    if led.get_kv(key):
+    matches = _verify_matches(inventory, number)
+    open_rows = [r for r in matches if str(r.get("state")).upper() == "OPEN"]
+    item_key = f"parent_verify_item:{project}:{number}"
+    if open_rows:
+        row = open_rows[0]
+        url = row.get("html_url") or row.get("url") or ""
+        _verify_refresh(gh, row, number, blockers, fingerprint)
+        led.set_kv(item_key, url)
+        if len(open_rows) > 1:
+            dup_key = f"parent_verify_dups:{project}:{number}"
+            ids = ",".join(str(r["number"]) for r in open_rows)
+            if led.get_kv(dup_key) != ids:
+                ctx.say(f"{project}#{number}: duplicate verify items {ids}; using #{row['number']}")
+                led.set_kv(dup_key, ids)
         return
-    marker = f"<!-- mahler:parent-verify:{number}:{fingerprint} -->"
-    url = gh.issue_by_marker(marker)
-    if not url:
-        policy = ctx.policy(project)
-        labels = ["type:chore", "size:m", "p2", "pass:verify"]
-        if policy.get("scope") == "label":
-            labels.append(policy["scope_label"])
+    follow_key = f"parent_verify_followup:{project}:{number}:{fingerprint}"
+    followup_marker = f"<!-- mahler:parent-verify-followup:{number}:{fingerprint} -->"
+    policy = ctx.policy(project)
+    labels = ["type:chore", "size:m", "p2", "pass:verify"]
+    if policy.get("scope") == "label":
+        labels.append(policy["scope_label"])
+    def create(body):
         gh.ensure_pass_label("verify")
-        url = gh.create_issue(
-            f"Verify remaining completion criteria for #{number}",
-            f"{marker}\n\n## Problem / goal\n"
-            f"Parent #{number} has completed children but still needs evidence for:\n" +
+        url = gh.create_issue(_verify_title(number), body, labels)
+        led.set_kv(item_key, url)
+        return url
+    tail = ("\n\n## Done when\n- [ ] Each remaining parent criterion has recorded evidence "
+            "or an explicit actionable owner question.\n\n## Needs a human to check\nNothing")
+    if not matches:
+        create(f"{_verify_managed(number, blockers, fingerprint)}\n\n## Problem / goal\n"
+               f"Parent #{number} has completed children but still needs evidence for:\n" +
+               "\n".join(f"- {b}" for b in blockers) +
+               "\n\n## Plan\nCollect and record evidence for each criterion on the parent. "
+               "Tick only criteria supported by that evidence; identify any owner-only decision."
+               + tail)
+        return
+    # Only closed verification items remain.
+    prior = matches[-1]
+    follow = next((r for r in matches if followup_marker in (r.get("body") or "")), None)
+    if follow is None and led.get_kv(follow_key):
+        follow = next((r for r in matches
+                       if (r.get("html_url") or "") == led.get_kv(follow_key)), None)
+        if follow is None:
+            raise GHError("recorded verify follow-up not found in inventory")
+    if follow is None:
+        url = create(f"{_verify_managed(number, blockers, fingerprint)}\n{followup_marker}\n\n"
+                     f"## Problem / goal\nVerification item #{prior['number']} for parent "
+                     f"#{number} closed, but the parent still lists unresolved criteria:\n" +
+                     "\n".join(f"- {b}" for b in blockers) +
+                     f"\n\n## Plan\nRead the previous result on #{prior['number']} and parent "
+                     f"#{number}. Record evidence on the parent and tick supported criteria, or "
+                     "raise a genuine owner-only question. Do not close without one of these."
+                     + tail)
+        led.set_kv(follow_key, url)
+        return
+    led.set_kv(follow_key, follow.get("html_url") or "1")
+    diag_key = f"parent_verify_diag:{project}:{number}:{fingerprint}"
+    diag_marker = f"<!-- mahler:parent-verify-diagnostic:{fingerprint} -->"
+    if led.get_kv(diag_key):
+        return
+    first = next((r for r in matches if r is not follow), prior)
+    text = (f"Verification attempts #{first['number']} and #{follow['number']} both closed while "
+            f"parent #{number} still lists unresolved criteria:\n" +
             "\n".join(f"- {b}" for b in blockers) +
-            "\n\n## Plan\nCollect and record evidence for each criterion on the parent. "
-            "Tick only criteria supported by that evidence; identify any owner-only decision."
-            "\n\n## Done when\n- [ ] Each remaining parent criterion has recorded evidence "
-            "or an explicit actionable owner question.\n\n## Needs a human to check\nNothing", labels)
-    led.set_kv(key, url)
+            "\nNo further follow-up will be filed for these criteria; they need attention.")
+    if not any(diag_marker in c.get("body", "") for c in comments):
+        gh.comment(number, f"{AGENT_MARK}\n{diag_marker}\n{text}")
+    ctx.ping(f"{project}#{number}: verification closed without resolving criteria",
+             text, project, number)
+    led.set_kv(diag_key, "1")
 
 
 def close_finished_parents(ctx, projects):
@@ -779,7 +877,7 @@ def _close_finished_parents_project(ctx, project):
                 ctx.say(f"{project}#{n}: {explanation}")
                 if not ctx.dry_run:
                     if free_text_only:
-                        _parent_verify(ctx, project, n, blockers, fingerprint)
+                        _parent_verify(ctx, project, n, blockers, fingerprint, inventory, comments)
                     if not any(marker in c.get("body", "") for c in comments):
                         gh.comment(n, f"{AGENT_MARK}\n{marker}\n{explanation}")
                     if not led.get_kv(notify_key):

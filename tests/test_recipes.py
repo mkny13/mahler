@@ -22,6 +22,12 @@ class SortRecipeTests(unittest.TestCase):
         self.assertIn("if the body already has this shape, edit its sections in place",
                       self.text)
 
+    def test_preserves_parent_verification_metadata(self):
+        self.assertIn("keep any `<!-- mahler:parent-verify:... -->` comments and the "
+                      "`<!-- mahler:verify-blockers:start -->`…"
+                      "`<!-- mahler:verify-blockers:end -->` section unquoted and unchanged",
+                      self.text)
+
     def test_done_when_checklist_bounds_scope_and_checks_feasibility(self):
         for fragment in (
             "Done-when checklist — apply to this issue and each sub-issue before marking ready",

@@ -390,6 +390,14 @@ Unknown relationships, missing merge evidence and unchecked criteria never
 prove completion; terminal blockers receive deduplicated explanations and pings.
 Nested trackers use recorded parent-completion evidence; cycles remain waiting.
 Completion comments and local state reconcile safely after partial failures.
+Free-text criteria get one verification item per parent (mahler#975). Its identity is the
+parent number — the `parent-verify:N:` marker, or for sorted-and-stripped bodies the
+`pass:verify` label plus the exact title `Verify remaining completion criteria for #N` —
+never the blocker fingerprint. An open item is reused (lowest number if several; none are
+closed automatically) and only its delimited `verify-blockers` section is rewritten. If every
+item is closed and the criteria remain, exactly one linked follow-up is filed per blocker
+fingerprint; if that also closes unresolved, one diagnostic comment and ping replace
+further attempts. Lookups use the exhaustive inventory, so failures never authorize creates.
 Release snapshots,
 historical-table (`uat`) shipment entries and shipped events are recorded at merge time. Startup preserves both
 shipped rows and historical done rows. Only accepted D10 evidence promotes a
