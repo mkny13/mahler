@@ -8,6 +8,15 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_pr_close_comments_with_agent_marker(self):
+        self.gh.pr_close(7, "Superseded by #9")
+        args = self.gh._gh.call_args.args
+        self.assertEqual(args[:3], ("pr", "close", "7"))
+        self.assertIn("-R", args)
+        body = args[args.index("--comment") + 1]
+        self.assertTrue(body.startswith(AGENT_NOTE))
+        self.assertIn("Superseded by #9", body)
+
     def test_parent_inventory_paginates_and_excludes_prs(self):
         self.gh._gh.side_effect = [json.dumps([{"number": n} for n in range(100)]),
                                   json.dumps([{"number": 101}, {"number": 102, "pull_request": {}}])]
