@@ -46,6 +46,9 @@ become the console's answer buttons.
    Keep existing `Part of #N` and `Depends on: #N` lines, each on its own unquoted line,
    never inside the original-request quote: Mahler parses them line by line. Quote only the
    owner's free-form words; if the body already has this shape, edit its sections in place.
+   Likewise keep any `<!-- mahler:parent-verify:... -->` comments and the
+   `<!-- mahler:verify-blockers:start -->`…`<!-- mahler:verify-blockers:end -->` section
+   unquoted and unchanged: Mahler maintains that section itself.
    The `Files:` list right under `## Plan` is parsed
    mechanically on every sync (`gh.files_of`, mahler#210): the scheduler blocks two
    `ready`/`working` issues from building at once whenever their `Files:` lists share a path —
