@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of, expand_route
 from .ledger import parse
+from . import model_availability
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
@@ -373,13 +374,15 @@ def hold_label(led, name):
     return HOLD_REASON_TEXT.get(led.get_kv(f"hold_reason:{name}"), "a run never started")
 
 
-def usage_state(led, name, pconf, burst_lines=None):
+def usage_state(led, name, pconf, burst_lines=None, role=None):
     """-> ('ok'|'soft'|'hard'|'stale', detail). Worst window wins.
 
     During an active D23 burst, `burst_lines` overrides the soft/hard lines for
     the windows in the burst — but only for Claude platforms (kind == "claude"),
     so free-tier platforms are never affected.
     """
+    if model_availability.blocked(led, name, pconf, role):
+        return "soft", model_availability.GUIDANCE
     now = led.now()
     usage = led.usage(name)
     hold = usage.pop(HOLD, None)
@@ -720,7 +723,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
                 f"— mahler peak --off to override")
             continue
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
-        state, detail = usage_state(led, name, pconf, burst_lines=claude_lines)
+        state, detail = usage_state(led, name, pconf, burst_lines=claude_lines, role=role)
         if state == "ok":
             return name, reasons
         reasons.append(f"{name}: {state} ({detail})")
@@ -794,9 +797,11 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
             if peak_active and pconf.get("kind") == "claude":
                 why.append("peak")
         claude_lines = burst_lines if pconf.get("kind") == "claude" else None
-        state, _ = usage_state(led, name, pconf, burst_lines=claude_lines)
+        state, _ = usage_state(led, name, pconf, burst_lines=claude_lines, role=role)
         if state == "no_credit":
             why.append("no_credit")
+        elif model_availability.blocked(led, name, pconf, role):
+            why.append("hold")
         elif state in ("soft", "hard"):
             why.append("hold" if _hold_active(led, name) else "quota")
         elif state == "stale":
@@ -889,6 +894,8 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
         if not pin and role == "fix" and (tier_of(pc) < min_tier
                 or rank < SIZES.get(pc.get("min_size"), 1)
                 or rank > SIZES.get(pc.get("max_size"), 3)):
+            continue
+        if model_availability.blocked(led, name, pc, role):
             continue
         eligible.append(name)
         if name in busy:

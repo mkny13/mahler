@@ -1,0 +1,117 @@
+"""A rejected launch selection stays blocked until configuration repair (#986)."""
+import copy
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+from mahler import cli, config, finalize, holds, model_availability as models, platforms, router
+from mahler.ledger import Ledger, iso
+
+NOW = datetime(2026, 10, 11, tzinfo=timezone.utc)
+
+
+class ModelAvailabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = str(Path(self.tmp.name) / "ledger.db")
+        self.led = Ledger(self.path, clock=lambda: NOW)
+        self.addCleanup(lambda: self.led.close())
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.name = "cline-free"
+        self.pc = self.cfg["platforms"][self.name]
+        self.pc.update(model="retired", effort="high")
+        self.run = dict(id=7, platform=self.name, project="x", number=1,
+                        role="build", configured_model="retired", effort="high")
+        self.ctx = SimpleNamespace(led=self.led, cfg=self.cfg, ping=mock.Mock())
+
+    def reject(self):
+        finalize._hold_model_unavailable(self.ctx, self.run, {
+            "model_diagnostic": "Error: Invalid model retired TOKEN=secret",
+            "available_models": "replacement-low\nreplacement-high"})
+
+    def test_persists_across_restart_time_refresh_unhold_and_duplicate_finalization(self):
+        self.reject()
+        self.led.close()
+        self.led = Ledger(self.path, clock=lambda: NOW + timedelta(days=7))
+        self.ctx.led = self.led
+        for age in (timedelta(hours=48), timedelta(days=7)):
+            with mock.patch.object(self.led, "now", return_value=NOW + age):
+                self.led.record_usage(self.name, "5h", 0, iso(NOW + age + timedelta(hours=1)))
+                holds.clear(self.cfg, self.led, self.name, by="test")
+                self.reject()
+                state, detail = router.usage_state(self.led, self.name, self.pc)
+                self.assertEqual(state, "soft")
+                self.assertIn("configuration needs repair", detail)
+                self.assertNotIn("until", detail)
+                self.assertIsNone(router.pick(self.cfg, self.led, "build", pin=self.name)[0])
+                self.assertEqual(router.capacity_recovery(
+                    self.cfg, self.led, {}, "build", pin=self.name), ([], None, None))
+        self.ctx.ping.assert_called_once()
+        stored = models.blocked(self.led, self.name, self.pc)
+        self.assertNotIn("secret", stored["diagnostic"])
+        self.assertIn("replacement-high", self.ctx.ping.call_args.args[1])
+
+    def test_only_selection_changes_restore_quota_routing_and_late_result_is_scoped(self):
+        self.reject()
+        self.pc.update(tier=3, max_size="l", backoff_minutes=99)
+        self.assertTrue(models.blocked(self.led, self.name, self.pc))
+        for changed in ({"model": "new"}, {"effort": "low"}):
+            pc = dict(self.pc, **changed)
+            self.assertEqual(router.usage_state(self.led, self.name, pc)[0], "ok")
+            self.led.record_usage(self.name, "hold", 100, iso(NOW + timedelta(hours=1)))
+            self.led.set_kv(f"hold_reason:{self.name}", "silent")
+            self.assertEqual(router.usage_state(self.led, self.name, pc)[0], "soft")
+            self.led.clear_usage(self.name, ["hold"])
+        self.pc["model"] = "new"
+        self.reject()  # late finalizer carries the launch model, not current config
+        self.assertFalse(models.blocked(self.led, self.name, self.pc))
+        for sibling in ("sibling", "other-account"):
+            self.assertEqual(router.usage_state(self.led, sibling, self.pc)[0], "ok")
+
+    def test_legacy_migration_and_no_metadata_one_classification(self):
+        self.led.create_run(project="x", number=1, platform=self.name, role="build",
+                            epoch=1, status="ended", outcome="model_unavailable",
+                            configured_model="retired", effort="high")
+        self.led.record_usage(self.name, "hold", 100, iso(NOW + timedelta(hours=24)))
+        self.led.record_usage(self.name, "weekly", 42, iso(NOW + timedelta(days=7)))
+        self.led.set_kv(f"hold_reason:{self.name}", "model_unavailable")
+        self.pc["model"] = "new"
+        self.assertFalse(models.blocked(self.led, self.name, self.pc))
+        self.assertNotIn("hold", self.led.usage(self.name))
+        self.assertEqual(self.led.usage(self.name)["weekly"]["used_pct"], 42)
+        other = "unrecorded"
+        self.led.record_usage(other, "hold", 100, iso(NOW + timedelta(hours=24)))
+        self.led.set_kv(f"hold_reason:{other}", "model_unavailable")
+        self.assertEqual(router.usage_state(self.led, other, self.pc)[0], "ok")
+        self.assertIsNone(self.led.get_kv(f"hold_reason:{other}"))
+        models.reject(self.led, other, self.pc, {}, {})
+        self.assertEqual(router.usage_state(self.led, other, self.pc)[0], "soft")
+
+    def test_unhold_explains_preserved_block_and_missing_list(self):
+        finalize._hold_model_unavailable(self.ctx, self.run)
+        self.assertIn("Available models: unavailable", self.ctx.ping.call_args.args[1])
+        self.assertTrue(holds.inspect(self.cfg, self.led, self.name)["model_block"])
+        for dry in (True, False):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                cli.cmd_unhold(SimpleNamespace(platform=self.name, dry_run=dry), self.cfg, self.led)
+            self.assertIn("configuration block remains", output.getvalue())
+            self.assertTrue(models.blocked(self.led, self.name, self.pc))
+
+    def test_agy_plaintext_and_structured_diagnostics_keep_advertised_models(self):
+        message = "Error: Invalid model: retired. Available models: replacement-low, replacement-high"
+        for text in (message, json.dumps({"event": "result", "result": {"status": "ERROR", "message": message}}),
+                     "Error: Invalid model: retired\nAvailable models:\nreplacement-low\nreplacement-high"):
+            path = Path(self.tmp.name) / "agent.log"
+            path.write_text(text)
+            log = platforms.read_log(path, "agy")
+            self.assertTrue(log["model_unavailable"])
+            self.assertIn("retired", log["model_diagnostic"])
+            self.assertIn("replacement-high", log["available_models"])

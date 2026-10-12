@@ -1051,12 +1051,19 @@ def _note_log_error(res, ev):
         res["last_error"] = error
     if is_model_unavailable(ev):
         res["model_unavailable"] = True
+        res["model_diagnostic"] = error
+        advertised = re.search(r"available models?[:\s]+(.+)", error, re.I | re.S)
+        if advertised:
+            res["available_models"] = advertised.group(1)
 
 
 def _read_plaintext(res, line, texts):
     line_str = line.strip()
     if line_str:
         texts.append(line_str)
+        if res.get("model_unavailable") and (res.get("available_models")
+                or re.match(r"available models?\b", line_str, re.I)):
+            res["available_models"] = (res.get("available_models", "") + "\n" + line_str)[-4096:]
         if is_credit_exhausted(line_str):
             _note_credit_exhausted(res, line_str)
         if (is_network_error(line_str) or line_str.lower().startswith("error:")

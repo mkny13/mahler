@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
+from mahler import model_availability, config, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -1546,8 +1546,7 @@ class RunTests(unittest.TestCase):
             fh.write(json.dumps({"type": "error", "error": {"message": "model not found: model-a"}}) + "\n")
         self.write_exit(1)
         self.finalize()
-        self.assertEqual(self.led.get_kv(f"hold_reason:{a}"), "model_unavailable")
-        self.assertIn(router.HOLD, self.led.usage(a))
+        self.assertTrue(model_availability.blocked(self.led, a, self.cfg["platforms"][a]))
         self.assertEqual(self.led.usage(b), {})
         self.cfg["routing"]["build"] = [a, b]
         self.assertEqual(router.pick(self.cfg, self.led, "build", size="s")[0], b)
@@ -1655,11 +1654,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["esc_fails"], 0)
         ping.assert_called_once()
         self.assertIn("rejected its configured model", ping.call_args.args[1])
-        hold = self.led.usage("cline-free").get(router.HOLD)
-        self.assertIsNotNone(hold)
-        until = datetime.fromisoformat(hold["resets_at"].replace("Z", "+00:00"))
-        self.assertLess(abs((until - (NOW + timedelta(hours=24))).total_seconds()), 60)
-        self.assertEqual(self.led.get_kv("hold_reason:cline-free"), "model_unavailable")
+        self.assertTrue(model_availability.blocked(self.led, "cline-free", self.cfg["platforms"]["cline-free"]))
 
     def test_codex_named_model_rejection_does_not_spend_attempts(self):
         self.run["platform"] = "codex"
@@ -1671,9 +1666,7 @@ class RunTests(unittest.TestCase):
             self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual((item["attempts"], item["esc_fails"]), (0, 0))
-        self.assertEqual(self.led.get_kv("hold_reason:codex"), "model_unavailable")
-        hold = self.led.usage("codex")[router.HOLD]
-        self.assertEqual(datetime.fromisoformat(hold["resets_at"]), NOW + timedelta(hours=24))
+        self.assertTrue(model_availability.blocked(self.led, "codex", self.cfg["platforms"]["codex"]))
         ping.assert_called_once()
 
     def test_model_rejection_past_the_grace_period_is_a_normal_attempt(self):
