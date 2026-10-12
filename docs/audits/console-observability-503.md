@@ -40,4 +40,4 @@ Rotation is a **daily, best-effort copy-and-truncate**. Between sweeps the live 
 ## Outstanding / not performed
 - Parent #503's two human checks remain open and are neither performed nor waived: phone-over-Tailscale usefulness of a recent-problem entry; desktop recent-problems view compactness and one-click access (DESIGN D27).
 - No live-phone or real-browser end-to-end run of `console.js`.
-- No failed gates; no unsupported criteria.
+- The exact focused command from #934 FAILED (exit 1); see Notes. All four repository gates passed. No unsupported criteria.
