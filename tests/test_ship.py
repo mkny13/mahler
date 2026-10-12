@@ -4609,6 +4609,58 @@ class DependencyPRTests(unittest.TestCase):
             self.views[10]['body'] = change
             self.assertIsNone(ship._dependency_update(self.views[10]))
 
+    GROUPED_TABLE = (
+        "Bumps the npm_and_yarn group with 2 updates in the / directory: "
+        "[vite](https://github.com/vitejs/vite) and [zod](https://github.com/colinhacks/zod).\n\n"
+        "Updates `vite` from 5.4.1 to 5.4.9\n<details>...</details>\n\n"
+        "Updates `zod` from 3.22.0 to 4.0.1\n\n"
+        "| Package | From | To |\n| --- | --- | --- |\n"
+        "| [vite](https://github.com/vitejs/vite) | `5.4.1` | `5.4.9` |\n"
+        "| [zod](https://github.com/colinhacks/zod) | `3.22.0` | `4.0.1` |\n")
+    PIP_RANGE = (
+        "Updates the requirements on [flask](https://github.com/pallets/flask) to permit the latest version.\n"
+        "Updates `flask` from >=3.0,<4 to >=3.1.3,<4\n")
+
+    def update(self, body):
+        view = dict(self.views[10], body=body)
+        return ship._dependency_update(view)
+
+    def test_grouped_table_and_lines_most_severe_wins(self):
+        got = self.update(self.GROUPED_TABLE)
+        self.assertEqual(got, {'classification': 'major', 'dependencies': ['vite', 'zod']})
+        minor = self.GROUPED_TABLE.replace('4.0.1', '3.23.0')
+        self.assertEqual(self.update(minor)['classification'], 'minor')
+
+    def test_grouped_conflicts_and_incomplete_rows_fail_closed(self):
+        body = self.GROUPED_TABLE
+        self.assertIsNone(self.update(body.replace('Updates `vite` from 5.4.1 to 5.4.9', 'Updates `vite` from 5.4.1 to 5.4.8')))
+        self.assertIsNone(self.update(body.replace('with 2 updates', 'with 3 updates')))
+        self.assertIsNone(self.update(body + '| [x](https://e.com) | `1.0.0` |\n'))
+        self.assertIsNone(self.update(body + 'Updates `y` to 2.0.0\n'))
+
+    def test_pip_range_lower_bound_rule(self):
+        self.assertEqual(self.update(self.PIP_RANGE),
+                         {'classification': 'minor', 'dependencies': ['flask']})
+        for bad in ('Updates `flask` from >=3.0,<4 to >=3.1.3,<5\n',
+                    'Updates `flask` from <4 to <5\n',
+                    'Updates `flask` from ~=3.0 to ~=3.1\n'):
+            self.assertIsNone(self.update(self.PIP_RANGE.splitlines()[0] + '\n' + bad))
+
+    def test_grouped_major_enters_tracked_item_path(self):
+        self.views[10]['body'] = self.GROUPED_TABLE
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+
+    def test_unparseable_pr_pings_once_and_never_merges(self):
+        self.views[10]['body'] = 'Some unknown format'
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            for _ in range(3):
+                self.run_pass()
+        ping.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+        self.gh.create_issue.assert_not_called()
+
 
 class ReviewPinFallbackTests(unittest.TestCase):
     setUp = ShipTests.setUp

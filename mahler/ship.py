@@ -43,6 +43,69 @@ UNOWNED_SCAN_MINUTES = 15
 _BOT_BRANCHES = ("dependabot/", "renovate/")
 
 
+_VERSION = r"v?\d+\.\d+(?:\.\d+)?"
+
+
+def _version_pair(before, after):
+    """Return comparable (old, new) tuples, or (None, None) without safe evidence.
+
+    Accepts exact x.y.z versions, and pip lower-bound ranges (`>=A[,<U]`) whose
+    upper bound is identical on both sides, so the bound is never read as a
+    released version. Anything else (other operators, changed caps) is unsafe.
+    """
+    def parts(v):
+        return tuple(map(int, v.lstrip("v").split("."))) + (0,) * (3 - v.lstrip("v").count(".") - 1)
+    if all(re.fullmatch(r"v?\d+\.\d+\.\d+", v) for v in (before, after)):
+        return parts(before), parts(after)
+    ranges = [re.fullmatch(rf"\s*>=\s*({_VERSION})\s*(?:,\s*<\s*(\d+(?:\.\d+)*)\s*)?", v)
+              for v in (before, after)]
+    if all(ranges) and ranges[0].group(2) == ranges[1].group(2):
+        return parts(ranges[0].group(1)), parts(ranges[1].group(1))
+    return None, None
+
+
+def _grouped_dependabot_updates(opening, body):
+    """Collect (dep, from, to, None) from a grouped/range Dependabot body.
+
+    Reads the `| Package | From | To |` table and `Updates X from A to B` lines.
+    Incomplete (fewer than the announced N updates, or a package with no
+    from/to) or conflicting evidence returns [] so the PR stays unmerged.
+    """
+    if not re.match(r"(Bumps the .+ group|Updates the requirements on )", opening):
+        return []
+    found = {}
+    names = set()
+
+    def add(dep, before, after):
+        if found.setdefault(dep, (before, after)) != (before, after):
+            raise ValueError(dep)
+
+    unwrap = lambda v: v.strip().strip("`").strip().rstrip(".")
+    link = lambda v: (re.fullmatch(r"\[([^\]\n]+)\]\([^\s)]+\)", v.strip()) or [None, v.strip().strip("`")])[1]
+    try:
+        table = re.search(r"(?m)^\| Package \| From \| To \|[^\n]*\n\|[- :|]+\n((?:\|[^\n]+\n?)+)", body)
+        if table:
+            for line in table.group(1).splitlines():
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                if len(cells) != 3 or not all(cells):
+                    return []
+                dep = link(cells[0])
+                names.add(dep)
+                add(dep, unwrap(cells[1]), unwrap(cells[2]))
+        for m in re.finditer(r"(?m)^Updates `([^`\n]+)` from (.+?) to (.+?)\s*$", body):
+            names.add(m.group(1))
+            add(m.group(1), unwrap(m.group(2)), unwrap(m.group(3)))
+        for m in re.finditer(r"(?m)^Updates `([^`\n]+)` to \S.*$", body):
+            names.add(m.group(1))
+    except ValueError:
+        return []
+    count = re.search(r"with (\d+) updates?\b", opening)
+    if (not found or names != set(found) or "" in names
+            or (count and len(found) < int(count.group(1)))):
+        return []
+    return [(dep, before, after, None) for dep, (before, after) in found.items()]
+
+
 def _dependency_update(view):
     """Recognize complete, single Dependabot bumps or Renovate update tables.
 
@@ -70,11 +133,14 @@ def _dependency_update(view):
             break
         match = re.fullmatch(r"Bumps (\[[^\]\n]+\]\([^\s]+\)|[^\s]+) from `?([^`\s]+)`? to `?([^`\s]+?)`?\.?", opening)
         if not match:
-            return None
-        dep, before, after = match.groups()
-        if branch.startswith("dependabot/github_actions/") and actions_only:
-            return {"classification": "github-actions", "dependencies": [dep]}
-        updates.append((dep, before, after, None))
+            updates = _grouped_dependabot_updates(opening, body)
+            if not updates:
+                return None
+        else:
+            dep, before, after = match.groups()
+            if branch.startswith("dependabot/github_actions/") and actions_only:
+                return {"classification": "github-actions", "dependencies": [dep]}
+            updates.append((dep, before, after, None))
     else:
         # The first markdown table is Renovate's complete package/update table.
         table = re.search(r"(?m)^\| Package \|[^\n]*\n\|[- :|]+\n((?:\|[^\n]+\n?)+)", body)
@@ -100,9 +166,9 @@ def _dependency_update(view):
         if declared == "github-actions":
             kinds.append(declared)
             continue
-        if not all(re.fullmatch(r"v?\d+\.\d+\.\d+", v) for v in (before, after)):
+        old, new = _version_pair(before, after)
+        if old is None:
             return None
-        old, new = (tuple(map(int, v.lstrip('v').split('.'))) for v in (before, after))
         if new <= old:
             return None
         kind = "major" if new[0] != old[0] else "minor" if new[1] != old[1] else "patch"
@@ -179,6 +245,18 @@ def _request_dependency_rebase(ctx, project, gh, view):
     led.event("dependency_rebase_requested", project, None, request)
 
 
+def _note_ambiguous_dependency(ctx, project, n, view):
+    """One ping per PR head for unparseable bot metadata; never merged."""
+    key = f"dependency-ambiguous:{project}:{n}"
+    sha = view.get("headRefOid") or ""
+    if ctx.led.get_kv(key) == sha:
+        return
+    ctx.led.set_kv(key, sha)
+    ctx.ping(f"Dependency PR needs a look — {project}#{n}",
+             f"{view.get('title', '')}: version evidence is ambiguous, so Mahler "
+             f"will not merge it. {view.get('url', '')}", tags="warning")
+
+
 def _dependency_prs(ctx, project):
     """Adopt low-risk bot PRs after ordinary work, with durable queue recovery."""
     pol, led = ctx.policy(project), ctx.led
@@ -233,7 +311,7 @@ def _dependency_prs(ctx, project):
             view = gh.dependency_pr_view(n)
             update = _dependency_update(view)
             if not update:
-                ctx.say(f"{project}: dependency PR #{n} has ambiguous metadata; left open")
+                _note_ambiguous_dependency(ctx, project, n, view)
                 continue
             if view.get("state") != "OPEN" or view.get("isDraft") is not False:
                 continue
