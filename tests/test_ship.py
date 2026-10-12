@@ -4507,6 +4507,20 @@ class DependencyPRTests(unittest.TestCase):
                 self.gh.pr_merge.assert_not_called()
         self.gh.request_dependency_rebase.assert_not_called()
 
+    def test_red_github_actions_pr_tracked_once_never_merged(self):
+        self.add(11)
+        self.views[11].update(headRefName='dependabot/github_actions/actions/checkout-5',
+                              body='Bumps [actions/checkout](https://example.com) from 4 to 5.',
+                              files=[{'path': '.github/workflows/ci.yml'}],
+                              statusCheckRollup=[{'state': 'FAILURE'}])
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        title, body, labels = self.gh.create_issue.call_args.args
+        self.assertIn('/pull/11', body)
+        self.assertIn('Fix the failing checks', body)
+        self.assertNotIn(11, [c.args[0] for c in self.gh.pr_merge.call_args_list])
+
     def test_major_dedup_and_scope(self):
         self.cfg['projects']['x'].update(scope='label', scope_label='custom')
         self.add(10, after='2.0.0')

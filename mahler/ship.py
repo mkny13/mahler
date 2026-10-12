@@ -241,7 +241,9 @@ def _dependency_prs(ctx, project):
             issue_key = f"dependency-issue:{project}:{n}"
             if led.get_kv(issue_key):
                 continue
-            if update["classification"] == "major":
+            red_action = (update["classification"] == "github-actions"
+                          and checks_state(view.get("statusCheckRollup")) == "red")
+            if update["classification"] == "major" or red_action:
                 issue = gh.issue_by_marker(marker)
                 if not issue:
                     labels = ["type:chore", "size:m", "p2"]
@@ -249,8 +251,11 @@ def _dependency_prs(ctx, project):
                         labels.append(pol["scope_label"])
                     url = view["url"]
                     issue = gh.create_issue(
-                        f"Check major dependency update: {view['title']}",
-                        f"{marker}\n\n## Problem / goal\nValidate and adopt {url}.\n\n"
+                        (f"Fix failing GitHub Actions update: {view['title']}" if red_action
+                         else f"Check major dependency update: {view['title']}"),
+                        f"{marker}\n\n## Problem / goal\n"
+                        + ("Fix the failing checks on" if red_action else "Validate and adopt")
+                        + f" {url}.\n\n"
                         "## Done when\n- Inspect the dependency migration requirements and resolve breakage.\n"
                         "- Apply the update, run the project's full verification, and ship through independent review.\n"
                         f"- Supersede or close the original bot PR {url} after shipping.\n\n"
