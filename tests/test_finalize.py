@@ -22,6 +22,11 @@ from tests.test_platforms import provider_error_events
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
 
+def _clean_git(head):
+    """Fake runner.git: HEAD is `head` and `status --porcelain` is clean."""
+    return lambda wt, *args, **kw: "" if args[:1] == ("status",) else head
+
+
 class FakeGH:
     def __init__(self, state="OPEN"):
         self.state, self.comments = state, []
@@ -620,7 +625,7 @@ class RunTests(unittest.TestCase):
         }}
         self._design_run(f"STATUS: DESIGNED {json.dumps(payload)}")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                mock.patch.object(runner, "git", return_value=head), \
+                mock.patch.object(runner, "git", side_effect=_clean_git(head)), \
                 mock.patch.object(runner, "snapshot") as snapshot, \
                 mock.patch.object(runner, "remove_worktree"):
             finalize.finalize(self.ctx, self.run)
@@ -632,6 +637,42 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.assertEqual(self.led.item("x", 5)["attempts"], 2)
         snapshot.assert_not_called()
+
+    def test_design_result_rejected_when_worktree_dirty(self):
+        head = "a" * 40
+        payload = {"head": head, "disposition": "fix", "plan": {
+            "summary": "Plan", "files": ["src/a.py"], "steps": ["Fix it"],
+            "tests": "python3 -m unittest"}}
+        self._design_run(f"STATUS: DESIGNED {json.dumps(payload)}")
+        dirty = lambda wt, *a, **k: " M src/a.py" if a[:1] == ("status",) else head
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "git", side_effect=dirty), \
+                mock.patch.object(runner, "snapshot"), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        self.assertIsNone(self.led.get_kv(finalize._design_record_key("x", 5, 88, head)))
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+
+    def test_design_payload_rejects_credential_wording(self):
+        head = "a" * 40
+        finding = {"severity": "low", "category": "behavior", "location": "l",
+                   "scenario": "s", "consequence": "c"}
+        for word in ("credential", "credentials", "secret", "secrets", "password",
+                     "passwords", "API key", "api-keys", "token", "tokens"):
+            for where in ("justification", "scenario"):
+                with self.subTest(word=word, where=where):
+                    f = dict(finding)
+                    just = "fine"
+                    if where == "justification":
+                        just = f"leaks a {word}"
+                    else:
+                        f["scenario"] = f"prints the {word}"
+                    payload = {"head": head, "disposition": "followups",
+                               "justification": just, "findings": [f]}
+                    self.assertIsNone(finalize._design_payload(json.dumps(payload)))
+        ok = {"head": head, "disposition": "followups", "justification": "fine",
+              "findings": [finding]}
+        self.assertIsNotNone(finalize._design_payload(json.dumps(ok)))
 
     def test_stale_or_malformed_design_results_retry_in_verification(self):
         head = "a" * 40
@@ -677,7 +718,7 @@ class RunTests(unittest.TestCase):
                 self.run["epoch"] = lease["epoch"]
                 self.led.update_run(self.run_id, epoch=lease["epoch"])
                 with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                        mock.patch.object(runner, "git", return_value=head), \
+                        mock.patch.object(runner, "git", side_effect=_clean_git(head)), \
                         mock.patch.object(runner, "snapshot") as snapshot, \
                         mock.patch.object(runner, "remove_worktree"):
                     finalize.finalize(self.ctx, self.run)
@@ -713,7 +754,7 @@ class RunTests(unittest.TestCase):
         self.led.set_kv(prompt.design_input_key("x", 5, 88, self.run_id),
                         json.dumps({"head": head, "evidence": "prior review"}))
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                mock.patch.object(runner, "git", return_value=head):
+                mock.patch.object(runner, "git", side_effect=_clean_git(head)):
             result = finalize._prepare_design(ending)
             self.assertIsNotNone(result)
             self.assertEqual(result["data"]["disposition"], "followups")
@@ -838,7 +879,7 @@ class RunTests(unittest.TestCase):
             {}, "cline", "DESIGNED", json.dumps(payload), None, "DESIGNED")
         self.gh.head = head
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
-                mock.patch.object(runner, "git", return_value=head):
+                mock.patch.object(runner, "git", side_effect=_clean_git(head)):
             prepared = finalize._prepare_design(ending)
         finalize._design_result(ending, prepared)
         key = finalize._design_record_key("x", 5, 88, head)

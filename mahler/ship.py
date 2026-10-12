@@ -886,6 +886,12 @@ def _format_design_plan(plan):
     return "\n".join(lines).strip()
 
 
+_PROTECTED_CATEGORIES = {"security", "done-when", "data-loss", "credential", "credentials", "secret"}
+_PROTECTED_PROSE = re.compile(
+    r"\[blocking\s*/\s*(security|data[\s_-]*loss|credentials?|secrets?)\s*\]"
+    r"|\[blocking(?:\s*/[^\]]*)?\][\s:(]*done[\s-]*when", re.I)
+
+
 def _is_protected_blocker(finding):
     """Return True if a finding is explicitly classified as a protected blocker.
 
@@ -895,17 +901,17 @@ def _is_protected_blocker(finding):
     if not isinstance(finding, dict):
         return False
     category = re.sub(r"[\s_]+", "-", str(finding.get("category") or "").strip().lower())
-    if category in {"security", "done-when", "data-loss"}:
+    if category in _PROTECTED_CATEGORIES:
         return True
     if (finding.get("done_when") and str(finding.get("done_when")).strip()) or (
             finding.get("done-when") and str(finding.get("done-when")).strip()):
         return True
     pb = finding.get("protected_blocker")
     if pb is True or (isinstance(pb, str) and re.sub(r"[\s_]+", "-", pb.strip().lower()) in {
-            "true", "yes", "security", "done-when", "data-loss"}):
+            "true", "yes"} | _PROTECTED_CATEGORIES):
         return True
     severity = re.sub(r"[\s_]+", "-", str(finding.get("severity") or "").strip().lower())
-    if severity in {"security", "done-when", "data-loss"}:
+    if severity in _PROTECTED_CATEGORIES:
         return True
     return False
 
@@ -933,7 +939,10 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
             ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
                     "(security, Done-when, or data loss); remaining on fix path")
             return False
-
+    if not review_classified and _PROTECTED_PROSE.search(str(info.get("findings") or "")):
+        ctx.say(f"{project}#{n}: PR #{pr} — design followups refused: review prose has a blocking "
+                "protected tag; remaining on fix path")
+        return False
 
     # Ingest findings into reviewresults for deduplicated follow-up filing
     key = f"reviewresults:{project}#{n}"

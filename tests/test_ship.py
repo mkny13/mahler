@@ -3336,8 +3336,11 @@ class TestGreenReviewRounds(unittest.TestCase):
         from mahler import review
         return review.window(self.led, "x", 5, self.item()["pr"])
 
-    def complete_head(self, sha, findings, rid):
+    def complete_head(self, sha, findings, rid, pr=88):
         ending = self.ending(findings, rid=rid)
+        if pr != 88:
+            self.led.upsert_item("x", 5, pr=pr)
+            ending.item = self.item()
         info = json.loads(self.led.get_kv("review:x#5"))
         info.update(sha=sha, pr=self.item()["pr"])
         self.led.set_kv("review:x#5", json.dumps(info))
@@ -3848,6 +3851,8 @@ class TestGreenReviewRounds(unittest.TestCase):
                         fix.assert_not_called()
 
     def test_design_result_followups_accepts_incidental_prose_mentions(self):
+        # Ship layer only: this writes the design KV directly. finalize._design_payload
+        # rejects such wording before a record is ever persisted.
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         for idx, keyword in enumerate(("security", "Done-when", "data loss"), 1):
             with self.subTest(keyword=keyword):
@@ -3877,17 +3882,16 @@ class TestGreenReviewRounds(unittest.TestCase):
                 self.gh.create_issue.assert_called_once()
                 self.assertTrue(any(f"issues/10{idx}" in c for c in self.gh.comments))
 
-    def test_design_result_followups_ignores_legacy_review_findings_marker(self):
+    def legacy_prose_case(self, prose, sha):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         self.led.set_kv("reviewresults:x#5", None)
-        sha = "head-legacy-marker"
         findings = [{
             "severity": "follow-up", "category": "behavior",
             "location": "a.py:10", "scenario": "Minor", "consequence": "None"
         }]
         self.complete_head(sha, [{**self.finding("blocking"), "location": "c.py:30"}], 3)
         info = json.loads(self.led.get_kv("review:x#5"))
-        info["findings"] = "[blocking/security] Something bad\n[blocking/spec](Done when: must verify)"
+        info["findings"] = prose
         info["classified"] = []
         self.led.set_kv("review:x#5", json.dumps(info))
         self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
@@ -3897,9 +3901,181 @@ class TestGreenReviewRounds(unittest.TestCase):
         }))
         self.gh.issue_by_marker = mock.Mock(return_value=None)
         self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/200")
+        return self.gate()
+
+    def test_design_result_followups_refuses_legacy_protected_prose(self):
+        for prose in ("[blocking/security] Something bad",
+                      "[blocking/data-loss] Rows vanish",
+                      "[blocking/credentials] Key in log",
+                      "[blocking/secret] Key in log",
+                      "[blocking/spec](Done when: must verify)",
+                      "[blocking/behavior] ok | [blocking/security] bad"):
+            with self.subTest(prose=prose):
+                merge, fix, _ = self.legacy_prose_case(prose, "head-legacy-marker")
+                merge.assert_not_called()
+                fix.assert_called_once()
+
+    def test_design_result_followups_merges_legacy_nonprotected_prose(self):
+        merge, fix, _ = self.legacy_prose_case(
+            "[blocking/behavior] Minor edge case | [follow-up/security] note", "head-legacy-ok")
+        merge.assert_called_once()
+        fix.assert_not_called()
+
+    def test_design_followups_refuses_credential_finding(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        for label, category, classified in (
+                ("structured", "credential", None),
+                ("structured-secret", "secret", None),
+                ("reviewer-security", "behavior", "security")):
+            with self.subTest(case=label):
+                self.led.set_kv("reviewresults:x#5", None)
+                sha = f"head-cred-{label}"
+                design_findings = [{**self.finding("follow-up"), "category": category}]
+                review_findings = [{**self.finding("blocking"), "location": "c.py:30"}]
+                if classified:
+                    review_findings = [{**review_findings[0], "category": classified}]
+                self.complete_head(sha, review_findings, 3)
+                info = json.loads(self.led.get_kv("review:x#5"))
+                info["findings"] = "Review requires a fix."
+                self.led.set_kv("review:x#5", json.dumps(info))
+                self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+                    "head": sha, "run_id": 42, "disposition": "followups",
+                    "justification": "Acceptable", "findings": design_findings}))
+                merge, fix, _ = self.gate()
+                merge.assert_not_called()
+                fix.assert_called_once()
+
+    def test_is_protected_blocker_covers_credentials(self):
+        for value in ("credential", "credentials", "secret", "Credentials"):
+            self.assertTrue(ship._is_protected_blocker({"category": value}))
+            self.assertTrue(ship._is_protected_blocker({"severity": value}))
+        self.assertFalse(ship._is_protected_blocker({"category": "behavior"}))
+
+    def design_window(self, pr=88, prefix="head"):
+        """Three drifting blocking heads on `pr`, ready for a design pass."""
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        later = iso(NOW + timedelta(hours=2))
+        for name in ("claude-opus", "claude-sonnet"):
+            self.led.record_usage(name, "5h", 10, later)
+            self.led.record_usage(name, "weekly", 10, later)
+        for number, name in enumerate("abc", 1):
+            self.complete_head(f"{prefix}-{number}",
+                               [{**self.finding("blocking"), "location": f"{name}.py:{number}0"}],
+                               number + (10 if pr != 88 else 0), pr=pr)
+            result = self.gate_pr(pr)
+        self.assertIsNotNone(self.led.get_kv(f"reviewdrift:x#5:{pr}"))
+        return result
+
+    def gate_pr(self, pr=88):
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship, "_review_triggered_fix") as fix, \
+                mock.patch.object(ship, "_start_review_run") as review_start, \
+                mock.patch.object(ship, "start", return_value=True) as start:
+            ship._review_gate(self.ctx, "x", self.item(), pr, self.gh.pr_view(pr))
+        starts = [c for c in start.call_args_list if len(c.args) > 3 and c.args[3] == "design"]
+        return merge, fix, review_start, starts
+
+    def reopen_ledger(self, name):
+        path = os.path.join(self.tmp, name)
+        connection = sqlite3.connect(path)
+        try:
+            self.led.con.backup(connection)
+        finally:
+            connection.close()
+        self.led = Ledger(path, clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+
+    def test_design_records_survive_persisted_ledger_reopen(self):
+        self.assertEqual(len(self.design_window()[3]), 1)  # control: design would start
+        run = self.led.create_run(project="x", number=5, role="design", platform="agy-gemini",
+                                  status="running", epoch=1)
+        self.reopen_ledger("design-active.db")
+        self.assertEqual(self.gate_pr()[3], [])
+        self.led.update_run(run, status="ended", outcome="DESIGNED")
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({"disposition": "fix", "consumed": True}))
+        self.reopen_ledger("design-consumed.db")
+        self.assertIsNotNone(self.led.get_kv("reviewdrift:x#5:88"))
+        self.assertEqual(self.gate_pr()[3], [])
+        self.assertTrue(json.loads(self.led.get_kv("design:x#5:88:head-3"))["consumed"])
+
+    def test_new_pr_after_design_starts_fresh_design_window(self):
+        self.design_window()
+        record = json.dumps({"head": "head-3", "disposition": "fix", "consumed": False,
+                             "plan": {"summary": "s", "files": ["a"], "steps": ["b"], "tests": "t"}})
+        self.led.set_kv("design:x#5:88:head-3", record)
+        self.led.upsert_item("x", 5, pr=89)
+        self.assertEqual(self.gate_pr(89)[3], [])
+        self.assertEqual(self.led.get_kv("design:x#5:88:head-3"), record)
+        self.assertIsNone(self.led.get_kv("design-consumed:x#5:88:head-3"))
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:89"))
+        self.assertIsNone(self.led.get_kv("design:x#5:89:head-3"))
+        self.assertEqual(len(self.design_window(89, prefix="pr89")[3]), 1)
+        self.assertEqual(self.led.get_kv("design:x#5:88:head-3"), record)
+
+    def test_manual_reship_does_not_restart_consumed_design(self):
+        self.assertEqual(len(self.design_window()[3]), 1)  # control: design would start
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({"disposition": "fix", "consumed": True}))
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.assertEqual(self.gate_pr()[3], [])
+        self.assertEqual(self.gate_pr()[3], [])
+        self.assertTrue(json.loads(self.led.get_kv("design:x#5:88:head-3"))["consumed"])
+
+    def followups_record(self, sha="head-3"):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        self.complete_head(sha, [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.led.set_kv(f"design:x#5:88:{sha}", json.dumps({
+            "head": sha, "run_id": 42, "disposition": "followups",
+            "justification": "Minor edge case acceptable for v1",
+            "findings": [self.finding("follow-up")]}))
+
+    def test_design_followups_intake_failure_blocks_merge_and_retries(self):
+        self.followups_record()
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(side_effect=gh_module.GHError("offline"))
+        merge, fix, _ = self.gate()
+        merge.assert_not_called()
+        fix.assert_not_called()
+        self.gh.create_issue.side_effect = None
+        self.gh.create_issue.return_value = "https://github.com/x/y/issues/101"
         merge, fix, _ = self.gate()
         merge.assert_called_once()
         fix.assert_not_called()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+
+    def test_design_followups_merge_runs_real_merge_guards(self):
+        self.followups_record()
+        self.gh.issue_by_marker = mock.Mock(return_value=None)
+        self.gh.create_issue = mock.Mock(return_value="https://github.com/x/y/issues/101")
+        self.gh.head_sha = "head-3"
+
+        def real_gate(view_head=None):
+            view = self.gh.pr_view(88)
+            if view_head:
+                view["headRefOid"] = view_head
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                    mock.patch.object(ship, "_review_triggered_fix") as fix, \
+                    mock.patch.object(ship, "_start_review_run"), \
+                    mock.patch.object(ship, "_update_reviewed_pr", return_value=True), \
+                    mock.patch.object(ship, "_ship_lease", return_value=True), \
+                    mock.patch.object(ship, "_ci_pending") as pending, \
+                    mock.patch.object(ship, "_rebuild_on_base"):
+                ship._review_gate(self.ctx, "x", self.item(), 88, view)
+            return fix, pending
+
+        with mock.patch.object(self.gh, "base_in_head", return_value=False):
+            fix, _ = real_gate()
+        self.assertEqual(self.gh.merged, [])
+        fix.assert_not_called()
+        fix, pending = real_gate(view_head="stale-head")
+        self.assertEqual(self.gh.merged, [])
+        fix.assert_not_called()
+        real_gate()
+        self.assertEqual(self.gh.merged, [88])
 
     def test_overlapping_findings_reset_drift_and_missing_locations_inconclusive(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2

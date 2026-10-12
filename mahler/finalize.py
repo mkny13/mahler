@@ -199,7 +199,8 @@ def _design_payload(rest):
         normalized = re.sub(r"[\s_-]+", " ", text_to_check)
         if (re.search(r'\bsecurity\b', normalized)
                 or re.search(r'\bdone when\b', normalized)
-                or re.search(r'\bdata loss\b', normalized)):
+                or re.search(r'\bdata loss\b', normalized)
+                or re.search(r'\b(credentials?|secrets?|passwords?|api keys?|tokens?)\b', normalized)):
             return None
         return data
         
@@ -217,6 +218,9 @@ def _prepare_design(e):
         expected = source.get("head")
         evidence = source.get("evidence")
         checkout_head = runner.git(e.run["worktree"], "rev-parse", "HEAD")
+        # Design is read-only: any uncommitted change rejects the result.
+        if runner.git(e.run["worktree"], "status", "--porcelain").strip():
+            return None
         view = e.ctx.gh(e.project).pr_view(e.item["pr"])
         current = view.get("headRefOid")
         if not isinstance(evidence, str) or not evidence.strip():
