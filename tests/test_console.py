@@ -2413,6 +2413,26 @@ class UatOutboxTests(unittest.TestCase):
         self.outbox.drain(self.ctx)
 
 
+    def test_fail_calls_carry_the_project_account_env(self):
+        env = {"GH_CONFIG_DIR": "/test/work-account", "GH_TOKEN": "test-user-token"}
+        cfg = make_cfg(projects={"mahler": {"gh_account": "work"}})
+        ctx = scheduler.Ctx(cfg, self.led)  # no client injected: ctx.gh builds it
+        self.assertNotIn("mkny13/mahler", ctx._gh)
+        with mock.patch("mahler.gh.config.run_env", return_value=env) as run_env, \
+                mock.patch("mahler.gh._gh") as call:
+            call.side_effect = lambda *a, **k: (
+                "[[]]" if a[0] == "api" else
+                "https://github.com/mkny13/mahler/issues/42" if a[:2] == ("issue", "create") else "")
+            actions.run(cfg, self.led, "uat_fail",
+                        {"project": "mahler", "number": 9, "note": "broken"})
+            self.outbox.drain(ctx)
+        run_env.assert_called_with(cfg, "work")
+        by_kind = {c.args[:2]: c for c in call.call_args_list}
+        self.assertIn(("issue", "create"), by_kind)
+        self.assertIn(("issue", "comment"), by_kind)
+        self.assertTrue(all(c.kwargs["env"] == env for c in call.call_args_list))
+        self.assertEqual(self.uat()["bug"], 42)
+
     def test_done_failure_retains_completion_and_exact_sha(self):
         self.led.accept_evidence('mahler', 9, dict(source='report:x', author='ci',
             created_at=iso(self.led.now()), kind='smoke', body='Smoke: PASS report:x'))
