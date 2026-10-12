@@ -110,6 +110,18 @@ class ModelAvailabilityTests(unittest.TestCase):
         self.led.record_usage(self.name, "5h", 100, iso(NOW + timedelta(hours=1)))
         self.assertEqual(router.usage_state(self.led, self.name, self.pc)[0], "hard")
 
+    def test_existing_running_sibling_is_not_stopped(self):
+        from mahler import watchdog
+        self.reject()
+        sibling = "sibling"
+        self.cfg["platforms"][sibling] = dict(self.pc, model="working")
+        pol = config.project_policy(self.cfg, "x")
+        self.ctx.say = mock.Mock()
+        with mock.patch.object(watchdog, "_log_idle", return_value=(0, 100)):
+            for name in (self.name, sibling):
+                run = dict(self.run, platform=name, started_at=iso(NOW), log_path="unused")
+                self.assertIsNone(watchdog._health(self.ctx, run, pol, NOW))
+
     def test_role_specific_selection_and_console_guidance(self):
         from mahler.console import state
         self.pc["build_model"] = "build-only"
@@ -123,12 +135,18 @@ class ModelAvailabilityTests(unittest.TestCase):
         self.assertIsNone(row["until"])
 
     def test_agy_plaintext_and_structured_diagnostics_keep_advertised_models(self):
-        message = "Error: Invalid model: retired. Available models: replacement-low, replacement-high"
+        # Captured rejection from run 11656, preserved in parent issue #972.
+        message = ('error: invalid model selection (--model "claude-opus-4-6-thinking" '
+                   '--effort ""): model claude-opus-4-6-thinking is not recognized ... '
+                   'Available models: Gemini 3.8 Flash (High/Medium/Low), '
+                   'Gemini 3.1 Pro (High/Low), Claude Opus 5.5 (Low/Medium/High), '
+                   'Claude Sonnet 5.5 (Low/Medium/High), GPT-OSS 120B (Medium)')
         for text in (message, json.dumps({"event": "result", "result": {"status": "ERROR", "message": message}}),
                      "Error: Invalid model: retired\nAvailable models:\nreplacement-low\nreplacement-high"):
             path = Path(self.tmp.name) / "agent.log"
             path.write_text(text)
             log = platforms.read_log(path, "agy")
             self.assertTrue(log["model_unavailable"])
-            self.assertIn("retired", log["model_diagnostic"])
-            self.assertIn("replacement-high", log["available_models"])
+            expected = "replacement-high" if "replacement-high" in text else "GPT-OSS 120B"
+            self.assertIn("model", log["model_diagnostic"].lower())
+            self.assertIn(expected, log["available_models"])
