@@ -25,7 +25,7 @@ class HoldTests(unittest.TestCase):
         until = iso(NOW + timedelta(hours=24))
         for window in (router.HOLD, "5h", "weekly"):
             self.led.record_usage(platform, window, 100, until)
-        self.led.set_kv(f"hold_reason:{platform}", "model_unavailable")
+        self.led.set_kv(f"hold_reason:{platform}", "silent")
         self.led.set_kv(f"credit_state:{platform}", json.dumps({"failures": 2}))
         return until
 
@@ -74,7 +74,7 @@ class HoldTests(unittest.TestCase):
                                 self.cfg, self.led)
         self.assertEqual(rc, 0)
         self.assertIn("would clear hold, 5h, weekly", output.getvalue())
-        self.assertIn("model_unavailable", output.getvalue())
+        self.assertIn("silent", output.getvalue())
         self.assertIn(router.HOLD, self.led.usage("cline-free"))
         self.assertEqual(self.led.q("SELECT * FROM events"), [])
 

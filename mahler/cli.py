@@ -927,6 +927,8 @@ def cmd_unhold(a, cfg, led):
     except ValueError as exc:
         print(f"mahler: {exc}", file=sys.stderr)
         return 2
+    if found.get("model_block"):
+        print("Model configuration block remains: repair the model or effort configuration.")
     windows = ", ".join(found["windows"]) or "no usage rows"
     reason = found["hold_reason"] or "unspecified"
     until = f" until {found['until']}" if found["until"] else ""

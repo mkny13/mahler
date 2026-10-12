@@ -816,7 +816,7 @@ def finalize(ctx, run):
     if reason == "silent":
         _hold_platform(ctx, run)
     elif reason == "model_unavailable":
-        _hold_model_unavailable(ctx, run)
+        _hold_model_unavailable(ctx, run, log)
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     _mark_stale(ending)
     resume = json.loads(led.get_kv(f"resume-run:{run['id']}") or "{}")
@@ -910,14 +910,13 @@ def _check_estimate_calibration(ctx):
 
 
 MODEL_UNAVAILABLE_GRACE_SECONDS = 120
-MODEL_UNAVAILABLE_HOLD_HOURS = 24
 
 
 def _model_unavailable_fast(run, log, code, verb):
     """A model-rejection error (issue #420) counts only when the run failed
     fast — within MODEL_UNAVAILABLE_GRACE_SECONDS of starting. A model that
     was accepted and later hit trouble mid-run is a different problem, and
-    must not spend the variant's 24h hold on a coincidental late error."""
+    must not block the variant on a coincidental late error."""
     if (not log.get("model_unavailable") or code == 0
             or log.get("ok") is True or verb == "DONE"):
         return False
@@ -950,20 +949,17 @@ def _hold_platform(ctx, run):
              run["project"], run["number"], priority="high", tags="warning")
 
 
-def _hold_model_unavailable(ctx, run):
-    """The CLI rejected this variant's model outright — that won't change on
-    retry, so hold it for a day rather than burn the item's attempt budget on
-    it (issue #420, D33). Distinct hold reason from `_hold_platform`'s, so the
-    router and console describe it accurately instead of "a run never
-    started"."""
-    until = ctx.led.now() + timedelta(hours=MODEL_UNAVAILABLE_HOLD_HOURS)
-    ctx.led.record_usage(run["platform"], router.HOLD, 100.0, iso(until))
-    ctx.led.set_kv(f"hold_reason:{run['platform']}", "model_unavailable")
-    ctx.ping(f"Mahler: {run['platform']}'s model is unavailable",
-             f"Run {run['id']} failed fast — the CLI rejected its configured model. "
-             f"{run['platform']} is on hold until {until.astimezone():%H:%M} "
-             f"{until.strftime('%b %d')}.",
-             run["project"], run["number"], tags="warning")
+def _hold_model_unavailable(ctx, run, log=None):
+    """Reject this launch selection until its model configuration changes."""
+    from . import model_availability
+    record, fresh = model_availability.reject(
+        ctx.led, run["platform"], ctx.cfg["platforms"][run["platform"]], run, log or {})
+    if fresh:
+        ctx.ping(f"Mahler: {run['platform']}'s model is unavailable",
+                 f"Run {run['id']} failed fast — the CLI rejected its configured model. "
+                 f"Repair the model or effort configuration to enable this selection.\n"
+                 f"{record['diagnostic']}\nAvailable models: {record['available_models']}",
+                 run["project"], run["number"], tags="warning")
 
 
 def _try_verify_fallback(ctx, run, pol, saved, item):

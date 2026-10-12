@@ -8,7 +8,7 @@ another platform's state or a metered platform's genuine usage.
 
 import json
 
-from . import router
+from . import router, model_availability
 
 
 def _credit_state(led, platform):
@@ -41,6 +41,7 @@ def inspect(cfg, led, platform):
             windows.append(window)
 
     return {
+        "model_block": model_availability.blocked(led, platform, pconf, migrate=False),
         "platform": platform,
         "windows": windows,
         "hold_reason": led.get_kv(f"hold_reason:{platform}"),
@@ -52,6 +53,7 @@ def inspect(cfg, led, platform):
 def clear(cfg, led, platform, *, by):
     """Clear one platform's explicit hold and record who requested it."""
     found = inspect(cfg, led, platform)
+    model_availability.blocked(led, platform, cfg["platforms"][platform])
     with led._tx():
         led.clear_usage(platform, found["windows"])
         led.set_kv(f"hold_reason:{platform}", None)
