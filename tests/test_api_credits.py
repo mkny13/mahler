@@ -1204,5 +1204,35 @@ class RedactTests(unittest.TestCase):
         self.assertNotIn("sk-ant", redact.redact("ANTHROPIC_API_KEY=sk-ant-api03-zzzzzzzzzzzzzzzzzz"))
 
 
+class DocsContractTests(unittest.TestCase):
+    """The workspace spend limit is unverified for credit-covered spend (mahler#981)."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def read(self, *parts):
+        with open(os.path.join(self.ROOT, *parts), encoding="utf-8") as f:
+            return " ".join(f.read().split())
+
+    def test_no_hard_workspace_ceiling_claim(self):
+        setup = self.read("docs", "team-api-credits.md")
+        design = self.read("DESIGN.md")
+        self.assertNotIn("is a hard server-side ceiling", setup)
+        self.assertNotIn("server-side backstop behind", setup)
+        self.assertIn("unverified", setup)
+        self.assertIn("belt-and-braces", setup)
+        self.assertIn("workspace spend limit is *not* counted among the enforced bounds", design)
+        self.assertIn("belt-and-braces", design)
+
+    def test_burst_uses_org_cost_api(self):
+        setup = self.read("docs", "team-api-credits.md")
+        self.assertIn("org-level Admin Cost API reading", setup)
+        self.assertIn("does not need the workspace limit raised", setup)
+
+    def test_example_config_documents_workspace_id(self):
+        cfg = self.read("config.example.toml")
+        self.assertIn("workspace_id", cfg)
+        self.assertIn("Cost API attribution", cfg)
+
+
 if __name__ == "__main__":
     unittest.main()

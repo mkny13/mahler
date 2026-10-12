@@ -26,8 +26,11 @@ current status.
 1. Confirm the Team plan's API credits are linked to a Console organization, and that the
    org has no purchased credits, auto-reload or invoiced overage (already done; re-verify
    only if seats or billing change).
-2. Create (or confirm) a Console workspace for Mahler, with its own spend limit — this is
-   the server-side backstop behind Mahler's own accounting.
+2. Create (or confirm) a Console workspace for Mahler, with its own spend limit. Keep the
+   limit as a belt-and-braces setting only: its effect on credit-covered spend is unverified
+   (see "Raising the burst cap"). The enforced bounds are Mahler's own allowance and
+   per-request reservation ceiling, the credit balance, and the absence of any payment method
+   or purchased balance.
 3. Create a workspace API key (`mahler-anthropic-api`) and, if using the Admin Cost API for
    the burst, an admin key (`mahler-anthropic-admin`). Both go in the mini's **login**
    keychain, account `work`:
@@ -65,10 +68,20 @@ current status.
 
 ## Raising the burst cap
 
-The Mahler workspace's Console spend limit ($20 today) is a hard server-side ceiling —
-Mahler's own accounting cannot spend past it regardless of the burst math. Raise it by hand
-in Console only when ready to let the burst actually spend past the allowance near a grant's
-expiry.
+The Mahler workspace's Console spend limit ($20 today) is **not** a documented hard ceiling
+for credits spend. On 2026-10-11 the workspace's billing page showed $0.00 of $20.00 while the
+Admin Cost API attributed $1.031 of the org's usage to that workspace (and org Billing showed
+$1.34 spent), so the meter does not count credit-covered spend. Whether the limit would stop
+credit-covered traffic is unverified, and we will not spend past it to find out.
+
+What actually bounds spend: Mahler's own allowance and per-request reservation ceiling (the
+gateway's atomic check), the credit balance, and the absence of any payment method or purchased
+balance (Console 2026-10-11: $0.00 purchased, no payment method). The workspace limit stays set
+as a belt-and-braces measure.
+
+The burst runs on the org-level Admin Cost API reading (`pool − org spend − margin`), so it
+does not need the workspace limit raised. `workspace_id` only scopes the Cost API's attribution
+of Mahler's own spend; it is not proven enforcement. The Cost API lags by about a day.
 
 
 ## Work discussions (#926)
