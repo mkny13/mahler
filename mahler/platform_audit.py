@@ -14,9 +14,10 @@ estimates (mahler#59).
 import json
 import os
 import re
+import subprocess
 from datetime import datetime, timedelta
 
-from . import config, router
+from . import config, model_availability, platforms, router
 from .gh import GHError
 
 TITLE = "Platform Tier/Capability Assumptions Audit"
@@ -378,7 +379,8 @@ def build_body(cfg, led, pol):
                      f"{min_runs} runs on both sides, with a done-rate gap of at least "
                      f"{pol['inversion_margin_pct']} points).")
 
-    cli_models = _optional_cli_models(cfg, pol)
+    catalog = agy_catalog(pol)
+    cli_models = _optional_cli_models(cfg, pol, catalog)
     cand = model_candidates(cfg, led, pol, cli_models=cli_models)
     lines += ["", "## Model candidates (mahler#421, D33)", "",
               "Read-only: the audit proposes, it never edits config. Slot and "
@@ -441,20 +443,153 @@ def build_body(cfg, led, pol):
     elif pol.get("model_list_cli"):
         lines.append("CLI model list: none offered, or the CLI was skipped.")
 
+    lines += _availability_lines(cfg, led, pol, catalog)
+
     return "\n".join(lines)
 
 
-def _optional_cli_models(cfg, pol):
+AGY_PROBE_TIMEOUT = 30
+AGY_PROBE_MAX_BYTES = 256 * 1024
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+
+
+def parse_agy_models(text):
+    """`agy models` output -> set of canonical IDs (first tab-separated field).
+
+    Lines without a tab (the "Fetching ..." banner) are ignored. Returns an
+    empty set when nothing parses, which the caller treats as unknown — never
+    as a catalog that supports nothing.
+    """
+    ids = set()
+    for line in (text or "").splitlines():
+        if "\t" not in line:
+            continue
+        model = line.split("\t", 1)[0].strip()
+        if _MODEL_ID_RE.match(model):
+            ids.add(model)
+    return ids
+
+
+def agy_catalog(pol, run=None, exe=None):
+    """Bounded, noninteractive `agy models` probe for the personal agy login.
+
+    Returns {"status": "off"|"ok"|"unknown"|"skipped", "models": set,
+    "context": "personal", "detail": str}. Only "ok" with a nonempty catalog
+    can establish availability; every failure is "unknown" with a reason.
+    """
+    result = {"status": "off", "models": set(), "context": config.DEFAULT_ACCOUNT,
+              "detail": "model_list_cli is off"}
+    if not pol.get("model_list_cli"):
+        return result
+    exe = exe or platforms.agy_exe()
+    run = run or subprocess.run
+    if not exe:
+        return dict(result, status="skipped", detail="agy executable not found")
+    try:
+        r = run([exe, "models"], capture_output=True, text=True,
+                timeout=AGY_PROBE_TIMEOUT, cwd=platforms.HOME,
+                stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return dict(result, status="unknown",
+                    detail=f"`agy models` timed out after {AGY_PROBE_TIMEOUT}s")
+    except (subprocess.SubprocessError, OSError) as e:
+        return dict(result, status="unknown", detail=f"`agy models` failed to run: {type(e).__name__}")
+    if r.returncode != 0:
+        return dict(result, status="unknown", detail=f"`agy models` exited {r.returncode}")
+    out = r.stdout or ""
+    if len(out) > AGY_PROBE_MAX_BYTES:
+        return dict(result, status="unknown", detail="`agy models` output exceeded the size limit")
+    models = parse_agy_models(out)
+    if not models:
+        return dict(result, status="unknown", detail="`agy models` output was empty or malformed")
+    return dict(result, status="ok", models=models, detail="ok")
+
+
+def _optional_cli_models(cfg, pol, catalog=None):
     """Point 3 of the plan: a CLI's zero-cost, non-interactive model list.
 
-    Returns a set of model IDs, or None when the audit shouldn't ask. The audit
-    never calls a CLI unless the operator opts in, and every call is wrapped so
-    a failure or a quota cost degrades to "skip and say so" — the audit's issue
-    body says which CLIs were skipped and why.
+    Returns a set of model IDs, or None when the audit shouldn't ask or the
+    probe didn't yield a catalog. The audit never calls a CLI unless the
+    operator opts in; failures degrade to "unknown" in the issue body.
     """
-    if not pol.get("model_list_cli"):
-        return None
-    return None
+    catalog = catalog if catalog is not None else agy_catalog(pol)
+    return catalog["models"] if catalog["status"] == "ok" else None
+
+
+def agy_pins(cfg):
+    """Enabled agy slot and expanded-variant pins: [(platform, model, account)]."""
+    out = []
+    for name, pconf in sorted(cfg.get("platforms", {}).items()):
+        if pconf.get("kind") != "agy" or pconf.get("enabled") is False:
+            continue
+        if pconf.get("model"):
+            out.append((name, pconf["model"], config.account_of(pconf)))
+    return out
+
+
+def missing_pins(cfg, catalog):
+    """Compare agy pins with a probed catalog.
+
+    Returns (missing, skipped): `missing` is [(platform, model, evidence)] for
+    personal-context pins absent from a successful nonempty catalog; `skipped`
+    is [(platform, model, reason)] for pins that can't be judged. With no
+    successful catalog nothing is flagged missing.
+    """
+    missing, skipped = [], []
+    if catalog["status"] != "ok" or not catalog["models"]:
+        return missing, skipped
+    for name, model, account in agy_pins(cfg):
+        if account != catalog["context"]:
+            skipped.append((name, model, f"account context `{account}` unsupported"))
+        elif model not in catalog["models"]:
+            missing.append((name, model, f"`agy models` ({catalog['context']} login)"))
+    return missing, skipped
+
+
+def current_rejections(cfg, led):
+    """Rejected-model records whose fingerprint still matches current config."""
+    found = []
+    for name, pconf in sorted(cfg.get("platforms", {}).items()):
+        if pconf.get("enabled") is False:
+            continue
+        try:
+            record = model_availability.blocked(led, name, pconf, migrate=False)
+        except Exception:
+            record = None
+        if record:
+            found.append((name, record))
+    return found
+
+
+def _availability_lines(cfg, led, pol, catalog):
+    lines = ["", "### Configured models flagged by availability evidence", ""]
+    rejections = current_rejections(cfg, led)
+    missing, skipped = missing_pins(cfg, catalog)
+    if rejections:
+        lines += ["| Platform | Configured ID | Evidence source |", "|---|---|---|"]
+        for name, rec in rejections:
+            effort = f", effort `{rec.get('effort')}`" if rec.get("effort") else ""
+            lines.append(f"| `{name}` | `{rec.get('model') or 'default'}` | "
+                         f"CLI rejected this selection{effort} (rejection record) |")
+    if missing:
+        if not rejections:
+            lines += ["| Platform | Configured ID | Evidence source |", "|---|---|---|"]
+        for name, model, evidence in missing:
+            lines.append(f"| `{name}` | `{model}` | absent from {evidence} |")
+    if not rejections and not missing:
+        lines.append("Missing or rejected configured models: none found.")
+    status = catalog["status"]
+    if status == "off":
+        lines.append("")
+        lines.append("agy catalog check: off (`platform_audit.model_list_cli` not enabled); "
+                     "only rejection records were consulted.")
+    elif status != "ok":
+        lines.append("")
+        lines.append(f"agy catalog check: **{status}** — {catalog['detail']}. "
+                     "No pin was judged unsupported on absent evidence.")
+    for name, model, reason in skipped:
+        lines.append(f"- skipped `{name}` (`{model}`): {reason}")
+    return lines
 
 
 def _has_open_pass(led, project):
