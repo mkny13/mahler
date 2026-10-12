@@ -359,9 +359,17 @@ def _dependency_prs(ctx, project):
             identity = _dependency_identity(view)
             if led.get_kv(issue_key):
                 stored = led.get_kv(identity_key)
-                # Entries predating identity tracking stay suppressed (unknown update).
-                if stored is None or stored == identity:
+                if stored == identity:
                     continue
+                if stored is None:
+                    # Marker predates identity tracking: the original update is unknown.
+                    # Keep suppressing only while the PR still needs an issue; a
+                    # now-adoptable update (e.g. rewritten to a patch) is reclassified.
+                    if (update["classification"] == "major" or (
+                            update["classification"] == "github-actions"
+                            and checks_state(view.get("statusCheckRollup")) == "red")):
+                        led.set_kv(identity_key, identity)
+                        continue
                 # Dependabot rewrote this PR to a different update: reclassify it.
                 led.set_kv(issue_key, None)
             red_action = (update["classification"] == "github-actions"
