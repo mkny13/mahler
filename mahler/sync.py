@@ -627,10 +627,14 @@ def _parent_children(body, repo):
 def _parent_checks(body):
     """Return source positions, checkboxes and exact local child criteria."""
     checks = []
+    raw = body.splitlines()
     for section, line, index in _parent_sections(body, numbered=True):
         if section not in {"done when", "done-when"} or not line:
             continue
         check = re.fullmatch(r"[-*+] \[([ xX])\]\s+(.+)", line)
+        indented = raw[index][:1] in (" ", "\t")
+        if checks and indented and not check and re.match(r"[-*+]\s|\d+[.)]\s", line):
+            continue  # nested detail bullet under a checkbox item
         if not check:
             # A wrapped item: a plain continuation line joins the previous checkbox.
             if checks and not re.match(r"[-*+]\s|\d+[.)]\s", line):
@@ -871,7 +875,7 @@ def _close_finished_parents_project(ctx, project):
             checklist_blockers = _parent_checklist(body)
             free_text_only = bool(checklist_blockers) and not blockers and all(
                 child is None for _, check, child in _parent_checks(body) if check[1] == " "
-            ) and bool(_parent_checks(body))
+            )
             blockers = checklist_blockers + blockers
             if waiting:
                 continue
