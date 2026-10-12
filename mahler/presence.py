@@ -9,34 +9,95 @@ encodes differently, so they never count as human activity.
 """
 
 import glob
+import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
 
-from .ledger import parse
+from .ledger import iso, parse
 
 HOT_HOLD_END_PREFIX = "hot_hold_end:"
 
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 
 
-def hot_hold_overridden(led, project, last_activity):
-    """A human ended this session, and no newer transcript activity followed."""
+def _marker(led, project):
+    """(ended_at, exempt transcript paths or None for a legacy marker), or None."""
+    raw = led.get_kv(HOT_HOLD_END_PREFIX + project)
+    if not raw:
+        return None
     try:
-        ended = parse(led.get_kv(HOT_HOLD_END_PREFIX + project))
+        data = json.loads(raw)
     except (TypeError, ValueError):
-        return False
-    return bool(ended and (last_activity is None or last_activity <= ended))
+        data = raw
+    try:
+        if isinstance(data, dict):
+            return parse(data["at"]), frozenset(data.get("files") or ())
+        return parse(raw), None
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def end_marker(led, project, project_path):
+    """Value stored by End session: the time plus the transcripts of the
+    sessions that existed then. Only those sessions are exempt; a session
+    that starts later is a different session and still holds."""
+    return json.dumps({"at": iso(led.now()),
+                       "files": sorted(transcripts(project_path))})
+
+
+def hot_hold_activity(led, project, project_path, window, now=None,
+                      retire=False):
+    """Latest transcript activity that should count toward the hot hold.
+
+    Sessions present when End session was clicked stay exempt while they
+    keep writing (watching a run); the exemption retires once all of them
+    have been quiet for `window` (retire=True also clears the marker; tick
+    only, the console reads without writing). Transcripts of any other
+    session always count.
+    """
+    now = now or led.now()
+    marker = _marker(led, project)
+    if marker is None:
+        return last_claude_activity(project_path)
+    ended, exempt = marker
+    overall = last_claude_activity(project_path)
+    if exempt is None:                      # legacy marker: old timestamp rule
+        if overall is None or overall <= ended:
+            if retire and (overall is None or now - overall >= window):
+                led.set_kv(HOT_HOLD_END_PREFIX + project, None)
+            return None
+        return overall
+    files = transcripts(project_path)
+    # Each marked session is judged on its own mtime: still writing within
+    # the window means it is a watcher (exempt); quiet for a full window
+    # means it retires and counts like any other session if it resumes.
+    # One session's writes never keep another's exemption alive.
+    exempt_active = {f for f in exempt
+                     if f in files and now - _utc(files[f]) < window}
+    if retire and exempt_active != set(exempt):
+        key = HOT_HOLD_END_PREFIX + project
+        if exempt_active:
+            led.set_kv(key, json.dumps({"at": iso(ended),
+                                        "files": sorted(exempt_active)}))
+        else:
+            led.set_kv(key, None)
+    return last_claude_activity(project_path, exclude=exempt_active)
+
+
+def _utc(mtime):
+    return datetime.fromtimestamp(mtime, timezone.utc)
 
 
 def encode(path):
     return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
 
 
-def last_claude_activity(project_path, root=CLAUDE_PROJECTS):
-    """Most recent transcript mtime for sessions in this project, or None."""
+def transcripts(project_path, root=None):
+    """{transcript path: mtime} for sessions in this project."""
+    root = root or CLAUDE_PROJECTS
     prefix = encode(project_path)
-    latest = None
+    out = {}
     for d in glob.glob(os.path.join(root, prefix + "*")):
         name = os.path.basename(d)
         # exact dir, or a nested path (worktree) — not a sister like "<name>X"
@@ -44,11 +105,17 @@ def last_claude_activity(project_path, root=CLAUDE_PROJECTS):
             continue
         for f in glob.glob(os.path.join(d, "*.jsonl")):
             try:
-                m = os.path.getmtime(f)
+                out[f] = os.path.getmtime(f)
             except OSError:
                 continue
-            latest = m if latest is None else max(latest, m)
-    return datetime.fromtimestamp(latest, timezone.utc) if latest else None
+    return out
+
+
+def last_claude_activity(project_path, root=None, exclude=()):
+    """Most recent transcript mtime for sessions in this project, or None."""
+    times = [m for f, m in transcripts(project_path, root).items()
+             if f not in exclude]
+    return datetime.fromtimestamp(max(times), timezone.utc) if times else None
 
 
 def human_claude_active(projects, minutes=20, root=CLAUDE_PROJECTS):

@@ -958,19 +958,117 @@ class HotHoldTests(unittest.TestCase):
             lines = plan(ctx, led)
         return lines, ctx.lines
 
-    def test_end_session_lifts_hold_until_new_activity(self):
-        for offset, expected in ((-1, ["a#1: would build on agy-claude"]),
-                                 (0, ["a#1: would build on agy-claude"]), (1, [])):
-            with self.subTest(activity_offset=offset):
-                ctx, led = mk_ctx({"a": proj(hot_hold=True)})
-                self.addCleanup(led.close)
-                seed(led, **{"agy-claude": (10, 10)})
-                item(led, "a", 1)
-                ended = NOW - timedelta(minutes=2)
-                led.set_kv("hot_hold_end:a", iso(ended))
-                with mock.patch.object(presence, "last_claude_activity",
-                                       return_value=ended + timedelta(seconds=offset)):
-                    self.assertEqual(plan(ctx, led), expected)
+    def test_end_session_action_to_scheduler_journey(self):
+        """Click End session, then A keeps writing (+1s, >20 min past the
+        click) without re-arming; a new session B still holds."""
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from mahler.console import actions
+        now = [NOW]
+        ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+        led.now = lambda: now[0]
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1)
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        d = os.path.join(root, presence.encode("/tmp/x"))
+        os.makedirs(d)
+
+        def write(name, when):
+            f = Path(d, name + ".jsonl")
+            f.write_text("{}")
+            os.utime(f, (when.timestamp(), when.timestamp()))
+
+        def run():
+            ctx.lines.clear()
+            seed(led, **{"agy-claude": (10, 10)})            # keep usage fresh
+            return plan(ctx, led)
+
+        built = ["a#1: would build on agy-claude"]
+        with mock.patch.object(presence, "CLAUDE_PROJECTS", root):
+            write("A", NOW - timedelta(minutes=2))
+            self.assertEqual(run(), [])                      # hold is on
+            actions.run(ctx.cfg, led, "end_session", {"project": "a"})
+            self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(seconds=1)
+            write("A", now[0])                                # +1s write
+            self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(minutes=25)
+            write("A", now[0] - timedelta(minutes=1))         # >20 min, still watching
+            self.assertEqual(run(), built)
+            write("B", now[0] - timedelta(minutes=1))         # new session B holds
+            self.assertEqual(run(), [])
+            now[0] = NOW + timedelta(minutes=60)              # everything quiet
+            self.assertEqual(run(), built)
+
+    def test_concurrent_exempt_sessions_retire_independently(self):
+        """A and C both exist at End session. A goes quiet for the full
+        window while C keeps writing: A retires on its own, so when A resumes
+        it holds again; C stays exempt the whole time."""
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from mahler.console import actions
+        now = [NOW]
+        ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+        led.now = lambda: now[0]
+        self.addCleanup(led.close)
+        item(led, "a", 1)
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        d = os.path.join(root, presence.encode("/tmp/x"))
+        os.makedirs(d)
+
+        def write(name, when):
+            f = Path(d, name + ".jsonl")
+            f.write_text("{}")
+            os.utime(f, (when.timestamp(), when.timestamp()))
+
+        def run():
+            ctx.lines.clear()
+            seed(led, **{"agy-claude": (10, 10)})
+            return plan(ctx, led)
+
+        built = ["a#1: would build on agy-claude"]
+        with mock.patch.object(presence, "CLAUDE_PROJECTS", root):
+            write("A", NOW - timedelta(minutes=1))
+            write("C", NOW - timedelta(minutes=1))
+            self.assertEqual(run(), [])
+            actions.run(ctx.cfg, led, "end_session", {"project": "a"})
+            self.assertEqual(run(), built)
+            for minutes in (5, 10, 15, 19):                   # C watches
+                now[0] = NOW + timedelta(minutes=minutes)
+                write("C", now[0] - timedelta(seconds=30))
+                self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(minutes=21)              # A quiet >= window
+            write("C", now[0] - timedelta(seconds=30))
+            self.assertEqual(run(), built)
+            presence.hot_hold_activity(                       # a live tick sees
+                led, "a", "/tmp/x", timedelta(minutes=20), retire=True)
+            self.assertEqual(json.loads(led.get_kv("hot_hold_end:a"))["files"],
+                             [os.path.join(d, "C.jsonl")])    # A retired, C kept
+            now[0] += timedelta(minutes=1)
+            write("C", now[0] - timedelta(seconds=30))
+            write("A", now[0])                                # A resumes
+            self.assertEqual(run(), [])                       # A blocks again
+            write("A", now[0] - timedelta(hours=2))           # (A quiet again)
+            write("C", now[0])
+            self.assertEqual(run(), built)                    # C still exempt
+
+    def test_equal_priority_builds_start_oldest_state_changed_first(self):
+        """Same project, equal priority: oldest state_changed_at wins, not the
+        lower issue number and not a pin preference."""
+        ctx, led = mk_ctx({"a": proj()}, total=1, max_runs=1)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, age_minutes=5)
+        item(led, "a", 2, age_minutes=60)
+        led.upsert_item("a", 1, pin="agy-claude")
+        self.assertEqual(plan(ctx, led), ["a#2: would build on agy-claude"])
 
     def test_recent_activity_holds_new_builds(self):
         lines, said = self.hold(minutes_ago=5)
