@@ -778,11 +778,41 @@ class AgyCatalogAudit(unittest.TestCase):
                 self.addCleanup(led.close)
                 with mock.patch.object(platform_audit.platforms, "agy_exe",
                                        return_value="/bin/agy"), \
-                        mock.patch.object(platform_audit.subprocess, "run", run):
+                        mock.patch.object(platform_audit, "bounded_run", run):
                     body = platform_audit.build_body(cfg, led, dict(
                         config.platform_audit_policy(cfg), model_list_cli=True))
                 self.assertNotIn("absent from", body)
                 self.assertIn("agy catalog check: **unknown**", body)
+
+    def test_stderr_and_combined_overflow_are_unknown(self):
+        import sys
+        big = platform_audit.AGY_PROBE_MAX_BYTES + 1024
+        scripts = {
+            "stderr": f"import sys; sys.stderr.write('x'*{big}); sys.stderr.flush()",
+            "stdout": f"import sys; sys.stdout.write('x'*{big}); sys.stdout.flush()",
+            "both": f"import sys; sys.stdout.write('x'*{big}); sys.stderr.write('y'*{big})",
+        }
+        for label, code in scripts.items():
+            with self.subTest(label):
+                procs = []
+                real = subprocess.Popen
+
+                def popen(cmd, **kw):
+                    p = real([sys.executable, "-c", code + "; import time; time.sleep(30)"], **kw)
+                    procs.append(p)
+                    return p
+                with mock.patch.object(platform_audit.subprocess, "Popen", popen):
+                    cat = platform_audit.agy_catalog(self.POL, exe="/bin/agy")
+                self.assertEqual(cat["status"], "unknown")
+                self.assertIn("size limit", cat["detail"])
+                self.assertIsNotNone(procs[0].poll())
+
+    def test_bounded_run_passes_normal_output(self):
+        import sys
+        r = platform_audit.bounded_run(
+            [sys.executable, "-c", "print('a\\tb')"], 10, 1024)
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout.strip(), "a\tb")
 
     def test_probe_not_run_when_disabled(self):
         calls = []
@@ -797,7 +827,7 @@ class AgyCatalogAudit(unittest.TestCase):
         cfg = self._cfg(**{"agy-old": pconf})
         model_availability.reject(led, "agy-old", pconf, {"role": "build"},
                                   {"model_diagnostic": "no such model"})
-        with mock.patch.object(platform_audit.subprocess, "run") as run:
+        with mock.patch.object(platform_audit, "bounded_run") as run:
             body = platform_audit.build_body(cfg, led, config.platform_audit_policy(cfg))
         run.assert_not_called()
         self.assertIn("CLI rejected this selection", body)
@@ -816,7 +846,7 @@ class AgyCatalogAudit(unittest.TestCase):
         pol = dict(config.platform_audit_policy(cfg), model_list_cli=True)
         before = copy.deepcopy(cfg)
         with mock.patch.object(platform_audit.platforms, "agy_exe", return_value="/bin/agy"), \
-                mock.patch.object(platform_audit.subprocess, "run",
+                mock.patch.object(platform_audit, "bounded_run",
                                   return_value=_proc(AGY_CATALOG)) as run:
             body = platform_audit.build_body(cfg, led, pol)
         self.assertEqual(run.call_args[0][0], ["/bin/agy", "models"])
