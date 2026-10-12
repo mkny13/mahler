@@ -125,7 +125,21 @@ def _grouped_dependabot_updates(opening, body, title=""):
     return [(dep, before, after, None) for dep, (before, after) in found.items()]
 
 
+def _with(update, with_versions, versions):
+    return {**update, "versions": versions} if with_versions else update
+
+
 def _dependency_update(view):
+    return _dependency_update_full(view, with_versions=False)
+
+
+def _dependency_identity(view):
+    """Stable (classification, package/version pairs) identity; survives rebases."""
+    update = _dependency_update_full(view, with_versions=True)
+    return json.dumps([update["classification"], update["versions"]]) if update else None
+
+
+def _dependency_update_full(view, with_versions):
     """Recognize complete, single Dependabot bumps or Renovate update tables.
 
     Titles and labels are not version evidence. Unknown/grouped body formats
@@ -158,7 +172,9 @@ def _dependency_update(view):
         else:
             dep, before, after = match.groups()
             if branch.startswith("dependabot/github_actions/") and actions_only:
-                return {"classification": "github-actions", "dependencies": [dep]}
+                return _with(
+                    {"classification": "github-actions", "dependencies": [dep]},
+                    with_versions, [[dep, before, after]])
             updates.append((dep, before, after, None))
     else:
         # The first markdown table is Renovate's complete package/update table.
@@ -199,7 +215,8 @@ def _dependency_update(view):
     if not kinds:
         return None
     kind = next((k for k in ("major", "minor", "patch", "github-actions") if k in kinds))
-    return {"classification": kind, "dependencies": [u[0] for u in updates]}
+    return _with({"classification": kind, "dependencies": [u[0] for u in updates]},
+                 with_versions, [[u[0], u[1], u[2]] for u in updates])
 
 
 def _dependency_ready(view):
@@ -338,8 +355,23 @@ def _dependency_prs(ctx, project):
                 continue
             marker = f"<!-- mahler:dependency-pr:{n} -->"
             issue_key = f"dependency-issue:{project}:{n}"
+            identity_key = f"dependency-identity:{project}:{n}"
+            identity = _dependency_identity(view)
             if led.get_kv(issue_key):
-                continue
+                stored = led.get_kv(identity_key)
+                if stored == identity:
+                    continue
+                if stored is None:
+                    # Marker predates identity tracking: the original update is unknown.
+                    # Keep suppressing only while the PR still needs an issue; a
+                    # now-adoptable update (e.g. rewritten to a patch) is reclassified.
+                    if (update["classification"] == "major" or (
+                            update["classification"] == "github-actions"
+                            and checks_state(view.get("statusCheckRollup")) == "red")):
+                        led.set_kv(identity_key, identity)
+                        continue
+                # Dependabot rewrote this PR to a different update: reclassify it.
+                led.set_kv(issue_key, None)
             red_action = (update["classification"] == "github-actions"
                           and checks_state(view.get("statusCheckRollup")) == "red")
             if update["classification"] == "major" or red_action:
@@ -360,6 +392,7 @@ def _dependency_prs(ctx, project):
                         f"- Supersede or close the original bot PR {url} after shipping.\n\n"
                         "## Needs a human to check\nNothing\n", labels)
                 led.set_kv(issue_key, issue)
+                led.set_kv(identity_key, identity)
                 continue
             if count >= pol.get("dependency_prs_daily_cap", 3) or not _dependency_ready(view):
                 continue

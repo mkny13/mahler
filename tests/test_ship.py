@@ -4537,6 +4537,37 @@ class DependencyPRTests(unittest.TestCase):
         self.run_pass()
         self.gh.create_issue.assert_called_once()
 
+    def test_same_major_pair_not_duplicated_across_sha_change(self):
+        self.add(10, after='2.0.0')
+        self.run_pass()
+        self.views[10]['headRefOid'] = 'c' * 40
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+
+    def test_rewritten_major_to_patch_is_reconsidered(self):
+        self.add(10, before='6.1.0', after='7.0.0')
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+        self.add(10, before='6.1.1', after='6.1.2')
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(10, '10'.zfill(40))
+
+    def test_legacy_marker_without_identity_reconsiders_patch(self):
+        self.add(10, before='6.1.1', after='6.1.2')
+        self.led.set_kv('dependency-issue:x:10', 'https://github.com/x/y/issues/20')
+        self.run_pass()
+        self.gh.pr_merge.assert_called_once_with(10, '10'.zfill(40))
+
+    def test_legacy_marker_still_major_stays_suppressed(self):
+        self.add(10, before='6.1.0', after='7.0.0')
+        self.led.set_kv('dependency-issue:x:10', 'https://github.com/x/y/issues/20')
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+        self.gh.pr_merge.assert_not_called()
+
     def test_daily_cap_restart_next_day_override_and_idempotence(self):
         for n in range(11, 15):
             self.add(n)
