@@ -432,3 +432,88 @@ def format_review_precision(rows):
             f"({r['unresolved']} unresolved, {r['unadjudicated']} unadjudicated)"
         )
     return "\n".join(lines)
+
+
+COMPLETION_LIMITATION = (
+    "Measures recorded Mahler history only; unrecorded outside-Mahler work is not measured. "
+    "Unknown histories are excluded from the denominator."
+)
+
+
+def completion_rate(led, cfg, project=None, since=None, until=None):
+    """Count each issue's latest done transition in [since, until).
+
+    Positive human evidence suffices even with partial history. Otherwise require
+    a state chain beginning at inbox (or creation), and an unbroken lease epoch
+    sequence from 1. Neither run DONE nor a shipment establishes item completion.
+    """
+    since = _time(since if since is not None else
+                  led.now() - timedelta(days=policy(cfg)["window_days"]))
+    until = _time(until)
+    histories = defaultdict(list)
+    for row in led.q('SELECT * FROM events ORDER BY at, id'):
+        if row['number'] is not None and (project is None or row['project'] == project):
+            histories[row['project'], row['number']].append(dict(row))
+    items = {(r['project'], r['number']): dict(r) for r in led.items(project)}
+    leases = {(r['project'], r['number']): dict(r) for r in led.q('SELECT * FROM leases')}
+    counts = dict(autonomous=0, human_assisted=0, unknown=0)
+    transition = re.compile(r'^(None|\w+) -> (\w+)(?: \((.*)\))?$', re.DOTALL)
+    for key in items.keys() | histories.keys():
+        events = histories[key]
+        states = [(e, transition.fullmatch(e['detail'] or ''))
+                  for e in events if e['kind'] == 'state']
+        completions = [e for e, m in states if m and m[2] == 'done' and m[1] != 'done']
+        item = items.get(key, {})
+        # Legacy done snapshots still belong in the total, but are not proof of
+        # an autonomous lifecycle when their transition history is absent.
+        snapshot = _time(item.get('state_changed_at')) if item.get('state') == 'done' else None
+        end = max((_time(e['at']) for e in completions), default=None)
+        fallback = snapshot is not None and (end is None or snapshot > end)
+        if fallback:
+            end = snapshot
+        if end is None or (since and end < since) or (until and end >= until):
+            continue
+        cutoff_id = max((e['id'] for e in completions if _time(e['at']) == end), default=math.inf)
+        history = [e for e in events if (_time(e['at']), e['id']) <= (end, cutoff_id)]
+        assisted, valid = False, not fallback
+        previous, epochs = None, []
+        for e in history:
+            detail = _json(e['detail'], {})
+            if e['kind'] == 'answered':
+                assisted = True
+            elif e['kind'] == 'lease':
+                assisted |= detail.get('kind') in {'interactive', 'primary'}
+                valid &= detail.get('kind') in {'auto', 'interactive', 'primary'}
+                epochs.append(detail.get('epoch'))
+            elif e['kind'] == 'state':
+                m = transition.fullmatch(e['detail'] or '')
+                if not m:
+                    valid = False
+                    continue
+                # GitHub replies on failed items resume with this reason, without
+                # an answered event. Automated retries use their own reasons.
+                assisted |= ('needs_you' in (m[1], m[2])
+                             or m[3] == 'you said go'
+                             or 'you answered' in (m[3] or ''))
+                valid &= m[1] in {'None', 'inbox'} if previous is None else m[1] == previous
+                previous = m[2]
+        lease = leases.get(key)
+        if lease and _time(lease['acquired_at']) <= end:
+            assisted |= lease['kind'] in {'interactive', 'primary'}
+        # Missing overwritten leases must not silently look autonomous.
+        valid &= all(type(epoch) is int and epoch == i for i, epoch in enumerate(epochs, 1))
+        if item.get('state') == 'done' and snapshot == end:
+            valid &= item.get('epoch', 0) == len(epochs)
+        result = 'human_assisted' if assisted else 'autonomous' if valid and previous == 'done' else 'unknown'
+        counts[result] += 1
+    denominator = counts['autonomous'] + counts['human_assisted']
+    return dict(counts, denominator=denominator, completed=sum(counts.values()),
+                percentage=100 * counts['autonomous'] / denominator if denominator else None,
+                limitation=COMPLETION_LIMITATION)
+
+
+def format_completion_rate(result):
+    percentage = 'unknown' if result['percentage'] is None else f"{result['percentage']:.1f}%"
+    return (f"Hands-off completion: {result['autonomous']}/{result['denominator']} ({percentage}) · "
+            f"{result['autonomous']} autonomous · {result['human_assisted']} human-assisted · "
+            f"{result['unknown']} unknown\n{result['limitation']}")

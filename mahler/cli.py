@@ -1186,9 +1186,14 @@ def cmd_scorecard(a, cfg, led):
     rows = scorecard.table(led, cfg, project=a.project, since=since)
     rows = [r for r in rows if (not a.role or r["role"] == a.role)
             and (not a.size or r["size"] == a.size)]
-    if a.raw or getattr(a, "json", False):
-        print(json.dumps([attempt for row in rows for attempt in row["attempts"]], indent=2))
+    completion = scorecard.completion_rate(led, cfg, project=a.project, since=since)
+    raw_attempts = [attempt for row in rows for attempt in row["attempts"]]
+    if getattr(a, "json", False):
+        print(json.dumps(dict(completion=completion, attempts=raw_attempts), indent=2))
+    elif a.raw:
+        print(json.dumps(raw_attempts, indent=2))
     else:
+        print(scorecard.format_completion_rate(completion))
         print("Model scorecard · API-equivalent dollars (weighted)")
         for row in rows:
             print(f'{row["role"]} / {row["size"] or "unknown size"}: {scorecard.summary(row)}')

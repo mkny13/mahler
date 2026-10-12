@@ -1,5 +1,6 @@
 """Synthetic history tests: no production state or external services."""
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 import unittest
 
 from mahler.ledger import Ledger, iso
@@ -649,3 +650,119 @@ class TableTests(unittest.TestCase):
         self.assertEqual([r['model'] for r in self.scorecard.table(
             self.led, self.cfg, project='p', since=self.now - timedelta(days=90))],
                          ['old', 'recent'])
+
+
+class CompletionTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+    def start(self, number, project='p', kind='auto'):
+        self.led.upsert_item(project, number)
+        self.led.claim(project, number, 'agent', kind, 30)
+        self.led.set_state(project, number, 'working')
+
+    def finish(self, number, project='p'):
+        self.led.set_state(project, number, 'done')
+
+    def result(self, **kwargs):
+        from mahler.scorecard import completion_rate
+        return completion_rate(self.led, {}, **kwargs)
+
+    def test_signals_and_handoffs(self):
+        for n, kind in enumerate(('auto', 'interactive', 'primary', 'auto', 'auto'), 1):
+            self.start(n, kind=kind)
+        self.led.set_state('p', 4, 'needs_you')
+        self.led.set_state('p', 4, 'ready')
+        self.led.event('answered', 'p', 5, {'via': 'console'})
+        self.now += timedelta(days=40)
+        self.led.claim('p', 1, 'next agent', 'auto', 30, platform='other')
+        for n in range(1, 6):
+            self.finish(n)
+        self.led.upsert_item('p', 6, state='done')
+        result = self.result(since=self.now)
+        self.assertEqual({k: result[k] for k in ('autonomous', 'human_assisted', 'unknown', 'denominator', 'completed', 'percentage')},
+                         dict(autonomous=1, human_assisted=4, unknown=1, denominator=5, completed=6, percentage=20))
+
+    def test_latest_completion_and_project_window(self):
+        self.start(1)
+        self.finish(1)
+        first = self.now
+        self.now += timedelta(days=1)
+        self.led.set_state('p', 1, 'ready')
+        self.finish(1)
+        self.start(1, project='q')
+        self.finish(1, project='q')
+        for _ in range(3):
+            self.led.create_run(project='p', number=1, role='build', platform='slot',
+                                epoch=1, status='ended', outcome='DONE', ended_at=iso(self.now))
+        self.assertEqual(self.result()['completed'], 2)
+        self.assertEqual(self.result(project='p', since=self.now)['autonomous'], 1)
+        self.assertEqual(self.result(until=self.now)['completed'], 0)
+        self.assertEqual(self.result(since=self.now + timedelta(seconds=1))['completed'], 0)
+        self.assertEqual(self.result(since=first)['completed'], 2)
+
+    def test_github_answer_resuming_failed_item_counts_as_assistance(self):
+        from mahler.sync import _process_comments
+
+        self.start(1)
+        self.led.set_state('p', 1, 'failed', attempts=3)
+        ctx = SimpleNamespace(led=self.led, say=lambda message: None)
+        _process_comments(ctx, 'p', self.led.item('p', 1), [{
+            'createdAt': iso(self.now), 'body': 'The PR is ready to retry',
+            'authorAssociation': 'OWNER',
+        }])
+        self.assertEqual(self.led.item('p', 1)['state'], 'ready')
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='answered'"), [])
+        self.now += timedelta(hours=1)
+        self.led.claim('p', 1, 'next agent', 'auto', 30, platform='other')
+        self.led.set_state('p', 1, 'working')
+        self.finish(1)
+
+        # An automated retry and platform handoff remain hands-off.
+        self.start(2)
+        self.led.set_state('p', 2, 'failed')
+        self.led.set_state('p', 2, 'ready', 'automatic retry')
+        self.now += timedelta(hours=1)
+        self.led.claim('p', 2, 'next agent', 'auto', 30, platform='other')
+        self.led.set_state('p', 2, 'working')
+        self.finish(2)
+        result = self.result()
+        self.assertEqual({k: result[k] for k in (
+            'autonomous', 'human_assisted', 'unknown', 'denominator', 'completed', 'percentage')},
+            dict(autonomous=1, human_assisted=1, unknown=0, denominator=2,
+                 completed=2, percentage=50))
+
+    def test_incomplete_history_and_empty_denominator(self):
+        self.led.upsert_item('p', 1, state='working')
+        self.finish(1)
+        self.start(2)
+        self.finish(2)
+        self.led.con.execute("DELETE FROM events WHERE kind='lease'")
+        self.start(3)
+        self.led.event('state', 'p', 3, 'unparseable legacy transition')
+        self.finish(3)
+        result = self.result()
+        self.assertEqual(result['unknown'], 3)
+        self.assertEqual(result['denominator'], 0)
+        self.assertIsNone(result['percentage'])
+        self.assertIsNone(self.result(project='missing')['percentage'])
+
+    def test_assistance_after_completion_is_not_counted(self):
+        self.start(1)
+        self.finish(1)
+        self.led.event('answered', 'p', 1, {})  # same timestamp, later event
+        self.assertEqual(self.result()['autonomous'], 1)
+
+    def test_partial_human_history_is_sufficient(self):
+        self.led.upsert_item('p', 1, state='needs_you')
+        self.finish(1)
+        self.assertEqual(self.result()['human_assisted'], 1)
+
+    def test_shipped_and_run_done_are_not_completion(self):
+        self.start(1)
+        self.led.set_state('p', 1, 'shipped')
+        self.led.create_run(project='p', number=1, role='build', platform='slot',
+                            epoch=1, status='ended', outcome='DONE', ended_at=iso(self.now))
+        self.assertEqual(self.result()['completed'], 0)
