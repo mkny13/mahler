@@ -68,17 +68,25 @@ def hot_hold_activity(led, project, project_path, window, now=None,
                 led.set_kv(HOT_HOLD_END_PREFIX + project, None)
             return None
         return overall
-    else:
-        files = transcripts(project_path)
-        mt = [files[f] for f in exempt if f in files]
-        exempt_last = (datetime.fromtimestamp(max(mt), timezone.utc)
-                       if mt else None)
-        counting = last_claude_activity(project_path, exclude=exempt)
-    if exempt_last is None or now - exempt_last >= window:
-        if retire:
-            led.set_kv(HOT_HOLD_END_PREFIX + project, None)
-        return overall
-    return counting
+    files = transcripts(project_path)
+    # Each marked session is judged on its own mtime: still writing within
+    # the window means it is a watcher (exempt); quiet for a full window
+    # means it retires and counts like any other session if it resumes.
+    # One session's writes never keep another's exemption alive.
+    exempt_active = {f for f in exempt
+                     if f in files and now - _utc(files[f]) < window}
+    if retire and exempt_active != set(exempt):
+        key = HOT_HOLD_END_PREFIX + project
+        if exempt_active:
+            led.set_kv(key, json.dumps({"at": iso(ended),
+                                        "files": sorted(exempt_active)}))
+        else:
+            led.set_kv(key, None)
+    return last_claude_activity(project_path, exclude=exempt_active)
+
+
+def _utc(mtime):
+    return datetime.fromtimestamp(mtime, timezone.utc)
 
 
 def encode(path):

@@ -1004,6 +1004,61 @@ class HotHoldTests(unittest.TestCase):
             now[0] = NOW + timedelta(minutes=60)              # everything quiet
             self.assertEqual(run(), built)
 
+    def test_concurrent_exempt_sessions_retire_independently(self):
+        """A and C both exist at End session. A goes quiet for the full
+        window while C keeps writing: A retires on its own, so when A resumes
+        it holds again; C stays exempt the whole time."""
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from mahler.console import actions
+        now = [NOW]
+        ctx, led = mk_ctx({"a": proj(hot_hold=True)})
+        led.now = lambda: now[0]
+        self.addCleanup(led.close)
+        item(led, "a", 1)
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, True)
+        d = os.path.join(root, presence.encode("/tmp/x"))
+        os.makedirs(d)
+
+        def write(name, when):
+            f = Path(d, name + ".jsonl")
+            f.write_text("{}")
+            os.utime(f, (when.timestamp(), when.timestamp()))
+
+        def run():
+            ctx.lines.clear()
+            seed(led, **{"agy-claude": (10, 10)})
+            return plan(ctx, led)
+
+        built = ["a#1: would build on agy-claude"]
+        with mock.patch.object(presence, "CLAUDE_PROJECTS", root):
+            write("A", NOW - timedelta(minutes=1))
+            write("C", NOW - timedelta(minutes=1))
+            self.assertEqual(run(), [])
+            actions.run(ctx.cfg, led, "end_session", {"project": "a"})
+            self.assertEqual(run(), built)
+            for minutes in (5, 10, 15, 19):                   # C watches
+                now[0] = NOW + timedelta(minutes=minutes)
+                write("C", now[0] - timedelta(seconds=30))
+                self.assertEqual(run(), built)
+            now[0] = NOW + timedelta(minutes=21)              # A quiet >= window
+            write("C", now[0] - timedelta(seconds=30))
+            self.assertEqual(run(), built)
+            presence.hot_hold_activity(                       # a live tick sees
+                led, "a", "/tmp/x", timedelta(minutes=20), retire=True)
+            self.assertEqual(json.loads(led.get_kv("hot_hold_end:a"))["files"],
+                             [os.path.join(d, "C.jsonl")])    # A retired, C kept
+            now[0] += timedelta(minutes=1)
+            write("C", now[0] - timedelta(seconds=30))
+            write("A", now[0])                                # A resumes
+            self.assertEqual(run(), [])                       # A blocks again
+            write("A", now[0] - timedelta(hours=2))           # (A quiet again)
+            write("C", now[0])
+            self.assertEqual(run(), built)                    # C still exempt
+
     def test_equal_priority_builds_start_oldest_state_changed_first(self):
         """Same project, equal priority: oldest state_changed_at wins, not the
         lower issue number and not a pin preference."""

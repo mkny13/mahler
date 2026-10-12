@@ -314,8 +314,10 @@ Two rules use this:
 
   **End session (mahler#933).** The console's End session lifts the hold for the sessions
   that existed at the click: the action snapshots their transcript files. Those sessions keep
-  writing while they watch a run without re-arming the hold; the exemption retires once all of
-  them have been quiet for the hold window. A transcript that was not in the snapshot (a new
+  writing while they watch a run without re-arming the hold; each session's exemption is
+  tracked separately and retires once that session has been quiet for the hold window (a
+  tick observes it and drops it from the marker), however busy the others are; if it
+  resumes later it holds again. A transcript that was not in the snapshot (a new
   session) always counts, so a new session B holds even while A is exempt. It never overrides
   authoritative leases. Build ordering is unchanged: priority, role, project preference, then
   oldest `state_changed_at`; a pin constrains routing, not priority
