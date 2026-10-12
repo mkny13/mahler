@@ -4609,6 +4609,94 @@ class DependencyPRTests(unittest.TestCase):
             self.views[10]['body'] = change
             self.assertIsNone(ship._dependency_update(self.views[10]))
 
+    GROUPED_TABLE = (
+        "Bumps the npm_and_yarn group with 2 updates in the / directory: "
+        "[vite](https://github.com/vitejs/vite) and [zod](https://github.com/colinhacks/zod).\n\n"
+        "Updates `vite` from 5.4.1 to 5.4.9\n<details>...</details>\n\n"
+        "Updates `zod` from 3.22.0 to 4.0.1\n\n"
+        "| Package | From | To |\n| --- | --- | --- |\n"
+        "| [vite](https://github.com/vitejs/vite) | `5.4.1` | `5.4.9` |\n"
+        "| [zod](https://github.com/colinhacks/zod) | `3.22.0` | `4.0.1` |\n")
+    PIP_RANGE = (
+        "Updates the requirements on [flask](https://github.com/pallets/flask) to permit the latest version.\n"
+        "Updates `flask` from >=3.0,<4 to >=3.1.3,<4\n")
+
+    def update(self, body):
+        view = dict(self.views[10], body=body)
+        return ship._dependency_update(view)
+
+    def test_grouped_table_and_lines_most_severe_wins(self):
+        got = self.update(self.GROUPED_TABLE)
+        self.assertEqual(got, {'classification': 'major', 'dependencies': ['vite', 'zod']})
+        minor = self.GROUPED_TABLE.replace('4.0.1', '3.23.0')
+        self.assertEqual(self.update(minor)['classification'], 'minor')
+
+    def test_grouped_conflicts_and_incomplete_rows_fail_closed(self):
+        body = self.GROUPED_TABLE
+        self.assertIsNone(self.update(body.replace('Updates `vite` from 5.4.1 to 5.4.9', 'Updates `vite` from 5.4.1 to 5.4.8')))
+        self.assertIsNone(self.update(body.replace('with 2 updates', 'with 3 updates')))
+        self.assertIsNone(self.update(body + '| [x](https://e.com) | `1.0.0` |\n'))
+        self.assertIsNone(self.update(body + 'Updates `y` to 2.0.0\n'))
+
+    def test_pip_range_lower_bound_rule(self):
+        self.assertEqual(self.update(self.PIP_RANGE),
+                         {'classification': 'minor', 'dependencies': ['flask']})
+        for bad in ('Updates `flask` from >=3.0,<4 to >=3.1.3,<5\n',
+                    'Updates `flask` from <4 to <5\n',
+                    'Updates `flask` from ~=3.0 to ~=3.1\n'):
+            self.assertIsNone(self.update(self.PIP_RANGE.splitlines()[0] + '\n' + bad))
+
+    def test_real_pip_range_title_only_evidence(self):
+        body = ("Updates the requirements on [flask](https://github.com/pallets/flask) "
+                "to permit the latest version.\n<details>notes</details>\n")
+        t = lambda title: ship._dependency_update(dict(self.views[10], body=body, title=title))
+        self.assertEqual(t('Update flask requirement from <4,>=3.0 to >=3.1.3,<4'),
+                         {'classification': 'minor', 'dependencies': ['flask']})
+        self.assertIsNone(t('Update flask requirement from <4,>=3.0 to >=3.1.3,<5'))
+        self.assertIsNone(t('Update flask requirement from ~=3.0 to ~=3.1'))
+        self.assertIsNone(t('Update flask requirement'))
+
+    def test_group_with_non_increasing_row_keeps_major(self):
+        body = ("Bumps the npm group with 3 updates in the / directory: "
+                "[dotenv](https://x.io/d), [a](https://x.io/a) and [b](https://x.io/b).\n\n"
+                "| Package | From | To |\n| --- | --- | --- |\n"
+                "| [dotenv](https://x.io/d) | `18.0.6` | `18.0.5` |\n"
+                "| [a](https://x.io/a) | `1.40.0` | `2.52.0` |\n"
+                "| [b](https://x.io/b) | `2.0.0` | `2.0.1` |\n")
+        self.assertEqual(self.update(body),
+                         {'classification': 'major', 'dependencies': ['dotenv', 'a', 'b']})
+        self.assertEqual(self.update(body.replace('2.52.0', '1.52.0'))['classification'], 'minor')
+
+    GROUNDWORK_224 = 'Bumps the dependencies group with 17 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [@better-auth/drizzle-adapter](https://github.com/better-auth/better-auth/tree/HEAD/packages/drizzle-adapter) | `1.7.1` | `1.7.7` |\n| [@better-auth/passkey](https://github.com/better-auth/better-auth/tree/HEAD/packages/passkey) | `1.7.1` | `1.7.7` |\n| [@neondatabase/serverless](https://github.com/neondatabase/serverless) | `1.1.0` | `1.2.0` |\n| [@notionhq/client](https://github.com/makenotion/notion-sdk-js) | `5.26.0` | `5.27.0` |\n| [better-auth](https://github.com/better-auth/better-auth/tree/HEAD/packages/better-auth) | `1.7.1` | `1.7.7` |\n| [drizzle-orm](https://github.com/drizzle-team/drizzle-orm) | `0.45.2` | `0.45.3` |\n| [lucide-react](https://github.com/lucide-icons/lucide/tree/HEAD/packages/lucide-react) | `1.40.0` | `1.52.0` |\n| [react](https://github.com/react/react/tree/HEAD/packages/react) | `19.2.8` | `19.3.0` |\n| [@types/react](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/react) | `19.2.18` | `19.3.0` |\n| [react-dom](https://github.com/react/react/tree/HEAD/packages/react-dom) | `19.2.8` | `19.3.0` |\n| [@types/react-dom](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/react-dom) | `19.2.4` | `19.3.0` |\n| [zod](https://github.com/colinhacks/zod) | `4.4.3` | `4.6.5` |\n| [@playwright/test](https://github.com/microsoft/playwright) | `1.62.1` | `1.63.0` |\n| [@types/react](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/react) | `19.2.18` | `19.3.0` |\n| [@types/react-dom](https://github.com/DefinitelyTyped/DefinitelyTyped/tree/HEAD/types/react-dom) | `19.2.4` | `19.3.0` |\n| [dotenv](https://github.com/motdotla/dotenv) | `18.0.6` | `18.0.5` |\n| [drizzle-kit](https://github.com/drizzle-team/drizzle-orm) | `0.31.10` | `0.31.11` |\n| [pg](https://github.com/brianc/node-postgres/tree/HEAD/packages/pg) | `8.23.0` | `8.23.1` |\n| [tsx](https://github.com/privatenumber/tsx) | `4.23.12` | `4.23.15` |\n\n\nUpdates `@better-auth/drizzle-adapter` from 1.7.1 to 1.7.7\n'
+    COUCH_TOUR_594 = 'Bumps the non-major group with 18 updates in the / directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| androidx.core:core-ktx | `1.15.0` | `1.19.1` |\n| androidx.navigation:navigation-compose | `2.8.5` | `2.10.2` |\n| [androidx.media3:media3-exoplayer](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-session](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-common](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-cast](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-ui](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-session](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-common](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-cast](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| [androidx.media3:media3-ui](https://github.com/androidx/media) | `1.10.1` | `1.11.1` |\n| com.google.android.gms:play-services-cast-framework | `22.1.0` | `22.3.1` |\n| [org.jetbrains.kotlinx:kotlinx-serialization-json](https://github.com/Kotlin/kotlinx.serialization) | `1.7.3` | `1.11.0` |\n| androidx.work:work-runtime-ktx | `2.11.2` | `2.12.0` |\n| [com.google.zxing:core](https://github.com/zxing/zxing) | `3.5.3` | `3.5.4` |\n| [org.robolectric:robolectric](https://github.com/robolectric/robolectric) | `4.14.1` | `4.17` |\n| [org.jetbrains.kotlinx:kotlinx-coroutines-test](https://github.com/Kotlin/kotlinx.coroutines) | `1.9.0` | `1.11.0` |\n| androidx.test:core | `1.6.1` | `1.7.0` |\n| [org.jetbrains.kotlin.android](https://github.com/JetBrains/kotlin) | `2.0.21` | `2.4.20` |\n| [org.jetbrains.kotlin.plugin.compose](https://github.com/JetBrains/kotlin) | `2.0.21` | `2.4.20` |\n| [org.jetbrains.kotlin.plugin.serialization](https://github.com/JetBrains/kotlin) | `2.0.21` | `2.4.20` |\n| [org.jetbrains.kotlin.plugin.compose](https://github.com/JetBrains/kotlin) | `2.0.21` | `2.4.20` |\n| [org.jetbrains.kotlin.plugin.serialization](https://github.com/JetBrains/kotlin) | `2.0.21` | `2.4.20` |\n| [com.google.devtools.ksp](https://github.com/google/ksp) | `2.0.21-1.0.28` | `2.3.12` |\n\n\nUpdates `androidx.core:core-ktx` from 1.15.0 to 1.19.1\n\nUpdates `androidx.navigation:navigation-compose` from 2.8.5 to 2.10.2\n\nUpdates `androidx.media3:media3-exoplayer` from 1.10.1 to 1.11.1\n'
+
+    def test_real_groundwork_224_body(self):
+        got = self.update(self.GROUNDWORK_224)
+        self.assertEqual(got['classification'], 'minor')
+        self.assertIn('dotenv', got['dependencies'])
+        self.assertEqual(len(got['dependencies']), 17)
+
+    def test_real_couch_tour_594_body(self):
+        got = self.update(self.COUCH_TOUR_594)
+        self.assertEqual(got['classification'], 'minor')
+        self.assertIn('com.google.devtools.ksp', got['dependencies'])
+        self.assertIn('org.robolectric:robolectric', got['dependencies'])
+
+    def test_grouped_major_enters_tracked_item_path(self):
+        self.views[10]['body'] = self.GROUPED_TABLE
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+
+    def test_unparseable_pr_pings_once_and_never_merges(self):
+        self.views[10]['body'] = 'Some unknown format'
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            for _ in range(3):
+                self.run_pass()
+        ping.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+        self.gh.create_issue.assert_not_called()
+
 
 class ReviewPinFallbackTests(unittest.TestCase):
     setUp = ShipTests.setUp
