@@ -49,3 +49,31 @@ Operator CLI commands for managing durable review adjudications and measuring re
   - Each failed verdict is counted once despite duplicate finalization events.
   - Precision is `justified / (justified + false)`; false-fail share is `false / (justified + false)`. Both excluded counts (`unresolved` and `unadjudicated`) are displayed. When the denominator is zero, precision and false-fail share are reported as `unknown` (`null` in JSON).
 
+## Hands-off completion scorecard
+
+`mahler scorecard [--project P] [--since 30d] [--json]` also reports issue-level
+hands-off completion: autonomous / (autonomous + human-assisted), as a percentage,
+with all three classification counts and the denominator. An empty denominator is
+`unknown` (`null` in JSON), not zero percent.
+
+Each issue is counted once, using its latest recorded transition to `done`, within
+the selected window (inclusive start). The default window is `measure.window_days`.
+Build `DONE` outcomes and merges alone are not completed issues. Repeated runs or
+completions do not inflate the count. Lifecycle evidence before the window still
+counts; evidence after the selected completion does not. Project filtering applies
+to both reports; role and size filters apply only to the existing model rows.
+
+Any recorded interactive/primary lease, transition into or out of `needs_you`, or
+posted human answer makes the issue human-assisted. Automated agent handoffs do
+not. Without positive human evidence, an autonomous classification requires a
+continuous state history from inbox/creation through completion and recorded lease
+epochs from 1 without gaps. Legacy done snapshots, missing transitions or lease
+history are unknown and excluded from the percentage denominator. Queued or undone
+console answers do not count as posted answers. This measures Mahler's recorded
+history only: unrecorded work outside Mahler is not measured.
+
+Normal JSON output is an object with `completion` and `attempts`. `completion`
+contains `autonomous`, `human_assisted`, `unknown`, `denominator`, `completed`,
+`percentage` (0–100 or null), and `limitation`. `attempts` retains the previous
+attempt records and meanings; `--raw` retains the legacy attempts-only array.
+`--review-precision` keeps its existing independent output format.
