@@ -346,6 +346,49 @@ class HumanClaudePresenceTests(unittest.TestCase):
                 [{"path": "/some/path", "hot_hold_minutes": 10}]))
 
 
+class PresenceTranscriptMatchingTests(unittest.TestCase):
+    """mahler#933: presence.transcripts matches transcript directories on disk
+    (temp dirs only): primary and nested checkouts count; sister directories
+    with a similar prefix and autonomous worktrees do not."""
+
+    PRIMARY = "/home/u/Mahler"
+
+    def _root(self, *project_paths):
+        from mahler import presence
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        for p in project_paths:
+            sub = os.path.join(d.name, presence.encode(p))
+            os.makedirs(sub)
+            with open(os.path.join(sub, "s.jsonl"), "w") as f:
+                f.write("{}\n")
+        return d.name
+
+    def _matched_dirs(self, root):
+        from mahler import presence
+        return {os.path.basename(os.path.dirname(f))
+                for f in presence.transcripts(self.PRIMARY, root=root)}
+
+    def test_primary_checkout_counts(self):
+        from mahler import presence
+        root = self._root(self.PRIMARY)
+        self.assertEqual(self._matched_dirs(root), {presence.encode(self.PRIMARY)})
+
+    def test_nested_checkout_counts(self):
+        from mahler import presence
+        nested = self.PRIMARY + "/sub/checkout"
+        root = self._root(nested)
+        self.assertEqual(self._matched_dirs(root), {presence.encode(nested)})
+
+    def test_sister_directory_with_similar_prefix_does_not_count(self):
+        root = self._root(self.PRIMARY + "X", self.PRIMARY + "2")
+        self.assertEqual(self._matched_dirs(root), set())
+
+    def test_autonomous_worktree_does_not_count(self):
+        root = self._root("/home/u/.mahler/worktrees/mahler-933")
+        self.assertEqual(self._matched_dirs(root), set())
+
+
 class ReapTests(unittest.TestCase):
     def test_dead_shell_still_gets_its_group_killed_before_finalize(self):
         ctx = ctx_for()
