@@ -1388,6 +1388,7 @@ def _review_route(ctx, project, item, sha):
 
 
 REVIEW_PIN_WAIT = timedelta(hours=6)
+REVIEW_STALL_PING = timedelta(minutes=30)
 
 
 def _review_preference(ctx, project, item, sha, busy=(), *, persist=False):
@@ -1454,6 +1455,9 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         _capacity_wait(ctx, project, item, wait_key, sha,
                        "every run slot is busy" if full else "no eligible platform for review",
                        "review", (capacity[0], None, None) if full else capacity, tier)
+        if not full:
+            _review_wait_followup(ctx, project, item, wait_key, ping_key, pol, pin, busy,
+                                  size, tier, exclude, sha, pr)
         return
     # Prefer another reviewer for a metadata-only fix, but never turn that
     # preference into a capacity wait or weaken builder/slot independence.
@@ -1470,6 +1474,8 @@ def _start_review_run(ctx, project, item, pr, view, sha):
     if not platform:
         detail = "; ".join(reasons) or "no eligible platform for review"
         _capacity_wait(ctx, project, item, wait_key, sha, detail, "review", capacity, tier)
+        _review_wait_followup(ctx, project, item, wait_key, ping_key, pol, pin, busy,
+                              size, tier, exclude, sha, pr, reasons)
         return
     conductor = led.lease(project, n)
     handoff_from = ((CONDUCTOR, conductor["epoch"])
@@ -1492,6 +1498,45 @@ def _start_review_run(ctx, project, item, pr, view, sha):
         led.set_kv(pin_key, "")
         led.set_kv(wait_key, "")
         led.set_kv(ping_key, "")
+
+
+def _review_wait_followup(ctx, project, item, wait_key, ping_key, pol, pin, busy,
+                          size, tier, exclude, sha, pr, reasons=None):
+    """After a review wait is recorded: note which non-excluded candidates are
+    stale so `refresh_usage` re-probes exactly those next tick, and ping the
+    owner once when the wait passes REVIEW_STALL_PING. Never widens the
+    candidate set (D11 exclusion and free-first routing are untouched)."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    wait = _kv_json(led, wait_key)
+    if wait.get("state") not in ("capacity_wait", None) or not wait:
+        return
+    try:
+        stale = router.stale_candidates(cfg, led, pol, "review", pin, busy, size=size,
+                                        min_tier=tier, exclude=exclude,
+                                        burst_lines=ctx.burst_lines)
+    except Exception as e:                      # noqa: BLE001 — never break the pass
+        ctx.say(f"{project}#{n}: stale-candidate lookup failed — {e}")
+        stale = []
+    if wait.get("stale") != stale:
+        led.set_kv(wait_key, json.dumps({**wait, "stale": stale}))
+    if (led.get_kv(ping_key)
+            or led.now() - parse(wait["at"]) < REVIEW_STALL_PING):
+        return
+    if reasons is None:
+        try:
+            _, reasons = router.pick_for_project(
+                cfg, led, pol, "review", pin, busy, size=size, min_tier=tier,
+                burst_lines=ctx.burst_lines, exclude=exclude)
+        except Exception:                       # noqa: BLE001
+            reasons = []
+    groups = "; ".join(f"{kind}: {', '.join(names)}"
+                       for kind, names in router.reason_groups(reasons or []).items())
+    minutes = int((led.now() - parse(wait["at"])).total_seconds() // 60)
+    led.set_kv(ping_key, iso(led.now()))
+    ctx.ping(f"Review waiting {minutes} min — {project} #{n}",
+             f"No eligible reviewer for PR #{pr} after {minutes} minutes."
+             + (f" Blockers — {groups}." if groups else ""),
+             project, n, priority="high", tags="warning,hourglass")
 
 
 def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
