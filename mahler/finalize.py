@@ -816,7 +816,8 @@ def _record_lessons(ctx, run, log):
     try:
         names, bad = platforms.lessons_report(log["final"] or log["last_text"])
         done, unknown = ctx.led.record_lesson_citations(
-            run["project"], run["platform"], run["id"], names)
+            run["project"], config.account_of(ctx.cfg["platforms"][run["platform"]]),
+            run["id"], names)
         if bad or unknown:
             ctx.say(f"{run['project']}#{run['number']}: ignored {bad + unknown} "
                     f"unusable lesson report entries")

@@ -360,14 +360,37 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.led.run(self.run_id)["requests"], 2)
 
     def test_lesson_report_binds_to_launch_inventory_and_is_idempotent(self):
-        self.led.record_lesson_exposure("x", "cline-free", self.run_id,
+        self.cfg["platforms"]["cline-free"]["account"] = "work"
+        self.led.record_lesson_exposure("x", "work", self.run_id,
                                         [{"name": "lesson-a", "hash": "h"}])
         Path(self.log).write_text("LESSONS: lesson-a, lesson-zzz\nSTATUS: DONE ok\n")
         self.finalize()
         self.finalize()
-        self.assertEqual(self.led.lesson_usage_stats("x", "cline-free"),
+        self.assertEqual(self.led.lesson_usage_stats("x", "work"),
                          {"lesson-a": {"count": 1, "last_used": iso(NOW)}})
-        self.assertEqual(self.led.lesson_usage_stats("y", "cline-free"), {})
+        self.assertEqual(self.led.lesson_usage_stats("y", "work"), {})
+        self.assertEqual(self.led.lesson_usage_stats("x", "personal"), {})
+        self.assertEqual(self.led.lesson_usage_stats("x", "cline-free"), {})
+
+    def test_launch_records_lessons_under_platform_account(self):
+        for account in ("work", None):
+            with self.subTest(account=account):
+                self.cfg["platforms"]["cline-free"]["account"] = account
+                number = 6 if account else 7
+                self.led.upsert_item("x", number, state="ready")
+                prep = {"lessons": {"safe": [{"name": "lesson-a", "hash": "h"}]}}
+                with mock.patch.object(runner, "prepare", return_value=prep), \
+                        mock.patch.object(prompt, "build", return_value="prompt"), \
+                        mock.patch.object(runner, "launch", return_value={"branch": "test"}), \
+                        mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                    self.assertTrue(tick.start(self.ctx, "x", self.led.item("x", number),
+                                               "build", "cline-free"))
+                self.assertEqual(
+                    self.led.lesson_usage_stats("x", account or "personal", kind="exposed"),
+                    {"lesson-a": {"count": 1, "last_used": iso(NOW)}})
+                self.assertEqual(self.led.lesson_usage_stats("y", account or "personal",
+                                                            kind="exposed"), {})
+        self.assertEqual(self.led.lesson_usage_stats("x", "cline-free", kind="exposed"), {})
 
     def finalize(self):
         saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
