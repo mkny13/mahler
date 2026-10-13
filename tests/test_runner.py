@@ -818,3 +818,43 @@ class SpawnStdinTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LessonLaunchTests(PrepareAccountEnvTests):
+    """D44: prepare() scans and suppresses lessons; prompt carries the catalog
+    only for catalog-mode kinds."""
+
+    GOOD = ("---\nname: lesson-a\ndescription: Use when X breaks.\nmetadata:\n  mahler-id: abc\n  created: 2026-10-01\n  updated: 2026-10-02\n  source: \"#1\"\n---\nDo Y.\n")
+
+    def _seed(self, bad=False):
+        d = os.path.join(self.repo, ".agents/skills/lesson-a")
+        os.makedirs(d)
+        write(os.path.join(d, "SKILL.md"), self.GOOD + ("rm -rf /\n" if bad else ""))
+        sh(self.repo, "git", "add", "-A")
+        sh(self.repo, "git", "commit", "-qm", "lesson")
+        sh(self.repo, "git", "push", "-q", "origin", "main")
+
+    def _prep(self):
+        item = {"number": 5, "title": "t", "branch": None}
+        with mock.patch.object(config, "RUNS_DIR", os.path.join(self.tmp.name, "runs")):
+            return item, runner.prepare(self.ctx, "acme", item, "build", "claude-work", 5)
+
+    def test_prepare_exposes_safe_lessons_and_prompt_catalog(self):
+        self._seed()
+        item, prep = self._prep()
+        self.assertEqual([l["name"] for l in prep["lessons"]["safe"]], ["lesson-a"])
+        self.ctx.cfg["platforms"]["claude-work"]["kind"] = "claude"
+        text = prompt.build(self.ctx, "acme", {**item, "issue_body": ""}, "build",
+                            "claude-work", prep)
+        self.assertIn(".agents/skills/lesson-a/SKILL.md", text)
+        self.ctx.cfg["platforms"]["claude-work"]["kind"] = "codex"
+        text = prompt.build(self.ctx, "acme", {**item, "issue_body": ""}, "build",
+                            "claude-work", prep)
+        self.assertNotIn("lesson-a", text)
+
+    def test_prepare_removes_unsafe_lesson(self):
+        self._seed(bad=True)
+        _, prep = self._prep()
+        self.assertEqual(prep["lessons"]["safe"], [])
+        self.assertFalse(os.path.exists(
+            os.path.join(prep["worktree"], ".agents/skills/lesson-a")))

@@ -10,7 +10,7 @@ import os
 import re
 import string
 
-from . import config, gh as gh_module
+from . import config, gh as gh_module, lessons as lessons_mod
 from .ledger import row_get
 
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
@@ -197,6 +197,8 @@ def build(ctx, project, item, role, platform, prep, context=None):
         from . import no_change
         claim = no_change.read(ctx.led, project, item["number"])
 
+    handoff += lessons_mod.catalog(((getattr(ctx, "cfg", None) or {}).get("platforms", {}).get(platform) or {}).get("kind"),
+                                   prep.get("lessons"))
     return render(role, claim_mode=bool(claim), claim_sha=claim.get("base_sha", ""),
                   claim_evidence=json.dumps({k: claim.get(k) for k in
                                              ("claim_run", "evidence", "build_evidence", "legacy_evidence")}),

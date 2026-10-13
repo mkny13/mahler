@@ -14,7 +14,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import config, platforms, redact, router
+from . import config, lessons as lessons_mod, platforms, redact, router
 from .ledger import row_get
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
@@ -286,9 +286,17 @@ def prepare(ctx, project, item, role, platform, run_id):
         kept = catch_up(wt, branch, base, item["number"], run_id, env=env)
         if kept:
             start = f"origin/{base}"
+    # D44: lessons are scanned against the base ref; whatever the worktree
+    # holds that isn't byte-identical to a scan-passed base lesson is removed.
+    lessons = lessons_mod.load(repo, wt, f"origin/{base}")
+    for line in lessons["diagnostics"]:
+        getattr(ctx, "say", print)(f"{project}#{item['number']}: {line}")
+    if lessons.get("fatal"):
+        raise GitError("lesson suppression failed; refusing to launch")
     return {"run_dir": run_dir, "worktree": wt, "branch": branch,
             "push_branch": push_branch or branch,
             "base_ref": start, "replayed": replayed, "kept": kept,
+            "lessons": lessons,
             "head_sha": git(wt, "rev-parse", "HEAD")}
 
 
