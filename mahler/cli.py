@@ -1032,6 +1032,20 @@ def cmd_restore_ledger(a, cfg, led):
     return 0
 
 
+def cmd_history(a, cfg, led):
+    from . import history
+    history.refresh(led, a.project)
+    hits = history.search(led, a.project, a.query, limit=a.limit)
+    if not hits:
+        print("no matching past runs")
+        return 0
+    for h in hits:
+        ex = " ".join((h["excerpt"] or "").split())
+        print(f"run {h['run_id']} — {a.project}#{h['number']} {h['role']} "
+              f"{h['outcome'] or ''}\n  {ex}")
+    return 0
+
+
 def cmd_log(a, cfg, led):
     run = led.run(a.run_id)
     if not run:
@@ -1394,6 +1408,12 @@ def build_parser(cfg=None):
     s = sub.add_parser("backfill-usage", help="recover accounting from ended run logs; price runs whose model now has a [prices] row")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_backfill_usage)
+
+    s = sub.add_parser("history", help="search past runs of a project")
+    s.add_argument("project")
+    s.add_argument("query")
+    s.add_argument("--limit", type=int, default=3)
+    s.set_defaults(fn=cmd_history)
 
     s = sub.add_parser("log", help="summarise a run's output")
     s.add_argument("run_id", type=int)
