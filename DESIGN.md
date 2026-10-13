@@ -2634,3 +2634,133 @@ The [phone](docs/console/screens/discuss-phone.svg) and
 [desktop](docs/console/screens/discuss-desktop.svg) mockups are proposals. Artifact
 work may merge independently; #925 must have Mike's explicit approval of the artifact
 commit revision before production panel code. Silence or closing #922 is not approval.
+
+
+### D44 — Repo lesson candidates: portable, scanned, advisory until gated (mahler#1054, #1055)
+
+Allocated with `mahler next-id mahler D`. This is a design contract; the build
+issues split from #1054 implement it. It refines D11 (recurring escapes become
+gates, not prose) and reuses D20's evidence-backed filing and D39's
+proposal-only, durably deduplicated model. A lesson is a **candidate
+observation**, never policy: it stays advisory until a mechanical check ships.
+
+**Storage: one canonical path and schema.** Lessons live in the managed repo,
+committed through the normal PR path, at `.agents/skills/<name>/SKILL.md`
+(Agent Skills layout). `<name>` is lowercase `[a-z0-9-]`, 1–64 chars, equal to the
+directory name, and prefixed `lesson-` so Mahler can tell its own from human
+skills. Required frontmatter: `name`, `description` (≤1024 chars, says when to
+use it). Mahler adds `metadata:` keys `mahler-id` (the dedup identity below),
+`created` and `updated` (ISO dates) and `source` (issue/PR numbers). The body
+is short Markdown: the trigger, what went wrong, the corrective step. Archived
+lessons move to `.agents/skills-archive/<name>/` (outside every discovery path).
+Nothing is ever deleted by Mahler.
+
+**Platform compatibility (checked 2026-10-13).** Format support is not discovery:
+each kind is native, a Mahler fallback, or unsupported. The fallback is the
+*catalog*: at launch Mahler appends to the run prompt the name, description and
+repo-relative path of each **scan-passed, non-archived** lesson, and tells the run
+to read the file when relevant. Evidence is primary docs or an installed-CLI probe.
+
+| Kind | Mechanism | Evidence |
+|---|---|---|
+| `codex` | Native `.agents/skills` | OpenAI Codex skills docs; codex-cli 0.154.0 installed |
+| `copilot` | Native `.agents/skills` | GitHub Copilot agent-skills docs; copilot 1.0.84 installed |
+| `agy` | Native `.agents/skills` | Google Antigravity skills docs; agy 1.3.4 installed |
+| `kilo` | Native `.agents/skills` | Kilo skills docs; kilo 7.8.8 installed |
+| `cline` | Native `.agents/skills` | Probe: installed cline 3.0.71 `@cline/shared` `storage/paths.d.ts` states `.agents/skills` is honored by skill discovery; Cline docs list `.cline/skills` as the documented path |
+| `vibe` | Native `.agents/skills`, trusted folders only | Mistral Vibe skills docs (project `.agents/skills`, `.vibe/skills`; only when the workdir is trusted, which Mahler's `--trust` run flag provides); vibe 2.25.8 installed |
+| `claude` | Catalog fallback | Claude Code documents `.claude/skills`, not `.agents/skills`; claude 2.1.296. Mahler does not copy or symlink into `.claude/skills` |
+| `agent-sdk` | Catalog fallback | `sdk_runner` uses `setting_sources=["project"]` at most, which reads `.claude/` only |
+| `kiro` | Catalog fallback | Kiro docs list `.kiro/skills`, no `.agents/skills`; `kiro-cli` is not installed on this host, so there is no probe |
+
+A kind whose native claim later fails a probe moves to the catalog fallback. The
+fallback is the safe default for any kind not listed. Native-discovery kinds still
+get no catalog line, so the same lesson is not loaded twice.
+
+**Launch-time trust: fail closed.** Native discovery reads the worktree directly,
+so Mahler cannot rely on filtering the prompt alone. Before every launch the
+scanner reads each `lesson-*` skill from the **base ref** (the merged `origin/<base>`
+tree), never from the run's own branch, and checks it as data. Runs often start on an
+existing issue/PR or snapshot branch (build, fix, design, review), so the worktree may
+hold branch-local lessons the scanner never saw. The rule is therefore on what the
+worktree exposes, not on where the scanner read: after the worktree is prepared and
+before launch, every `lesson-*` directory in it (any `.agents/skills/lesson-*`
+present, including ones added or modified on the branch) must be **byte-identical to
+its scan-passed base version**. Any branch-local lesson that is new, differs from base,
+or has a base version that failed the scan is **suppressed**: removed from the
+working tree with sparse-exclude/skip-worktree so the removal is never staged, committed
+or snapshotted as a deletion, and left out of the catalog and usage rows. It reaches a
+native loader only after merge and a passing scan. The check is as follows:
+(a) schema: frontmatter, name/directory match, size ≤ 8 KiB, no extra files beside
+`SKILL.md` (no scripts, no symlinks); (b) injection: instructions to ignore, override
+or reveal prior/system instructions, role or tool-permission changes, hidden
+Unicode/bidi/zero-width text; (c) exfiltration: URLs, hosts, or commands that send
+files, env vars, tokens or logs outward (`curl`, `wget`, `nc`, `scp`, webhooks);
+(d) destructive commands: `rm -rf`, `git push --force`, `git reset --hard`, `sudo`,
+`DROP`, disk or credential-store writes; (e) secrets via `redact.py`. Any hit, any
+parse error and any scanner exception means **unsafe**. An unsafe lesson is
+**unavailable to the run**: it is left out of the catalog and the run's worktree is
+created with that skill directory removed (sparse-excluded) so native loaders cannot
+see it. Mahler records the lesson, rule ID and redacted evidence in the ledger and
+files one `mahler`-labelled issue per lesson per content hash. If the scanner itself
+cannot run, no lesson is loaded for that launch; the launch proceeds without lessons.
+If suppression itself fails for any lesson, the launch proceeds with
+every `lesson-*` directory removed from that worktree, or does not launch if that also
+fails. A run's own newly written lessons, and lessons carried on an unmerged branch,
+take effect only after merge.
+
+**Writing: patch before create, same PR.** `build.md` and `fix.md` tell a run that
+finishes an issue with a reusable, non-obvious lesson (not task-specific, not
+already enforced by a gate) to first search `.agents/skills/lesson-*` and the catalog
+for the same trigger and patch that file, bumping `updated`; only if none matches
+may it create one. The change goes in the same branch and PR as the work, so
+independent review (`review.md`) sees it and the squash merge is the only path in.
+A run may touch at most one lesson per issue and never the scanner, archive or
+`.mahler/` files. A lesson that restates a mechanical check is rejected in review.
+
+**Usage evidence.** At launch Mahler records, per run, the lesson names and content
+hashes it exposed (native kinds: all scan-passed lessons in the tree; fallback kinds:
+the catalog) in a ledger table keyed `(project, account, lesson, content_hash, run)`.
+"Loaded" means exposed, not read: no kind guarantees a read signal, and a run that
+cites a lesson in its final summary is recorded as `cited` where its transcript allows.
+Usage is counted only from runs of the same project and account.
+
+**Curation clocks.** Computed by D20's maintenance pass, in UTC calendar days from
+`last_used = max(created, updated, latest cited run)`; exposure alone does not
+refresh it. A lesson is **stale** at ≥14 days with no cite and **archived** at ≥30
+days with no cite. Archiving is a PR that moves the directory to the archive path
+(git history keeps it); Mahler never deletes. An edit or cite resets both clocks, and
+an archived lesson is restored by moving it back, which resets them.
+
+**Consolidation.** Before any merge, rewrite or dedupe of lessons, Mahler writes a
+snapshot to `.agents/skills-archive/_snapshots/<UTC timestamp>/` containing every
+affected lesson verbatim, and commits it in the same PR as the consolidation. A
+consolidation without its snapshot fails the scanner's PR check. **Dedup identity:**
+`mahler-id = sha256(project + "\n" + normalized trigger sentence)[:16]`, where the
+trigger is the lowercased, whitespace-collapsed first sentence of `description`.
+Two lessons with one identity in a project are merged, never both kept.
+
+**Promotion to gates (D20).** D20's pass counts, per `mahler-id` over a trailing
+90 days, distinct *evidence events*: merged runs that patched the lesson, `cited`
+runs whose own fix PR was a follow-up to a regression in the same area, and reopened or
+`Escape cause` issues naming the lesson. At **≥3 distinct events across ≥2 distinct
+issues** the pass files one proposal issue (`mahler`-labelled) naming the lesson, the
+events as links, and one named mechanical gate (a test, CI step or lint, with a path
+and command for the check). Deduplication key: `lesson-gate:<project>:<mahler-id>`,
+stored durably as in D39; at most one open proposal per key, and a closed proposal is
+re-filed only after 3 *new* events. Proposal only (D39): D20 never edits CI or merges.
+The lesson stays advisory, and keeps being loaded, until a PR adds the check;
+that PR then archives the lesson. A gate that cannot be named is reported as such,
+not guessed.
+
+**D25 isolation.** Lessons and usage rows are scoped to one configured project and
+its account binding. The scanner, catalog, usage table and D20 pass read only that
+project's repo and rows; there is no global lesson index, no cross-project
+deduplication, promotion or "similar lesson" suggestion, and no lesson text in any
+cross-project report, digest or notification (D39's audit sees only counts and
+names, never content). Personal and work projects are never mixed in a prompt, ledger
+query or issue. A lesson never moves between repos automatically; a human copies
+it, in a PR in the target repo.
+
+**Out of scope here.** Scanner, loader, usage table, curation pass, gate proposals
+and recipe edits are separate build issues.
