@@ -1338,6 +1338,29 @@ def resume_rejected(log):
         error, re.IGNORECASE))
 
 
+MAX_LESSON_REPORT = 20
+
+
+def lessons_report(text):
+    """Optional `LESSONS: lesson-a, lesson-b` line (last wins) -> (names, ignored).
+    Bounded and shape-checked; never changes the STATUS contract. Whether a name
+    was really exposed is decided at finalization against the launch inventory."""
+    import re
+    for line in reversed((text or "").splitlines()):
+        line = line.strip().strip("`*_~")
+        if line.upper().startswith("LESSONS:"):
+            parts = [p.strip().strip("`*_~ ") for p in line.split(":", 1)[1].split(",")]
+            parts = [p for p in parts if p and p.lower() != "none"]
+            names, ignored = [], 0
+            for p in parts[:MAX_LESSON_REPORT]:
+                if re.fullmatch(r"lesson-[a-z0-9-]{1,57}", p) and p not in names:
+                    names.append(p)
+                else:
+                    ignored += 1
+            return names, ignored + max(0, len(parts) - MAX_LESSON_REPORT)
+    return [], 0
+
+
 def status_line(text):
     """Last `STATUS: ...` line an agent printed -> (verb, rest) or (None, None)."""
     for line in reversed((text or "").splitlines()):

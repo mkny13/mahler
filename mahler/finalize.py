@@ -808,6 +808,23 @@ def _apply_ci_retry(e, prepared):
                 branch=e.run["branch"], **attribution["before"])
 
 
+def _record_lessons(ctx, run, log):
+    """D44 usage evidence: reported lessons count only if they were in this
+    run's launch inventory. Never raises; diagnostics carry no lesson text."""
+    if ctx.dry_run:
+        return
+    try:
+        names, bad = platforms.lessons_report(log["final"] or log["last_text"])
+        done, unknown = ctx.led.record_lesson_citations(
+            run["project"], config.account_of(ctx.cfg["platforms"][run["platform"]]),
+            run["id"], names)
+        if bad or unknown:
+            ctx.say(f"{run['project']}#{run['number']}: ignored {bad + unknown} "
+                    f"unusable lesson report entries")
+    except Exception as e:                      # noqa: BLE001 — never fail finalization
+        ctx.say(f"{run['project']}#{run['number']}: lesson usage not recorded: {type(e).__name__}")
+
+
 def finalize(ctx, run):
     """A run that ended passes through here exactly once."""
     led = ctx.led
@@ -836,6 +853,7 @@ def finalize(ctx, run):
         led.update_run(run["id"], session_id=session_id)
 
     verb, rest = platforms.status_line(log["final"] or log["last_text"])
+    _record_lessons(ctx, run, log)
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
     reason = run["stop_reason"] or ("no_credit" if log.get("credit_exhausted")

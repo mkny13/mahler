@@ -128,6 +128,16 @@ class CreditExhaustionTests(unittest.TestCase):
             self.assertFalse(result["credit_exhausted"])
             self.assertTrue(result["quota_hit"])
 
+    def test_lessons_report_is_bounded_and_leaves_status_alone(self):
+        text = "x\nLESSONS: lesson-a, `lesson-b`, lesson-a, Bad Name, ../x\nSTATUS: DONE ok"
+        self.assertEqual(platforms.lessons_report(text), (["lesson-a", "lesson-b"], 3))
+        self.assertEqual(platforms.status_line(text), ("DONE", "ok"))
+        self.assertEqual(platforms.lessons_report("LESSONS: none"), ([], 0))
+        self.assertEqual(platforms.lessons_report("STATUS: DONE"), ([], 0))
+        many = "LESSONS: " + ",".join(f"lesson-{i}" for i in range(30))
+        names, ignored = platforms.lessons_report(many)
+        self.assertEqual((len(names), ignored), (20, 10))
+
     def test_status_line_strips_markdown_emphasis(self):
         self.assertEqual(platforms.status_line("STATUS: **DONE** all set"),
                          ("DONE", "all set"))

@@ -112,6 +112,8 @@ only if none applies. Touch at most one lesson per issue, never the archive, sca
 files, validate it (name/directory match, description ≤1024 chars, no extra files, no URLs or
 destructive commands), and commit it in this same branch so independent review sees it.
 Lessons are advisory and take effect only after merge.
+If you actually applied any listed lesson, add one optional line before the STATUS line:
+`LESSONS: lesson-<name>, lesson-<name>` (names from the list only; omit it if none).
 
 $whats_new
 $rules
