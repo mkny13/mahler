@@ -1344,6 +1344,14 @@ def _pr_authors(led, project, number):
     return authors - {None}
 
 
+def _kv_json_list(led, key):
+    try:
+        v = json.loads(led.get_kv(key) or "[]")
+    except ValueError:
+        return []
+    return [r for r in v if isinstance(r, dict)] if isinstance(v, list) else []
+
+
 def _review_route(ctx, project, item, sha):
     """Share reviewer independence and risk routing with capacity recovery."""
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
@@ -1366,6 +1374,8 @@ def _review_route(ctx, project, item, sha):
     if (dup.get("sha") == sha and dup.get("reviewer")
             and not led.get_kv(f"reviewdone:{project}#{n}:{item['pr']}:{sha}")):
         exclude.add(dup["reviewer"])     # a repeat finding needs a different reviewer
+    exclude |= {r.get("platform") for r in _kv_json_list(led, f"reviewinconclusive:{project}#{n}:{sha}")
+                if r.get("platform")}
     authors = _pr_authors(led, project, n) | exclude
     # Prefer independence from every author. If the configured route cannot
     # supply that, the latest author and any mandatory second opinion stay fenced.

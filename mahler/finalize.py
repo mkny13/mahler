@@ -368,15 +368,39 @@ def _review_failed(e, prepared=None, defer=None):
     return True
 
 
+REVIEW_INCONCLUSIVE_CAP = 3
+
+
 def _review_inconclusive(e):
     """No usable verdict (crash, timeout, quota, an unmatched STATUS verb):
     clear any stale kv record so ship.py's gate starts a fresh review run
     next tick, instead of either merging on a verdict never reached or
     waiting forever on one that will never arrive."""
+    # DESIGN D18: a missing STATUS line is never turned into a verdict by
+    # parsing findings; the reviewer did not commit to pass/fail.
     info = json.loads(e.led.get_kv(_review_kv_key(e.project, e.number)) or "{}")
     if info.get("run_id") not in (None, e.run["id"]):
         return True
+    sha = info.get("sha")
+    seen = []
+    if sha:
+        key = f"reviewinconclusive:{e.project}#{e.number}:{sha}"
+        try:
+            seen = json.loads(e.led.get_kv(key) or "[]")
+        except ValueError:
+            seen = []
+        if e.run["id"] not in [r.get("run_id") for r in seen]:
+            seen.append({"run_id": e.run["id"], "platform": e.run["platform"]})
+            e.led.set_kv(key, json.dumps(seen))
     e.led.set_kv(_review_kv_key(e.project, e.number), None)
+    if len(seen) >= REVIEW_INCONCLUSIVE_CAP:
+        names = ", ".join(sorted({r["platform"] for r in seen if r.get("platform")}))
+        question = (f"{len(seen)} reviews of this PR head ended without a verdict "
+                    f"(platforms: {names}). Review it yourself, or re-run it?")
+        e.set_state("needs_you", question, question=question, options=json.dumps([]))
+        e.ping(f"Mahler needs you — {e.project} #{e.number}", question,
+               priority="high", tags="question", console=True)
+        return True
     e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
     return True
 
