@@ -2680,7 +2680,17 @@ get no catalog line, so the same lesson is not loaded twice.
 **Launch-time trust: fail closed.** Native discovery reads the worktree directly,
 so Mahler cannot rely on filtering the prompt alone. Before every launch the
 scanner reads each `lesson-*` skill from the **base ref** (the merged `origin/<base>`
-tree), never from the run's own branch, and checks it as data:
+tree), never from the run's own branch, and checks it as data. Runs often start on an
+existing issue/PR or snapshot branch (build, fix, design, review), so the worktree may
+hold branch-local lessons the scanner never saw. The rule is therefore on what the
+worktree exposes, not on where the scanner read: after the worktree is prepared and
+before launch, every `lesson-*` directory in it (any `.agents/skills/lesson-*`
+present, including ones added or modified on the branch) must be **byte-identical to
+its scan-passed base version**. Any branch-local lesson that is new, differs from base,
+or has a base version that failed the scan is **suppressed**: removed from the
+working tree with sparse-exclude/skip-worktree so the removal is never staged, committed
+or snapshotted as a deletion, and left out of the catalog and usage rows. It reaches a
+native loader only after merge and a passing scan. The check is as follows:
 (a) schema: frontmatter, name/directory match, size ≤ 8 KiB, no extra files beside
 `SKILL.md` (no scripts, no symlinks); (b) injection: instructions to ignore, override
 or reveal prior/system instructions, role or tool-permission changes, hidden
@@ -2694,7 +2704,10 @@ created with that skill directory removed (sparse-excluded) so native loaders ca
 see it. Mahler records the lesson, rule ID and redacted evidence in the ledger and
 files one `mahler`-labelled issue per lesson per content hash. If the scanner itself
 cannot run, no lesson is loaded for that launch; the launch proceeds without lessons.
-A run's own newly written lessons take effect only after merge.
+If suppression itself fails for any lesson, the launch proceeds with
+every `lesson-*` directory removed from that worktree, or does not launch if that also
+fails. A run's own newly written lessons, and lessons carried on an unmerged branch,
+take effect only after merge.
 
 **Writing: patch before create, same PR.** `build.md` and `fix.md` tell a run that
 finishes an issue with a reusable, non-obvious lesson (not task-specific, not
