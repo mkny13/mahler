@@ -728,6 +728,9 @@ def _close_the_books(e, code):
     from .run_usage import columns
     update_cols.update(columns(e.log, run, ctx.cfg))
     led.update_run(run["id"], **update_cols)
+    from . import history
+    history.index_run(led, led.q1("SELECT * FROM runs WHERE id=?", (run["id"],)),
+                      base=f"origin/{e.pol.get('base', 'main')}")
     _check_estimate_calibration(ctx)
     if not e.keep_worktree:
         runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],

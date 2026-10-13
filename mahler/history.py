@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sqlite3
+import subprocess
 
 from . import redact as redact_mod
 
@@ -45,7 +46,27 @@ def _log_tail(path):
     return text[-LOG_TAIL_BYTES:]
 
 
-def _body(led, run):
+def _changed_files(run, base=None):
+    """Read actual committed, dirty and untracked paths while the tree exists.
+
+    Old runs whose worktree has gone have no Git evidence available; never
+    substitute their planned file list for observed changes.
+    """
+    wt = run["worktree"]
+    base = base or run["base_ref"]
+    if not wt or not base or not os.path.isdir(wt):
+        return ""
+    def git(*args):
+        result = subprocess.run(["git", "-C", wt, *args], capture_output=True,
+                                text=True, timeout=10, check=True)
+        return result.stdout
+    ancestor = git("merge-base", base, "HEAD").strip()
+    paths = git("diff", "--name-only", "-z", ancestor, "--").split("\0")
+    paths += git("ls-files", "--others", "--exclude-standard", "-z").split("\0")
+    return "\n".join(sorted(set(paths) - {""}))
+
+
+def _body(led, run, base=None):
     item = led.q1("SELECT * FROM items WHERE project=? AND number=?",
                   (run["project"], run["number"]))
     parts = []
@@ -54,8 +75,9 @@ def _body(led, run):
         parts.append(item["issue_body"] or "")
         if item["summary"]:
             parts.append("STATUS: " + item["summary"])
-        if item["files"] and item["files"] != "[]":
-            parts.append("files: " + item["files"])
+    files = _changed_files(run, base)
+    if files:
+        parts.append("files changed:\n" + files)
     tail = _log_tail(run["log_path"])
     # The final STATUS line is in the log tail; keep it ahead of the rest.
     from . import platforms
@@ -77,18 +99,27 @@ def refresh(led, project):
     except Exception as e:
         log.warning("history: refresh failed: %s", e)
         return 0
-    n = 0
-    for run in runs:
-        try:
-            led.con.execute(
-                f"INSERT INTO {_TABLE} (project, run_id, number, role, outcome, body) "
-                "VALUES (?,?,?,?,?,?)",
-                (project, run["id"], run["number"], run["role"],
-                 redact_mod.redact(run["outcome"] or ""), _body(led, run)))
-            n += 1
-        except Exception as e:
-            log.warning("history: could not index run %s: %s", run["id"], e)
-    return n
+    return sum(index_run(led, run) for run in runs)
+
+
+def index_run(led, run, base=None):
+    """Persist ended-run evidence before finalization removes its worktree."""
+    try:
+        if run["status"] != "ended" or not _ensure(led):
+            return 0
+        if led.q1(f"SELECT run_id FROM {_TABLE} WHERE project=? AND run_id=?",
+                  (run["project"], run["id"])):
+            return 0
+        body = _body(led, run, base)
+        led.con.execute(
+            f"INSERT INTO {_TABLE} (project, run_id, number, role, outcome, body) "
+            "VALUES (?,?,?,?,?,?)",
+            (run["project"], run["id"], run["number"], run["role"],
+             redact_mod.redact(run["outcome"] or ""), body))
+        return 1
+    except Exception as e:
+        log.warning("history: could not index run %s: %s", run["id"], e)
+        return 0
 
 
 def _match_query(text):

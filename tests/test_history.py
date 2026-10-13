@@ -3,6 +3,8 @@
 import io
 import os
 import tempfile
+import subprocess
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -40,6 +42,39 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual(history.refresh(self.led, "a"), 0)
         hits = history.search(self.led, "a", "zebra parser")
         self.assertEqual([h["run_id"] for h in hits], [rid])
+
+    def test_actual_files_survive_worktree_removal(self):
+        wt = Path(self.tmp.name) / "repo"
+        wt.mkdir()
+        def git(*args):
+            return subprocess.run(["git", "-C", str(wt), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("init")
+        git("config", "user.email", "test@example.invalid")
+        git("config", "user.name", "Test")
+        (wt / "deleted.py").write_text("old")
+        git("add", ".")
+        git("commit", "-m", "base")
+        base = git("rev-parse", "HEAD")
+        (wt / "actual.py").write_text("implementation")
+        git("add", ".")
+        git("commit", "-m", "implementation")
+        (wt / "deleted.py").unlink()
+        (wt / "untracked.py").write_text("new")
+        (wt / (FAKE_KEY + ".py")).write_text("secret filename")
+        rid = self.seed("a", 1, "Zebra", "STATUS: DONE implemented")
+        self.led.upsert_item("a", 1, files='["planned.py"]')
+        self.led.update_run(rid, worktree=str(wt), base_ref=base)
+        self.assertEqual(history.refresh(self.led, "a"), 1)
+        body = self.led.q1("SELECT body FROM run_history")["body"]
+        for name in ("actual.py", "deleted.py", "untracked.py"):
+            self.assertIn(name, body)
+        self.assertNotIn("planned.py", body)
+        self.assertNotIn(FAKE_KEY, body)
+        import shutil
+        shutil.rmtree(wt)
+        self.assertEqual(history.refresh(self.led, "a"), 0)
+        self.assertEqual(history.search(self.led, "a", "actual")[0]["run_id"], rid)
 
     def test_running_not_indexed(self):
         self.seed("a", 1, "Zebra", "x", status="running")
