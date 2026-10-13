@@ -360,3 +360,22 @@ class TestInteractiveLeaseCommands(unittest.TestCase):
                 self.assertEqual(cli.cmd_lease_check(SimpleNamespace(item=None, epoch=None),
                                                      self.cfg, self.led), 0)
         self.assertIn("allowed", out.getvalue())
+
+
+class TestLedgerTestHookRoot(unittest.TestCase):
+    def test_root_comes_from_edited_file_not_hook_location(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "ledger_test_hook", os.path.join(os.path.dirname(__file__), "..", ".claude", "hooks", "ledger_test.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = os.path.realpath(tmp)
+            os.makedirs(os.path.join(tmp, "mahler"))
+            os.makedirs(os.path.join(tmp, "tests"))
+            f = os.path.join(tmp, "mahler", "ledger.py")
+            open(f, "w").close()
+            self.assertEqual(mod.edited_root({"tool_input": {"file_path": f}, "cwd": tmp}), tmp)
+            self.assertEqual(mod.edited_root({"tool_input": {"file_path": "mahler/ledger.py"}, "cwd": tmp}), tmp)
+            other = os.path.join(tmp, "mahler", "other.py")
+            self.assertIsNone(mod.edited_root({"tool_input": {"file_path": other}, "cwd": tmp}))
