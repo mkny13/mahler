@@ -1968,6 +1968,22 @@ class ReviewInconclusiveTests(unittest.TestCase):
         self.assertEqual(ship._kv_json_list(led, kv)[0]["platform"], "kilo")
         self.assertEqual(ship._kv_json_list(led, "reviewinconclusive:x#5:sha2"), [])
 
+    def test_replay_after_cap_keeps_needs_you(self):
+        import json
+        led = Ledger(":memory:")
+        key = finalize._review_kv_key("x", 5)
+        for rid in (1, 2, 3):
+            led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
+            e, states, pings = self.ending(led, rid)
+            finalize._review_inconclusive(e)
+        # Replay of run 3: the review record is already cleared.
+        self.assertIsNone(led.get_kv(key))
+        e, states, pings = self.ending(led, 3)
+        finalize._review_inconclusive(e)
+        self.assertEqual(states[0][0][0], "needs_you")
+        self.assertTrue(pings)
+        self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 3)
+
     def test_route_excludes_platform_only_for_same_sha(self):
         import json
         from mahler import ship
