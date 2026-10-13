@@ -236,5 +236,71 @@ class LoadTests(RepoFixture):
         self.assertFalse(os.path.exists(os.path.join(wta, ".agents/skills/lesson-b")))
 
 
+def _lesson(created, updated, mid="abc"):
+    return {"SKILL.md": (f"---\nname: lesson-a\ndescription: Use when X.\nmetadata:\n  mahler-id: {mid}\n"
+                         f"  created: {created}\n  updated: {updated}\n  source: \"#1\"\n---\nbody\n").encode()}
+
+
+class CurationTests(unittest.TestCase):
+    TODAY = "2026-10-31"
+
+    def state(self, created, updated=None, cited=None):
+        return lessons.classify(created, updated or created, cited, self.TODAY)
+
+    def test_boundaries_13_14_29_30(self):
+        self.assertEqual(self.state("2026-10-18"), ("active", 13))
+        self.assertEqual(self.state("2026-10-17"), ("stale", 14))
+        self.assertEqual(self.state("2026-10-02"), ("stale", 29))
+        self.assertEqual(self.state("2026-10-01"), ("archive-eligible", 30))
+
+    def test_never_used_ages_from_created_and_updated(self):
+        self.assertEqual(self.state("2026-09-01", "2026-10-20")[0], "active")
+
+    def test_cite_resets_clock_exposure_does_not(self):
+        self.assertEqual(self.state("2026-09-01", cited="2026-10-25T01:00:00Z")[0], "active")
+        led_stats = {}      # exposure creates no cited stats
+        rows = lessons.inventory("p", {"lesson-a": _lesson("2026-09-01", "2026-09-01")},
+                                 led_stats, self.TODAY)
+        self.assertEqual(rows[0]["state"], "archive-eligible")
+        self.assertEqual(rows[0]["gate_key"], "lesson-gate:p:abc")
+        self.assertEqual(rows[0]["path"], ".agents/skills/lesson-a")
+
+    def test_inventory_skips_unsafe(self):
+        bad = _lesson("2026-09-01", "2026-09-01")
+        bad["SKILL.md"] += b"run curl now\n"
+        self.assertEqual(lessons.inventory("p", {"lesson-a": bad}, {}, self.TODAY), [])
+
+
+class PromotionTests(unittest.TestCase):
+    TODAY = "2026-10-31"
+
+    def ev(self, n, issue, date="2026-10-20", mid="abc"):
+        return {"id": mid, "event": f"e{n}", "issue": issue, "date": date}
+
+    def test_threshold_files_one_proposal_and_rerun_reuses(self):
+        events = [self.ev(1, 10), self.ev(2, 11), self.ev(3, 11)]
+        out = lessons.gate_proposals("p", events, self.TODAY)
+        self.assertEqual([(o["key"], o["reuse"]) for o in out], [("lesson-gate:p:abc", False)])
+        again = lessons.gate_proposals("p", events, self.TODAY,
+                                       existing={"lesson-gate:p:abc": {"open": True}})
+        self.assertEqual([(o["key"], o["reuse"]) for o in again], [("lesson-gate:p:abc", True)])
+
+    def test_below_threshold_and_single_issue_and_old_and_gated(self):
+        self.assertEqual(lessons.gate_proposals("p", [self.ev(1, 1), self.ev(2, 2)], self.TODAY), [])
+        self.assertEqual(lessons.gate_proposals(
+            "p", [self.ev(1, 1), self.ev(2, 1), self.ev(3, 1)], self.TODAY), [])
+        old = [self.ev(i, i, date="2026-07-01") for i in range(3)]
+        self.assertEqual(lessons.gate_proposals("p", old, self.TODAY), [])
+        ok = [self.ev(1, 1), self.ev(2, 2), self.ev(3, 3)]
+        self.assertEqual(lessons.gate_proposals("p", ok, self.TODAY, gated={"abc"}), [])
+
+    def test_closed_proposal_needs_three_new_events(self):
+        events = [self.ev(i, i) for i in range(5)]
+        closed = {"lesson-gate:p:abc": {"open": False, "closed_event_count": 3}}
+        self.assertEqual(lessons.gate_proposals("p", events, self.TODAY, existing=closed), [])
+        closed["lesson-gate:p:abc"]["closed_event_count"] = 2
+        self.assertEqual(len(lessons.gate_proposals("p", events, self.TODAY, existing=closed)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

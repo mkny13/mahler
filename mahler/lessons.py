@@ -326,3 +326,86 @@ def catalog(kind, lessons):
         desc = " ".join(l["description"].split())[:300]
         lines.append(f"- `{l['name']}` — {desc} (`{l['path']}`)")
     return "\n".join(lines) + "\n"
+
+
+# ---- curation (D44 clocks; D20 `lessons` pass) ------------------------------
+ARCHIVE_DIR = ".agents/skills-archive"
+STALE_DAYS, ARCHIVE_DAYS = 14, 30
+PROMOTE_EVENTS, PROMOTE_ISSUES, PROMOTE_WINDOW_DAYS = 3, 2, 90
+ACTIVE, STALE, ARCHIVE_ELIGIBLE = "active", "stale", "archive-eligible"
+
+
+def _day(s):
+    from datetime import date
+    return date.fromisoformat(str(s)[:10])
+
+
+def last_used(created, updated, cited=None):
+    """D44: max(created, updated, latest cited run). A lesson never cited is
+    aged from created/updated; exposure alone never refreshes it."""
+    return max(_day(d) for d in (created, updated, cited) if d)
+
+
+def classify(created, updated, cited, today):
+    """-> (state, unused_days) in UTC calendar days; stale at >=14, archive-
+    eligible at >=30."""
+    days = (_day(today) - last_used(created, updated, cited)).days
+    state = (ARCHIVE_ELIGIBLE if days >= ARCHIVE_DAYS else
+             STALE if days >= STALE_DAYS else ACTIVE)
+    return state, max(days, 0)
+
+
+def durable_key(project, mahler_id):
+    return f"lesson-gate:{project}:{mahler_id}"
+
+
+def gate_proposals(project, events, today, existing=None, gated=()):
+    """Lessons meeting D44's promotion threshold.
+
+    `events`: [{"id": mahler-id, "event": distinct event ref, "issue": n,
+    "date": ISO}]. Counts distinct events in the trailing 90 days; needs >=3
+    events across >=2 distinct issues. `existing`: {key: {"open": bool,
+    "closed_event_count": events counted when it closed}}; an open proposal is
+    reused, a closed one re-files only after 3 new events. `gated`: mahler-ids
+    that already name an adequate shipped gate -> never proposed.
+    -> [{"key", "id", "events", "issues", "reuse": bool}] sorted by key."""
+    today, existing, per = _day(today), existing or {}, {}
+    for e in events or ():
+        if (today - _day(e["date"])).days > PROMOTE_WINDOW_DAYS or _day(e["date"]) > today:
+            continue
+        per.setdefault(e["id"], {})[e["event"]] = e["issue"]
+    out = []
+    for mid in sorted(per):
+        evs = per[mid]
+        key = durable_key(project, mid)
+        if mid in gated or len(evs) < PROMOTE_EVENTS or len(set(evs.values())) < PROMOTE_ISSUES:
+            continue
+        prior = existing.get(key)
+        if prior and prior.get("open"):
+            out.append({"key": key, "id": mid, "events": sorted(evs),
+                        "issues": sorted(set(evs.values())), "reuse": True})
+        elif prior and len(evs) - prior.get("closed_event_count", 0) < PROMOTE_EVENTS:
+            continue
+        else:
+            out.append({"key": key, "id": mid, "events": sorted(evs),
+                        "issues": sorted(set(evs.values())), "reuse": False})
+    return out
+
+
+def inventory(project, lessons, stats, today, limit=50):
+    """Bounded per-project inventory from validated lessons plus ledger usage.
+    `lessons`: {dirname: files} (read_base output); `stats`: ledger
+    lesson_usage_stats(project, account). Unsafe lessons are skipped."""
+    rows = []
+    for name in sorted(lessons):
+        info, findings = scan(name, lessons[name])
+        if findings or not info:
+            continue
+        meta = _frontmatter(lessons[name]["SKILL.md"].decode("utf-8"))[0]["metadata"]
+        cited = (stats.get(name) or {}).get("last_used")
+        state, days = classify(meta["created"], meta["updated"], cited, today)
+        rows.append({"name": name, "mahler_id": meta["mahler-id"], "state": state,
+                     "unused_days": days, "cited_runs": (stats.get(name) or {}).get("count", 0),
+                     "gate_key": durable_key(project, meta["mahler-id"]),
+                     "path": f"{SKILLS_DIR}/{name}"})
+    return rows[:limit]
