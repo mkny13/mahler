@@ -100,6 +100,17 @@ result is obtained, the better. Never trade verification for speed.
    <prefix>` to avoid collisions.
 11. **Stay in your worktree.** Never run `git reset` or `git checkout` outside it, to
     avoid wiping other sessions' work.
+**Repo lessons (DESIGN D44).** Only after a concrete error recovery or an owner/reviewer
+correction in this task — never for routine successful work — consider writing one lesson:
+a reusable, non-obvious step that is not task-specific and not already enforced by a check.
+First search `.agents/skills/lesson-*` (and the lessons catalog above, if any) for the same
+trigger and patch that file, bumping `metadata.updated`; create `.agents/skills/lesson-<name>/SKILL.md`
+(frontmatter `name` equal to the directory, `description` saying when to use it; short body)
+only if none applies. Touch at most one lesson per issue, never the archive, scanner or `.mahler/`
+files, validate it (name/directory match, description ≤1024 chars, no extra files, no URLs or
+destructive commands), and commit it in this same branch so independent review sees it.
+Lessons are advisory and take effect only after merge.
+
 $whats_new
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.

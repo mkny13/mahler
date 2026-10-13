@@ -843,3 +843,19 @@ class ClaimContractTests(unittest.TestCase):
                          "all unrelated acceptance", "Optional observations do not gate closure"):
             self.assertIn(required, claim)
         self.assertNotIn("parked for a later human", claim)
+
+
+class LessonRecipeTests(unittest.TestCase):
+    def test_build_and_fix_gate_lessons_on_recovery_and_patch_first(self):
+        for recipe in ("build", "fix"):
+            text = " ".join(prompt.render(recipe, number=1, title="t", repo="o/r", base="main",
+                                          verify="v", worktree="/w", rules="").split())
+            for fragment in (
+                "Only after a concrete error recovery or an owner/reviewer correction",
+                "never for routine successful work",
+                "First search `.agents/skills/lesson-*`",
+                "patch that file", "only if none applies",
+                "validate it", "commit it in this same branch so independent review sees it",
+                "at most one lesson per issue",
+            ):
+                self.assertIn(fragment, text, f"{recipe}: {fragment}")
