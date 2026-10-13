@@ -1519,8 +1519,7 @@ def _review_wait_followup(ctx, project, item, wait_key, ping_key, pol, pin, busy
         stale = []
     if wait.get("stale") != stale:
         led.set_kv(wait_key, json.dumps({**wait, "stale": stale}))
-    # a known retry time is a promise, not a stall; only unknown recovery pings
-    if (wait.get("retry_at") or led.get_kv(ping_key)
+    if (led.get_kv(ping_key)
             or led.now() - parse(wait["at"]) < REVIEW_STALL_PING):
         return
     if reasons is None:
