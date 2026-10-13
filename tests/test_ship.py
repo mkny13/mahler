@@ -1029,6 +1029,7 @@ class ShipTests(unittest.TestCase):
 
     def test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
+        self.led.set_kv("review-pinged:x#5", "1")    # the 30-minute stall ping is tested separately
         now = [NOW]
         self.led.now = lambda: now[0]
         with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
@@ -1106,6 +1107,74 @@ class ShipTests(unittest.TestCase):
                     self.assertEqual(json.loads(self.led.get_kv(f"{key}:run")),
                                      {"run_id": run["id"], "verdict": verdict})
                 self.led.update_run(run["id"], status="ended")
+
+    def _stale_review_wait(self):
+        self.cfg["routing"]["review"] = ["agy-claude"]
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        now = [NOW]
+        self.led.now = lambda: now[0]
+        now[0] += timedelta(minutes=10)      # samples (taken at NOW) are now stale
+        return now
+
+    def test_stale_review_wait_marks_candidates_and_next_tick_probes_them(self):
+        from mahler import usage
+        now = self._stale_review_wait()
+        self.ship().assert_not_called()
+        wait = json.loads(self.led.get_kv("review-wait:x#5"))
+        self.assertEqual(wait["stale"], ["agy-claude"])
+        with mock.patch.object(platforms, "probe_agy", return_value={}) as probe:
+            usage.refresh_usage(self.ctx, [{"name": "x"}])
+        probe.assert_called_once()
+        # the probe records fresh samples -> a reviewer is picked
+        for w in ("5h", "weekly"):
+            self.led.record_usage("agy-claude", w, 10, iso(now[0] + timedelta(hours=2)))
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+            start.assert_called_once()
+            self.assertEqual(start.call_args.args[4], "agy-claude")
+        self.assertFalse(self.led.get_kv("review-wait:x#5"))
+
+    def test_stale_probe_targets_only_stale_candidates(self):
+        self.cfg["routing"]["review"] = ["agy-claude", "agy-gemini"]
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        now = [NOW]
+        self.led.now = lambda: now[0]
+        now[0] += timedelta(minutes=10)
+        self.led.record_usage("agy-gemini", "5h", 10, iso(now[0] + timedelta(hours=2)))
+        self.led.record_usage("agy-gemini", "weekly", 10, iso(now[0] + timedelta(hours=2)))
+        with mock.patch("mahler.router.pick_for_project", return_value=(None, [])):
+            self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("review-wait:x#5"))["stale"], ["agy-claude"])
+
+    def test_long_review_wait_pings_once_and_clears_on_start(self):
+        now = self._stale_review_wait()
+        self.ship().assert_not_called()
+        now[0] += timedelta(minutes=29)
+        self.ship().assert_not_called()
+        now[0] += timedelta(minutes=2)
+        ping = self.ship()
+        ping.assert_called_once()
+        self.assertIn("stale", ping.call_args.args[1])
+        self.assertTrue(self.led.get_kv("review-pinged:x#5"))
+        now[0] += timedelta(minutes=5)
+        self.ship().assert_not_called()
+        for w in ("5h", "weekly"):
+            self.led.record_usage("agy-claude", w, 10, iso(now[0] + timedelta(hours=2)))
+        with mock.patch.object(ship, "start", return_value=True):
+            self.ship()
+        self.assertFalse(self.led.get_kv("review-pinged:x#5"))
+
+    def test_review_wait_never_widens_to_excluded_builder_slot(self):
+        self.cfg["routing"]["review"] = ["claude"]
+        self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
+        self.led.create_run(project="x", number=5, role="build", platform="claude",
+                            status="ended", outcome="DONE", epoch=1)
+        with mock.patch.object(ship, "start", return_value=True) as start:
+            self.ship()
+            for call in start.call_args_list:
+                self.assertNotEqual(call.args[4], "claude")
+        wait = self.led.get_kv("review-wait:x#5")
+        self.assertNotIn("claude", json.loads(wait).get("stale", []) if wait else [])
 
     def test_known_hold_skips_routing_then_recovers(self):
         self.cfg["routing"]["review"] = ["agy-claude"]

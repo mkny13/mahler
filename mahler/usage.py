@@ -278,6 +278,16 @@ def refresh_usage(ctx, projects):
                 routing = router.routing_for(cfg, account)
                 wanted |= {n for role in ("sort", "build", "plan", "review") for n in routing.get(role, [])}
     wanted |= {r["platform"] for r in led.active_runs()}
+    # A review wait that recorded stale candidates (ship._review_wait_followup)
+    # re-probes exactly those platforms; each kind's own probe throttle still applies.
+    for p in projects:
+        for it in led.items(p["name"], ["verifying"]):
+            try:
+                wait = json.loads(led.get_kv(f"review-wait:{p['name']}#{it['number']}") or "{}")
+            except ValueError:
+                continue
+            if isinstance(wait, dict) and isinstance(wait.get("stale"), list):
+                wanted |= {n for n in wait["stale"] if isinstance(n, str)}
     wanted = {n for n in wanted if n in cfg["platforms"]}
     # probe_agy and a copilot probe without an account's own GitHub login read
     # this machine's own logins, so they only ever feed its own platforms (D25)

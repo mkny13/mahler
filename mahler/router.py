@@ -956,6 +956,32 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
     return eligible, recovery, retry
 
 
+def stale_candidates(cfg, led, pol, role, pin=None, busy=(), size=None,
+                     min_tier=0, exclude=(), burst_lines=None):
+    """Non-excluded candidates whose only blocker is an unknown (stale or
+    missing) usage sample — the platforms a re-probe could unblock. Uses the
+    same exclusion and eligibility gates as `capacity_recovery`, so an
+    excluded builder slot is never widened in (D11)."""
+    role = route_role(role)
+    accts = accounts_of(pol)
+    names = (candidates_for_priority(cfg, role, accts, pol.get("routing") or {}, pin)
+             if account_mode_of(pol) == "priority" else
+             candidates_for_accounts(cfg, role, accts, pin))
+    excluded = {platform_slot(cfg, name) for name in exclude}
+    out = []
+    for name in names:
+        pc = cfg["platforms"][name]
+        if (pc.get("approval") and name != pin) or platform_slot(cfg, name) in excluded:
+            continue
+        if not pin and role == "review" and tier_of(pc) < min_tier:
+            continue
+        if model_availability.blocked(led, name, pc, role) or name in busy:
+            continue
+        if usage_state(led, name, pc, burst_lines)[0] == "stale":
+            out.append(name)
+    return out
+
+
 def reason_groups(reasons):
     """Group router diagnostics by blocker, keeping each platform once."""
     groups = {}

@@ -36,3 +36,18 @@ class ReviewTierTests(unittest.TestCase):
                     if tier and not pin:
                         self.assertNotIn('agy-gemini', names)
                         self.assertIn('tier', diag['agy-gemini'])
+
+
+class StaleCandidatesTests(unittest.TestCase):
+    def test_stale_candidates_skip_fresh_and_excluded_slots(self):
+        now = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['routing']['review'] = ['agy-gemini', 'agy-claude', 'claude']
+        pol = config.project_policy(cfg, 'x')
+        led = Ledger(':memory:', clock=lambda: now)
+        self.addCleanup(led.close)
+        for window in ('5h', 'weekly'):
+            led.record_usage('agy-gemini', window, 10, iso(now + timedelta(days=1)))
+        with mock.patch.object(platforms, 'available', return_value=True):
+            got = router.stale_candidates(cfg, led, pol, 'review', exclude={'claude'})
+        self.assertEqual(got, ['agy-claude'])    # fresh skipped, builder slot never widened in
