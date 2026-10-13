@@ -272,7 +272,7 @@ class BuildRecipeTests(unittest.TestCase):
             rules="",
             # mahler#569: the contract is now a template value; a relevant
             # build passes it (its title asks for the What's New contract).
-            whats_new=prompt.WHATS_NEW_GUIDANCE,
+            whats_new=prompt.WHATS_NEW_GUIDANCE, history="",
         )
         self.rendered = prompt.render("build", **self.values)
         self.text = " ".join(self.rendered.split())
