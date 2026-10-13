@@ -2,7 +2,8 @@
 # One-shot bootstrap (mahler#918): the Agent SDK runner, on the Team-plan API
 # credits, builds its own Mahler integration. Run on the mini, after
 # `security unlock-keychain` when over ssh. Hard stop at $6 (SDK estimate);
-# the Mahler Console workspace limit is the server-side backstop.
+# the Mahler Console workspace limit is belt-and-braces only: its effect on
+# credit-covered spend is unverified (mahler#981).
 set -eu
 BRANCH=mahler/918-agent-sdk-harness
 WT="$HOME/Mahler-918"
