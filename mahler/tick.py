@@ -64,8 +64,57 @@ acceptance check. Propose gates, not guidance. If no feasible mechanical check
 exists, explain why. Report classes, source links, existing coverage and reused or
 new issue links; if no bugs or gaps qualify, say so without filing filler work.
 This pass proposes checks; implementing them belongs to separate project issues."""),
+    "lessons": ("Repo Lesson Curation & Gate Promotion", """Curate this project's repo lessons (`.agents/skills/lesson-*`, DESIGN D44) using
+the inventory below. Lessons are advisory candidates; nothing here is a merge gate.
+
+Lifecycle, in UTC days since last use (`max(created, updated, latest cited run)`; a
+never-cited lesson ages from created/updated; exposure alone does not refresh it):
+stale at >=14 days, archive-eligible at >=30. In ONE ordinary builder PR, archive each
+archive-eligible lesson by moving its directory to `.agents/skills-archive/<name>/`.
+Never delete a lesson; keep its `name` and `mahler-id` unchanged so identity and history
+survive; reruns must be idempotent (skip lessons already archived). Before any merge,
+rewrite or dedupe of lessons, first write a verbatim snapshot of every affected lesson
+to `.agents/skills-archive/_snapshots/<UTC timestamp>/` in the same PR. Two lessons
+sharing one `mahler-id` are merged, never both kept.
+
+Promotion to gates: per `mahler-id`, count distinct evidence events in the trailing 90
+days (merged runs that patched the lesson; cited runs whose fix PR followed a regression
+in the same area; reopened or `Escape cause` issues naming the lesson). At >=3 events
+across >=2 distinct issues, file or reuse exactly one `mahler`-labelled proposal issue
+per durable key (`lesson-gate:<project>:<mahler-id>`; put the key in the body and search
+open and closed issues for it first). Reuse an open one; re-file a closed one only after
+3 new events. Name the lesson, link each event, and name one mechanical gate (test, CI
+step, lint, contract check or smoke journey) with a path, command and executable
+acceptance check. Skip lessons whose adequate named gate already ships, and lessons
+below threshold; if no gate can be named, report that rather than guessing. The lesson
+stays advisory and loaded until the gate PR ships, and that PR archives it.
+Proposal only (D39): do not edit workflows, verify commands, `~/.mahler/config.toml` or
+protection settings."""),
     "docs": ("Documentation Accuracy & Onboarding Review", "Documentation Accuracy & Onboarding Review — verify README setup and safety guidance from a fresh-user perspective; compare commands, examples, architecture, roadmap status, and operator/agent documentation with the current code and CLI help; fix stale claims, broken links, machine-specific examples, and undocumented configuration or behavior. Preserve historical decisions as history, but clearly distinguish shipped behavior from plans."),
 }
+
+
+def _lessons_inventory(ctx, p, now):
+    """Bounded per-project inventory block for the lessons pass; never raises."""
+    from . import lessons
+    try:
+        pol = ctx.policy(p["name"])
+        base = pol.get("base") or "main"
+        rows = []
+        for acct in config.accounts_of(pol):
+            stats = ctx.led.lesson_usage_stats(p["name"], acct)
+            rows = lessons.inventory(
+                p["name"], lessons.read_base(pol["path"], f"origin/{base}"), stats,
+                now.date().isoformat())
+            if rows:
+                break
+    except Exception as e:
+        return f"\n\nLesson inventory unavailable ({type(e).__name__}); inspect the repo directly."
+    if not rows:
+        return "\n\nLesson inventory: no scan-passed lessons at the base ref; nothing to curate."
+    lines = [f"- `{r['name']}` id={r['mahler_id']} state={r['state']} unused_days={r['unused_days']} "
+             f"cited_runs={r['cited_runs']} gate_key={r['gate_key']}" for r in rows]
+    return f"\n\nLesson inventory (as of {now.date().isoformat()} UTC):\n" + "\n".join(lines)
 
 
 def queue_maintenance(ctx, projects):
@@ -150,6 +199,8 @@ def queue_maintenance(ctx, projects):
                          + ("Start is the previous escapes pass filing checkpoint."
                             if previous else
                             "First pass: no prior checkpoint; review one cadence window."))
+            if pass_name == "lessons":
+                body += _lessons_inventory(ctx, p, now)
             issue_labels = ["type:chore", "size:l", "p2", label]
             if scope_label is not None:
                 issue_labels.append(scope_label)

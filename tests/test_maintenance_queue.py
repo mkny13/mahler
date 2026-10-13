@@ -555,5 +555,41 @@ class CustomMaintenanceQueueTests(unittest.TestCase):
             "Other scan", "Other text", ["type:chore", "size:l", "p2", "pass:parity"])
 
 
+class LessonsPassTests(unittest.TestCase):
+    def setUp(self):
+        EscapesQueueTests.setUp(self)
+        self.led.set_maintenance_checkpoint("mahler", "escapes", last_filed_at=NOW)
+        self.led.set_maintenance_checkpoint("mahler", "lessons",
+                                            last_filed_at=NOW - timedelta(days=40), merged_since=25)
+
+    def test_exactly_one_builtin_and_omittable(self):
+        self.assertEqual(config.MAINTENANCE_PASSES.count("lessons"), 1)
+        self.cfg["projects"]["mahler"]["maintenance"] = {"passes": ["security"]}
+        self.assertNotIn("lessons", config.maintenance_policy(self.cfg, "mahler")["passes"])
+
+    def test_files_with_scope_label_and_resets_checkpoint(self):
+        self.cfg["projects"]["mahler"].update(scope="label", scope_label="area:x")
+        tick.queue_maintenance(self.ctx, [proj()])
+        title, body, labels = self.gh_mock.create_issue.call_args.args
+        self.assertEqual(title, "Repo Lesson Curation & Gate Promotion")
+        self.assertEqual(labels, ["type:chore", "size:l", "p2", "pass:lessons", "area:x"])
+        for needle in ("skills-archive/_snapshots", "Never delete", "lesson-gate:<project>",
+                       "Proposal only (D39)", "Lesson inventory"):
+            self.assertIn(needle, body)
+        self.assertEqual(self.led.maintenance_checkpoint("mahler", "lessons")["merged_since"], 0)
+
+    def test_one_open_pass_blocks(self):
+        self.led.upsert_item("mahler", 5, labels=json.dumps(["pass:docs"]), state="ready")
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+    def test_cooldown_blocks(self):
+        self.led.upsert_item("mahler", 6, labels=json.dumps(["pass:lessons"]), state="done")
+        self.led.con.execute("UPDATE items SET state_changed_at=? WHERE number=6",
+                             (iso(NOW - timedelta(days=3)),))
+        tick.queue_maintenance(self.ctx, [proj()])
+        self.gh_mock.create_issue.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
