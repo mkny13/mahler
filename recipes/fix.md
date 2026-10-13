@@ -12,6 +12,7 @@ Start by reading:
 - the issue and every comment: `gh issue view $number -R $repo --comments`
 - CLAUDE.md / AGENTS.md and `.mahler/project.toml` in the workspace
 $handoff
+$history
 
 Rules:
 Time matters here: do not spend time that can be avoided; the earlier a correct, verified

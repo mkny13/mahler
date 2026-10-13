@@ -400,6 +400,23 @@ class RunTests(unittest.TestCase):
             finalize.finalize(self.ctx, self.run)
         return snap, rm
 
+    def test_history_captures_files_before_worktree_cleanup(self):
+        from mahler import history
+        Path(self.log).write_text("STATUS: DONE implemented\n")
+        saved = {"ref": "snapshot", "sha": "abc123", "ahead": 1, "stat": None}
+        def removed(*args):
+            row = self.led.q1("SELECT body FROM run_history WHERE run_id=?",
+                              (self.run["id"],))
+            self.assertIsNotNone(row)
+            self.assertIn("actual.py", row["body"])
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=saved), \
+                mock.patch.object(history, "_changed_files", return_value="actual.py") as files, \
+                mock.patch.object(runner, "remove_worktree", side_effect=removed) as cleanup:
+            finalize.finalize(self.ctx, self.run)
+        cleanup.assert_called_once()
+        self.assertEqual(files.call_args.args[1], "origin/main")
+
     def no_work_done(self, base="base-sha", explanation="already implemented",
                      saved=None, snapshot_error=None, probe_error=None, ping_error=None):
         with open(self.log, "w") as stream:

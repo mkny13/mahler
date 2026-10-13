@@ -712,6 +712,16 @@ or the issue explicitly explains why no feasible mechanical check exists. That
 exception does not waive verification of the fix. Non-bug body shapes stay unchanged.
 D20 periodically turns recurring escape classes into mechanical-gate proposals.
 
+**Run history** (mahler#1053). `mahler/history.py` keeps an FTS5 table (`run_history`) in
+the ledger DB, created lazily. Each ended run is indexed once (this is also the backfill)
+with its redacted issue title/body, final STATUS line, actual changed files and an ~8 KB
+`agent.log` tail. Finalization indexes Git changes (including dirty and untracked
+paths) before worktree cleanup. Backfill reads Git where the old worktree survives;
+missing worktrees leave file evidence unavailable, never replaced by planned paths. Build and fix prompts get at most 3 hits within 3000 bytes, labelled
+untrusted background; `mahler history <project> "query"` prints hits. Only the same
+project's runs are ever searched (D25), the current issue is excluded, and every failure
+(including FTS5 being unavailable) degrades to no history, never a broken tick or prompt.
+
 - **Review evidence** (mahler#706). Grade the branch against the issue's Done-when.
   PR-description content alone never blocks; required evidence such as audit output
   belongs in the repository or CI. Description-only requests are follow-ups, without
