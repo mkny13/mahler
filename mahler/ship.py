@@ -190,7 +190,9 @@ def _dependency_update_full(view, with_versions):
                 return None
             row = dict(zip(headers, cells))
             if row.get("Type") == "action" and actions_only:
-                updates.append((row["Package"], None, None, "github-actions"))
+                revs = re.fullmatch(r"`([^`\n]+)` → `([^`\n]+)`", row["Change"])
+                before, after = revs.groups() if revs else (None, None)
+                updates.append((row["Package"], before, after, "github-actions"))
                 continue
             versions = re.fullmatch(r"`(v?\d+\.\d+\.\d+)` → `(v?\d+\.\d+\.\d+)`", row["Change"])
             if not versions:

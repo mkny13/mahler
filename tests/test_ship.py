@@ -4741,6 +4741,24 @@ class DependencyPRTests(unittest.TestCase):
         self.run_pass()
         self.gh.pr_merge.assert_called_once_with(10, '10'.zfill(40))
 
+    def test_rewritten_renovate_action_revision_is_reconsidered(self):
+        def action(before, after, state):
+            self.add(10, bot='renovate')
+            v = self.views[10]
+            v['body'] = v['body'].replace('dependencies', 'action').replace(
+                '`1.2.3` → `1.2.4`', f'`{before}` → `{after}`')
+            v['files'] = [{'path': '.github/workflows/ci.yml'}]
+            v['statusCheckRollup'] = [{'state': state}]
+        action('abc123', 'def456', 'FAILURE')
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.views[10]['headRefOid'] = 'c' * 40
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        action('abc123', '789abc', 'SUCCESS')
+        self.run_pass()
+        self.assertEqual(len(self.events()), 1)
+
     def test_legacy_marker_without_identity_reconsiders_patch(self):
         self.add(10, before='6.1.1', after='6.1.2')
         self.led.set_kv('dependency-issue:x:10', 'https://github.com/x/y/issues/20')
