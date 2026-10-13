@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/ledger_test.py"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ledger_test.py"
           }
         ]
       }
