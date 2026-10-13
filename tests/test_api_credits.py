@@ -1223,6 +1223,11 @@ class DocsContractTests(unittest.TestCase):
         self.assertIn("workspace spend limit is *not* counted among the enforced bounds", design)
         self.assertIn("belt-and-braces", design)
 
+    def test_bootstrap_script_no_backstop_claim(self):
+        script = self.read("sdk_runner", "bootstrap", "run-918.sh")
+        self.assertNotIn("server-side backstop", script)
+        self.assertIn("unverified", script)
+
     def test_burst_uses_org_cost_api(self):
         setup = self.read("docs", "team-api-credits.md")
         self.assertIn("org-level Admin Cost API reading", setup)
