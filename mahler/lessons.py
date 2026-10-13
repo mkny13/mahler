@@ -20,6 +20,7 @@ SKILLS_DIR = ".agents/skills"
 PREFIX = "lesson-"
 MAX_BYTES = 8 * 1024
 MAX_DESC = 1024
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NAME_RE = re.compile(r"^lesson-[a-z0-9-]{1,57}$")
 
 NATIVE, CATALOG, UNSUPPORTED = "native", "catalog", "unsupported"
@@ -44,8 +45,15 @@ _RULES = (
         re.IGNORECASE)),
     ("hidden-unicode", re.compile("[​-‏‪-‮⁠-⁤⁦-⁩﻿]")),
     ("exfiltration", re.compile(
-        r"https?://|\b(curl|wget|nc|ncat|netcat|scp|rsync|ftp|sftp)\b|webhook"
-        r"|\b(printenv|env)\b\s*\|", re.IGNORECASE)),
+        r"https?://|\b(curl|wget|nc|ncat|netcat|scp|rsync|ftp|sftp|telnet|socat|sendmail)\b|webhook"
+        r"|\b(printenv|env)\b\s*\||/dev/(tcp|udp)/"
+        r"|\b(socket|urllib\d?|requests|httpx|aiohttp|smtplib|ftplib|paramiko|http\.client"
+        r"|create_connection|urlopen|XMLHttpRequest|fetch)\b\s*(?:\(|\.\w)"
+        r"|\bimport\s+(socket|urllib|requests|httpx|smtplib|ftplib)\b"
+        r"|\b(?:\d{1,3}\.){3}\d{1,3}\b"
+        r"|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|ai|co|xyz|app|cloud|info|biz|ru|cn|tk|ly|me|us|uk|de)\b"
+        r"|\b(send|upload|post|transmit|exfiltrate|email|mail)\b[^.\n]{0,60}\b(token|secret|credential|password|key|env(ironment)?|log)s?\b",
+        re.IGNORECASE)),
     ("destructive", re.compile(
         r"\brm\s+-[a-z]*[rf][a-z]*\b|git\s+push\b[^\n]*(--force|\s-f\b)|git\s+reset\s+--hard"
         r"|\bsudo\b|\bDROP\s+(TABLE|DATABASE)\b|\bmkfs\b|\bdd\s+if=|>\s*/dev/(sd|disk)"
@@ -60,14 +68,22 @@ def _frontmatter(text):
     head, sep, body = text[4:].partition("\n---")
     if not sep:
         raise ValueError("unterminated frontmatter")
-    fm = {}
+    fm, meta, in_meta = {}, {}, False
     for line in head.splitlines():
-        if not line.strip() or line.startswith((" ", "\t", "#")):
+        if not line.strip() or line.startswith("#"):
+            continue
+        if line.startswith((" ", "\t")):
+            if in_meta:
+                k, colon, v = line.strip().partition(":")
+                if colon:
+                    meta[k.strip()] = v.strip().strip("\"'")
             continue
         key, colon, val = line.partition(":")
         if not colon:
             raise ValueError("malformed frontmatter line")
+        in_meta = key.strip() == "metadata"
         fm[key.strip()] = val.strip().strip("\"'")
+    fm["metadata"] = meta
     return fm, body
 
 
@@ -105,6 +121,14 @@ def _scan(dirname, files):
                                   f"and match lesson-[a-z0-9-]"))
         if not desc or len(desc) > MAX_DESC:
             out.append(("schema", "description missing or over 1024 chars"))
+        meta = fm.get("metadata", {})
+        missing = [k for k in ("mahler-id", "created", "updated", "source")
+                   if not meta.get(k)]
+        if missing:
+            out.append(("schema", "metadata missing: " + ", ".join(missing)))
+        for k in ("created", "updated"):
+            if meta.get(k) and not DATE_RE.match(meta[k]):
+                out.append(("schema", f"metadata.{k} must be an ISO date"))
         if not out:
             info = {"name": name, "description": desc}
     except ValueError as e:
@@ -202,6 +226,29 @@ def _suppress(repo_wt, name):
         raise RuntimeError("suppression left the directory")
 
 
+def _suppress_roots(wt):
+    """A symlinked `.agents` or `.agents/skills` would let native discovery
+    escape the scan: untrack-hide and remove the link itself."""
+    for rel in (".agents", SKILLS_DIR):
+        p = os.path.join(wt, rel)
+        if not os.path.islink(p):
+            continue
+        r = subprocess.run(["git", "-C", wt, "ls-files", "-z", "--", rel],
+                           capture_output=True, timeout=60)
+        paths = [x for x in r.stdout.split(b"\0") if x]
+        if paths:
+            u = subprocess.run(["git", "-C", wt, "update-index", "--skip-worktree",
+                                "-z", "--stdin"], input=b"\0".join(paths) + b"\0",
+                               capture_output=True, timeout=60)
+            if u.returncode != 0:
+                raise RuntimeError("skip-worktree failed")
+        os.remove(p)
+        if os.path.lexists(p):
+            raise RuntimeError("could not remove symlinked skills root")
+        return True
+    return False
+
+
 def load(repo, wt, ref):
     """Prepare lessons for a launch in worktree `wt`. Never raises.
 
@@ -211,6 +258,9 @@ def load(repo, wt, ref):
     res = {"safe": [], "rejected": [], "diagnostics": []}
     try:
         base = {n: (scan(n, f), digest(f)) for n, f in read_base(repo, ref).items()}
+        if _suppress_roots(wt):
+            res["rejected"].append({"name": SKILLS_DIR, "rule": "symlink",
+                                    "evidence": "skills root is a symlink; removed"})
         present = read_worktree(wt)
     except Exception as e:
         res["diagnostics"].append(
