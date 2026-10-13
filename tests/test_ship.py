@@ -4533,6 +4533,17 @@ class DependencyPRTests(unittest.TestCase):
                              files=[{'path': '.github/workflows/ci.yml'}])
         self.run_pass()
         self.assertEqual(json.loads(self.events()[-1]['detail'])['classification'], 'github-actions')
+        self.add(13)
+        self.views[13].update(headRefName='dependabot/github_actions/actions/setup-python-6',
+                              body='Bumps [actions/setup-python](https://example.com) from 5 to 6.',
+                              files=[{'path': '.github/workflows/ci.yml'}],
+                              statusCheckRollup=[{'state': 'FAILURE'}])
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.assertIn('Fix failing GitHub Actions update', self.gh.create_issue.call_args.args[0])
+        self.assertEqual(len(self.events()), 2)
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
         self.add(12, bot='renovate')
         self.views[12]['body'] = self.views[12]['body'].replace('dependencies', 'action').replace('`1.2.3` → `1.2.4`', '`abc123` → `def456`')
         self.views[12]['files'] = [{'path': '.github/workflows/ci.yml'}]
