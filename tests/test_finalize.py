@@ -359,6 +359,16 @@ class RunTests(unittest.TestCase):
         self.finalize()
         self.assertEqual(self.led.run(self.run_id)["requests"], 2)
 
+    def test_lesson_report_binds_to_launch_inventory_and_is_idempotent(self):
+        self.led.record_lesson_exposure("x", "cline-free", self.run_id,
+                                        [{"name": "lesson-a", "hash": "h"}])
+        Path(self.log).write_text("LESSONS: lesson-a, lesson-zzz\nSTATUS: DONE ok\n")
+        self.finalize()
+        self.finalize()
+        self.assertEqual(self.led.lesson_usage_stats("x", "cline-free"),
+                         {"lesson-a": {"count": 1, "last_used": iso(NOW)}})
+        self.assertEqual(self.led.lesson_usage_stats("y", "cline-free"), {})
+
     def finalize(self):
         saved = {"ref": "mahler/snapshot/5-run7", "sha": "abc123", "ahead": 1, "stat": None}
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \

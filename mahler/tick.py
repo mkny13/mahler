@@ -718,6 +718,8 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     prep = None
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
+        led.record_lesson_exposure(project, platform, run_id,
+                                   (prep.get("lessons") or {}).get("safe"))
         if role == "design":
             led.set_kv(prompt.design_input_key(project, n, row_get(item, "pr"), run_id),
                        json.dumps({"head": prep["head_sha"], "evidence": context}))

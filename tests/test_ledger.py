@@ -2087,3 +2087,37 @@ class DiscussionLedgerTests(unittest.TestCase):
                 self.assertEqual(len(tokens), 2)
             finally:
                 with_ledger.close()
+
+
+class LessonUsageTests(unittest.TestCase):
+    def setUp(self):
+        self.t = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.t)
+        self.addCleanup(self.led.close)
+        self.safe = [{"name": "lesson-a", "hash": "h1"}, {"name": "lesson-b", "hash": "h2"}]
+
+    def test_two_lessons_idempotent_and_later_run_increments(self):
+        self.led.record_lesson_exposure("p", "acct", 1, self.safe)
+        done, ign = self.led.record_lesson_citations(
+            "p", "acct", 1, ["lesson-a", "lesson-b", "lesson-a", "lesson-x", "../bad"])
+        self.assertEqual((done, ign), (["lesson-a", "lesson-b"], 2))
+        self.led.record_lesson_citations("p", "acct", 1, ["lesson-a", "lesson-b"])
+        rows = self.led.con.execute(
+            "SELECT * FROM lesson_usage WHERE kind='cited'").fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({r["recorded_at"] for r in rows}, {iso(self.t)})
+        self.t += timedelta(days=3)
+        self.led.record_lesson_exposure("p", "acct", 2, self.safe)
+        self.led.record_lesson_citations("p", "acct", 2, ["lesson-a"])
+        self.assertEqual(self.led.lesson_usage_stats("p", "acct"), {
+            "lesson-a": {"count": 2, "last_used": iso(self.t)},
+            "lesson-b": {"count": 1, "last_used": iso(self.t - timedelta(days=3))}})
+
+    def test_other_project_or_account_sees_nothing(self):
+        self.led.record_lesson_exposure("p", "acct", 1, self.safe)
+        self.led.record_lesson_citations("p", "acct", 1, ["lesson-a"])
+        self.assertEqual(self.led.lesson_usage_stats("q", "acct"), {})
+        self.assertEqual(self.led.lesson_usage_stats("p", "other"), {})
+        done, ign = self.led.record_lesson_citations("q", "acct", 1, ["lesson-a"])
+        self.assertEqual((done, ign), ([], 1))
+        self.assertEqual(self.led.lesson_usage_stats("q", "acct"), {})

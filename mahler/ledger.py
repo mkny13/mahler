@@ -230,6 +230,16 @@ CREATE TABLE IF NOT EXISTS completion_evidence (
     PRIMARY KEY (project, number)
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS lesson_usage (   -- D44: scoped to one project and account (D25)
+    project      TEXT NOT NULL,
+    account      TEXT NOT NULL,
+    lesson       TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    run_id       INTEGER NOT NULL,
+    kind         TEXT NOT NULL,          -- exposed (launch inventory) | cited (run report)
+    recorded_at  TEXT NOT NULL,
+    PRIMARY KEY (project, account, lesson, content_hash, run_id, kind)
+);
 CREATE TABLE IF NOT EXISTS credit_reservations (
     id          INTEGER PRIMARY KEY,
     group_name  TEXT NOT NULL,        -- the spend pool's quota group (D41)
@@ -1095,6 +1105,40 @@ class Ledger:
 
     def set_kv(self, key, value):
         self.con.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)", (key, value))
+
+    def record_lesson_exposure(self, project, account, run_id, safe):
+        """The run's safe launch inventory: [{name, hash}]. Idempotent."""
+        now = iso(self.now())
+        for l in safe or ():
+            self.con.execute(
+                "INSERT OR IGNORE INTO lesson_usage VALUES (?,?,?,?,?,'exposed',?)",
+                (project, account, l["name"], l["hash"], run_id, now))
+
+    def record_lesson_citations(self, project, account, run_id, names):
+        """Bind reported names to this run's exposed inventory; only those
+        become `cited` rows. -> (recorded names, ignored count). Idempotent."""
+        exposed = {r["lesson"]: r["content_hash"] for r in self.con.execute(
+            "SELECT lesson, content_hash FROM lesson_usage WHERE project=? AND account=? "
+            "AND run_id=? AND kind='exposed'", (project, account, run_id))}
+        now, done, ignored = iso(self.now()), [], 0
+        for name in dict.fromkeys(names or ()):
+            if name not in exposed:
+                ignored += 1
+                continue
+            self.con.execute(
+                "INSERT OR IGNORE INTO lesson_usage VALUES (?,?,?,?,?,'cited',?)",
+                (project, account, name, exposed[name], run_id, now))
+            done.append(name)
+        return done, ignored
+
+    def lesson_usage_stats(self, project, account, kind="cited"):
+        """{lesson: {"count": distinct runs, "last_used": max recorded_at}} for
+        one project+account only, ordered by lesson name."""
+        rows = self.con.execute(
+            "SELECT lesson, COUNT(DISTINCT run_id) n, MAX(recorded_at) last FROM lesson_usage "
+            "WHERE project=? AND account=? AND kind=? GROUP BY lesson ORDER BY lesson",
+            (project, account, kind))
+        return {r["lesson"]: {"count": r["n"], "last_used": r["last"]} for r in rows}
 
     def paused(self):
         return self.get_kv("paused") == "1"

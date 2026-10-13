@@ -859,3 +859,12 @@ class LessonRecipeTests(unittest.TestCase):
                 "at most one lesson per issue",
             ):
                 self.assertIn(fragment, text, f"{recipe}: {fragment}")
+
+
+class LessonReportRecipeTests(unittest.TestCase):
+    def test_build_and_fix_describe_optional_lessons_line(self):
+        common = dict(number=1, repo="e/p", title="t", worktree="/tmp/w", rules="r",
+                      sizing="", scope_rules="", verify="v", base="main", whats_new="")
+        for role in ("build", "fix"):
+            text = prompt.render(role, **common)
+            self.assertIn("`LESSONS: lesson-<name>, lesson-<name>`", text)
