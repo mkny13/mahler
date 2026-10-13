@@ -4900,6 +4900,36 @@ class DependencyPRTests(unittest.TestCase):
         self.assertIn('com.google.devtools.ksp', got['dependencies'])
         self.assertIn('org.robolectric:robolectric', got['dependencies'])
 
+    # Frozen from hockey-draft-copilot#92: per-package lines only, no table.
+    HOCKEY_92 = (
+        'Bumps the non-major group with 1 update in the / directory: [ws](https://github.com/websockets/ws).\n\n'
+        'Updates `ws` from 8.21.3 to 8.22.0\n<details>\n<summary>Release notes</summary>\n'
+        '<p><em>Sourced from <a href="https://github.com/websockets/ws/releases">ws\'s releases</a>.</em></p>\n'
+        '<blockquote>\n<h2>8.22.0</h2>\n</blockquote>\n</details>\n'
+        '<details>\n<summary>Commits</summary>\n<ul>\n'
+        '<li>See full diff in <a href="https://github.com/websockets/ws/compare/8.21.3...8.22.0">compare view</a></li>\n'
+        '</ul>\n</details>\n<br />')
+    # Frozen from mental-jukebox#24: pip range bump; the body has no version evidence.
+    MENTAL_JUKEBOX_24 = (
+        'Updates the requirements on [flask](https://github.com/pallets/flask) to permit the latest version.\n'
+        '<details>\n<summary>Release notes</summary>\n'
+        '<p><em>Sourced from <a href="https://github.com/pallets/flask/releases">flask\'s releases</a>.</em></p>\n'
+        '<blockquote>\n<h2>3.1.3</h2>\n</blockquote>\n</details>\n'
+        '<details>\n<summary>Commits</summary>\n<ul>\n'
+        '<li>Additional commits viewable in <a href="https://github.com/pallets/flask/compare/3.0.0...3.1.3">compare view</a></li>\n'
+        '</ul>\n</details>\n<br />')
+
+    def test_real_hockey_92_body(self):
+        self.assertEqual(self.update(self.HOCKEY_92),
+                         {'classification': 'minor', 'dependencies': ['ws']})
+        self.assertEqual(self.update(self.HOCKEY_92.replace('to 8.22.0', 'to 9.0.0'))['classification'], 'major')
+
+    def test_real_mental_jukebox_24_body(self):
+        title = 'Update flask requirement from <4,>=3.0 to >=3.1.3,<4'
+        got = ship._dependency_update(dict(self.views[10], body=self.MENTAL_JUKEBOX_24, title=title))
+        self.assertEqual(got, {'classification': 'minor', 'dependencies': ['flask']})
+        self.assertIsNone(self.update(self.MENTAL_JUKEBOX_24))
+
     def test_grouped_major_enters_tracked_item_path(self):
         self.views[10]['body'] = self.GROUPED_TABLE
         self.run_pass()
