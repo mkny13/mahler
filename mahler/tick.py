@@ -100,14 +100,17 @@ def _lessons_inventory(ctx, p, now):
     try:
         pol = ctx.policy(p["name"])
         base = pol.get("base") or "main"
-        rows = []
-        for acct in config.accounts_of(pol):
-            stats = ctx.led.lesson_usage_stats(p["name"], acct)
-            rows = lessons.inventory(
-                p["name"], lessons.read_base(pol["path"], f"origin/{base}"), stats,
-                now.date().isoformat())
-            if rows:
-                break
+        # Archiving changes the shared repo, so a cite on any authorized
+        # account must reset the clock. Keep each ledger query project-scoped.
+        stats = {}
+        for acct in dict.fromkeys(config.accounts_of(pol)):
+            for name, usage in ctx.led.lesson_usage_stats(p["name"], acct).items():
+                total = stats.setdefault(name, {"count": 0, "last_used": ""})
+                total["count"] += usage["count"]
+                total["last_used"] = max(total["last_used"], usage["last_used"])
+        rows = lessons.inventory(
+            p["name"], lessons.read_base(pol["path"], f"origin/{base}"), stats,
+            now.date().isoformat())
     except Exception as e:
         return f"\n\nLesson inventory unavailable ({type(e).__name__}); inspect the repo directly."
     if not rows:
