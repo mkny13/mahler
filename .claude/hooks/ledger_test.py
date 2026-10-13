@@ -13,12 +13,25 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__
 TARGET = os.path.join("mahler", "ledger.py")
 
 
-def edited_ledger(data):
+def edited_root(data):
+    """Return the checkout root whose mahler/ledger.py was edited, else None.
+
+    CLAUDE_PROJECT_DIR (and so this file's location) can point at the original
+    checkout after the session enters a task worktree, so find the root from the
+    edited file itself, not from where the hook lives.
+    """
     path = (data.get("tool_input") or {}).get("file_path") or ""
     if not path:
-        return False
+        return None
     full = os.path.realpath(os.path.join(data.get("cwd") or ROOT, path))
-    return full == os.path.realpath(os.path.join(ROOT, TARGET))
+    if os.path.basename(full) != "ledger.py":
+        return None
+    root = os.path.dirname(os.path.dirname(full))
+    if os.path.dirname(full) != os.path.join(root, "mahler"):
+        return None
+    if not os.path.isdir(os.path.join(root, "tests")):
+        return None
+    return root
 
 
 def main():
@@ -26,11 +39,12 @@ def main():
         data = json.load(sys.stdin)
         if data.get("tool_name") not in ("Edit", "Write", "MultiEdit"):
             return
-        if not edited_ledger(data):
+        root = edited_root(data)
+        if not root:
             return
         r = subprocess.run(
             [sys.executable, "-m", "unittest", "tests.test_ledger"],
-            cwd=ROOT, capture_output=True, text=True, timeout=120)
+            cwd=root, capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
             out = (r.stdout + r.stderr).strip()
             # Exit-0 JSON is what Claude Code feeds back to the model;
