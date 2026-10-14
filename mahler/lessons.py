@@ -367,19 +367,11 @@ def durable_key(project, mahler_id):
 def _new_events(evs, prior):
     """Events not counted when the proposal closed. Identity-based when the
     prior records `closed_events` (refs); aged-out events can't mask new ones.
-    Falls back to the count difference for records without refs."""
+    Without refs, count current events as new because a historical count cannot
+    identify which current events were already counted."""
     if prior.get("closed_events") is not None:
         return len(set(evs) - set(prior["closed_events"]))
-    return len(evs) - prior.get("closed_event_count", 0)
-
-
-def _new_events(evs, prior):
-    """Events not counted when the proposal closed. Identity-based when the
-    prior records `closed_events` (refs), so aged-out events can't mask new
-    ones; else the count difference."""
-    if prior.get("closed_events") is not None:
-        return len(set(evs) - set(prior["closed_events"]))
-    return len(evs) - prior.get("closed_event_count", 0)
+    return len(evs)
 
 
 def gate_proposals(project, events, today, existing=None, gated=()):
@@ -390,7 +382,9 @@ def gate_proposals(project, events, today, existing=None, gated=()):
     events across >=2 distinct issues. `existing`: {key: {"open": bool,
     "closed_event_count": events counted when it closed,
     optional "closed_events": their refs, preferred}}; an open proposal is
-    reused, a closed one re-files only after 3 new events. `gated`: mahler-ids
+    reused, a closed one re-files only after 3 new events. Without refs, current
+    events are treated as new because the historical count cannot identify
+    them. `gated`: mahler-ids
     that already name an adequate shipped gate -> never proposed.
     -> [{"key", "id", "events", "issues", "reuse": bool}] sorted by key."""
     today, existing, per = _day(today), existing or {}, {}
