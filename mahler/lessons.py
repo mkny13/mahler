@@ -87,17 +87,17 @@ def _frontmatter(text):
     return fm, body
 
 
-def scan(dirname, files):
+def scan(dirname, files, project):
     """Check one lesson given as {relative filename: bytes}.
     -> (info or None, findings). `findings` is a list of (rule, redacted
     evidence); empty means safe. Never raises."""
     try:
-        return _scan(dirname, files)
+        return _scan(dirname, files, project)
     except Exception as e:          # fail closed (D44)
         return None, [("scanner-error", redact.redact(str(e))[:120])]
 
 
-def _scan(dirname, files):
+def _scan(dirname, files, project):
     out = []
     if set(files) != {"SKILL.md"}:
         extra = sorted(set(files) - {"SKILL.md"})
@@ -126,6 +126,11 @@ def _scan(dirname, files):
                    if not meta.get(k)]
         if missing:
             out.append(("schema", "metadata missing: " + ", ".join(missing)))
+        # Preserve sentence punctuation; normalize case and whitespace only.
+        trigger = re.split(r"(?<=[.!?])\s+", " ".join(desc.lower().split()), maxsplit=1)[0]
+        expected_id = hashlib.sha256((project + "\n" + trigger).encode("utf-8")).hexdigest()[:16]
+        if meta.get("mahler-id") and meta["mahler-id"] != expected_id:
+            out.append(("schema", "metadata.mahler-id does not match project and description trigger"))
         for k in ("created", "updated"):
             if meta.get(k) and not DATE_RE.match(meta[k]):
                 out.append(("schema", f"metadata.{k} must be an ISO date"))
@@ -249,7 +254,7 @@ def _suppress_roots(wt):
     return False
 
 
-def load(repo, wt, ref):
+def load(repo, wt, ref, project):
     """Prepare lessons for a launch in worktree `wt`. Never raises.
 
     -> {"safe": [{name, description, path, hash}], "rejected":
@@ -257,7 +262,7 @@ def load(repo, wt, ref):
     never returned, only redacted evidence."""
     res = {"safe": [], "rejected": [], "diagnostics": []}
     try:
-        base = {n: (scan(n, f), digest(f)) for n, f in read_base(repo, ref).items()}
+        base = {n: (scan(n, f, project), digest(f)) for n, f in read_base(repo, ref).items()}
         if _suppress_roots(wt):
             res["rejected"].append({"name": SKILLS_DIR, "rule": "symlink",
                                     "evidence": "skills root is a symlink; removed"})
@@ -398,7 +403,7 @@ def inventory(project, lessons, stats, today, limit=50):
     lesson_usage_stats(project, account). Unsafe lessons are skipped."""
     rows = []
     for name in sorted(lessons):
-        info, findings = scan(name, lessons[name])
+        info, findings = scan(name, lessons[name], project)
         if findings or not info:
             continue
         meta = _frontmatter(lessons[name]["SKILL.md"].decode("utf-8"))[0]["metadata"]

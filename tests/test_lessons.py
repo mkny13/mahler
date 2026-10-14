@@ -1,5 +1,6 @@
 """Repo lesson candidates: scan, suppression, catalog and isolation (DESIGN D44)."""
 
+import hashlib
 import os
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ import unittest
 from mahler import lessons
 
 GOOD = ("---\nname: lesson-a\ndescription: Use when the build fails on X.\n"
-        "metadata:\n  mahler-id: abc\n  created: 2026-10-01\n  updated: 2026-10-02\n  source: \"#12\"\n---\nRun the formatter first.\n")
+        "metadata:\n  mahler-id: 58d1fc1f8ac8de24\n  created: 2026-10-01\n  updated: 2026-10-02\n  source: \"#12\"\n---\nRun the formatter first.\n")
 
 
 def sh(cwd, *args):
@@ -29,7 +30,7 @@ class ScanTests(unittest.TestCase):
     def check(self, text, dirname="lesson-a", extra=None):
         files = {"SKILL.md": text.encode()}
         files.update(extra or {})
-        return lessons.scan(dirname, files)
+        return lessons.scan(dirname, files, "p")
 
     def rules(self, *a, **k):
         return {r for r, _ in self.check(*a, **k)[1]}
@@ -38,6 +39,20 @@ class ScanTests(unittest.TestCase):
         info, f = self.check(GOOD)
         self.assertEqual(f, [])
         self.assertEqual(info["name"], "lesson-a")
+
+    def test_identity_derivation(self):
+        expected = hashlib.sha256(b"p\nuse when the build fails on x.").hexdigest()[:16]
+        self.assertIn(f"mahler-id: {expected}", GOOD)
+        for description in ("Use when the build fails on X.",
+                            "USE  when   the build fails on X. More detail."):
+            text = GOOD.replace("Use when the build fails on X.", description)
+            self.assertEqual(self.check(text)[1], [])
+        for wrong in ("abc", "0" * 16,
+                      hashlib.sha256(b"other\nuse when the build fails on x.").hexdigest()[:16]):
+            with self.subTest(wrong=wrong):
+                info, findings = self.check(GOOD.replace(expected, wrong))
+                self.assertIsNone(info)
+                self.assertIn("schema", {rule for rule, _ in findings})
 
     def test_malformed_frontmatter(self):
         self.assertEqual(self.rules("no frontmatter"), {"schema"})
@@ -83,7 +98,7 @@ class ScanTests(unittest.TestCase):
         self.assertNotIn("supersecretvalue1234", repr(f))
 
     def test_scanner_exception_fails_closed(self):
-        info, f = lessons.scan("lesson-a", {"SKILL.md": "not bytes"})
+        info, f = lessons.scan("lesson-a", {"SKILL.md": "not bytes"}, "p")
         self.assertIsNone(info)
         self.assertEqual(f[0][0], "scanner-error")
 
@@ -139,7 +154,7 @@ class LoadTests(RepoFixture):
     def test_valid_lesson_discoverable_and_files_kept(self):
         repo = self.make_repo(self.root, {"lesson-a": GOOD})
         wt = self.worktree(self.root, repo)
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
         self.assertTrue(os.path.exists(os.path.join(wt, ".agents/skills/lesson-a/SKILL.md")))
         self.assertEqual(res["rejected"], [])
@@ -159,7 +174,7 @@ class LoadTests(RepoFixture):
         sh(repo, "git", "commit", "-qm", "more")
         sh(repo, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
         wt = self.worktree(self.root, repo)
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
         for n in ("lesson-bad", "lesson-mal", "lesson-rm", "lesson-inj", "lesson-trav"):
             self.assertFalse(os.path.exists(os.path.join(wt, ".agents/skills", n)), n)
@@ -173,7 +188,7 @@ class LoadTests(RepoFixture):
         wt = self.worktree(self.root, repo)
         put(wt, "lesson-a", GOOD + "extra line\n")
         put(wt, "lesson-new", GOOD.replace("lesson-a", "lesson-new"))
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         self.assertEqual(res["safe"], [])
         self.assertEqual({r["name"] for r in res["rejected"]}, {"lesson-a", "lesson-new"})
         self.assertFalse(os.path.exists(os.path.join(wt, ".agents/skills/lesson-new")))
@@ -185,7 +200,7 @@ class LoadTests(RepoFixture):
         os.makedirs(outside)
         wt = self.worktree(self.root, repo)
         os.symlink(outside, os.path.join(wt, ".agents/skills/lesson-link"))
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
         self.assertFalse(os.path.lexists(os.path.join(wt, ".agents/skills/lesson-link")))
         self.assertTrue(os.path.isdir(outside))
@@ -199,7 +214,7 @@ class LoadTests(RepoFixture):
         root = os.path.join(wt, ".agents/skills")
         shutil.rmtree(root)
         os.symlink(os.path.join(shared, ".agents/skills"), root)
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         self.assertEqual(res["safe"], [])
         self.assertFalse(os.path.lexists(root))
         self.assertTrue(any(r["rule"] == "symlink" for r in res["rejected"]))
@@ -208,7 +223,7 @@ class LoadTests(RepoFixture):
         repo = self.make_repo(self.root, {"lesson-a": GOOD,
                                           "lesson-b": GOOD.replace("lesson-a", "lesson-a")})
         wt = self.worktree(self.root, repo)
-        res = lessons.load(repo, wt, "origin/main")
+        res = lessons.load(repo, wt, "origin/main", "p")
         # lesson-b's frontmatter names lesson-a: a name/directory mismatch
         self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
         self.assertEqual([r["name"] for r in res["rejected"]], ["lesson-b"])
@@ -216,7 +231,7 @@ class LoadTests(RepoFixture):
     def test_scanner_failure_loads_nothing_and_does_not_raise(self):
         repo = self.make_repo(self.root, {"lesson-a": GOOD})
         wt = self.worktree(self.root, repo)
-        res = lessons.load(repo, wt, "origin/does-not-exist")
+        res = lessons.load(repo, wt, "origin/does-not-exist", "p")
         self.assertEqual(res["safe"], [])
         self.assertFalse(os.path.exists(os.path.join(wt, ".agents/skills/lesson-a")))
         self.assertTrue(res["diagnostics"])
@@ -230,13 +245,13 @@ class LoadTests(RepoFixture):
         os.makedirs(sub)
         b = self.make_repo(sub, {"lesson-b": GOOD.replace("lesson-a", "lesson-b")})
         wtb = self.worktree(sub, b, "wtb")
-        ra, rb = lessons.load(a, wta, "origin/main"), lessons.load(b, wtb, "origin/main")
+        ra, rb = lessons.load(a, wta, "origin/main", "p"), lessons.load(b, wtb, "origin/main", "p")
         self.assertEqual([l["name"] for l in ra["safe"]], ["lesson-a"])
         self.assertEqual([l["name"] for l in rb["safe"]], ["lesson-b"])
         self.assertFalse(os.path.exists(os.path.join(wta, ".agents/skills/lesson-b")))
 
 
-def _lesson(created, updated, mid="abc"):
+def _lesson(created, updated, mid="2480b89809ac262b"):
     return {"SKILL.md": (f"---\nname: lesson-a\ndescription: Use when X.\nmetadata:\n  mahler-id: {mid}\n"
                          f"  created: {created}\n  updated: {updated}\n  source: \"#1\"\n---\nbody\n").encode()}
 
@@ -262,7 +277,7 @@ class CurationTests(unittest.TestCase):
         rows = lessons.inventory("p", {"lesson-a": _lesson("2026-09-01", "2026-09-01")},
                                  led_stats, self.TODAY)
         self.assertEqual(rows[0]["state"], "archive-eligible")
-        self.assertEqual(rows[0]["gate_key"], "lesson-gate:p:abc")
+        self.assertEqual(rows[0]["gate_key"], "lesson-gate:p:2480b89809ac262b")
         self.assertEqual(rows[0]["path"], ".agents/skills/lesson-a")
 
     def test_inventory_skips_unsafe(self):

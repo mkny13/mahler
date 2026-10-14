@@ -288,7 +288,7 @@ def prepare(ctx, project, item, role, platform, run_id):
             start = f"origin/{base}"
     # D44: lessons are scanned against the base ref; whatever the worktree
     # holds that isn't byte-identical to a scan-passed base lesson is removed.
-    lessons = lessons_mod.load(repo, wt, f"origin/{base}")
+    lessons = lessons_mod.load(repo, wt, f"origin/{base}", project)
     for line in lessons["diagnostics"]:
         getattr(ctx, "say", print)(f"{project}#{item['number']}: {line}")
     if lessons.get("fatal"):

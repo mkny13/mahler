@@ -114,7 +114,7 @@ a reusable, non-obvious step that is not task-specific and not already enforced 
 First search `.agents/skills/lesson-*` (and the lessons catalog above, if any) for the same
 trigger and patch that file, bumping `metadata.updated`; create `.agents/skills/lesson-<name>/SKILL.md`
 (frontmatter `name` equal to the directory, `description` saying when to use it, and a
-`metadata:` block with `mahler-id`, `created`, `updated` (ISO dates) and `source` (issue/PR
+`metadata:` block with `mahler-id` (`sha256(project + "\n" + trigger)[:16]` hex, where `project` is this repo's configured project name and `trigger` is the lowercased, whitespace-collapsed first sentence of `description`), `created`, `updated` (ISO dates) and `source` (issue/PR
 numbers); short body)
 only if none applies. Touch at most one lesson per issue, never the archive, scanner or `.mahler/`
 files, validate it (name/directory match, description ≤1024 chars, no extra files, no URLs or
