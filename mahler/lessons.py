@@ -335,6 +335,7 @@ def catalog(kind, lessons):
 
 # ---- curation (D44 clocks; D20 `lessons` pass) ------------------------------
 ARCHIVE_DIR = ".agents/skills-archive"
+SNAPSHOTS_DIR = f"{ARCHIVE_DIR}/_snapshots"
 STALE_DAYS, ARCHIVE_DAYS = 14, 30
 PROMOTE_EVENTS, PROMOTE_ISSUES, PROMOTE_WINDOW_DAYS = 3, 2, 90
 ACTIVE, STALE, ARCHIVE_ELIGIBLE = "active", "stale", "archive-eligible"
@@ -427,3 +428,63 @@ def inventory(project, lessons, stats, today, limit=50):
                      "gate_key": durable_key(project, meta["mahler-id"]),
                      "path": f"{SKILLS_DIR}/{name}"})
     return rows[:limit]
+
+
+# ---- consolidation snapshots (D44) -------------------------------------------
+def snapshot_lesson(root, ts, name, files):
+    """Write `files` ({rel: bytes}) verbatim to `<SNAPSHOTS_DIR>/<ts>/<name>/`."""
+    base = os.path.join(root, SNAPSHOTS_DIR, ts, name)
+    for rel, data in files.items():
+        dest = os.path.join(base, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(data)
+    return base
+
+
+def read_snapshots(root):
+    """{ts: {name: {rel: bytes}}} for every snapshot under `root`."""
+    out = {}
+    top = os.path.join(root, SNAPSHOTS_DIR)
+    if not os.path.isdir(top):
+        return out
+    for ts in sorted(os.listdir(top)):
+        tdir = os.path.join(top, ts)
+        if not os.path.isdir(tdir):
+            continue
+        for name in sorted(os.listdir(tdir)):
+            d = os.path.join(tdir, name)
+            files = out.setdefault(ts, {}).setdefault(name, {})
+            for dp, _dns, fns in os.walk(d):
+                for n in fns:
+                    p = os.path.join(dp, n)
+                    if not os.path.islink(p):
+                        with open(p, "rb") as fh:
+                            files[os.path.relpath(p, d)] = fh.read()
+    return out
+
+
+def check_consolidation(base, head, snapshots, archived=None):
+    """Reject a consolidation lacking a verbatim snapshot of each affected lesson.
+
+    base/head: {name: {rel: bytes}} lessons at the base ref and in the PR.
+    snapshots: {ts: {name: {rel: bytes}}}. archived: names moved intact to
+    ARCHIVE_DIR/<name> (a plain archive is not a consolidation). A lesson is
+    affected when it is in base and is missing or different in head. One
+    snapshot dir must hold every affected lesson, byte-identical to base.
+    Returns a list of problems; empty means accepted."""
+    archived = archived or {}
+    affected = sorted(n for n, f in base.items()
+                      if head.get(n) != f and archived.get(n) != f)
+    if not affected:
+        return []
+    problems = []
+    for ts in sorted(snapshots):
+        snap = snapshots[ts]
+        bad = [n for n in affected if snap.get(n) != base[n]]
+        if not bad:
+            return []
+        problems.append(f"snapshot {ts}: missing or not verbatim: {', '.join(bad)}")
+    if not snapshots:
+        problems.append(f"no snapshot under {SNAPSHOTS_DIR}/<ts>/ for: {', '.join(affected)}")
+    return problems
