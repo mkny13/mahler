@@ -37,6 +37,6 @@ The single skipped test is the same in all runs and is not one of the tests cite
 
 Audit-document checks: exactly three criterion rows; every cited test identifier was looked up by `def` in `tests/`, and every GitHub URL and PR/issue number was read through `gh`.
 
-## Remaining step
+## Parent-issue reconciliation
 
-After this merges, one `<!-- mahler:agent -->` evidence comment is posted on #705, checking criteria 1 and 2 and replacing criterion 3 with the checked #718/#741 supersession disposition. That edit happens outside this branch and no other #705 text or labels change.
+On 2026-10-14, #705 was updated without changing other body text or labels: criteria 1 and 2 were checked, criterion 3 was replaced with the checked #718/#741 supersession disposition, and one `<!-- mahler:agent -->` evidence comment was posted. The parent issue now records the completed evidence rather than deferring reconciliation until after merge.
