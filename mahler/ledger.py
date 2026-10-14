@@ -1541,9 +1541,12 @@ class Ledger:
             args = (project,)
         return self.q(sql, args)
 
-    def last_run(self, project, number, roles=None):
+    def last_run(self, project, number, roles=None, exclude_run_id=None):
         sql = "SELECT * FROM runs WHERE project=? AND number=?"
         args = [project, number]
+        if exclude_run_id is not None:
+            sql += " AND id<>?"
+            args.append(exclude_run_id)
         if roles is not None:
             sql += " AND role IN (" + ",".join("?" for _ in roles) + ")"
             args.extend(roles)

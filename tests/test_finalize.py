@@ -467,6 +467,63 @@ class RunTests(unittest.TestCase):
         self.run.update(id=run_id, epoch=epoch, role=role)
         self.led.set_state("x", 5, "working", "test run")
 
+    def blocked_done(self, reason, check=None):
+        with open(self.log, "w") as stream:
+            stream.write("STATUS: BLOCKED " + reason + "\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        return ping
+
+    def test_blocked_stop_gate_text_parks_without_attempt_or_escalation(self):
+        reason = "a beta must be cut after #609 merges"
+        self.led.upsert_item("x", 5, issue_body=f"stop with `STATUS: BLOCKED {reason}`")
+        self.gh.pr_view = lambda n: {"state": "OPEN"}
+        ping = self.blocked_done(reason)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual((item["attempts"], item["esc_tier"]), (0, 0))
+        ping.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv("blocked:x#5"))["checkable"])
+
+    def test_blocked_repeat_parks_but_different_reason_retries(self):
+        self.blocked_done("waiting for the upstream thing")
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 1)
+        self.next_no_work_run()
+        self.led.update_run(self.run_id, base_ref="b")
+        self.blocked_done("waiting for something else")
+        self.assertNotEqual(self.led.item("x", 5)["state"], "parked")
+        self.next_no_work_run()
+        ping = self.blocked_done("waiting for something else")
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual(item["attempts"], 2)   # the repeat was not charged
+        ping.assert_called_once()
+
+    def test_blocked_condition_met_goes_ready_and_recheck_resumes(self):
+        reason = "needs PR #609 merged"
+        self.led.upsert_item("x", 5, issue_body=reason)
+        self.gh.pr_view = lambda n: {"state": "OPEN"}
+        self.blocked_done(reason)
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.gh.pr_view = lambda n: {"state": "MERGED", "mergedAt": "2026-10-12T00:00:00Z"}
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_blocked_condition_already_met_moves_straight_to_ready(self):
+        reason = "needs PR #609 merged"
+        self.led.upsert_item("x", 5, issue_body=reason)
+        self.gh.pr_view = lambda n: {"state": "MERGED", "mergedAt": "2026-10-12T00:00:00Z"}
+        self.blocked_done(reason)
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
     def test_no_change_done_review_pass_closes_without_pr_or_attempt_charge(self):
         self.no_work_done(explanation="src.py:10 satisfies acceptance; unit tests pass")
         record = no_change.read(self.led, "x", 5)

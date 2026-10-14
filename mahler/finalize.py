@@ -60,6 +60,8 @@ class Ending:
         self.stale = False          # lease revoked or replaced: leave the item alone
         self.after_commit = []
         self.verify_green = False
+        self.blocked_external = False   # prepared before the write lock
+        self.blocked_check = (None, "")
         self.duration_mins = None
         started_at = row_get(run, "started_at")
         if started_at:
@@ -127,6 +129,110 @@ def _access_blocked(e):
         return True
     e.rest = question
     return _needs_you(e)
+
+
+# ---------- BLOCKED on an external precondition ----------
+
+def _norm(text):
+    return " ".join((text or "").lower().split())
+
+
+def _blocked_is_external(e):
+    """A build/fix BLOCKED that names a gate outside the code: its reason is
+    the stop-gate text the issue itself prescribes, or repeats the previous
+    build/fix run's BLOCKED reason on the same base (mahler#1080)."""
+    reason = _norm(e.rest)
+    if not reason:
+        return False
+    if reason in _norm(e.item["issue_body"] if e.item is not None else ""):
+        return True
+    prev = e.led.last_run(e.project, e.number, roles=("build", "fix"),
+                          exclude_run_id=e.run["id"])
+    return bool(prev and _norm(row_get(prev, "outcome")) == _norm(e.outcome)
+                and (row_get(prev, "base_ref") or None) == (row_get(e.run, "base_ref") or None))
+
+
+_PR_REF = re.compile(r"(?:\bPRs?\s*)?#(\d+)")
+_BRANCH_REF = re.compile(r"\bbranch\s+[`'\"]?([\w][\w./-]*)", re.IGNORECASE)
+_RELEASE_WORD = re.compile(r"\b(?:tag|release|beta)\b", re.IGNORECASE)
+
+
+def _check_blocked_condition(ctx, project, number, reason):
+    """-> (met, detail). met is None when the reason names nothing checkable,
+    True/False when every named condition holds / one does not (or the check
+    could not be made)."""
+    reason = reason or ""
+    prs = [int(n) for n in _PR_REF.findall(reason) if int(n) != number]
+    branches = [b for b in _BRANCH_REF.findall(reason) if b.lower() not in ("exists", "must")]
+    want_release = bool(_RELEASE_WORD.search(reason))
+    if not (prs or branches or want_release):
+        return None, "no checkable condition"
+    gh = ctx.gh(project)
+    try:
+        merged_at = None
+        for pr in prs:
+            view = gh.pr_view(pr)
+            if view.get("state") != "MERGED":
+                return False, f"PR #{pr} is not merged"
+            merged_at = max(merged_at or "", view.get("mergedAt") or "") or None
+        for branch in branches:
+            gh.branch_sha(branch)
+        if want_release:
+            rel = gh.latest_release()
+            if not rel:
+                return False, "no release or tag exists yet"
+            if merged_at and (rel.get("publishedAt") or "") <= merged_at:
+                return False, "no release newer than the merged PR yet"
+    except (GHError, ValueError, KeyError) as exc:
+        return False, f"condition not confirmable: {exc}"
+    return True, "named condition is met"
+
+
+def _ended_blocked_external(e):
+    """Park without charging an attempt or escalating tiers. A condition that
+    is already met means the block is stale: back to ready."""
+    met, detail = e.blocked_check
+    key = f"blocked:{e.project}#{e.number}"
+    if met:
+        e.led.set_kv(key, None)
+        e.set_state("ready", f"blocked condition met ({detail})")
+        return True
+    previous = json.loads(e.led.get_kv(key) or "{}")
+    record = {"reason": e.rest, "since": previous.get("since") or iso(e.led.now()),
+              "checkable": met is not None}
+    e.led.set_kv(key, json.dumps(record))
+    e.set_state("parked", f"blocked on an external precondition: {e.rest}")
+    if previous.get("reason") != e.rest:
+        e.ping(f"Blocked — {e.project} #{e.number}",
+               f"{e.rest} (waiting; /mahler go resumes)", priority="low")
+    return True
+
+
+def recheck_blocked(ctx, projects):
+    """Tick pass: move parked items back to ready once the checkable
+    condition in their BLOCKED reason is met."""
+    if ctx.dry_run:
+        return
+    led = ctx.led
+    for pol in projects:
+        project = pol["name"]
+        for item in led.items(project, ["parked"]):
+            n = item["number"]
+            key = f"blocked:{project}#{n}"
+            try:
+                record = json.loads(led.get_kv(key) or "null")
+                if not record or not record.get("checkable"):
+                    continue
+                met, detail = _check_blocked_condition(ctx, project, n, record["reason"])
+                if met:
+                    with led._tx():
+                        cur = led.item(project, n)
+                        if cur["state"] == "parked" and led.get_kv(key):
+                            led.set_kv(key, None)
+                            led.set_state(project, n, "ready",
+                                          f"blocked condition met ({detail})")
+            except Exception as exc:            # noqa: BLE001 — never break the tick
+                ctx.say(f"{project}#{n}: blocked recheck failed: {type(exc).__name__}")
 
 
 def _sorted_ready(e):
@@ -572,6 +678,8 @@ ENDINGS = (
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
+    (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
+     and e.blocked_external, _ended_blocked_external),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
      _ended_unconfirmed),
@@ -929,6 +1037,11 @@ def finalize(ctx, run):
                 and (item["pr"] or not no_change.read(led, project, n))):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review", "design"):
+            if (verb == "BLOCKED" and run["role"] in ("build", "fix") and rest
+                    and not _ACCESS_BLOCKER.search(rest)):
+                ending.blocked_external = _blocked_is_external(ending)
+                if ending.blocked_external:
+                    ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed and not log.get("gateway_failed"):
                 ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item)
