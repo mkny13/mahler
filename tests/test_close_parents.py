@@ -41,6 +41,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.side_effect = lambda n: self.states.update({n: "CLOSED"})
         self.gh.parent_issue_inventory.return_value = self.remote
         self.gh.sub_issues.return_value = []
+        self.gh._parent_pages.return_value = []
         self.gh.closing_prs.return_value = [{"number": 99, "state": "MERGED"}]
         self.gh.pr_merge_info.return_value = {"state": "MERGED"}
         self.led.upsert_item("mahler", 10, state="parent")
@@ -134,7 +135,10 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.run_pass()
                 self.gh.edit_issue_body.assert_not_called()
                 self.gh.close_issue.assert_not_called()
-                self.gh.create_issue.assert_not_called()
+                if condition == "unmerged":
+                    self.gh.create_issue.assert_called_once()
+                else:
+                    self.gh.create_issue.assert_not_called()
 
     def test_ticks_preserve_other_sections_quotes_and_fences(self):
         self.bodies[10] = ("## Context\n- [ ] #11 closed\n## Done when\n"
@@ -310,22 +314,67 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertIn("closed without confirmed merged PR", self.comments[10][0]["body"])
 
-    def test_not_planned_child_does_not_block_parent(self):
+    def test_closed_unmerged_child_feeds_parent_verify(self):
+        self.bodies[10] = self.FREE
         self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
         self.gh.closing_prs.return_value = []
-        self.gh.issue_close_reason.side_effect = lambda n: "NOT_PLANNED"
-        self.led.upsert_item("mahler", 11, state="done", pr=None)
         self.run_pass()
-        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        body = self.gh.create_issue.call_args.args[1]
+        self.assertIn("#11: closed without confirmed merged PR evidence", body)
+        self.assertIn("supersession", body)
+        self.gh.close_issue.assert_not_called()
 
-    def test_closed_verify_item_does_not_block_parent(self):
-        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
-        self.gh.closing_prs.return_value = []
-        self.gh.issue_close_reason.side_effect = lambda n: "COMPLETED"
-        self.add_remote(11, state="closed")
-        self.led.upsert_item("mahler", 11, state="done", pr=None)
-        self.run_pass()
-        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+    def test_verify_item_with_part_of_does_not_block_parent(self):
+        for state in ("open", "closed"):
+            for marked in (False, True):
+                with self.subTest(state=state, marked=marked):
+                    self.setUp()
+                    body = "Part of #10"
+                    if marked:
+                        body += "\n<!-- mahler:parent-verify:10:abc -->"
+                    self.add_remote(31, state=state, body=body, label=not marked,
+                                    title="changed title" if marked else None)
+                    self.led.upsert_item("mahler", 31, parent=10, state="done")
+                    self.run_pass()
+                    self.gh.close_issue.assert_called_once_with(10)
+                    self.assertNotIn(mock.call(31), self.gh.closing_prs.call_args_list)
+
+    def test_newly_merged_pr_reopens_diagnostic_parent_verify(self):
+        for target in (10, 76):
+            with self.subTest(target=target):
+                self.setUp()
+                self.bodies[10] = self.FREE
+                self.add_remote(43, state="closed")
+                self.run_pass()
+                self.remote[-1]["state"] = "closed"
+                self.comments[30] = [{"body": "Follow-up fix #76, prior PR #77"}]
+                self.remote.append({"number": 76, "body": "Fix", "state": "closed"})
+                self.run_pass()  # diagnostic
+                # Exercise migration of the old permanent diagnostic flag.
+                diag_key = self.led.q("SELECT key FROM kv WHERE key LIKE 'parent_verify_diag:%'")[0]["key"]
+                self.led.set_kv(diag_key, "1")
+                for comment in self.comments[10]:
+                    if "parent-verify-diagnostic" in comment["body"]:
+                        comment["created_at"] = iso(NOW)
+                self.run_pass()  # no new evidence
+                self.assertEqual(self.gh.create_issue.call_count, 1)
+                event = {"event": "cross-referenced", "source": {"issue": {
+                    "number": 78, "pull_request": {},
+                    "repository_url": "https://api.github.com/repos/mkny13/mahler"}}}
+                event["source"]["issue"]["pull_request"] = {"url": "pr"}
+                self.gh._parent_pages.side_effect = lambda endpoint: (
+                    [event] if endpoint == f"repos/mkny13/mahler/issues/{target}/timeline?" else [])
+                self.gh.pr_merge_info.return_value = {
+                    "state": "MERGED", "mergedAt": iso(NOW + timedelta(hours=1))}
+                self.run_pass()
+                self.assertEqual(self.gh.create_issue.call_count, 2)
+                self.assertIn("PR #78", self.gh.create_issue.call_args.args[1])
+                self.run_pass()  # reuse open verification
+                self.remote[-1]["state"] = "closed"
+                self.run_pass()  # the same merge cannot create a chain
+                self.assertEqual(self.gh.create_issue.call_count, 2)
 
     def test_supported_list_syntax_and_cross_repository_unknown(self):
         body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
