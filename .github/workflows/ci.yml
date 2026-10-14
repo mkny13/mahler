@@ -9,10 +9,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m mahler.repo_guard
+      - name: Lesson consolidation gate
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || echo "$BASE_SHA" | grep -qE '^0+$'; then
+            echo "no base ref for this event; skipping"; exit 0
+          fi
+          python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"
       - run: python -m unittest discover -s tests -v
       - run: python tests/run_random.py
       - run: python -X dev tests/run_strict.py
