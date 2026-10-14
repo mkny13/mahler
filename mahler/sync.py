@@ -770,8 +770,13 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
     diag_key = f"parent_verify_diag:{project}:{number}:{fingerprint}"
     diag_marker = f"<!-- mahler:parent-verify-diagnostic:{fingerprint} -->"
     diagnosed = led.get_kv(diag_key)
+    new_diagnostic = not diagnosed
+    if new_diagnostic:
+        # A fix may merge after the final attempt closed but before the
+        # diagnostic is recorded: look back to that closure, not to now().
+        diagnosed = follow.get("closed_at") or follow.get("closedAt")
     if diagnosed:
-        legacy_diagnostic = diagnosed == "1"
+        legacy_diagnostic = not new_diagnostic and diagnosed == "1"
         # Old diagnostics stored only "1"; recover their actual timestamp from
         # GitHub.  They have no merge watermark, so the migration must inspect
         # all linked merges once: a fix can land after the last verification
@@ -816,7 +821,9 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                        f"Re-verify parent #{number}, read prior verification results, and "
                        "record evidence or a concrete actionable question on the parent." + tail)
             led.set_kv(diag_key, max(merges.values(), key=parse))
-        return
+            return
+        if not new_diagnostic:
+            return
     first = next((r for r in matches if r is not follow), prior)
     text = (f"Verification attempts #{first['number']} and #{follow['number']} both closed while "
             f"parent #{number} still lists unresolved criteria:\n" +
@@ -826,7 +833,7 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
         gh.comment(number, f"{AGENT_MARK}\n{diag_marker}\n{text}")
     ctx.ping(f"{project}#{number}: verification closed without resolving criteria",
              text, project, number)
-    led.set_kv(diag_key, iso(led.now()))
+    led.set_kv(diag_key, diagnosed or iso(led.now()))
 
 
 def close_finished_parents(ctx, projects):
