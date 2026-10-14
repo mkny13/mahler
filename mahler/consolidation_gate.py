@@ -40,15 +40,26 @@ def _nest(flat, depth):
     return out
 
 
+def _snapshots(archive):
+    flat = {k[len("_snapshots/"):]: v for k, v in archive.items()
+            if k.startswith("_snapshots/")}
+    return _nest(flat, 2)
+
+
 def run(repo, base_ref, head_ref):
     base = lessons.read_base(repo, base_ref)
     head = lessons.read_base(repo, head_ref)
-    arch = _tree(repo, head_ref, lessons.ARCHIVE_DIR)
-    snaps = _nest({k[len("_snapshots/"):]: v for k, v in arch.items()
-                   if k.startswith("_snapshots/")}, 2)
-    archived = _nest({k: v for k, v in arch.items()
+    base_archive = _tree(repo, base_ref, lessons.ARCHIVE_DIR)
+    head_archive = _tree(repo, head_ref, lessons.ARCHIVE_DIR)
+    base_snapshots = _snapshots(base_archive)
+    head_snapshots = _snapshots(head_archive)
+    new_or_changed_snapshots = {
+        ts: files for ts, files in head_snapshots.items()
+        if base_snapshots.get(ts) != files
+    }
+    archived = _nest({k: v for k, v in head_archive.items()
                       if not k.startswith("_snapshots/")}, 1)
-    return lessons.check_consolidation(base, head, snaps, archived)
+    return lessons.check_consolidation(base, head, new_or_changed_snapshots, archived)
 
 
 def main(argv=None):

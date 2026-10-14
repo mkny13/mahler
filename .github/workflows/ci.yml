@@ -18,10 +18,10 @@ jobs:
       - name: Lesson consolidation gate
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after }}
         run: |
-          if [ -z "$BASE_SHA" ] || echo "$BASE_SHA" | grep -qE '^0+$'; then
-            echo "no base ref for this event; skipping"; exit 0
+          if echo "$BASE_SHA" | grep -qE '^0+$'; then
+            BASE_SHA="$(git hash-object -t tree /dev/null)"
           fi
           python -m mahler.consolidation_gate --base "$BASE_SHA" --head "$HEAD_SHA"
       - run: python -m unittest discover -s tests -v
