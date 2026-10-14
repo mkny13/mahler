@@ -425,6 +425,14 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.assertIn("PR #78", self.gh.create_issue.call_args.args[1])
         self.assertFalse(any("parent-verify-diagnostic" in c["body"]
                              for c in self.comments.get(10, [])))
+        # The merge-triggered retry closes unresolved with no further merge:
+        # the diagnostic must still be posted once.
+        self.remote[-1]["state"] = "closed"
+        self.remote[-1]["closed_at"] = "2026-10-14T10:00:00Z"
+        for _ in range(3):
+            self.run_pass()
+        diag = [c for c in self.comments.get(10, []) if "parent-verify-diagnostic" in c["body"]]
+        self.assertEqual(len(diag), 1)
 
     def test_supported_list_syntax_and_cross_repository_unknown(self):
         body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
