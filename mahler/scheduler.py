@@ -18,6 +18,7 @@ from . import backup, capacity, config, digest, failures, janitor, notify, platf
 from .console import outbox
 from .gh import project_client, GHError
 from .ledger import iso
+from .finalize import recheck_blocked
 from .ship import ship
 from .sync import close_finished_parents, mirror_labels, sync
 from .tick import expire, queue_maintenance, schedule
@@ -114,6 +115,7 @@ def tick(ctx):
             _sync_access_result(ctx, p)
     failures.backfill(ctx, projects)
     expire(ctx)
+    recheck_blocked(ctx, projects)
     close_finished_parents(ctx, projects)
     if ctx.led.paused():
         ctx.say("paused — not starting anything (mahler resume)")
