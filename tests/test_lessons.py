@@ -310,11 +310,30 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(lessons.gate_proposals("p", ok, self.TODAY, gated={"abc"}), [])
 
     def test_closed_proposal_needs_three_new_events(self):
-        events = [self.ev(i, i) for i in range(5)]
-        closed = {"lesson-gate:p:abc": {"open": False, "closed_event_count": 3}}
+        old = [self.ev(i, i) for i in range(3)]
+        new = [self.ev(i, i) for i in range(10, 13)]
+        events = old + new[:2]
+        closed = {"lesson-gate:p:abc": {
+            "open": False, "closed_event_count": 3,
+            "closed_events": [e["event"] for e in old],
+        }}
         self.assertEqual(lessons.gate_proposals("p", events, self.TODAY, existing=closed), [])
-        closed["lesson-gate:p:abc"]["closed_event_count"] = 2
-        self.assertEqual(len(lessons.gate_proposals("p", events, self.TODAY, existing=closed)), 1)
+        self.assertEqual(len(lessons.gate_proposals(
+            "p", old + new, self.TODAY, existing=closed)), 1)
+
+    def test_closed_count_only_record_allows_replacement_events(self):
+        replacements = [self.ev(i, i) for i in range(10, 13)]
+        closed = {"lesson-gate:p:abc": {"open": False, "closed_event_count": 3}}
+        self.assertEqual(
+            len(lessons.gate_proposals("p", replacements, self.TODAY, existing=closed)), 1)
+
+    def test_closed_proposal_identity_survives_aging_out(self):
+        old = [self.ev(i, i) for i in range(3)]
+        new = [self.ev(i, i) for i in range(10, 13)]
+        closed = {"lesson-gate:p:abc": {"open": False, "closed_event_count": 3,
+                                        "closed_events": [e["event"] for e in old]}}
+        self.assertEqual(len(lessons.gate_proposals("p", new, self.TODAY, existing=closed)), 1)
+        self.assertEqual(lessons.gate_proposals("p", old + new[:2], self.TODAY, existing=closed), [])
 
 
 if __name__ == "__main__":
