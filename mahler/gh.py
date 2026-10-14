@@ -253,6 +253,11 @@ class GH:
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
 
+    def issue_close_reason(self, number):
+        """GitHub stateReason of an issue: COMPLETED | NOT_PLANNED | DUPLICATE | ''."""
+        out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "stateReason")
+        return (json.loads(out).get("stateReason") or "").upper()
+
     def _parent_pages(self, endpoint):
         """Bounded, exhaustive REST reads; truncation is never an empty relation."""
         rows = []

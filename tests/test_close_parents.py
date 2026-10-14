@@ -310,6 +310,23 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertIn("closed without confirmed merged PR", self.comments[10][0]["body"])
 
+    def test_not_planned_child_does_not_block_parent(self):
+        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+        self.gh.closing_prs.return_value = []
+        self.gh.issue_close_reason.side_effect = lambda n: "NOT_PLANNED"
+        self.led.upsert_item("mahler", 11, state="done", pr=None)
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
+    def test_closed_verify_item_does_not_block_parent(self):
+        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+        self.gh.closing_prs.return_value = []
+        self.gh.issue_close_reason.side_effect = lambda n: "COMPLETED"
+        self.add_remote(11, state="closed")
+        self.led.upsert_item("mahler", 11, state="done", pr=None)
+        self.run_pass()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+
     def test_supported_list_syntax_and_cross_repository_unknown(self):
         body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
         body += "- mkny13/mahler#15 child\n- https://github.com/mkny13/mahler/issues/16 child"

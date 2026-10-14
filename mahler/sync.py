@@ -856,6 +856,12 @@ def _close_finished_parents_project(ctx, project):
                     completed.add(child)
                     evidence.append(f"#{child}: merged " + ", ".join(
                         f"PR #{pr['number']}" for pr in prs))
+                elif (gh.issue_close_reason(child) in {"NOT_PLANNED", "DUPLICATE"}
+                      or any(r["number"] == child and any(
+                          (l.get("name") if isinstance(l, dict) else l) == "pass:verify"
+                          for l in r.get("labels") or []) for r in inventory)):
+                    # Dropped or Mahler's own verify item: nothing to ship, never a blocker.
+                    evidence.append(f"#{child}: closed without a PR (not planned or verify item)")
                 else:
                     blockers.append(f"#{child}: closed without confirmed merged PR evidence")
             lines = body.splitlines(keepends=True)
