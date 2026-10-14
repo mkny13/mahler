@@ -702,7 +702,7 @@ def _verify_refresh(gh, row, number, blockers, fingerprint):
 
 
 def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comments=()):
-    """Give free-text criteria one verification owner per parent.
+    """Give unresolved criteria and child evidence one verifier per parent.
 
     Reuse any open item for the parent (updating its blocker section). If only
     closed ones remain and the same blockers stand, file one linked follow-up;
@@ -742,7 +742,9 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                f"Parent #{number} has completed children but still needs evidence for:\n" +
                "\n".join(f"- {b}" for b in blockers) +
                "\n\n## Plan\nCollect and record evidence for each criterion on the parent. "
-               "Tick only criteria supported by that evidence; identify any owner-only decision."
+               "Investigate closed unmerged children for supersession and record the successor and "
+               "its merge evidence. Tick only criteria supported by that evidence; "
+               "identify any owner-only decision."
                + tail)
         return
     # Only closed verification items remain.
@@ -767,18 +769,64 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
     led.set_kv(follow_key, follow.get("html_url") or "1")
     diag_key = f"parent_verify_diag:{project}:{number}:{fingerprint}"
     diag_marker = f"<!-- mahler:parent-verify-diagnostic:{fingerprint} -->"
-    if led.get_kv(diag_key):
+    diagnosed = led.get_kv(diag_key)
+    if diagnosed:
+        legacy_diagnostic = diagnosed == "1"
+        # Old diagnostics stored only "1"; recover their actual timestamp from
+        # GitHub.  They have no merge watermark, so the migration must inspect
+        # all linked merges once: a fix can land after the last verification
+        # attempt but just before the conductor posts its diagnostic comment.
+        if legacy_diagnostic:
+            diagnosed = next((c.get("created_at") or c.get("createdAt") for c in comments
+                              if diag_marker in c.get("body", "") and
+                              (c.get("created_at") or c.get("createdAt"))), iso(led.now()))
+            led.set_kv(diag_key, diagnosed)
+        targets = {number} | {r["number"] for r in matches}
+        texts = [c.get("body", "") for c in comments]
+        for row in matches:
+            texts.append(row.get("body") or "")
+            texts.extend(c.get("body", "") for c in gh.issue_comments(row["number"]))
+        # Follow-up fixes are often named in the verification result, rather
+        # than recorded as children. Only resolve local issue references.
+        for text in texts:
+            targets.update(int(m[1]) for m in re.finditer(r"(?<![\w/])#(\d+)\b", text))
+        # The inventory contains issues only: a prose PR reference must not
+        # become an issue lookup (GitHub uses the same number space).
+        targets.intersection_update({number} | {r["number"] for r in inventory})
+        merges = {}
+        for target in sorted(targets):
+            prs = list(gh.closing_prs(target))
+            for event in gh._parent_pages(f"repos/{policy['repo']}/issues/{target}/timeline?"):
+                source = (event.get("source") or {}).get("issue") or {}
+                if (event.get("event") == "cross-referenced" and source.get("pull_request")
+                        and source.get("repository_url", "").lower() ==
+                        f"https://api.github.com/repos/{policy['repo']}".lower()):
+                    prs.append(dict(gh.pr_merge_info(source["number"]), number=source["number"]))
+            for pr in prs:
+                if (pr_merged(pr) and pr.get("mergedAt") and
+                        (legacy_diagnostic or parse(pr["mergedAt"]) > parse(diagnosed))):
+                    merges[pr["number"]] = pr["mergedAt"]
+        if merges:
+            evidence = ", ".join(f"PR #{n}" for n in sorted(merges))
+            retry_marker = f"<!-- mahler:parent-verify-merge:{number}:{fingerprint}:" + ",".join(
+                str(n) for n in sorted(merges)) + " -->"
+            if not any(retry_marker in (r.get("body") or "") for r in matches):
+                create(f"{_verify_managed(number, blockers, fingerprint)}\n{retry_marker}\n\n"
+                       f"## Plan\nNew merge evidence after the diagnostic: {evidence}. "
+                       f"Re-verify parent #{number}, read prior verification results, and "
+                       "record evidence or a concrete actionable question on the parent." + tail)
+            led.set_kv(diag_key, max(merges.values(), key=parse))
         return
     first = next((r for r in matches if r is not follow), prior)
     text = (f"Verification attempts #{first['number']} and #{follow['number']} both closed while "
             f"parent #{number} still lists unresolved criteria:\n" +
             "\n".join(f"- {b}" for b in blockers) +
-            "\nNo further follow-up will be filed for these criteria; they need attention.")
+            "\nFurther verification waits for new linked merge evidence; these criteria need attention.")
     if not any(diag_marker in c.get("body", "") for c in comments):
         gh.comment(number, f"{AGENT_MARK}\n{diag_marker}\n{text}")
     ctx.ping(f"{project}#{number}: verification closed without resolving criteria",
              text, project, number)
-    led.set_kv(diag_key, "1")
+    led.set_kv(diag_key, iso(led.now()))
 
 
 def close_finished_parents(ctx, projects):
@@ -818,6 +866,7 @@ def _close_finished_parents_project(ctx, project):
                             if part_of("\n".join(line for section, line in
                                        _parent_sections(it.get("body") or "")
                                        if section not in {"original request", "context", "dependencies"})) == n)
+            children.difference_update(r["number"] for r in _verify_matches(inventory, n))
             children.discard(n)
             # A goal may be built directly after planning. Its type alone does
             # not make it a tracker; explicit markers still permit recovery.
@@ -830,14 +879,17 @@ def _close_finished_parents_project(ctx, project):
             checks = _parent_checks(body)
             blockers = []
             evidence, waiting, completed = [], False, set()
+            verifiable = bool(children)
             if not children:
                 blockers.append("No child relationships found")
             for child in sorted(children):
                 child_state = gh.issue_state(child)
                 if child_state == "OPEN":
+                    verifiable = False
                     waiting = True
                     continue
                 if child_state != "CLOSED":
+                    verifiable = False
                     blockers.append(f"#{child}: unknown issue state")
                     continue
                 if led.get_kv(f"parent_complete:{project}:{child}"):
@@ -873,9 +925,6 @@ def _close_finished_parents_project(ctx, project):
                         led.set_kv(f"parent_tick:{project}:{n}#{child}", "1")
                     body = gh.issue_body(n)
             checklist_blockers = _parent_checklist(body)
-            free_text_only = bool(checklist_blockers) and not blockers and all(
-                child is None for _, check, child in _parent_checks(body) if check[1] == " "
-            )
             blockers = checklist_blockers + blockers
             if waiting:
                 continue
@@ -888,7 +937,7 @@ def _close_finished_parents_project(ctx, project):
                 notify_key = f"parent_blocked:{project}:{n}:{fingerprint}"
                 ctx.say(f"{project}#{n}: {explanation}")
                 if not ctx.dry_run:
-                    if free_text_only:
+                    if verifiable:
                         _parent_verify(ctx, project, n, blockers, fingerprint, inventory, comments)
                     if not any(marker in c.get("body", "") for c in comments):
                         gh.comment(n, f"{AGENT_MARK}\n{marker}\n{explanation}")
