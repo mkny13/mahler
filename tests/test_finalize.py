@@ -74,6 +74,28 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def test_review_fail_with_incomplete_convergence_keeps_blocker(self):
+        finding = dict(severity="blocking", category="spec", location="app.py:50",
+                       scenario="Query is not cleared", consequence="Search returns no results",
+                       done_when="- [ ] all checks pass")
+        self.run["role"] = "review"
+        self.led.update_run(self.run_id, role="review")
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_kv("review:x#5", json.dumps({
+            "run_id": self.run_id, "pr": 88, "sha": self.gh.head}))
+        payload = {"findings": [{**finding, "convergence": {"relation": "unresolved"}}]}
+        Path(self.log).write_text("STATUS: REVIEW-FAIL " + json.dumps(payload) + "\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        result = json.loads(self.led.get_kv("review:x#5"))
+        self.assertEqual(result["verdict"], "fail")
+        self.assertEqual(result["classified"], [finding])
+        self.assertIn("Query is not cleared", result["findings"])
+        self.assertIsNone(self.led.get_kv("reviewinconclusive:x#5:" + self.gh.head))
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        self.assertEqual(history[0]["classified"], [finding])
+
     def ci_retry_fixture(self):
         self.run["role"] = "fix"
         self.led.update_run(self.run_id, role="fix")
