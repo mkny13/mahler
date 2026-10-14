@@ -154,7 +154,8 @@ def _blocked_is_external(e):
 
 _PR_REF = re.compile(r"(?:\bPRs?\s*)?#(\d+)")
 _BRANCH_REF = re.compile(r"\bbranch\s+[`'\"]?([\w][\w./-]*)", re.IGNORECASE)
-_RELEASE_WORD = re.compile(r"\b(?:tag|release|beta)\b", re.IGNORECASE)
+_TAG_REF = re.compile(r"\btag\s+[`'\"]?([\w][\w./-]*)", re.IGNORECASE)
+_RELEASE_WORD = re.compile(r"\b(?:release|beta)\b", re.IGNORECASE)
 
 
 def _check_blocked_condition(ctx, project, number, reason):
@@ -164,8 +165,12 @@ def _check_blocked_condition(ctx, project, number, reason):
     reason = reason or ""
     prs = [int(n) for n in _PR_REF.findall(reason) if int(n) != number]
     branches = [b for b in _BRANCH_REF.findall(reason) if b.lower() not in ("exists", "must")]
-    want_release = bool(_RELEASE_WORD.search(reason))
-    if not (prs or branches or want_release):
+    tags = [t for t in _TAG_REF.findall(reason)
+            if t.lower() not in ("exists", "must", "is", "has", "needs", "should")]
+    # A tag name can itself contain "release" or "beta". Only prose outside
+    # the named tag can request a separate GitHub Release.
+    want_release = bool(_RELEASE_WORD.search(_TAG_REF.sub("", reason)))
+    if not (prs or branches or tags or want_release):
         return None, "no checkable condition"
     gh = ctx.gh(project)
     try:
@@ -177,6 +182,9 @@ def _check_blocked_condition(ctx, project, number, reason):
             merged_at = max(merged_at or "", view.get("mergedAt") or "") or None
         for branch in branches:
             gh.branch_sha(branch)
+        for tag in tags:
+            if not gh.get_tag_sha(tag):
+                return False, f"tag {tag} does not exist yet"
         if want_release:
             rel = gh.latest_release()
             if not rel:

@@ -524,6 +524,45 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "ready")
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
 
+    def test_blocked_named_tag_waits_for_exact_tag_then_resumes(self):
+        reason = "tag v1.2.3 must exist"
+        self.led.upsert_item("x", 5, issue_body=reason)
+        self.gh.get_tag_sha = mock.Mock(return_value=None)
+        self.gh.latest_release = mock.Mock(return_value={"tagName": "v1.2.2"})
+        self.blocked_done(reason)
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+            self.assertEqual(self.led.item("x", 5)["state"], "parked")
+            self.gh.get_tag_sha.return_value = "a" * 40
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.assertIsNone(self.led.get_kv("blocked:x#5"))
+        self.assertEqual(self.gh.get_tag_sha.call_args_list, [mock.call("v1.2.3")] * 3)
+        self.gh.latest_release.assert_not_called()
+
+    def test_blocked_existing_tag_needs_no_github_release(self):
+        self.gh.get_tag_sha = mock.Mock(return_value="a" * 40)
+        self.gh.latest_release = mock.Mock(return_value=None)
+        for tag in ("v1.2.3", "v1.2.3-beta.1", "release/v1.2.3"):
+            for quote in ("", "`", "'", '"'):
+                with self.subTest(tag=tag, quote=quote), \
+                        mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                    met, _ = finalize._check_blocked_condition(
+                        self.ctx, "x", 5, f"tag {quote}{tag}{quote} must exist")
+                    self.assertTrue(met)
+                    self.gh.get_tag_sha.assert_called_with(tag)
+        self.gh.latest_release.assert_not_called()
+
+    def test_blocked_tag_lookup_error_stays_parked(self):
+        reason = "tag v1.2.3 must exist"
+        self.led.upsert_item("x", 5, issue_body=reason)
+        self.gh.get_tag_sha = mock.Mock(side_effect=gh_module.GHError("unavailable"))
+        self.blocked_done(reason)
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
     def test_no_change_done_review_pass_closes_without_pr_or_attempt_charge(self):
         self.no_work_done(explanation="src.py:10 satisfies acceptance; unit tests pass")
         record = no_change.read(self.led, "x", 5)
