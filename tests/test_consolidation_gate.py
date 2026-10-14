@@ -119,6 +119,59 @@ class GateTest(unittest.TestCase):
         result = gate(self.r, self.base, self.base)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_new_lesson_passes(self):
+        put(self.r, f"{SK}/lesson-b/SKILL.md", "new lesson\n")
+        self.commit("add lesson")
+        result = gate(self.r, self.base, self.rev())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_changed_archive_requires_snapshot(self):
+        archive = ".agents/skills-archive/lesson-a/SKILL.md"
+        git(self.r, "rm", "-rq", f"{SK}/lesson-a")
+        put(self.r, archive, "altered archive\n")
+        self.commit("archive with changed bytes")
+        result = gate(self.r, self.base, self.rev())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("snapshot", result.stderr)
+
+    def test_untracked_snapshot_cannot_supply_evidence(self):
+        put(self.r, f"{SK}/lesson-a/SKILL.md", "new\n")
+        self.commit("rewrite without snapshot")
+        head = self.rev()
+        put(self.r, f"{SNAP}/t1/lesson-a/SKILL.md", "old\n")
+        result = gate(self.r, self.base, head)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("snapshot", result.stderr)
+
+    def test_dirty_snapshot_cannot_supply_evidence(self):
+        snapshot = f"{SNAP}/t1/lesson-a/SKILL.md"
+        put(self.r, f"{SK}/lesson-a/SKILL.md", "new\n")
+        put(self.r, snapshot, "incorrect committed bytes\n")
+        self.commit("rewrite with invalid snapshot")
+        head = self.rev()
+        put(self.r, snapshot, "old\n")
+        result = gate(self.r, self.base, head)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("snapshot", result.stderr)
+
+    def test_committed_symlink_snapshot_cannot_supply_evidence(self):
+        put(self.r, f"{SK}/lesson-a/SKILL.md", "new\n")
+        put(self.r, "evidence/SKILL.md", "old\n")
+        snapshot = os.path.join(self.r, SNAP, "t1/lesson-a/SKILL.md")
+        os.makedirs(os.path.dirname(snapshot))
+        target = os.path.relpath(os.path.join(self.r, "evidence/SKILL.md"),
+                                 os.path.dirname(snapshot))
+        os.symlink(target, snapshot)
+        self.commit("rewrite with linked snapshot")
+        mode = subprocess.run(
+            ["git", "-C", self.r, "ls-tree", "HEAD", "--", snapshot],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()[0]
+        self.assertEqual(mode, "120000")
+        result = gate(self.r, self.base, self.rev())
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("snapshot", result.stderr)
+
     def test_bad_ref_fails_closed(self):
         result = gate(self.r, "nonexistent", self.base)
         self.assertEqual(result.returncode, 2, result.stderr)
