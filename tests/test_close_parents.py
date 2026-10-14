@@ -376,6 +376,34 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.run_pass()  # the same merge cannot create a chain
                 self.assertEqual(self.gh.create_issue.call_count, 2)
 
+    def test_legacy_diagnostic_migration_accepts_merge_before_comment(self):
+        self.bodies[10] = self.FREE
+        self.add_remote(43, state="closed")
+        self.run_pass()
+        self.remote[-1]["state"] = "closed"
+        self.comments[30] = [{"body": "Follow-up fix #76"}]
+        self.remote.append({"number": 76, "body": "Fix", "state": "closed"})
+        self.run_pass()  # diagnostic
+        diag_key = self.led.q(
+            "SELECT key FROM kv WHERE key LIKE 'parent_verify_diag:%'")[0]["key"]
+        self.led.set_kv(diag_key, "1")
+        for comment in self.comments[10]:
+            if "parent-verify-diagnostic" in comment["body"]:
+                comment["created_at"] = "2026-10-14T09:36:34Z"
+        event = {"event": "cross-referenced", "source": {"issue": {
+            "number": 78, "pull_request": {"url": "pr"},
+            "repository_url": "https://api.github.com/repos/mkny13/mahler"}}}
+        self.gh._parent_pages.side_effect = lambda endpoint: (
+            [event] if endpoint == "repos/mkny13/mahler/issues/76/timeline?" else [])
+        # PR #1078 merged four minutes before #1054's diagnostic comment.
+        self.gh.pr_merge_info.return_value = {
+            "state": "MERGED", "mergedAt": "2026-10-14T09:32:05Z"}
+        self.run_pass()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+        self.assertIn("PR #78", self.gh.create_issue.call_args.args[1])
+        self.run_pass()
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+
     def test_supported_list_syntax_and_cross_repository_unknown(self):
         body = "## Children\n- #11: child\n1. #12 child\n- 2. #13: child\n- [x] #14 child\n"
         body += "- mkny13/mahler#15 child\n- https://github.com/mkny13/mahler/issues/16 child"

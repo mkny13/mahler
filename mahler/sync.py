@@ -771,9 +771,12 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
     diag_marker = f"<!-- mahler:parent-verify-diagnostic:{fingerprint} -->"
     diagnosed = led.get_kv(diag_key)
     if diagnosed:
+        legacy_diagnostic = diagnosed == "1"
         # Old diagnostics stored only "1"; recover their actual timestamp from
-        # GitHub so fixes merged before this upgrade still trigger verification.
-        if diagnosed == "1":
+        # GitHub.  They have no merge watermark, so the migration must inspect
+        # all linked merges once: a fix can land after the last verification
+        # attempt but just before the conductor posts its diagnostic comment.
+        if legacy_diagnostic:
             diagnosed = next((c.get("created_at") or c.get("createdAt") for c in comments
                               if diag_marker in c.get("body", "") and
                               (c.get("created_at") or c.get("createdAt"))), iso(led.now()))
@@ -800,7 +803,8 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                         f"https://api.github.com/repos/{policy['repo']}".lower()):
                     prs.append(dict(gh.pr_merge_info(source["number"]), number=source["number"]))
             for pr in prs:
-                if pr_merged(pr) and pr.get("mergedAt") and parse(pr["mergedAt"]) > parse(diagnosed):
+                if (pr_merged(pr) and pr.get("mergedAt") and
+                        (legacy_diagnostic or parse(pr["mergedAt"]) > parse(diagnosed))):
                     merges[pr["number"]] = pr["mergedAt"]
         if merges:
             evidence = ", ".join(f"PR #{n}" for n in sorted(merges))
