@@ -37,7 +37,7 @@ Selectors are fully qualified and run as `python3 -m unittest <selector>`.
 | Snapshot before consolidation | **DEFECT** | Validator `lessons.check_consolidation` (+ `snapshot_lesson`, `read_snapshots`) is correct: `tests.test_lessons.ConsolidationSnapshotTests.test_no_snapshot_rejected`, `...test_missing_affected_lesson_rejected`, `...test_non_verbatim_snapshot_rejected`, `...test_complete_verbatim_snapshot_passes`, `...test_untouched_lessons_need_no_snapshot`, `...test_plain_archive_move_is_not_consolidation`, `...test_snapshot_roundtrip_on_disk` all pass individually. But a repo-wide grep finds no caller outside `tests/test_lessons.py`, and `.github/workflows/ci.yml` runs only the four standard gates. So no scanner/PR-check entry point rejects a consolidation lacking a snapshot, which D44 requires (D11). Follow-up: [#1076](https://github.com/mkny13/mahler/issues/1076) (executable integration test required). |
 | Deduplicated D20 proposals | SUPPORTED | `tests.test_lessons.PromotionTests.test_threshold_files_one_proposal_and_rerun_reuses`, `tests.test_lessons.PromotionTests.test_below_threshold_and_single_issue_and_old_and_gated`, `tests.test_lessons.PromotionTests.test_closed_proposal_needs_three_new_events`, `tests.test_lessons.PromotionTests.test_closed_count_only_record_allows_replacement_events`, `tests.test_lessons.PromotionTests.test_closed_proposal_identity_survives_aging_out`. |
 
-Re-verification: the 11 new #1070 selectors above were each run individually at `a874503` and printed `OK`.
+Re-verification: all 40 unique selectors cited above (including the 11 new #1070 selectors) were each run individually at `a874503` and printed `OK` (exit 0).
 
 ## Gates (audited SHA)
 
@@ -50,11 +50,17 @@ Re-verification: the 11 new #1070 selectors above were each run individually at 
 
 ### Gates re-run at `a874503` (#1073)
 
+Review-fix verification on 2026-10-14, Python 3.14.3: checked out the exact
+audited SHA `a874503329db5806579c91f6d964c486b0b25604` in this worktree.
+All four commands below completed with exit 0. The randomized seed and passing
+result were captured from the same run; reproduce with
+`python3 tests/run_random.py 926141357`.
+
 | Command | Result |
 |---|---|
 | `python3 -m mahler.repo_guard` | exit 0 |
 | `python3 -m unittest discover -s tests` | Ran 2854 tests, OK (skipped=1) |
-| `python3 tests/run_random.py` | Ran 2854 tests, OK (skipped=1); the passing run's seed was not captured, a rerun used seed `267982652` |
+| `python3 tests/run_random.py` | seed `926141357`; Ran 2854 tests, OK (skipped=1) |
 | `python3 -X dev tests/run_strict.py` | Ran 2854 tests, OK (skipped=1) |
 
 ## Combined criterion-4 verdict
