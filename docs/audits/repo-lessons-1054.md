@@ -34,7 +34,7 @@ Selectors are fully qualified and run as `python3 -m unittest <selector>`.
 | Snapshot before consolidation | **COVERAGE GAP** | The same test only checks the issue body contains `skills-archive/_snapshots`. D44 says a consolidation without its snapshot fails "the scanner's PR check", but no test asserts such a check or that a snapshot is written. |
 | Deduplicated D20 proposals | SUPPORTED | `tests.test_lessons.PromotionTests.test_threshold_files_one_proposal_and_rerun_reuses`, `tests.test_lessons.PromotionTests.test_below_threshold_and_single_issue_and_old_and_gated`, `tests.test_lessons.PromotionTests.test_closed_proposal_needs_three_new_events`, `tests.test_lessons.PromotionTests.test_closed_count_only_record_allows_replacement_events`, `tests.test_lessons.PromotionTests.test_closed_proposal_identity_survives_aging_out`. |
 
-Every selector listed in this report was run individually at the audited SHA: all 32 printed `OK`.
+Every selector listed in this report was run individually at the audited SHA: all 30 unique fully qualified selectors (31 mentions; `tests.test_lessons.PlatformModeTests.test_nine_kinds` appears twice) printed `OK`.
 
 ## Gates (audited SHA)
 
