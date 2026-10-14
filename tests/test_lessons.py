@@ -1,5 +1,6 @@
 """Repo lesson candidates: scan, suppression, catalog and isolation (DESIGN D44)."""
 
+import ast
 import hashlib
 import os
 import shutil
@@ -334,6 +335,94 @@ class PromotionTests(unittest.TestCase):
                                         "closed_events": [e["event"] for e in old]}}
         self.assertEqual(len(lessons.gate_proposals("p", new, self.TODAY, existing=closed)), 1)
         self.assertEqual(lessons.gate_proposals("p", old + new[:2], self.TODAY, existing=closed), [])
+
+class ConsolidationSnapshotTests(unittest.TestCase):
+    A = {"SKILL.md": GOOD.encode()}
+    B = {"SKILL.md": GOOD.replace("lesson-a", "lesson-b").encode()}
+
+    def setUp(self):
+        self.base = {"lesson-a": self.A, "lesson-b": self.B}
+        self.head = {"lesson-b": {"SKILL.md": b"merged"}}   # a removed, b rewritten
+
+    def test_no_snapshot_rejected(self):
+        self.assertTrue(lessons.check_consolidation(self.base, self.head, {}))
+
+    def test_missing_affected_lesson_rejected(self):
+        snaps = {"20261001T000000Z": {"lesson-a": self.A}}
+        self.assertTrue(lessons.check_consolidation(self.base, self.head, snaps))
+
+    def test_non_verbatim_snapshot_rejected(self):
+        snaps = {"t": {"lesson-a": self.A, "lesson-b": {"SKILL.md": b"edited"}}}
+        self.assertTrue(lessons.check_consolidation(self.base, self.head, snaps))
+
+    def test_complete_verbatim_snapshot_passes(self):
+        snaps = {"t": {"lesson-a": self.A, "lesson-b": self.B}}
+        self.assertEqual(lessons.check_consolidation(self.base, self.head, snaps), [])
+
+    def test_untouched_lessons_need_no_snapshot(self):
+        self.assertEqual(lessons.check_consolidation(self.base, dict(self.base), {}), [])
+
+    def test_plain_archive_move_is_not_consolidation(self):
+        self.assertEqual(lessons.check_consolidation(
+            {"lesson-a": self.A}, {}, {}, archived={"lesson-a": self.A}), [])
+
+    def test_snapshot_roundtrip_on_disk(self):
+        with tempfile.TemporaryDirectory() as root:
+            lessons.snapshot_lesson(root, "t", "lesson-a", self.A)
+            lessons.snapshot_lesson(root, "t", "lesson-b", self.B)
+            snaps = lessons.read_snapshots(root)
+            self.assertTrue(os.path.isdir(os.path.join(root, lessons.SNAPSHOTS_DIR, "t")))
+            self.assertEqual(lessons.check_consolidation(self.base, self.head, snaps), [])
+
+
+class NeverDeletesLessonsTests(unittest.TestCase):
+    DELETERS = {"rmtree", "unlink", "remove", "rmdir", "removedirs"}
+    ALLOWED_IN_LESSONS = {"_suppress", "_suppress_roots"}   # skip-worktree, never staged
+
+    def _calls(self):
+        root = os.path.join(os.path.dirname(lessons.__file__))
+        for dp, _d, fns in os.walk(root):
+            for fn in fns:
+                if not fn.endswith(".py"):
+                    continue
+                path = os.path.join(dp, fn)
+                with open(path, encoding="utf-8") as fh:
+                    src = fh.read()
+                tree = ast.parse(src)
+                for fdef in [n for n in ast.walk(tree)
+                             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))] + [tree]:
+                    for n in ast.walk(fdef):
+                        if isinstance(n, ast.Call):
+                            f = n.func
+                            nm = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+                            recv = getattr(getattr(f, "value", None), "id", "")
+                            if nm in self.DELETERS and (nm != "remove" or recv == "os"):
+                                yield path, getattr(fdef, "name", "<module>"), n, src
+
+    def test_lessons_module_deletes_only_in_worktree_suppression(self):
+        for path, fn, n, _src in self._calls():
+            if os.path.basename(path) == "lessons.py" and fn != "<module>":
+                self.assertIn(fn, self.ALLOWED_IN_LESSONS, f"{path}:{n.lineno}")
+
+    def test_other_modules_with_deletions_never_name_lesson_paths(self):
+        for path, _fn, _n, src in self._calls():
+            if os.path.basename(path) == "lessons.py":
+                continue
+            for needle in (".agents/skills", "SKILLS_DIR", "ARCHIVE_DIR", "SNAPSHOTS_DIR"):
+                self.assertNotIn(needle, src, f"{path} deletes and names {needle}")
+
+    def test_archive_is_a_directory_move_preserving_identity(self):
+        from mahler import tick
+        with open(tick.__file__, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("moving its directory to `.agents/skills-archive/<name>/`", text)
+        self.assertIn("Never delete a lesson", text)
+        self.assertIn("`mahler-id` unchanged", text)
+        self.assertIn(lessons.SNAPSHOTS_DIR + "/<UTC timestamp>/", text)
+
+    def test_suppress_is_the_only_removal_and_leaves_archive_alone(self):
+        self.assertEqual(lessons.SNAPSHOTS_DIR, ".agents/skills-archive/_snapshots")
+        self.assertFalse(lessons.SNAPSHOTS_DIR.startswith(lessons.SKILLS_DIR + "/"))
 
 
 if __name__ == "__main__":
