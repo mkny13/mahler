@@ -364,13 +364,32 @@ def durable_key(project, mahler_id):
     return f"lesson-gate:{project}:{mahler_id}"
 
 
+def _new_events(evs, prior):
+    """Events not counted when the proposal closed. Identity-based when the
+    prior records `closed_events` (refs); aged-out events can't mask new ones.
+    Falls back to the count difference for records without refs."""
+    if prior.get("closed_events") is not None:
+        return len(set(evs) - set(prior["closed_events"]))
+    return len(evs) - prior.get("closed_event_count", 0)
+
+
+def _new_events(evs, prior):
+    """Events not counted when the proposal closed. Identity-based when the
+    prior records `closed_events` (refs), so aged-out events can't mask new
+    ones; else the count difference."""
+    if prior.get("closed_events") is not None:
+        return len(set(evs) - set(prior["closed_events"]))
+    return len(evs) - prior.get("closed_event_count", 0)
+
+
 def gate_proposals(project, events, today, existing=None, gated=()):
     """Lessons meeting D44's promotion threshold.
 
     `events`: [{"id": mahler-id, "event": distinct event ref, "issue": n,
     "date": ISO}]. Counts distinct events in the trailing 90 days; needs >=3
     events across >=2 distinct issues. `existing`: {key: {"open": bool,
-    "closed_event_count": events counted when it closed}}; an open proposal is
+    "closed_event_count": events counted when it closed,
+    optional "closed_events": their refs, preferred}}; an open proposal is
     reused, a closed one re-files only after 3 new events. `gated`: mahler-ids
     that already name an adequate shipped gate -> never proposed.
     -> [{"key", "id", "events", "issues", "reuse": bool}] sorted by key."""
@@ -389,7 +408,7 @@ def gate_proposals(project, events, today, existing=None, gated=()):
         if prior and prior.get("open"):
             out.append({"key": key, "id": mid, "events": sorted(evs),
                         "issues": sorted(set(evs.values())), "reuse": True})
-        elif prior and len(evs) - prior.get("closed_event_count", 0) < PROMOTE_EVENTS:
+        elif prior and _new_events(evs, prior) < PROMOTE_EVENTS:
             continue
         else:
             out.append({"key": key, "id": mid, "events": sorted(evs),

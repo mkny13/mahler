@@ -316,6 +316,14 @@ class PromotionTests(unittest.TestCase):
         closed["lesson-gate:p:abc"]["closed_event_count"] = 2
         self.assertEqual(len(lessons.gate_proposals("p", events, self.TODAY, existing=closed)), 1)
 
+    def test_closed_proposal_identity_survives_aging_out(self):
+        old = [self.ev(i, i) for i in range(3)]
+        new = [self.ev(i, i) for i in range(10, 13)]
+        closed = {"lesson-gate:p:abc": {"open": False, "closed_event_count": 3,
+                                        "closed_events": [e["event"] for e in old]}}
+        self.assertEqual(len(lessons.gate_proposals("p", new, self.TODAY, existing=closed)), 1)
+        self.assertEqual(lessons.gate_proposals("p", old + new[:2], self.TODAY, existing=closed), [])
+
 
 if __name__ == "__main__":
     unittest.main()
