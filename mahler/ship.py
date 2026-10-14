@@ -1396,6 +1396,8 @@ def _review_preference(ctx, project, item, sha, busy=(), *, persist=False):
     led, cfg = ctx.led, ctx.cfg
     pin, size, exclude = _review_route(ctx, project, item, sha)
     route = dict(pin=pin, size=size, exclude=exclude, min_tier=0)
+    if led.get_kv(f"reviewescalate:{project}#{item['number']}:{sha}"):
+        route["min_tier"] = 2     # repeated inconclusive reviews: ask a stronger reviewer
     key = f"review-pin:{project}#{item['number']}:{item['pr']}:{sha}"
     if (not router.risk_min_tier(row_get(item, "title", ""))
             or router.platform_slot(cfg, "claude") in
