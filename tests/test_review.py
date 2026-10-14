@@ -517,23 +517,27 @@ class TestConvergencePayload(unittest.TestCase):
                         acceptance_tests=[dict(test="tests/test_app.py::test_parked", result="pass",
                                                evidence="Current head passes stated case")],
                         outside_tests="New timing not in stated cases")
+        legacy = dict(finding)
         finding["convergence"] = evidence
         self.assertEqual(parse(finding), [finding])
         for key in evidence:
             bad = copy.deepcopy(finding)
             del bad["convergence"][key]
-            with self.subTest(missing=key), self.assertRaises(ValueError):
-                parse(bad)
+            with self.subTest(missing=key):
+                self.assertEqual(parse(bad), [legacy])
         for relation in ("unresolved", "regression", "acceptance-failure"):
             protected = copy.deepcopy(finding)
             protected["convergence"]["relation"] = relation
-            with self.assertRaises(ValueError):
-                parse(protected)
+            self.assertEqual(parse(protected), [legacy])
             protected["convergence"]["defect"] = dict(location="app.py:12",
                 test="tests/test_app.py::test_parked", evidence="First-fix test fails again")
             self.assertEqual(parse(protected), [protected])
         for bad_evidence in (None, [], {}, {**evidence, "relation": "guess"},
                              {**evidence, "acceptance_tests": []},
                              {**evidence, "acceptance_tests": [dict(test="case", result="maybe", evidence="unknown")]}):
-            with self.subTest(evidence=bad_evidence), self.assertRaises(ValueError):
-                parse({**finding, "convergence": bad_evidence})
+            with self.subTest(evidence=bad_evidence):
+                self.assertEqual(parse({**finding, "convergence": bad_evidence}), [legacy])
+        with self.assertRaisesRegex(ValueError, "verdict contradicts"):
+            review.parse("pass", json.dumps({"findings": [{**legacy, "convergence": {}}]}), body)
+        with self.assertRaisesRegex(ValueError, "exact Done-when"):
+            parse({**legacy, "done_when": "unrelated criterion", "convergence": {}})

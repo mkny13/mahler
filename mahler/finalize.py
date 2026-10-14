@@ -320,7 +320,7 @@ def _classified_review(e, verdict, prepared, defer):
         return False  # A late finalization must not overwrite a newer review.
     valid, findings = prepared if prepared is not None else _prepare_review(e, verdict)
     if not valid:
-        _review_inconclusive(e)
+        _review_inconclusive(e, count=False)   # parse-rejected: not the reviewer's failure
         return False
     review.remember(e, info, findings)
     _update_review_kv(e, run_id=e.run["id"], classified=findings)
@@ -377,7 +377,7 @@ def _inconclusive_needs_you(e, question):
            priority="high", tags="question", console=True)
 
 
-def _review_inconclusive(e):
+def _review_inconclusive(e, count=True):
     """No usable verdict (crash, timeout, quota, an unmatched STATUS verb):
     clear any stale kv record so ship.py's gate starts a fresh review run
     next tick, instead of either merging on a verdict never reached or
@@ -406,10 +406,21 @@ def _review_inconclusive(e):
         except ValueError:
             seen = []
         if e.run["id"] not in [r.get("run_id") for r in seen]:
-            seen.append({"run_id": e.run["id"], "platform": e.run["platform"]})
-            e.led.set_kv(key, json.dumps(seen))
+            if count and getattr(e, "reason", None) not in CAPACITY_STOPS:
+                seen.append({"run_id": e.run["id"], "platform": e.run["platform"]})
+                e.led.set_kv(key, json.dumps(seen))
     e.led.set_kv(_review_kv_key(e.project, e.number), None)
-    if len(seen) >= REVIEW_INCONCLUSIVE_CAP:
+    if not count or getattr(e, "reason", None) in CAPACITY_STOPS:
+        # Credit/quota failures and parse-rejected verdicts say nothing about
+        # the PR head; they must not push it toward the cap.
+        e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
+        return True
+    if len(seen) == REVIEW_INCONCLUSIVE_CAP and sha:
+        # Try a stronger reviewer once before parking (ship._review_preference).
+        e.led.set_kv(f"reviewescalate:{e.project}#{e.number}:{sha}", "1")
+        e.set_state("verifying", "reviews ended without a verdict — retrying with a stronger reviewer")
+        return True
+    if len(seen) > REVIEW_INCONCLUSIVE_CAP or (len(seen) >= REVIEW_INCONCLUSIVE_CAP and not sha):
         names = ", ".join(sorted({r["platform"] for r in seen if r.get("platform")}))
         question = (f"{len(seen)} reviews of this PR head ended without a verdict "
                     f"(platforms: {names}). Review it yourself, or re-run it?")

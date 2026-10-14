@@ -134,7 +134,12 @@ def parse(verdict, text, issue_body=""):
                     or f["done_when"] not in criteria):
                 raise ValueError("scope/spec blocker needs an exact Done-when line")
         if "convergence" in f:
-            validate_convergence(f["convergence"])
+            try:
+                validate_convergence(f["convergence"])
+            except ValueError:
+                # Optional attestation cannot erase a concrete blocking finding.
+                # Without valid evidence, normal (non-converged) severity applies.
+                del f["convergence"]
     if (verdict == "fail") != any(f["severity"] == "blocking" for f in findings):
         raise ValueError("verdict contradicts findings")
     return findings

@@ -74,6 +74,28 @@ class RunTests(unittest.TestCase):
                     "log_path": self.log, "status_path": os.path.join(self.tmp, "exit"),
                     "started_at": iso(NOW), "stop_reason": None}
 
+    def test_review_fail_with_incomplete_convergence_keeps_blocker(self):
+        finding = dict(severity="blocking", category="spec", location="app.py:50",
+                       scenario="Query is not cleared", consequence="Search returns no results",
+                       done_when="- [ ] all checks pass")
+        self.run["role"] = "review"
+        self.led.update_run(self.run_id, role="review")
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_kv("review:x#5", json.dumps({
+            "run_id": self.run_id, "pr": 88, "sha": self.gh.head}))
+        payload = {"findings": [{**finding, "convergence": {"relation": "unresolved"}}]}
+        Path(self.log).write_text("STATUS: REVIEW-FAIL " + json.dumps(payload) + "\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        result = json.loads(self.led.get_kv("review:x#5"))
+        self.assertEqual(result["verdict"], "fail")
+        self.assertEqual(result["classified"], [finding])
+        self.assertIn("Query is not cleared", result["findings"])
+        self.assertIsNone(self.led.get_kv("reviewinconclusive:x#5:" + self.gh.head))
+        history = json.loads(self.led.get_kv("reviewfindings:x#5"))
+        self.assertEqual(history[0]["classified"], [finding])
+
     def ci_retry_fixture(self):
         self.run["role"] = "fix"
         self.led.update_run(self.run_id, role="fix")
@@ -2007,13 +2029,14 @@ class ReviewInconclusiveTests(unittest.TestCase):
         led = Ledger(":memory:")
         key = finalize._review_kv_key("x", 5)
         kv = f"reviewinconclusive:x#5:sha1"
-        for rid, expect in ((1, "verifying"), (1, "verifying"), (2, "verifying"), (3, "needs_you")):
+        for rid, expect in ((1, "verifying"), (1, "verifying"), (2, "verifying"), (3, "verifying"), (4, "needs_you")):
             led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
             e, states, pings = self.ending(led, rid)
             finalize._review_inconclusive(e)
             self.assertEqual(states[0][0][0], expect)
             self.assertEqual(bool(pings), expect == "needs_you")
-        self.assertEqual([r["run_id"] for r in json.loads(led.get_kv(kv))], [1, 2, 3])
+        self.assertEqual([r["run_id"] for r in json.loads(led.get_kv(kv))], [1, 2, 3, 4])
+        self.assertEqual(led.get_kv('reviewescalate:x#5:sha1'), '1')
         ctx = mock.Mock(led=led)
         self.assertEqual(ship._kv_json_list(led, kv)[0]["platform"], "kilo")
         self.assertEqual(ship._kv_json_list(led, "reviewinconclusive:x#5:sha2"), [])
@@ -2022,17 +2045,32 @@ class ReviewInconclusiveTests(unittest.TestCase):
         import json
         led = Ledger(":memory:")
         key = finalize._review_kv_key("x", 5)
-        for rid in (1, 2, 3):
+        for rid in (1, 2, 3, 4):
             led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
             e, states, pings = self.ending(led, rid)
             finalize._review_inconclusive(e)
-        # Replay of run 3: the review record is already cleared.
+        # Replay of run 4: the review record is already cleared.
         self.assertIsNone(led.get_kv(key))
-        e, states, pings = self.ending(led, 3)
+        e, states, pings = self.ending(led, 4)
         finalize._review_inconclusive(e)
         self.assertEqual(states[0][0][0], "needs_you")
         self.assertTrue(pings)
-        self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 3)
+        self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 4)
+
+    def test_credit_failures_and_parse_rejects_do_not_count(self):
+        import json
+        led = Ledger(":memory:")
+        key = finalize._review_kv_key("x", 5)
+        for rid in range(1, 6):
+            led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
+            e, states, pings = self.ending(led, rid)
+            if rid % 2:
+                e.reason = "no_credit"
+                finalize._review_inconclusive(e)
+            else:
+                finalize._review_inconclusive(e, count=False)
+            self.assertEqual(states[0][0][0], "verifying")
+        self.assertIsNone(led.get_kv("reviewinconclusive:x#5:sha1"))
 
     def test_route_excludes_platform_only_for_same_sha(self):
         import json
