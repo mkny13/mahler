@@ -822,7 +822,11 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                        "record evidence or a concrete actionable question on the parent." + tail)
             led.set_kv(diag_key, max(merges.values(), key=parse))
             return
-        if not new_diagnostic:
+        # A merge watermark may have been stored before any diagnostic was
+        # posted; if the retry closed unresolved, still emit the diagnostic.
+        if not new_diagnostic and any(diag_marker in c.get("body", "") for c in comments):
+            return
+        if not new_diagnostic and diagnosed == "1":
             return
     first = next((r for r in matches if r is not follow), prior)
     text = (f"Verification attempts #{first['number']} and #{follow['number']} both closed while "
