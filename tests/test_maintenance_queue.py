@@ -577,7 +577,7 @@ class LessonsPassTests(unittest.TestCase):
             self.led.record_lesson_exposure(project, account, run, safe)
             self.led.record_lesson_citations(project, account, run, ["lesson-a"])
         self.led.clock = lambda: NOW
-        fixtures = {"lesson-a": _lesson("2026-07-01", "2026-07-01")}
+        fixtures = {"lesson-a": _lesson("2026-07-01", "2026-07-01", mid="3a46166e70883125")}
         for accounts, state, days, count in (
                 (["personal", "work"], "active", 1, 2),
                 (["work", "personal"], "active", 1, 2),

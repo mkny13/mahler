@@ -824,7 +824,7 @@ class LessonLaunchTests(PrepareAccountEnvTests):
     """D44: prepare() scans and suppresses lessons; prompt carries the catalog
     only for catalog-mode kinds."""
 
-    GOOD = ("---\nname: lesson-a\ndescription: Use when X breaks.\nmetadata:\n  mahler-id: abc\n  created: 2026-10-01\n  updated: 2026-10-02\n  source: \"#1\"\n---\nDo Y.\n")
+    GOOD = ("---\nname: lesson-a\ndescription: Use when X breaks.\nmetadata:\n  mahler-id: 555fcc9256092e5a\n  created: 2026-10-01\n  updated: 2026-10-02\n  source: \"#1\"\n---\nDo Y.\n")
 
     def _seed(self, bad=False):
         d = os.path.join(self.repo, ".agents/skills/lesson-a")
