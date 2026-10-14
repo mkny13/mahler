@@ -879,6 +879,8 @@ def _close_finished_parents_project(ctx, project):
                                        if section not in {"original request", "context", "dependencies"})) == n)
             children.difference_update(r["number"] for r in _verify_matches(inventory, n))
             children.discard(n)
+            reasons = {it["number"]: str(it.get("state_reason") or it.get("stateReason") or "")
+                       .strip().lower().replace(" ", "_") for it in inventory}
             # A goal may be built directly after planning. Its type alone does
             # not make it a tracker; explicit markers still permit recovery.
             if not children and not (
@@ -919,6 +921,10 @@ def _close_finished_parents_project(ctx, project):
                     completed.add(child)
                     evidence.append(f"#{child}: merged " + ", ".join(
                         f"PR #{pr['number']}" for pr in prs))
+                elif reasons.get(child) in {"not_planned", "duplicate"}:
+                    # Disposition removes only the demand for a child merge; it is
+                    # never added to `completed`, so it cannot tick merge criteria.
+                    evidence.append(f"#{child}: closed {reasons[child].replace('_', ' ')} without a PR")
                 else:
                     blockers.append(f"#{child}: closed without confirmed merged PR evidence")
             lines = body.splitlines(keepends=True)

@@ -314,6 +314,42 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertIn("closed without confirmed merged PR", self.comments[10][0]["body"])
 
+    def _unmerged_with_reason(self, reason, body="## Done when\n- [x] Works"):
+        self.bodies[10] = body
+        self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
+        self.gh.closing_prs.return_value = []
+        self.led.upsert_item("mahler", 11, parent=10, state="done", pr=None)
+        self.remote.append({"number": 11, "state": "closed", "state_reason": reason,
+                            "title": "child", "body": "Part of #10"})
+
+    def test_disposition_matrix(self):
+        for reason, resolves in (("not_planned", True), ("duplicate", True),
+                                 ("completed", False), (None, False), ("weird", False)):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self._unmerged_with_reason(reason)
+                self.run_pass()
+                self.assertEqual(self.gh.close_issue.called, resolves)
+                if not resolves:
+                    self.assertIn("closed without confirmed merged PR evidence",
+                                  self.comments[10][0]["body"])
+
+    def test_not_planned_child_705_shape_closes_once_idempotent(self):
+        self._unmerged_with_reason("not_planned")
+        self.run_pass()
+        self.run_pass()
+        self.gh.close_issue.assert_called_once_with(10)
+        self.gh.create_issue.assert_not_called()
+        text = "\n".join(c["body"] for c in self.comments[10])
+        self.assertIn("#11: closed not planned without a PR", text)
+        self.assertNotIn("#11: merged", text)
+
+    def test_not_planned_child_cannot_tick_merge_criterion(self):
+        self._unmerged_with_reason("not_planned", "## Done when\n- [ ] #11 merged")
+        self.run_pass()
+        self.assertNotIn("[x]", self.bodies[10])
+        self.gh.close_issue.assert_not_called()
+
     def test_closed_unmerged_child_feeds_parent_verify(self):
         self.bodies[10] = self.FREE
         self.gh.pr_merge_info.return_value = {"state": "CLOSED"}
