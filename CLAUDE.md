@@ -61,6 +61,18 @@ files, or SQLite state that another test depends on, and no test may touch the r
 `~/.mahler` state — use `Ledger(':memory:')` or temp dirs. Pass the randomized runner's
 printed seed back to `python3 tests/run_random.py <seed>` to reproduce a failure.
 
+## Reuse past evidence
+
+Search earlier run transcripts on the Mac mini with
+`mahler history <project> "<query>" [--limit N]` before repeating an investigation.
+
+After a concrete error recovery or owner/reviewer correction, consider recording one
+reusable, non-obvious lesson under `.agents/skills/lesson-*/SKILL.md`. Never create a
+lesson for routine successful work or to restate a mechanical check. Search existing
+lessons first and patch a match; otherwise follow DESIGN D44's schema and safety rules.
+Touch at most one lesson per issue and commit it in the same branch and PR. Lessons are
+advisory and take effect only after merge.
+
 ## Working on an issue by hand (interactive sessions)
 
 If you're a chat session, not a Mahler run, take part in the lease protocol (DESIGN D6).
