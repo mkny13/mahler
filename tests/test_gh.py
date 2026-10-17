@@ -1,7 +1,8 @@
 import json
+from contextlib import closing
 import unittest
 from unittest.mock import patch, MagicMock
-from mahler.gh import GH, GHError, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
+from mahler.gh import GH, GHError, GHRateLimit, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
 
 class TestGH(unittest.TestCase):
     def setUp(self):
@@ -630,3 +631,74 @@ class TestCommitPRLookup(unittest.TestCase):
         from mahler.gh import GHError
         with patch.object(gh, "_gh", side_effect=GHError("offline")):
             self.assertIsNone(gh.pr_for_commit("a" * 40))
+
+
+class RateLimitTests(unittest.TestCase):
+    def test_header_reset_shared_across_repositories_and_new_contexts(self):
+        from mahler.ledger import Ledger
+        from mahler.scheduler import Ctx
+        from mahler.github_app import Installation
+        with closing(Ledger(":memory:")) as led:
+            first = GH("a/one", app=Installation(1, 2, "/unused", "/unused"))
+            other = GH("a/two", app=Installation(1, 2, "/unused", "/unused"))
+            separate = GH("b/three", app=Installation(1, 3, "/unused", "/unused"))
+            for client in (first, other, separate):
+                client.rate_ledger = led
+                client._env = MagicMock(return_value={})
+            failure = MagicMock(returncode=1, stdout="HTTP/2 403 Forbidden\r\n"
+                                "X-RateLimit-Reset: 2000\r\n\r\n{}",
+                                stderr="gh: API rate limit exceeded (HTTP 403)")
+            with patch("mahler.gh.time.time", return_value=1000), \
+                    patch("mahler.gh.subprocess.run", return_value=failure) as run:
+                with self.assertRaises(GHRateLimit) as error:
+                    first.issue_comments(1)
+                self.assertEqual(error.exception.reset, 2000)
+                with self.assertRaises(GHRateLimit):
+                    other.issue_comments(2)
+                other._env.assert_not_called()
+                self.assertEqual(run.call_count, 1)
+                run.return_value = MagicMock(returncode=0, stdout="[[]]")
+                separate.issue_comments(3)
+                self.assertEqual(run.call_count, 2)
+            with patch("mahler.gh.time.time", return_value=2001), \
+                    patch("mahler.gh._gh", return_value="[[]]") as call:
+                other.issue_comments(2)
+                call.assert_called_once()
+            ctx = Ctx({}, led)
+            for n in range(50):
+                ctx.say(f"item #{n}: evidence lookup failed — {error.exception}")
+            self.assertEqual(ctx.lines, ["GitHub API backoff until 2000.0"])
+
+    def test_headerless_403_queries_reset_once_and_blocks_further_calls(self):
+        client = GH("a/one")
+        failure = MagicMock(returncode=1, stdout="", stderr="API rate limit exceeded (HTTP 403)")
+        quota = MagicMock(returncode=0, stdout=json.dumps({"resources": {
+            "core": {"remaining": 0, "reset": 3000},
+            "graphql": {"remaining": 100, "reset": 4000}}}))
+        with patch("mahler.gh.time.time", return_value=1000), \
+                patch("mahler.gh.subprocess.run", side_effect=[failure, quota]) as run:
+            for _ in range(3):
+                with self.assertRaises(GHRateLimit) as error:
+                    client.issue_comments(1)
+                self.assertEqual(error.exception.reset, 3000)
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args.args[0], ["gh", "api", "rate_limit"])
+
+    def test_failed_reset_lookup_has_conservative_backoff(self):
+        client = GH("a/one")
+        with patch("mahler.gh.time.time", return_value=1000), \
+                patch("mahler.gh._gh", side_effect=[GHRateLimit(), GHError("offline")]) as call:
+            for _ in range(2):
+                with self.assertRaises(GHRateLimit) as error:
+                    client.issue_comments(1)
+                self.assertEqual(error.exception.reset, 4600)
+            self.assertEqual(call.call_count, 2)
+
+    def test_permission_403_is_not_a_rate_limit(self):
+        client = GH("a/one")
+        failure = MagicMock(returncode=1, stdout="", stderr="Resource not accessible (HTTP 403)")
+        with patch("mahler.gh.subprocess.run", return_value=failure) as run:
+            with self.assertRaises(GHError) as error:
+                client.issue_comments(1)
+            self.assertNotIsInstance(error.exception, GHRateLimit)
+            self.assertEqual(run.call_count, 1)

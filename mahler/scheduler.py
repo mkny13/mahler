@@ -55,9 +55,14 @@ class Ctx:
         repo = pol["repo"]
         if repo not in self._gh:
             self._gh[repo] = project_client(self.cfg, pol)
+            self._gh[repo].rate_ledger = self.led
         return self._gh[repo]
 
     def say(self, msg):
+        if "GitHub API backoff until " in msg:
+            msg = "GitHub API backoff until " + msg.split("GitHub API backoff until ", 1)[1]
+            if msg in self.lines:
+                return
         self.lines.append(msg)
 
     def hold(self, kind, **data):

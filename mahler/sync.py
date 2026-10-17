@@ -295,7 +295,25 @@ def reconcile_shipped(ctx, project):
         return
     led = ctx.led
     quiet_budget = QUIET_BATCH
+    # Persist attempts, including failures, so a bad item cannot monopolize the
+    # batch. Quiet-window checks have a separate bounded budget and bypass the
+    # ordinary six-hour cooldown once when the boundary is crossed.
+    candidates, due = [], []
     for item in led.items(project, ["shipped"]):
+        row = led.uat(project, item["number"])
+        key = f"shipped_poll:{project}:{item['number']}"
+        last = parse(led.get_kv(key))
+        merged = parse(row["shipped_at"]) if row else None
+        boundary = merged + timedelta(days=QUIET_DAYS) if merged else None
+        entry = (last or led.now() - timedelta(days=36500), item, key)
+        if boundary and led.now() >= boundary and (last is None or last < boundary):
+            due.append(entry)
+        elif last is None or (merged and last < merged) or led.now() >= last + timedelta(hours=6):
+            candidates.append(entry)
+    selected = (sorted(due, key=lambda e: (e[0], e[1]["number"]))[:QUIET_BATCH]
+                + sorted(candidates, key=lambda e: (e[0], e[1]["number"]))[:5])
+    for _, item, poll_key in selected:
+        led.set_kv(poll_key, iso(led.now()))
         n = item["number"]
         try:
             row = led.uat(project, n)

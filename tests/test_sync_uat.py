@@ -88,6 +88,44 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), mock.patch.object(self.ctx, "ping"):
             sync.sync(self.ctx, "x")
 
+    def test_reconcile_shipped_call_budget_independent_of_shipped_count(self):
+        self.led.set_state("x", 5, "done")
+        self.led.set_kv("depends_format:x", "4")
+        self.gh.issues_changed = mock.Mock(return_value=(False, None))
+        self.gh.open_issues = mock.Mock(side_effect=AssertionError("unchanged"))
+        self.gh.issue_comments = mock.Mock(return_value=[])
+        for n in range(100, 150):
+            self.led.upsert_item("x", n, state="shipped")
+            self.led.add_uat("x", n, None, "sha", "title", "check", shipped_at=iso(NOW))
+        seen = set()
+        for _ in range(10):
+            self.gh.issue_comments.reset_mock()
+            self.sync()
+            calls = [c.args[0] for c in self.gh.issue_comments.call_args_list]
+            self.assertLessEqual(len(calls), 5)
+            self.assertFalse(seen.intersection(calls))
+            seen.update(calls)
+        self.assertEqual(len(seen), 50)
+        self.gh.issue_comments.reset_mock()
+        self.sync()
+        self.gh.issue_comments.assert_not_called()
+        self.led.clock = lambda: NOW + timedelta(hours=6)
+        self.sync()
+        self.assertEqual(self.gh.issue_comments.call_count, 5)
+
+    def test_failed_poll_rotates_without_completing_from_stale_evidence(self):
+        self.led.set_state("x", 5, "shipped")
+        self.led.add_uat("x", 5, 88, "sha", "title", "check",
+                         shipped_at=iso(NOW - timedelta(days=14)))
+        with mock.patch.object(self.gh, "issue_comments", side_effect=gh_module.GHError("offline")) as fetch:
+            self.sync()
+            self.sync()
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(self.led.item("x", 5)["state"], "shipped")
+        self.led.clock = lambda: NOW + timedelta(hours=6)
+        self.sync()
+        self.assertEqual(self.led.item("x", 5)["state"], "done")
+
     def test_hand_merged_pr_with_needs_human_lands_in_uat_queue(self):
         self.sync()
         self.assertEqual(self.led.item("x", 5)["state"], "shipped")
@@ -137,6 +175,7 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
 
     def test_evidence_closed_poll_even_on_304_is_idempotent(self):
         self.sync()
+        self.led.clock = lambda: NOW + timedelta(hours=6)
         self.gh.comments = [dict(body="Verified: exporter works", author={"login": "owner"},
                                  authorAssociation="OWNER", id=10, url="https://example/comment/10",
                                  createdAt="2026-09-15T12:01:00Z")]
@@ -172,6 +211,7 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
 
     def test_label_failure_retries_after_local_completion(self):
         self.sync()
+        self.led.clock = lambda: NOW + timedelta(hours=6)
         self.gh.comments = [dict(body="Smoke: PASS tag=v1.2", author={"login": "bot"},
                                  id=11, createdAt="2026-09-15T12:01:00Z")]
         with mock.patch.object(self.gh, "set_state_label", side_effect=gh_module.GHError("offline")):
@@ -194,6 +234,7 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
         self.assertIsNone(self.led.item("x", 5)["mirror"])
         self.assertIn("mahler:shipped", self.gh.labels)
 
+        self.led.clock = lambda: NOW + timedelta(hours=6)
         self.gh.comments = [dict(body="Smoke: PASS tag=v1.2", author={"login": "bot"},
                                  id=11, createdAt="2026-09-15T12:01:00Z")]
         self.sync()

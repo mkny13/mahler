@@ -5,6 +5,8 @@ other clients preserve their configured `gh auth` identity.
 """
 
 import json
+import hashlib
+import time
 import os
 import re
 import subprocess
@@ -76,6 +78,12 @@ class GHError(RuntimeError):
     pass
 
 
+class GHRateLimit(GHError):
+    def __init__(self, reset=None):
+        self.reset = reset
+        super().__init__(f"GitHub API backoff until {reset or 'reset lookup'}")
+
+
 def _safe_error(message, env):
     token = (env or {}).get("GH_TOKEN")
     if token:
@@ -90,6 +98,10 @@ def _gh(*args, input=None, timeout=90, env=None):
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"gh {' '.join(args[:3])}: {_safe_error(str(e), env)}") from None
     if r.returncode != 0:
+        response = (r.stdout or "") + "\n" + (r.stderr or "")
+        if re.search(r"rate limit exceeded|secondary rate limit", response, re.I):
+            match = re.search(r"^x-ratelimit-reset:\s*(\d+)", response, re.I | re.M)
+            raise GHRateLimit(int(match[1]) if match else None)
         raise GHError(f"gh {' '.join(args[:3])}: "
                       f"{_safe_error((r.stderr or r.stdout).strip(), env)[:500]}")
     return r.stdout
@@ -125,6 +137,8 @@ class GH:
         self.repo = repo
         self.env = env      # the project's account env (DESIGN D25); None = inherit
         self._relationships = {}
+        self.rate_ledger = None
+        self._rate_reset = 0
 
     def _env(self, git=False):
         if self.app is None:
@@ -150,8 +164,41 @@ class GH:
             env["GIT_TERMINAL_PROMPT"] = "0"
         return env
 
+    def _rate_key(self):
+        if self.app is not None:
+            identity = f"app:{self.app.app_id}:{self.app.installation_id}"
+        else:
+            env = os.environ if self.env is None else self.env
+            identity = json.dumps([env.get(k, "") for k in
+                                   ("GH_HOST", "GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN")])
+        return "github_backoff:" + hashlib.sha256(identity.encode()).hexdigest()
+
     def _gh(self, *args, **kw):
-        return _gh(*args, env=self._env(), **kw)
+        key = self._rate_key()
+        reset = (float(self.rate_ledger.get_kv(key, "0")) if self.rate_ledger is not None
+                 else self._rate_reset)
+        if time.time() < reset:
+            raise GHRateLimit(reset)
+        env = self._env()
+        try:
+            return _gh(*args, env=env, **kw)
+        except GHRateLimit as exc:
+            reset = exc.reset
+            if reset is None:
+                # gh's high-level commands omit response headers. One quota
+                # lookup obtains the reset without retrying the failed action.
+                try:
+                    data = json.loads(_gh("api", "rate_limit", env=env))
+                    exhausted = [r["reset"] for r in data.get("resources", {}).values()
+                                 if r.get("remaining") == 0 and r.get("reset")]
+                    reset = max(exhausted) if exhausted else None
+                except (GHError, ValueError, KeyError, TypeError):
+                    pass
+            reset = max(float(reset or 0), time.time() + 60) if reset else time.time() + 3600
+            self._rate_reset = reset
+            if self.rate_ledger is not None:
+                self.rate_ledger.set_kv(key, str(reset))
+            raise GHRateLimit(reset) from None
 
     def _git_args(self, args):
         if self.app and args and args[0] in ("fetch", "push", "ls-remote"):

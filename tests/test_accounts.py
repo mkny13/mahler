@@ -638,6 +638,8 @@ class LaunchAndGitHubTests(unittest.TestCase):
             self.assertEqual(env["GH_CONFIG_DIR"], "/fake/work-gh")
             for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"):
                 self.assertNotIn(key, env)
+            app.return_value.app_id = "123"
+            app.return_value.installation_id = "456"
             app.return_value.token.return_value = "fake-personal-app"
             ctx.gh("home").issue_state(1)
             app.assert_called_once()
