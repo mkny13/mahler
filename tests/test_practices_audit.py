@@ -1794,6 +1794,8 @@ class FilingIdentityTests(unittest.TestCase):
                 patch.dict(os.environ, {key: "daemon" for key in config.GH_IDENTITY_VARS}), \
                 patch("mahler.github_app.Installation", autospec=True) as app, \
                 patch("mahler.gh.subprocess.run", side_effect=run):
+            app.return_value.app_id = "123"
+            app.return_value.installation_id = "456"
             app.return_value.token.return_value = "fake-app-token"
             first = audit.file_audit(cfg, (result,), scheduler.Ctx(cfg, led).gh)
             self.assertEqual(first.errors, ())
