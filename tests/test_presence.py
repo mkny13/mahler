@@ -178,3 +178,43 @@ class PresenceTests(unittest.TestCase):
                                 'hot_hold': True, 'hot_hold_minutes': 20}], self.now)
         self.assertEqual(holds[0]['directory'], row['cwd'])
         self.assertEqual(holds[0]['ago'], 5)
+
+    def test_read_only_heredoc_with_quotes_does_not_hold(self):
+        commands = [
+            "python3 - <<'EOF'\nimport sys\n# It's an ops query\nprint(\"Don't hold\")\nEOF",
+            "cat <<'EOF'\nPart of issue #292. Mike's feedback was that we shouldn't hold.\nEOF",
+            "cat <<-EOF\n\t\tDon't fail on tabbed heredoc\n\t\tEOF",
+            'cat << "EOF"\nHere is a double-quoted delimiter with Mike\'s apostrophe\nEOF',
+            "cat <<\\EOF\nBackslash delimiter: Mike's bug\nEOF",
+            'mahler add mahler "title" --body "$(cat <<\'EOF\'\nMike\'s bug\nEOF\n)"',
+            "diff -u <(cat <<EOF1) <(cat <<EOF2)\nMike's 1\nEOF1\nMike's 2\nEOF2",
+            'echo "<<EOF"\n# Not a heredoc: git commit in quotes should not hold',
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.write([self.message('Bash', command=command)])
+                self.assertIsNone(presence.last_claude_activity(self.project))
+                self.assertFalse(self.active())
+
+    def test_git_writes_with_heredocs_hold(self):
+        commands = [
+            "git commit -F - <<'EOF'\nFix Mike's bug\nEOF",
+            'git commit -m "$(cat <<\'EOF\'\nFix Mike\'s bug\nEOF\n)"',
+            "python3 - <<'EOF'\nprint('test')\nEOF\ngit push origin HEAD",
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                self.write([self.message('Bash', command=command)])
+                self.assertTrue(self.active())
+                self.assertFalse(presence.last_claude_edit(self.project).fallback)
+
+    def test_unclosed_heredoc_retains_fallback(self):
+        self.write([self.message('Bash', command="cat <<'EOF'\nmissing delimiter")])
+        self.assertTrue(self.active())
+        self.assertTrue(presence.last_claude_edit(self.project).fallback)
+
+    def test_hash_in_arguments_does_not_truncate_command(self):
+        self.write([self.message('Bash', command='mahler ship mahler#625')])
+        self.assertIsNone(presence.last_claude_activity(self.project))
+        self.assertFalse(self.active())
+
