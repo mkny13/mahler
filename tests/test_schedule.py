@@ -965,14 +965,20 @@ class HotHoldTests(unittest.TestCase):
             folder = Path(root) / presence.encode("/tmp/x")
             folder.mkdir()
             transcript = folder / "session.jsonl"
-            for tool, minutes, held in [("Read", 1, False), ("Edit", 1, True),
-                                        ("Edit", 25, False)]:
-                with self.subTest(tool=tool, minutes=minutes):
+            for tool, cmd, minutes, held in [
+                ("Read", None, 1, False),
+                ("Bash", "python3 - <<'EOF'\nprint(\"It's a test\")\nEOF", 1, False),
+                ("Edit", None, 1, True),
+                ("Bash", "git commit -F - <<'EOF'\nFix Mike's bug\nEOF", 1, True),
+                ("Edit", None, 25, False),
+            ]:
+                with self.subTest(tool=tool, command=cmd, minutes=minutes):
+                    inp = {"command": cmd} if cmd else {}
                     transcript.write_text(json.dumps({
                         "type": "assistant", "cwd": "/tmp/x",
                         "timestamp": (NOW - timedelta(minutes=minutes)).isoformat(),
                         "message": {"content": [{"type": "tool_use", "name": tool,
-                                                   "input": {}}]},
+                                                   "input": inp}]},
                     }))
                     ctx, led = mk_ctx({"a": proj(hot_hold=True)})
                     self.addCleanup(led.close)

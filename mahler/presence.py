@@ -150,14 +150,166 @@ class Activity:
     fallback: bool = False
 
 
+def _preprocess_shell(cmd):
+    """Strip here-document bodies and shell comments from a command string.
+
+    Returns the sanitized command string for tokenization.
+    Raises ValueError if a here-document is unclosed.
+    """
+    lines = cmd.splitlines(keepends=True)
+    out_lines = []
+    pending_heredocs = []
+    i = 0
+    stack = []
+    escape = False
+    in_continuation = False
+
+    while i < len(lines):
+        if pending_heredocs and not in_continuation:
+            delim, strip_tabs = pending_heredocs[0]
+            line = lines[i]
+            check_line = line.lstrip("\t") if strip_tabs else line
+            if check_line.rstrip("\r\n") == delim:
+                pending_heredocs.pop(0)
+                out_lines.append(line)
+            i += 1
+            continue
+
+        line = lines[i]
+        j = 0
+        cleaned_line_chars = []
+        escaped_newline = False
+
+        while j < len(line):
+            c = line[j]
+            top = stack[-1] if stack else None
+
+            if escape:
+                if c == "\n":
+                    escaped_newline = True
+                escape = False
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if top == "'":
+                if c == "'":
+                    stack.pop()
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if c == "\\":
+                escape = True
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if top == '"':
+                if c == '"':
+                    stack.pop()
+                    cleaned_line_chars.append(c)
+                    j += 1
+                    continue
+                if c == "$" and j + 1 < len(line) and line[j + 1] == "(":
+                    stack.append("$(")
+                    cleaned_line_chars.append("$(")
+                    j += 2
+                    continue
+                if c == "`":
+                    stack.append("`")
+                    cleaned_line_chars.append("`")
+                    j += 1
+                    continue
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if top == "`":
+                if c == "`":
+                    stack.pop()
+                    cleaned_line_chars.append(c)
+                    j += 1
+                    continue
+
+            # top is None, "$(" or "`"
+            if c == "'":
+                stack.append("'")
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if c == '"':
+                stack.append('"')
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if c == "$" and j + 1 < len(line) and line[j + 1] == "(":
+                stack.append("$(")
+                cleaned_line_chars.append("$(")
+                j += 2
+                continue
+
+            if c == ")" and top == "$(":
+                stack.pop()
+                cleaned_line_chars.append(c)
+                j += 1
+                continue
+
+            if c == "`":
+                stack.append("`")
+                cleaned_line_chars.append("`")
+                j += 1
+                continue
+
+            if c == "#":
+                if j == 0 or line[j - 1] in " \t;&|(":
+                    if line.endswith("\n"):
+                        cleaned_line_chars.append("\n")
+                    break
+
+            if (
+                line[j : j + 2] == "<<"
+                and (j == 0 or line[j - 1] != "<")
+                and (j + 2 >= len(line) or line[j + 2] != "<")
+            ):
+                rest = line[j:]
+                m = re.match(
+                    r'<<(-?)\s*(?:\'([^\']+)\'|"([^"]+)"|\\?([^\s;&|<>()\'"]+))',
+                    rest,
+                )
+                if m:
+                    strip_tabs = bool(m.group(1))
+                    delim = m.group(2) or m.group(3) or m.group(4)
+                    pending_heredocs.append((delim, strip_tabs))
+                    cleaned_line_chars.append(rest[: m.end()])
+                    j += m.end()
+                    continue
+
+            cleaned_line_chars.append(c)
+            j += 1
+
+        in_continuation = escaped_newline
+        out_lines.append("".join(cleaned_line_chars))
+        i += 1
+
+    if pending_heredocs:
+        raise ValueError(f"No closing delimiter for here-document: {pending_heredocs[0][0]}")
+
+    return "".join(out_lines)
+
+
 def _git_write(command):
     """Recognize commit/push subcommands, never words in their arguments.
 
     This is a tool-intent heuristic for simple shell commands, not a shell
     interpreter. Invalid quoting raises ValueError for the transcript fallback.
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    cleaned = _preprocess_shell(command)
+    lexer = shlex.shlex(cleaned, posix=True, punctuation_chars=";&|()\n")
     lexer.whitespace = " \t\r"
+    lexer.commenters = ""
     words = list(lexer)
     start = 0
     for end in range(len(words) + 1):
