@@ -69,6 +69,32 @@ class PresenceTests(unittest.TestCase):
                 self.assertEqual(holds[0]['directory'], self.cwd)
                 self.assertIn('ops-session (last edit 3m ago)', state._hot_hold_text(holds[0]))
 
+    def test_routine_metadata_preserves_read_only_and_edit_signals(self):
+        for kind in ('atis-latch', 'attachment', 'agent-name', 'custom-title'):
+            metadata = {'type': kind, 'timestamp': self.now.isoformat()}
+            for tool, minutes in [('Read', 0), ('Edit', 3), ('Edit', 30)]:
+                with self.subTest(kind=kind, tool=tool, minutes=minutes):
+                    self.write([metadata, self.message(tool, minutes=minutes),
+                                self.message('Bash', command='mahler status'),
+                                metadata])
+                    activity = presence.last_claude_edit(self.project)
+                    if tool == 'Read':
+                        self.assertIsNone(activity)
+                    else:
+                        self.assertFalse(activity.fallback)
+                        self.assertEqual(activity.at,
+                                         self.now - timedelta(minutes=minutes))
+                    self.assertEqual(self.active(), tool == 'Edit' and minutes < 20)
+                    self.assertFalse(self.active(2))
+
+    def test_metadata_does_not_disable_unknown_transcript_fallback(self):
+        for rows in [[{'type': 'custom-title'}],
+                     [self.message('Read'), {'type': 'future-record'}]]:
+            with self.subTest(rows=rows):
+                self.write(rows)
+                self.assertTrue(self.active())
+                self.assertTrue(presence.last_claude_edit(self.project).fallback)
+
     def test_git_arguments_do_not_count_as_write_subcommands(self):
         for command in ['git log --grep=commit', 'git show HEAD:docs/push.md',
                         'git -C "/projects/commit repo" log --grep=push',
