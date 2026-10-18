@@ -91,6 +91,7 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
     def test_reconcile_shipped_call_budget_independent_of_shipped_count(self):
         self.led.set_state("x", 5, "done")
         self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
         self.gh.issues_changed = mock.Mock(return_value=(False, None))
         self.gh.open_issues = mock.Mock(side_effect=AssertionError("unchanged"))
         self.gh.issue_comments = mock.Mock(return_value=[])
@@ -328,6 +329,7 @@ class QuietWindowTests(unittest.TestCase):
     def test_quiet_completion_still_runs_on_unchanged_poll(self):
         self.now = self.MERGED + timedelta(days=14)
         self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.gh, "issues_changed", return_value=(False, None)), \
                 mock.patch.object(self.gh, "open_issues") as fetch:

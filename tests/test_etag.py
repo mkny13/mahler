@@ -90,6 +90,7 @@ class SyncETagTests(unittest.TestCase):
         self.addCleanup(self.led.close)
         self.cfg = {"defaults": {}, "projects": {"mahler": proj()}}
         self.led.set_kv("depends_format:mahler", "4")
+        self.led.set_kv("unmerged_reconciled:mahler", "1")
         self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         self.gh = mock.Mock()
         self.gh.blocked_by_of.return_value = []
