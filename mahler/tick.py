@@ -558,7 +558,7 @@ def _check_eligible(ctx, p, role, it, st):
     # Hot hold (D6 layer 2): no new *code-writing* starts while an
     # untracked Claude session is active in the project — running work
     # continues, and the hold lifts hot_hold_minutes after the last
-    # transcript activity. Sorts are read-only triage (no worktree, no
+    # detected edit (mtime for unknown transcripts). Sorts are read-only triage (no worktree, no
     # files) and fixes repair an item already in flight, so neither
     # competes with the human's work; only builds are gated.
     if role == "build" and st["hot"][name]:

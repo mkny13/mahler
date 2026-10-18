@@ -304,7 +304,7 @@ Two rules use this:
 - **Unattributable activity** (files changing in a project, but no idea which item) puts the
   project on a **hot hold**: no *new* autonomous starts there until 20 minutes after the
   activity stops. Running work continues. The shipped sensor is conservative: any recent
-  Claude transcript in the project holds, claimed or not. (The earlier intent that
+  Claude edit in the project holds, claimed or not; unknown transcripts use mtime. (The earlier intent that
   instrumented but unclaimed sessions don't trigger a hold is not implemented.) The nudges
   below still apply:
   - `SessionStart` injects "these items are currently held by autonomous runs: … If you work on
@@ -323,6 +323,20 @@ Two rules use this:
   oldest `state_changed_at`; a pin constrains routing, not priority
   (`test_equal_priority_builds_start_oldest_state_changed_first`). The historical #930 skip is
   not claimed to be reproduced.
+
+**Presence-lite write signal (mahler#453).** Claude transcript mtime alone no longer
+holds a project: ops/triage chats can read files, query the ledger and file issues
+without blocking builds. The sensor streams each matching JSONL transcript and
+uses the latest timestamp of an `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, or
+Bash `git commit`/`git push` invocation. Streaming the full file avoids losing a
+recent edit behind a long read-only tail. This is a conservative tool-intent
+signal, not proof that a write succeeded; arbitrary shell scripts and external
+tools that mutate files are not classified as edits. Empty, malformed, unreadable
+or unknown transcript formats (including edits without usable timestamps) fall
+back to file mtime. The same signal drives build holds, presence-based lease
+renewal and burst suppression. The console names the recorded session cwd and
+last edit age, or labels the fallback as activity from an unreadable transcript.
+The configured hold window still applies; read-only messages never extend it.
 
 #### Layer 3 — Isolation and optimistic merge (collisions are cheap)
 

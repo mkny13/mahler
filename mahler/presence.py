@@ -2,16 +2,20 @@
 
 Claude Code writes each session's transcript under
 ~/.claude/projects/<cwd with every non-alphanumeric char replaced by '-'>/.
-A recently modified transcript whose directory matches the project path
-(including worktrees nested inside it) means an interactive session is
-working there. Mahler's own runs live under ~/.mahler/worktrees, which
-encodes differently, so they never count as human activity.
+Recent edit tool calls or commit/push commands in transcripts under that
+project path (including nested worktrees) identify writers; read-only
+conversations do not hold builds. Empty, unreadable, or unknown transcripts fall
+back to file mtime so a real editing session is never missed. Mahler's own runs
+live under ~/.mahler/worktrees, which encodes differently, so they never count as
+human activity.
 """
 
 import glob
 import json
 import os
 import re
+import shlex
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .ledger import iso, parse
@@ -19,6 +23,32 @@ from .ledger import iso, parse
 HOT_HOLD_END_PREFIX = "hot_hold_end:"
 
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+
+# Claude writes these bookkeeping records alongside user/assistant messages.
+# They carry no tool invocation, so they must not turn an otherwise read-only
+# session into transcript-mtime activity. Keep unknown record types on the
+# conservative fallback path below.
+ROUTINE_TRANSCRIPT_RECORDS = frozenset({
+    "agent-name",
+    "ai-title",
+    "atis-latch",
+    "attachment",
+    "bridge-session",
+    "cost-state",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "pr-link",
+    "progress",
+    "queue-operation",
+    "relocated",
+    "summary",
+    "system",
+    "worktree-state",
+})
 
 
 def _marker(led, project):
@@ -47,7 +77,7 @@ def end_marker(led, project, project_path):
 
 
 def hot_hold_activity(led, project, project_path, window, now=None,
-                      retire=False):
+                      retire=False, details=False):
     """Latest transcript activity that should count toward the hot hold.
 
     Sessions present when End session was clicked stay exempt while they
@@ -56,15 +86,17 @@ def hot_hold_activity(led, project, project_path, window, now=None,
     only, the console reads without writing). Transcripts of any other
     session always count.
     """
+    read = last_claude_edit if details else last_claude_activity
     now = now or led.now()
     marker = _marker(led, project)
     if marker is None:
-        return last_claude_activity(project_path)
+        return read(project_path)
     ended, exempt = marker
-    overall = last_claude_activity(project_path)
+    overall = read(project_path)
+    overall_at = overall.at if details and overall else overall
     if exempt is None:                      # legacy marker: old timestamp rule
-        if overall is None or overall <= ended:
-            if retire and (overall is None or now - overall >= window):
+        if overall is None or overall_at <= ended:
+            if retire and (overall is None or now - overall_at >= window):
                 led.set_kv(HOT_HOLD_END_PREFIX + project, None)
             return None
         return overall
@@ -82,7 +114,7 @@ def hot_hold_activity(led, project, project_path, window, now=None,
                                         "files": sorted(exempt_active)}))
         else:
             led.set_kv(key, None)
-    return last_claude_activity(project_path, exclude=exempt_active)
+    return read(project_path, exclude=exempt_active)
 
 
 def _utc(mtime):
@@ -111,14 +143,132 @@ def transcripts(project_path, root=None):
     return out
 
 
+@dataclass(frozen=True)
+class Activity:
+    at: datetime
+    directory: str
+    fallback: bool = False
+
+
+def _git_write(command):
+    """Recognize commit/push subcommands, never words in their arguments.
+
+    This is a tool-intent heuristic for simple shell commands, not a shell
+    interpreter. Invalid quoting raises ValueError for the transcript fallback.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    words = list(lexer)
+    start = 0
+    for end in range(len(words) + 1):
+        if end < len(words) and not all(c in ";&|()\n" for c in words[end]):
+            continue
+        args = words[start:end]
+        start = end + 1
+        if not args or os.path.basename(args[0]) != "git":
+            continue
+        i = 1
+        while i < len(args) and args[i].startswith("-"):
+            option = args[i]
+            if option in {"--help", "--version"}:
+                break
+            # These global options consume the next word; attached values
+            # (-Cpath, --git-dir=path) already occupy a single word.
+            i += 2 if option in {"-C", "-c", "--git-dir", "--work-tree",
+                                  "--namespace", "--config-env", "--super-prefix"} else 1
+        if i < len(args) and args[i] in {"commit", "push"}:
+            return True
+    return False
+
+
+def _transcript_activity(path, mtime, directory):
+    """Stream the whole transcript so a long read-only tail cannot hide an edit.
+
+    Unknown records and incomplete writes retain the old mtime safety net.
+    Tool invocations are intent signals; waiting for results could miss a writer
+    while the tool is still running.
+    """
+    fallback = Activity(mtime, directory, True)
+    latest = None
+    seen = False
+    try:
+        with open(path, encoding="utf-8") as stream:
+            for line in stream:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    return fallback
+                cwd = row.get("cwd")
+                if isinstance(cwd, str) and cwd:
+                    directory = cwd
+                    fallback = Activity(mtime, directory, True)
+                kind = row.get("type")
+                # Routine session metadata is not a tool invocation. Keep
+                # scanning so it neither creates a hold nor hides a later edit.
+                if kind in ROUTINE_TRANSCRIPT_RECORDS:
+                    continue
+                if kind not in {"assistant", "user"}:
+                    return fallback
+                content = row.get("message", {}).get("content")
+                if isinstance(content, str):
+                    seen = True
+                    continue
+                if not isinstance(content, list):
+                    return fallback
+                seen = True
+                for block in content:
+                    if not isinstance(block, dict) or "type" not in block:
+                        return fallback
+                    if block["type"] != "tool_use":
+                        if block["type"] not in {"text", "thinking", "redacted_thinking",
+                                                "tool_result", "image", "document"}:
+                            return fallback
+                        continue
+                    name = block.get("name")
+                    if not isinstance(name, str):
+                        return fallback
+                    writes = name in {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+                    if name == "Bash":
+                        command = block.get("input", {}).get("command")
+                        if not isinstance(command, str):
+                            return fallback
+                        writes = _git_write(command)
+                    if not writes:
+                        continue
+                    at = datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+                    if at.tzinfo is None:
+                        return fallback
+                    activity = Activity(at.astimezone(timezone.utc), directory)
+                    if latest is None or activity.at > latest.at:
+                        latest = activity
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return fallback
+    return latest if seen else fallback
+
+
+def last_claude_edit(project_path, root=None, exclude=()):
+    """Latest edit signal and session directory, excluding ended sessions."""
+    prefix = encode(project_path)
+    latest = None
+    for path, mtime in transcripts(project_path, root).items():
+        if path in exclude:
+            continue
+        name = os.path.basename(os.path.dirname(path))
+        directory = str(project_path) if name == prefix else name[len(prefix) + 1:]
+        activity = _transcript_activity(path, _utc(mtime), directory)
+        if activity and (latest is None or activity.at > latest.at):
+            latest = activity
+    return latest
+
+
 def last_claude_activity(project_path, root=None, exclude=()):
-    """Most recent transcript mtime for sessions in this project, or None."""
-    times = [m for f, m in transcripts(project_path, root).items()
-             if f not in exclude]
-    return datetime.fromtimestamp(max(times), timezone.utc) if times else None
+    """Write timestamp shared by scheduling, lease expiry and burst suppression."""
+    activity = last_claude_edit(project_path, root, exclude)
+    return activity.at if activity else None
 
 
-def human_claude_active(projects, minutes=20, root=CLAUDE_PROJECTS):
+def human_claude_active(projects, minutes=20, root=None):
     """True if a human is actively using Claude Code on a managed project (D23).
 
     Walks each project's primary checkout path for a recently modified

@@ -937,15 +937,16 @@ class BannerTests(unittest.TestCase):
             led.record_usage("cline-free", w, 100.0, iso(led.now() + timedelta(minutes=40)))
         led.create_run(project="mahler", number=3, role="build", platform="kilo", epoch=1,
                        status="ended", stop_reason="silent")
-        with mock.patch.object(state.presence, "last_claude_activity",
-                               return_value=led.now() - timedelta(minutes=4)):
+        with mock.patch.object(state.presence, "last_claude_edit",
+                               return_value=state.presence.Activity(
+                                   led.now() - timedelta(minutes=4), "/repo/ops-session")):
             banners = state.build(cfg, led)["banners"]
         self.assertEqual([b["kind"] for b in banners],
                          ["PAUSED BY YOU", "ALL PLATFORMS OVER SOFT LINE", "HOT HOLD · MAHLER",
                           "RUN SAT SILENT · KILO"])
-        self.assertEqual(banners[2]["text"], "You were working in mahler with Claude Code 4 "
-                                             "minutes ago. No new builds start there until 20 "
-                                             "minutes after you stop. Work in flight continues.")
+        self.assertEqual(banners[2]["text"], "Claude session in ops-session (last edit 4m ago). "
+                                             "New builds in mahler wait until 20 minutes "
+                                             "after that activity. Work in flight continues.")
         self.assertEqual(banners[0]["act"], "resume")
         self.assertIn("printed nothing for 10 minutes", banners[3]["text"])
 
@@ -1810,7 +1811,7 @@ class RecordedIdleTests(unittest.TestCase):
             "peak": {"active": True, "until": "11:00", "tz": "PT", "left": "1h left"},
             "quota": [{"name": "kilo", "state": "backoff", "until": now + timedelta(minutes=5)},
                       {"name": "codex", "state": "hold", "until": now + timedelta(minutes=2)}],
-        }, [{"project": "mahler", "hold_minutes": 20, "until": now + timedelta(minutes=3)}], now)
+        }, [{"project": "mahler", "ago": 17, "hold_minutes": 20, "until": now + timedelta(minutes=3)}], now)
         self.assertEqual(result, {
             "headline": "Nothing is running. A few things are holding it:",
             "reasons": [
@@ -1823,8 +1824,8 @@ class RecordedIdleTests(unittest.TestCase):
                  "action": "Clear backoff", "act": "clear_backoff", "platforms": ["kilo"]},
                 {"text": "codex is on hold after a run never started.", "countdown": "codex 2m",
                  "action": "Unhold", "act": "unhold", "platforms": ["codex"]},
-                {"text": "You have been working in mahler, so new builds there wait "
-                         "until 20 minutes after you stop.", "countdown": "3m left",
+                {"text": "Claude session in mahler (last edit 17m ago). "
+                         "New builds in mahler wait until 20 minutes after that activity.", "countdown": "3m left",
                  "act": "end_session", "action": "End session", "project": "mahler"},
                 {"text": "mahler#1 waits — area:console already in progress."},
             ]})
