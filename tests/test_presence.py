@@ -70,7 +70,12 @@ class PresenceTests(unittest.TestCase):
                 self.assertIn('ops-session (last edit 3m ago)', state._hot_hold_text(holds[0]))
 
     def test_routine_metadata_preserves_read_only_and_edit_signals(self):
-        for kind in ('atis-latch', 'attachment', 'agent-name', 'custom-title'):
+        for kind in ('agent-name', 'ai-title', 'atis-latch', 'attachment',
+                     'bridge-session', 'cost-state', 'custom-title',
+                     'file-history-delta', 'file-history-snapshot', 'last-prompt',
+                     'mode', 'permission-mode', 'pr-link', 'progress',
+                     'queue-operation', 'relocated', 'summary', 'system',
+                     'worktree-state'):
             metadata = {'type': kind, 'timestamp': self.now.isoformat()}
             for tool, minutes in [('Read', 0), ('Edit', 3), ('Edit', 30)]:
                 with self.subTest(kind=kind, tool=tool, minutes=minutes):

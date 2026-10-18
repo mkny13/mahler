@@ -24,6 +24,32 @@ HOT_HOLD_END_PREFIX = "hot_hold_end:"
 
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 
+# Claude writes these bookkeeping records alongside user/assistant messages.
+# They carry no tool invocation, so they must not turn an otherwise read-only
+# session into transcript-mtime activity. Keep unknown record types on the
+# conservative fallback path below.
+ROUTINE_TRANSCRIPT_RECORDS = frozenset({
+    "agent-name",
+    "ai-title",
+    "atis-latch",
+    "attachment",
+    "bridge-session",
+    "cost-state",
+    "custom-title",
+    "file-history-delta",
+    "file-history-snapshot",
+    "last-prompt",
+    "mode",
+    "permission-mode",
+    "pr-link",
+    "progress",
+    "queue-operation",
+    "relocated",
+    "summary",
+    "system",
+    "worktree-state",
+})
+
 
 def _marker(led, project):
     """(ended_at, exempt transcript paths or None for a legacy marker), or None."""
@@ -180,9 +206,7 @@ def _transcript_activity(path, mtime, directory):
                 kind = row.get("type")
                 # Routine session metadata is not a tool invocation. Keep
                 # scanning so it neither creates a hold nor hides a later edit.
-                if kind in {"system", "progress", "summary", "file-history-snapshot",
-                            "queue-operation", "last-prompt", "atis-latch",
-                            "attachment", "agent-name", "custom-title"}:
+                if kind in ROUTINE_TRANSCRIPT_RECORDS:
                     continue
                 if kind not in {"assistant", "user"}:
                     return fallback
