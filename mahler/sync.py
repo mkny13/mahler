@@ -52,7 +52,9 @@ def sync(ctx, project):
     # Version 4 adds GitHub's native blocked-by relationships. Version 3 removed
     # self/ancestor deadlocks as well as preserving qualifiers.
     depends_key = f"depends_format:{project}"
-    if not poll_changed and led.get_kv(depends_key) == "4":
+    repair_key = f"unmerged_reconciled:{project}"
+    if (not poll_changed and led.get_kv(depends_key) == "4"
+            and led.get_kv(repair_key) == "1"):
         reconcile_shipped(ctx, project)
         _resume_dependency_waits(ctx, project)
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
@@ -135,6 +137,12 @@ def sync(ctx, project):
                     and planned_child(iss, labels, led, project)):
                 _born_ready(led, project, n, iss)
                 item = led.item(project, n)
+            try:
+                _reconcile_open_completion(ctx, project, item, iss)
+            except (GHError, ValueError):
+                led.set_kv(etag_key, "")
+                raise
+            item = led.item(project, n)
             _note_source_reopen(ctx, project, item)
             _adopt_label_edits(ctx, project, item, labels)
         _process_comments(ctx, project, led.item(project, n), iss.get("comments") or [])
@@ -182,6 +190,38 @@ def sync(ctx, project):
     if poll_etag:
         led.set_kv(etag_key, poll_etag)
     led.set_kv(depends_key, "4")
+    if not ctx.dry_run:
+        led.set_kv(repair_key, "1")
+
+
+def _reconcile_open_completion(ctx, project, item, issue):
+    """Repair legacy closed-unmerged completions, using positive PR evidence."""
+    if ctx.dry_run or item["state"] not in ("done", "shipped"):
+        return
+    led, gh, n = ctx.led, ctx.gh(project), item["number"]
+    pr = item["pr"]
+    if not pr:
+        key = f"completion_missing_pr:{project}:{n}"
+        if led.get_kv(key) != "1":
+            ctx.say(f"{project}#{n}: open completed item has no recorded PR; leaving unchanged")
+            led.event("completion_missing_pr", project, n, {"state": item["state"]})
+            led.set_kv(key, "1")
+        return
+    view = gh.pr_view(pr)
+    if pr_merged(view) or view.get("state") != "CLOSED":
+        return
+    # A replacement may have shipped the work even though the stored PR did not.
+    if any(pr_merged(other) for other in gh.closing_prs(n)):
+        return
+    reason = f"not shipped: PR #{pr} closed without merging"
+    marker = f"<!-- mahler:unmerged-completion:{pr} -->"
+    if not any(marker in (c.get("body") or "") for c in issue.get("comments") or []):
+        gh.comment(n, f"{AGENT_MARK}\n{marker}\n{reason}. Returning to ready.")
+    # Reset the source as well: rebuilding must not reuse the abandoned PR branch.
+    led.upsert_item(project, n, pr=None, branch=None, mirror=None)
+    resume_item(led, project, n, why=reason)
+    led.event("completion_unmerged", project, n, {"pr": pr, "previous_state": item["state"]})
+    ctx.say(f"{project}#{n}: {reason} — ready")
 
 
 def _resume_dependency_waits(ctx, project):

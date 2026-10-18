@@ -21,6 +21,7 @@ class CapacityMigrationTests(unittest.TestCase):
         self.gh.issues_changed.return_value = (False, "etag")
         self.ctx._gh["x/y"] = self.gh
         self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
         self.led.set_kv("release_baseline_checked:x", "1")
 
     def test_304_migrates_only_known_capacity_questions_once(self):
@@ -113,6 +114,7 @@ class RepositoryAccessAlertTests(unittest.TestCase):
         for name, client in self.clients.items():
             client.issues_changed.return_value = (False, "etag")
             self.led.set_kv(f"depends_format:{name}", "4")
+            self.led.set_kv(f"unmerged_reconciled:{name}", "1")
             self.led.set_kv(f"release_baseline_checked:{name}", "1")
         # Exercise the real tick sync boundary and real sync (including 304),
         # isolating every unrelated pass from machine state and external services.
@@ -191,3 +193,102 @@ class RepositoryAccessAlertTests(unittest.TestCase):
         self.tick("HTTP 404")
         self.send.assert_called_once()
         self.assertEqual(self.clients["home"].issues_changed.call_count, 3)
+
+
+class OpenCompletionTests(unittest.TestCase):
+    def setUp(self):
+        CapacityMigrationTests.setUp(self)
+        self.ctx.cfg['projects']['x']['scope'] = 'all'
+        self.gh.issues_changed.return_value = (True, 'new-etag')
+        self.gh.blocked_by_of.return_value = []
+        self.gh.closing_prs.return_value = []
+        self.gh.pr_view.return_value = {'state': 'CLOSED', 'mergedAt': None}
+        self.issue = {'number': 1, 'title': 'Lost work', 'body': '',
+                      'createdAt': iso(self.led.now()),
+                      'labels': [{'name': 'mahler:working'}], 'comments': []}
+        self.gh.open_issues.return_value = [self.issue]
+
+    def completed(self, state='done', pr=88):
+        self.led.set_state('x', 1, state, pr=pr, branch='abandoned',
+                           attempts=3, mirror='mahler:working')
+
+    def test_closed_unmerged_recovers_both_states_once(self):
+        for state in ('done', 'shipped'):
+            with self.subTest(state=state):
+                self.completed(state)
+                self.gh.comment.reset_mock()
+                sync.sync(self.ctx, 'x')
+                item = self.led.item('x', 1)
+                self.assertEqual(item['state'], 'ready')
+                self.assertIsNone(item['pr'])
+                self.assertIsNone(item['branch'])
+                self.assertEqual(item['attempts'], 0)
+                self.gh.comment.assert_called_once()
+                self.assertIn('not shipped: PR #88 closed without merging',
+                              self.gh.comment.call_args.args[1])
+                count = len(self.led.q("SELECT * FROM events WHERE kind='completion_unmerged'"))
+                sync.sync(self.ctx, 'x')
+                self.gh.comment.assert_called_once()
+                self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='completion_unmerged'")), count)
+
+    def test_merged_or_open_pr_is_not_requeued(self):
+        for view in ({'state': 'MERGED'}, {'state': 'CLOSED', 'mergedAt': '2026-10-01T00:00:00Z'},
+                     {'state': 'OPEN'}, {}):
+            with self.subTest(view=view):
+                self.completed()
+                self.gh.pr_view.return_value = view
+                sync.sync(self.ctx, 'x')
+                self.assertEqual(self.led.item('x', 1)['state'], 'done')
+        self.gh.comment.assert_not_called()
+
+    def test_merged_replacement_is_not_requeued(self):
+        self.completed()
+        self.gh.closing_prs.return_value = [{'number': 99, 'state': 'MERGED'}]
+        sync.sync(self.ctx, 'x')
+        self.assertEqual(self.led.item('x', 1)['state'], 'done')
+        self.gh.comment.assert_not_called()
+
+    def test_missing_pr_reported_once_without_requeue(self):
+        self.completed(pr=None)
+        sync.sync(self.ctx, 'x')
+        sync.sync(self.ctx, 'x')
+        self.assertEqual(self.led.item('x', 1)['state'], 'done')
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='completion_missing_pr'")), 1)
+        self.gh.pr_view.assert_not_called()
+        self.gh.comment.assert_not_called()
+
+    def test_upgrade_forces_full_sync_on_304(self):
+        self.completed()
+        self.led.set_kv('unmerged_reconciled:x', '')
+        self.gh.issues_changed.return_value = (False, 'etag')
+        sync.sync(self.ctx, 'x')
+        self.assertEqual(self.led.item('x', 1)['state'], 'ready')
+        sync.sync(self.ctx, 'x')
+        self.gh.open_issues.assert_called_once()
+
+    def test_lookup_and_comment_errors_preserve_state_and_retry(self):
+        from mahler.gh import GHError
+        for method in (self.gh.pr_view, self.gh.closing_prs, self.gh.comment):
+            with self.subTest(method=method):
+                self.completed()
+                method.side_effect = GHError('offline')
+                with self.assertRaises(GHError):
+                    sync.sync(self.ctx, 'x')
+                self.assertEqual(self.led.item('x', 1)['state'], 'done')
+                self.assertEqual(self.led.get_kv('etag:x'), '')
+                method.side_effect = None
+                sync.sync(self.ctx, 'x')
+                self.assertEqual(self.led.item('x', 1)['state'], 'ready')
+
+    def test_existing_comment_and_dry_run(self):
+        self.completed()
+        self.ctx.dry_run = True
+        sync.sync(self.ctx, 'x')
+        self.assertEqual(self.led.item('x', 1)['state'], 'done')
+        self.gh.pr_view.assert_not_called()
+        self.ctx.dry_run = False
+        self.issue['comments'] = [{'body': '<!-- mahler:agent -->\n<!-- mahler:unmerged-completion:88 -->',
+                                   'createdAt': iso(self.led.now())}]
+        sync.sync(self.ctx, 'x')
+        self.assertEqual(self.led.item('x', 1)['state'], 'ready')
+        self.gh.comment.assert_not_called()
