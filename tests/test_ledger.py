@@ -56,6 +56,18 @@ class LeaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "full lowercase merge SHA"):
             self.led.create_post_merge_check("p", 1, "aaaaaaa", policy)
 
+    def test_run_notes_are_idempotent_and_scoped_to_project_and_item(self):
+        self.assertTrue(self.led.insert_run_note("p", 12, 5, "first fact"))
+        self.assertFalse(self.led.insert_run_note("p", 12, 5, "replacement"))
+        self.assertTrue(self.led.insert_run_note("q", 12, 5, "other project"))
+        self.assertTrue(self.led.insert_run_note("p", 13, 6, "other item"))
+        self.assertEqual(self.led.run_notes("p", 5), [
+            {"run_id": 12, "note": "first fact"}])
+        self.assertEqual(self.led.run_notes("q", 5), [
+            {"run_id": 12, "note": "other project"}])
+        self.assertEqual(self.led.run_notes("p", 6), [
+            {"run_id": 13, "note": "other item"}])
+
     def test_post_merge_transitions_fencing_and_terminal_stability(self):
         sha = "a" * 40
         self.led.upsert_item("p", 1, state="shipped")

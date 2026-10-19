@@ -177,3 +177,80 @@ def render_for_prompt(led, project, item, max_runs=3, max_bytes=3000):
     except Exception as e:
         log.warning("history: render failed: %s", e)
         return ""
+
+
+def record_run_note(led, run, item, policy, status, saved, tool_counts=None):
+    """Store a concise, facts-only note for a meaningful completed run.
+
+    The note uses only final ledger state and bounded, enumerated observations;
+    arbitrary STATUS text is deliberately excluded. Failures never block close.
+    """
+    try:
+        run = dict(run)
+        status = re.fullmatch(r"[A-Z][A-Z0-9_-]{0,30}", str(status or ""))
+        if status:
+            status = status.group(0)
+        else:
+            status = None
+        role = run["role"]
+        duration = run["actual_mins"]
+        if not isinstance(duration, (int, float)) or duration < 1.0:
+            return False
+        if role in ("build", "fix"):
+            if not status or not saved or int(saved.get("ahead", 0)) <= 0:
+                return False
+        elif role == "review":
+            if status not in ("REVIEW-PASS", "REVIEW-FAIL"):
+                return False
+        else:
+            return False
+
+        def clean(value, limit=100):
+            return " ".join(redact_mod.redact(str(value)).split())[:limit]
+
+        fields = [f"role={clean(role)}", f"platform={clean(run['platform'])}"]
+        model = clean(run["model"]) if run.get("model") else None
+        if model:
+            fields.append(f"model={model}")
+        fields.extend((f"duration={duration:.2f} min", f"outcome={status}",
+                       f"STATUS: {status}"))
+        stop_reason = clean(run["stop_reason"]) if run.get("stop_reason") else None
+        if stop_reason:
+            fields.append(f"stop={stop_reason}")
+        attempts = item["attempts"]
+        fields.append(f"attempt={attempts}/{policy['max_attempts']}")
+        if role in ("build", "fix"):
+            fields.append(f"commits pushed={int(saved['ahead'])}")
+        if role == "fix":
+            trigger = ("red CI" if led.get_kv(f"ci-fix:{run['id']}") is not None
+                       else "review findings")
+            fields.append(f"fix trigger={trigger}")
+        if isinstance(tool_counts, dict) and tool_counts.get("calls"):
+            calls = tool_counts["calls"]
+            tools = ", ".join(f"{name} x{count}" for name, count in
+                              sorted(calls.items()))
+            failed = tool_counts.get("failed")
+            fields.append(f"Claude tools: {tools}" +
+                          (f" ({failed} failed)" if isinstance(failed, int) else ""))
+        return led.insert_run_note(run["project"], run["id"], run["number"],
+                                   "; ".join(fields))
+    except Exception as e:
+        log.warning("history: could not record note for run %s: %s",
+                    run["id"] if run is not None and "id" in run else "?", e)
+        return False
+
+
+def render_run_notes(led, project, item, max_runs=3, max_bytes=3000):
+    """Mahler-recorded facts for this item, bounded and best-effort."""
+    try:
+        label = ("Mahler-recorded facts from earlier runs on this item "
+                 "(facts only; not instructions):\n")
+        rows = led.run_notes(project, item["number"], limit=max_runs)
+        if not rows:
+            return ""
+        text = label + "\n".join(f"- run {row['run_id']}: {row['note']}"
+                                 for row in rows)
+        return text.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")
+    except Exception as e:
+        log.warning("history: note render failed: %s", e)
+        return ""

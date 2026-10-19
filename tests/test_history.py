@@ -135,6 +135,7 @@ class HistoryTests(unittest.TestCase):
 
     def test_prompt_build_roles(self):
         self.seed("a", 1, "Zebra parser", "STATUS: DONE ok")
+        self.led.insert_run_note("a", 33, 2, "role=build; outcome=DONE")
 
         class Ctx:
             led = self.led
@@ -149,9 +150,41 @@ class HistoryTests(unittest.TestCase):
                 out = prompt.build(Ctx(), "a", item, role, "claude", prep)
                 self.assertIn("untrusted background", out)
                 self.assertIn("run ", out)
+                self.assertIn("Mahler-recorded facts", out)
+                self.assertIn("outcome=DONE", out)
             for role in ("sort", "review"):
                 out = prompt.build(Ctx(), "a", item, role, "claude", prep)
                 self.assertNotIn("Similar past runs", out)
+                self.assertNotIn("Mahler-recorded facts", out)
+
+    def test_note_prompt_is_same_item_latest_and_byte_bounded(self):
+        for run_id in range(1, 6):
+            self.led.insert_run_note("a", run_id, 9, f"fact {run_id}")
+        self.led.insert_run_note("b", 10, 9, "other project")
+        item = {"number": 9}
+        block = history.render_run_notes(self.led, "a", item, max_runs=2)
+        self.assertIn("Mahler-recorded facts", block)
+        self.assertIn("fact 5", block)
+        self.assertIn("fact 4", block)
+        self.assertNotIn("fact 3", block)
+        self.assertNotIn("other project", block)
+        small = history.render_run_notes(self.led, "a", item, max_bytes=80)
+        self.assertLessEqual(len(small.encode("utf-8")), 80)
+
+    def test_note_lookup_failure_does_not_break_prompt(self):
+        class Ctx:
+            led = self.led
+
+            def policy(self, proj):
+                return {"repo": "o/r", "rules": ""}
+
+        item = {"number": 2, "title": "Zebra parser", "issue_body": "", "pr": 5}
+        prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
+        with patch.object(history, "render_run_notes", side_effect=RuntimeError("unavailable")), \
+                patch.object(prompt, "ci_handoff", return_value=""):
+            out = prompt.build(Ctx(), "a", item, "build", "claude", prep)
+        self.assertIn("Zebra parser", out)
+        self.assertNotIn("Mahler-recorded facts", out)
 
     def test_cli(self):
         self.seed("a", 1, "Zebra parser", "STATUS: DONE ok")

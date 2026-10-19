@@ -1309,6 +1309,7 @@ def read_log(path, kind, model=None):
         return res
     handler = _LOG_HANDLERS.get(kind, _read_agy_event)
     texts = []
+    tool_counts = {"calls": {}, "failed": 0}
     with fh:
         for line in fh:
             try:
@@ -1320,10 +1321,30 @@ def read_log(path, kind, model=None):
                 continue
             if not isinstance(ev, dict):
                 continue
+            if kind == "claude":
+                message = ev.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, list) and ev.get("type") in ("assistant", "user"):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        if ev["type"] == "assistant" and block.get("type") == "tool_use":
+                            name = block.get("name")
+                            if isinstance(name, str):
+                                name = re.sub(r"[^A-Za-z0-9_.-]", "", name)[:40]
+                                if name:
+                                    calls = tool_counts["calls"]
+                                    key = name if name in calls or len(calls) < 20 else "other"
+                                    calls[key] = calls.get(key, 0) + 1
+                        elif (ev["type"] == "user" and block.get("type") == "tool_result"
+                              and block.get("is_error") is True):
+                            tool_counts["failed"] += 1
             collect(res, ev, kind)
             note_request(res, ev, kind)
             handler(res, ev, texts, first_quota)
     finish_requests(res, kind, True)
+    if kind == "claude" and (tool_counts["calls"] or tool_counts["failed"]):
+        res["tool_counts"] = tool_counts
     return _finish_log(res, texts, kind)
 
 
