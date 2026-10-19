@@ -281,3 +281,45 @@ class WeeklyModelsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NetBacklogTests(unittest.TestCase):
+    """One net-backlog line per project (mahler#1104), from ledger snapshots only."""
+
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+        self.cfg = {"defaults": {}, "projects": {
+            "full": {"scope": "all"}, "partial": {"scope": "label", "scope_label": "mahler"},
+            "fresh": {"scope": "all"}, "off": {"scope": "all", "enabled": False}}}
+        t = self.clock.t
+        for days_ago, count in ((31, 40), (7, 33), (1, 25)):
+            self.led.record_backlog("full", count, at=t - timedelta(days=days_ago))
+        self.led.record_backlog("full", 28, at=t)
+        self.led.record_backlog("partial", 10, at=t - timedelta(days=9))
+        self.led.record_backlog("partial", 6, at=t)
+        self.led.record_backlog("off", 1, at=t - timedelta(days=2))
+        self.led.record_backlog("off", 2, at=t)
+
+    def lines(self):
+        data = digest.gather(self.led, self.cfg, since=self.clock.t - timedelta(days=1),
+                             local_now=datetime(2026, 9, 13))
+        text = digest.format_digest(data)
+        after = text.split("Net backlog, opened − closed (+ = grew):\n", 1)[1]
+        return after.split("\nQuota:", 1)[0].splitlines()
+
+    def test_full_partial_and_no_history_lines(self):
+        self.assertEqual(self.lines(), [
+            "- full: +3 / \u22125 / \u221212 (24h/7d/30d)",
+            "- partial: \u22124 / \u22124 / \u22124 (only 9d of history) (24h/7d/30d)"
+            " (label mahler only)",
+            "- fresh: backlog history starts today",
+        ])
+
+    def test_zero_and_hours_of_history(self):
+        net = {k: {"net": 0, "covered": timedelta(hours=5), "full": False}
+               for k in ("24h", "7d", "30d")}
+        self.assertEqual(digest.backlog_line("p", net),
+                         "p: 0 (only 5h of history) / 0 (only 5h of history)"
+                         " / 0 (only 5h of history) (24h/7d/30d)")

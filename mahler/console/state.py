@@ -125,6 +125,7 @@ def build(cfg, led, stats_range="week", section=None):
         "measured_routes": measured_routes(cfg, led, projects, measurement_rows) if measured else [],
         "stats": stats(led, stats_range, project_names),
         "stats_range": _stats_range_key(stats_range),
+        "net_backlog": _net_backlog(cfg, led, projects, now),
         "releases": releases_data,
         "releases_suggested": sum(1 for r in releases_data if r["draft"]["is_suggested"]),
         "briefs": briefs,
@@ -1428,6 +1429,48 @@ def _digest(cfg, led, now):
             if r["at"] and now - r["at"] < timedelta(hours=DIGEST_HOURS)]
     return {"count": len(rows), "rows": rows,
             "upto": max((r["id"] for r in rows), default=seen)}
+
+
+# ---------- net backlog (mahler#1104) ----------
+
+NET_BACKLOG_TITLE = "Net backlog · opened − closed"
+NET_BACKLOG_EXPLAIN = ("+ means more issues opened than closed — the backlog grew. "
+                       "− means more closed than opened — it shrank. Measured from "
+                       "Mahler's hourly snapshots of each project's open-issue count.")
+NET_BACKLOG_EMPTY = "History starts today; figures appear after the next hourly snapshot."
+
+
+def _signed(n):
+    return f"+{n}" if n > 0 else f"\u2212{-n}" if n < 0 else "0"
+
+
+def _span(covered):
+    if covered >= timedelta(days=1):
+        return f"{covered.days}d"
+    return f"{int(covered.total_seconds() // 3600)}h"
+
+
+def _net_backlog(cfg, led, projects, now):
+    """Per project: the 24h/7d/30d net backlog, read from ledger snapshots only."""
+    rows = []
+    for p in projects:
+        net = led.backlog_net(p["name"], now=now)
+        label = p.get("scope_label") if p.get("scope") == "label" else None
+        windows = []
+        for key in ("24h", "7d", "30d"):
+            w = (net or {}).get(key)
+            if w is None:
+                continue
+            tone = "bad" if w["net"] > 0 else "good" if w["net"] < 0 else "mut"
+            windows.append({"key": key, "net": w["net"], "text": _signed(w["net"]),
+                            "full": w["full"], "tone": tone,
+                            "note": None if w["full"] else
+                            f"only {_span(w['covered'])} of history"})
+        rows.append({"project": p["name"], "windows": windows,
+                     "empty": None if windows else NET_BACKLOG_EMPTY,
+                     "scope": (f"Counts only issues labelled {label}, the ones Mahler manages."
+                               if label else None)})
+    return {"title": NET_BACKLOG_TITLE, "explain": NET_BACKLOG_EXPLAIN, "rows": rows}
 
 
 # ---------- banners and idle reasons ----------

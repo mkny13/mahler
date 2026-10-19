@@ -2788,3 +2788,22 @@ it, in a PR in the target repo.
 
 **Out of scope here.** Scanner, loader, usage table, curation pass, gate proposals
 and recipe edits are separate build issues.
+
+### D45 — Net backlog: open-count deltas from hourly ledger snapshots (mahler#1104)
+
+Allocated with `mahler next-id mahler D`. The digest and console show, per
+project, the **net backlog** (issues opened − closed) over 24h / 7d / 30d. It is
+the change in the in-scope open-issue count between two snapshots: the newest,
+and the latest one at or before the window start. That difference *is* opened
+minus closed, so no separate cumulative counters are kept.
+
+- **No extra GitHub calls (#1098).** `sync` already has the open issues in hand;
+  it records `len(issues)` (or the in-scope count for `scope = "label"`
+  projects) in `backlog_snapshots`. A 304 tick reuses the last count. The
+  console and digest read only the ledger.
+- **Hourly, 35-day retention.** At most one row per project per hour; rows older
+  than 35 days are pruned on write.
+- **Short history is flagged, never passed off as a full window.** When no
+  snapshot reaches the window start, the oldest is used and the figure carries
+  "only Nd of history". History starts when this shipped; nothing is backfilled.
+- A snapshot failure is logged and never breaks sync.

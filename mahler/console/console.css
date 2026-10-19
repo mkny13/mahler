@@ -204,6 +204,14 @@ a { color: var(--acc); text-decoration: none; }
 .statcard .statlabel { justify-self: end; color: var(--mut); }
 .statcard .statprev { font-size: 11px; color: var(--mut); }
 .statcard .statdelta { justify-self: end; font-size: 12px; }
+.net-backlog { margin-top: 18px; display: flex; flex-direction: column; gap: 8px; }
+.net-backlog .nb-title { font-size: 13px; margin: 0; }
+.net-backlog .nb-explain { margin: 0; }
+.nb-row .nb-figs { grid-column: 1 / -1; display: flex; gap: 14px; flex-wrap: wrap; }
+.nb-row .nb-win { display: flex; flex-direction: column; gap: 2px; }
+.nb-row .nb-win .statnum { font-size: 22px; }
+.nb-row .nb-win .statlabel { justify-self: start; font-size: 11px; }
+.nb-row .nb-scope { grid-column: 1 / -1; }
 
 .sect { display: flex; flex-direction: column; gap: 8px; }
 .sect.rule { border-top: 1px solid var(--line); padding-top: 14px; gap: 7px; }

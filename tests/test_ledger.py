@@ -2121,3 +2121,58 @@ class LessonUsageTests(unittest.TestCase):
         done, ign = self.led.record_lesson_citations("q", "acct", 1, ["lesson-a"])
         self.assertEqual((done, ign), ([], 1))
         self.assertEqual(self.led.lesson_usage_stats("q", "acct"), {})
+
+
+class BacklogSnapshotTests(unittest.TestCase):
+    """Net backlog snapshots (mahler#1104): throttle, prune, window differencing."""
+
+    def setUp(self):
+        self.t0 = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.t0)
+        self.addCleanup(self.led.close)
+
+    def rows(self, project="p"):
+        return [(r["at"], r["open_count"]) for r in self.led.q(
+            "SELECT at, open_count FROM backlog_snapshots WHERE project=? ORDER BY at",
+            (project,))]
+
+    def test_throttles_to_one_row_per_hour(self):
+        self.assertTrue(self.led.record_backlog("p", 5, at=self.t0))
+        self.assertFalse(self.led.record_backlog("p", 6, at=self.t0 + timedelta(minutes=59)))
+        self.assertEqual(self.rows(), [(iso(self.t0), 5)])
+        self.assertTrue(self.led.record_backlog("p", 7, at=self.t0 + timedelta(hours=1)))
+        self.assertTrue(self.led.record_backlog("q", 1, at=self.t0 + timedelta(minutes=5)))
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(self.led.last_backlog("p")["open_count"], 7)
+        self.assertIsNone(self.led.last_backlog("none"))
+
+    def test_prunes_rows_older_than_35_days(self):
+        self.led.record_backlog("p", 1, at=self.t0 - timedelta(days=36))
+        self.led.record_backlog("p", 2, at=self.t0 - timedelta(days=34))
+        self.led.record_backlog("q", 9, at=self.t0 - timedelta(days=40))
+        self.led.record_backlog("p", 3, at=self.t0)
+        self.assertEqual([c for _, c in self.rows()], [2, 3])
+        self.assertEqual([c for _, c in self.rows("q")], [9])   # other projects untouched
+
+    def test_exact_net_with_31_days_of_history(self):
+        for days_ago, count in ((31, 50), (30, 40), (8, 30), (7, 33), (2, 20),
+                                (1, 25), (0.5, 22)):
+            self.led.record_backlog("p", count, at=self.t0 - timedelta(days=days_ago))
+        self.led.record_backlog("p", 28, at=self.t0)
+        net = self.led.backlog_net("p")
+        self.assertEqual({k: (v["net"], v["full"]) for k, v in net.items()},
+                         {"24h": (3, True), "7d": (-5, True), "30d": (-12, True)})
+        self.assertEqual(net["30d"]["covered"], timedelta(days=30))
+
+    def test_short_history_is_not_full(self):
+        self.led.record_backlog("p", 10, at=self.t0 - timedelta(days=9))
+        self.led.record_backlog("p", 6, at=self.t0)
+        net = self.led.backlog_net("p")
+        self.assertEqual(net["24h"], {"net": -4, "covered": timedelta(days=9), "full": True})
+        self.assertTrue(net["7d"]["full"])
+        self.assertEqual(net["30d"], {"net": -4, "covered": timedelta(days=9), "full": False})
+
+    def test_fewer_than_two_rows_is_none(self):
+        self.assertIsNone(self.led.backlog_net("p"))
+        self.led.record_backlog("p", 3, at=self.t0)
+        self.assertIsNone(self.led.backlog_net("p"))
