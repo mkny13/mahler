@@ -736,6 +736,17 @@ untrusted background; `mahler history <project> "query"` prints hits. Only the s
 project's runs are ever searched (D25), the current issue is excluded, and every failure
 (including FTS5 being unavailable) degrades to no history, never a broken tick or prompt.
 
+**Same-item run notes** (mahler#1106). Finalization also stores one short,
+facts-only note for meaningful build/fix runs (at least one minute, STATUS,
+and a pushed snapshot) and REVIEW-PASS/FAIL runs (at least one minute).
+Notes use final run/item state, never copy arbitrary STATUS text, and are
+keyed idempotently by project/run. Build and fix prompts include only the
+latest few notes for that project/item under a Mahler-recorded-facts label;
+the independent cross-issue FTS history remains unchanged. Claude stream-json
+tool-use/result counts are included only when observed; other platforms and
+unreadable logs do not get invented counts. Note persistence and rendering
+are best-effort and never gate finalization or prompt construction.
+
 - **Review evidence** (mahler#706). Grade the branch against the issue's Done-when.
   PR-description content alone never blocks; required evidence such as audit output
   belongs in the repository or CI. Description-only requests are follow-ups, without

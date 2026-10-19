@@ -156,6 +156,16 @@ CREATE TABLE IF NOT EXISTS runs (
     started_at  TEXT NOT NULL,
     ended_at    TEXT
 );
+CREATE TABLE IF NOT EXISTS run_notes (
+    project    TEXT NOT NULL,
+    run_id     INTEGER NOT NULL,
+    number     INTEGER NOT NULL,
+    note       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (project, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_run_notes_item
+    ON run_notes(project, number, run_id DESC);
 CREATE TABLE IF NOT EXISTS usage (
     platform   TEXT NOT NULL,
     window     TEXT NOT NULL,            -- 5h | weekly
@@ -1582,6 +1592,25 @@ class Ledger:
 
     def run(self, run_id):
         return self.q1("SELECT * FROM runs WHERE id=?", (run_id,))
+
+    def insert_run_note(self, project, run_id, number, note):
+        """Keep one redacted facts note for a run; replay never replaces it."""
+        clean = redact(str(note or ""))
+        clean = clean.encode("utf-8")[:2000].decode("utf-8", "ignore")
+        cur = self.con.execute(
+            "INSERT OR IGNORE INTO run_notes (project, run_id, number, note, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (project, run_id, number, clean, iso(self.now())))
+        return cur.rowcount == 1
+
+    def run_notes(self, project, number, limit=3):
+        """Return a bounded newest-first note set for one project/item."""
+        limit = max(0, min(int(limit), 10))
+        if not limit:
+            return []
+        return [dict(row) for row in self.q(
+            "SELECT run_id, note FROM run_notes WHERE project=? AND number=? "
+            "ORDER BY run_id DESC LIMIT ?", (project, number, limit))]
 
     def run_for_lease(self, lease):
         """Return this ledger's run only when it owns the lease identity.

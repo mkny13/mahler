@@ -146,6 +146,26 @@ class CreditExhaustionTests(unittest.TestCase):
 
 
 class ReadLogResumeInfoTests(unittest.TestCase):
+    def test_claude_log_counts_tool_calls_and_failed_results_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "claude.log")
+            events = (
+                {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Bash", "id": "one"},
+                    {"type": "tool_use", "name": "Read", "id": "two"},
+                    {"type": "tool_use", "name": "Bash", "id": "three"}]}},
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "one", "is_error": True},
+                    {"type": "tool_result", "tool_use_id": "two", "is_error": False}]}},
+            )
+            with open(path, "w") as fh:
+                fh.write("".join(json.dumps(event) + "\n" for event in events))
+            result = platforms.read_log(path, "claude")
+            self.assertEqual(result["tool_counts"],
+                             {"calls": {"Bash": 2, "Read": 1}, "failed": 1})
+            self.assertNotIn("tool_counts", platforms.read_log(path, "codex"))
+        self.assertNotIn("tool_counts", platforms.read_log("/missing/claude.log", "claude"))
+
     def test_kilo_log_extracts_session_id_and_last_error(self):
         with tempfile.TemporaryDirectory() as d:
             log_path = os.path.join(d, "kilo.log")

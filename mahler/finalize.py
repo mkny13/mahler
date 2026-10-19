@@ -856,8 +856,15 @@ def _close_the_books(e, code):
     update_cols.update(columns(e.log, run, ctx.cfg))
     led.update_run(run["id"], **update_cols)
     from . import history
-    history.index_run(led, led.q1("SELECT * FROM runs WHERE id=?", (run["id"],)),
+    final_run = led.q1("SELECT * FROM runs WHERE id=?", (run["id"],))
+    history.index_run(led, final_run,
                       base=f"origin/{e.pol.get('base', 'main')}")
+    try:
+        final_item = led.item(e.project, e.number)
+        history.record_run_note(led, final_run, final_item, e.pol, e.verb, e.saved,
+                                e.log.get("tool_counts"))
+    except Exception as exc:
+        ctx.say(f"{e.project}#{e.number}: run note unavailable: {type(exc).__name__}")
     _check_estimate_calibration(ctx)
     if not e.keep_worktree:
         runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],

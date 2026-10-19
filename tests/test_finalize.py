@@ -214,6 +214,83 @@ class RunTests(unittest.TestCase):
     def test_completed_fix_keeps_session_identity(self):
         self.check_completed_session_identity('fix')
 
+    def test_meaningful_fix_records_facts_and_finalize_replay_preserves_them(self):
+        self.run.update(role="fix", platform="claude", model="claude-sonnet-5",
+                        started_at=iso(NOW - timedelta(minutes=2)))
+        self.led.update_run(self.run_id, role="fix", platform="claude", model="claude-sonnet-5",
+                            started_at=self.run["started_at"])
+        self.led.con.execute("UPDATE leases SET platform='claude' WHERE project='x' AND number=5")
+        self.led.upsert_item("x", 5, attempts=2)
+        self.led.set_kv(f"ci-fix:{self.run_id}", '{"pr":88}')
+        events = (
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "id": "one"},
+                {"type": "tool_use", "name": "Bash", "id": "two"}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "one", "is_error": True}]}},
+            {"type": "result", "subtype": "success",
+             "result": "STATUS: DONE changed arbitrary text"},
+        )
+        Path(self.log).write_text("".join(json.dumps(event) + "\n" for event in events))
+        self.finalize()
+        rows = self.led.run_notes("x", 5)
+        self.assertEqual(len(rows), 1)
+        note = rows[0]["note"]
+        for text in ("role=fix", "platform=claude", "model=claude-sonnet-5",
+                     "duration=2.00 min", "outcome=DONE", "STATUS: DONE",
+                     "attempt=2/3", "commits pushed=1", "fix trigger=red CI",
+                     "Claude tools: Bash x2 (1 failed)"):
+            self.assertIn(text, note)
+        self.assertNotIn("changed arbitrary text", note)
+        self.finalize()
+        self.assertEqual(self.led.run_notes("x", 5)[0]["note"], note)
+
+    def test_review_pass_records_note_without_snapshot(self):
+        self.run.update(role="review", started_at=iso(NOW - timedelta(minutes=2)))
+        self.led.update_run(self.run_id, role="review",
+                            started_at=self.run["started_at"])
+        self.led.upsert_item("x", 5, pr=88, attempts=1)
+        Path(self.log).write_text("STATUS: REVIEW-PASS {}\n")
+        with mock.patch.object(finalize, "_prepare_review", return_value=(True, [])), \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        note = self.led.run_notes("x", 5)[0]["note"]
+        self.assertIn("role=review", note)
+        self.assertIn("outcome=REVIEW-PASS", note)
+        self.assertIn("attempt=1/3", note)
+        self.assertNotIn("commits pushed", note)
+
+    def test_fix_note_records_review_findings_trigger_without_ci_attribution(self):
+        self.run.update(role="fix", started_at=iso(NOW - timedelta(minutes=2)))
+        self.led.update_run(self.run_id, role="fix", started_at=self.run["started_at"])
+        Path(self.log).write_text("STATUS: DONE fixed review finding\n")
+        self.finalize()
+        self.assertIn("fix trigger=review findings", self.led.run_notes("x", 5)[0]["note"])
+
+    def test_run_note_requires_minimum_duration_status_and_pushed_snapshot(self):
+        self.led.update_run(self.run_id, started_at=iso(NOW - timedelta(seconds=59)))
+        self.run["started_at"] = iso(NOW - timedelta(seconds=59))
+        Path(self.log).write_text("STATUS: DONE finished\n")
+        self.finalize()
+        self.assertEqual(self.led.run_notes("x", 5), [])
+
+        self.run.update(id=self.run_id, started_at=iso(NOW - timedelta(minutes=2)))
+        self.led.update_run(self.run_id, started_at=self.run["started_at"])
+        Path(self.log).write_text("no status line\n")
+        self.finalize()
+        self.assertEqual(self.led.run_notes("x", 5), [])
+
+    def test_run_note_requires_a_pushed_snapshot(self):
+        self.run["started_at"] = iso(NOW - timedelta(minutes=2))
+        self.led.update_run(self.run_id, started_at=self.run["started_at"])
+        Path(self.log).write_text("STATUS: DONE finished\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        self.assertEqual(self.led.run_notes("x", 5), [])
+
     def check_completed_session_identity(self, role):
         self.run.update(role=role, platform='claude')
         self.led.update_run(self.run_id, role=role, platform='claude', status='running')
