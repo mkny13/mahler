@@ -36,6 +36,24 @@ def missing_scope_counts(led, cfg, project=None):
     return counts
 
 
+def _record_backlog(ctx, project, open_count):
+    """Net-backlog snapshot (mahler#1104), throttled hourly by the ledger.
+
+    `open_count` None (a 304 tick) reuses the last count: the collection is
+    unchanged. Never raises — a snapshot failure must not break sync."""
+    if ctx.dry_run:
+        return
+    try:
+        if open_count is None:
+            last = ctx.led.last_backlog(project)
+            if last is None:
+                return
+            open_count = last["open_count"]
+        ctx.led.record_backlog(project, open_count)
+    except Exception as e:  # noqa: BLE001 — a metric must never break sync
+        ctx.say(f"{project}: backlog snapshot failed: {e}")
+
+
 def sync(ctx, project):
     led, gh = ctx.led, ctx.gh(project)
     pol = ctx.policy(project)
@@ -55,6 +73,7 @@ def sync(ctx, project):
     repair_key = f"unmerged_reconciled:{project}"
     if (not poll_changed and led.get_kv(depends_key) == "4"
             and led.get_kv(repair_key) == "1"):
+        _record_backlog(ctx, project, None)
         reconcile_shipped(ctx, project)
         _resume_dependency_waits(ctx, project)
         ctx.say(f"{project}: GitHub unchanged (304) — sync skipped")
@@ -88,6 +107,8 @@ def sync(ctx, project):
                         changed = True
     else:
         in_scope_nums = None
+    _record_backlog(ctx, project,
+                    len(issues) if in_scope_nums is None else len(in_scope_nums))
 
     # Prefer this poll over cached ancestry, regardless of GitHub issue ordering.
     parents = {iss["number"]: part_of(iss.get("body")) for iss in issues}

@@ -11,7 +11,7 @@ on the next tick instead of being lost for the day.
 import json
 from datetime import timedelta
 
-from . import notify
+from . import config, notify
 from .ledger import iso
 from .sync import missing_scope_counts
 
@@ -63,7 +63,8 @@ def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
     weekly = weekly_models(led, cfg, scorecard_rows) if (local_now or now.astimezone()).weekday() == 0 else None
     return {"models": weekly, "completed": completed, "waiting": waiting, "handoffs": handoffs,
             "usage": usage, "since": since, "now": now,
-            "missing_scope_counts": missing_scope_counts(led, cfg)}
+            "missing_scope_counts": missing_scope_counts(led, cfg),
+            "backlog_net": backlog_rows(led, cfg, now)}
 
 
 # ---------- the text builder (pure; unit-tested) ----------
@@ -116,6 +117,12 @@ def format_digest(data):
         lines.append(f"Open issues older than 24h missing scope label: {total} "
                      f"(latest full sync{suffix})")
 
+    backlog = data.get("backlog_net") or []
+    if backlog:
+        lines.append("Net backlog, opened − closed (+ = grew):")
+        for b in backlog:
+            lines.append(f"- {backlog_line(b['project'], b['net'], b.get('scope_label'))}")
+
     lines.append("Quota:")
     for u in data["usage"]:
         lines.append(f"- {u['platform']}: 5h {_pct(u['5h'])}, "
@@ -124,6 +131,46 @@ def format_digest(data):
         lines.append("Weekly model scorecard:")
         lines.extend(data["models"]["lines"])
     return "\n".join(lines)
+
+
+def signed(n):
+    """+3, −5 (U+2212 minus) or 0."""
+    return f"+{n}" if n > 0 else f"\u2212{-n}" if n < 0 else "0"
+
+
+def history_span(covered):
+    """A short span like '9d' or '5h' for how much history a window has."""
+    if covered >= timedelta(days=1):
+        return f"{covered.days}d"
+    return f"{int(covered.total_seconds() // 3600)}h"
+
+
+def backlog_line(project, net, scope_label=None):
+    """One digest line: `mahler: +3 / −5 / −12 (24h/7d/30d)` (mahler#1104)."""
+    suffix = f" (label {scope_label} only)" if scope_label else ""
+    if not net:
+        return f"{project}: backlog history starts today{suffix}"
+    parts = []
+    for key in ("24h", "7d", "30d"):
+        w = net[key]
+        text = signed(w["net"])
+        if not w["full"]:
+            text += f" (only {history_span(w['covered'])} of history)"
+        parts.append(text)
+    return f"{project}: {' / '.join(parts)} (24h/7d/30d){suffix}"
+
+
+def backlog_rows(led, cfg, now=None):
+    """Per enabled project: {project, net, scope_label} from ledger snapshots only."""
+    rows = []
+    for name in cfg.get("projects", {}):
+        pol = config.project_policy(cfg, name)
+        if not pol.get("enabled", True):
+            continue
+        rows.append({"project": name, "net": led.backlog_net(name, now=now),
+                     "scope_label": pol.get("scope_label")
+                     if pol.get("scope") == "label" else None})
+    return rows
 
 
 # ---------- gating and the tick hook ----------

@@ -344,3 +344,43 @@ account = "work"
         row = state._quota_row(self.cfg, self.led, {}, "work-claude-api",
                                ["work-claude-api"], {"work-claude-api"}, {})
         self.assertIn("no confirmed grant", row["detail"])
+
+
+class NetBacklogStateTests(unittest.TestCase):
+    """Console net backlog (mahler#1104): figures plus all copy from state.py."""
+
+    def setUp(self):
+        from datetime import timedelta
+        self.now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        for days_ago, count in ((31, 40), (7, 33), (1, 25), (0, 28)):
+            self.led.record_backlog('a', count, at=self.now - timedelta(days=days_ago))
+        self.led.record_backlog('b', 10, at=self.now - timedelta(days=9))
+        self.led.record_backlog('b', 6, at=self.now)
+        self.projects = [{'name': 'a', 'scope': 'all'},
+                         {'name': 'b', 'scope': 'label', 'scope_label': 'mahler'},
+                         {'name': 'c', 'scope': 'all'}]
+
+    def test_figures_and_copy(self):
+        nb = state._net_backlog({}, self.led, self.projects, self.now)
+        self.assertIn('+ means more issues opened than closed — the backlog grew', nb['explain'])
+        self.assertIn('shrank', nb['explain'])
+        a, b, c = nb['rows']
+        self.assertEqual([(w['key'], w['text'], w['tone'], w['note']) for w in a['windows']],
+                         [('24h', '+3', 'bad', None), ('7d', '\u22125', 'good', None),
+                          ('30d', '\u221212', 'good', None)])
+        self.assertIsNone(a['scope'])
+        self.assertEqual([(w['text'], w['full'], w['note']) for w in b['windows']][-1],
+                         ('\u22124', False, 'only 9d of history'))
+        self.assertIn('labelled mahler', b['scope'])
+        self.assertEqual(c['windows'], [])
+        self.assertEqual(c['empty'], state.NET_BACKLOG_EMPTY)
+
+    def test_page_renders_on_phone_and_desktop(self):
+        from mahler.console import page
+        s = {'net_backlog': state._net_backlog({}, self.led, self.projects, self.now)}
+        html = page._net_backlog(s)
+        for text in ('data-nb-project="a"', '+3', 'only 9d of history', 'labelled mahler',
+                     state.NET_BACKLOG_TITLE.replace('·', '·')):
+            self.assertIn(text, html)

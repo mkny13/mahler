@@ -292,3 +292,61 @@ class OpenCompletionTests(unittest.TestCase):
         sync.sync(self.ctx, 'x')
         self.assertEqual(self.led.item('x', 1)['state'], 'ready')
         self.gh.comment.assert_not_called()
+
+
+class BacklogSnapshotSyncTests(unittest.TestCase):
+    """sync records the net-backlog snapshot from data in hand (mahler#1104)."""
+
+    def setUp(self):
+        MissingScopeTests.setUp(self)
+
+    issue = MissingScopeTests.issue
+
+    def test_full_sync_records_in_scope_count_for_label_projects(self):
+        self.gh.open_issues.return_value = [
+            self.issue(1, 25, ["custom"]), self.issue(2, 25, ["custom"]),
+            self.issue(3, 25), self.issue(4, 1)]
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.last_backlog("x")["open_count"], 2)
+
+    def test_all_scope_counts_every_open_issue_once_per_hour(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        self.gh.open_issues.return_value = [self.issue(1, 25), self.issue(2, 1)]
+        sync.sync(self.ctx, "x")
+        self.gh.open_issues.return_value = [self.issue(1, 25)]
+        sync.sync(self.ctx, "x")                    # same hour: throttled
+        rows = self.led.q("SELECT open_count FROM backlog_snapshots WHERE project='x'")
+        self.assertEqual([r["open_count"] for r in rows], [2])
+
+    def test_304_reuses_last_count_without_fetching(self):
+        self.led.record_backlog("x", 7, at=self.led.now() - timedelta(hours=2))
+        self.gh.issues_changed.return_value = (False, "etag")
+        sync.sync(self.ctx, "x")
+        self.gh.open_issues.assert_not_called()
+        rows = self.led.q("SELECT at, open_count FROM backlog_snapshots WHERE project='x'"
+                          " ORDER BY at")
+        self.assertEqual([(r["at"], r["open_count"]) for r in rows][-1],
+                         (iso(self.led.now()), 7))
+        self.assertEqual(len(rows), 2)
+
+    def test_304_without_history_records_nothing(self):
+        self.gh.issues_changed.return_value = (False, "etag")
+        sync.sync(self.ctx, "x")
+        self.assertIsNone(self.led.last_backlog("x"))
+
+    def test_dry_run_records_nothing(self):
+        self.ctx.dry_run = True
+        self.gh.open_issues.return_value = [self.issue(1, 25, ["custom"])]
+        sync.sync(self.ctx, "x")
+        self.assertIsNone(self.led.last_backlog("x"))
+
+    def test_raising_record_backlog_does_not_break_sync(self):
+        self.gh.open_issues.return_value = [self.issue(4, 25, ["custom"])]
+        with mock.patch.object(self.led, "record_backlog", side_effect=RuntimeError("disk")):
+            sync.sync(self.ctx, "x")
+        self.assertEqual([i["number"] for i in self.led.items("x")], [4])
+        self.assertTrue(any("backlog snapshot failed: disk" in line for line in self.ctx.lines))
+        self.gh.issues_changed.return_value = (False, "etag")
+        self.led.record_backlog("x", 1, at=self.led.now() - timedelta(hours=2))
+        with mock.patch.object(self.led, "record_backlog", side_effect=RuntimeError("disk")):
+            sync.sync(self.ctx, "x")                # the 304 path too

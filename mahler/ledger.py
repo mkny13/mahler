@@ -332,6 +332,14 @@ CREATE TABLE IF NOT EXISTS capacity_intervals (
 );
 CREATE INDEX IF NOT EXISTS idx_capacity_open ON capacity_intervals(open, project, number, role);
 CREATE INDEX IF NOT EXISTS idx_capacity_last_seen ON capacity_intervals(last_seen);
+-- Net backlog (mahler#1104): sync's in-scope open-issue count, at most hourly
+-- per project, kept ~35 days. The change in open count is opened − closed.
+CREATE TABLE IF NOT EXISTS backlog_snapshots (
+    project    TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    open_count INTEGER NOT NULL,
+    PRIMARY KEY (project, at)
+);
 """
 
 SCHEMA += f"""
@@ -1014,6 +1022,64 @@ class Ledger:
             sql += " AND project=?"
             args.append(project)
         return self.q(sql + " ORDER BY first_seen, id LIMIT ?", (*args, limit))
+
+    # ---------- net backlog (mahler#1104) ----------
+
+    BACKLOG_WINDOWS = (("24h", timedelta(hours=24)), ("7d", timedelta(days=7)),
+                       ("30d", timedelta(days=30)))
+
+    def record_backlog(self, project, open_count, at=None,
+                       min_interval=timedelta(hours=1), keep=timedelta(days=35)):
+        """Snapshot the project's open-issue count, at most once per
+        `min_interval`; prune rows older than `keep`. True when a row was written."""
+        at = at or self.now()
+        with self._tx():
+            last = self.q1("SELECT at FROM backlog_snapshots WHERE project=?"
+                           " ORDER BY at DESC LIMIT 1", (project,))
+            wrote = last is None or at - parse(last["at"]) >= min_interval
+            if wrote:
+                self.con.execute("INSERT OR REPLACE INTO backlog_snapshots"
+                                 " (project, at, open_count) VALUES (?,?,?)",
+                                 (project, iso(at), int(open_count)))
+            self.con.execute("DELETE FROM backlog_snapshots WHERE project=? AND at < ?",
+                             (project, iso(at - keep)))
+        return wrote
+
+    def last_backlog(self, project):
+        """The project's newest snapshot row (project, at, open_count) or None."""
+        return self.q1("SELECT * FROM backlog_snapshots WHERE project=?"
+                       " ORDER BY at DESC LIMIT 1", (project,))
+
+    def backlog_net(self, project, now=None):
+        """Net backlog (opened − closed) per window, from snapshot differences.
+
+        {"24h"|"7d"|"30d": {net, covered, full}}: the newest snapshot minus the
+        latest one at or before `now − window`; failing that, minus the oldest,
+        with full=False and covered = the span actually measured. None with
+        fewer than two snapshots."""
+        now = now or self.now()
+        rows = self.q("SELECT at, open_count FROM backlog_snapshots WHERE project=?"
+                      " ORDER BY at", (project,))
+        if len(rows) < 2:
+            return None
+        newest, oldest = rows[-1], rows[0]
+        newest_at = parse(newest["at"])
+        out = {}
+        for key, window in self.BACKLOG_WINDOWS:
+            start = iso(now - window)
+            base = None
+            for row in rows:
+                if row["at"] <= start:
+                    base = row
+                else:
+                    break
+            full = base is not None
+            if base is None:
+                base = oldest
+            out[key] = {"net": newest["open_count"] - base["open_count"],
+                        "covered": newest_at - parse(base["at"]),
+                        "full": full}
+        return out
 
     # ---------- plumbing ----------
 

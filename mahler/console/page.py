@@ -951,9 +951,34 @@ def _stats_rows(s):
     return "".join(rows)
 
 
+def _net_backlog(s):
+    """Net backlog per project (mahler#1104); every word comes from state.py."""
+    nb = s.get("net_backlog")
+    if not nb:
+        return ""
+    rows = []
+    for r in nb["rows"]:
+        if r["windows"]:
+            figs = "".join(
+                f'<span class="nb-win" data-nb-window="{e(w["key"])}">'
+                f'<span class="statlabel">{e(w["key"])}</span>'
+                f'<span class="statnum mono t-{e(w["tone"])}">{e(w["text"])}</span>'
+                + (f'<span class="statprev">{e(w["note"])}</span>' if w["note"] else "")
+                + '</span>' for w in r["windows"])
+        else:
+            figs = f'<span class="statprev">{e(r["empty"])}</span>'
+        scope = f'<span class="statprev nb-scope">{e(r["scope"])}</span>' if r["scope"] else ""
+        rows.append(f'<div class="statcard nb-row" data-nb-project="{e(r["project"])}">'
+                    f'<span class="name mono">{e(r["project"])}</span>'
+                    f'<span class="nb-figs">{figs}</span>{scope}</div>')
+    return (f'<div class="net-backlog"><h3 class="nb-title">{e(nb["title"])}</h3>'
+            f'<p class="settings-help nb-explain">{e(nb["explain"])}</p>'
+            f'<div class="stats-grid">{"".join(rows)}</div></div>')
+
+
 def _d_stats(s):
     return (f'<section class="view view-stats">{_stats_controls(s)}'
-            f'<div class="stats-grid">{_stats_rows(s)}</div></section>')
+            f'<div class="stats-grid">{_stats_rows(s)}</div>{_net_backlog(s)}</section>')
 
 
 # ---------- phone ----------
@@ -1085,7 +1110,8 @@ def _settings_form(settings, layout):
 
 def _p_stats(s):
     return (f'<section class="tabv tabv-stats"><div class="pad view-stats">'
-            f'{_stats_controls(s)}<div class="stats-grid">{_stats_rows(s)}</div></div></section>')
+            f'{_stats_controls(s)}<div class="stats-grid">{_stats_rows(s)}</div>'
+            f'{_net_backlog(s)}</div></section>')
 
 
 def _p_now(s):
