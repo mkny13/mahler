@@ -129,6 +129,16 @@ def _pyproject(text, path, direct):
         for entries in project.get("optional-dependencies", {}).values():
             for requirement in entries:
                 _pep_requirement(requirement, path, direct)
+    build_system = data.get("build-system", {})
+    if not isinstance(build_system, dict):
+        raise VettingError(f"ambiguous build-system in {path}")
+    build_requirements = build_system.get("requires", [])
+    if not isinstance(build_requirements, list):
+        raise VettingError(f"ambiguous build-system requires in {path}")
+    for requirement in build_requirements:
+        if not isinstance(requirement, str):
+            raise VettingError(f"ambiguous build-system requirement in {path}")
+        _pep_requirement(requirement, path, direct)
     poetry = data.get("tool", {}).get("poetry", {})
     groups = [poetry.get("dependencies", {}), poetry.get("dev-dependencies", {})]
     groups.extend(g.get("dependencies", {}) for g in poetry.get("group", {}).values())

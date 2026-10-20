@@ -102,6 +102,29 @@ class DependencyVettingTests(unittest.TestCase):
         self.assertIsNone(blocked)
         self.assertEqual(findings[0].dependency.version, "2.31.0")
 
+    def test_pypi_build_system_addition_is_vetted(self):
+        after = python_files()
+        after["pyproject.toml"] = (
+            '[build-system]\nrequires = ["requests>=2.30"]\n'
+            'build-backend = "requests.build"\n'
+        )
+        opener, calls = self.opener()
+        findings, blocked = vetting.vet({}, after, now=NOW, opener=opener)
+        self.assertIsNone(blocked)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].dependency.name, "requests")
+        self.assertEqual(findings[0].dependency.version, "2.31.0")
+        self.assertEqual(calls, [
+            "https://pypi.org/pypi/requests/json",
+            "https://api.osv.dev/v1/query",
+        ])
+
+    def test_malformed_build_system_requires_fails_closed(self):
+        after = {"pyproject.toml": '[build-system]\nrequires = "requests==2.31.0"\n'}
+        with self.assertRaisesRegex(vetting.VettingError,
+                                    "ambiguous build-system requires"):
+            vetting.changed_dependencies({}, after)
+
     def test_npm_version_change_uses_new_lock_resolution(self):
         before = npm_files(version="1.2.2")
         after = npm_files(version="1.2.3")
