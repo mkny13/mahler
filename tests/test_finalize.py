@@ -672,6 +672,33 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
         self.assertEqual(len([c for c in self.gh.comments if "mahler:no-change" in c]), 1)
 
+    def test_no_change_done_with_stale_closed_pr_enters_claim_review(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/snapshot/5-run7")
+        self.gh.pr_state = "CLOSED"
+        self.no_work_done(explanation="src.py:10 satisfies acceptance")
+
+        record = no_change.read(self.led, "x", 5)
+        self.assertEqual(record["phase"], "waiting")
+        self.assertEqual(record["claim_run"], self.run_id)
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertIsNone(self.led.item("x", 5)["pr"])
+        self.assertIsNone(self.led.item("x", 5)["branch"])
+        event = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                           "AND kind='state' ORDER BY at DESC LIMIT 1")[0]["detail"]
+        self.assertIn("no-change DONE awaiting independent base review", event)
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
+    def test_no_change_done_with_open_pr_keeps_existing_ship_path(self):
+        self.led.upsert_item("x", 5, pr=88, branch="mahler/5-x")
+        self.gh.pr_state = "OPEN"
+        self.no_work_done(explanation="src.py:10 satisfies acceptance")
+
+        self.assertEqual(no_change.read(self.led, "x", 5), {})
+        event = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                           "AND kind='state' ORDER BY at DESC LIMIT 1")[0]["detail"]
+        self.assertIn("build done — the conductor ships it", event)
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
     def test_repeated_no_work_parks_before_third_build_and_replay_is_quiet(self):
         self.no_work_done(explanation="already   implemented")
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")

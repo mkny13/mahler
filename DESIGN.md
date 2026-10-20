@@ -1355,7 +1355,9 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
 - **No-change build DONE** (mahler#716, #717). A clean worktree with zero commits
   ahead of the freshly fetched configured base supplies evidence; missing worktrees
   and Git/snapshot failures do not. The first claim enters independent review without
-  a build-attempt charge or PR. The existing review role checks a detached exact base
+  a build-attempt charge or PR. A confirmed closed-unmerged recorded PR and its stale
+  branch are cleared before this claim; open or merged PRs keep their existing ship path.
+  The existing review role checks a detached exact base
   SHA, grading the issue/comments against source and available evidence, never presumed
   green CI. Claim-mode JSON on REVIEW-PASS/FAIL carries evidence and remaining manual
   checks, separately from ordinary classified PR reviews. Durable kv binds claim/run/

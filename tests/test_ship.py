@@ -664,6 +664,28 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
         self.assert_nothing_shipped(ping)
 
+    def test_missing_snapshot_ref_queues_rebuild_and_notifies(self):
+        ref = "mahler/snapshot/5-run7"
+        self.led.upsert_item("x", 5, pr=88, branch=ref)
+        self.gh.view_state = "CLOSED"
+        missing_ref = gh_module.GHError(
+            f"git fetch --quiet --force: fatal: couldn't find remote ref refs/heads/{ref}")
+        with mock.patch.object(self.gh, "push_branch", side_effect=missing_ref):
+            ping = self.ship()
+
+        item = self.item()
+        self.assertEqual(item["state"], "ready")
+        self.assertIsNone(item["pr"])
+        self.assertIsNone(item["branch"])
+        self.assertLessEqual(item["attempts"], self.ctx.policy("x")["max_attempts"])
+        self.assertIsNone(self.led.lease("x", 5))
+        event = self.led.q("SELECT detail FROM events WHERE project='x' AND number=5 "
+                           "AND kind='snapshot_missing'")[0]["detail"]
+        self.assertIn(ref, event)
+        ping.assert_called_once()
+        self.assertIn("clean rebuild from current base", ping.call_args.args[1])
+        self.assert_nothing_shipped(ping)
+
     def test_closed_immediately_after_merge_request_is_not_shipped(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(self.gh, "pr_merge", side_effect=lambda *a: setattr(
