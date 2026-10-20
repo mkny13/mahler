@@ -834,6 +834,36 @@ class GH:
                           redact.redact(result.stderr.strip())[:400])
         return result.returncode == 0
 
+    def dependency_files(self, path, base, head):
+        """Return changed dependency-file snapshots from the fetched PR base/head."""
+        from .dependency_vetting import relevant_path
+
+        if not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+            raise GHError("dependency vetting: missing or invalid PR head SHA")
+        if not isinstance(base, str) or not base:
+            raise GHError("dependency vetting: missing PR target branch")
+        self._git(path, "check-ref-format", f"refs/heads/{base}")
+        target = self._git(path, "rev-parse", "--verify",
+                           f"refs/remotes/origin/{base}^{{commit}}")
+        self._git(path, "rev-parse", "--verify", f"{head}^{{commit}}")
+        names = self._git(path, "diff", "--name-only", "-z", target, head).split("\0")
+        if not any(relevant_path(name) for name in names if name):
+            return {}, {}
+
+        def snapshot(revision):
+            tree_paths = self._git(path, "ls-tree", "-r", "--name-only", "-z",
+                                   revision).split("\0")
+            result = {}
+            for name in tree_paths:
+                if name and relevant_path(name):
+                    try:
+                        result[name] = self._git(path, "show", f"{revision}:{name}")
+                    except GHError:
+                        raise GHError(f"dependency vetting: cannot read {name}") from None
+            return result
+
+        return snapshot(target), snapshot(head)
+
     def update_reviewed_branch(self, path, branch, base, head, authorize):
         """Merge current target into the reviewed head in an isolated checkout.
 
