@@ -633,6 +633,50 @@ class ReviewRecipeToolchainTests(unittest.TestCase):
                 self.assertIn(fragment, text)
 
 
+class TestSensitivityRecipeTests(unittest.TestCase):
+    def test_both_review_modes_check_changed_test_sensitivity_and_abuse_tests(self):
+        from pathlib import Path
+
+        recipe = (Path(__file__).resolve().parents[1] / "recipes/review.md").read_text()
+        claim, normal = recipe.split("<!-- normal-pr-review -->", 1)
+        for mode, text in (("claim", claim), ("normal", normal)):
+            normalized = " ".join(text.split())
+            for fragment in (
+                "each added or modified test",
+                "isolated baseline",
+                "exact checked base",
+                "retaining the changed test code",
+                "reverting non-test PR changes",
+                "`hardening`",
+                "`behavior`",
+                "Pure refactor and test-only PRs are exempt",
+                "state explicitly when either exemption applies",
+                "authorization, accounts, credentials, payments, or user data",
+                "negative/abuse test",
+                "unauthorized or other-user access is refused",
+                "blocking finding",
+            ):
+                with self.subTest(mode=mode, fragment=fragment):
+                    self.assertIn(fragment, normalized)
+
+    def test_build_and_fix_prompt_failing_first_and_sensitive_abuse_tests(self):
+        for role in ("build", "fix"):
+            text = " ".join(prompt.render(
+                role, number=1, repo="example/project", title="t",
+                worktree="/tmp/w", branch="b", base="main", verify="verify",
+                rules="", sizing="", scope_rules="", whats_new="").split())
+            for fragment in (
+                "failing-first tests",
+                "fail without the",
+                "pass with it",
+                "authorization, accounts, credentials, payments, or user data",
+                "negative/abuse test",
+                "unauthorized or other-user access is refused",
+            ):
+                with self.subTest(role=role, fragment=fragment):
+                    self.assertIn(fragment, text)
+
+
 class FixPromptToolchainHandoffTests(unittest.TestCase):
     class Context:
         def __init__(self, gh):

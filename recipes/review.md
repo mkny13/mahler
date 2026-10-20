@@ -21,6 +21,19 @@ optional usability/UAT observations, never missing required technical evidence. 
 source/acceptance mismatch fails with actionable evidence. Missing evidence is
 inconclusive: return an empty evidence list, never an unsupported pass.
 
+For any supplied PR diff, identify each added or modified test and run it against
+the checked-base implementation in an isolated baseline: start from the exact
+checked base, retaining the changed test code and reverting non-test PR changes. Do not
+modify this read-only review checkout. Report tests that still pass there as
+`hardening`, or as `behavior` when that test is the only evidence for the change.
+Pure refactor and test-only PRs are exempt from this baseline run; state explicitly
+when either exemption applies. If the candidate tests or diff are unavailable, say
+the sensitivity check is inconclusive rather than treating it as an exemption.
+
+For diffs changing authorization, accounts, credentials, payments, or user data,
+require at least one negative/abuse test showing unauthorized or other-user access
+is refused. Missing such a test is a blocking finding.
+
 Return one JSON object on one status line. Use mode "claim", evidence as a list
 of nonempty strings citing source locations, commands/results or concrete failures,
 and human_checks as a list of optional non-gating observations (empty if none).
@@ -60,6 +73,16 @@ Start by reading:
 $handoff
 
 Rules:
+Before applying the numbered review criteria, verify changed-test sensitivity
+against the base: for each added or modified test in the PR diff, run it in an
+isolated baseline based on the exact checked base, retaining the changed test code
+while reverting non-test PR changes. Do not alter the review checkout. Report tests
+that still pass against the base implementation as `hardening`, or as `behavior`
+when that test is the only evidence for the change. Pure refactor and test-only PRs
+are exempt; state explicitly when either exemption applies.
+For diffs changing authorization, accounts, credentials, payments, or user data,
+require at least one negative/abuse test showing unauthorized or other-user access
+is refused. Missing such a test is a blocking finding.
 1. **Be adversarial about correctness, not about completeness.** Try to disprove that this
    diff does what the issue asks, safely. A finding needs concrete evidence — a specific input
    or sequence of events, what happens, and what should happen instead. Style, naming, "could
