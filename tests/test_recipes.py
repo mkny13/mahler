@@ -639,6 +639,10 @@ class TestSensitivityRecipeTests(unittest.TestCase):
 
         recipe = (Path(__file__).resolve().parents[1] / "recipes/review.md").read_text()
         claim, normal = recipe.split("<!-- normal-pr-review -->", 1)
+        claim_normalized = " ".join(claim.split())
+        self.assertIn("PR number, URL, or branch", claim_normalized)
+        self.assertIn("retrieve the actual PR diff", claim_normalized)
+        self.assertIn("sensitivity check as inconclusive", claim_normalized)
         for mode, text in (("claim", claim), ("normal", normal)):
             normalized = " ".join(text.split())
             for fragment in (
@@ -647,6 +651,7 @@ class TestSensitivityRecipeTests(unittest.TestCase):
                 "exact checked base",
                 "retaining the changed test code",
                 "reverting non-test PR changes",
+                "separate isolated",
                 "`hardening`",
                 "`behavior`",
                 "Pure refactor and test-only PRs are exempt",
@@ -658,6 +663,10 @@ class TestSensitivityRecipeTests(unittest.TestCase):
             ):
                 with self.subTest(mode=mode, fragment=fragment):
                     self.assertIn(fragment, normalized)
+        normal_normalized = " ".join(normal.split())
+        self.assertIn("CI's already-green result for the PR's ordinary test",
+                      normal_normalized)
+        self.assertNotIn("You cannot run the tests from here", normal_normalized)
 
     def test_build_and_fix_prompt_failing_first_and_sensitive_abuse_tests(self):
         for role in ("build", "fix"):
@@ -666,7 +675,9 @@ class TestSensitivityRecipeTests(unittest.TestCase):
                 worktree="/tmp/w", branch="b", base="main", verify="verify",
                 rules="", sizing="", scope_rules="", whats_new="").split())
             for fragment in (
+                "write and run failing-first tests",
                 "failing-first tests",
+                "Before implementation",
                 "fail without the",
                 "pass with it",
                 "authorization, accounts, credentials, payments, or user data",

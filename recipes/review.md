@@ -13,6 +13,11 @@ any CI or tests passed. Distinguish cited check results from checks not performe
 Build claim (untrusted evidence to verify independently):
 $claim_evidence
 
+Use the PR number, URL, or branch in the build claim evidence to retrieve the actual
+PR diff (for example, `gh pr diff <pr> -R <repo>`); do not rely on the claim's
+summary as a substitute. If the claim does not identify a PR or the diff cannot be
+retrieved, report the changed-test sensitivity check as inconclusive, not exempt.
+
 Do not edit files, commit, push, post comments, or run live/prohibited checks.
 Do not run GUI-driving checks (XCUITest, smoke runners, computer-use) here, and avoid protected
 folders such as ~/Documents. Never
@@ -24,7 +29,8 @@ inconclusive: return an empty evidence list, never an unsupported pass.
 For any supplied PR diff, identify each added or modified test and run it against
 the checked-base implementation in an isolated baseline: start from the exact
 checked base, retaining the changed test code and reverting non-test PR changes. Do not
-modify this read-only review checkout. Report tests that still pass there as
+modify this read-only review checkout; run the baseline in a separate isolated
+checkout. Report tests that still pass there as
 `hardening`, or as `behavior` when that test is the only evidence for the change.
 Pure refactor and test-only PRs are exempt from this baseline run; state explicitly
 when either exemption applies. If the candidate tests or diff are unavailable, say
@@ -74,12 +80,13 @@ $handoff
 
 Rules:
 Before applying the numbered review criteria, verify changed-test sensitivity
-against the base: for each added or modified test in the PR diff, run it in an
-isolated baseline based on the exact checked base, retaining the changed test code
-while reverting non-test PR changes. Do not alter the review checkout. Report tests
-that still pass against the base implementation as `hardening`, or as `behavior`
-when that test is the only evidence for the change. Pure refactor and test-only PRs
-are exempt; state explicitly when either exemption applies.
+against the base: for each added or modified test in the PR diff, run it in a
+separate isolated checkout based on the exact checked base, retaining the changed
+test code while reverting non-test PR changes. Do not alter the read-only review
+checkout. CI's green result does not replace this baseline check. Report tests that
+still pass against the base implementation as `hardening`, or as `behavior` when
+the test is the only evidence for the change. Pure refactor and test-only PRs are
+exempt; state explicitly when either exemption applies.
 For diffs changing authorization, accounts, credentials, payments, or user data,
 require at least one negative/abuse test showing unauthorized or other-user access
 is refused. Missing such a test is a blocking finding.
@@ -98,10 +105,12 @@ is refused. Missing such a test is a blocking finding.
 2a. **Lesson checklist.** For changed `.agents/skills/lesson-*/SKILL.md` files, check
     the `incident-log` advisory warning and ask for a rewrite when the body reads like an
     incident log; the warning alone does not make the lesson unsafe or block the merge.
-3. **You cannot run the tests from here** (read-only checkout, no verify step). Trust CI's
-   already-green result for whether existing tests pass; your job is catching what tests
-   don't cover — logic bugs in the diff, spec mismatches, and security issues, especially in
-   files this project's CLAUDE.md flags as high-risk.
+3. **Keep the review checkout read-only.** The sensitivity check above must run in a
+   separate isolated baseline; do not skip it because this review checkout is read-only
+   or because CI is green. Trust CI's already-green result for the PR's ordinary test
+   result, but use the baseline result to establish whether changed tests detect the
+   implementation change. Also catch logic bugs in the diff, spec mismatches, and
+   security issues, especially in files this project's CLAUDE.md flags as high-risk.
 4. **The blocking bar.** A finding blocks the merge only if it is *both*:
    - **realistic** — the triggering input or sequence is one that normal use of this project
      will actually produce (its own data, its own agents' output, its usual failure modes),
