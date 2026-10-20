@@ -140,6 +140,29 @@ class DependencyVettingTests(unittest.TestCase):
             vetting.vet({}, files, now=NOW, opener=opener)
         opener.assert_not_called()
 
+    def test_stale_python_lock_version_fails_before_registry_calls(self):
+        before = {
+            "pyproject.toml": '[project]\ndependencies = ["demo==1.0"]\n',
+            "uv.lock": 'version = 1\n\n[[package]]\nname = "demo"\nversion = "1.0"\n',
+        }
+        after = {
+            "pyproject.toml": '[project]\ndependencies = ["demo==2.0"]\n',
+            "uv.lock": 'version = 1\n\n[[package]]\nname = "demo"\nversion = "1.0"\n',
+        }
+        opener = mock.Mock()
+        with self.assertRaisesRegex(
+                vetting.VettingError, r"lockfile version 1\.0 does not satisfy pypi dependency demo"):
+            vetting.vet(before, after, now=NOW, opener=opener)
+        opener.assert_not_called()
+
+    def test_stale_npm_lock_version_fails_before_registry_calls(self):
+        after = npm_files(declaration="^2.0.0", version="1.9.0")
+        opener = mock.Mock()
+        with self.assertRaisesRegex(
+                vetting.VettingError, r"lockfile version 1\.9\.0 does not satisfy npm dependency"):
+            vetting.vet({}, after, now=NOW, opener=opener)
+        opener.assert_not_called()
+
     def test_conflicting_direct_declarations_fail_closed(self):
         after = {
             "pyproject.toml": "[project]\ndependencies = [\"safe_package>=1.0\"]\n",
