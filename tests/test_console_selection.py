@@ -64,6 +64,23 @@ class SelectionTests(unittest.TestCase):
         self.assertIn('data-capture-detail="1"', fragment)
         self.assertNotIn('data-release-detail=', fragment)
 
+    def test_project_navigation_renders_only_scoped_sections_and_global_scope_falls_back(self):
+        scoped = state.build(self.cfg, self.led, project_scope="project-0")
+        self.assertEqual(scoped["landing"]["view"], "overview")
+        for layout, key in (("desktop", "view"), ("phone", "tab")):
+            for name, _ in page.PROJECT_VIEWS:
+                fragment = page.app(scoped, layout, **{key: name})
+                self.assertIn(f'data-rendered-section="{name}"', fragment)
+                self.assertIn('data-project-scope="project-0"', fragment)
+                self.assertNotIn('data-go="capacity"', fragment)
+                self.assertNotIn('data-tab-go="models"', fragment)
+                sections = re.findall(
+                    r'<section class="(?:view|tabv) (?:view|tabv)-([^" ]+)', fragment)
+                self.assertEqual(sections, [name])
+        invalid = state.build(self.cfg, self.led, project_scope="old")
+        self.assertIsNone(invalid["project_scope"])
+        self.assertEqual(invalid["landing"], self.s["landing"])
+
     def test_long_tasks_are_validated_and_recorded(self):
         report = dict(kind="longtask", duration_ms=1200, layout="phone", view="triage",
                       elements=100, fragment_bytes=12000, heap_bytes=50000,
@@ -93,6 +110,18 @@ class SelectionHTTPTests(_Served):
         self.assertIn('data-rendered-section="settings"', fragment)
         self.assertNotIn('class="ph"', fragment)
         self.assertNotIn('section class="view view-now"', fragment)
+
+    def test_project_fragment_and_full_page_scope_survive_selection(self):
+        status, _, html = self.request("/?project=mahler")
+        self.assertEqual(status, 200)
+        self.assertIn('data-project-scope="mahler"', html)
+        self.assertIn('data-rendered-section="overview"', html)
+        status, _, html = self.request(
+            "/fragment?project=mahler&layout=desktop&view=backlog")
+        self.assertEqual(status, 200)
+        self.assertIn('data-project-scope="mahler"', html)
+        self.assertIn('data-rendered-section="backlog"', html)
+        self.assertIn('class="view view-backlog"', html)
 
     def test_long_task_uses_existing_endpoint_and_limiter(self):
         payload = dict(kind="longtask", duration_ms=1500, layout="desktop", view="now",

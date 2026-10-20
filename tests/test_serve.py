@@ -244,6 +244,29 @@ class TestPages(_Served):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["stats_range"], "custom:2026-09-01:2026-09-12")
 
+    def test_project_query_accepts_only_enabled_projects_on_pages_fragments_and_state(self):
+        self.cfg["projects"]["disabled"] = {"enabled": False, "repo": "mkny13/disabled"}
+        status, _, body = self.request("/?project=mahler")
+        self.assertEqual(status, 200)
+        self.assertIn('data-project-scope="mahler"', body)
+        self.assertIn('data-rendered-section="overview"', body)
+
+        status, _, fragment = self.request("/fragment?project=mahler&layout=phone&tab=history")
+        self.assertEqual(status, 200)
+        self.assertIn('data-project-scope="mahler"', fragment)
+        self.assertIn('data-rendered-section="history"', fragment)
+        self.assertIn('class="tabv tabv-history"', fragment)
+
+        status, _, body = self.request("/api/state?project=mahler")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["project_scope"], "mahler")
+
+        for value in ("", "disabled", "unknown"):
+            with self.subTest(project=value):
+                status, _, fragment = self.request(f"/fragment?project={value}")
+                self.assertEqual(status, 200)
+                self.assertIn('data-project-scope=""', fragment)
+
     def test_unknown_path_404(self):
         self.assertEqual(self.request("/status")[0], 404)
 

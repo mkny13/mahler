@@ -73,16 +73,20 @@ def scorecard_rows(cfg, led):
     return rows
 
 
-def build(cfg, led, stats_range="week", section=None):
+def build(cfg, led, stats_range="week", section=None, project_scope=None):
     """The whole console as plain data (see docs/console/design.md, "Shared
     state model"). Client-only state — tab, theme, expanded groups — is not
     here; the page keeps that in the browser. `section` is the view or tab
     being rendered; the model scorecard is only built for the sections that
-    show it (None builds everything, for /api/state)."""
+    show it (None builds everything, for /api/state). `project_scope` filters
+    project-shaped views after the shared snapshot is built."""
     measured = section is None or section in SCORECARD_SECTIONS
     measurement_rows = scorecard_rows(cfg, led) if measured else []
     now = led.now()
     projects = config.enabled_projects(cfg)
+    project_names = [p["name"] for p in projects]
+    if project_scope not in project_names:
+        project_scope = None
     peak = _peak(cfg, led)
     runs = _runs(cfg, led, now)
     active_by_platform = {}
@@ -93,11 +97,10 @@ def build(cfg, led, stats_range="week", section=None):
     uat = _uat(cfg, led, projects)
     backlog = _backlog(cfg, led, projects)
     dep_graph = {g["project"]: _graph(g["items"]) for g in backlog if len(g["items"]) > 1}
-    events = _events(cfg, led)
-    digest = _digest(cfg, led, now)
+    events = _events(cfg, led, project_scope)
+    digest = _digest(cfg, led, now, project_scope)
     paused = led.paused()
     hot = _hot_holds(led, projects, now)
-    project_names = [p["name"] for p in projects]
     releases_data = _releases(cfg, led, projects, now)
     briefs = _briefs(cfg, led, projects, now)
     s = {
@@ -131,7 +134,7 @@ def build(cfg, led, stats_range="week", section=None):
         "briefs": briefs,
         "briefs_unread": sum(b["count"] for b in briefs),
         "events": events,
-        "recent_problems": _recent_problems(cfg, led, now),
+        "recent_problems": _recent_problems(cfg, led, now, project_scope),
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
         "projects": project_names,
@@ -139,11 +142,69 @@ def build(cfg, led, stats_range="week", section=None):
         "settings": config.settings(cfg),
     }
     s["idle"] = None if runs else _idle(cfg, led, s, hot, now)
-    s["landing"] = {
+    all_projects_landing = {
         "tab": "triage" if needs else "now",
         "view": "needs" if needs else "now",
     }
+    s["landing"] = dict(all_projects_landing)
+    s["all_projects_landing"] = dict(all_projects_landing)
+    s["project_scope"] = project_scope
+    s["scope_options"] = _scope_options(project_names, runs, needs, backlog,
+                                         releases_data, paused)
+    if project_scope:
+        s["runs"] = [row for row in runs if row["ref"].startswith(project_scope + "#")]
+        s["needs"] = [row for row in needs if row["project"] == project_scope]
+        s["needs_count"] = sum(row["pending"] is None for row in s["needs"])
+        s["projects"] = [project_scope]
+        s["uat"] = [row for row in uat if row["project"] == project_scope]
+        s["sessions"] = _uat_sessions(s["uat"])
+        s["backlog"] = [group for group in backlog if group["project"] == project_scope]
+        s["backlog_total"] = sum(len(group["items"]) for group in s["backlog"])
+        s["dep_graph"] = {name: graph for name, graph in dep_graph.items()
+                          if name == project_scope}
+        s["releases"] = [row for row in releases_data if row["project"] == project_scope]
+        s["releases_suggested"] = sum(
+            1 for row in s["releases"] if row["draft"]["is_suggested"])
+        s["briefs"] = [row for row in briefs if row["project"] == project_scope]
+        s["briefs_unread"] = sum(row["count"] for row in s["briefs"])
+        s["stats"] = {project_scope: s["stats"][project_scope]}
+        s["net_backlog"]["rows"] = [
+            row for row in s["net_backlog"]["rows"] if row["project"] == project_scope]
+        s["events"] = [row for row in events if row["project"] == project_scope]
+        s["recent_problems"] = [
+            row for row in s["recent_problems"] if row["project"] == project_scope]
+        s["digest"]["rows"] = [
+            row for row in s["digest"]["rows"] if row["project"] == project_scope]
+        s["digest"]["count"] = len(s["digest"]["rows"])
+        s["banners"] = [row for row in s["banners"]
+                        if row.get("project") == project_scope]
+        s["landing"] = {"tab": "overview", "view": "overview"}
     return s
+
+
+def _scope_options(project_names, runs, needs, backlog, releases, paused):
+    """Expose each enabled project's one-line status from the existing snapshot."""
+    options = []
+    for name in project_names:
+        running = sum(1 for row in runs if row["project"] == name)
+        waiting = sum(1 for row in needs if row["project"] == name and row["pending"] is None)
+        group = next((row for row in backlog if row["project"] == name), None)
+        queued = sum(1 for row in (group or {}).get("items", [])
+                     if row["state"] in ("ready", "inbox"))
+        release = next((row for row in releases if row["project"] == name), None)
+        version = next((row["version"] for row in (release or {}).get("published", [])), "")
+        status = ("paused" if paused else "running" if running else
+                  "waiting on you" if waiting else f"{queued} queued" if queued else "quiet")
+        options.append({
+            "name": name,
+            "status": status,
+            "running": running,
+            "queued": queued,
+            "waiting_on_you": waiting,
+            "paused": paused,
+            "current_version": version,
+        })
+    return options
 
 
 # ---------- productivity stats ----------
@@ -713,7 +774,8 @@ def _runs(cfg, led, now):
                   else ls["text"])
         status_tone = ls["tone"] if r["status"] not in ("stopping",) and r["id"] not in stop_queued else "mut"
         out.append({
-            "id": r["id"], "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
+            "id": r["id"], "project": project, "ref": _ref(project, n),
+            "url": _issue_url(cfg, project, n),
             "title": (item["title"] if item else None) or _ref(project, n),
             "platform": r["platform"], "role": r["role"], "role_label": role_label,
             "mins": mins, "est": est,
@@ -1415,27 +1477,37 @@ def _rows(cfg, led, where="", args=(), limit=EVENTS_SHOWN):
     return out
 
 
-def _recent_problems(cfg, led, now):
+def _recent_problems(cfg, led, now, project=None):
     marks = ",".join("?" for _ in PROBLEM_KINDS)
-    rows = _rows(cfg, led, f"AND kind IN ({marks}) AND at >= ? AND at <= ?",
-                 (*PROBLEM_KINDS, iso(now - timedelta(hours=24)), iso(now)),
+    where = f"AND kind IN ({marks}) AND at >= ? AND at <= ?"
+    args = (*PROBLEM_KINDS, iso(now - timedelta(hours=24)), iso(now))
+    if project:
+        where += " AND project=?"
+        args += (project,)
+    rows = _rows(cfg, led, where, args,
                  limit=RECENT_PROBLEMS_SHOWN)
     for row in rows:
         row["text"] = " ".join(row["text"].split())
     return rows
 
 
-def _events(cfg, led):
-    return _rows(cfg, led)
+def _events(cfg, led, project=None):
+    return _rows(cfg, led, "AND project=?" if project else "",
+                 (project,) if project else ())
 
 
-def _digest(cfg, led, now):
+def _digest(cfg, led, now, project=None):
     """Events since you last marked the stream seen — the "3 new" chip."""
     try:
         seen = int(led.get_kv(SEEN_KEY) or 0)
     except (TypeError, ValueError):
         seen = 0
-    rows = [r for r in _rows(cfg, led, "AND id > ?", (seen,), limit=DIGEST_SHOWN)
+    where = "AND id > ?"
+    args = (seen,)
+    if project:
+        where += " AND project=?"
+        args += (project,)
+    rows = [r for r in _rows(cfg, led, where, args, limit=DIGEST_SHOWN)
             if r["at"] and now - r["at"] < timedelta(hours=DIGEST_HOURS)]
     return {"count": len(rows), "rows": rows,
             "upto": max((r["id"] for r in rows), default=seen)}

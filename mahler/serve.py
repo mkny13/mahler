@@ -121,9 +121,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _json(self, status, obj):
         self._send(status, json.dumps(obj, default=_json_default), "application/json")
 
-    def _state(self, stats_range="week", section=None):
-        cfg = self.load_cfg()
-        return cfg, state.build(cfg, self.led, stats_range, section=section)
+    def _state(self, stats_range="week", section=None, project_scope=None, cfg=None):
+        cfg = cfg or self.load_cfg()
+        return cfg, state.build(cfg, self.led, stats_range, section=section,
+                                project_scope=project_scope)
 
     def do_GET(self):
         request = urlsplit(self.path)
@@ -260,10 +261,16 @@ class _Handler(BaseHTTPRequestHandler):
                     ])[0]
                 selected = dict(layout=preference("layout", "desktop"),
                                 view=preference("view"), tab=preference("tab"))
+                cfg = self.load_cfg()
+                requested_scope = (query.get("project") or [""])[0]
+                enabled = {p["name"] for p in config.enabled_projects(cfg)}
+                project_scope = requested_scope if requested_scope in enabled else None
+                if project_scope and "view" not in query and "tab" not in query:
+                    selected.update(view="overview", tab="overview")
                 # Only the rendered section's data is built; /api/state gets it all.
                 section = None if path == "/api/state" else (
                     selected["tab"] if selected["layout"] == "phone" else selected["view"]) or ""
-                _, s = self._state(range_key, section)
+                _, s = self._state(range_key, section, project_scope, cfg)
                 if path == "/":
                     out, ctype = page.document(s, **selected), "text/html; charset=utf-8"
                 elif path == "/fragment":

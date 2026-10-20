@@ -33,7 +33,9 @@
   }
   function selectionUrl() {
     rememberSelection();
-    return "&layout=" + layout + "&view=" + encodeURIComponent(root.getAttribute("data-view")) +
+    var scope = root.getAttribute("data-project-scope") || "";
+    return (scope ? "&project=" + encodeURIComponent(scope) : "") +
+      "&layout=" + layout + "&view=" + encodeURIComponent(root.getAttribute("data-view")) +
       "&tab=" + encodeURIComponent(root.getAttribute("data-tab")) +
       "&run=" + encodeURIComponent(openRun || "") + "&revert=" + encodeURIComponent(openRevert || "") +
       "&bug=" + encodeURIComponent(openBug || "") + "&release=" + encodeURIComponent(openRelease || "") +
@@ -303,6 +305,25 @@
   function setTab(tab) {
     root.setAttribute("data-tab", tab);
     store("session", "mahler.tab", tab);
+    window.scrollTo(0, 0);
+    return loading(refresh(true));
+  }
+  function setProjectScope(project) {
+    project = project || "";
+    if (project === (root.getAttribute("data-project-scope") || "")) { return; }
+    root.setAttribute("data-project-scope", project);
+    var view = project ? "overview" : root.getAttribute("data-all-view");
+    var tab = project ? "overview" : root.getAttribute("data-all-tab");
+    root.setAttribute("data-view", view || "now");
+    root.setAttribute("data-tab", tab || "now");
+    store("session", "mahler.view", root.getAttribute("data-view"));
+    store("session", "mahler.tab", root.getAttribute("data-tab"));
+    openRun = openRevert = openBug = openRelease = null;
+    openCapture = false;
+    var url = new URL(window.location.href);
+    url.search = "";
+    if (project) { url.searchParams.set("project", project); }
+    window.history.pushState(null, "", url.pathname + url.search + url.hash);
     window.scrollTo(0, 0);
     return loading(refresh(true));
   }
@@ -961,6 +982,8 @@
 
   document.addEventListener("change", function (ev) {
     var el = ev.target;
+    var scope = el && el.closest && el.closest("[data-project-scope-switcher]");
+    if (scope && app.contains(scope)) { setProjectScope(scope.value); }
     if (el && el.closest && el.closest("[data-settings-form]")) { settingsDirty = true; }
     if (el && el.hasAttribute && el.hasAttribute("data-capture-select")) { updateCaptureSave(el); }
     if (el && el.classList && el.classList.contains("attach-in") && el.files && el.files.length > 0) {
@@ -1069,8 +1092,13 @@
   } catch (ignore) {}
 
   // a stored view or tab this page no longer has falls back to the landing one
-  if (!["now", "needs", "test", "capture", "backlog", "releases", "capacity", "stats", "models", "history", "settings"].includes(root.getAttribute("data-view"))) { root.setAttribute("data-view", "now"); }
-  if (!["now", "triage", "releases", "browse", "stats", "models", "settings"].includes(root.getAttribute("data-tab"))) { root.setAttribute("data-tab", "now"); }
+  var projectScope = root.getAttribute("data-project-scope") || "";
+  var validViews = projectScope ? ["overview", "needs", "backlog", "releases", "stats", "history"] :
+    ["now", "needs", "test", "capture", "backlog", "releases", "capacity", "stats", "models", "history", "settings"];
+  var validTabs = projectScope ? ["overview", "needs", "backlog", "releases", "stats", "history"] :
+    ["now", "triage", "releases", "browse", "stats", "models", "settings"];
+  if (!validViews.includes(root.getAttribute("data-view"))) { root.setAttribute("data-view", projectScope ? "overview" : "now"); }
+  if (!validTabs.includes(root.getAttribute("data-tab"))) { root.setAttribute("data-tab", projectScope ? "overview" : "now"); }
   if (root.getAttribute("data-view") === "history") { markSeen(); }
   apply();
   if (!applyHash()) { refresh(true); }

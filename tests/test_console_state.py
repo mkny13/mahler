@@ -442,3 +442,90 @@ class NetBacklogStateTests(unittest.TestCase):
         ], 'Uneven timestamps')
         self.assertIn('class="nb-trend-line" d="M0.0,38.7 L30.0,5.3 L240.0,22.0"',
                       uneven)
+
+
+class ProjectScopeStateTests(unittest.TestCase):
+    def setUp(self):
+        from test_console import make_cfg
+
+        self.cfg = make_cfg()
+        self.now = datetime(2026, 9, 21, 12, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+        self.led.upsert_item("mahler", 101, title="Mahler queued", state="ready")
+        self.led.upsert_item("groundwork", 201, title="Groundwork waiting", state="needs_you")
+        self.led.set_state("groundwork", 201, "needs_you", "Choose an option")
+        self.led.upsert_item("groundwork", 202, title="Groundwork queued", state="ready")
+        self.led.upsert_item("groundwork", 203, title="Groundwork running", state="working")
+        self.led.create_run(project="groundwork", number=203, role="build",
+                            platform="cline-free", epoch=1, status="running",
+                            started_at=iso(self.now))
+        for project, number, version in (
+            ("mahler", 101, "1.2.3"), ("groundwork", 202, "2.4.1")):
+            self.led.snapshot_release_item(project, number, pr=number + 1000,
+                title=f"{project} shipped", merge_sha="abc123", labels=["type:feature"])
+            self.led.create_release(project, version, checkpoint_sha="abc123",
+                                    item_numbers=[number])
+            self.led.event("run_start", project=project, number=number)
+
+    def test_project_views_filter_exactly_and_menu_uses_snapshot_status(self):
+        all_projects = state.build(self.cfg, self.led)
+        selected = state.build(self.cfg, self.led, project_scope="groundwork")
+
+        self.assertEqual(selected["project_scope"], "groundwork")
+        self.assertEqual({row["project"] for row in selected["needs"]}, {"groundwork"})
+        self.assertEqual({row["project"] for row in selected["backlog"]}, {"groundwork"})
+        self.assertEqual({row["project"] for row in selected["releases"]}, {"groundwork"})
+        self.assertEqual(set(selected["stats"]), {"groundwork"})
+        self.assertEqual({row["project"] for row in selected["net_backlog"]["rows"]},
+                         {"groundwork"})
+        self.assertEqual({row["project"] for row in selected["events"]}, {"groundwork"})
+        self.assertEqual({row["project"] for row in all_projects["needs"]},
+                         {"groundwork"})
+        self.assertEqual({row["project"] for row in all_projects["backlog"]},
+                         {"mahler", "groundwork"})
+        self.assertEqual({row["project"] for row in all_projects["releases"]},
+                         {"mahler", "groundwork"})
+        self.assertEqual(set(all_projects["stats"]), {"mahler", "groundwork"})
+        self.assertEqual({row["project"] for row in all_projects["events"]},
+                         {"mahler", "groundwork"})
+
+        summary = next(row for row in selected["scope_options"]
+                       if row["name"] == "groundwork")
+        self.assertEqual(summary, {
+            "name": "groundwork", "status": "running", "running": 1, "queued": 1,
+            "waiting_on_you": 1, "paused": False, "current_version": "2.4.1"})
+        queued_summary = next(row for row in selected["scope_options"]
+                              if row["name"] == "mahler")
+        self.assertEqual((queued_summary["status"], queued_summary["queued"],
+                          queued_summary["current_version"]), ("1 queued", 1, "1.2.3"))
+        self.assertEqual(selected["landing"], {"view": "overview", "tab": "overview"})
+
+        self.led.set_kv("paused", "1")
+        paused = state.build(self.cfg, self.led, project_scope="groundwork")
+        paused_summary = next(row for row in paused["scope_options"]
+                              if row["name"] == "groundwork")
+        self.assertTrue(paused_summary["paused"])
+        self.assertEqual(paused_summary["status"], "paused")
+
+    def test_unknown_and_disabled_scope_falls_back_to_all_projects(self):
+        self.cfg["projects"]["disabled"] = {"enabled": False}
+        selected = state.build(self.cfg, self.led, project_scope="disabled")
+        self.assertIsNone(selected["project_scope"])
+        self.assertEqual(set(selected["stats"]), {"mahler", "groundwork"})
+        self.assertEqual(selected["landing"], {"view": "needs", "tab": "triage"})
+
+    def test_project_event_limits_apply_after_filtering(self):
+        for number in range(60):
+            self.led.event("console_client_error", project="mahler", number=101,
+                           detail={"message": f"other project {number}"})
+        self.led.event("console_client_error", project="groundwork", number=201,
+                       detail={"message": "selected project"})
+
+        selected = state.build(self.cfg, self.led, project_scope="groundwork")
+        self.assertTrue(selected["events"])
+        self.assertEqual({row["project"] for row in selected["events"]}, {"groundwork"})
+        self.assertEqual({row["project"] for row in selected["recent_problems"]},
+                         {"groundwork"})
+        self.assertIn("selected project", selected["recent_problems"][0]["text"])

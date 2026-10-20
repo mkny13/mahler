@@ -62,6 +62,13 @@ a { color: var(--acc); text-decoration: none; }
         display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
 .brand { font-weight: 600; font-size: 16px; line-height: 1; }
 .rail .brand { padding: 0 16px 8px; }
+.scope-brand { padding: 0 10px 8px; }
+.scope-switcher { max-width: 100%; min-width: 0; min-height: 38px; padding: 0 8px;
+                  border: 1px solid var(--line); border-radius: 5px; background: var(--bg);
+                  color: var(--ink); font: inherit; font-size: 12px; }
+.scope-wrap { display: block; min-width: 0; }
+.rail .scope-switcher { width: 100%; }
+.project-scope .scope-switcher { font-weight: 600; }
 .rail-i { display: flex; align-items: center; justify-content: space-between; gap: 8px;
           padding: 10px 16px; min-height: 40px; border-left: 2px solid transparent;
           font-size: 13.5px; color: var(--mut); width: 100%; }
@@ -69,6 +76,8 @@ a { color: var(--acc); text-decoration: none; }
 .rail-foot { margin-top: auto; padding: 14px 16px 0; border-top: 1px solid var(--line); }
 .rail-foot .btn { display: block; width: 100%; min-height: 34px; font-size: 12px; color: var(--mut);
                   text-align: center; }
+.scope-global-note { color: var(--mut); font-size: 10.5px; line-height: 1.45; }
+.rail-foot .scope-global-note { margin-bottom: 10px; }
 :root[data-view="now"] .rail-i[data-go="now"],
 :root[data-view="needs"] .rail-i[data-go="needs"],
 :root[data-view="test"] .rail-i[data-go="test"],
@@ -79,6 +88,14 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="stats"] .rail-i[data-go="stats"],
 :root[data-view="history"] .rail-i[data-go="history"],
 :root[data-view="settings"] .rail-i[data-go="settings"] {
+  background: var(--bg); border-left-color: var(--acc); color: var(--ink); font-weight: 600;
+}
+:root[data-view="overview"] .rail-i[data-go="overview"],
+:root[data-view="needs"] .project-scope .rail-i[data-go="needs"],
+:root[data-view="backlog"] .project-scope .rail-i[data-go="backlog"],
+:root[data-view="releases"] .project-scope .rail-i[data-go="releases"],
+:root[data-view="stats"] .project-scope .rail-i[data-go="stats"],
+:root[data-view="history"] .project-scope .rail-i[data-go="history"] {
   background: var(--bg); border-left-color: var(--acc); color: var(--ink); font-weight: 600;
 }
 
@@ -92,6 +109,7 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="backlog"] .vt-backlog, :root[data-view="releases"] .vt-releases,
 :root[data-view="capacity"] .vt-capacity, :root[data-view="stats"] .vt-stats,
 :root[data-view="history"] .vt-history, :root[data-view="settings"] .vt-settings { display: inline; }
+:root[data-view="overview"] .vt-overview { display: inline; }
 .peak-btn { margin-left: auto; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line);
             border-radius: 4px; padding: 0 10px; min-height: 32px; }
 .settings-head-link { margin-left: auto; }
@@ -351,8 +369,13 @@ a { color: var(--acc); text-decoration: none; }
 .phead-btns .theme { min-width: 44px; font-size: 12px; color: var(--mut); }
 .phead-btns .pause { font-size: 13px; padding: 0 12px; }
 .phead-btns .settings-link { font-size: 12px; padding: 0 8px; }
+.project-phead .scope-wrap { flex: 1; }
+.project-phead .scope-switcher { width: 100%; }
+.project-phead .scope-global-note { padding: 0 14px 8px; }
 :root[data-tab="settings"] .settings-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
 .tabs { display: flex; gap: 4px; }
+.project-tabs { overflow-x: auto; }
+.project-tabs .tab { flex: 0 0 auto; padding: 0 8px; font-size: 13px; }
 .tab { flex: 1; min-height: 46px; border-bottom: 2px solid transparent; display: flex;
        align-items: center; justify-content: center; gap: 6px; font-size: 15px; color: var(--mut); }
 .tab .mono { font-size: 10px; }
@@ -360,11 +383,25 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-tab="releases"] .tab[data-tab-go="releases"],
 :root[data-tab="browse"] .tab[data-tab-go="browse"], :root[data-tab="stats"] .tab[data-tab-go="stats"] {
   border-bottom-color: var(--ink); color: var(--ink); font-weight: 600; }
+:root[data-tab="overview"] .project-tabs .tab[data-tab-go="overview"],
+:root[data-tab="needs"] .project-tabs .tab[data-tab-go="needs"],
+:root[data-tab="backlog"] .project-tabs .tab[data-tab-go="backlog"],
+:root[data-tab="releases"] .project-tabs .tab[data-tab-go="releases"],
+:root[data-tab="stats"] .project-tabs .tab[data-tab-go="stats"],
+:root[data-tab="history"] .project-tabs .tab[data-tab-go="history"] {
+  border-bottom-color: var(--ink); color: var(--ink); font-weight: 600;
+}
 .tabv { display: none; }
 :root[data-tab="now"] .tabv-now, :root[data-tab="triage"] .tabv-triage,
 :root[data-tab="releases"] .tabv-releases,
 :root[data-tab="browse"] .tabv-browse, :root[data-tab="stats"] .tabv-stats,
 :root[data-tab="settings"] .tabv-settings { display: block; }
+:root[data-tab="overview"] .tabv-overview, :root[data-tab="needs"] .tabv-needs,
+:root[data-tab="backlog"] .tabv-backlog, :root[data-tab="history"] .tabv-history {
+  display: block;
+}
+.project-overview { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.project-overview-links { display: flex; flex-wrap: wrap; gap: 8px; }
 .tabv-settings .settings-form { padding: 14px 14px 24px; }
 .ph .settings-grid { grid-template-columns: 1fr; }
 .ph .settings-field input, .ph .settings-field select, .ph .route-add select { min-height: 44px; }

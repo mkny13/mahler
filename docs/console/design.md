@@ -547,6 +547,19 @@ The separate console walkthrough remains a software testing practice.
 - Scheduler-recorded structured holds, automatic console restart after a code
   update, and ntfy needs-you deep links.
 
+### Project scope
+
+The optional `project` query parameter selects an enabled project; absent,
+empty, disabled, or unknown names keep the Mahler-wide view. The desktop rail
+and phone header expose the same switcher, with each enabled project's current
+status and latest published version. Project scope lands on Overview and limits
+Needs you, Backlog, Releases, Stats, and Event stream to that project. Capacity,
+Models, and Settings are Mahler-wide and are not offered in project navigation.
+Changing scope updates the URL, preserves the active layout, and survives reload;
+choosing all projects removes the query parameter and restores the normal landing
+view. Overview is currently a minimal navigation shell for the dependent
+overview-content work.
+
 ### Changed from the design (owner, 2026-09-15)
 
 These override the verbatim spec above.
