@@ -353,6 +353,18 @@
     if (settingsDirty && form) { settingsDraft = form; }
   }
 
+  // A failed refresh keeps the old fragment, so say in both headers that it is
+  // stale and since when (mahler#1108). The next success hides it again.
+  var lastUpdated = new Date();
+  function noteStale(failed) {
+    var notes = app.querySelectorAll("[data-stale-note]");
+    var at = ("0" + lastUpdated.getHours()).slice(-2) + ":" + ("0" + lastUpdated.getMinutes()).slice(-2);
+    for (var i = 0; i < notes.length; i++) {
+      if (failed) { notes[i].textContent = notes[i].getAttribute("data-stale-note").replace("{time}", at); }
+      notes[i].hidden = !failed;
+    }
+  }
+
   function refresh(force) {
     if (document.hidden) { return Promise.resolve(); }
     if (settingsDirty && !force && app.querySelector("[data-settings-form]")) { return Promise.resolve(); }
@@ -373,6 +385,8 @@
       return r.text();
     }).then(function (html) {
       if (sequence !== refreshSequence || url !== statsUrl()) { return; }
+      lastUpdated = new Date();
+      noteStale(false);
       fragmentBytes = new TextEncoder().encode(html).length;
       // Submitted drafts still need clearing even when server state is unchanged.
       if (html === lastFragment && !skip.length) {
@@ -405,7 +419,10 @@
       }
       apply();
       noteRevision();
-    }).catch(function (err) { if (window.console) { console.warn(err); } });
+    }).catch(function (err) {
+      if (window.console) { console.warn(err); }
+      if (sequence === refreshSequence) { noteStale(true); }
+    });
   }
 
   // refresh() swaps only #app, so a server restart can pair new controls with

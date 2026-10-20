@@ -704,3 +704,10 @@ a { color: var(--acc); text-decoration: none; }
 .weekly-list { list-style: none; padding: 0; margin-block: 8px; color: var(--mut); font-size: 13px; }
 .weekly-list li { padding-block: 3px; line-height: 1.5; overflow-wrap: anywhere; }
 .weekly-list .mono { white-space: nowrap; }
+
+/* A failed refresh says the page is stale (mahler#1108). */
+.stale-note { font-size: 11px; color: var(--warn); white-space: nowrap; }
+.stale-note[hidden] { display: none; }
+.dhead .stale-note { margin-left: auto; }
+.dhead .stale-note:not([hidden]) + .settings-head-link { margin-left: 0; }
+.phead .stale-note:not([hidden]) { display: block; margin-top: 6px; white-space: normal; }

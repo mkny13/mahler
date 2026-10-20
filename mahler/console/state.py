@@ -1969,6 +1969,10 @@ def _idle(cfg, led, s, hot, now):
 
 MODELS_LABEL = "Models"
 
+# Shown in both headers after a failed 30s refresh (mahler#1108); console.js
+# fills {time} with when the page last updated and hides it on the next success.
+STALE_NOTE = "Couldn't refresh · showing {time}"
+
 
 def measured_routes(cfg, led, projects, rows):
     """Project/role/size routes cannot be represented by a single quota-pool order."""

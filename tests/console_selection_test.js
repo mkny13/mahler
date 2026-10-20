@@ -6,6 +6,7 @@ const source = fs.readFileSync("mahler/console/console.js", "utf8");
 const slice = (a, b) => source.slice(source.indexOf(a), source.indexOf(b));
 let attrs = {"data-view": "capture", "data-tab": "now"}, inputs = [], form = null;
 let requests = [], swaps = 0, applied = 0, revisionNotes = 0, resize;
+const staleNotes = [{hidden: true, textContent: "", getAttribute: () => "Couldn't refresh · showing {time}"}];
 const input = value => ({value, getAttribute: () => "draft", hasAttribute: () => true});
 const media = {matches: false, addEventListener: (event, callback) => { resize = callback; }};
 const context = vm.createContext({
@@ -21,7 +22,7 @@ const context = vm.createContext({
     busy: false,
     setAttribute(k) { if (k === "aria-busy") { this.busy = true; } },
     removeAttribute(k) { if (k === "aria-busy") { this.busy = false; } },
-    querySelectorAll: () => inputs,
+    querySelectorAll: sel => sel === "[data-stale-note]" ? staleNotes : inputs,
     querySelector: () => form,
     set innerHTML(html) {
       swaps++;
@@ -32,7 +33,7 @@ const context = vm.createContext({
   fetch(url) {
     return new Promise(resolve => requests.push({url, finish(html) {
       resolve({ok: true, text: () => Promise.resolve(html)});
-    }}));
+    }, fail() { resolve({ok: false, status: 502}); }}));
   }
 });
 vm.runInContext(slice("  var layoutMedia", "  var mermaidPromise") +
@@ -88,6 +89,18 @@ async function finish(promise, html) {
   await finish(context.refresh(true), "triage");
   assert.equal(swaps, priorSwaps);
   assert.equal(applied, priorApplies + 1, "reopening an unchanged overlay restores visibility");
+
+  // A failed poll keeps the old section and says so in the header; the next success hides it.
+  const keptSwaps = swaps, quiet = context.console;
+  context.console = {warn() {}};
+  let failing = context.refresh();
+  requests.at(-1).fail(); await failing;
+  context.console = quiet;
+  assert.equal(swaps, keptSwaps, "a failed refresh never replaces the section");
+  assert.equal(staleNotes[0].hidden, false, "a failed refresh shows the stale note");
+  assert.match(staleNotes[0].textContent, /^Couldn't refresh · showing \d\d:\d\d$/);
+  await finish(context.refresh(), "triage");
+  assert.equal(staleNotes[0].hidden, true, "the next good refresh hides the stale note");
 
   // A slow switch dims the old section after 150 ms and clears when it lands.
   let slow = context.setTab("triage");
