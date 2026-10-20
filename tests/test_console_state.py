@@ -376,11 +376,69 @@ class NetBacklogStateTests(unittest.TestCase):
         self.assertIn('labelled mahler', b['scope'])
         self.assertEqual(c['windows'], [])
         self.assertEqual(c['empty'], state.NET_BACKLOG_EMPTY)
+        self.assertEqual([point['count'] for point in a['series']], [33, 25, 28])
+        self.assertEqual(a['trend_caption'], 'Open issues · last 7 days: 33 → 28')
+        self.assertEqual(a['trend_label'],
+                         'Open issues over the last 7 days: 33 to 28, low 25, high 33')
+        self.assertEqual(c['series'], [])
+        self.assertIsNone(c['trend_caption'])
+        self.assertIsNone(c['trend_label'])
 
     def test_page_renders_on_phone_and_desktop(self):
         from mahler.console import page
-        s = {'net_backlog': state._net_backlog({}, self.led, self.projects, self.now)}
+        nb = state._net_backlog({}, self.led, self.projects, self.now)
+        s = {'net_backlog': nb, 'stats_range': 'week', 'projects': ['a'],
+             'stats': {'a': {'delta': 0, 'closed': 3, 'prev_closed': 4}}}
         html = page._net_backlog(s)
         for text in ('data-nb-project="a"', '+3', 'only 9d of history', 'labelled mahler',
                      state.NET_BACKLOG_TITLE.replace('·', '·')):
             self.assertIn(text, html)
+        self.assertEqual(html.count('<svg class="nb-trend"'), 2)
+        self.assertNotIn('<svg class="nb-trend"', html.split('data-nb-project="c"', 1)[1])
+        for render in (page._d_stats, page._p_stats):
+            self.assertEqual(render(s).count('<svg class="nb-trend"'), 2)
+
+    def test_one_snapshot_has_no_trend(self):
+        self.led.record_backlog('single', 7, at=self.now)
+        nb = state._net_backlog({}, self.led, [{'name': 'single'}], self.now)
+        self.assertEqual(nb['rows'][0]['series'], [])
+        self.assertIsNone(nb['rows'][0]['trend_caption'])
+        from mahler.console import page
+        self.assertNotIn('<svg class="nb-trend"', page._net_backlog({'net_backlog': nb}))
+
+    def test_trend_caption_uses_the_series_span_in_days(self):
+        self.led.record_backlog('hours', 5, at=self.now - timedelta(hours=6))
+        self.led.record_backlog('hours', 4, at=self.now)
+        nb = state._net_backlog({}, self.led, [{'name': 'hours'}], self.now)
+        self.assertEqual(nb['rows'][0]['trend_caption'],
+                         'Open issues · last 0.25 days: 5 → 4')
+
+    def test_trend_svg_scales_known_series_and_uses_theme_colours(self):
+        from mahler.console import page
+        points = [
+            {'at': iso(self.now - timedelta(days=2)), 'count': 10},
+            {'at': iso(self.now - timedelta(days=1)), 'count': 20},
+            {'at': iso(self.now), 'count': 15},
+        ]
+        svg = page._trend_svg(points, 'Open issues over the last 2 days')
+        line = 'M0.0,38.7 L120.0,5.3 L240.0,22.0'
+        area = f'{line} L240.0,44.0 L0.0,44.0 Z'
+        self.assertIn(f'class="nb-trend-line" d="{line}"', svg)
+        self.assertIn(f'class="nb-trend-area" d="{area}"', svg)
+        self.assertIn('aria-label="Open issues over the last 2 days"', svg)
+        self.assertNotIn('#', svg)
+        self.assertNotIn('rgb(', svg)
+        self.assertIn('.nb-trend-line { fill: none; stroke: var(--acc);', page.CSS)
+        self.assertIn('.nb-trend-area { fill: var(--acc);', page.CSS)
+        flat = page._trend_svg([
+            {'at': iso(self.now - timedelta(days=1)), 'count': 7},
+            {'at': iso(self.now), 'count': 7},
+        ], 'Flat series')
+        self.assertIn('class="nb-trend-line" d="M0.0,22.0 L240.0,22.0"', flat)
+        uneven = page._trend_svg([
+            {'at': iso(self.now - timedelta(days=2)), 'count': 10},
+            {'at': iso(self.now - timedelta(days=2) + timedelta(hours=6)), 'count': 20},
+            {'at': iso(self.now), 'count': 15},
+        ], 'Uneven timestamps')
+        self.assertIn('class="nb-trend-line" d="M0.0,38.7 L30.0,5.3 L240.0,22.0"',
+                      uneven)

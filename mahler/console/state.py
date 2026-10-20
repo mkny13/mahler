@@ -1438,6 +1438,8 @@ NET_BACKLOG_EXPLAIN = ("+ means more issues opened than closed — the backlog g
                        "− means more closed than opened — it shrank. Measured from "
                        "Mahler's hourly snapshots of each project's open-issue count.")
 NET_BACKLOG_EMPTY = "History starts today; figures appear after the next hourly snapshot."
+NET_BACKLOG_TREND_CAPTION = "Open issues"
+NET_BACKLOG_TREND_LABEL = "Open issues over"
 
 
 def _signed(n):
@@ -1450,11 +1452,31 @@ def _span(covered):
     return f"{int(covered.total_seconds() // 3600)}h"
 
 
+def _trend_span(series):
+    covered = parse(series[-1]["at"]) - parse(series[0]["at"])
+    days = covered.total_seconds() / timedelta(days=1).total_seconds()
+    value = f"{days:g}" if days.is_integer() else f"{days:.2f}".rstrip("0").rstrip(".")
+    return f"{value} day" if days == 1 else f"{value} days"
+
+
 def _net_backlog(cfg, led, projects, now):
     """Per project: the 24h/7d/30d net backlog, read from ledger snapshots only."""
     rows = []
     for p in projects:
         net = led.backlog_net(p["name"], now=now)
+        series = led.backlog_series(p["name"], since=iso(now - timedelta(days=30)))
+        if len(series) < 2:
+            series = []
+            caption = trend_label = None
+        else:
+            span = _trend_span(series)
+            first, last = series[0]["count"], series[-1]["count"]
+            low = min(point["count"] for point in series)
+            high = max(point["count"] for point in series)
+            caption = (f"{NET_BACKLOG_TREND_CAPTION} · last {span}: "
+                       f"{first} → {last}")
+            trend_label = (f"{NET_BACKLOG_TREND_LABEL} the last {span}: "
+                           f"{first} to {last}, low {low}, high {high}")
         label = p.get("scope_label") if p.get("scope") == "label" else None
         windows = []
         for key in ("24h", "7d", "30d"):
@@ -1468,6 +1490,8 @@ def _net_backlog(cfg, led, projects, now):
                             f"only {_span(w['covered'])} of history"})
         rows.append({"project": p["name"], "windows": windows,
                      "empty": None if windows else NET_BACKLOG_EMPTY,
+                     "series": series, "trend_caption": caption,
+                     "trend_label": trend_label,
                      "scope": (f"Counts only issues labelled {label}, the ones Mahler manages."
                                if label else None)})
     return {"title": NET_BACKLOG_TITLE, "explain": NET_BACKLOG_EXPLAIN, "rows": rows}
