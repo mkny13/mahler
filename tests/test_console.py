@@ -3381,3 +3381,38 @@ class AttachmentResourceTests(unittest.TestCase):
                         closed.assert_not_called()
                         self.assertTrue(handles[0].closed)
                         handles[1].close.assert_called_once_with()
+
+
+class ProjectScopePageTests(unittest.TestCase):
+    def test_switcher_and_project_navigation_render_on_both_layouts(self):
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        scoped = state.build(cfg, led, project_scope="groundwork")
+
+        desktop = page.app(scoped, "desktop", view="overview")
+        self.assertIn('data-project-scope-switcher', desktop)
+        self.assertIn("Mahler · all projects", desktop)
+        self.assertIn("mahler · quiet · no release", desktop)
+        self.assertIn('data-go="overview"', desktop)
+        self.assertIn('data-go="history"', desktop)
+        self.assertIn("Capacity, Models and Settings stay Mahler-wide", desktop)
+        self.assertNotIn('data-go="capacity"', desktop)
+        self.assertNotIn('data-go="models"', desktop)
+        self.assertNotIn('data-go="settings"', desktop)
+        self.assertIn('data-rendered-section="overview"', desktop)
+
+        phone = page.app(scoped, "phone", tab="overview")
+        self.assertIn('class="ph project-scope"', phone)
+        self.assertIn('data-project-scope-switcher', phone)
+        self.assertIn('class="tabs project-tabs"', phone)
+        self.assertIn('data-tab-go="overview"', phone)
+        self.assertIn('data-tab-go="backlog"', phone)
+        self.assertIn('data-tab-go="history"', phone)
+        self.assertIn("switch to “all projects” for them", phone)
+        self.assertNotIn('data-tab-go="models"', phone)
+        self.assertNotIn('data-tab-go="settings"', phone)
+        self.assertIn('data-rendered-section="overview"', phone)
+
+        unavailable = page.app(scoped, "desktop", view="capacity")
+        self.assertIn('data-rendered-section="overview"', unavailable)
+        self.assertNotIn('section class="view view-capacity"', unavailable)

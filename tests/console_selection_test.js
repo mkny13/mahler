@@ -4,16 +4,23 @@ const fs = require("fs");
 const vm = require("vm");
 const source = fs.readFileSync("mahler/console/console.js", "utf8");
 const slice = (a, b) => source.slice(source.indexOf(a), source.indexOf(b));
-let attrs = {"data-view": "capture", "data-tab": "now"}, inputs = [], form = null;
+let attrs = {"data-view": "capture", "data-tab": "now", "data-project-scope": "",
+  "data-all-view": "needs", "data-all-tab": "triage"}, inputs = [], form = null;
 let requests = [], swaps = 0, applied = 0, revisionNotes = 0, resize;
+const browserWindow = {
+  matchMedia: () => media, scrollTo() {}, console, location: {href: "http://localhost/"}
+};
+browserWindow.history = {pushState(state, title, url) {
+  browserWindow.location.href = new URL(url, browserWindow.location.href).href;
+}};
 const staleNotes = [{hidden: true, textContent: "", getAttribute: () => "Couldn't refresh · showing {time}"}];
 const input = value => ({value, getAttribute: () => "draft", hasAttribute: () => true});
 const media = {matches: false, addEventListener: (event, callback) => { resize = callback; }};
 const context = vm.createContext({
-  TextEncoder, console, setTimeout, clearTimeout,
+  TextEncoder, URL, console, setTimeout, clearTimeout,
   root: {getAttribute: k => attrs[k], setAttribute: (k, v) => attrs[k] = v},
   document: {hidden: false, activeElement: null, getElementById: () => null},
-  window: {matchMedia: () => media, scrollTo() {}, console},
+  window: browserWindow,
   store() {}, load() { return null; }, markSeen() {},
   settingsDirty: false, errorToastTimer: null, suppressKeep: [],
   openRun: null, openRevert: null, openBug: null, openRelease: null, openCapture: false,
@@ -109,6 +116,20 @@ async function finish(promise, html) {
   await finish(slow, "triage");
   assert.equal(context.app.busy, false, "loading state clears when the view arrives");
 
+  let toProject = context.setProjectScope("project / one");
+  assert.equal(attrs["data-project-scope"], "project / one");
+  assert.equal(attrs["data-view"], "overview");
+  assert.equal(new URL(browserWindow.location.href).searchParams.get("project"), "project / one");
+  assert(requests.at(-1).url.includes("project=project%20%2F%20one"));
+  assert(requests.at(-1).url.includes("layout=phone"));
+  await finish(toProject, "overview");
+  let toAll = context.setProjectScope("");
+  assert.equal(new URL(browserWindow.location.href).search, "");
+  assert.equal(attrs["data-view"], "needs");
+  assert.equal(attrs["data-tab"], "triage");
+  assert(!requests.at(-1).url.includes("&project="));
+  await finish(toAll, "needs");
+
   // Telemetry excludes short tasks and works without the optional heap API.
   let callback, reports = [];
   context.PerformanceObserver = function (cb) {
@@ -128,7 +149,7 @@ async function finish(promise, html) {
   assert.equal(reports[0][1].view, "triage");
   assert.equal(reports[0][1].heap_bytes, null);
   assert.equal(reports[0][1].minutes_since_load, 2);
-  assert.equal(reports[0][1].fragment_bytes, 6);
+  assert.equal(reports[0][1].fragment_bytes, 5);
   context.fetch = () => { throw Error("offline"); };
   callback({getEntries: () => [{duration: 1400}]}); // best effort never throws
 })().catch(err => { console.error(err); process.exitCode = 1; });

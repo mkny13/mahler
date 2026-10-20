@@ -19,6 +19,9 @@ VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "What changed"),
          ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
          ("capacity", "Capacity"), ("stats", "Stats"), ("models", MODELS_LABEL), ("history", "Event stream"),
          ("settings", "Settings"))
+PROJECT_VIEWS = (("overview", "Overview"), ("needs", "Needs you"),
+                 ("backlog", "Backlog"), ("releases", "Releases"),
+                 ("stats", "Stats"), ("history", "Event stream"))
 
 
 def e(s):
@@ -50,7 +53,10 @@ def document(s, layout="desktop", view=None, tab=None):
     land["tab" if layout == "phone" else "view"] = selected
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="auto" data-view="{e(land['view'])}" data-tab="{e(land['tab'])}"
- data-console-revision="{asset_revision()}" data-stats-range="{e(s['stats_range'])}">
+ data-console-revision="{asset_revision()}" data-stats-range="{e(s['stats_range'])}"
+ data-project-scope="{e(s.get('project_scope') or '')}"
+ data-all-view="{e(s['all_projects_landing']['view'])}"
+ data-all-tab="{e(s['all_projects_landing']['tab'])}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -79,7 +85,9 @@ TABS = ("now", "triage", "releases", "browse", "stats", "models", "settings")
 
 def selection(s, layout="desktop", view=None, tab=None):
     layout = "phone" if layout == "phone" else "desktop"
-    choices = TABS if layout == "phone" else dict(VIEWS)
+    choices = (tuple(name for name, _ in PROJECT_VIEWS) if layout == "phone" else
+               dict(PROJECT_VIEWS)) if s.get("project_scope") else (
+                   TABS if layout == "phone" else dict(VIEWS))
     selected = tab if layout == "phone" else view
     if selected not in choices:
         selected = s["landing"]["tab" if layout == "phone" else "view"]
@@ -92,9 +100,13 @@ def app(s, layout="desktop", view=None, tab=None, overlays=None):
     counts = {"runs": len(s["runs"]), "needs": s["needs_count"],
               "digest": s["digest"]["count"], "digest_upto": s["digest"]["upto"]}
     out = (f'<span hidden data-console-revision="{asset_revision()}" '
-           f'data-rendered-layout="{layout}" data-rendered-section="{selected}"></span>'
+           f'data-rendered-layout="{layout}" data-rendered-section="{selected}" '
+           f'data-project-scope="{e(s.get("project_scope") or "")}"></span>'
            + f'<script type="application/json" id="counts">{json.dumps(counts)}</script>'
-           + (_phone(s, selected) if layout == "phone" else _desktop(s, selected)))
+           + (_project_phone(s, selected) if layout == "phone" and s.get("project_scope")
+              else _phone(s, selected) if layout == "phone"
+              else _project_desktop(s, selected) if s.get("project_scope")
+              else _desktop(s, selected)))
     overlays = overlays or {}
     for name, collection, key, render in (
         ("run", "runs", "id", _run_overlays),
@@ -118,6 +130,19 @@ def _theme_labels():
     return ('<span class="tl" data-tl="auto">Auto</span>'
             '<span class="tl" data-tl="light" hidden>Light</span>'
             '<span class="tl" data-tl="dark" hidden>Dark</span>')
+
+
+def _scope_switcher(s, cls):
+    selected = s.get("project_scope") or ""
+    options = ['<option value=""' + (' selected' if not selected else '') +
+               '>Mahler · all projects</option>']
+    for project in s["scope_options"]:
+        version = f'v{project["current_version"]}' if project["current_version"] else "no release"
+        label = f'{project["name"]} · {project["status"]} · {version}'
+        chosen = " selected" if project["name"] == selected else ""
+        options.append(f'<option value="{e(project["name"])}"{chosen}>{e(label)}</option>')
+    return (f'<label class="scope-wrap"><select class="{e(cls)}" aria-label="Project scope" '
+            f'data-project-scope-switcher>{"".join(options)}</select></label>')
 
 
 def _pause_button(s, cls="btn pause"):
@@ -387,6 +412,40 @@ def _event_text(ev):
 
 
 # ---------- desktop ----------
+
+def _project_overview(s, phone=False):
+    project = s["project_scope"]
+    summary = next((row for row in s["scope_options"] if row["name"] == project), {})
+    version = f' · v{summary["current_version"]}' if summary.get("current_version") else ""
+    tag = "tabv" if phone else "view"
+    return (f'<section class="{tag} {tag}-overview"><div class="project-overview">'
+            f'<span class="lbl">{e(project)}{e(version)}</span>'
+            '<p class="settings-help">Project overview. Choose a view to continue.</p>'
+            '<div class="project-overview-links">'
+            + "".join(f'<button class="btn" data-{ "tab-go" if phone else "go"}="{key}">'
+                      f'{e(label)} →</button>' for key, label in PROJECT_VIEWS if key != "overview")
+            + '</div></div></section>')
+
+
+def _project_desktop(s, view):
+    rail = [f'<nav class="rail"><div class="scope-brand">{_scope_switcher(s, "scope-switcher")}</div>']
+    for key, label in PROJECT_VIEWS:
+        count = str(s["needs_count"]) if key == "needs" and s["needs"] else ""
+        if key == "backlog":
+            count = str(s["backlog_total"]) if s["backlog_total"] else ""
+        rail.append(f'<button class="rail-i" data-go="{key}"><span>{e(label)}</span>'
+                    f'<span class="mono t-mut">{e(count)}</span></button>')
+    rail.append(f'<div class="rail-foot"><div class="scope-global-note">Capacity, Models and Settings '
+                f'stay Mahler-wide — switch to “all projects” for them.</div>'
+                f'<button class="btn" data-theme-cycle>Theme · {_theme_labels()}</button></div></nav>')
+    titles = "".join(f'<span class="vt vt-{key}">{e(label)}</span>'
+                     for key, label in PROJECT_VIEWS)
+    content = (_project_overview(s) if view == "overview" else
+               globals()["_d_" + view](s))
+    main = (f'<main class="dmain"><div class="dhead"><span class="dtitle">{titles}</span>'
+            f'{_stale_note()}</div><div class="dbody">{content}</div></main>')
+    return f'<div class="dk project-scope">{"".join(rail)}{main}{_d_side(s)}</div>'
+
 
 def _desktop(s, view):
     rail_counts = {
@@ -1025,6 +1084,61 @@ def _d_stats(s):
 
 
 # ---------- phone ----------
+
+def _project_phone_needs(s):
+    out = ['<section class="tabv tabv-needs"><div class="pad psect">']
+    for n in s["needs"]:
+        if n["pending"]:
+            out.append(f'<div class="pneed" data-need="{e(n["id"])}">{_answered(n)}</div>')
+            continue
+        out.append(f'<div class="pneed{" p1" if n["p1"] else ""}{_edge(n)}" data-need="{e(n["id"])}">'
+                   f'<div class="row"><span class="meta">{_a(n["url"], n["ref"])}</span>'
+                   f'<span class="pchip{" p1" if n["p1"] else ""}">{e(n["p"])}</span>'
+                   f'<span class="meta" style="font-size:10.5px">{e(n["meta"])}</span></div>'
+                   f'<div class="q">{e(n["question"])}</div>{_need_details(n)}'
+                   f'{_answer_buttons(n)}{_answer_input(n, phone=True)}</div>')
+    if not s["needs"]:
+        out.append('<div class="empty">Nothing waiting on you. Runs continue on their own.</div>')
+    return "".join(out) + '</div></section>'
+
+
+def _project_phone_backlog(s):
+    return (f'<section class="tabv tabv-backlog"><div class="pad">'
+            f'{_backlog_groups(s, phone=True)}</div></section>')
+
+
+def _project_phone_history(s):
+    rows = []
+    for ev in s["events"]:
+        tone, text = _event_text(ev)
+        rows.append(f'<div class="pev"><span class="when mono">{e(ev["when"])}</span>'
+                    f'<span class="txt t-{tone}"><span class="kind mono t-ink">'
+                    f'{e(ev["kind"])}</span> {text}</span>{_undo(ev)}</div>')
+    return f'<section class="tabv tabv-history"><div class="pad psect">{"".join(rows)}</div></section>'
+
+
+def _project_phone(s, tab):
+    head = (f'<header class="phead project-phead"><div class="phead-row">'
+            f'{_scope_switcher(s, "scope-switcher")}'
+            f'<div class="phead-btns"><button class="btn theme" data-theme-cycle>'
+            f'{_theme_labels()}</button>{_pause_button(s)}</div></div>'
+            f'{_stale_note()}<div class="tabs project-tabs">')
+    nav = "".join(f'<button class="tab" data-tab-go="{key}">{e(label)}</button>'
+                  for key, label in PROJECT_VIEWS)
+    render = {
+        "overview": lambda: _project_overview(s, phone=True),
+        "needs": lambda: _project_phone_needs(s),
+        "backlog": lambda: _project_phone_backlog(s),
+        "releases": lambda: _p_releases(s),
+        "stats": lambda: _p_stats(s),
+        "history": lambda: _project_phone_history(s),
+    }[tab]
+    content = render()
+    return (f'<div class="ph project-scope">{head}{nav}</div>'
+            f'<div class="scope-global-note">Capacity, Models and Settings stay Mahler-wide — '
+            f'switch to “all projects” for them.</div></header>'
+            f'<div class="pbody">{content}</div></div>')
+
 
 def _phone(s, tab):
     runs, needs = len(s["runs"]), s["needs_count"]
