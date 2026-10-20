@@ -386,12 +386,37 @@ class TestGH(unittest.TestCase):
         self.assertEqual(self.gh.blocked_by_of(600), [])
 
     def test_open_issues_retains_author_login_and_association(self):
-        issue = {"number": 7, "author": {"login": "trusted-user"},
-                 "authorAssociation": "MEMBER"}
-        self.gh._gh.return_value = json.dumps([issue])
+        issue = {"number": 7, "author": {"login": "trusted-user"}}
+        rest = [[{"number": 7, "author_association": "MEMBER"},
+                 {"number": 9, "author_association": "OWNER", "pull_request": {}}]]
+        self.gh._gh.side_effect = [json.dumps([issue]), json.dumps(rest)]
         self.assertEqual(self.gh.open_issues(),
-                         [{**issue, "authorLogin": "trusted-user"}])
-        self.assertIn("author,authorAssociation", self.gh._gh.call_args.args[-1])
+                         [{**issue, "authorLogin": "trusted-user",
+                           "authorAssociation": "MEMBER"}])
+        self.assertEqual(self.gh._gh.call_args.args,
+                         ("api", "repos/mkny13/mahler/issues?state=open&per_page=100",
+                          "--paginate", "--slurp"))
+
+    def test_open_issues_missing_association_stays_unknown(self):
+        issue = {"number": 7, "author": {"login": "stranger"}}
+        self.gh._gh.side_effect = [json.dumps([issue]), json.dumps([[]])]
+        self.assertIsNone(self.gh.open_issues()[0]["authorAssociation"])
+
+    def test_open_issues_requests_only_fields_gh_issue_list_supports(self):
+        # mahler#1147 regression: gh rejects unknown --json fields, which
+        # failed every project's sync. Supported set from `gh issue list --json`.
+        supported = {
+            "assignees", "author", "blockedBy", "blocking", "body", "closed",
+            "closedAt", "closedByPullRequestsReferences", "comments", "createdAt",
+            "id", "isPinned", "issueType", "labels", "milestone", "number",
+            "parent", "projectCards", "projectItems", "reactionGroups", "state",
+            "stateReason", "subIssues", "subIssuesSummary", "title", "updatedAt",
+            "url"}
+        self.gh._gh.return_value = json.dumps([])
+        self.gh.open_issues()
+        args = self.gh._gh.call_args_list[0].args
+        fields = set(args[args.index("--json") + 1].split(","))
+        self.assertLessEqual(fields, supported)
 
     def test_open_issues_batches_relationships_for_both_directions(self):
         issue = {"number": 7, "blocking": {"nodes": [{"number": 8}]},
