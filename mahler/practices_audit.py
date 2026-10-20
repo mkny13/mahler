@@ -1062,6 +1062,47 @@ def _secrets(tree):
     return _finding("tracked-secrets", state, reason, evidence)
 
 
+def _flag(mapping, key, safe_value):
+    """True when `key` holds the safe value, False when unsafe, None when absent/odd."""
+    value = mapping.get(key) if isinstance(mapping, dict) else None
+    if isinstance(value, dict):
+        value = value.get("enabled")
+    if not isinstance(value, bool):
+        return None
+    return value is safe_value
+
+
+def _hardening(protection, rules):
+    """Per safeguard: True safe, False known unsafe, None unknown.
+
+    Classic protection and effective rules are alternative mechanisms: either
+    one that enforces a safeguard satisfies it, so a repo need not use both."""
+    status = protection.get("required_status_checks")
+    status = status if isinstance(status, dict) else {}
+    by_type = {}
+    for rule in rules:
+        by_type.setdefault(rule.get("type"), []).append(rule)
+
+    def strict_rule(rule):
+        value = (rule.get("parameters") or {}).get("strict_required_status_checks_policy")
+        return value if isinstance(value, bool) else None
+
+    def bypass_rule(rule):
+        actors = rule.get("bypass_actors")
+        return None if not isinstance(actors, list) else not actors
+
+    strict_rules = [strict_rule(r) for r in by_type.get("required_status_checks", [])]
+    bypass_rules = [bypass_rule(r) for r in by_type.get("required_status_checks", [])]
+    return {
+        "strict required checks": [_flag(status, "strict", True), *strict_rules],
+        "administrator enforcement": [_flag(protection, "enforce_admins", True), *bypass_rules],
+        "force pushes disabled": [_flag(protection, "allow_force_pushes", False),
+                                  True if by_type.get("non_fast_forward") else None],
+        "deletion disabled": [_flag(protection, "allow_deletions", False),
+                              True if by_type.get("deletion") else None],
+    }
+
+
 def _protection(gh, jobs, ci_unknown):
     evidence = ["GitHub API: repository default_branch/allow_squash_merge",
                 "GitHub API: branches/<default>/protection; rules/branches/<default>"]
@@ -1095,6 +1136,22 @@ def _protection(gh, jobs, ci_unknown):
     if not gated:
         return _finding("branch-protection", "gap",
                         "No identified PR test job is a required check.", [*evidence, f"test jobs: {jobs}"])
+    unsafe, missing = [], []
+    for name, votes in _hardening(protection, rules).items():
+        if any(v is True for v in votes):
+            evidence.append(f"{name}: enabled")
+        elif any(v is False for v in votes):
+            unsafe.append(name)
+        else:
+            missing.append(name)
+    if unsafe:
+        return _finding("branch-protection", "gap",
+                        "Default-branch protection can be bypassed: " + ", ".join(unsafe) + ".",
+                        [*evidence, "unsafe: " + ", ".join(unsafe)])
+    if missing:
+        return _finding("branch-protection", "unknown",
+                        "Cannot establish: " + ", ".join(missing) + ".",
+                        [*evidence, "unavailable: " + ", ".join(missing)])
     incompatible = [r.get("type") for r in rules if r.get("type") in
                     ("required_signatures", "required_deployments", "pull_request")]
     if protection.get("required_pull_request_reviews") or incompatible:
@@ -1102,7 +1159,7 @@ def _protection(gh, jobs, ci_unknown):
                         "Additional review/signature/deployment rules need D18 compatibility review.",
                         [*evidence, f"additional rules: {incompatible}"])
     return _finding("branch-protection", "pass",
-                    "Squash merging enabled and a PR test check is required.", evidence)
+                    "Squash merging enabled, a PR test check is required, and the default branch is non-bypassable.", evidence)
 
 
 _EXEMPTION_KW = re.compile(
