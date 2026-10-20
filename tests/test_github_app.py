@@ -124,6 +124,125 @@ class InstallationTests(unittest.TestCase):
             self.app.token()
         self.http.assert_not_called()
 
+    def test_scoped_token_exchange_and_payload(self):
+        self.assertEqual(self.app.token(repository="mahler"), TOKEN)
+        req = self.http.call_args.args[0]
+        self.assertEqual(req.full_url, "https://api.github.com/app/installations/456/access_tokens")
+        self.assertEqual(req.get_method(), "POST")
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {
+            "permissions": github_app.AGENT_PERMISSIONS,
+            "repositories": ["mahler"],
+        })
+        self.assertEqual(payload["repositories"], ["mahler"])
+        self.assertEqual(payload["permissions"]["contents"], "read")
+        self.assertEqual(payload["permissions"]["issues"], "write")
+        self.assertEqual(payload["permissions"]["pull_requests"], "read")
+        self.assertEqual(payload["permissions"]["checks"], "read")
+        self.assertEqual(payload["permissions"]["actions"], "read")
+        self.assertEqual(payload["permissions"]["metadata"], "read")
+        self.assertNotIn("administration", payload["permissions"])
+        self.assertNotIn("secrets", payload["permissions"])
+        self.assertNotIn("workflows", payload["permissions"])
+        # Also agent_token alias
+        self.assertEqual(self.app.agent_token("mahler"), TOKEN)
+
+    def test_scoped_token_explicit_permissions(self):
+        perms = {"contents": "read", "issues": "read"}
+        self.assertEqual(self.app.token(repository="mahler", permissions=perms), TOKEN)
+        req = self.http.call_args.args[0]
+        payload = json.loads(req.data.decode("utf-8"))
+        self.assertEqual(payload, {"permissions": perms, "repositories": ["mahler"]})
+
+    def test_scoped_token_cache_separation_and_rejection_of_broader_tokens(self):
+        # 1. Conductor token
+        c_token = self.app.token()
+        self.assertEqual(c_token, TOKEN)
+        conductor_path = self.cache / "123-456.json"
+        self.assertTrue(conductor_path.exists())
+        self.assertEqual(stat.S_IMODE(conductor_path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.cache.stat().st_mode), 0o700)
+        self.assertEqual(self.http.call_count, 1)
+
+        # 2. Scoped token for "mahler" cannot reuse conductor token
+        m_token = self.app.token(repository="mahler")
+        self.assertEqual(m_token, TOKEN)
+        self.assertEqual(self.http.call_count, 2)
+        cached_files = list(self.cache.glob("123-456-mahler-*.json"))
+        self.assertEqual(len(cached_files), 1)
+        mahler_path = cached_files[0]
+        self.assertEqual(stat.S_IMODE(mahler_path.stat().st_mode), 0o600)
+
+        # 3. Repeated scoped token call reuses its own cache
+        self.assertEqual(self.app.token(repository="mahler"), TOKEN)
+        self.assertEqual(self.http.call_count, 2)
+
+        # 4. Another repository gets its own cache file
+        self.assertEqual(self.app.token(repository="couch-tour"), TOKEN)
+        self.assertEqual(self.http.call_count, 3)
+        couch_files = list(self.cache.glob("123-456-couch-tour-*.json"))
+        self.assertEqual(len(couch_files), 1)
+
+        # 5. Overwrite mahler_path with conductor cache data (broader unscoped token)
+        # Never let a scoped request reuse a broader cached token.
+        mahler_path.write_text(conductor_path.read_text())
+        self.app.token(repository="mahler")
+        self.assertEqual(self.http.call_count, 4)
+
+    def test_scoped_token_expiry_and_refresh(self):
+        self.app.token(repository="mahler")
+        self.assertEqual(self.http.call_count, 1)
+        self.clock.return_value = NOW + 3299
+        self.assertEqual(self.app.token(repository="mahler"), TOKEN)
+        self.assertEqual(self.http.call_count, 1)
+        self.clock.return_value = NOW + 3300
+        self.http.side_effect = lambda *a, **kw: response("refreshed-agent-token", NOW + 6900)
+        self.assertEqual(self.app.token(repository="mahler"), "refreshed-agent-token")
+        self.assertEqual(self.http.call_count, 2)
+
+    def test_invalid_scope_fails_closed_without_leaking_secrets(self):
+        secret = "/secret/key.pem " + TOKEN
+        invalid_repos = (
+            "", "   ", "org/repo", "../secret", "bad\x00repo", "repo name",
+            ".", "..", 123, True, None, "repo/with/slashes", secret
+        )
+        for repo in invalid_repos:
+            with self.subTest(repo=repo), self.assertRaises(GHError) as caught:
+                if repo is None:
+                    self.app.token(repository=repo, permissions=github_app.AGENT_PERMISSIONS)
+                else:
+                    self.app.token(repository=repo)
+            rendered = ''.join(traceback.format_exception(caught.exception))
+            self.assertNotIn("/secret/key.pem", rendered)
+            self.assertNotIn(TOKEN, rendered)
+        self.http.assert_not_called()
+
+        invalid_perms = (
+            {"contents": "write"},
+            {"administration": "read"},
+            {"secrets": "read"},
+            {"workflows": "read"},
+            {"issues": "admin"},
+            {"pull_requests": "write"},
+            {},
+            "contents:read",
+            ["contents"],
+        )
+        for perms in invalid_perms:
+            with self.subTest(perms=perms), self.assertRaises(GHError) as caught:
+                self.app.token(repository="mahler", permissions=perms)
+            rendered = ''.join(traceback.format_exception(caught.exception))
+            self.assertNotIn("/secret/key.pem", rendered)
+            self.assertNotIn(TOKEN, rendered)
+        self.http.assert_not_called()
+
+    def test_scoped_exchange_failures_fail_closed(self):
+        self.http.side_effect = OSError("scoped-exchange-fail " + TOKEN)
+        with self.assertRaisesRegex(GHError, "token exchange failed") as caught:
+            self.app.token(repository="mahler")
+        self.assertNotIn(TOKEN, ''.join(traceback.format_exception(caught.exception)))
+        self.assertEqual(list(self.cache.iterdir()), [])
+
 
 class ConfigTests(unittest.TestCase):
     def test_global_and_project_selection(self):
@@ -207,6 +326,47 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     config.validate_github_app(cfg)
                 self.assertEqual(str(caught.exception), "github_app requires private_key_path")
+
+    def test_project_github_app_helpers(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/secret/key.pem"}}
+        # 1. Personal global installation
+        app = config.project_github_app(cfg, {})
+        self.assertIsInstance(app, github_app.Installation)
+        self.assertEqual(app.app_id, "123")
+        self.assertEqual(app.installation_id, "456")
+        self.assertEqual(app._key_path, "/secret/key.pem")
+
+        # 2. Project override
+        app_override = config.project_github_app(cfg, {"github_app_installation_id": 789})
+        self.assertEqual(app_override.installation_id, "789")
+
+        # 3. Unavailable App (no github_app table)
+        self.assertIsNone(config.project_github_app({}, {}))
+
+        # 4. Unavailable App (work account with no project override)
+        self.assertIsNone(config.project_github_app(cfg, {"gh_account": "work"}))
+        self.assertIsNone(config.project_github_app(cfg, {"account": "work"}))
+
+        # 5. github_app.for_project and Installation.for_project aliases
+        self.assertEqual(github_app.for_project(cfg, {}).installation_id, "456")
+        self.assertEqual(github_app.Installation.for_project(cfg, {}).installation_id, "456")
+
+        # 6. Project policy resolution by string name
+        cfg_with_proj = {
+            "github_app": {"app_id": 123, "installation_id": 456, "private_key_path": "/secret/key.pem"},
+            "defaults": {},
+            "projects": {"p1": {"github_app_installation_id": 888}},
+        }
+        self.assertEqual(config.project_github_app(cfg_with_proj, "p1").installation_id, "888")
+
+        # 7. Run environment does NOT leak App credentials
+        cfg_with_proj["accounts"] = {"work": {"env": {"SAFE_VAR": "val"}}}
+        env = config.run_env(cfg_with_proj, "work", base={})
+        for secret_val in ("123", "456", "/secret/key.pem"):
+            self.assertNotIn(secret_val, env.values())
+        for secret_key in ("app_id", "installation_id", "private_key_path", "GITHUB_APP_ID"):
+            self.assertNotIn(secret_key, env)
 
 
 class ClientTests(unittest.TestCase):

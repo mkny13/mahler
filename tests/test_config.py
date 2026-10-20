@@ -688,3 +688,48 @@ class CopilotCandidatesTests(unittest.TestCase):
             self.assertEqual(prices[model], expected)
         self.assertIn('claude-sonnet-5-5', prices)
         self.assertIn('claude-sonnet-5-5', config.DEFAULTS['prices'])
+
+
+class ProjectGitHubAppConfigTests(unittest.TestCase):
+    def test_global_personal_installation_resolved(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/secret/key.pem"}}
+        app = config.project_github_app(cfg, {})
+        self.assertIsNotNone(app)
+        self.assertEqual(app.app_id, "123")
+        self.assertEqual(app.installation_id, "456")
+        self.assertEqual(app._key_path, "/secret/key.pem")
+
+    def test_project_override_installation_resolved(self):
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/secret/key.pem"}}
+        app = config.project_github_app(cfg, {"github_app_installation_id": 789})
+        self.assertIsNotNone(app)
+        self.assertEqual(app.installation_id, "789")
+
+    def test_unavailable_app_returns_none(self):
+        self.assertIsNone(config.project_github_app({}, {}))
+        cfg = {"github_app": {"app_id": 123, "installation_id": 456,
+                              "private_key_path": "/secret/key.pem"}}
+        self.assertIsNone(config.project_github_app(cfg, {"account": "work"}))
+        self.assertIsNone(config.project_github_app(cfg, {"gh_account": "work"}))
+
+    def test_project_name_resolution(self):
+        cfg = {
+            "github_app": {"app_id": 123, "installation_id": 456, "private_key_path": "/secret/key.pem"},
+            "defaults": {},
+            "projects": {
+                "proj_personal": {"repo": "org/repo"},
+                "proj_override": {"github_app_installation_id": 999, "repo": "org/repo"},
+                "proj_work": {"account": "work", "repo": "org/repo"},
+            },
+        }
+        self.assertEqual(config.project_github_app(cfg, "proj_personal").installation_id, "456")
+        self.assertEqual(config.project_github_app(cfg, "proj_override").installation_id, "999")
+        self.assertIsNone(config.project_github_app(cfg, "proj_work"))
+
+    def test_invalid_app_config_fails_secret_safe(self):
+        for invalid in ({"app_id": "not-a-number"}, {"app_id": 123}, {"app_id": 123, "installation_id": 456}):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError) as caught:
+                config.project_github_app({"github_app": invalid}, {})
+            self.assertNotIn("/secret", str(caught.exception))

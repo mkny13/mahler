@@ -2885,3 +2885,48 @@ GitHub's open-issue payload identifies the issue author but does not reliably
 identify who last edited the current body. Once an issue is admitted, its
 current body remains admitted after later edits by another actor; reconstructing
 body-edit provenance is outside this decision.
+
+### D47 — Repository-scoped GitHub App tokens for agent runs (mahler#1143, #1128)
+
+Allocated with `mahler next-id mahler D`. Coding agent runs (sort, build, fix,
+review) require GitHub API access for issue triage, comments, labels, and
+context, but must operate under least privilege. An agent run must never receive
+ambient human credentials (`GH_TOKEN`, `GITHUB_TOKEN`, keychain, or saved CLI
+state), conductor-level permissions, or access to repositories outside its own
+project.
+
+- **Finite permission set.** Minted agent tokens request only the capabilities
+  required by recipes:
+  - `metadata: read`
+  - `contents: read`
+  - `issues: write`
+  - `pull_requests: read`
+  - `checks: read`
+  - `actions: read`
+  All other capabilities are excluded: `contents: write`, `administration`,
+  `secrets`, and `workflows` are never granted.
+- **One-repository restriction.** Every scoped token request restricts access to
+  exactly one repository (`repositories = [repo]`). Tokens never span multiple
+  repositories or organizations.
+- **One-hour GitHub expiry.** Scoped installation tokens carry GitHub's maximum
+  one-hour (60-minute) lifetime. Mahler caches valid tokens privately and refreshes
+  them 300 seconds before expiration.
+- **Conductor-owned pushes (D18).** Agents build, the conductor ships. Git pushes
+  remain strictly conductor-owned operations performed through conductor credentials
+  or push direct subprocesses. Agent tokens cannot write contents or push refs.
+- **Fail-closed credential boundary.** If a GitHub App is missing, misconfigured,
+  JWT signing fails, scope input is invalid, or token exchange fails, the request
+  raises a secret-safe error and fails closed. Mahler never falls back to an
+  ambient human credential or unconfined token.
+- **Private cache isolation.** Scoped tokens are cached under
+  `$MAHLER_HOME/github-app-tokens` in files with `0600` permissions within a `0700`
+  directory. Cache keys incorporate the app ID, installation ID, repository name,
+  and a SHA-256 hash of the exact scope. A scoped request can never read or reuse
+  a broader conductor token or a token minted for a different repository or scope.
+- **Transitional handling of non-App projects.** Projects without an App installation
+  (e.g., non-App or work-account projects without an explicit installation override)
+  cannot mint App-backed scoped agent tokens. In this phase, App token resolution
+  returns `None`, and agent runs cannot silently inherit the conductor's global App
+  key or ambient human tokens. Migration of non-App and work accounts to scoped
+  identities is deferred to #1145.
+
