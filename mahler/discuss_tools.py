@@ -10,7 +10,7 @@ from pathlib import PurePosixPath
 import subprocess
 
 from . import config
-from .gh import AGENT_NOTE, GHError, label_names, project_client
+from .gh import AGENT_NOTE, GHError, LABEL_STATES, label_names, project_client, trusted_actor
 
 MAX_FILE_BYTES = 64 * 1024
 MAX_CONTEXT_BYTES = 512 * 1024
@@ -31,8 +31,8 @@ TOOL_FIELDS = {
 DESCRIPTIONS = {
     'read_repo_file': 'Read a bounded tracked UTF-8 text file from the repository HEAD.',
     'list_repo_files': 'List bounded tracked regular files in the repository HEAD.',
-    'list_items': 'List open issues in the bound project scope.',
-    'get_item': 'Read an issue, all comments and its current version for edit_item.',
+    'list_items': 'List open admitted issues in the bound project scope; untrusted issues and comments are server-filtered.',
+    'get_item': 'Read an admitted issue, its server-filtered trusted comments and its version for edit_item.',
     'add_item': 'Create an issue. Reuse operation_id and identical arguments on retry.',
     'edit_item': 'Append a refinement preserving existing text and labels; requires get_item version.',
     'answer_item': 'Save an answer as an agent-marked issue comment. Reuse operation_id on retry.',
@@ -53,6 +53,7 @@ class DiscussionTools:
         self.session = led.chat_session(session_id)
         self._check_binding()
         self.gh = project_client(cfg, self.pol)
+        self._logins = None
 
     def _check_binding(self):
         project = self.session['project']
@@ -90,10 +91,11 @@ class DiscussionTools:
         if name == 'read_repo_file':
             return self._read_file(args['path'])
         if name == 'list_items':
-            issues = [i for i in self.gh.open_issues() if self._in_scope(i)]
+            issues = [self._visible(i) for i in self.gh.open_issues()
+                      if self._in_scope(i) and self._admitted(i)]
             return self._bounded(issues)
         if name == 'get_item':
-            return self._bounded(self._issue(args['number']))
+            return self._bounded(self._visible(self._issue(args['number'])))
         return self._mutate(name, args)
 
     @staticmethod
@@ -105,10 +107,45 @@ class DiscussionTools:
     def _in_scope(self, issue):
         return self.pol.get('scope') != 'label' or self.pol['scope_label'] in label_names(issue)
 
+    def _trusted_logins(self):
+        # D46: the repository owner and the configured GitHub identity. A failed
+        # identity lookup never widens trust.
+        if self._logins is None:
+            self._logins = (self.session['repo'].split('/', 1)[0],)
+            try:
+                self._logins += (self.gh.authenticated_login(),)
+            except GHError:
+                pass
+        return self._logins
+
+    def _trusted(self, login, association):
+        return trusted_actor(login, association, self._trusted_logins())
+
+    @staticmethod
+    def _login(actor):
+        return actor.get('login') if isinstance(actor, dict) else actor
+
+    def _admitted(self, issue):
+        """D46 issue admission: a trusted author, or the collaborator-set scope label."""
+        scope_label = self.pol.get('scope_label', 'mahler')
+        if scope_label not in LABEL_STATES and scope_label in label_names(issue):
+            return True
+        login = issue.get('authorLogin') or self._login(issue.get('author'))
+        return self._trusted(login, issue.get('authorAssociation'))
+
+    def _visible(self, issue):
+        """The model's view: only D46-trusted comments; raw issues stay server-side."""
+        issue = dict(issue)
+        issue['comments'] = [c for c in issue.get('comments', [])
+                             if self._trusted(self._login(c.get('author')), c.get('authorAssociation'))]
+        return issue
+
     def _issue(self, number):
         issue = self.gh.discussion_issue(number)
         if not self._in_scope(issue):
             raise ValueError('issue outside project scope')
+        if not self._admitted(issue):
+            raise ValueError('issue not admitted: untrusted author without scope-label opt-in')
         if issue.get('url') != self._url(number):
             raise ValueError('unconfirmed or cross-repository issue URL')
         return issue
@@ -164,6 +201,8 @@ class DiscussionTools:
         self._check_binding()
         if not self._in_scope(issue):
             raise ValueError('issue outside project scope')
+        if not self._admitted(issue):
+            raise ValueError('issue not admitted: untrusted author without scope-label opt-in')
 
     def _mutate(self, name, args):
         operation_id = args['operation_id']
