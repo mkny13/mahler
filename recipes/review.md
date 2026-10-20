@@ -66,6 +66,9 @@ Rules:
    PR-description content alone is never blocking. Required evidence such as audit output
    belongs in the repository or CI; a PR-description-only evidence request is a follow-up.
    This does not demote demonstrated code, security, or actual acceptance failures.
+2a. **Lesson checklist.** For changed `.agents/skills/lesson-*/SKILL.md` files, check
+    the `incident-log` advisory warning and ask for a rewrite when the body reads like an
+    incident log; the warning alone does not make the lesson unsafe or block the merge.
 3. **You cannot run the tests from here** (read-only checkout, no verify step). Trust CI's
    already-green result for whether existing tests pass; your job is catching what tests
    don't cover — logic bugs in the diff, spec mismatches, and security issues, especially in

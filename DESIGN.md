@@ -2691,6 +2691,9 @@ use it). Mahler adds `metadata:` keys `mahler-id` (the dedup identity below),
 is short Markdown: the trigger, what went wrong, the corrective step. Archived
 lessons move to `.agents/skills-archive/<name>/` (outside every discovery path).
 Nothing is ever deleted by Mahler.
+The scanner separately warns, without affecting availability, when a body has
+at least three issue/PR references or more than half its sentences are dated;
+keep incident references in `metadata.source`.
 
 **Platform compatibility (checked 2026-10-13).** Format support is not discovery:
 each kind is native, a Mahler fallback, or unsupported. The fallback is the

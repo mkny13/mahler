@@ -22,6 +22,17 @@ MAX_BYTES = 8 * 1024
 MAX_DESC = 1024
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 NAME_RE = re.compile(r"^lesson-[a-z0-9-]{1,57}$")
+_INCIDENT_REF_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/[\w.-]+/[\w.-]+/pull/\d+\b"
+    r"|\b[\w.-]+/[\w.-]+#\d+\b|(?<![\w/])#\d+\b",
+    re.IGNORECASE)
+_DATE_RE = re.compile(
+    r"\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+\d{1,2}(?:,?\s+\d{4})?)\b",
+    re.IGNORECASE)
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 NATIVE, CATALOG, UNSUPPORTED = "native", "catalog", "unsupported"
 # D44's compatibility table. A kind not listed gets the catalog fallback.
@@ -89,32 +100,47 @@ def _frontmatter(text):
 
 def scan(dirname, files, project):
     """Check one lesson given as {relative filename: bytes}.
-    -> (info or None, findings). `findings` is a list of (rule, redacted
-    evidence); empty means safe. Never raises."""
+    -> (info or None, findings, warnings). Findings are fail-closed; warnings
+    are advisory and do not affect safety. Never raises."""
     try:
         return _scan(dirname, files, project)
     except Exception as e:          # fail closed (D44)
-        return None, [("scanner-error", redact.redact(str(e))[:120])]
+        return None, [("scanner-error", redact.redact(str(e))[:120])], []
+
+
+def _incident_log_warning(body):
+    references = len(_INCIDENT_REF_RE.findall(body))
+    sentences = [sentence.strip() for sentence in _SENTENCE_RE.split(body)
+                 if sentence.strip()]
+    dated = sum(bool(_DATE_RE.search(sentence)) for sentence in sentences)
+    if references >= 3 or (sentences and dated > len(sentences) / 2):
+        return ("incident-log", "body has at least 3 issue/PR references or "
+                "more than half its sentences are dated")
+    return None
 
 
 def _scan(dirname, files, project):
     out = []
+    warnings = []
     if set(files) != {"SKILL.md"}:
         extra = sorted(set(files) - {"SKILL.md"})
         out.append(("schema", "unexpected files: " + ", ".join(extra)[:100]
                     if extra else "missing SKILL.md"))
         if "SKILL.md" not in files:
-            return None, out
+            return None, out, warnings
     raw = files["SKILL.md"]
     if len(raw) > MAX_BYTES:
         out.append(("schema", f"SKILL.md is {len(raw)} bytes (max {MAX_BYTES})"))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None, out + [("schema", "not UTF-8")]
+        return None, out + [("schema", "not UTF-8")], warnings
     info = None
     try:
-        fm, _ = _frontmatter(text)
+        fm, body = _frontmatter(text)
+        warning = _incident_log_warning(body)
+        if warning:
+            warnings.append(warning)
         name, desc = fm.get("name", ""), fm.get("description", "")
         if not NAME_RE.match(dirname) or name != dirname:
             out.append(("schema", f"name {name!r} must equal directory {dirname!r} "
@@ -145,7 +171,7 @@ def _scan(dirname, files, project):
     secret = redact.redact(text)
     if secret != text:
         out.append(("secret", "credential-shaped text"))
-    return (None if out else info), out
+    return (None if out else info), out, warnings
 
 
 def _git_bytes(repo, *args):
@@ -279,7 +305,7 @@ def load(repo, wt, ref, project):
         if entry is None:
             verdict = ("branch-local", "not in base; takes effect after merge")
         else:
-            (info, findings), base_hash = entry
+            (info, findings, warnings), base_hash = entry
             if findings:
                 verdict = findings[0]
                 res["rejected"] += [{"name": name, "rule": r, "evidence": e}
@@ -303,6 +329,9 @@ def load(repo, wt, ref, project):
             res["safe"].append({"name": name, "description": info["description"],
                                 "path": f"{SKILLS_DIR}/{name}/SKILL.md",
                                 "hash": entry[1]})
+            for warning, evidence in entry[0][2]:
+                res["diagnostics"].append(
+                    f"lesson {name} warning [{warning}]: {evidence}")
     for r in res["rejected"]:
         res["diagnostics"].append(
             f"lesson {r['name']} unavailable [{r['rule']}]: {r['evidence']}")
@@ -417,7 +446,7 @@ def inventory(project, lessons, stats, today, limit=50):
     lesson_usage_stats(project, account). Unsafe lessons are skipped."""
     rows = []
     for name in sorted(lessons):
-        info, findings = scan(name, lessons[name], project)
+        info, findings, _ = scan(name, lessons[name], project)
         if findings or not info:
             continue
         meta = _frontmatter(lessons[name]["SKILL.md"].decode("utf-8"))[0]["metadata"]

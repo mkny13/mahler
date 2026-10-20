@@ -37,9 +37,33 @@ class ScanTests(unittest.TestCase):
         return {r for r, _ in self.check(*a, **k)[1]}
 
     def test_valid(self):
-        info, f = self.check(GOOD)
+        info, f, warnings = self.check(GOOD)
         self.assertEqual(f, [])
+        self.assertEqual(warnings, [])
         self.assertEqual(info["name"], "lesson-a")
+
+    def test_incident_log_warns_without_making_lesson_unsafe(self):
+        text = GOOD + "\nWe fixed #123, #234, and #345 after the failure.\n"
+        info, findings, warnings = self.check(text)
+        self.assertIsNotNone(info)
+        self.assertEqual(findings, [])
+        self.assertEqual([rule for rule, _ in warnings], ["incident-log"])
+
+    def test_clean_body_has_no_incident_log_warning(self):
+        info, findings, warnings = self.check(
+            GOOD.replace("Run the formatter first.", "Run the formatter before testing."))
+        self.assertIsNotNone(info)
+        self.assertEqual(findings, [])
+        self.assertEqual(warnings, [])
+
+    def test_mostly_dated_sentences_warn(self):
+        dated = GOOD.replace(
+            "Run the formatter first.",
+            "On 2026-10-18, we saw the failure. On 2026-10-19, we fixed it.")
+        info, findings, warnings = self.check(dated)
+        self.assertIsNotNone(info)
+        self.assertEqual(findings, [])
+        self.assertEqual([rule for rule, _ in warnings], ["incident-log"])
 
     def test_identity_derivation(self):
         expected = hashlib.sha256(b"p\nuse when the build fails on x.").hexdigest()[:16]
@@ -51,7 +75,7 @@ class ScanTests(unittest.TestCase):
         for wrong in ("abc", "0" * 16,
                       hashlib.sha256(b"other\nuse when the build fails on x.").hexdigest()[:16]):
             with self.subTest(wrong=wrong):
-                info, findings = self.check(GOOD.replace(expected, wrong))
+                info, findings, _ = self.check(GOOD.replace(expected, wrong))
                 self.assertIsNone(info)
                 self.assertIn("schema", {rule for rule, _ in findings})
 
@@ -94,14 +118,15 @@ class ScanTests(unittest.TestCase):
             self.assertIn("destructive", self.rules(GOOD + cmd), cmd)
 
     def test_secret_is_redacted_in_evidence(self):
-        info, f = self.check(GOOD + "GH_TOKEN=supersecretvalue1234")
+        info, f, _ = self.check(GOOD + "GH_TOKEN=supersecretvalue1234")
         self.assertIn("secret", {r for r, _ in f})
         self.assertNotIn("supersecretvalue1234", repr(f))
 
     def test_scanner_exception_fails_closed(self):
-        info, f = lessons.scan("lesson-a", {"SKILL.md": "not bytes"}, "p")
+        info, f, warnings = lessons.scan("lesson-a", {"SKILL.md": "not bytes"}, "p")
         self.assertIsNone(info)
         self.assertEqual(f[0][0], "scanner-error")
+        self.assertEqual(warnings, [])
 
 
 class PlatformModeTests(unittest.TestCase):
@@ -159,6 +184,15 @@ class LoadTests(RepoFixture):
         self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
         self.assertTrue(os.path.exists(os.path.join(wt, ".agents/skills/lesson-a/SKILL.md")))
         self.assertEqual(res["rejected"], [])
+
+    def test_incident_log_warning_is_diagnostic_and_lesson_stays_safe(self):
+        logged = GOOD + "\nWe fixed #123, #234, and #345 after the failure.\n"
+        repo = self.make_repo(self.root, {"lesson-a": logged})
+        wt = self.worktree(self.root, repo)
+        res = lessons.load(repo, wt, "origin/main", "p")
+        self.assertEqual([l["name"] for l in res["safe"]], ["lesson-a"])
+        self.assertEqual(res["rejected"], [])
+        self.assertTrue(any("[incident-log]" in line for line in res["diagnostics"]))
 
     def test_unsafe_base_lessons_removed_and_redacted(self):
         repo = self.make_repo(self.root, {
