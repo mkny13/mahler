@@ -611,7 +611,18 @@ def _ended_done(e):
         return True
     if _repeated_no_work(e):
         return True
-    if e.no_work_base and not e.item["pr"]:
+    stale_closed_pr = False
+    if e.no_work_base and e.item["pr"]:
+        try:
+            view = e.ctx.gh(e.project).pr_view(e.item["pr"])
+            stale_closed_pr = (view.get("state") == "CLOSED" and not view.get("mergedAt"))
+        except (GHError, ValueError) as exc:
+            e.ctx.say(f"{e.project}#{e.number}: couldn't confirm whether PR "
+                      f"#{e.item['pr']} is closed — preserving the regular ship path: {exc}")
+    if e.no_work_base and (not e.item["pr"] or stale_closed_pr):
+        if stale_closed_pr:
+            e.led.upsert_item(e.project, e.number, pr=None, branch=None)
+            e.led.set_kv(f"ship_snapshot:{e.project}#{e.number}", None)
         no_change.begin(e)
         return True
     if not (e.saved or e.item["branch"]):

@@ -619,6 +619,13 @@ def _closed_pr(ctx, project, item, pr, view):
         led.release(project, n, holder=CONDUCTOR)
 
 
+def _missing_remote_ref(error, ref):
+    message = str(error).lower()
+    return (bool(ref) and f"refs/heads/{ref}".lower() in message
+            and ("couldn't find remote ref" in message or
+                 "could not find remote ref" in message))
+
+
 def _mergeability_observation(ctx, project, item, pr, view):
     """Nudge GitHub across ticks; REST is only a trigger, never merge evidence."""
     led = ctx.led
@@ -2178,14 +2185,15 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
         return
     base = pol.get("base", "main")
     branch = None
+    existing_view = None
     if item["pr"]:
         try:
-            view = gh.pr_view(item["pr"])
-            if view["state"] == "MERGED":
-                _shipped(ctx, project, n, item["pr"], item, view, merged=False)
+            existing_view = gh.pr_view(item["pr"])
+            if existing_view["state"] == "MERGED":
+                _shipped(ctx, project, n, item["pr"], item, existing_view, merged=False)
                 return
-            if view.get("headRefName"):
-                branch = view["headRefName"]
+            if existing_view.get("headRefName"):
+                branch = existing_view["headRefName"]
         except (GHError, ValueError) as e:
             ctx.say(f"{project}#{n}: existing PR #{item['pr']} lookup failed — {e}")
             led.release(project, n, holder=CONDUCTOR)
@@ -2204,6 +2212,26 @@ def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):
                               pr_body(n, item["summary"], needs, unconfirmed=unconfirmed))
             created = True
     except (GHError, ValueError) as e:
+        if isinstance(e, GHError) and _missing_remote_ref(e, ref):
+            led.set_kv(f"ship_snapshot:{project}#{n}", None)
+            if (item["pr"] and existing_view and existing_view.get("state") == "OPEN"
+                    and existing_view.get("headRefName")):
+                led.upsert_item(project, n, branch=existing_view["headRefName"])
+                led.event("snapshot_missing", project, n, {
+                    "ref": ref, "pr": item["pr"], "recovery": "watch_open_pr"})
+                ctx.say(f"{project}#{n}: saved ref `{ref}` is missing; continuing to watch "
+                        f"open PR #{item['pr']}")
+            else:
+                reason = f"saved ref `{ref}` is missing — rebuilding from current base"
+                led.set_state(project, n, "ready", reason, pr=None, branch=None)
+                led.event("snapshot_missing", project, n, {
+                    "ref": ref, "recovery": "rebuild_from_base"})
+                ctx.ping(f"Rebuilding — {project} #{n}",
+                         f"The saved branch `{ref}` is missing; a clean rebuild from current "
+                         "base is queued.",
+                         project, n, priority="low")
+            led.release(project, n, holder=CONDUCTOR)
+            return
         ctx.say(f"{project}#{n}: opening PR failed — {e}")
         led.release(project, n, holder=CONDUCTOR)
         return
