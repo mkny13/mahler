@@ -233,6 +233,125 @@ def _python_versions(files):
     return versions
 
 
+def _release_tuple(version):
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", version, re.IGNORECASE)
+    if not match:
+        return None
+    return tuple(map(int, match.group(1).split(".")))
+
+
+def _compare_releases(left, right):
+    width = max(len(left), len(right))
+    left = left + (0,) * (width - len(left))
+    right = right + (0,) * (width - len(right))
+    return (left > right) - (left < right)
+
+
+def _pep_spec_matches(spec, version):
+    if not spec:
+        return True
+    candidate = _release_tuple(version)
+    if candidate is None:
+        raise VettingError(f"ambiguous locked Python version: {version}")
+    for clause in spec.split(","):
+        match = re.fullmatch(
+            r"\s*(===|==|!=|~=|<=|>=|<|>)\s*([0-9]+(?:\.[0-9]+)*(?:\.\*)?)\s*",
+            clause)
+        if not match:
+            raise VettingError(f"ambiguous Python version declaration: {spec}")
+        operator, bound_text = match.groups()
+        wildcard = bound_text.endswith(".*")
+        bound = _release_tuple(bound_text[:-2] if wildcard else bound_text)
+        if bound is None:
+            raise VettingError(f"ambiguous Python version declaration: {spec}")
+        comparison = _compare_releases(candidate, bound)
+        if wildcard:
+            matches = (len(candidate) >= len(bound)
+                       and candidate[:len(bound)] == bound)
+            if operator == "!=":
+                matches = not matches
+            elif operator not in ("==", "==="):
+                raise VettingError(f"ambiguous Python version declaration: {spec}")
+        elif operator in ("==", "==="):
+            matches = comparison == 0
+        elif operator == "!=":
+            matches = comparison != 0
+        elif operator == ">=":
+            matches = comparison >= 0
+        elif operator == "<=":
+            matches = comparison <= 0
+        elif operator == ">":
+            matches = comparison > 0
+        elif operator == "<":
+            matches = comparison < 0
+        else:
+            matches = comparison >= 0
+            if len(bound) < 2:
+                raise VettingError(f"ambiguous compatible-release declaration: {spec}")
+            upper = bound[:-2] + (bound[-2] + 1,)
+            matches &= _compare_releases(candidate, upper) < 0
+        if not matches:
+            return False
+    return True
+
+
+def _npm_range_matches(spec, version):
+    candidate = _release_tuple(version)
+    if candidate is None:
+        raise VettingError(f"ambiguous locked npm version: {version}")
+    for alternative in spec.split("||"):
+        tokens = alternative.strip().split()
+        if not tokens:
+            raise VettingError(f"ambiguous npm version declaration: {spec}")
+        matches = True
+        for token in tokens:
+            if token in ("*", "x", "X"):
+                continue
+            match = re.fullmatch(r"(\^|~|>=|<=|>|<|=)?(v?\d+(?:\.\d+)*|v?\d+(?:\.\d+)*\.[xX*])", token)
+            if not match:
+                raise VettingError(f"ambiguous npm version declaration: {spec}")
+            operator, bound_text = match.groups()
+            wildcard = bound_text.lower().endswith((".x", ".*"))
+            bound = _release_tuple(bound_text[:-2] if wildcard else bound_text)
+            if bound is None:
+                raise VettingError(f"ambiguous npm version declaration: {spec}")
+            if wildcard:
+                matches &= (len(candidate) >= len(bound)
+                            and candidate[:len(bound)] == bound)
+                continue
+            comparison = _compare_releases(candidate, bound)
+            if operator in (None, "="):
+                matches &= comparison == 0
+            elif operator == ">=":
+                matches &= comparison >= 0
+            elif operator == "<=":
+                matches &= comparison <= 0
+            elif operator == ">":
+                matches &= comparison > 0
+            elif operator == "<":
+                matches &= comparison < 0
+            elif operator == "~":
+                upper = bound[:1] + (bound[1] + 1,) if len(bound) > 1 else (bound[0] + 1,)
+                matches &= comparison >= 0 and _compare_releases(candidate, upper) < 0
+            elif operator == "^":
+                if bound[0] > 0:
+                    upper = (bound[0] + 1,)
+                elif len(bound) > 1 and bound[1] > 0:
+                    upper = (0, bound[1] + 1)
+                else:
+                    upper = bound[:2] + (bound[2] + 1,) if len(bound) > 2 else bound + (1,)
+                matches &= comparison >= 0 and _compare_releases(candidate, upper) < 0
+        if matches:
+            return True
+    return False
+
+
+def _version_matches(dependency):
+    if dependency.ecosystem == "npm":
+        return _npm_range_matches(dependency.declaration, dependency.version)
+    return _pep_spec_matches(dependency.declaration, dependency.version)
+
+
 def changed_dependencies(before, after):
     """Return only added or changed direct dependencies, without network access."""
     for path in set(before) | set(after):
@@ -254,7 +373,12 @@ def changed_dependencies(before, after):
             if key[0] == "npm" and declaration.strip().lower().startswith(
                     ("file:", "link:", "workspace:", "git:", "git+", "github:", "https:")):
                 raise VettingError(f"unsupported npm dependency source for {name}: {declaration}")
-            changed.append(Dependency(key[0], name, declaration, version))
+            dependency = Dependency(key[0], name, declaration, version)
+            if version and not _version_matches(dependency):
+                raise VettingError(
+                    f"lockfile version {version} does not satisfy {key[0]} "
+                    f"dependency {name} declaration {declaration}")
+            changed.append(dependency)
     return sorted(changed, key=lambda dep: (dep.ecosystem, _canonical(dep.name)))
 
 
