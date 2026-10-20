@@ -25,6 +25,11 @@ def e(s):
     return html.escape("" if s is None else str(s), quote=True)
 
 
+def _edge(x):
+    """Return a row's urgency edge class when state.py marks it urgent."""
+    return f' edge-{x["edge"]}' if x.get("edge") else ""
+
+
 def _a(url, text, cls=""):
     """A link when there is somewhere to go, plain text otherwise."""
     c = f' class="{cls}"' if cls else ""
@@ -341,7 +346,7 @@ def _backlog_groups(s, phone, dep_graph=None):
 
             title = _a(i["url"], i["title"] or i["ref"], "title")
             st = f'<span class="st mono t-{i["tone"]}">{e(i["state"])}</span>'
-            rows.append(f'<div class="{"pbl" if phone else "bl"}">{p}{ref_html}{title}{st}</div>')
+            rows.append(f'<div class="{"pbl" if phone else "bl"}{_edge(i)}">{p}{ref_html}{title}{st}</div>')
         
         graph_svg = ""
         toggle = ""
@@ -445,7 +450,7 @@ def _d_now(s):
     out.append('<div class="sect rule recent-problems"><span class="lbl">Recent problems · 24 hours</span>')
     for ev in s.get("recent_problems", []):
         tone, text = _event_text(ev)
-        out.append(f'<div class="ev"><span class="when mono">{e(ev["when"])}</span>'
+        out.append(f'<div class="ev edge-bad"><span class="when mono">{e(ev["when"])}</span>'
                    f'<span class="kind mono">{e(ev["kind"])}</span>'
                    f'<span class="txt t-{tone}" style="overflow-wrap:anywhere">{text}</span></div>')
     if not s.get("recent_problems"):
@@ -495,7 +500,8 @@ def _d_needs(s):
         content = (_answered(n) if n["pending"] else
                    f'<div class="body"><span class="q">{e(n["question"])}</span>'
                    f'{_need_meta(n)}{_need_details(n)}{_answer_input(n)}</div>{_answer_buttons(n)}')
-        out.append(f'<div class="need" data-need="{e(n["id"])}">{content}</div>')
+        edge = "" if n["pending"] else _edge(n)
+        out.append(f'<div class="need{edge}" data-need="{e(n["id"])}">{content}</div>')
     if not s["needs"]:
         out.append('<span class="empty">Nothing waiting on you. Runs continue on their own.</span>')
     out.append("</section>")
@@ -553,7 +559,7 @@ def _uat_cards(s, phone=False):
             row = dict(u)
             if session["link"]:
                 row["link"] = None
-            out.append(f'<div class="{"puat" if phone else "uat"}" data-uat="{e(u["ref"])}">'
+            out.append(f'<div class="{"puat" if phone else "uat"}{_edge(u)}" data-uat="{e(u["ref"])}">'
                        f'{_uat_left(row)}{_uat_done(u) or _uat_buttons(u)}</div>')
         out.append('</article>')
     return "".join(out)
@@ -832,7 +838,7 @@ def _d_side(s):
     open_needs = [n for n in s["needs"] if not n["pending"]]
     if open_needs:
         first = max(open_needs, key=lambda n: n["waited_s"])
-        out.append(f'<div class="needcard"><span class="lbl">Needs you · {s["needs_count"]}</span>'
+        out.append(f'<div class="needcard{_edge(first)}"><span class="lbl">Needs you · {s["needs_count"]}</span>'
                    f'<span class="q">{e(first["question"])}</span>'
                    f'<span class="meta">{_a(first["url"], first["ref"])} · {e(first["meta"])}</span>'
                    f'{_answer_buttons(first)}'
@@ -1197,7 +1203,7 @@ def _p_triage(s):
         if n["pending"]:
             out.append(f'<div class="pneed" data-need="{e(n["id"])}">{_answered(n)}</div>')
             continue
-        out.append(f'<div class="pneed{" p1" if n["p1"] else ""}" data-need="{e(n["id"])}">'
+        out.append(f'<div class="pneed{" p1" if n["p1"] else ""}{_edge(n)}" data-need="{e(n["id"])}">'
                    f'<div class="row"><span class="meta">{_a(n["url"], n["ref"])}</span>'
                    f'<span class="pchip{" p1" if n["p1"] else ""}">{e(n["p"])}</span>'
                    f'<span class="meta" style="font-size:10.5px">{e(n["meta"])}</span></div>'

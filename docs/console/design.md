@@ -114,8 +114,12 @@ chips and log lines — anything you scan or compare rather than read.
   `--line` rules and whitespace. The only filled surfaces are the left rail
   (`--surf`), the log panel (`--surf`), banner grounds (`--warnq` / `--badq`)
   and primary buttons.
-- Left-edge accent: a 3px solid border-left in `--bad` marks a needs-you item
-  or banner; `--warn` marks a warning banner.
+- Left-edge accent: a 3px solid border-left in `--bad` marks a bad banner.
+  Urgency edges (mahler#1112) use the same 3px edge on cards and rows:
+  `--bad` for failed items and Recent problems; `--warn` for needs-you questions,
+  backlog rows and changes waiting to be tested. Everything else, including
+  parked items and active runs, stays neutral. `state.py` decides each row's
+  `edge`; rows reserve the 3px so edged and plain rows line up.
 
 ### Touch targets
 
