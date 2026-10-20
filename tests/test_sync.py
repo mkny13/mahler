@@ -61,7 +61,8 @@ class MissingScopeTests(unittest.TestCase):
     def issue(self, number, hours, labels=()):
         return {"number": number, "title": "Example", "body": "",
                 "createdAt": iso(self.led.now() - timedelta(hours=hours)),
-                "labels": [{"name": label} for label in labels], "comments": []}
+                "labels": [{"name": label} for label in labels], "comments": [],
+                "authorAssociation": "OWNER"}
 
     def test_counts_only_over_24_hours_without_configured_label(self):
         self.gh.open_issues.return_value = [
@@ -93,6 +94,67 @@ class MissingScopeTests(unittest.TestCase):
         with self.assertRaises(GHError):
             sync.sync(self.ctx, "x")
         self.assertEqual(self.led.get_kv("missing_scope:x"), "7")
+
+
+class TrustGatedIntakeTests(unittest.TestCase):
+    def setUp(self):
+        CapacityMigrationTests.setUp(self)
+        self.gh.issues_changed.return_value = (True, "new-etag")
+        self.gh.blocked_by_of.return_value = []
+        self.gh.authenticated_login.return_value = "configured-user"
+
+    def issue(self, number, *, association="NONE", login="outsider", labels=(),
+              body=""):
+        return {"number": number, "title": f"Issue {number}", "body": body,
+                "createdAt": iso(self.led.now()),
+                "labels": [{"name": label} for label in labels], "comments": [],
+                "authorLogin": login, "authorAssociation": association}
+
+    def test_trusted_associations_repository_owner_and_configured_login_are_admitted(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        self.gh.open_issues.return_value = [
+            self.issue(1, association="OWNER"),
+            self.issue(2, association="MEMBER"),
+            self.issue(3, association="COLLABORATOR"),
+            self.issue(4, login="x"),
+            self.issue(5, login="configured-user"),
+        ]
+        sync.sync(self.ctx, "x")
+        self.assertEqual({item["number"]: item["state"] for item in self.led.items("x")},
+                         {n: "inbox" for n in range(1, 6)})
+        self.gh.authenticated_login.assert_called_once_with()
+
+    def test_untrusted_issue_is_held_before_forged_parent_and_state_labels(self):
+        self.ctx.cfg["projects"]["x"].update(scope="label", scope_label="custom")
+        parent = self.issue(10, association="OWNER", labels=["custom"])
+        child = self.issue(11, body="Part of #10", labels=["mahler:ready"])
+        self.gh.open_issues.return_value = [parent, child]
+        sync.sync(self.ctx, "x")
+
+        held = self.led.item("x", 11)
+        self.assertEqual(held["state"], "parked")
+        self.assertIsNone(held["parent"])
+        self.assertNotIn(held["state"], {"inbox", "ready", "working"})
+        state_events = [row["detail"] for row in self.led.q(
+            "SELECT detail FROM events WHERE project='x' AND number=11 AND kind='state'")]
+        self.assertTrue(any("untrusted issue author @outsider (NONE)" in detail
+                            for detail in state_events))
+        self.assertEqual(self.led.q("SELECT * FROM runs WHERE project='x' AND number=11"), [])
+
+        child["labels"].append({"name": "custom"})
+        sync.sync(self.ctx, "x")
+        admitted = self.led.item("x", 11)
+        self.assertEqual(admitted["state"], "ready")
+        self.assertEqual(admitted["parent"], 10)
+        self.assertEqual(self.led.get_kv("intake_hold:x#11"), "")
+
+    def test_mahler_state_label_is_never_an_opt_in_even_if_configured(self):
+        self.ctx.cfg["projects"]["x"].update(scope="all", scope_label="mahler:ready")
+        self.gh.open_issues.return_value = [
+            self.issue(12, labels=["mahler:ready"]),
+        ]
+        sync.sync(self.ctx, "x")
+        self.assertEqual(self.led.item("x", 12)["state"], "parked")
 
 
 class RepositoryAccessAlertTests(unittest.TestCase):
@@ -205,7 +267,8 @@ class OpenCompletionTests(unittest.TestCase):
         self.gh.pr_view.return_value = {'state': 'CLOSED', 'mergedAt': None}
         self.issue = {'number': 1, 'title': 'Lost work', 'body': '',
                       'createdAt': iso(self.led.now()),
-                      'labels': [{'name': 'mahler:working'}], 'comments': []}
+                      'labels': [{'name': 'mahler:working'}], 'comments': [],
+                      'authorAssociation': 'OWNER'}
         self.gh.open_issues.return_value = [self.issue]
 
     def completed(self, state='done', pr=88):

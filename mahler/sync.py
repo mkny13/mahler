@@ -13,7 +13,7 @@ from datetime import timedelta
 from . import config, releases
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
-                 label_names, parse_command, part_of, pin_of, priority_of,
+                 label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
                  completion_evidence)
 from .ledger import QUIET_DAYS, iso, parse
 from .scorecard import DEFECT_WINDOW, linked_bug
@@ -80,8 +80,53 @@ def sync(ctx, project):
         return
     issues = gh.open_issues()
 
+    scope_label = pol.get("scope_label", "mahler")
+    repo_owner = pol["repo"].split("/", 1)[0]
+    configured_login = None
+    admitted_issues = []
+    untrusted_issues = []
+    for iss in issues:
+        labels = label_names(iss)
+        login = iss.get("authorLogin")
+        opted_in = scope_label not in LABEL_STATES and scope_label in labels
+        admitted = (opted_in
+                    or trusted_actor(login, iss.get("authorAssociation"), (repo_owner,)))
+        if (not admitted and isinstance(login, str) and login.strip()):
+            if configured_login is None:
+                configured_login = gh.authenticated_login()
+            admitted = trusted_actor(login, iss.get("authorAssociation"),
+                                     (repo_owner, configured_login))
+        (admitted_issues if admitted else untrusted_issues).append(iss)
+
+    open_nums = {iss["number"] for iss in issues}
+    active_runs = led.active_runs(project)
+    for iss in untrusted_issues:
+        n = iss["number"]
+        labels = label_names(iss)
+        item = led.item(project, n)
+        if item is None:
+            led.upsert_item(project, n, created_at=iss["createdAt"])
+        led.upsert_item(
+            project, n, title=iss["title"], issue_body=iss.get("body") or "",
+            labels=json.dumps(labels), priority=priority_of(labels), pin=pin_of(labels),
+            parent=None, depends="[]", files="[]")
+        for run in active_runs:
+            if run["number"] == n:
+                request_stop(ctx, run, "untrusted issue author")
+        login = iss.get("authorLogin")
+        association = iss.get("authorAssociation") or "unknown association"
+        actor = f"@{login}" if isinstance(login, str) and login else "unknown author"
+        opt_in = (f"configure a non-Mahler scope label; `{scope_label}` is a state label"
+                  if scope_label in LABEL_STATES
+                  else f"add the `{scope_label}` label to opt in")
+        reason = f"held: untrusted issue author {actor} ({association}); {opt_in}"
+        hold_key = f"intake_hold:{project}#{n}"
+        if not led.get_kv(hold_key):
+            led.set_state(project, n, "parked", reason, sorted_at=None)
+            led.set_kv(hold_key, "untrusted")
+        ctx.say(f"{project}#{n}: {reason}")
+
     if pol.get("scope") == "label":
-        scope_label = pol["scope_label"]
         cutoff = led.now() - timedelta(hours=24)
         count = sum(1 for iss in issues
                     if scope_label not in label_names(iss)
@@ -89,7 +134,7 @@ def sync(ctx, project):
         if not ctx.dry_run:
             led.set_kv(f"missing_scope:{project}", str(count))
         in_scope_nums = {
-            iss["number"] for iss in issues
+            iss["number"] for iss in admitted_issues
             if scope_label in label_names(iss)
             or any(l in LABEL_STATES for l in label_names(iss))
             or led.item(project, iss["number"]) is not None
@@ -98,7 +143,7 @@ def sync(ctx, project):
         changed = True
         while changed:
             changed = False
-            for iss in issues:
+            for iss in admitted_issues:
                 n = iss["number"]
                 if n not in in_scope_nums:
                     parent_n = part_of(iss.get("body"))
@@ -106,14 +151,13 @@ def sync(ctx, project):
                         in_scope_nums.add(n)
                         changed = True
     else:
-        in_scope_nums = None
+        in_scope_nums = {iss["number"] for iss in admitted_issues}
     _record_backlog(ctx, project,
                     len(issues) if in_scope_nums is None else len(in_scope_nums))
 
     # Prefer this poll over cached ancestry, regardless of GitHub issue ordering.
-    parents = {iss["number"]: part_of(iss.get("body")) for iss in issues}
-    open_nums = set()
-    for iss in issues:
+    parents = {iss["number"]: part_of(iss.get("body")) for iss in admitted_issues}
+    for iss in admitted_issues:
         n = iss["number"]
         labels = label_names(iss)
         if in_scope_nums is not None and n not in in_scope_nums:
@@ -154,6 +198,17 @@ def sync(ctx, project):
             item = led.item(project, n)
         else:
             led.upsert_item(project, n, **fields)
+            hold_key = f"intake_hold:{project}#{n}"
+            if led.get_kv(hold_key):
+                state = _state_from_labels(labels)
+                planned = state is None and planned_child(iss, labels, led, project)
+                if state is None:
+                    state = "ready" if planned else "inbox"
+                led.set_state(
+                    project, n, state, "trusted issue intake resumed",
+                    sorted_at=iso(led.now()) if state == "ready" else None)
+                led.set_kv(hold_key, "")
+                item = led.item(project, n)
             if (item["state"] == "inbox" and led.lease(project, n) is None
                     and planned_child(iss, labels, led, project)):
                 _born_ready(led, project, n, iss)

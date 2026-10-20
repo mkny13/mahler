@@ -370,6 +370,9 @@ def _backlog_groups(s, phone, dep_graph=None):
                 ref_html = '<span class="ref mono t-mut"></span>'
 
             title = _a(i["url"], i["title"] or i["ref"], "title")
+            if i.get("reason"):
+                title = (f'<span class="title">{title}'
+                         f'<span class="backlog-reason">{e(i["reason"])}</span></span>')
             st = f'<span class="st mono t-{i["tone"]}">{e(i["state"])}</span>'
             rows.append(f'<div class="{"pbl" if phone else "bl"}{_edge(i)}">{p}{ref_html}{title}{st}</div>')
         

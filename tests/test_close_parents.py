@@ -779,7 +779,7 @@ class SyncStoresParentTests(unittest.TestCase):
                 "body": "Part of #10\n\n## Plan\n...\n## Done when\n...",
                 "createdAt": "2026-09-13T10:00:00Z",
                 "updatedAt": "2026-09-13T10:00:00Z",
-                "comments": [],
+                "comments": [], "authorAssociation": "OWNER",
             }
         ]
 
@@ -798,7 +798,7 @@ class SyncStoresParentTests(unittest.TestCase):
                 "body": "**Part of #10**\n\n## Plan\n...\n## Done when\n...",
                 "createdAt": "2026-09-13T10:00:00Z",
                 "updatedAt": "2026-09-13T10:00:00Z",
-                "comments": [],
+                "comments": [], "authorAssociation": "OWNER",
             }
         ]
 
@@ -820,7 +820,7 @@ class SyncStoresParentTests(unittest.TestCase):
                         "> Part of #10 (Some Goal)\n\n## Plan\n...\n## Done when\n...",
                 "createdAt": "2026-09-13T10:00:00Z",
                 "updatedAt": "2026-09-13T10:00:00Z",
-                "comments": [],
+                "comments": [], "authorAssociation": "OWNER",
             }
         ]
 
@@ -839,7 +839,7 @@ class SyncStoresParentTests(unittest.TestCase):
                 "body": "Just a regular issue",
                 "createdAt": "2026-09-13T10:00:00Z",
                 "updatedAt": "2026-09-13T10:00:00Z",
-                "comments": [],
+                "comments": [], "authorAssociation": "OWNER",
             }
         ]
 

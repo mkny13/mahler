@@ -1050,6 +1050,8 @@ def _backlog(cfg, led, projects):
                   "p1": i["priority"] == 1, "priority": i["priority"],
                   "state": i["state"].replace("_", "-"), "tone": _state_tone(i["state"]),
                   "edge": _edge(i["state"]),
+                  "reason": (_question(led, name, i["number"], "parked", i)
+                             if i["state"] == "parked" else None),
                   "parent": i["parent"],
                   "depends": [target[1] for d in json.loads(i["depends"] or "[]")
                               if (target := dependency_target(d, name, enabled))

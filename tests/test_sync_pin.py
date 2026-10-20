@@ -43,6 +43,7 @@ class FakeGH:
     def open_issues(self):
         return [{"number": n, "title": i["title"], "body": i.get("body", ""),
                  "createdAt": t(-60), "updatedAt": t(0),
+                 "authorAssociation": "OWNER",
                  "url": f"https://github.com/x/y/issues/{n}",
                  "labels": [{"name": l} for l in i["labels"]],
                  "comments": [{"createdAt": at, "body": body}
