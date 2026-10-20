@@ -75,6 +75,12 @@ def _etag_of(out):
     return m.group(1) if m else None
 
 
+# Fields `gh issue list --json` accepts (gh 2.101/2.102). authorAssociation is
+# not one of them; open_issues() reads it from the REST listing instead.
+ISSUE_LIST_FIELDS = ("number,title,labels,body,createdAt,updatedAt,comments,url,"
+                     "author,blocking,blockedBy")
+
+
 class GHError(RuntimeError):
     pass
 
@@ -227,10 +233,7 @@ class GH:
         limit = 300
         while True:
             out = self._gh("issue", "list", "-R", self.repo, "--state", "open",
-                           "--limit", str(limit), "--json",
-                           "number,title,labels,body,createdAt,updatedAt,comments,url,"
-                           "author,authorAssociation,"
-                           "blocking,blockedBy")
+                           "--limit", str(limit), "--json", ISSUE_LIST_FIELDS)
             issues = json.loads(out)
             if len(issues) < limit:
                 break
@@ -238,6 +241,12 @@ class GH:
         for issue in issues:
             author = issue.get("author")
             issue["authorLogin"] = author.get("login") if isinstance(author, dict) else None
+        if any(isinstance(i["authorLogin"], str) and i["authorLogin"] for i in issues):
+            # `gh issue list --json` has no authorAssociation field; the REST
+            # listing does. A missing association stays untrusted (D46).
+            associations = self._open_issue_associations()
+            for issue in issues:
+                issue["authorAssociation"] = associations.get(issue["number"])
         self._relationships = {
             issue["number"]: {
                 "blocking": _relationship_numbers(issue.get("blocking")),
@@ -246,6 +255,14 @@ class GH:
             for issue in issues
         }
         return issues
+
+    def _open_issue_associations(self):
+        """Issue number -> author_association for every open issue (REST)."""
+        pages = json.loads(self._gh(
+            "api", f"repos/{self.repo}/issues?state=open&per_page=100",
+            "--paginate", "--slurp"))
+        return {i["number"]: i.get("author_association")
+                for page in pages for i in page if "pull_request" not in i}
 
     def authenticated_login(self):
         """The configured user identity, not an App installation's bot identity."""
