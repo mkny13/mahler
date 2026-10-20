@@ -492,6 +492,46 @@ remains **public personal code only**; applicable overseas terms and training
 consent remain unverified. Any future offer needs a new availability and terms
 check before integration. This is the issue's free-offer-ended outcome.
 
+**Hermes Agent + Nous Portal investigation: free CLI builder ineligible (mahler#1115, 2026-10-20).**
+No adapter or route is added. Upstream tag `v0.22.2` (released 2026-10-15) resolves to commit
+`d923a5eb487a17c0a68801bba9ef0f56c81040a8` at https://github.com/NousResearch/hermes-agent.
+Investigation evaluated Hermes Agent CLI and Nous Portal against Mahler's unattended builder
+contract across six core areas:
+
+| Contract area | Upstream source / doc citation | Verified behavior | Unknown / unverified behavior |
+|---|---|---|---|
+| **Finite invocation, output & exit** | [`hermes_cli/_parser.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/_parser.py), [`hermes_cli/oneshot.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/oneshot.py), [`cli-commands.md`](https://hermes-agent.nousresearch.com/docs/reference/cli-commands) | Supports non-interactive runs via `hermes chat -q "<prompt>" --format stream-json --in <worktree>` (or `-z "<prompt>" --in <worktree>`). Streaming JSONL delivers events. Process exit status is mapped by `_oneshot_exit_code`: `0` on success, `1` on empty/partial output, `2` on failure, `130` on interrupt/SIGINT. | Exact stream event payload format under network errors; unverified live in headless execution without valid credentials. |
+| **Approvals & deny rules** | [`tools/approval_floors.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/tools/approval_floors.py), [`tools/approval_context.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/tools/approval_context.py) | `approvals.single_query_mode: approve` permits unattended execution. `approvals.deny` specifies unconditional fnmatch glob patterns evaluated in `_floor_block` via `_match_user_deny_rule` before any approval mode bypass; achieves full parity with Mahler's `DENY_STEMS` (e.g. `git push --force*`, `git push -f*`, `git reset --hard*`, `gh repo delete*`, `rm -rf /*`). | Whether complex shell syntax like command chaining (e.g. `foo && git push -f`) bypasses `_match_user_deny_rule` without bash AST inspection. |
+| **Free models, rates, usage & quota errors** | [`hermes_cli/anon_auth.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/anon_auth.py), [`hermes_cli/models_catalog_static.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/models_catalog_static.py), [`tool-gateway.md`](https://hermes-agent.nousresearch.com/docs/user-guide/tool-gateway) | Anonymous free tier (`nous/welcome` on `welcome-api.nousresearch.com`) is strictly restricted to local desktop app surfaces (`client_surface() == "desktop" and is_local_desktop_backend()`); CLI surface (`client_surface() == "cli"`) has `free_inference_active() == False` and fails with `AuthError("Hermes is not logged into Nous Portal.", code="nous_auth_missing")`. Curated `nous` catalog explicitly filters out free models (`not mid.endswith(":free")`). Tool Gateway is paywalled to paid plans ($20–$200/mo). No zero-cost CLI usage probe exists; unmetered with 429 backoff matching `QUOTA_WORDS`. | Quota reset cadence and rate limits for an authenticated $0 account (unverified without live account creation). |
+| **Login & state isolation (D25)** | [`hermes_constants.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_constants.py), [`agent/credential_sources.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/agent/credential_sources.py) | External credential borrowing is enabled by default (`auth.adopt_external_logins: true` reads `~/.codex/auth.json` and Claude Code state), but setting `auth.adopt_external_logins: false` in config fully prevents borrowing (`adopt_external_logins_enabled() == False`). Setting `HERMES_HOME=<path>` env var relocates all config, environment, database, and scratch paths away from `~/.hermes/`. | None; state and credential isolation behavior is completely verifiable from source. |
+| **Background side effects** | [`hermes_cli/config.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/config.py), [`hermes_cli/subcommands/curator.py`](https://github.com/NousResearch/hermes-agent/blob/d923a5eb487a17c0a68801bba9ef0f56c81040a8/hermes_cli/subcommands/curator.py) | Background review fork is disabled via `auxiliary.background_review.enabled: false`; memory persistence is disabled via `memory.memory_enabled: false` and `memory.user_profile_enabled: false` (or `--ignore-rules`); curator background tasks disabled via `curator.enabled: false`; telemetry is off by default (`telemetry.shared_metrics.enabled: false`); fallback chains disabled via `fallback_providers: []`. | Long-running cache or session file retention inside isolated `HERMES_HOME`. |
+| **D33 qualification** | [`ROADMAP.md`](https://github.com/mkny13/mahler/blob/main/ROADMAP.md), [`portal.nousresearch.com`](https://portal.nousresearch.com) | Disqualified as an unattended free builder. Hermes cannot run free inference from the CLI surface and Tool Gateway is paid-only. | Real-world coding benchmark pass rates against Kilo / GLM-5.3-flash on size:s items (untested due to lack of a functional free CLI tier). |
+
+**Blocking contract facts:**
+1. *Free anonymous inference is blocked on CLI:* In `hermes_cli/anon_auth.py:210-216`, `free_inference_active()` requires `client_surface() == "desktop" and is_local_desktop_backend()`. Any headless CLI invocation (`client_surface() == "cli"`) returns `False`, causing runs without Portal credentials to raise `AuthError("Hermes is not logged into Nous Portal.", code="nous_auth_missing")`.
+2. *Curated Nous catalog excludes free models:* `_PROVIDER_MODELS["nous"]` in `hermes_cli/models_catalog_static.py:174` filters out models ending in `:free`.
+3. *Tool Gateway is paid-tier only:* Web browsing, code search, and file tools provided by the Nous Tool Gateway require an active paid Portal plan ($20, $100, or $200/month; `tool-gateway.md`).
+4. *Authenticated $0 tier is unestablished for unattended CLI:* Live testing an authenticated $0 account requires creating and authenticating a live Nous Portal account, which requires unprovisioned owner credentials and is out of scope. Free-tier contract facts cannot be assumed from marketing copy.
+
+**Executable pinned-source verification:**
+Verification was **source-derived**, not an unauthenticated live run: Python 3.12+ standard library executed against the pinned upstream source (commit `d923a5eb487a17c0a68801bba9ef0f56c81040a8`), testing `HERMES_HOME` path isolation, CLI argument parser options (`-q`, `--format stream-json`, `--in`, `-z`), `_oneshot_exit_code` process exit code mappings, unconditional `approvals.deny` glob matching against Mahler `DENY_STEMS`, `auth.adopt_external_logins: false` disabling credential borrowing, and `free_inference_active()` refusing anonymous execution on CLI surfaces.
+Command:
+```bash
+python3 scratch/verify_hermes_contract.py
+```
+Exit status: `0`.
+Sanitized output:
+```text
+PASS: HERMES_HOME environment redirection isolates paths.
+PASS: CLI parser accepts -q, --format stream-json, --in, and -z.
+PASS: Finite turn exit codes verified (0=ok, 1=empty, 2=failed, 130=SIGINT).
+PASS: Unconditional approvals.deny rule matching against DENY_STEMS verified.
+PASS: auth.adopt_external_logins: false prevents external login adoption.
+PASS: Anonymous guest inference restricted to desktop backend (rejected on CLI).
+ALL PINNED-SOURCE CONTRACT CHECKS PASSED (exit code 0).
+```
+No Nous Portal account was created or used, no paid tier or credits were enabled, no existing Claude or Codex credentials were read or adopted, and no global Hermes install or `~/.hermes` state modification occurred.
+
 **Antigravity test results (2026-09-12).**
 - `agy` 1.1.23 was already installed at `~/.local/bin/agy` and signed in. dispatch only
   searched the app bundle, which is why NOTES.md says Antigravity has no CLI.
@@ -540,6 +580,7 @@ Claude may build, but keep headroom for me*):
    - A `platform:` label overrides the order.
    - The 2026-09-27 Cline check found no new free Gemini 3.8 Flash slot: `cline-free` keeps its GLM-5.3-flash default and tier-1 slot. No `cline-gemini` platform is added; Cline's Gemini provider uses a paid API key, while Antigravity's free `agy-gemini` (`gemini-3.8-flash-high`) already covers that model.
    - The 2026-10-07 Moonshot Kimi Code CLI investigation (mahler#722) found that official membership documentation (https://www.kimi.com/code/docs/en/kimi-code/membership.html) restricts Kimi Code to paid subscription plans (Plus $19/mo and higher); the free Go/Adagio tier provides 0 coding quota. Third-party reports of a 7-day recurring free starter quota were unsubstantiated rumors that conflated legacy paid plans with a free tier. Per D8 free-only rules (Mahler never spends money; no card on file, no pay-as-you-go, no auto top-up), Kimi Code is ineligible as a free builder; no platform adapter is added.
+   - The 2026-10-20 Hermes Agent + Nous Portal investigation (mahler#1115) found that Nous Research's Hermes Agent (v0.22.2, commit `d923a5eb487a17c0a68801bba9ef0f56c81040a8`) restricts its $0 anonymous inference channel (`welcome-api.nousresearch.com`) exclusively to local desktop application backends (`client_surface() == "desktop"`); headless CLI execution (`client_surface() == "cli"`) refuses anonymous access with `AuthError(code="nous_auth_missing")`. Furthermore, the curated Nous catalog (`_PROVIDER_MODELS["nous"]`) excludes free models, and Tool Gateway features are restricted to paid subscriptions ($20-$200/mo). Per D8 free-only rules and D25 credential isolation constraints, Hermes Agent is ineligible as an unattended free builder; no platform adapter is added.
 3. **Nothing autonomous ever runs into paid extra usage.** At or above 100%, Claude is marked
    exhausted until `resets_at`.
 4. **Escalation:** two failed verify rounds on a weaker platform → the item is retried a tier
