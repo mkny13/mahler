@@ -602,8 +602,9 @@ class PrepareAccountEnvTests(unittest.TestCase):
         text = prompt.build(self.ctx, "acme", item, "review", "claude-work", prep)
         self.assertIn(sha, text)
         self.assertIn("claim mode", text)
-        self.assertIn("gh pr diff <pr>", text)
-        self.assertIn("sensitivity check as inconclusive", text)
+        self.assertIn("Claim mode has no PR or branch diff", text)
+        self.assertIn("exact checked-base ancestry", text)
+        self.assertNotIn("gh pr diff", text)
         self.assertNotIn("already-green", text)
         normal = prompt.build(self.ctx, "acme", {**item, "claim_base_sha": None, "pr": 8},
                               "review", "claude-work", prep)

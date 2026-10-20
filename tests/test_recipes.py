@@ -640,9 +640,18 @@ class TestSensitivityRecipeTests(unittest.TestCase):
         recipe = (Path(__file__).resolve().parents[1] / "recipes/review.md").read_text()
         claim, normal = recipe.split("<!-- normal-pr-review -->", 1)
         claim_normalized = " ".join(claim.split())
-        self.assertIn("PR number, URL, or branch", claim_normalized)
-        self.assertIn("retrieve the actual PR diff", claim_normalized)
-        self.assertIn("sensitivity check as inconclusive", claim_normalized)
+        for fragment in (
+            "Claim mode has no PR or branch diff",
+            "Do not look for one in the build evidence",
+            "exact checked-base ancestry",
+            "`git log` and `git blame`",
+            "claim-supporting diff",
+            "separate checkout at the exact checked base",
+            "reverse-applying only that diff's non-test changes",
+        ):
+            with self.subTest(mode="claim", fragment=fragment):
+                self.assertIn(fragment, claim_normalized)
+        self.assertNotIn("gh pr diff", claim_normalized)
         for mode, text in (("claim", claim), ("normal", normal)):
             normalized = " ".join(text.split())
             for fragment in (
@@ -650,8 +659,7 @@ class TestSensitivityRecipeTests(unittest.TestCase):
                 "isolated baseline",
                 "exact checked base",
                 "retaining the changed test code",
-                "reverting non-test PR changes",
-                "separate isolated",
+                "reverting non-test",
                 "`hardening`",
                 "`behavior`",
                 "Pure refactor and test-only PRs are exempt",
