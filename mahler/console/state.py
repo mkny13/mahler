@@ -1440,6 +1440,35 @@ NET_BACKLOG_EXPLAIN = ("+ means more issues opened than closed — the backlog g
 NET_BACKLOG_EMPTY = "History starts today; figures appear after the next hourly snapshot."
 
 
+NET_BACKLOG_TREND_DAYS = 30
+NET_BACKLOG_TREND_POINTS = 180   # at most this many points per chart (4h apart over 30d)
+
+
+def _backlog_trend(led, project, now):
+    """Open issues over the last 30 days for the Stats chart (mahler#1113).
+
+    Points are (x, count) with x from 0 (the chart's left edge) to 1 (now).
+    The chart spans 30 days, or less when history is shorter, so a new project
+    isn't one dot at the far right. None with fewer than two snapshots."""
+    series = led.backlog_series(project, now - timedelta(days=NET_BACKLOG_TREND_DAYS))
+    if len(series) < 2:
+        return None
+    start = series[0][0]
+    span = max((now - start).total_seconds(), 1)
+    step = -(-len(series) // NET_BACKLOG_TREND_POINTS)   # ceil
+    kept = series[::step]
+    if kept[-1] is not series[-1]:
+        kept.append(series[-1])
+    first, last = series[0][1], series[-1][1]
+    ago = _span(now - start) if now - start < timedelta(days=NET_BACKLOG_TREND_DAYS) \
+        else f"{NET_BACKLOG_TREND_DAYS}d"
+    return {"points": [(round((at - start).total_seconds() / span, 4), n) for at, n in kept],
+            "max": max(n for _, n in series), "last": last,
+            "left": f"{ago} ago", "right": "now",
+            "caption": f"open issues · {first} → {last} over {ago}",
+            "aria": f"Open issues over the last {ago}: {first} then, {last} now."}
+
+
 def _signed(n):
     return f"+{n}" if n > 0 else f"\u2212{-n}" if n < 0 else "0"
 
@@ -1467,6 +1496,7 @@ def _net_backlog(cfg, led, projects, now):
                             "note": None if w["full"] else
                             f"only {_span(w['covered'])} of history"})
         rows.append({"project": p["name"], "windows": windows,
+                     "trend": _backlog_trend(led, p["name"], now),
                      "empty": None if windows else NET_BACKLOG_EMPTY,
                      "scope": (f"Counts only issues labelled {label}, the ones Mahler manages."
                                if label else None)})

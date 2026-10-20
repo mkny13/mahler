@@ -212,6 +212,15 @@ a { color: var(--acc); text-decoration: none; }
 .nb-row .nb-win .statnum { font-size: 22px; }
 .nb-row .nb-win .statlabel { justify-self: start; font-size: 11px; }
 .nb-row .nb-scope { grid-column: 1 / -1; }
+.nb-row .nb-chart { grid-column: 1 / -1; min-width: 0; }
+.nb-chart svg { display: block; width: 100%; height: auto; }
+.nb-chart .nb-grid { stroke: var(--line); stroke-width: 1; }
+.nb-chart .nb-axis, .nb-chart .nb-end { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; }
+.nb-chart .nb-axis { fill: var(--mut); }
+.nb-chart .nb-end { fill: var(--acc); }
+.nb-chart .nb-area { fill: var(--accq); }
+.nb-chart .nb-line { fill: none; stroke: var(--acc); stroke-width: 2;
+  stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 
 .sect { display: flex; flex-direction: column; gap: 8px; }
 .sect.rule { border-top: 1px solid var(--line); padding-top: 14px; gap: 7px; }

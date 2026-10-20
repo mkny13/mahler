@@ -1060,6 +1060,13 @@ class Ledger:
         return self.q1("SELECT * FROM backlog_snapshots WHERE project=?"
                        " ORDER BY at DESC LIMIT 1", (project,))
 
+    def backlog_series(self, project, since):
+        """The project's snapshots at or after `since`, oldest first, as
+        (datetime, open_count) pairs: the console's trend chart (mahler#1113)."""
+        rows = self.q("SELECT at, open_count FROM backlog_snapshots WHERE project=?"
+                      " AND at >= ? ORDER BY at", (project, iso(since)))
+        return [(parse(r["at"]), r["open_count"]) for r in rows]
+
     def backlog_net(self, project, now=None):
         """Net backlog (opened − closed) per window, from snapshot differences.
 

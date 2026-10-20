@@ -377,6 +377,38 @@ class NetBacklogStateTests(unittest.TestCase):
         self.assertEqual(c['windows'], [])
         self.assertEqual(c['empty'], state.NET_BACKLOG_EMPTY)
 
+    def test_trend_series(self):
+        a, b, c = state._net_backlog({}, self.led, self.projects, self.now)['rows']
+        # 'a' has 31 days of history: the chart shows the last 30 (from 33 at 7d ago)
+        self.assertEqual(a['trend']['points'][0], (0.0, 33))
+        self.assertEqual(a['trend']['points'][-1], (1.0, 28))
+        self.assertEqual((a['trend']['max'], a['trend']['last'], a['trend']['left']),
+                         (33, 28, '7d ago'))
+        self.assertIn('33 \u2192 28', a['trend']['caption'])
+        self.assertEqual(b['trend']['left'], '9d ago')
+        self.assertIsNone(c['trend'])
+
+    def test_trend_is_thinned_but_keeps_the_newest_point(self):
+        from datetime import timedelta
+        led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(led.close)
+        for h in range(30 * 24, -1, -1):
+            led.record_backlog('p', h % 50, at=self.now - timedelta(hours=h))
+        t = state._backlog_trend(led, 'p', self.now)
+        self.assertLessEqual(len(t['points']), state.NET_BACKLOG_TREND_POINTS + 1)
+        self.assertEqual(t['points'][-1], (1.0, 0))
+        self.assertEqual(t['left'], '30d ago')
+
+    def test_chart_svg(self):
+        from mahler.console import page
+        rows = state._net_backlog({}, self.led, self.projects, self.now)['rows']
+        html = page._nb_chart(rows[0]['trend'])
+        for text in ('<svg viewBox="0 0 320 110"', 'class="nb-area"', 'class="nb-line"',
+                     'role="img"', 'aria-label="Open issues', '7d ago', '>28</text>'):
+            self.assertIn(text, html)
+        self.assertNotIn('#', html.split('<span')[0])   # theme colours only, via CSS
+        self.assertEqual(page._nb_chart(None), '')
+
     def test_page_renders_on_phone_and_desktop(self):
         from mahler.console import page
         s = {'net_backlog': state._net_backlog({}, self.led, self.projects, self.now)}

@@ -951,6 +951,41 @@ def _stats_rows(s):
     return "".join(rows)
 
 
+NB_W, NB_H = 320, 110                   # trend chart viewBox (mahler#1113)
+NB_PL, NB_PR, NB_PT, NB_PB = 26, 28, 8, 18
+
+
+def _nb_chart(t):
+    """Open issues over time as one server-rendered SVG (mahler#1113): the
+    shaded area is the backlog, so progress is the line coming down. Scales
+    to the card's width; colours are the theme's CSS variables."""
+    if not t:
+        return ""
+    top = max(4, -(-t["max"] // 4) * 4)          # round up to a multiple of 4
+    plot_w, plot_h = NB_W - NB_PL - NB_PR, NB_H - NB_PT - NB_PB
+
+    def y(v):
+        return round(NB_PT + (1 - v / top) * plot_h, 1)
+
+    line = " ".join(f'{round(NB_PL + x * plot_w, 1)},{y(n)}' for x, n in t["points"])
+    first_x = round(NB_PL + t["points"][0][0] * plot_w, 1)
+    area = f'{first_x},{y(0)} {line} {NB_PL + plot_w},{y(0)}'
+    grid = "".join(
+        f'<line class="nb-grid" x1="{NB_PL}" x2="{NB_PL + plot_w}" y1="{y(v)}" y2="{y(v)}"/>'
+        f'<text class="nb-axis" x="{NB_PL - 4}" y="{y(v) + 3}" text-anchor="end">{v}</text>'
+        for v in (0, top // 2, top))
+    axis = (f'<text class="nb-axis" x="{NB_PL}" y="{NB_H - 4}">{e(t["left"])}</text>'
+            f'<text class="nb-axis" x="{NB_PL + plot_w}" y="{NB_H - 4}" '
+            f'text-anchor="end">{e(t["right"])}</text>')
+    end = (f'<text class="nb-end" x="{NB_PL + plot_w + 4}" y="{y(t["last"]) + 3}">'
+           f'{t["last"]}</text>')
+    return (f'<div class="nb-chart"><svg viewBox="0 0 {NB_W} {NB_H}" role="img" '
+            f'aria-label="{e(t["aria"])}">{grid}{axis}'
+            f'<polygon class="nb-area" points="{area}"/>'
+            f'<polyline class="nb-line" points="{line}"/>{end}</svg>'
+            f'<span class="statprev nb-caption">{e(t["caption"])}</span></div>')
+
+
 def _net_backlog(s):
     """Net backlog per project (mahler#1104); every word comes from state.py."""
     nb = s.get("net_backlog")
@@ -970,7 +1005,8 @@ def _net_backlog(s):
         scope = f'<span class="statprev nb-scope">{e(r["scope"])}</span>' if r["scope"] else ""
         rows.append(f'<div class="statcard nb-row" data-nb-project="{e(r["project"])}">'
                     f'<span class="name mono">{e(r["project"])}</span>'
-                    f'<span class="nb-figs">{figs}</span>{scope}</div>')
+                    f'<span class="nb-figs">{figs}</span>{_nb_chart(r.get("trend"))}'
+                    f'{scope}</div>')
     return (f'<div class="net-backlog"><h3 class="nb-title">{e(nb["title"])}</h3>'
             f'<p class="settings-help nb-explain">{e(nb["explain"])}</p>'
             f'<div class="stats-grid">{"".join(rows)}</div></div>')

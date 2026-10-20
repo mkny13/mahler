@@ -2820,3 +2820,8 @@ minus closed, so no separate cumulative counters are kept.
   snapshot reaches the window start, the oldest is used and the figure carries
   "only Nd of history". History starts when this shipped; nothing is backfilled.
 - A snapshot failure is logged and never breaks sync.
+- **The console charts the open count itself (mahler#1113).** Each Stats card has
+  a server-rendered SVG of open issues over the last 30 days (or the shorter
+  history), shaded beneath. Progress is the line coming down. A two-line
+  opened-vs-closed chart was mocked up and set aside: it would need the
+  cumulative counters this decision avoids.

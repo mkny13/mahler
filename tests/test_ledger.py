@@ -2184,6 +2184,14 @@ class BacklogSnapshotTests(unittest.TestCase):
         self.assertTrue(net["7d"]["full"])
         self.assertEqual(net["30d"], {"net": -4, "covered": timedelta(days=9), "full": False})
 
+    def test_series_since(self):
+        for days_ago, count in ((31, 50), (9, 10), (0, 6)):
+            self.led.record_backlog("p", count, at=self.t0 - timedelta(days=days_ago))
+        self.led.record_backlog("q", 1, at=self.t0)
+        self.assertEqual(self.led.backlog_series("p", self.t0 - timedelta(days=30)),
+                         [(self.t0 - timedelta(days=9), 10), (self.t0, 6)])
+        self.assertEqual(self.led.backlog_series("none", self.t0), [])
+
     def test_fewer_than_two_rows_is_none(self):
         self.assertIsNone(self.led.backlog_net("p"))
         self.led.record_backlog("p", 3, at=self.t0)
