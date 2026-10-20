@@ -774,6 +774,8 @@ def validate_post_merge(cfg):
 
 def github_app_settings(cfg, pol):
     """Resolve only conductor configuration; never export it through run_env."""
+    if isinstance(pol, str):
+        pol = project_policy(cfg, pol)
     app = cfg.get("github_app", {})
     if not isinstance(app, dict):
         raise ValueError("github_app must be a table")
@@ -796,6 +798,24 @@ def github_app_settings(cfg, pol):
     if "github_app_installation_id" not in pol and gh_account_of(pol) != DEFAULT_ACCOUNT:
         return None
     return str(app["app_id"]), str(installation), key_path
+
+
+def project_github_app(cfg, pol, cache_dir=None):
+    """Resolve the GitHub App installation for conductor or agent use.
+
+    Returns a mahler.github_app.Installation instance or None if no App
+    is configured for the project. Never places the App id, installation id,
+    or private-key path in run environment variables (D47).
+    """
+    from . import github_app
+
+    if isinstance(pol, str):
+        pol = project_policy(cfg, pol)
+    settings = github_app_settings(cfg, pol)
+    if settings is None:
+        return None
+    cache = cache_dir or os.path.join(STATE, "github-app-tokens")
+    return github_app.Installation(*settings, cache_dir=cache)
 
 
 def validate_github_app(cfg):
