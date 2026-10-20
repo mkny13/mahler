@@ -8,8 +8,11 @@ Workspace: $worktree — a git worktree on branch `$branch`, with PR head `$push
 Work only inside it. Never touch other checkouts, and never run `git worktree add` or
 `git worktree remove`.
 
+Use this admitted issue context as the work specification and trusted discussion context.
+Do not fetch raw issue comments:
+$issue_context
+
 Start by reading:
-- the issue and every comment: `gh issue view $number -R $repo --comments`
 - CLAUDE.md / AGENTS.md and `.mahler/project.toml` in the workspace
 $handoff
 $history
