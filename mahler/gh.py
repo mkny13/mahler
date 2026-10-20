@@ -22,6 +22,7 @@ STATE_LABELS = {
 }
 LABEL_STATES = {v: k for k, v in STATE_LABELS.items()}
 LABEL_STATES["mahler:tracking"] = "parent"  # backward compatibility
+TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 LABEL_COLORS = {
     "mahler:inbox": "ededed", "mahler:ready": "0e8a16", "mahler:working": "1d76db",
     "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5",
@@ -139,6 +140,7 @@ class GH:
         self._relationships = {}
         self.rate_ledger = None
         self._rate_reset = 0
+        self._login = None
 
     def _env(self, git=False):
         if self.app is None:
@@ -221,17 +223,21 @@ class GH:
 
     def open_issues(self):
         # gh paginates up to --limit. Grow until the result proves exhaustion,
-        # retaining its normalized issue/comment and dependency fields.
+        # retaining its author and dependency fields for intake classification.
         limit = 300
         while True:
             out = self._gh("issue", "list", "-R", self.repo, "--state", "open",
                            "--limit", str(limit), "--json",
                            "number,title,labels,body,createdAt,updatedAt,comments,url,"
+                           "author,authorAssociation,"
                            "blocking,blockedBy")
             issues = json.loads(out)
             if len(issues) < limit:
                 break
             limit *= 2
+        for issue in issues:
+            author = issue.get("author")
+            issue["authorLogin"] = author.get("login") if isinstance(author, dict) else None
         self._relationships = {
             issue["number"]: {
                 "blocking": _relationship_numbers(issue.get("blocking")),
@@ -240,6 +246,16 @@ class GH:
             for issue in issues
         }
         return issues
+
+    def authenticated_login(self):
+        """The configured user identity, not an App installation's bot identity."""
+        if self._login is None:
+            user = json.loads(_gh("api", "user", env=self._git_env()))
+            login = user.get("login") if isinstance(user, dict) else None
+            if not isinstance(login, str) or not login.strip():
+                raise GHError("gh api user returned no configured login")
+            self._login = login
+        return self._login
 
     def _relationships_of(self, number):
         """Both native GitHub dependency directions for one issue.
@@ -1005,6 +1021,17 @@ class GH:
 
 def label_names(issue):
     return [l["name"] if isinstance(l, dict) else l for l in issue.get("labels", [])]
+
+
+def trusted_actor(login, association, trusted_logins=()):
+    """Whether GitHub attribution or an explicitly trusted login admits an actor."""
+    if isinstance(association, str) and association.upper() in TRUSTED_ASSOCIATIONS:
+        return True
+    if not isinstance(login, str) or not login.strip():
+        return False
+    login = login.casefold()
+    return any(isinstance(trusted, str) and trusted.strip()
+               and login == trusted.casefold() for trusted in trusted_logins)
 
 
 def _relationship_numbers(relationship):

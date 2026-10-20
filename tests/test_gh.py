@@ -378,20 +378,39 @@ class TestGH(unittest.TestCase):
         issues = [{"number": n} for n in range(601)]
         self.gh._gh.side_effect = [json.dumps(issues[:300]),
                                   json.dumps(issues[:600]), json.dumps(issues)]
-        self.assertEqual(self.gh.open_issues(), issues)
+        self.assertEqual(self.gh.open_issues(),
+                         [{**issue, "authorLogin": None} for issue in issues])
         limits = [call.args[call.args.index("--limit") + 1]
                   for call in self.gh._gh.call_args_list]
         self.assertEqual(limits, ["300", "600", "1200"])
         self.assertEqual(self.gh.blocked_by_of(600), [])
 
+    def test_open_issues_retains_author_login_and_association(self):
+        issue = {"number": 7, "author": {"login": "trusted-user"},
+                 "authorAssociation": "MEMBER"}
+        self.gh._gh.return_value = json.dumps([issue])
+        self.assertEqual(self.gh.open_issues(),
+                         [{**issue, "authorLogin": "trusted-user"}])
+        self.assertIn("author,authorAssociation", self.gh._gh.call_args.args[-1])
+
     def test_open_issues_batches_relationships_for_both_directions(self):
         issue = {"number": 7, "blocking": {"nodes": [{"number": 8}]},
                  "blockedBy": {"nodes": [{"number": 6}]}}
         self.gh._gh.return_value = json.dumps([issue])
-        self.assertEqual(self.gh.open_issues(), [issue])
+        self.assertEqual(self.gh.open_issues(), [{**issue, "authorLogin": None}])
         self.assertEqual(self.gh.blocking_of(7), [8])
         self.assertEqual(self.gh.blocked_by_of(7), [6])
         self.gh._gh.assert_called_once()
+
+    def test_trusted_actor_accepts_associations_and_configured_logins(self):
+        from mahler.gh import trusted_actor
+        for association in ("OWNER", "MEMBER", "COLLABORATOR"):
+            with self.subTest(association=association):
+                self.assertTrue(trusted_actor("stranger", association))
+        self.assertTrue(trusted_actor("RepoOwner", "NONE", ("repoowner",)))
+        self.assertTrue(trusted_actor("ConfiguredUser", "NONE", ("configureduser",)))
+        self.assertFalse(trusted_actor("stranger", "NONE", ("repoowner", "operator")))
+        self.assertFalse(trusted_actor(None, "NONE", ("operator",)))
 
     def test_branch_sha(self):
         self.gh._gh.return_value = json.dumps({"sha": "c0ffee1234567890"})

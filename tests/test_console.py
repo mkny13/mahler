@@ -228,6 +228,17 @@ class UrgencyEdgeTests(unittest.TestCase):
         self.assertEqual(rows, {"mahler#9": "warn", "mahler#10": "bad", "mahler#11": "",
                                 "mahler#12": "", "mahler#13": ""})
 
+    def test_parked_backlog_shows_its_reason_on_desktop_and_phone(self):
+        reason = "held: untrusted issue author @stranger (NONE); add the `mahler` label to opt in"
+        self.led.upsert_item("mahler", 14, title="Untrusted intake", state="inbox")
+        self.led.set_state("mahler", 14, "parked", reason)
+        snapshot = state.build(self.cfg, self.led)
+        row = next(item for group in snapshot["backlog"] for item in group["items"]
+                   if item["number"] == 14)
+        self.assertEqual(row["reason"], reason)
+        self.assertIn(reason, page._backlog_groups(snapshot, phone=False))
+        self.assertIn(reason, page._backlog_groups(snapshot, phone=True))
+
     def test_changes_to_test_are_amber_until_evidence_or_a_report(self):
         for n in (21, 22, 23):
             self.led.upsert_item("mahler", n, state="shipped")

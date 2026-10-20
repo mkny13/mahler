@@ -316,7 +316,8 @@ class QuietWindowTests(unittest.TestCase):
                 self.now = self.MERGED + timedelta(days=14)
                 bug = dict(number=20, title="Regression", body=f"Broke #{ref}",
                            labels=[{"name": "type:bug"}], comments=[],
-                           createdAt=iso(self.now - timedelta(seconds=30)))
+                           createdAt=iso(self.now - timedelta(seconds=30)),
+                           authorAssociation="OWNER")
                 with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                         mock.patch.object(self.gh, "open_issues", return_value=[bug]), \
                         mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
@@ -400,7 +401,8 @@ class QuietWindowTests(unittest.TestCase):
         self.now = self.MERGED + timedelta(days=14, minutes=1)
         issue = dict(number=5, title="Wired", body="",
                      labels=[{"name": "mahler:shipped"}], comments=[],
-                     createdAt=iso(self.MERGED), updatedAt=iso(self.now))
+                     createdAt=iso(self.MERGED), updatedAt=iso(self.now),
+                     authorAssociation="OWNER")
         self.gh.issue_reopens = lambda n: [iso(reopened_at)]
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
@@ -449,7 +451,7 @@ class QuietWindowTests(unittest.TestCase):
         self.assertEqual(self.state(), "done")
 
         issue = dict(number=5, title="Wired", body="", labels=[], comments=[],
-                     createdAt=iso(self.MERGED))
+                     createdAt=iso(self.MERGED), authorAssociation="OWNER")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
                 mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
@@ -559,7 +561,8 @@ class QuietWindowTests(unittest.TestCase):
     def test_reopen_fetch_failure_retries_without_quiet_completion(self):
         self.now = self.MERGED + timedelta(days=14, minutes=1)
         issue = dict(number=5, title="Wired", body="", labels=[], comments=[],
-                     createdAt=iso(self.MERGED), updatedAt=iso(self.now))
+                     createdAt=iso(self.MERGED), updatedAt=iso(self.now),
+                     authorAssociation="OWNER")
         with mock.patch.object(self.gh, "open_issues", return_value=[issue]), \
                 mock.patch.object(self.gh, "blocked_by_of", return_value=[], create=True):
             with mock.patch.object(self.gh, "issue_reopens", side_effect=gh_module.GHError("offline")):

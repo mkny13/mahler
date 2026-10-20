@@ -310,6 +310,8 @@ a { color: var(--acc); text-decoration: none; }
       padding: 7px 0; border-bottom: 1px solid var(--line); }
 .bl .p, .bl .st, .bl .ref { font-size: 11px; }
 .bl .title { font-size: 13px; color: var(--ink); }
+.bl .title, .pbl .title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.backlog-reason { font-size: 11px; color: var(--mut); overflow-wrap: anywhere; }
 
 .viewtog { display: flex; gap: 4px; }
 .viewtog button { border: 1px solid var(--line); border-radius: 4px; min-height: 24px; padding: 0 9px;

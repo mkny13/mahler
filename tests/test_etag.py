@@ -98,7 +98,8 @@ class SyncETagTests(unittest.TestCase):
 
     def issue(self, n=11):
         return {"number": n, "title": "T", "labels": [], "body": "",
-                "createdAt": iso(NOW), "updatedAt": iso(NOW), "comments": []}
+                "createdAt": iso(NOW), "updatedAt": iso(NOW), "comments": [],
+                "authorAssociation": "OWNER"}
 
     def test_full_sync_processes_and_stores_the_etag(self):
         self.gh.issues_changed.return_value = (True, 'W/"e1"')

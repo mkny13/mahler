@@ -17,7 +17,8 @@ BODY = "Part of #5\n\n## Plan\nChange one file.\n\n## Done when\nTests pass."
 class FakeGH:
     def __init__(self):
         self.issues = [{"number": 6, "title": "Child", "body": BODY,
-                        "labels": [{"name": "size:s"}], "createdAt": iso(NOW)}]
+                        "labels": [{"name": "size:s"}], "createdAt": iso(NOW),
+                        "authorAssociation": "OWNER"}]
         self.polls = []
         self.fetches = 0
 

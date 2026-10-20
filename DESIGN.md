@@ -2864,3 +2864,24 @@ minus closed, so no separate cumulative counters are kept.
   snapshot reaches the window start, the oldest is used and the figure carries
   "only Nd of history". History starts when this shipped; nothing is backfilled.
 - A snapshot failure is logged and never breaks sync.
+
+### D46 — Trust-gated public issue intake (mahler#1126, #1134)
+
+An issue is admitted when its GitHub `authorAssociation` is `OWNER`, `MEMBER`,
+or `COLLABORATOR`, or its author login matches the repository owner or the
+authenticated GitHub identity configured for that project. Association and
+login matching use one shared deterministic actor predicate. Failure to resolve
+the configured identity cannot turn an unknown author into a trusted one.
+
+An otherwise-untrusted issue is admitted only when it carries the project's
+configured `scope_label`, a collaborator-controlled GitHub action. Mahler state
+labels and `Part of` relationships are never opt-ins: intake trust is classified
+before scope inheritance and planned-child detection. Other untrusted issues
+are held in the ledger as non-schedulable `parked` items, with the author,
+association, and opt-in label shown in the console. A later trusted author or
+scope-label opt-in resumes normal intake.
+
+GitHub's open-issue payload identifies the issue author but does not reliably
+identify who last edited the current body. Once an issue is admitted, its
+current body remains admitted after later edits by another actor; reconstructing
+body-edit provenance is outside this decision.
