@@ -866,7 +866,8 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.settings["allow_squash_merge"] = True
         self.gh.protection["required_status_checks"]["contexts"] = ["build"]
         self.assertEqual(self.results()["branch-protection"].state, "gap")
-        self.gh.rules = [{"type": "required_status_checks", "parameters": {
+        self.gh.rules = [{"type": "required_status_checks", "bypass_actors": [], "parameters": {
+            "strict_required_status_checks_policy": True,
             "required_status_checks": [{"context": "test"}]}}]
         self.assertEqual(self.results()["branch-protection"].state, "pass")
         self.gh.protection["required_pull_request_reviews"] = {"required_approving_review_count": 1}
@@ -932,10 +933,26 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(self._protection_state(), "gap")
 
     def test_classic_and_ruleset_mix_without_requiring_both(self):
-        self.gh.protection = {"required_status_checks": {"contexts": ["test"], "strict": False},
+        self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": False},
                               "enforce_admins": {"enabled": True}}
         self.gh.rules = self._safe_rules()
         self.assertEqual(self._protection_state(), "pass")
+
+    def test_classic_admin_enforcement_does_not_vouch_for_ruleset_gate(self):
+        self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": True},
+                              "enforce_admins": {"enabled": True},
+                              "allow_force_pushes": {"enabled": False},
+                              "allow_deletions": {"enabled": False}}
+        self.gh.rules = self._safe_rules()
+        del self.gh.rules[0]["bypass_actors"]
+        self.assertEqual(self._protection_state(), "unknown")
+
+    def test_ruleset_only_repo_with_classic_404_matches_classic_result(self):
+        self.gh.rules = self._safe_rules()
+        with patch.object(self.gh, "branch_protection", side_effect=GHError("HTTP 404")):
+            self.assertEqual(self._protection_state(), "pass")
+        with patch.object(self.gh, "branch_protection", side_effect=GHError("HTTP 403")):
+            self.assertEqual(self._protection_state(), "unknown")
 
     def test_npm_test_node_script_runner_is_recognized(self):
         self.write("package.json", json.dumps({"scripts": {"test": "node scripts/run_tests.js"}}))
