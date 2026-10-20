@@ -1072,35 +1072,52 @@ def _flag(mapping, key, safe_value):
     return value is safe_value
 
 
-def _hardening(protection, rules):
+def _hardening(protection, rules, jobs):
     """Per safeguard: True safe, False known unsafe, None unknown.
 
-    Classic protection and effective rules are alternative mechanisms: either
-    one that enforces a safeguard satisfies it, so a repo need not use both."""
+    Classic protection and effective rules are alternative mechanisms. Strictness
+    and bypass protection are judged on each mechanism that supplies a PR test
+    gate, so an unrelated classic value cannot vouch for a ruleset-sourced gate.
+    Effective rules do not report bypass actors, so those stay unknown unless
+    the rule carries `bypass_actors`."""
     status = protection.get("required_status_checks")
     status = status if isinstance(status, dict) else {}
     by_type = {}
     for rule in rules:
         by_type.setdefault(rule.get("type"), []).append(rule)
 
-    def strict_rule(rule):
-        value = (rule.get("parameters") or {}).get("strict_required_status_checks_policy")
-        return value if isinstance(value, bool) else None
-
-    def bypass_rule(rule):
+    classic = set(status.get("contexts") or [])
+    classic |= {c["context"] for c in status.get("checks", [])}
+    strict, bypass = [], []
+    if classic & set(jobs):
+        strict.append(_flag(status, "strict", True))
+        bypass.append(_flag(protection, "enforce_admins", True))
+    for rule in by_type.get("required_status_checks", []):
+        params = rule.get("parameters") or {}
+        if not {c["context"] for c in params.get("required_status_checks", [])} & set(jobs):
+            continue
+        value = params.get("strict_required_status_checks_policy")
+        strict.append(value if isinstance(value, bool) else None)
         actors = rule.get("bypass_actors")
-        return None if not isinstance(actors, list) else not actors
+        bypass.append(None if not isinstance(actors, list) else not actors)
 
-    strict_rules = [strict_rule(r) for r in by_type.get("required_status_checks", [])]
-    bypass_rules = [bypass_rule(r) for r in by_type.get("required_status_checks", [])]
+    def combine(votes):
+        if any(v is False for v in votes):
+            return False
+        return True if votes and all(v is True for v in votes) else None
+
     return {
-        "strict required checks": [_flag(status, "strict", True), *strict_rules],
-        "administrator enforcement": [_flag(protection, "enforce_admins", True), *bypass_rules],
-        "force pushes disabled": [_flag(protection, "allow_force_pushes", False),
-                                  True if by_type.get("non_fast_forward") else None],
-        "deletion disabled": [_flag(protection, "allow_deletions", False),
-                              True if by_type.get("deletion") else None],
+        "strict required checks": combine(strict),
+        "administrator enforcement": combine(bypass),
+        "force pushes disabled": _either(_flag(protection, "allow_force_pushes", False),
+                                         bool(by_type.get("non_fast_forward"))),
+        "deletion disabled": _either(_flag(protection, "allow_deletions", False),
+                                     bool(by_type.get("deletion"))),
     }
+
+
+def _either(classic, rule_enforced):
+    return True if (classic is True or rule_enforced) else classic
 
 
 def _protection(gh, jobs, ci_unknown):
@@ -1112,8 +1129,14 @@ def _protection(gh, jobs, ci_unknown):
         if not branch:
             raise ValueError("missing default branch")
         evidence.append(f"default_branch={branch}; allow_squash_merge={settings.get('allow_squash_merge')}")
-        protection = gh.branch_protection(branch)
         rules = gh.branch_rules(branch)
+        try:
+            protection = gh.branch_protection(branch)
+        except GHError as exc:
+            # Ruleset-only repos answer 404 here; denial or other errors stay unknown.
+            if not (rules and "404" in str(exc)):
+                raise
+            protection = {}
         status = protection.get("required_status_checks") or {}
         contexts = list(status.get("contexts") or [])
         contexts += [c["context"] for c in status.get("checks", [])]
@@ -1137,10 +1160,10 @@ def _protection(gh, jobs, ci_unknown):
         return _finding("branch-protection", "gap",
                         "No identified PR test job is a required check.", [*evidence, f"test jobs: {jobs}"])
     unsafe, missing = [], []
-    for name, votes in _hardening(protection, rules).items():
-        if any(v is True for v in votes):
+    for name, vote in _hardening(protection, rules, jobs).items():
+        if vote is True:
             evidence.append(f"{name}: enabled")
-        elif any(v is False for v in votes):
+        elif vote is False:
             unsafe.append(name)
         else:
             missing.append(name)
