@@ -211,6 +211,10 @@ a { color: var(--acc); text-decoration: none; }
 .nb-row .nb-win { display: flex; flex-direction: column; gap: 2px; }
 .nb-row .nb-win .statnum { font-size: 22px; }
 .nb-row .nb-win .statlabel { justify-self: start; font-size: 11px; }
+.nb-row .nb-trend { grid-column: 1 / -1; display: block; width: 100%; height: 44px; }
+.nb-trend-line { fill: none; stroke: var(--acc); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.nb-trend-area { fill: var(--acc); fill-opacity: .12; }
+.nb-trend-caption { grid-column: 1 / -1; color: var(--mut); font-size: 11px; }
 .nb-row .nb-scope { grid-column: 1 / -1; }
 
 .sect { display: flex; flex-direction: column; gap: 8px; }

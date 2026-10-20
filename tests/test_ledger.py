@@ -2188,3 +2188,22 @@ class BacklogSnapshotTests(unittest.TestCase):
         self.assertIsNone(self.led.backlog_net("p"))
         self.led.record_backlog("p", 3, at=self.t0)
         self.assertIsNone(self.led.backlog_net("p"))
+
+    def test_backlog_series_is_oldest_first_and_filters_since(self):
+        earlier = self.t0 - timedelta(days=2)
+        later = self.t0 - timedelta(days=1)
+        newest = self.t0
+        for at, count in ((earlier, 10), (later, 8), (newest, 6)):
+            self.led.record_backlog("p", count, at=at)
+        self.led.record_backlog("other", 99, at=earlier)
+
+        self.assertEqual(self.led.backlog_series("p"), [
+            {"at": iso(earlier), "count": 10},
+            {"at": iso(later), "count": 8},
+            {"at": iso(newest), "count": 6},
+        ])
+        self.assertEqual(self.led.backlog_series("p", since=iso(later)), [
+            {"at": iso(later), "count": 8},
+            {"at": iso(newest), "count": 6},
+        ])
+        self.assertEqual(self.led.backlog_series("missing"), [])

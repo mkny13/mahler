@@ -292,6 +292,33 @@ def _graph_svg(g):
             f'width="{width}" height="{height}">{edges}{boxes}</svg></div>')
 
 
+def _trend_svg(points, label):
+    """Render an accessible open-issue trend from the project's snapshots."""
+    if len(points) < 2:
+        return ""
+    timestamps = [parse(point["at"]) for point in points]
+    start, end = timestamps[0], timestamps[-1]
+    span = (end - start).total_seconds()
+    counts = [point["count"] for point in points]
+    low, high = min(counts), max(counts)
+    headroom = (high - low) * .1 if high != low else 1
+    scale_low, scale_high = low - headroom, high + headroom
+    values = []
+    for index, (timestamp, count) in enumerate(zip(timestamps, counts)):
+        x = ((timestamp - start).total_seconds() / span * 240
+             if span else index / (len(points) - 1) * 240)
+        y = 42 - (count - scale_low) / (scale_high - scale_low) * 40
+        values.append((f"{x:.1f}", f"{y:.1f}"))
+    line = " ".join(
+        f"{'M' if index == 0 else 'L'}{x},{y}"
+        for index, (x, y) in enumerate(values))
+    area = f"{line} L{values[-1][0]},44.0 L{values[0][0]},44.0 Z"
+    return (f'<svg class="nb-trend" viewBox="0 0 240 44" preserveAspectRatio="none" '
+            f'role="img" aria-label="{e(label)}"><title>{e(label)}</title>'
+            f'<path class="nb-trend-area" d="{area}"/>'
+            f'<path class="nb-trend-line" d="{line}"/></svg>')
+
+
 def _backlog_groups(s, phone, dep_graph=None):
     out = []
     for g in s["backlog"]:
@@ -974,9 +1001,13 @@ def _net_backlog(s):
         else:
             figs = f'<span class="statprev">{e(r["empty"])}</span>'
         scope = f'<span class="statprev nb-scope">{e(r["scope"])}</span>' if r["scope"] else ""
+        trend = ""
+        if r["series"]:
+            trend = (f'{_trend_svg(r["series"], r["trend_label"])}'
+                     f'<span class="statprev nb-trend-caption">{e(r["trend_caption"])}</span>')
         rows.append(f'<div class="statcard nb-row" data-nb-project="{e(r["project"])}">'
                     f'<span class="name mono">{e(r["project"])}</span>'
-                    f'<span class="nb-figs">{figs}</span>{scope}</div>')
+                    f'<span class="nb-figs">{figs}</span>{trend}{scope}</div>')
     return (f'<div class="net-backlog"><h3 class="nb-title">{e(nb["title"])}</h3>'
             f'<p class="settings-help nb-explain">{e(nb["explain"])}</p>'
             f'<div class="stats-grid">{"".join(rows)}</div></div>')
