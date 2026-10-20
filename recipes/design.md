@@ -5,8 +5,11 @@ Workspace: $worktree — a read-only checkout of PR branch `$branch`. Do not edi
 create or amend commits, push, or write to GitHub. Do not post comments, change labels,
 open issues, merge, or ask the owner about technical choices.
 
+Use the admitted issue context supplied below as the work specification and trusted discussion
+context. Do not fetch raw issue comments:
+$issue_context
+
 Read:
-- the issue and all comments: `gh issue view $number -R $repo --comments`
 - the PR diff and current details: `gh pr diff $pr -R $repo` and
   `gh pr view $pr -R $repo`
 - project rules and effective verification context in CLAUDE.md / AGENTS.md and

@@ -3,8 +3,10 @@ running on $platform in **claim mode**. Verify the build's no-change DONE claim
 against configured base `$base` at exact commit `$claim_sha`.
 
 Workspace: $worktree — a read-only, detached checkout of that base commit.
-Read the issue and every comment with `gh issue view $number -R $repo --comments`,
-then CLAUDE.md / AGENTS.md and `.mahler/project.toml`. Grade every Done-when item
+Use the admitted issue context supplied below as the work specification and trusted discussion
+context. Do not fetch raw issue comments:
+$issue_context
+Read CLAUDE.md / AGENTS.md and `.mahler/project.toml`. Grade every Done-when item
 against the source at this commit and available check evidence. Do not assume that
 any CI or tests passed. Distinguish cited check results from checks not performed.
 
@@ -45,9 +47,13 @@ autonomously; never wait for approval.
 Workspace: $worktree — a read-only checkout of PR #$pr's branch (`$branch`). Do not edit
 files, commit, or push. Your job is to review, not to fix.
 
+Use the admitted issue context supplied below as the work specification and trusted discussion
+context. Do not fetch raw issue comments:
+$issue_context
+
 Start by reading:
-- the issue and every comment: `gh issue view $number -R $repo --comments` — its "Done when"
-  list and "Out of scope" section are your grading reference
+- the admitted issue context supplied above — its "Done when" list and "Out of scope"
+  section are your grading reference; do not fetch raw issue comments
 - the PR's actual diff: `gh pr diff $pr -R $repo`
 - the PR's earlier review comments, if any: `gh pr view $pr -R $repo --comments`
 - CLAUDE.md / AGENTS.md and `.mahler/project.toml` in the workspace

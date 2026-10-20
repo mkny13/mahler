@@ -14,6 +14,7 @@ from . import config, gh as gh_module, history as history_mod, lessons as lesson
 from .ledger import row_get
 
 RECIPES = os.path.join(config.REPO_ROOT, "recipes")
+ISSUE_CONTEXT_MAX_BYTES = 32 * 1024  # UTF-8 byte bound; body text has priority.
 
 
 def design_input_key(project, number, pr, run_id):
@@ -66,12 +67,70 @@ def needs_whats_new(item):
 
 
 def render(recipe, **vars):
+    vars.setdefault("issue_context", "")
     with open(os.path.join(RECIPES, f"{recipe}.md"), encoding="utf-8") as fh:
         text = fh.read()
         if recipe == "review":
             claim, normal = text.split("<!-- normal-pr-review -->\n", 1)
             text = claim if vars.get("claim_mode") else normal
         return string.Template(text).safe_substitute(**vars)
+
+
+def _utf8_prefix(text, max_bytes):
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def issue_context(ctx, project, item, repo):
+    """Render admitted body and D46-trusted comments, capped at 32 KiB UTF-8."""
+    body = row_get(item, "issue_body", "")
+    parts = [
+        "Issue context (the admitted issue body is the work specification; comments are attributed):\n",
+        "Issue body:\n",
+        body if isinstance(body, str) else "",
+    ]
+    gh_getter = getattr(ctx, "gh", None)
+    if callable(gh_getter):
+        try:
+            gh = gh_getter(project)
+        except (gh_module.GHError, ValueError, TypeError, AttributeError) as exc:
+            ctx.say(f"{project}#{item['number']}: couldn't initialize GitHub for issue "
+                    f"context — {exc}")
+        else:
+            trusted_logins = (repo.split("/", 1)[0],)
+            try:
+                trusted_logins += (gh.authenticated_login(),)
+            except (gh_module.GHError, ValueError, TypeError, AttributeError) as exc:
+                ctx.say(f"{project}#{item['number']}: couldn't resolve configured GitHub identity "
+                        f"for issue context — {exc}")
+            try:
+                comments = gh.issue_comments(item["number"])
+            except (gh_module.GHError, ValueError, TypeError, AttributeError) as exc:
+                ctx.say(f"{project}#{item['number']}: couldn't fetch issue comments for prompt "
+                        f"context — {exc}")
+                comments = []
+            if not isinstance(comments, list):
+                ctx.say(f"{project}#{item['number']}: malformed issue comments omitted from prompt context")
+                comments = []
+            for comment in comments:
+                if not isinstance(comment, dict):
+                    continue
+                author = comment.get("author")
+                login = author.get("login") if isinstance(author, dict) else None
+                association = comment.get("authorAssociation")
+                comment_body = comment.get("body")
+                if (not isinstance(comment_body, str)
+                        or not gh_module.trusted_actor(login, association, trusted_logins)):
+                    continue
+                attribution = f"@{login}" if isinstance(login, str) and login.strip() else (
+                    "trusted GitHub actor")
+                if isinstance(association, str) and association.strip():
+                    attribution += f" ({association.upper()})"
+                parts.extend(["\n\nTrusted issue comment from ", attribution, ":\n", comment_body])
+
+    return _utf8_prefix("".join(parts), ISSUE_CONTEXT_MAX_BYTES)
 
 
 def pr_ci_toolchain_handoff(ctx, project, item):
@@ -147,6 +206,9 @@ def build(ctx, project, item, role, platform, prep, context=None):
     failed review's findings, rather than red CI (D11)."""
     pol = ctx.policy(project)
     base = pol.get("base", "main")
+    rendered_issue_context = (issue_context(ctx, project, item, pol.get("repo", ""))
+                              if role in ("sort", "build", "fix", "review", "design")
+                              else "")
     if role == "design":
         pr = row_get(item, "pr")
         if not pr or not prep.get("head_sha") or not context:
@@ -155,6 +217,7 @@ def build(ctx, project, item, role, platform, prep, context=None):
             "design", number=item["number"], title=item["title"], repo=pol["repo"],
             worktree=prep["worktree"], branch=prep["branch"] or "", base=base,
             platform=platform, pr=pr, head=prep["head_sha"],
+            issue_context=rendered_issue_context,
             handoff=context, rules=(
                 "\nProject rules and review context:\n" + pol["rules"].strip() + "\n")
             if pol.get("rules") else "")
@@ -227,5 +290,6 @@ def build(ctx, project, item, role, platform, prep, context=None):
                   mahler=config.MAHLER_BIN, handoff=handoff, history=history, sizing=sizing,
                   scope_rules=scope_rules,
                   whats_new=whats_new,
+                  issue_context=rendered_issue_context,
                   rules=("\nProject rules (from Mahler's config — these override anything else):\n"
                          + pol["rules"].strip() + "\n") if pol.get("rules") else "")

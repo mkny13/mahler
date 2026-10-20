@@ -8,8 +8,10 @@ credentials or money. When the answer is one of two or three short choices, end 
 NEEDS-YOU line with `OPTIONS:` and the choices, a few words each, separated by `|` — they
 become the console's answer buttons.
 
-1. Read the issue and all its comments: `gh issue view $number -R $repo --comments`.
-   Owner comments that answer an earlier question are authoritative.
+1. Use the server-rendered issue context below: it contains the admitted issue body and only
+   D46-trusted comments. Owner comments that answer an earlier question are authoritative.
+   Do not fetch raw issue comments:
+$issue_context
 2. Skim $worktree for context (README, ROADMAP.md, DESIGN.md, CLAUDE.md / AGENTS.md).
    That checkout is read-only for you: do not edit files, commit, or push.
 3. Rewrite the issue body with `gh issue edit $number -R $repo --body-file <file>` into
