@@ -111,7 +111,7 @@ zero alone as success. The worker constructs timeout/crash errors even without o
 ## Capabilities and funding
 
 The restricted tool server, not the prompt alone, enforces a fixed allow-list:
-`read_repo_file`, `list_repo_files`, `list_items`, `get_item` (including comments),
+`read_repo_file`, `list_repo_files`, `list_items`, `get_item` (server-filtered trusted comments only),
 `add_item`, `edit_item`, `answer_item`. Bind every call to the session project on the
 server; reject cross-project arguments. Repository reads are bounded tracked text
 only; reject absolute paths, traversal and symlink escapes. Do not attach the existing

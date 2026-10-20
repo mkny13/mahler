@@ -491,6 +491,8 @@ class GH:
         result = {"number": issue["number"], "title": issue["title"],
                   "body": issue.get("body") or "", "labels": label_names(issue),
                   "url": issue["html_url"], "updated_at": issue["updated_at"],
+                  "authorLogin": (issue.get("user") or {}).get("login"),
+                  "authorAssociation": issue.get("author_association"),
                   "comments": comments}
         result["version"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
         return result
