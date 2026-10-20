@@ -6,7 +6,7 @@ import json
 import os
 from urllib.parse import quote
 
-from .state import MODELS_LABEL, STATS_RANGES, _hhmm, _uat_sessions
+from .state import MODELS_LABEL, STALE_NOTE, STATS_RANGES, _hhmm, _uat_sessions
 from ..ledger import parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,6 +119,11 @@ def _pause_button(s, cls="btn pause"):
     if s["paused"]:
         return f'<button class="{cls} on" data-act="resume">Resume</button>'
     return f'<button class="{cls}" data-act="pause">Pause all</button>'
+
+
+def _stale_note():
+    """Hidden until a refresh fails; console.js fills in the time (mahler#1108)."""
+    return f'<span class="stale-note mono" role="status" data-stale-note="{e(STALE_NOTE)}" hidden></span>'
 
 
 def _state_label(s):
@@ -382,6 +387,7 @@ def _desktop(s, view):
                     f'<span class="txt">{e(peak["short"])}</span>'
                     f'<span class="mono t-{tone}">{e(peak["action"])}</span></button>')
     head = (f'<div class="dhead"><span class="dtitle">{titles}</span>'
+            f'{_stale_note()}'
             f'<button class="btn settings-head-link" data-go="settings">Settings</button>'
             f'{peak_btn}</div>')
 
@@ -991,7 +997,7 @@ def _phone(s, tab):
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
             f'<button class="btn" style="font-weight:bold" data-open-capture>+</button>'
             f'{_pause_button(s)}<button class="btn settings-link" data-tab-go="settings">Settings</button>'
-            f'</div></div><div class="tabs">'
+            f'</div></div>{_stale_note()}<div class="tabs">'
             f'<button class="tab" data-tab-go="now"><span>Now</span>'
             f'<span class="mono t-acc">{runs or ""}</span></button>'
             f'<button class="tab" data-tab-go="triage"><span>Triage</span>'

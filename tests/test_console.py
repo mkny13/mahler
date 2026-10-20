@@ -440,6 +440,22 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(wins["weekly"]["pct"], 10)
 
 
+class StaleNoteTests(unittest.TestCase):
+    """mahler#1108: both headers carry a hidden note console.js shows after a failed refresh."""
+
+    def test_both_headers_carry_the_hidden_stale_note(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        s = state.build(make_cfg(), led)
+        note = ('<span class="stale-note mono" role="status" '
+                'data-stale-note="Couldn&#x27;t refresh · showing {time}" hidden></span>')
+        desktop = page.app(s, "desktop", "now", "now")
+        phone = page._phone(s, "now")
+        self.assertIn(note, desktop[desktop.index('class="dhead"'):])
+        self.assertIn(note, phone[phone.index('class="phead"'):phone.index('class="tabs"')])
+        self.assertIn("{time}", state.STALE_NOTE)
+
+
 class CapacityPageTests(unittest.TestCase):
     """mahler#335: Capacity is a top-level view with full quota detail."""
 

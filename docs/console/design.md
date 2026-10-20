@@ -600,6 +600,9 @@ place:
 - Capacity line phrases: *"is past its soft line"*, *"has no fresh quota
   reading"*, *"is on hold until 11:12"*.
 - Hot hold banner: *"under a minute ago"* when it is under a minute.
+- Stale page (mahler#1108): *"Couldn't refresh · showing 14:02"* in both headers
+  after a failed 30s refresh, with the time the page last updated; it stays until
+  the next refresh succeeds (no toast, no reload).
 - Event kinds shown: `run_started`, `pr_opened`, `pr_merged`, `escalated`
   (*"retried a tier up (2 → 3)"*), `handoff`, `backoff_cleared` (*"cleared by hand
   on kilo"*), and the state an item moved to (`needs_you`, `ready`, …).
