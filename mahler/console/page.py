@@ -382,6 +382,7 @@ def _desktop(s, view):
                     f'<span class="txt">{e(peak["short"])}</span>'
                     f'<span class="mono t-{tone}">{e(peak["action"])}</span></button>')
     head = (f'<div class="dhead"><span class="dtitle">{titles}</span>'
+            f'<span class="refresh-status" data-refresh-status hidden aria-live="polite"></span>'
             f'<button class="btn settings-head-link" data-go="settings">Settings</button>'
             f'{peak_btn}</div>')
 
@@ -991,7 +992,8 @@ def _phone(s, tab):
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
             f'<button class="btn" style="font-weight:bold" data-open-capture>+</button>'
             f'{_pause_button(s)}<button class="btn settings-link" data-tab-go="settings">Settings</button>'
-            f'</div></div><div class="tabs">'
+            f'</div></div><span class="refresh-status" data-refresh-status hidden '
+            f'aria-live="polite"></span><div class="tabs">'
             f'<button class="tab" data-tab-go="now"><span>Now</span>'
             f'<span class="mono t-acc">{runs or ""}</span></button>'
             f'<button class="tab" data-tab-go="triage"><span>Triage</span>'

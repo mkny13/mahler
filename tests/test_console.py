@@ -3228,6 +3228,64 @@ post("end_session", payloadFor(button, "end_session")).then(() => {
         self.assertNotIn("location.reload", refresh)
 
 
+class RefreshStatusTests(unittest.TestCase):
+    def test_refresh_status_is_in_both_server_rendered_headers(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        snapshot = state.build(make_cfg(), led)
+        marker = 'class="refresh-status" data-refresh-status hidden aria-live="polite"'
+        self.assertIn(marker, page._desktop(snapshot, "now"))
+        self.assertIn(marker, page._phone(snapshot, "now"))
+
+    def test_failed_refresh_shows_last_success_and_next_success_clears_it(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node is needed for the browser logic regression")
+        source = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
+        refresh = source[source.index("  var lastFragment = null;"):source.index(
+            "  // refresh() swaps only #app")]
+        script = r'''
+const assert = require("assert");
+var status = {hidden: true, textContent: ""};
+var app = {
+  querySelector: function (selector) {
+    if (selector === "[data-refresh-status]") { return status; }
+    return null;
+  },
+  querySelectorAll: function () { return []; },
+  set innerHTML(value) { status = {hidden: true, textContent: ""}; }
+};
+var document = {
+  hidden: false, activeElement: null,
+  getElementById: function () { return null; }
+};
+var window = {console: {warn: function () {}}};
+var settingsDirty = false, suppressKeep = [], errorToastTimer = null;
+var drafts = {}, settingsDraft = null;
+var fetchFails = true;
+function statsUrl() { return "/api/fragment"; }
+function fetch() {
+  if (fetchFails) { return Promise.reject(Error("offline")); }
+  return Promise.resolve({ok: true, text: function () { return Promise.resolve("<fresh>"); }});
+}
+function apply() {}
+function noteRevision() {}
+''' + refresh + r'''
+(async function () {
+  await refresh();
+  assert.equal(status.hidden, false);
+  assert.match(status.textContent, /^Couldn't refresh · showing \d{2}:\d{2}$/);
+  fetchFails = false;
+  await refresh();
+  assert.equal(status.hidden, true);
+  assert.equal(status.textContent, "");
+})().catch(err => { console.error(err); process.exitCode = 1; });
+'''
+        result = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class RecentProblemsRenderingTests(unittest.TestCase):
     def test_desktop_only_summary_and_history_route(self):
         led = make_led()

@@ -346,8 +346,21 @@
   var lastFragment = null;
   var fragmentBytes = 0;
   var refreshSequence = 0;
+  var lastSuccessfulRefresh = new Date();
+  var refreshFailed = false;
   var drafts = {};
   var settingsDraft = null;
+  function renderRefreshStatus() {
+    var status = app.querySelector("[data-refresh-status]");
+    if (!status) { return; }
+    status.hidden = !refreshFailed;
+    status.textContent = refreshFailed ?
+      "Couldn't refresh · showing " + timeOfDay(lastSuccessfulRefresh) : "";
+  }
+  function timeOfDay(date) {
+    return String(date.getHours()).padStart(2, "0") + ":" +
+      String(date.getMinutes()).padStart(2, "0");
+  }
   function saveSettingsDraft() {
     var form = app.querySelector("[data-settings-form]");
     if (settingsDirty && form) { settingsDraft = form; }
@@ -373,6 +386,9 @@
       return r.text();
     }).then(function (html) {
       if (sequence !== refreshSequence || url !== statsUrl()) { return; }
+      lastSuccessfulRefresh = new Date();
+      refreshFailed = false;
+      renderRefreshStatus();
       fragmentBytes = new TextEncoder().encode(html).length;
       // Submitted drafts still need clearing even when server state is unchanged.
       if (html === lastFragment && !skip.length) {
@@ -405,7 +421,13 @@
       }
       apply();
       noteRevision();
-    }).catch(function (err) { if (window.console) { console.warn(err); } });
+    }).catch(function (err) {
+      if (sequence === refreshSequence && url === statsUrl()) {
+        refreshFailed = true;
+        renderRefreshStatus();
+      }
+      if (window.console) { console.warn(err); }
+    });
   }
 
   // refresh() swaps only #app, so a server restart can pair new controls with

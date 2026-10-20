@@ -86,6 +86,8 @@ a { color: var(--acc); text-decoration: none; }
 .dhead { padding: 12px 20px; border-bottom: 1px solid var(--line); display: flex;
          align-items: center; gap: 12px; min-height: 57px; }
 .dtitle { font-weight: 600; font-size: 15px; line-height: 1; }
+.refresh-status { color: var(--mut); font-size: 11px; white-space: nowrap; }
+.refresh-status[hidden] { display: none; }
 .vt { display: none; }
 :root[data-view="now"] .vt-now, :root[data-view="needs"] .vt-needs,
 :root[data-view="test"] .vt-test, :root[data-view="capture"] .vt-capture,
@@ -342,6 +344,7 @@ a { color: var(--acc); text-decoration: none; }
 .phead-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .phead-row .brand { font-size: 17px; letter-spacing: -.01em; }
 .phead-row .state { font-size: 10px; margin-left: 8px; }
+.phead .refresh-status { align-self: flex-end; margin-top: -6px; }
 .phead-btns { display: flex; gap: 6px; align-items: center; }
 .phead-btns .btn { min-height: 36px; }
 .phead-btns .theme { min-width: 44px; font-size: 12px; color: var(--mut); }
