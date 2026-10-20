@@ -804,7 +804,8 @@ def _needs(cfg, led, projects, now):
                          {"label": "Park it", "text": "/mahler park"}]
                         if it["state"] == "failed" else options),
             "p": f"p{it['priority']}", "p1": it["priority"] == 1,
-            "state": it["state"], "waited_s": waited.total_seconds(),
+            "state": it["state"], "edge": _edge(it["state"]),
+            "waited_s": waited.total_seconds(),
             "meta": " · ".join(meta),
         })
     out.sort(key=lambda x: (not x["p1"], -x["waited_s"]))
@@ -917,6 +918,10 @@ def _uat(cfg, led, projects):
         else:
             link, link_label = None, None
         shared = bool(uat_url and "{number}" not in uat_url and "{pr}" not in uat_url)
+        reported = bool(row["bug"] or row["verdict"] == "fail")
+        pending = queued.get((project, n))
+        # amber while it still waits on your test (mahler#1112)
+        waiting = not (reported or pending or kind or row["verdict"] == "pass")
         out.append({
             **_shipment_gallery(led, row, pols[project]),
             "shared_link": link if shared else None,
@@ -927,7 +932,7 @@ def _uat(cfg, led, projects):
             "title": row["title"] or _ref(project, n),
             "meta": " · ".join(meta), "check": "; ".join(needs),
             "link": link, "link_label": link_label,
-            "pending": queued.get((project, n)), "reported": bool(row["bug"] or row["verdict"] == "fail"),
+            "pending": pending, "reported": reported, "edge": "warn" if waiting else "",
             "sha": row["sha"], "shipped_at": row["shipped_at"], "completion_kind": kind,
         })
     return out
@@ -950,6 +955,12 @@ def _state_tone(state):
             "acc" if state in ("working", "verifying") else "mut")
 
 
+def _edge(state):
+    """The urgency edge on a card or row (mahler#1112): red when it failed,
+    amber when it waits on you, none otherwise."""
+    return "bad" if state == "failed" else "warn" if state == "needs_you" else ""
+
+
 def _backlog(cfg, led, projects):
     rank = {s: i for i, s in enumerate(STATE_ORDER)}
     enabled = config.enabled_projects(cfg)
@@ -970,7 +981,7 @@ def _backlog(cfg, led, projects):
         rows = [{"ref": None, "url": None, "number": None, "pr": None, "pr_url": None,
                  "title": outbox.capture_title(json.loads(r["payload"])["text"]),
                  "p": "p2", "p1": False, "priority": 2, "state": "inbox", "tone": "mut",
-                 "parent": None, "depends": []}
+                 "edge": "", "parent": None, "depends": []}
                 for r in pending.get(name, [])]
         rows += [{"ref": _ref(name, i["number"]), "url": _issue_url(cfg, name, i["number"]),
                   "number": i["number"],
@@ -978,6 +989,7 @@ def _backlog(cfg, led, projects):
                   "title": i["title"] or "", "p": f"p{i['priority']}",
                   "p1": i["priority"] == 1, "priority": i["priority"],
                   "state": i["state"].replace("_", "-"), "tone": _state_tone(i["state"]),
+                  "edge": _edge(i["state"]),
                   "parent": i["parent"],
                   "depends": [target[1] for d in json.loads(i["depends"] or "[]")
                               if (target := dependency_target(d, name, enabled))

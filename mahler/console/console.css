@@ -417,7 +417,6 @@ a { color: var(--acc); text-decoration: none; }
 .ph .link { font-size: 12.5px; padding: 6px 0; align-self: flex-start; }
 .pneed { border: 1px solid var(--line); border-left: 3px solid var(--line); border-radius: 4px; padding: 12px;
          display: flex; flex-direction: column; gap: 10px; }
-.pneed.p1 { border-left-color: var(--bad); }
 .pneed .row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .pchip { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9.5px; padding: 2px 5px;
          border-radius: 3px; color: var(--mut); }
@@ -704,3 +703,13 @@ a { color: var(--acc); text-decoration: none; }
 .weekly-list { list-style: none; padding: 0; margin-block: 8px; color: var(--mut); font-size: 13px; }
 .weekly-list li { padding-block: 3px; line-height: 1.5; overflow-wrap: anywhere; }
 .weekly-list .mono { white-space: nowrap; }
+
+/* Urgency edges (mahler#1112): red when it failed or broke, amber when it
+   waits on you, nothing otherwise. state.py decides; rows reserve the 3px so
+   edged and plain rows line up. */
+.need, .bl, .pbl, .uat, .recent-problems .ev, .uat-session .puat {
+  border-left: 3px solid transparent; padding-left: 9px; }
+.edge-warn { border-left: 3px solid var(--warn) !important; }
+.edge-bad { border-left: 3px solid var(--bad) !important; }
+.needcard.edge-warn { border-color: var(--warn); }
+.needcard.edge-warn .lbl { color: var(--warn); }

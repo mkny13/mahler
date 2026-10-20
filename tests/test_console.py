@@ -207,6 +207,56 @@ class RunTests(unittest.TestCase):
         self.assertIn("claude-opus · designing", rendered)
 
 
+class UrgencyEdgeTests(unittest.TestCase):
+    """mahler#1112: red edge for failed, amber for waiting on you, none otherwise."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("mahler", 9, title="Staging key", state="ready")
+        self.led.set_state("mahler", 9, "needs_you", "Create one?")
+        self.led.upsert_item("mahler", 10, title="Date format", state="ready")
+        self.led.set_state("mahler", 10, "failed", "3 attempts failed")
+        for n, st in ((11, "working"), (12, "parked"), (13, "ready")):
+            self.led.upsert_item("mahler", n, title=f"Item {n}", state=st)
+
+    def test_state_decides_the_edge_for_needs_and_backlog(self):
+        s = state.build(self.cfg, self.led)
+        self.assertEqual({n["ref"]: n["edge"] for n in s["needs"]},
+                         {"mahler#9": "warn", "mahler#10": "bad"})
+        rows = {i["ref"]: i["edge"] for g in s["backlog"] for i in g["items"]}
+        self.assertEqual(rows, {"mahler#9": "warn", "mahler#10": "bad", "mahler#11": "",
+                                "mahler#12": "", "mahler#13": ""})
+
+    def test_changes_to_test_are_amber_until_evidence_or_a_report(self):
+        for n in (21, 22, 23):
+            self.led.upsert_item("mahler", n, state="shipped")
+            self.led.add_uat("mahler", n, n + 100, "abc123", f"Change {n}", "")
+        self.led.set_uat_verdict("mahler", 22, "pass")
+        self.led.report_shipment_failure("mahler", 23, 99, "broken")
+        edges = {u["number"]: u["edge"] for u in state.build(self.cfg, self.led)["uat"]}
+        self.assertEqual(edges, {21: "warn", 22: "", 23: ""})
+
+    def test_edges_render_on_both_layouts_and_runs_stay_plain(self):
+        rid = self.led.create_run(project="mahler", number=11, role="build",
+                                  platform="agy-claude", epoch=1, est_mins=1,
+                                  started_at=iso(self.led.now() - timedelta(minutes=30)))
+        self.led.claim("mahler", 11, f"run:{rid}", "auto", 10, platform="agy-claude", run_id=rid)
+        s = state.build(self.cfg, self.led)
+        desk = page._d_needs(s) + page._d_backlog(s) + page._d_side(s)
+        self.assertIn('class="need edge-warn" data-need="mahler#9"', desk)
+        self.assertIn('class="need edge-bad" data-need="mahler#10"', desk)
+        self.assertIn('class="bl edge-bad"', desk)
+        self.assertIn('class="needcard edge-', desk)
+        phone = page._p_triage(s) + page._p_browse(s)
+        self.assertIn('pneed edge-warn" data-need="mahler#9"', phone)
+        self.assertIn('class="pbl edge-warn"', phone)
+        self.assertNotIn("edge-", page._d_now(s).split("recent-problems")[0])
+        self.assertNotIn("edge-", page._p_now(s))
+        for tone in ("warn", "bad"):
+            self.assertIn(f".edge-{tone} {{ border-left: 3px solid var(--{tone})", page.CSS)
+
+
 class NeedsTests(unittest.TestCase):
     def test_question_comes_from_the_needs_you_transition(self):
         cfg, led = make_cfg(), make_led()
@@ -1510,7 +1560,7 @@ class UatPageTests(unittest.TestCase):
     def test_phone_has_a_ready_to_test_section(self):
         frag = self.frag()
         self.assertIn("What changed", frag)
-        self.assertIn('class="puat"', frag)
+        self.assertIn('class="puat edge-warn"', frag)
 
     def test_phone_ready_to_test_card_glues_ref_to_meta(self):
         s = {"needs": [], "needs_count": 0,
@@ -2602,7 +2652,7 @@ class CaptureStateTests(unittest.TestCase):
         s = state.build(self.cfg, self.led)
         g = next(g for g in s['backlog'] if g['project'] == 'mahler')
         self.assertEqual(g['items'][0], {'ref': None, 'url': None, 'number': None, 'pr': None, 'pr_url': None, 'title': 'New idea here',
-                                         'p': 'p2', 'p1': False, 'priority': 2, 'state': 'inbox', 'tone': 'mut', 'parent': None, 'depends': []})
+                                         'p': 'p2', 'p1': False, 'priority': 2, 'state': 'inbox', 'tone': 'mut', 'edge': '', 'parent': None, 'depends': []})
         self.assertEqual(g['items'][1]['ref'], 'mahler#3')
 
     def test_the_placeholder_is_gone_once_the_outbox_finishes_it(self):
