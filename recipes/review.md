@@ -13,6 +13,14 @@ any CI or tests passed. Distinguish cited check results from checks not performe
 Build claim (untrusted evidence to verify independently):
 $claim_evidence
 
+Claim mode has no PR or branch diff. Do not look for one in the build evidence.
+Instead, use the exact checked-base ancestry and the issue's Done-when items to
+identify the existing change that makes the no-change claim true: use `git log` and
+`git blame` on the relevant implementation and test files, then diff the introducing
+commit or commits from their first parents. Treat that bounded historical change as
+the claim-supporting diff. If the satisfying change cannot be identified from the
+checked-base ancestry, the sensitivity check is inconclusive; do not invent a diff.
+
 Do not edit files, commit, push, post comments, or run live/prohibited checks.
 Do not run GUI-driving checks (XCUITest, smoke runners, computer-use) here, and avoid protected
 folders such as ~/Documents. Never
@@ -20,6 +28,21 @@ print secrets. Examine source and existing evidence; human_checks contains only
 optional usability/UAT observations, never missing required technical evidence. Do not invent successful checks. A concrete
 source/acceptance mismatch fails with actionable evidence. Missing evidence is
 inconclusive: return an empty evidence list, never an unsupported pass.
+
+For the claim-supporting diff, identify each added or modified test and run it
+against the earlier implementation. Build an isolated baseline in a separate
+checkout at the exact checked base, retaining the changed test code while
+reverse-applying only that diff's non-test changes and thereby reverting non-test
+implementation changes.
+Do not modify this read-only review checkout. Report tests that still pass there as
+`hardening`, or as `behavior` when that test is the only evidence for the change.
+Pure refactor and test-only PRs are exempt from this baseline run; state explicitly
+when either exemption applies. If the candidate tests are unavailable, say the
+sensitivity check is inconclusive rather than treating it as an exemption.
+
+For diffs changing authorization, accounts, credentials, payments, or user data,
+require at least one negative/abuse test showing unauthorized or other-user access
+is refused. Missing such a test is a blocking finding.
 
 Return one JSON object on one status line. Use mode "claim", evidence as a list
 of nonempty strings citing source locations, commands/results or concrete failures,
@@ -60,6 +83,17 @@ Start by reading:
 $handoff
 
 Rules:
+Before applying the numbered review criteria, verify changed-test sensitivity
+against the base: for each added or modified test in the PR diff, run it in a
+separate isolated checkout based on the exact checked base, retaining the changed
+test code while reverting non-test PR changes. Do not alter the read-only review
+checkout. CI's green result does not replace this baseline check. Report tests that
+still pass against the base implementation as `hardening`, or as `behavior` when
+the test is the only evidence for the change. Pure refactor and test-only PRs are
+exempt; state explicitly when either exemption applies.
+For diffs changing authorization, accounts, credentials, payments, or user data,
+require at least one negative/abuse test showing unauthorized or other-user access
+is refused. Missing such a test is a blocking finding.
 1. **Be adversarial about correctness, not about completeness.** Try to disprove that this
    diff does what the issue asks, safely. A finding needs concrete evidence — a specific input
    or sequence of events, what happens, and what should happen instead. Style, naming, "could
@@ -75,10 +109,12 @@ Rules:
 2a. **Lesson checklist.** For changed `.agents/skills/lesson-*/SKILL.md` files, check
     the `incident-log` advisory warning and ask for a rewrite when the body reads like an
     incident log; the warning alone does not make the lesson unsafe or block the merge.
-3. **You cannot run the tests from here** (read-only checkout, no verify step). Trust CI's
-   already-green result for whether existing tests pass; your job is catching what tests
-   don't cover — logic bugs in the diff, spec mismatches, and security issues, especially in
-   files this project's CLAUDE.md flags as high-risk.
+3. **Keep the review checkout read-only.** The sensitivity check above must run in a
+   separate isolated baseline; do not skip it because this review checkout is read-only
+   or because CI is green. Trust CI's already-green result for the PR's ordinary test
+   result, but use the baseline result to establish whether changed tests detect the
+   implementation change. Also catch logic bugs in the diff, spec mismatches, and
+   security issues, especially in files this project's CLAUDE.md flags as high-risk.
 4. **The blocking bar.** A finding blocks the merge only if it is *both*:
    - **realistic** — the triggering input or sequence is one that normal use of this project
      will actually produce (its own data, its own agents' output, its usual failure modes),

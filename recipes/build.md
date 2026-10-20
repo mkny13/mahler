@@ -16,6 +16,11 @@ $handoff
 $history
 
 Rules:
+Before implementation, write and run failing-first tests that fail without the
+behavior change and pass with it. For changes to authorization, accounts,
+credentials, payments, or user data, also write at least one negative/abuse test
+showing unauthorized or other-user access is refused.
+
 Time matters here: do not spend time that can be avoided; the earlier a correct, verified
 result is obtained, the better. Never trade verification for speed.
 
