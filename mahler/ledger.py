@@ -40,6 +40,13 @@ ESTIMATE_SAMPLE_SQL = (
     "OR substr(outcome, 1, 14) = 'launch failed:', 0)"
 )
 
+PRIORITY_BOOST_KEY = "priority_boost"
+PRIORITY_BOOST_DURATIONS = {
+    "1h": timedelta(hours=1),
+    "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
+}
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_sessions (
     id TEXT PRIMARY KEY, project TEXT NOT NULL, repo TEXT NOT NULL,
@@ -1191,6 +1198,150 @@ class Ledger:
 
     def set_kv(self, key, value):
         self.con.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)", (key, value))
+
+    # ---------- priority boost ----------
+
+    def priority_boost(self):
+        """Read the active priority boost record: {project, started_at, expires_at}.
+        Returns None if not set, expired, or malformed/corrupt."""
+        raw = self.get_kv(PRIORITY_BOOST_KEY)
+        if not raw:
+            return None
+        try:
+            record = json.loads(raw)
+            if not isinstance(record, dict):
+                return None
+            project = record.get("project")
+            started_at = record.get("started_at")
+            expires_at = record.get("expires_at")
+            if not (isinstance(project, str) and project and
+                    isinstance(started_at, str) and isinstance(expires_at, str)):
+                return None
+            exp = parse(expires_at)
+            start = parse(started_at)
+            if not exp or not start:
+                return None
+            if self.now() >= exp:
+                return None
+            return {
+                "project": project,
+                "started_at": started_at,
+                "expires_at": expires_at,
+            }
+        except Exception:
+            return None
+
+    def start_priority_boost(self, project, duration):
+        """Start or atomically replace a priority boost for `project` for `duration` (1h, 1d, 1w).
+        Returns the new record {project, started_at, expires_at}."""
+        if duration not in PRIORITY_BOOST_DURATIONS:
+            raise ValueError(f"invalid duration {duration!r}: must be 1h, 1d, or 1w")
+        if not isinstance(project, str) or not project:
+            raise ValueError(f"invalid project: {project!r}")
+        delta = PRIORITY_BOOST_DURATIONS[duration]
+        with self._tx():
+            now = self.now()
+            existing = self.priority_boost()
+            started_at = iso(now)
+            expires_at = iso(now + delta)
+            record = {
+                "project": project,
+                "started_at": started_at,
+                "expires_at": expires_at,
+            }
+            self.set_kv(PRIORITY_BOOST_KEY, json.dumps(record))
+            if existing and existing["project"] != project:
+                self.event("priority_boost_replace", project=project, detail={
+                    "replaced": existing["project"],
+                    "started_at": started_at,
+                    "expires_at": expires_at,
+                    "duration": duration,
+                })
+            else:
+                self.event("priority_boost_start", project=project, detail={
+                    "started_at": started_at,
+                    "expires_at": expires_at,
+                    "duration": duration,
+                })
+            return record
+
+    def extend_priority_boost(self, project, duration="1h"):
+        """Extend the expiry of an active boost for `project` by `duration` (1h, 1d, 1w).
+        Returns the updated record {project, started_at, expires_at}."""
+        if duration not in PRIORITY_BOOST_DURATIONS:
+            raise ValueError(f"invalid duration {duration!r}: must be 1h, 1d, or 1w")
+        delta = PRIORITY_BOOST_DURATIONS[duration]
+        with self._tx():
+            existing = self.priority_boost()
+            if not existing or existing["project"] != project:
+                raise ValueError(f"no active priority boost for project {project!r}")
+            cur_expires = parse(existing["expires_at"])
+            new_expires = cur_expires + delta
+            new_expires_at = iso(new_expires)
+            record = {
+                "project": project,
+                "started_at": existing["started_at"],
+                "expires_at": new_expires_at,
+            }
+            self.set_kv(PRIORITY_BOOST_KEY, json.dumps(record))
+            self.event("priority_boost_extend", project=project, detail={
+                "started_at": existing["started_at"],
+                "expires_at": new_expires_at,
+                "duration": duration,
+            })
+            return record
+
+    def stop_priority_boost(self, project=None):
+        """Stop an active priority boost. If `project` is given, only stops if that
+        project matches the active boost. Returns True if stopped, False otherwise."""
+        with self._tx():
+            existing = self.priority_boost()
+            if not existing:
+                return False
+            if project is not None and existing["project"] != project:
+                return False
+            self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+            self.event("priority_boost_stop", project=existing["project"], detail={
+                "stopped_at": iso(self.now()),
+                "started_at": existing.get("started_at"),
+                "expires_at": existing.get("expires_at"),
+            })
+            return True
+
+    def expire_priority_boost(self):
+        """Reconcile priority boost expiry: if the stored record has expired or is corrupt,
+        delete it and emit an expiry event (for natural expiry). Idempotent. Returns True if expired."""
+        with self._tx():
+            raw = self.get_kv(PRIORITY_BOOST_KEY)
+            if not raw:
+                return False
+            try:
+                record = json.loads(raw)
+                if not isinstance(record, dict):
+                    self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+                    return False
+                project = record.get("project")
+                expires_at = record.get("expires_at")
+                if not project or not expires_at:
+                    self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+                    return False
+                exp = parse(expires_at)
+                if not exp:
+                    self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+                    return False
+            except Exception:
+                self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+                return False
+
+            if self.now() >= exp:
+                self.con.execute("DELETE FROM kv WHERE key=?", (PRIORITY_BOOST_KEY,))
+                self.event("priority_boost_expire", project=project, detail={
+                    "started_at": record.get("started_at"),
+                    "expires_at": record.get("expires_at"),
+                    "expired_at": iso(self.now()),
+                })
+                return True
+            return False
 
     def record_lesson_exposure(self, project, account, run_id, safe):
         """The run's safe launch inventory: [{name, hash}]. Idempotent."""

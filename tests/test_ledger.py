@@ -2207,3 +2207,156 @@ class BacklogSnapshotTests(unittest.TestCase):
             {"at": iso(newest), "count": 6},
         ])
         self.assertEqual(self.led.backlog_series("missing"), [])
+
+
+class PriorityBoostTests(unittest.TestCase):
+    def setUp(self):
+        self.t0 = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        self.clock_time = self.t0
+        self.led = Ledger(":memory:", clock=lambda: self.clock_time)
+        self.addCleanup(self.led.close)
+
+    def test_priority_boost_initially_none(self):
+        self.assertIsNone(self.led.priority_boost())
+
+    def test_start_priority_boost_exact_durations(self):
+        durations = [
+            ("1h", timedelta(hours=1)),
+            ("1d", timedelta(days=1)),
+            ("1w", timedelta(weeks=1)),
+        ]
+        for dur_str, delta in durations:
+            with self.subTest(duration=dur_str):
+                record = self.led.start_priority_boost("groundwork", dur_str)
+                self.assertEqual(record["project"], "groundwork")
+                self.assertEqual(record["started_at"], iso(self.t0))
+                self.assertEqual(record["expires_at"], iso(self.t0 + delta))
+
+                active = self.led.priority_boost()
+                self.assertEqual(active, record)
+
+        events = self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_start'")
+        self.assertTrue(len(events) >= 1)
+        ev = events[0]
+        self.assertEqual(ev["project"], "groundwork")
+        detail = json.loads(ev["detail"])
+        self.assertEqual(detail["started_at"], iso(self.t0))
+        self.assertEqual(detail["expires_at"], iso(self.t0 + timedelta(hours=1)))
+        self.assertEqual(detail["duration"], "1h")
+
+    def test_start_rejects_invalid_duration(self):
+        for bad in ("2h", "10m", "invalid", "", None):
+            with self.subTest(duration=bad):
+                with self.assertRaises(ValueError):
+                    self.led.start_priority_boost("mahler", bad)
+
+    def test_same_project_extension(self):
+        self.led.start_priority_boost("mahler", "1h")
+        self.clock_time = self.t0 + timedelta(minutes=30)
+        extended = self.led.extend_priority_boost("mahler", "1h")
+        self.assertEqual(extended["project"], "mahler")
+        self.assertEqual(extended["started_at"], iso(self.t0))
+        self.assertEqual(extended["expires_at"], iso(self.t0 + timedelta(hours=2)))
+
+        active = self.led.priority_boost()
+        self.assertEqual(active["expires_at"], iso(self.t0 + timedelta(hours=2)))
+
+        events = self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_extend'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "mahler")
+        detail = json.loads(events[0]["detail"])
+        self.assertEqual(detail["started_at"], iso(self.t0))
+        self.assertEqual(detail["expires_at"], iso(self.t0 + timedelta(hours=2)))
+        self.assertEqual(detail["duration"], "1h")
+
+    def test_extend_fails_when_not_active(self):
+        with self.assertRaises(ValueError):
+            self.led.extend_priority_boost("mahler", "1h")
+
+        self.led.start_priority_boost("other", "1h")
+        with self.assertRaises(ValueError):
+            self.led.extend_priority_boost("mahler", "1h")
+
+    def test_cross_project_atomic_replacement(self):
+        self.led.start_priority_boost("projectA", "1h")
+        self.clock_time = self.t0 + timedelta(minutes=15)
+        replaced = self.led.start_priority_boost("projectB", "1d")
+        self.assertEqual(replaced["project"], "projectB")
+        self.assertEqual(replaced["started_at"], iso(self.clock_time))
+        self.assertEqual(replaced["expires_at"], iso(self.clock_time + timedelta(days=1)))
+
+        active = self.led.priority_boost()
+        self.assertEqual(active["project"], "projectB")
+        # Ensure only 1 record exists in KV table
+        rows = self.led.q("SELECT * FROM kv WHERE key = 'priority_boost'")
+        self.assertEqual(len(rows), 1)
+
+        events = self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_replace'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "projectB")
+        detail = json.loads(events[0]["detail"])
+        self.assertEqual(detail["replaced"], "projectA")
+        self.assertEqual(detail["started_at"], iso(self.clock_time))
+        self.assertEqual(detail["expires_at"], iso(self.clock_time + timedelta(days=1)))
+
+    def test_stop_priority_boost(self):
+        self.led.start_priority_boost("mahler", "1h")
+        self.assertTrue(self.led.stop_priority_boost("mahler"))
+        self.assertIsNone(self.led.priority_boost())
+
+        events = self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_stop'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "mahler")
+        detail = json.loads(events[0]["detail"])
+        self.assertEqual(detail["stopped_at"], iso(self.t0))
+
+        # Idempotent: stopping again returns False and emits no second event
+        self.assertFalse(self.led.stop_priority_boost("mahler"))
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_stop'")), 1)
+
+        # Stopping with mismatched project returns False
+        self.led.start_priority_boost("mahler", "1h")
+        self.assertFalse(self.led.stop_priority_boost("other"))
+        self.assertIsNotNone(self.led.priority_boost())
+
+    def test_corrupt_record_safety(self):
+        self.led.set_kv("priority_boost", "{bad json")
+        self.assertIsNone(self.led.priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+        # Corrupt record removed
+        self.assertIsNone(self.led.get_kv("priority_boost"))
+
+        self.led.set_kv("priority_boost", json.dumps({"project": "p"}))  # missing timestamps
+        self.assertIsNone(self.led.priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+
+        self.led.set_kv("priority_boost", json.dumps({
+            "project": "p", "started_at": "invalid-date", "expires_at": "invalid-date"
+        }))
+        self.assertIsNone(self.led.priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+
+    def test_natural_expiry_and_idempotence(self):
+        self.led.start_priority_boost("mahler", "1h")
+        self.clock_time = self.t0 + timedelta(minutes=59)
+        self.assertIsNotNone(self.led.priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_expire'"), [])
+
+        # Step past 1h
+        self.clock_time = self.t0 + timedelta(hours=1, seconds=1)
+        self.assertIsNone(self.led.priority_boost())
+        self.assertTrue(self.led.expire_priority_boost())
+
+        events = self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_expire'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "mahler")
+        detail = json.loads(events[0]["detail"])
+        self.assertEqual(detail["started_at"], iso(self.t0))
+        self.assertEqual(detail["expires_at"], iso(self.t0 + timedelta(hours=1)))
+        self.assertEqual(detail["expired_at"], iso(self.clock_time))
+
+        # Second call does not emit duplicate event
+        self.assertFalse(self.led.expire_priority_boost())
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind = 'priority_boost_expire'")), 1)
+
