@@ -1084,24 +1084,7 @@ def dumps_toml(data):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def save_settings(body, path=None):
-    """Validate settings and atomically persist them to config.toml."""
-    path = path or CONFIG_PATH
-    user = {}
-    if os.path.exists(path):
-        with open(path, "rb") as fh:
-            user = tomllib.load(fh)
-    current = resolve_platforms(_merge(DEFAULTS, user))
-    clean = validate_settings(body, current)
-    updated = _apply_settings(user, clean)
-    candidate = _merge(DEFAULTS, updated)
-    resolved_candidate = resolve_platforms(candidate)
-    validate_accounts(resolved_candidate)
-    encoded = dumps_toml(updated)
-    # Prove our serialization before replacing the operator's config.
-    parsed = tomllib.loads(encoded)
-    resolve_platforms(_merge(DEFAULTS, parsed))
-
+def _write_private(path, encoded):
     parent = os.path.dirname(os.path.abspath(path))
     ensure_private_dir(parent)
     fd, tmp = tempfile.mkstemp(prefix=".config.", suffix=".toml", dir=parent)
@@ -1123,6 +1106,27 @@ def save_settings(body, path=None):
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def save_settings(body, path=None):
+    """Validate settings and atomically persist them to config.toml."""
+    path = path or CONFIG_PATH
+    user = {}
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            user = tomllib.load(fh)
+    current = resolve_platforms(_merge(DEFAULTS, user))
+    clean = validate_settings(body, current)
+    updated = _apply_settings(user, clean)
+    candidate = _merge(DEFAULTS, updated)
+    resolved_candidate = resolve_platforms(candidate)
+    validate_accounts(resolved_candidate)
+    encoded = dumps_toml(updated)
+    # Prove our serialization before replacing the operator's config.
+    parsed = tomllib.loads(encoded)
+    resolve_platforms(_merge(DEFAULTS, parsed))
+
+    _write_private(path, encoded)
     return settings(load(path))
 
 
@@ -1494,3 +1498,29 @@ def discussion_env(base=None):
     # Leave CLAUDE_CONFIG_DIR unset so the CLI uses its default personal
     # directory and default keychain service, rather than a named profile.
     return env
+
+
+def project_pause_key(project):
+    return f"project_paused:{project}"
+
+
+def set_project_max_parallel(project, value, path=None):
+    """Change only `[projects.<project>].max_parallel` in config.toml: reload the
+    current file, validate, and atomically replace. Returns the effective value."""
+    path = path or CONFIG_PATH
+    user = {}
+    if os.path.exists(path):
+        with open(path, "rb") as fh:
+            user = tomllib.load(fh)
+    current = resolve_platforms(_merge(DEFAULTS, user))
+    if project not in {p["name"] for p in enabled_projects(current)}:
+        raise ValueError("project must be enabled")
+    value = _settings_int(value, f"project {project} max_parallel", 1, 64)
+    updated = copy.deepcopy(user)
+    updated.setdefault("projects", {}).setdefault(project, {})["max_parallel"] = value
+    resolved = resolve_platforms(_merge(DEFAULTS, updated))
+    validate_accounts(resolved)
+    encoded = dumps_toml(updated)
+    resolve_platforms(_merge(DEFAULTS, tomllib.loads(encoded)))
+    _write_private(path, encoded)
+    return value

@@ -1415,3 +1415,32 @@ class ScheduleStateUpdateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectPauseTests(unittest.TestCase):
+    def test_paused_project_starts_nothing_and_other_project_takes_the_slot(self):
+        ctx, led = mk_ctx({"a": proj(repo="x/a", path="/tmp/a", max_parallel=2),
+                           "b": proj(repo="x/b", path="/tmp/b", max_parallel=2)},
+                          total=2, max_runs=3)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 1, state="working")
+        led.create_run(project="a", number=1, role="build", platform="agy-claude", epoch=1)
+        item(led, "a", 2, age_minutes=30)
+        item(led, "a", 3, state="inbox", age_minutes=30)
+        item(led, "b", 4, age_minutes=5)
+        led.set_kv(config.project_pause_key("a"), "1")
+
+        lines = plan(ctx, led)
+
+        self.assertEqual(lines, ["b#4: would build on agy-claude"])
+        self.assertIn({"kind": "project_paused", "project": "a"}, ctx.holds)
+        self.assertEqual(len(led.active_runs("a")), 1)  # still running, still counted
+
+    def test_resumed_project_is_eligible_again(self):
+        ctx, led = mk_ctx({"a": proj(repo="x/a", path="/tmp/a")})
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "a", 2)
+        led.set_kv(config.project_pause_key("a"), "0")
+        self.assertEqual(plan(ctx, led), ["a#2: would build on agy-claude"])

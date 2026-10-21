@@ -151,6 +151,32 @@ def _pause_button(s, cls="btn pause"):
     return f'<button class="{cls}" data-act="pause">Pause all</button>'
 
 
+def _stepper(ov):
+    par = ov.get("parallel") or {"running": 0, "max": 1}
+    project = e(ov.get("project", ""))
+    lo, hi, cur = par.get("min_value", 1), par.get("max_value", 64), par["max"]
+
+    def btn(label, name, value, off):
+        dis = " disabled" if off else ""
+        return (f'<button class="stp" data-act="set_max_parallel" data-project="{project}" '
+                f'data-value="{value}" aria-label="{name}"{dis}>{label}</button>')
+    return (btn("−", "Fewer parallel jobs", cur - 1, cur <= lo) + f'<b>{cur}</b>'
+            + btn("+", "More parallel jobs", cur + 1, cur >= hi))
+
+
+def _wide_text(ov):
+    par = ov.get("parallel") or {}
+    return f'Mahler-wide: {par.get("mahler_active", 0)} of {par.get("mahler_total", 0)} in use'
+
+
+def _project_pause_button(ov, cls="btn"):
+    project = e(ov.get("project", ""))
+    if ov.get("project_paused"):
+        return (f'<button class="{cls} on" data-act="resume_project" data-project="{project}">'
+                f'Resume project</button>')
+    return f'<button class="{cls}" data-act="pause_project" data-project="{project}">Pause project</button>'
+
+
 def _stale_note():
     """Hidden until a refresh fails; console.js fills in the time (mahler#1108)."""
     return f'<span class="stale-note mono" role="status" data-stale-note="{e(STALE_NOTE)}" hidden></span>'
@@ -428,12 +454,12 @@ def _project_desktop_head(s, view):
     par = ov.get("parallel", {"running": 0, "max": 1})
     threads = (f'<span class="threads" title="How many of this project\'s jobs may run at the same time">'
                f'<span class="meta">Parallel jobs · {par["running"]} running · max</span>'
-               f'<button class="stp" disabled>−</button><b>{par["max"]}</b>'
-               f'<button class="stp" disabled>+</button></span>')
+               f'{_stepper(ov)}</span>'
+               f'<span class="meta wide">{e(_wide_text(ov))}</span>')
     return (f'<div class="dhead"><span class="dtitle">{e(project)}</span>'
             f'<span class="chip {ov.get("status_tone", "")}">{e(ov.get("status_label", ""))}</span>'
             f'{ver_chip}{repo_link}<span style="flex:1"></span>'
-            f'{threads}{_pause_button(s)}'
+            f'{threads}{_project_pause_button(ov)}{_pause_button(s)}'
             f'<button class="btn btn-pri" data-open-capture>+ Add issue</button>'
             f'{_stale_note()}</div>')
 
@@ -685,9 +711,10 @@ def _phone_overview(s):
 
     par = ov.get("parallel", {"running": 0, "max": 1})
     threads_div = (
-        f'<div class="meta">Parallel jobs: {par["running"]} running · max {par["max"]} '
-        f'<button class="btn" style="min-height:24px" disabled>−</button> '
-        f'<button class="btn" style="min-height:24px" disabled>+</button></div>'
+        f'<div class="threads"><span class="meta">Parallel jobs: {par["running"]} running · max</span>'
+        f'{_stepper(ov)}</div>'
+        f'<div class="meta wide">{e(_wide_text(ov))}</div>'
+        f'<div>{_project_pause_button(ov)}</div>'
     )
 
     project = ov.get("project") or s.get("project_scope")

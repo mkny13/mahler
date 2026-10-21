@@ -159,7 +159,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     s["landing"] = dict(all_projects_landing)
     s["all_projects_landing"] = dict(all_projects_landing)
     s["project_scope"] = project_scope
-    s["scope_options"] = _scope_options(project_names, runs, needs, backlog,
+    s["scope_options"] = _scope_options(led, project_names, runs, needs, backlog,
                                          releases_data, paused)
     if project_scope:
         s["runs"] = [row for row in runs if row["ref"].startswith(project_scope + "#")]
@@ -194,7 +194,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     return s
 
 
-def _scope_options(project_names, runs, needs, backlog, releases, paused):
+def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
     """Expose each enabled project's one-line status from the existing snapshot."""
     options = []
     for name in project_names:
@@ -205,7 +205,8 @@ def _scope_options(project_names, runs, needs, backlog, releases, paused):
                      if row["state"] in ("ready", "inbox"))
         release = next((row for row in releases if row["project"] == name), None)
         version = next((row["version"] for row in (release or {}).get("published", [])), "")
-        status = ("paused" if paused else "running" if running else
+        project_paused = led.get_kv(config.project_pause_key(name)) == "1"
+        status = ("paused" if paused or project_paused else "running" if running else
                   "waiting on you" if waiting else f"{queued} queued" if queued else "quiet")
         options.append({
             "name": name,
@@ -214,6 +215,7 @@ def _scope_options(project_names, runs, needs, backlog, releases, paused):
             "queued": queued,
             "waiting_on_you": waiting,
             "paused": paused,
+            "project_paused": project_paused,
             "current_version": version,
         })
     return options
@@ -2551,7 +2553,8 @@ def _project_overview_state(cfg, led, project, s, now):
 
     runs = s.get("runs", [])
     active_count = len(runs)
-    paused = s.get("paused", False)
+    project_paused = led.get_kv(config.project_pause_key(project)) == "1"
+    paused = s.get("paused", False) or project_paused
     status_label = "PAUSED" if paused else f"RUNNING · {active_count}" if active_count else "IDLE"
     status_tone = "warn" if paused else "acc" if active_count else "mut"
 
@@ -2565,7 +2568,12 @@ def _project_overview_state(cfg, led, project, s, now):
         "parallel": {
             "running": active_count,
             "max": pol.get("max_parallel", 1),
+            "min_value": 1,
+            "max_value": 64,
+            "mahler_active": len(led.active_runs()),
+            "mahler_total": cfg["concurrency"]["total"],
         },
+        "project_paused": project_paused,
         "kpis": {
             "open": open_count,
             "open_delta_7d": delta_7d,

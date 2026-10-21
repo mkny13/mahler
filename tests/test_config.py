@@ -733,3 +733,35 @@ class ProjectGitHubAppConfigTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError) as caught:
                 config.project_github_app({"github_app": invalid}, {})
             self.assertNotIn("/secret", str(caught.exception))
+
+
+class SetProjectMaxParallelTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = Path(tmp.name) / 'config.toml'
+        self.user = {'concurrency': {'total': 5},
+                     'projects': {'app': {'enabled': True, 'repo': 'x/app', 'path': '/tmp/app',
+                                          'max_parallel': 2},
+                                  'off': {'enabled': False, 'repo': 'x/off', 'path': '/tmp/off'}}}
+        self.path.write_text(config.dumps_toml(self.user))
+
+    def test_changes_only_that_project_value(self):
+        self.assertEqual(config.set_project_max_parallel('app', 7, self.path), 7)
+        got = tomllib.loads(self.path.read_text())
+        self.user['projects']['app']['max_parallel'] = 7
+        self.assertEqual(got, self.user)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_rejections_leave_file_byte_identical(self):
+        before = self.path.read_bytes()
+        for project, value in (('app', 0), ('app', 65), ('app', True), ('app', '3'),
+                               ('app', 2.0), ('off', 3), ('nope', 3)):
+            with self.subTest(project=project, value=value):
+                with self.assertRaises(ValueError):
+                    config.set_project_max_parallel(project, value, self.path)
+                self.assertEqual(self.path.read_bytes(), before)
+
+    def test_boundaries_accepted(self):
+        for value in (1, 64):
+            self.assertEqual(config.set_project_max_parallel('app', value, self.path), value)

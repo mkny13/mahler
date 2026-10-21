@@ -684,6 +684,12 @@
       if (platform) { return { platform: platform }; }
       return { platforms: (el.getAttribute("data-platforms") || "").split(",").filter(Boolean) };
     }
+    if (act === "set_max_parallel") {
+      return { project: el.getAttribute("data-project"), value: Number(el.getAttribute("data-value")) };
+    }
+    if (act === "pause_project" || act === "resume_project") {
+      return { project: el.getAttribute("data-project") };
+    }
     if (act === "revert") { return { event: Number(el.getAttribute("data-event")) }; }
     if (act === "uat_fail") {
       var bug = el.closest(".bugov");

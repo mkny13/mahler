@@ -569,6 +569,20 @@ plus what changed since the owner last looked, without changing autonomous execu
    - Parallel jobs indicator with stepper buttons (`Parallel jobs · N running · max M`).
    - Pause / Resume button for this project, and `+ Add issue` button (opens Capture overlay).
 
+**Overview header controls (mahler#1124).** The stepper writes `max_parallel` through the
+targeted `set_max_parallel` action, never the Settings form: `config.set_project_max_parallel`
+reloads `config.toml`, accepts only an enabled project and a non-boolean integer 1–64 (− is
+disabled at 1, + at 64), changes only `[projects.<name>].max_parallel`, and replaces the file
+privately and atomically; on any failure the file is left untouched. It does not raise the
+limit on its own and never stops running jobs. Beside it the read-only copy
+`Mahler-wide: X of Y in use` shows running/stopping runs against `concurrency.total`.
+**Pause project / Resume project** (`pause_project`, `resume_project`) is operational state,
+not config: one ledger KV flag `project_paused:<name>`. A paused project supplies no new
+sort/build/fix/review candidates (the scheduler holds `project_paused`) and takes no slot,
+but active runs continue and still count. It stays enabled, listed in the scope switcher as
+`paused`, and its Overview stays reachable. Repeats are idempotent; only real transitions
+emit `project_pause` / `project_resume` events. Distinct from **Pause all**, which stops every project.
+
 2. **Main Column Ordering:**
    - **Headline KPIs (`.kpis.five`):** Six headline measures: open count with 7-day delta (`open · −N in 7d`), active run count (`active`), queued count with next item reference (`queued · next #N`), waiting on owner with wait age (`waiting on you · 2h 10m`), other blocked count (`blocked otherwise`), and done in 7 days with last shipment age (`done 7d · last 3h ago`).
    - **Needs you:** Open owner questions for this project, answerable inline via option buttons (`data-act="answer"`) or custom text input, with pending replies and undo.
