@@ -2940,7 +2940,7 @@ project.
 
 ### D50 — Unattended macOS smoke: an unlocked session, a sleeping display (mahler#1172)
 
-Proposed 2026-10-21; **the owner's settings step is pending.** couch-tour#686 (smoke for
+Decided 2026-10-21 (owner). couch-tour#686 (smoke for
 v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. The mini's
 session locks overnight, so D40's idle check passed, the run started, and the smoke runner
 found the lock screen. Android passed on the `phishin_test` AVD, but macOS never ran.
@@ -2985,8 +2985,11 @@ present.
     owner won't run unlocked.
   - **Hybrid (Android local, macOS in CI).** This inherits the hosted runner's coverage gap,
     so it can't produce a full PASS.
-- **Owner step (unlocked option).** In System Settings: Lock Screen → "Start Screen Saver
-  when inactive" = Never; "Require password after screen saver begins or display is turned
-  off" = Never; "Turn display off when inactive" can stay as it is. Privacy & Security →
-  Advanced → "Log out automatically after inactivity" = off. Agents never change these
-  (security settings are the owner's).
+- **Chosen: the unlocked session.** On 2026-10-21 the mini already had these settings:
+  `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver begins
+  or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system sleep
+  0, and the display off after 3 hours. The 2026-10-20 failures ran at about 14:26, in the
+  day. The power log shows the display on at 08:03:20 and off at 08:03:33, which is a
+  manual lock (⌃⌘Q) as the owner left, not a setting. **A manual lock is the owner's
+  choice. Smoke now waits it out instead of failing.** Agents never change these settings,
+  because security settings are the owner's.
