@@ -800,8 +800,6 @@ def codex_home(account=None, cfg=None, env=None, home=None):
         val = own_env.get("CODEX_HOME")
         if val:
             return os.path.expanduser(str(val))
-        if acct != "personal":
-            return None
     val = os.environ.get("CODEX_HOME")
     if val:
         return os.path.expanduser(str(val))

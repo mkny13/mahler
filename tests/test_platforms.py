@@ -1016,6 +1016,24 @@ class CodexOfferedModelsTests(unittest.TestCase):
             models = platforms.codex_offered_models(account="work", cfg=cfg)
             self.assertEqual(models, {"gpt-6-astra"})
 
+    def test_codex_offered_models_work_account_defaults_to_codex_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_dir = os.path.join(tmp, ".codex")
+            os.mkdir(codex_dir)
+            with open(os.path.join(codex_dir, "models_cache.json"), "w") as f:
+                json.dump({"models": [{"slug": "gpt-6-default"}]}, f)
+            cfg = {"accounts": {"work": {"env": {}}}}
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=False):
+                os.environ.pop("CODEX_HOME", None)
+                self.assertEqual(
+                    platforms.codex_home(account="work", cfg=cfg),
+                    codex_dir,
+                )
+                self.assertEqual(
+                    platforms.codex_offered_models(account="work", cfg=cfg),
+                    {"gpt-6-default"},
+                )
+
     def test_variant_routing_with_fixture_models_cache(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = os.path.join(tmp, "models_cache.json")
