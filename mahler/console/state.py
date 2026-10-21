@@ -48,6 +48,16 @@ NUMBER_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
 DESIGN_D8 = ("https://github.com/mkny13/mahler/blob/main/DESIGN.md"
              "#d8--platforms-quota-sensing-and-routing")
 
+HOW_A_CHANGE_SHIPS_TITLE = "How a change ships"
+HOW_A_CHANGE_SHIPS_STEPS = (
+    ("Built", "An agent writes the change on its own branch and runs the project's own checks {verify_clause}before saying it's done."),
+    ("PR", "Mahler (not the agent) pushes the branch and opens a pull request: the proposed change, waiting to be merged."),
+    ("CI checks", "GitHub runs the project's automated tests on the PR. Green means they all passed. Red: Mahler first retries once if it looks like a flaky test, then starts a fix run with the failure log. If the fix limit runs out, the change is parked and shows under Blocked."),
+    ("Review", "A different AI platform from the one that built it reads the change. Problems it finds go back for a fix, then through checks again."),
+    ("Merged", "On green checks and a clean review, Mahler merges it into main and closes the issue. No one has to press a button."),
+    ("Confirmed live", "Where a project has an automatic post-merge check, a pass marks it verified. Otherwise it counts as done after 14 quiet days with no problem reported."),
+)
+
 _STATE_DETAIL = re.compile(r"^(\w+) -> (\w+)(?: \((.*)\))?$", re.S)
 
 
@@ -179,6 +189,8 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
         s["banners"] = [row for row in s["banners"]
                         if row.get("project") == project_scope]
         s["landing"] = {"tab": "overview", "view": "overview"}
+        s["overview"] = _project_overview_state(cfg, led, project_scope, s, now)
+        s["project_overview"] = s["overview"]
     return s
 
 
@@ -774,7 +786,7 @@ def _runs(cfg, led, now):
                   else ls["text"])
         status_tone = ls["tone"] if r["status"] not in ("stopping",) and r["id"] not in stop_queued else "mut"
         out.append({
-            "id": r["id"], "project": project, "ref": _ref(project, n),
+            "id": r["id"], "project": project, "number": n, "ref": _ref(project, n),
             "url": _issue_url(cfg, project, n),
             "title": (item["title"] if item else None) or _ref(project, n),
             "platform": r["platform"], "role": r["role"], "role_label": role_label,
@@ -2131,3 +2143,451 @@ def models(led, cfg, rows=None):
             "note": f'Last {scorecard.policy(cfg)["window_days"]} days · API-equivalent dollars '
                     '(weighted). Pending and excluded runs do not count. '
                     'Unpriced rows have incomplete cost data. Outcomes can change with later evidence.'}
+
+
+# ---------- project overview ----------
+
+def _how_a_change_ships(policy):
+    verify = policy.get("verify")
+    verify_clause = f"(for this project: {verify}) " if verify else ""
+    steps = []
+    for title, template in HOW_A_CHANGE_SHIPS_STEPS:
+        text = template.replace("{verify_clause}", verify_clause).strip()
+        steps.append({"title": title, "text": text})
+    return {"title": HOW_A_CHANGE_SHIPS_TITLE, "steps": steps}
+
+
+def _shipping_rows(cfg, led, project, s, now):
+    rows = []
+    seen_numbers = set()
+
+    # 1. In-flight built-but-unfinished changes
+    candidates = led.items(project, states=["verifying", "parked", "failed"])
+    for it in candidates:
+        n = it["number"]
+        pr = row_get(it, "pr")
+        st = it["state"]
+        has_prior_build = bool(led.last_run(project, n, roles=("build",)))
+        if st != "verifying" and not pr and not has_prior_build:
+            continue
+        seen_numbers.add(n)
+        title = row_get(it, "title") or _ref(project, n)
+
+        built_stage = {"key": "built", "label": "Built", "status": "ok", "text": ""}
+
+        if not pr:
+            pr_stage = {"key": "pr", "label": "PR", "status": "now", "text": ""}
+            ci_stage = {"key": "ci", "label": "CI checks", "status": "", "text": ""}
+            rev_stage = {"key": "review", "label": "Review", "status": "", "text": ""}
+            merged_stage = {"key": "merged", "label": "Merged", "status": "", "text": ""}
+            confirmed_stage = {"key": "confirmed", "label": "Confirmed live", "status": "", "text": ""}
+            change_subtitle = "built · waiting for PR"
+        else:
+            pr_stage = {"key": "pr", "label": "PR", "status": "ok", "text": ""}
+            ci_data = {}
+            ci_raw = led.get_kv(f"ci:{project}#{n}:{pr}")
+            if ci_raw:
+                try:
+                    ci_data = json.loads(ci_raw) or {}
+                except (TypeError, ValueError):
+                    ci_data = {}
+            ci_state = ci_data.get("state")
+            failed_check = (ci_data.get("failed_check") or ci_data.get("check_name") or
+                            ci_data.get("check"))
+            progress = ci_data.get("progress")
+            if not progress and "completed" in ci_data and "total" in ci_data:
+                progress = f"{ci_data['completed']} of {ci_data['total']}"
+
+            rev_data = {}
+            rev_raw = led.get_kv(f"review:{project}#{n}")
+            if rev_raw:
+                try:
+                    rev_data = json.loads(rev_raw) or {}
+                except (TypeError, ValueError):
+                    rev_data = {}
+            rev_status = review.effective_for_item(led, project, n, pr=pr, sha=ci_data.get("sha"))
+            if not rev_status or rev_status == "unknown":
+                rev_status = rev_data.get("verdict")
+            rev_plat = rev_data.get("platform")
+            active_rev = next((r for r in led.active_runs(project)
+                               if r["number"] == n and r["role"] == "review"), None)
+            if active_rev:
+                rev_plat = active_rev["platform"]
+            active_fix = next((r for r in led.active_runs(project)
+                               if r["number"] == n and r["role"] == "fix"), None)
+
+            merged_stage = {"key": "merged", "label": "Merged", "status": "", "text": ""}
+            confirmed_stage = {"key": "confirmed", "label": "Confirmed live", "status": "", "text": ""}
+
+            if ci_state == "red":
+                ci_stage = {
+                    "key": "ci", "label": "CI checks", "status": "bad",
+                    "text": f"✕ {failed_check}" if failed_check else "failed",
+                }
+                rev_stage = {"key": "review", "label": "Review", "status": "", "text": ""}
+                why = row_get(it, "reason") or _question(led, project, n, it["state"], it)
+                if it["state"] == "parked":
+                    change_subtitle = f"PR #{pr} · {why if why else 'checks failed · parked'}"
+                else:
+                    change_subtitle = f"PR #{pr} · CI failed"
+            elif ci_state in (None, "pending"):
+                since = parse(ci_data.get("since")) if ci_data.get("since") else None
+                elapsed = _mins(now - since) if since else None
+                ci_stage = {
+                    "key": "ci", "label": "CI checks", "status": "now",
+                    "text": progress or "checks running",
+                }
+                rev_stage = {"key": "review", "label": "Review", "status": "", "text": ""}
+                sub = f"checks running {elapsed}m" if elapsed is not None else "checks running"
+                change_subtitle = f"PR #{pr} · {sub}"
+            elif ci_state in ("green", "none"):
+                ci_stage = {"key": "ci", "label": "CI checks", "status": "ok", "text": ""}
+                if rev_status == "fail" or active_fix:
+                    rev_stage = {"key": "review", "label": "Review", "status": "bad", "text": ""}
+                    change_subtitle = (f"PR #{pr} · review failed; fixing"
+                                       if active_fix else f"PR #{pr} · review failed")
+                elif rev_status in ("pending", "required", "unknown") or active_rev or rev_plat:
+                    rev_stage = {"key": "review", "label": "Review", "status": "now", "text": ""}
+                    plat_label = f"{rev_plat} reviewing" if rev_plat else "in review"
+                    change_subtitle = f"PR #{pr} · {plat_label}"
+                else:
+                    rev_stage = {"key": "review", "label": "Review", "status": "ok", "text": ""}
+                    change_subtitle = f"PR #{pr} · ready to merge"
+            else:
+                ci_stage = {"key": "ci", "label": "CI checks", "status": "", "text": ""}
+                rev_stage = {"key": "review", "label": "Review", "status": "", "text": ""}
+                change_subtitle = f"PR #{pr}"
+
+        rows.append({
+            "ref": _ref(project, n),
+            "number": n,
+            "title": title,
+            "pr": pr,
+            "pr_url": _pr_url(cfg, project, pr) if pr else None,
+            "change_subtitle": change_subtitle,
+            "stages": [built_stage, pr_stage, ci_stage, rev_stage, merged_stage, confirmed_stage],
+        })
+
+    # 2. Recently merged changes
+    for sh in led.shipment_history(project, limit=10):
+        n = sh["number"]
+        if n in seen_numbers:
+            continue
+        seen_numbers.add(n)
+        pr = row_get(sh, "pr")
+        title = row_get(sh, "title") or _ref(project, n)
+        shipped_at = row_get(sh, "shipped_at")
+        shipped_dt = parse(shipped_at) if shipped_at else None
+        mins = max(0, int((now - shipped_dt).total_seconds() // 60)) if shipped_dt else 0
+        age_str = ("yesterday" if 1440 <= mins < 2880 else
+                   f"{mins // 1440}d ago" if mins >= 1440 else
+                   f"{mins // 60}h ago" if mins >= 60 else f"{mins}m ago")
+        if mins == 0:
+            age_str = "just now"
+        verified = bool(row_get(sh, "completion_kind") or row_get(sh, "verdict") == "pass")
+        quiet_days = max(0, (now - shipped_dt).days) if shipped_dt else 0
+
+        built_stage = {"key": "built", "label": "Built", "status": "ok", "text": ""}
+        pr_stage = {"key": "pr", "label": "PR", "status": "ok", "text": ""}
+        ci_stage = {"key": "ci", "label": "CI checks", "status": "ok", "text": ""}
+        rev_stage = {"key": "review", "label": "Review", "status": "ok", "text": ""}
+        merged_stage = {"key": "merged", "label": "Merged", "status": "ok", "text": ""}
+        if verified:
+            confirmed_stage = {"key": "confirmed", "label": "Confirmed live", "status": "ok",
+                               "text": "verified"}
+            change_subtitle = f"merged {age_str} · verified"
+        else:
+            confirmed_stage = {"key": "confirmed", "label": "Confirmed live", "status": "wait",
+                               "text": f"quiet {min(14, quiet_days)}/14d"}
+            change_subtitle = f"merged {age_str} · no problem reported"
+
+        rows.append({
+            "ref": _ref(project, n),
+            "number": n,
+            "title": title,
+            "pr": pr,
+            "pr_url": _pr_url(cfg, project, pr) if pr else None,
+            "change_subtitle": change_subtitle,
+            "stages": [built_stage, pr_stage, ci_stage, rev_stage, merged_stage, confirmed_stage],
+        })
+
+    return rows
+
+
+def _blocked_overview_rows(cfg, led, project, items, s, now):
+    rows = []
+    seen = set()
+
+    # 1. Owner questions (needs_you and failed)
+    for it in s.get("needs", []):
+        if it["project"] == project and it["pending"] is None:
+            n = it["number"]
+            seen.add(n)
+            rows.append({
+                "ref": _ref(project, n),
+                "number": n,
+                "url": _issue_url(cfg, project, n),
+                "title": it["title"],
+                "reason": "needs you",
+                "tone": "bad",
+            })
+
+    # 2. Dependency blocked
+    open_numbers = {it["number"] for it in items}
+    for it in items:
+        n = it["number"]
+        if n in seen:
+            continue
+        deps = []
+        raw_deps = row_get(it, "depends")
+        if raw_deps:
+            try:
+                parsed_deps = json.loads(raw_deps)
+                deps = [d for d in parsed_deps if isinstance(d, int) and d in open_numbers]
+            except Exception:
+                deps = []
+        parent = row_get(it, "parent")
+        if it["state"] == "parent" or deps:
+            seen.add(n)
+            dep_ref = deps[0] if deps else parent
+            reason = f"waits on #{dep_ref}" if dep_ref else "waits on dependency"
+            rows.append({
+                "ref": _ref(project, n),
+                "number": n,
+                "url": _issue_url(cfg, project, n),
+                "title": row_get(it, "title") or _ref(project, n),
+                "reason": reason,
+                "tone": "warn",
+            })
+
+    # 3. Parked
+    for it in items:
+        n = it["number"]
+        if n in seen:
+            continue
+        if it["state"] == "parked":
+            seen.add(n)
+            why = _question(led, project, n, "parked", it)
+            reason = (f"parked · {why}"
+                      if (why and not why.lower().startswith("parked"))
+                      else (why or "parked"))
+            rows.append({
+                "ref": _ref(project, n),
+                "number": n,
+                "url": _issue_url(cfg, project, n),
+                "title": row_get(it, "title") or _ref(project, n),
+                "reason": reason,
+                "tone": "bad",
+            })
+
+    # 4. Holds from scheduler
+    schedule_holds = _schedule_holds(led, now) or []
+    for h in schedule_holds:
+        if h.get("project") != project:
+            continue
+        n = h.get("number")
+        if n and n in open_numbers and n not in seen:
+            seen.add(n)
+            it = next((i for i in items if i["number"] == n), None)
+            overlap = f"area:{h['area']}" if h.get("area") else (", ".join(h.get("files", [])) or "overlap")
+            rows.append({
+                "ref": _ref(project, n),
+                "number": n,
+                "url": _issue_url(cfg, project, n),
+                "title": (row_get(it, "title") if it else None) or _ref(project, n),
+                "reason": f"waits — {overlap} already in progress",
+                "tone": "warn",
+            })
+
+    return rows
+
+
+def _queued_overview_rows(cfg, led, project, items, blocked_numbers):
+    rows = []
+    queued_candidates = [
+        it for it in items
+        if it["state"] in ("ready", "inbox") and it["number"] not in blocked_numbers
+    ]
+    queued_candidates.sort(key=lambda i: (i["priority"], i["number"]))
+    for idx, it in enumerate(queued_candidates):
+        n = it["number"]
+        labels = json.loads(row_get(it, "labels", "[]"))
+        size = next((l.split(":", 1)[1] for l in labels if l.startswith("size:")), None)
+        parts = []
+        if idx == 0:
+            parts.append("next")
+        if size:
+            parts.append(size)
+        if it["state"] == "inbox":
+            parts.append("needs sort")
+        meta = " · ".join(parts) if parts else ""
+        rows.append({
+            "ref": _ref(project, n),
+            "number": n,
+            "url": _issue_url(cfg, project, n),
+            "title": it["title"] or _ref(project, n),
+            "meta": meta,
+            "tone": "meta",
+        })
+    return rows
+
+
+def _completed_7d_rows(cfg, led, project, now):
+    out = []
+    for sh in led.shipment_history(project, limit=50):
+        shipped_at = row_get(sh, "shipped_at")
+        shipped_dt = parse(shipped_at) if shipped_at else None
+        if not shipped_dt or shipped_dt < now - timedelta(days=7):
+            continue
+        n = sh["number"]
+        mins = max(0, int((now - shipped_dt).total_seconds() // 60))
+        age_str = ("yesterday" if 1440 <= mins < 2880 else
+                   f"{mins // 1440}d ago" if mins >= 1440 else
+                   f"{mins // 60}h ago" if mins >= 60 else f"{mins}m ago")
+        if mins == 0:
+            age_str = "just now"
+        last_run = led.last_run(project, n, roles=("build",))
+        plat = last_run["platform"] if last_run else ""
+        verified = bool(row_get(sh, "completion_kind") or row_get(sh, "verdict") == "pass")
+        quiet_days = max(0, (now - shipped_dt).days)
+        status_label = "verified" if verified else f"quiet {min(14, quiet_days)}/14d"
+        status_tone = "good" if verified else "mut"
+        meta_parts = []
+        if not age_str.startswith("yesterday"):
+            meta_parts.append(f"merged {age_str}")
+        else:
+            meta_parts.append(age_str)
+        if plat:
+            meta_parts.append(plat)
+        pr = row_get(sh, "pr")
+        out.append({
+            "ref": _ref(project, n),
+            "number": n,
+            "url": _issue_url(cfg, project, n),
+            "pr": pr,
+            "pr_url": _pr_url(cfg, project, pr) if pr else None,
+            "title": row_get(sh, "title") or _ref(project, n),
+            "meta": " · ".join(meta_parts),
+            "status": status_label,
+            "status_tone": status_tone,
+            "verified": verified,
+        })
+    return out
+
+
+def _builders_30d(led, project, now):
+    since_30d = iso(now - timedelta(days=30))
+    rows = led.q("SELECT platform, count(*) AS count FROM runs "
+                 "WHERE project=? AND role='build' AND status='ended' AND outcome='DONE' "
+                 "AND ended_at >= ? GROUP BY platform ORDER BY count DESC",
+                 (project, since_30d))
+    total = sum(r["count"] for r in rows)
+    out = []
+    for r in rows:
+        pct = round(r["count"] / total * 100) if total else 0
+        out.append({"platform": r["platform"], "count": r["count"], "pct": pct})
+    return out
+
+
+def _project_settings_summary(cfg, project):
+    pol = config.project_policy(cfg, project)
+    account = config.account_of(pol)
+    verify = pol.get("verify") or "none configured"
+    return {
+        "account": account,
+        "verify": verify,
+    }
+
+
+def _project_overview_state(cfg, led, project, s, now):
+    pol = config.project_policy(cfg, project)
+    repo = pol.get("repo", "")
+    repo_url = f"https://github.com/{repo}" if repo else ""
+    summary = next((row for row in s["scope_options"] if row["name"] == project), {})
+    current_ver = summary.get("current_version", "")
+
+    all_items = led.items(project)
+    open_items = [it for it in all_items if it["state"] in STATE_ORDER]
+    open_count = len(open_items)
+
+    net = led.backlog_net(project, now=now)
+    net_7d = (net or {}).get("7d")
+    delta_7d = net_7d["net"] if net_7d else 0
+    delta_text = f"{_signed(delta_7d)} in 7d" if net_7d else ""
+    delta_tone = "good" if delta_7d < 0 else "bad" if delta_7d > 0 else "mut"
+
+    blocked_rows = _blocked_overview_rows(cfg, led, project, open_items, s, now)
+    blocked_numbers = {r["number"] for r in blocked_rows}
+    blocked_otherwise = sum(1 for r in blocked_rows if r["reason"] != "needs you")
+
+    queued_rows = _queued_overview_rows(cfg, led, project, open_items, blocked_numbers)
+    next_item = f"#{queued_rows[0]['number']}" if queued_rows else None
+
+    waiting_items = [n for n in s["needs"] if n["project"] == project and n["pending"] is None]
+    waiting_on_you = len(waiting_items)
+    waiting_age = _dur(timedelta(seconds=max(n["waited_s"] for n in waiting_items))) if waiting_items else ""
+
+    completed_7d_rows = _completed_7d_rows(cfg, led, project, now)
+    done_7d = len(completed_7d_rows)
+    last_shipment = led.shipment_history(project, limit=1)
+    if last_shipment and row_get(last_shipment[0], "shipped_at"):
+        last_dt = parse(row_get(last_shipment[0], "shipped_at"))
+        lmins = max(0, int((now - last_dt).total_seconds() // 60))
+        last_shipped_age = (f"{lmins // 1440}d ago" if lmins >= 1440 else
+                            f"{lmins // 60}h ago" if lmins >= 60 else f"{lmins}m ago")
+        if lmins == 0:
+            last_shipped_age = "just now"
+    else:
+        last_shipped_age = ""
+
+    shipping_rows = _shipping_rows(cfg, led, project, s, now)
+    how_ships = _how_a_change_ships(pol)
+    activity_rows = [
+        {"when": ev["when"], "text": ev["text"], "url": ev.get("url")}
+        for ev in s.get("events", [])[:4]
+    ]
+    builders_30d = _builders_30d(led, project, now)
+    settings_summary = _project_settings_summary(cfg, project)
+
+    runs = s.get("runs", [])
+    active_count = len(runs)
+    paused = s.get("paused", False)
+    status_label = "PAUSED" if paused else f"RUNNING · {active_count}" if active_count else "IDLE"
+    status_tone = "warn" if paused else "acc" if active_count else "mut"
+
+    return {
+        "project": project,
+        "repo": repo,
+        "repo_url": repo_url,
+        "current_version": current_ver,
+        "status_label": status_label,
+        "status_tone": status_tone,
+        "parallel": {
+            "running": active_count,
+            "max": pol.get("max_parallel", 1),
+        },
+        "kpis": {
+            "open": open_count,
+            "open_delta_7d": delta_7d,
+            "open_delta_text": delta_text,
+            "open_delta_tone": delta_tone,
+            "active": active_count,
+            "queued": len(queued_rows),
+            "next_item": next_item,
+            "waiting_on_you": waiting_on_you,
+            "waiting_age": waiting_age,
+            "blocked_otherwise": blocked_otherwise,
+            "done_7d": done_7d,
+            "last_shipped_age": last_shipped_age,
+        },
+        "needs_you": [n for n in s.get("needs", []) if n["project"] == project],
+        "active_rows": runs,
+        "queued_rows": queued_rows,
+        "blocked_rows": blocked_rows,
+        "shipping_rows": shipping_rows,
+        "how_a_change_ships": how_ships,
+        "completed_7d_rows": completed_7d_rows,
+        "activity_rows": activity_rows,
+        "builders_30d": builders_30d,
+        "settings": settings_summary,
+    }

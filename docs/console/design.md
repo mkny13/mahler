@@ -547,7 +547,7 @@ The separate console walkthrough remains a software testing practice.
 - Scheduler-recorded structured holds, automatic console restart after a code
   update, and ntfy needs-you deep links.
 
-### Project scope
+### Project scope and Overview (mahler#1119, mahler#1122)
 
 The optional `project` query parameter selects an enabled project; absent,
 empty, disabled, or unknown names keep the Mahler-wide view. The desktop rail
@@ -557,8 +557,55 @@ Needs you, Backlog, Releases, Stats, and Event stream to that project. Capacity,
 Models, and Settings are Mahler-wide and are not offered in project navigation.
 Changing scope updates the URL, preserves the active layout, and survives reload;
 choosing all projects removes the query parameter and restores the normal landing
-view. Overview is currently a minimal navigation shell for the dependent
-overview-content work.
+view.
+
+#### Overview Information Hierarchy and Ordering
+
+The Overview answers what is open, active, blocked, shipping and recently completed,
+plus what changed since the owner last looked, without changing autonomous execution.
+
+1. **Desktop Header (`.dhead`):**
+   - Project name, status chip (`RUNNING · N`, `PAUSED`, `IDLE`), published version chip, repository URL link (`owner/repo ↗`).
+   - Parallel jobs indicator with stepper buttons (`Parallel jobs · N running · max M`).
+   - Pause / Resume button for this project, and `+ Add issue` button (opens Capture overlay).
+
+2. **Main Column Ordering:**
+   - **Headline KPIs (`.kpis.five`):** Six headline measures: open count with 7-day delta (`open · −N in 7d`), active run count (`active`), queued count with next item reference (`queued · next #N`), waiting on owner with wait age (`waiting on you · 2h 10m`), other blocked count (`blocked otherwise`), and done in 7 days with last shipment age (`done 7d · last 3h ago`).
+   - **Needs you:** Open owner questions for this project, answerable inline via option buttons (`data-act="answer"`) or custom text input, with pending replies and undo.
+   - **Active now:** In-flight runs showing issue ref and title, role, platform, timing progress (`14m of ~25m`), and visual progress bar.
+   - **Queued & Blocked (`.two`):** Two equal columns. Queued shows open items in dispatch order linking to Backlog; Blocked shows items waiting on owner, dependencies (`waits on #N`), parked CI failures (`parked · CI red twice`), or scheduler holds.
+   - **Shipping Pipeline (`.pipe`):** Built-but-unfinished changes and recently merged items showing the 6 stage dots: Built → PR → CI checks → Review → Merged → Confirmed live. Below it, an expandable plain-English "How a change ships" explainer accurate to DESIGN D18, D11, and D10 (all prose kept in `state.py`).
+   - **Dependencies Graph (`.graph`):** Accessible SVG DAG for interdependent items within the project, showing ranked columns and a color-coded status legend (needs you, waiting, running, done).
+   - **Completed · last 7 days:** Work merged within the last 7 days, indicating platform, age, and verification state (`verified` or `quiet N/14d`).
+   - **Activity:** Project-scoped recent ledger events.
+
+3. **Right Sidebar (`.project-side`):**
+   - **What's new · since you last looked:** Shipped changes since the owner's last acknowledged event with a `Mark read` action (`data-act="brief_seen"`).
+   - **Releases:** Current published version, unreleased draft change count, suggested version, and `Cut release →` action (`data-open-release`).
+   - **Open issues · 30 days:** 30-day net backlog trend line and 30d net change.
+   - **Who built it · 30 days:** Proportional breakdown of builds across AI platforms over the last 30 days.
+   - **Project settings:** Read-only summary of the project's configured account and verification command (`verify`).
+
+#### Shipping Stage Evidence Rules
+
+Stage status is derived solely from recorded ledger evidence:
+- **Built:** Always green (`ok`) once the agent finishes its work branch and local verification.
+- **PR:** Green (`ok`) when a GitHub pull request is opened by the conductor; neutral if pending.
+- **CI checks:** Running checks show in-progress (`now`) with progress text (`3 of 5`); passing checks show `ok`; failing checks show `bad` with the failing check name (`✕ test_chat`).
+- **Review:** Active independent review shows in-progress (`now`) with reviewing platform; failed review shows `bad` (`review failed; fixing`); clean review shows `ok`.
+- **Merged:** Shows `ok` once merged to main; prior stages remain neutral until merged.
+- **Confirmed live:** Post-merge check pass marks `ok` (`verified`); unverified changes within the 14-day post-merge window show waiting (`wait`) with `quiet N/14d`.
+- **Ambiguous or unavailable stages** remain neutral rather than inventing synthetic evidence.
+
+#### Phone Condensation
+
+On mobile devices, the Overview collapses into a single condensed tab (`.tabv-overview`):
+- Compact headline block (`.ph-open`) combining open count, 7-day delta, and inline breakdown (`1 active · 4 queued · 1 on you · 2 blocked · 7 done 7d`).
+- Inline Needs-you cards with direct answer buttons.
+- Active runs with platform and timing.
+- Combined Queued and Blocked list.
+- Shipping rows with status badges and PR references.
+- Compact parallel jobs control, What's new list, and Release summary.
 
 ### Changed from the design (owner, 2026-09-15)
 

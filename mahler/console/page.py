@@ -414,20 +414,414 @@ def _event_text(ev):
     return tone, _a(ev.get("url"), ev["text"])
 
 
-# ---------- desktop ----------
+# ---------- project overview & desktop ----------
+
+def _project_desktop_head(s, view):
+    if view != "overview":
+        titles = "".join(f'<span class="vt vt-{key}">{e(label)}</span>'
+                         for key, label in PROJECT_VIEWS)
+        return f'<div class="dhead"><span class="dtitle">{titles}</span>{_stale_note()}</div>'
+    ov = s.get("overview") or s.get("project_overview") or {}
+    project = ov.get("project") or s.get("project_scope") or ""
+    ver_chip = f'<span class="chip">v{e(ov["current_version"])}</span>' if ov.get("current_version") else ""
+    repo_link = f'<a class="meta" href="{e(ov["repo_url"])}" target="_blank" rel="noopener">{e(ov["repo"])} ↗</a>' if ov.get("repo") else ""
+    par = ov.get("parallel", {"running": 0, "max": 1})
+    threads = (f'<span class="threads" title="How many of this project\'s jobs may run at the same time">'
+               f'<span class="meta">Parallel jobs · {par["running"]} running · max</span>'
+               f'<button class="stp" disabled>−</button><b>{par["max"]}</b>'
+               f'<button class="stp" disabled>+</button></span>')
+    return (f'<div class="dhead"><span class="dtitle">{e(project)}</span>'
+            f'<span class="chip {ov.get("status_tone", "")}">{e(ov.get("status_label", ""))}</span>'
+            f'{ver_chip}{repo_link}<span style="flex:1"></span>'
+            f'{threads}{_pause_button(s)}'
+            f'<button class="btn btn-pri" data-open-capture>+ Add issue</button>'
+            f'{_stale_note()}</div>')
+
+
+def _desktop_overview(s):
+    ov = s.get("overview") or s.get("project_overview") or {}
+    kpis = ov.get("kpis") or {}
+    delta_span = (f'<span class="t-{kpis["open_delta_tone"]}">{kpis["open_delta_text"]}</span>'
+                  if kpis.get("open_delta_text") else "")
+    delta_part = f' · {delta_span}' if delta_span else ""
+    next_part = f' · next {kpis["next_item"]}' if kpis.get("next_item") else ""
+    wait_part = f' · {kpis["waiting_age"]}' if kpis.get("waiting_age") else ""
+    last_part = f' · last {kpis["last_shipped_age"]}' if kpis.get("last_shipped_age") else ""
+
+    kpis_html = (
+        f'<div class="kpis five">'
+        f'<div class="kpi"><div class="n">{kpis.get("open", 0)}</div><div class="d">open{delta_part}</div></div>'
+        f'<div class="kpi"><div class="n t-acc">{kpis.get("active", 0)}</div><div class="d">active</div></div>'
+        f'<div class="kpi"><div class="n">{kpis.get("queued", 0)}</div><div class="d">queued{next_part}</div></div>'
+        f'<div class="kpi"><div class="n t-bad">{kpis.get("waiting_on_you", 0)}</div><div class="d">waiting on you{wait_part}</div></div>'
+        f'<div class="kpi"><div class="n t-warn">{kpis.get("blocked_otherwise", 0)}</div><div class="d">blocked otherwise</div></div>'
+        f'<div class="kpi"><div class="n t-good">{kpis.get("done_7d", 0)}</div><div class="d">done 7d{last_part}</div></div>'
+        f'</div>'
+    )
+
+    needs_html = ""
+    if ov.get("needs_you"):
+        cards = []
+        for n in ov["needs_you"]:
+            if n.get("pending"):
+                cards.append(f'<div class="needs">{_answered(n)}</div>')
+            else:
+                cards.append(
+                    f'<div class="needs" data-need="{e(n["id"])}">'
+                    f'<div class="meta">{_a(n["url"], n["ref"])} · {e(n["meta"])}</div>'
+                    f'<div class="q">{e(n["question"])}</div>'
+                    f'{_answer_buttons(n)}'
+                    f'{_answer_input(n, phone=False)}'
+                    f'</div>'
+                )
+        needs_html = (
+            f'<section><h3><span class="lbl">Needs you · {len(ov["needs_you"])}</span></h3>'
+            f'{"".join(cards)}</section>'
+        )
+
+    active_html = ""
+    if ov.get("active_rows"):
+        arows = []
+        for r in ov["active_rows"]:
+            meta_str = f'{r["role"]} · {r["platform"]} · {r["timing"]}'
+            prog = min(max(r.get("progress", 0), 0), 100)
+            arows.append(
+                f'<div class="row"><span class="mono">{_a(r.get("url"), r["ref"])}</span>'
+                f'<span>{e(r["title"])}</span>'
+                f'<span class="r mono t-acc">{e(meta_str)}</span>'
+                f'<span class="why"><span class="bar" style="width:200px"><span style="width:{prog}%"></span></span></span></div>'
+            )
+        active_html = (
+            f'<section><h3><span class="lbl">Active now · {len(ov["active_rows"])}</span></h3>'
+            f'<div class="rows">{"".join(arows)}</div></section>'
+        )
+
+    qrows = []
+    for q in ov.get("queued_rows", []):
+        qrows.append(
+            f'<div class="row"><span class="mono">{_a(q.get("url"), q["ref"])}</span>'
+            f'<span>{e(q["title"])}</span>'
+            f'<span class="r meta">{e(q["meta"])}</span></div>'
+        )
+    q_sec = (
+        f'<section><h3><span class="lbl">Queued · {len(ov.get("queued_rows", []))}</span>'
+        f'<button class="link meta" data-go="backlog">Backlog →</button></h3>'
+        f'<div class="rows">{"".join(qrows)}</div></section>'
+    )
+
+    brows = []
+    for b in ov.get("blocked_rows", []):
+        brows.append(
+            f'<div class="row"><span class="mono">{_a(b.get("url"), b["ref"])}</span>'
+            f'<span>{e(b["title"])}</span>'
+            f'<span class="r meta t-{b.get("tone", "mut")}">{e(b["reason"])}</span></div>'
+        )
+    b_sec = (
+        f'<section><h3><span class="lbl">Blocked · {len(ov.get("blocked_rows", []))}</span></h3>'
+        f'<div class="rows">{"".join(brows)}</div></section>'
+    )
+    two_sec = f'<div class="two">{q_sec}{b_sec}</div>'
+
+    pipe_rows = []
+    for sr in ov.get("shipping_rows", []):
+        sub = e(sr.get("change_subtitle", ""))
+        item_col = (
+            f'<td class="it"><span class="mono">{_a(sr.get("url"), sr["ref"])}</span> {e(sr["title"])}'
+            f'<span class="st">{sub}</span></td>'
+        )
+        stage_tds = []
+        for st in sr.get("stages", []):
+            dot_cls = f"dot {st['status']}" if st.get("status") else "dot"
+            text_cls = "st t-bad" if st.get("status") == "bad" else "st"
+            st_text = f'<span class="{text_cls}">{e(st["text"])}</span>' if st.get("text") else ""
+            stage_tds.append(f'<td><span class="{dot_cls}"></span>{st_text}</td>')
+        pipe_rows.append(f'<tr>{item_col}{"".join(stage_tds)}</tr>')
+
+    how = ov.get("how_a_change_ships") or {}
+    how_title = how.get("title") or "How a change ships"
+    how_steps = how.get("steps") or []
+    steps_li = "".join(f'<li><b>{e(step.get("title", ""))}.</b> {e(step.get("text", ""))}</li>' for step in how_steps)
+    how_details = f'<details class="explain"><summary>{e(how_title)}</summary><ol>{steps_li}</ol></details>'
+
+    repo_url = ov.get("repo_url")
+    prs_link = f'<a class="meta" href="{e(repo_url)}/pulls" target="_blank" rel="noopener">Open PRs on GitHub ↗</a>' if repo_url else ""
+    shipping_count = len(ov.get("shipping_rows", []))
+    shipping_sec = (
+        f'<section><h3><span class="lbl">Shipping · {shipping_count}</span>{prs_link}</h3>'
+        f'<div style="overflow-x:auto"><table class="pipe">'
+        f'<tr><th>Change</th><th>Built</th><th>PR</th><th>CI checks</th><th>Review</th><th>Merged</th><th>Confirmed live</th></tr>'
+        f'{"".join(pipe_rows)}</table></div>'
+        f'{how_details}</section>'
+    )
+
+    project = ov.get("project") or s.get("project_scope")
+    graph = (s.get("dep_graph") or {}).get(project)
+    dep_sec = ""
+    if graph and graph.get("nodes"):
+        dep_sec = (
+            f'<section class="graph"><h3><span class="lbl">Dependencies</span>'
+            f'<span class="meta">only issues that block or wait on another</span></h3>'
+            f'{_graph_svg(graph)}'
+            f'<div class="legend meta"><span><i style="border-color:var(--bad)"></i>needs you</span>'
+            f'<span><i style="border-color:var(--warn)"></i>waiting</span>'
+            f'<span><i style="border-color:var(--acc)"></i>running</span>'
+            f'<span><i style="border-color:var(--good)"></i>done</span></div></section>'
+        )
+
+    crows = []
+    for c in ov.get("completed_7d_rows", []):
+        status_cls = f'class="t-{c["tone"]}"' if c.get("tone") else ""
+        status_span = f'<span {status_cls}>{e(c["status"])}</span>'
+        crows.append(
+            f'<div class="row"><span class="mono">{_a(c.get("url"), c["ref"])}</span>'
+            f'<span>{e(c["title"])}</span>'
+            f'<span class="r meta">{e(c["meta"])} · {status_span}</span></div>'
+        )
+    comp_count = len(ov.get("completed_7d_rows", []))
+    comp_sec = (
+        f'<section><h3><span class="lbl">Completed · last 7 days · {comp_count}</span>'
+        f'<button class="link meta" data-go="history">All →</button></h3>'
+        f'<div class="rows">{"".join(crows)}</div></section>'
+    )
+
+    act_rows = []
+    for ev in ov.get("activity_rows", []):
+        act_rows.append(
+            f'<div class="row"><span>{e(ev["when"])}</span>'
+            f'<span style="color:var(--ink)">{_a(ev.get("url"), ev["text"])}</span><span></span></div>'
+        )
+    act_sec = (
+        f'<section><h3><span class="lbl">Activity</span>'
+        f'<button class="link meta" data-go="history">Event stream →</button></h3>'
+        f'<div class="rows meta">{"".join(act_rows)}</div></section>'
+    )
+
+    body = "".join([kpis_html, needs_html, active_html, two_sec, shipping_sec, dep_sec, comp_sec, act_sec])
+    return f'<section class="view view-overview"><div class="overview-body">{body}</div></section>'
+
+
+def _phone_overview(s):
+    ov = s.get("overview") or s.get("project_overview") or {}
+    kpis = ov.get("kpis") or {}
+    delta_span = (f'<span class="t-{kpis["open_delta_tone"]} meta">{kpis["open_delta_text"]}</span>'
+                  if kpis.get("open_delta_text") else "")
+    open_block = (
+        f'<div class="ph-open"><span class="n">{kpis.get("open", 0)} open</span> {delta_span}'
+        f'<div class="meta" style="margin-top:2px">'
+        f'<span class="t-acc">{kpis.get("active", 0)} active</span> · '
+        f'{kpis.get("queued", 0)} queued · '
+        f'<span class="t-bad">{kpis.get("waiting_on_you", 0)} on you</span> · '
+        f'<span class="t-warn">{kpis.get("blocked_otherwise", 0)} blocked</span> · '
+        f'<span class="t-good">{kpis.get("done_7d", 0)} done 7d</span>'
+        f'</div></div>'
+    )
+
+    needs_html = ""
+    if ov.get("needs_you"):
+        cards = []
+        for n in ov["needs_you"]:
+            if n.get("pending"):
+                cards.append(f'<div class="needs">{_answered(n)}</div>')
+            else:
+                cards.append(
+                    f'<div class="needs" data-need="{e(n["id"])}">'
+                    f'<div class="lbl t-bad">Needs you · 1</div>'
+                    f'<div class="q">{e(n["question"])}</div>'
+                    f'{_answer_buttons(n)}'
+                    f'{_answer_input(n, phone=True)}'
+                    f'</div>'
+                )
+        needs_html = "".join(cards)
+
+    active_html = ""
+    if ov.get("active_rows"):
+        arows = []
+        for r in ov["active_rows"]:
+            r_num = r["number"]
+            arows.append(
+                f'<div class="row"><span class="mono">{_a(r.get("url"), f"#{r_num}")}</span>'
+                f'<span>{e(r["title"])}</span>'
+                f'<span class="r meta t-acc">{e(r["platform"])} · {e(r["timing"])}</span></div>'
+            )
+        active_html = (
+            f'<section><h3><span class="lbl">Active · {len(ov["active_rows"])}</span></h3>'
+            f'<div class="rows">{"".join(arows)}</div></section>'
+        )
+
+    qrows = []
+    for q in ov.get("queued_rows", []):
+        q_num = q["number"]
+        qrows.append(
+            f'<div class="row"><span class="mono">{_a(q.get("url"), f"#{q_num}")}</span>'
+            f'<span>{e(q["title"])}</span>'
+            f'<span class="r meta">{e(q["meta"])}</span></div>'
+        )
+    brows = []
+    for b in ov.get("blocked_rows", []):
+        b_num = b["number"]
+        brows.append(
+            f'<div class="row"><span class="mono">{_a(b.get("url"), f"#{b_num}")}</span>'
+            f'<span>{e(b["title"])}</span>'
+            f'<span class="r meta t-{b.get("tone", "mut")}">{e(b["reason"])}</span></div>'
+        )
+    qb_sec = (
+        f'<section><h3><span class="lbl">Queued {len(qrows)} · Blocked {len(brows)}</span></h3>'
+        f'<div class="rows">{"".join(qrows + brows)}</div></section>'
+    )
+
+    srows = []
+    for sr in ov.get("shipping_rows", []):
+        sub = e(sr.get("change_subtitle", ""))
+        s_num = sr["number"]
+        srows.append(
+            f'<div class="row"><span class="mono">{_a(sr.get("url"), f"#{s_num}")}</span>'
+            f'<span>{e(sr["title"])}</span>'
+            f'<span class="r meta">{sub}</span></div>'
+        )
+    shipping_sec = (
+        f'<section><h3><span class="lbl">Shipping · {len(srows)}</span></h3>'
+        f'<div class="rows">{"".join(srows)}</div></section>'
+    )
+
+    par = ov.get("parallel", {"running": 0, "max": 1})
+    threads_div = (
+        f'<div class="meta">Parallel jobs: {par["running"]} running · max {par["max"]} '
+        f'<button class="btn" style="min-height:24px" disabled>−</button> '
+        f'<button class="btn" style="min-height:24px" disabled>+</button></div>'
+    )
+
+    project = ov.get("project") or s.get("project_scope")
+    brief = next((b for b in s.get("briefs", []) if b["project"] == project), None)
+    all_brief = []
+    if brief:
+        all_brief = (brief.get("features", []) + brief.get("fixes", []) +
+                     brief.get("other", []) + brief.get("maintenance", []))
+    brief_items = "".join(f'<li>{e(it["title"])}</li>' for it in all_brief) if all_brief else '<li>No new changes</li>'
+    whats_new = f'<section><h3><span class="lbl">{"What\'s new"}</span></h3><div class="brief"><ul>{brief_items}</ul></div></section>'
+
+    rel = next((r for r in s.get("releases", []) if r["project"] == project), None)
+    cur_ver = f'v{ov["current_version"]}' if ov.get("current_version") else "no release"
+    draft_cnt = rel["draft"]["count"] if rel and rel.get("draft") else 0
+    sugg = (f' · <span class="t-acc mono">suggest v{rel["draft"]["suggested_version"]}</span>'
+            if rel and rel.get("draft", {}).get("suggested_version") else "")
+    rel_sec = (
+        f'<section><h3><span class="lbl">Release</span></h3>'
+        f'<div>{e(cur_ver)} · {draft_cnt} unreleased{sugg}</div></section>'
+    )
+
+    body = "".join([open_block, needs_html, active_html, qb_sec, shipping_sec, threads_div, whats_new, rel_sec])
+    return f'<section class="tabv tabv-overview"><div class="ph-body">{body}</div></section>'
+
 
 def _project_overview(s, phone=False):
-    project = s["project_scope"]
-    summary = next((row for row in s["scope_options"] if row["name"] == project), {})
-    version = f' · v{summary["current_version"]}' if summary.get("current_version") else ""
-    tag = "tabv" if phone else "view"
-    return (f'<section class="{tag} {tag}-overview"><div class="project-overview">'
-            f'<span class="lbl">{e(project)}{e(version)}</span>'
-            '<p class="settings-help">Project overview. Choose a view to continue.</p>'
-            '<div class="project-overview-links">'
-            + "".join(f'<button class="btn" data-{ "tab-go" if phone else "go"}="{key}">'
-                      f'{e(label)} →</button>' for key, label in PROJECT_VIEWS if key != "overview")
-            + '</div></div></section>')
+    return _phone_overview(s) if phone else _desktop_overview(s)
+
+
+def _project_side_brief(s):
+    project = s.get("project_scope")
+    brief = next((b for b in s.get("briefs", []) if b["project"] == project), None)
+    if not brief:
+        return ""
+    all_items = (brief.get("features", []) + brief.get("fixes", []) +
+                 brief.get("other", []) + brief.get("maintenance", []))
+    head_btn = ""
+    if brief.get("count"):
+        head_btn = (f'<button class="btn link meta" data-act="brief_seen" '
+                    f'data-project="{e(project)}" data-upto="{brief["upto"]}">'
+                    'Mark read</button>')
+    items_html = ""
+    if all_items:
+        items_html = '<ul>' + ''.join(
+            f'<li>{_a(it.get("url"), it.get("title"))} ({_a(it.get("url"), it.get("ref"))})</li>'
+            for it in all_items
+        ) + '</ul>'
+    else:
+        items_html = '<div class="empty meta">Up to date</div>'
+    return (f'<section class="brief"><h3><span class="lbl">{"What\'s new · since you last looked"}</span>'
+            f'{head_btn}</h3>{items_html}</section>')
+
+
+def _project_side_releases(s):
+    project = s.get("project_scope")
+    ov = s.get("overview") or s.get("project_overview") or {}
+    rel = next((r for r in s.get("releases", []) if r["project"] == project), None)
+    if not rel:
+        return ""
+    draft = rel.get("draft") or {}
+    cur_ver = ov.get("current_version") or rel.get("current_version")
+    v_str = f"v{cur_ver}" if cur_ver else "no release"
+    cur_sub = '<span class="car" style="font-size:11px;font-weight:400;color:var(--mut)">current</span>'
+    cut_btn = ""
+    if draft.get("count", 0) > 0:
+        cut_btn = f'<button class="link meta" data-open-release="{e(project)}">Cut release →</button>'
+    unrel_count = draft.get("count", 0)
+    sugg = (f' · <span class="t-acc">suggest v{draft["suggested_version"]}</span>'
+            if draft.get("suggested_version") else "")
+    meta_sub = (f'<div class="meta" style="margin-top:4px">{unrel_count} unreleased '
+                f'merged change{"s" if unrel_count != 1 else ""}{sugg}</div>'
+                if unrel_count > 0 else '<div class="meta" style="margin-top:4px">No unreleased changes</div>')
+    return (f'<section><h3><span class="lbl">Releases</span>{cut_btn}</h3>'
+            f'<div class="mono" style="font-size:15px;font-weight:650">{e(v_str)} {cur_sub}</div>'
+            f'{meta_sub}</section>')
+
+
+def _project_side_trend(s):
+    project = s.get("project_scope")
+    nb_rows = s.get("net_backlog", {}).get("rows", [])
+    row = next((r for r in nb_rows if r["project"] == project), None)
+    if not row:
+        return ""
+    series = row.get("series") or []
+    trend_html = ""
+    if len(series) >= 2:
+        trend_html = _trend_svg(series, "Open issues · 30 days")
+    else:
+        trend_html = '<div class="empty meta">No trend history yet.</div>'
+
+    win_30d = next((w for w in row.get("windows", []) if w["key"] == "30d"), None)
+    kv_rows = []
+    if win_30d:
+        net_str = f'{win_30d["text"]} issues'
+        kv_rows.append(f'<span class="k">30d net</span><span class="t-{win_30d["tone"]}">{e(net_str)}</span>')
+    kv_html = f'<div class="kv meta" style="margin-top:6px">{"".join(kv_rows)}</div>' if kv_rows else ""
+    return f'<section><h3><span class="lbl">Open issues · 30 days</span></h3>{trend_html}{kv_html}</section>'
+
+
+def _project_side_builders(s):
+    ov = s.get("overview") or s.get("project_overview") or {}
+    builders = ov.get("builders_30d") or []
+    if not builders:
+        bars = '<div class="empty meta">No builds in the last 30 days.</div>'
+    else:
+        bars = "".join(
+            f'<div class="pbar meta"><span class="k">{e(b["platform"])}</span>'
+            f'<span class="bar"><span style="width:{b["pct"]}%"></span></span>'
+            f'<span class="r">{b["count"]}</span></div>'
+            for b in builders
+        )
+    return f'<section><h3><span class="lbl">Who built it · 30 days</span></h3>{bars}</section>'
+
+
+def _project_side_settings(s):
+    ov = s.get("overview") or s.get("project_overview") or {}
+    st = ov.get("settings") or {}
+    acc = st.get("account") or ""
+    verify = st.get("verify") or "none"
+    return (f'<section><h3><span class="lbl">Project settings</span></h3>'
+            f'<div class="kv meta">'
+            f'<span class="k">Account</span><span>{e(acc)}</span>'
+            f'<span class="k">Verify</span><span>{e(verify)}</span>'
+            f'</div></section>')
+
+
+def _project_side(s):
+    return (f'<aside class="side project-side">'
+            f'{_project_side_brief(s)}'
+            f'{_project_side_releases(s)}'
+            f'{_project_side_trend(s)}'
+            f'{_project_side_builders(s)}'
+            f'{_project_side_settings(s)}'
+            f'</aside>')
 
 
 def _project_desktop(s, view):
@@ -441,13 +835,11 @@ def _project_desktop(s, view):
     rail.append(f'<div class="rail-foot"><div class="scope-global-note">Capacity, Models and Settings '
                 f'stay Mahler-wide — switch to “all projects” for them.</div>'
                 f'<button class="btn" data-theme-cycle>Theme · {_theme_labels()}</button></div></nav>')
-    titles = "".join(f'<span class="vt vt-{key}">{e(label)}</span>'
-                     for key, label in PROJECT_VIEWS)
     content = (_project_overview(s) if view == "overview" else
                globals()["_d_" + view](s))
-    main = (f'<main class="dmain"><div class="dhead"><span class="dtitle">{titles}</span>'
-            f'{_stale_note()}</div><div class="dbody">{content}</div></main>')
-    return f'<div class="dk project-scope">{"".join(rail)}{main}{_d_side(s)}</div>'
+    head = _project_desktop_head(s, view)
+    main = f'<main class="dmain">{head}<div class="dbody">{content}</div></main>'
+    return f'<div class="dk project-scope">{"".join(rail)}{main}{_project_side(s)}</div>'
 
 
 def _desktop(s, view):

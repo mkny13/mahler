@@ -761,3 +761,53 @@ a { color: var(--acc); text-decoration: none; }
 .dhead .stale-note { margin-left: auto; }
 .dhead .stale-note:not([hidden]) + .settings-head-link { margin-left: 0; }
 .phead .stale-note:not([hidden]) { display: block; margin-top: 6px; white-space: normal; }
+
+/* Project Overview & Shipping Pipeline (mahler#1122) */
+.kpis { display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line); border-radius: 4px; }
+.kpi { padding: 10px 12px; border-right: 1px solid var(--line); }
+.kpi:last-child { border-right: none; }
+.kpi .n { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.kpi .d { font-size: 11px; color: var(--mut); }
+.kpis.five { grid-template-columns: repeat(6, 1fr); }
+.kpis.five .kpi .n a { color: inherit; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.pipe { width: 100%; border-collapse: collapse; }
+.pipe th { font: 10.5px ui-monospace, Menlo, monospace; letter-spacing: .06em; text-transform: uppercase; color: var(--mut); font-weight: 400; text-align: center; padding: 4px 2px 8px; border-bottom: 1px solid var(--line); }
+.pipe th:first-child, .pipe td:first-child { text-align: left; }
+.pipe td { border-bottom: 1px solid var(--line); padding: 9px 2px; text-align: center; vertical-align: middle; }
+.pipe td.it { width: 34%; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--line); }
+.dot.ok { background: var(--good); border-color: var(--good); }
+.dot.now { background: var(--acc); border-color: var(--acc); outline: 2px solid var(--accq); }
+.dot.bad { background: var(--bad); border-color: var(--bad); }
+.dot.wait { background: var(--warnq); border-color: var(--warn); }
+.pipe .st { display: block; font: 10.5px ui-monospace, Menlo, monospace; color: var(--mut); margin-top: 3px; }
+.pipe .st.t-bad { color: var(--bad); }
+details.explain { margin-top: 10px; border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; }
+details.explain summary { cursor: pointer; color: var(--acc); font-size: 12.5px; }
+details.explain ol { margin: 8px 0 2px; padding-left: 20px; }
+details.explain li { margin-bottom: 5px; }
+.threads { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px 3px 10px; }
+.threads .stp { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 3px; text-align: center; }
+.pbar { display: grid; grid-template-columns: 92px 1fr 38px; gap: 8px; align-items: center; margin: 6px 0; }
+.spark { display: flex; align-items: flex-end; gap: 3px; height: 44px; }
+.spark span { flex: 1; background: var(--acc); opacity: .75; min-height: 2px; }
+.ph-open .n { font-size: 20px; font-weight: 650; }
+.overview-body { display: flex; flex-direction: column; gap: 22px; width: 100%; }
+.overview-body h3 { margin: 0 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.overview-body .rows { border-top: 1px solid var(--line); }
+.overview-body .row { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.overview-body .row .why { grid-column: 2 / -1; margin-top: -4px; }
+.overview-body .row .r { text-align: right; }
+.dhead-overview { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.project-side { display: flex; flex-direction: column; gap: 18px; }
+.project-side h3 { margin: 0 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.project-side .brief li { margin: 0 0 6px; }
+.project-side .brief ul { margin: 0; padding-left: 16px; }
+@media (max-width: 900px) {
+  .two { grid-template-columns: 1fr; }
+  .kpis.five { grid-template-columns: repeat(3, 1fr); }
+  .kpis.five .kpi:nth-child(3) { border-right: none; }
+  .kpis.five .kpi:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+}
+

@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project view mockup</title>
+<style>
+:root { --bg:#fff; --surf:#f4f5f6; --ink:#0d1013; --mut:#4a5158; --line:#d6dadd; --acc:#1256c4; --accq:#e8f0fd;
+  --warn:#8f4a06; --warnq:#fcf0e6; --bad:#a8180f; --badq:#fdeceb; --good:#10602c; --on:#fff; color-scheme:light; }
+@media (prefers-color-scheme: dark) { :root[data-theme="auto"] { --bg:#0f1113; --surf:#181b1e; --ink:#f2f4f6; --mut:#a7aeb5;
+  --line:#2b3135; --acc:#7cb0ff; --accq:#16243a; --warn:#e59a5c; --warnq:#2b1d14; --bad:#f4918a; --badq:#2e1a18; --good:#62d68f; --on:#0f1113; color-scheme:dark; } }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+html,body { margin:0; background:var(--bg); color:var(--ink); }
+body { font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+button { font:inherit; color:inherit; cursor:pointer; background:transparent; border:none; padding:0; text-align:left; }
+a { color:var(--acc); text-decoration:none; }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
+.lbl { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:10.5px; letter-spacing:.1em; color:var(--mut); text-transform:uppercase; }
+.meta { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:var(--mut); }
+.t-acc{color:var(--acc)} .t-warn{color:var(--warn)} .t-bad{color:var(--bad)} .t-good{color:var(--good)} .t-mut{color:var(--mut)}
+.btn { border:1px solid var(--line); border-radius:4px; min-height:30px; padding:0 10px; font-size:12.5px; display:inline-flex; align-items:center; white-space:nowrap; }
+.btn-pri { background:var(--acc); color:var(--on); border-color:var(--acc); font-weight:600; }
+.bar { display:block; height:3px; background:var(--line); } .bar>span { display:block; height:100%; background:var(--acc); }
+
+/* mockup chrome */
+.mock-note { max-width:1240px; margin:16px auto 10px; padding:0 16px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.mock-note p { margin:0; color:var(--mut); flex:1 1 400px; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+.seg button { padding:5px 12px; font-size:12px; } .seg button.on { background:var(--ink); color:var(--bg); }
+.frame { max-width:1240px; margin:0 auto 40px; border:1px solid var(--line); }
+.phone-wrap { display:flex; justify-content:center; padding:0 16px 40px; }
+.phone { width:390px; max-width:100%; border:1px solid var(--line); border-radius:18px; overflow:hidden; }
+
+/* desktop */
+.dk { display:grid; grid-template-columns:200px minmax(0,1fr) 300px; min-height:820px; }
+.rail { background:var(--surf); border-right:1px solid var(--line); display:flex; flex-direction:column; }
+.scope { position:relative; border-bottom:1px solid var(--line); }
+.scope-btn { width:100%; padding:14px 16px 12px; display:flex; flex-direction:column; gap:2px; }
+.scope-btn .k { font-size:10.5px; color:var(--mut); letter-spacing:.08em; text-transform:uppercase; font-family:ui-monospace,Menlo,monospace; }
+.scope-btn .v { min-width:0; font-size:14px; font-weight:650; display:flex; justify-content:space-between; align-items:center; gap:6px; }
+.scope-btn .v .car { color:var(--mut); font-weight:400; font-size:11px; }
+.menu { position:absolute; left:8px; right:-120px; top:58px; background:var(--bg); border:1px solid var(--line); border-radius:6px; z-index:5; padding:6px 0; }
+.menu button { display:grid; grid-template-columns:1fr auto; gap:8px; width:100%; padding:7px 12px; align-items:baseline; }
+.menu button:hover, .menu button.cur { background:var(--surf); }
+.menu .sep { border-top:1px solid var(--line); margin:6px 0; }
+.menu .sub { grid-column:1/-1; font-size:11px; color:var(--mut); font-family:ui-monospace,Menlo,monospace; margin-top:-2px; }
+.rail-i { display:flex; justify-content:space-between; padding:9px 16px; border-left:3px solid transparent; }
+.rail-i.on { background:var(--bg); border-left-color:var(--acc); font-weight:600; }
+.rail-i .mono { font-size:11px; }
+.rail-foot { margin-top:auto; padding:12px 16px; border-top:1px solid var(--line); }
+.dmain { min-width:0; }
+.dhead { min-height:58px; flex-wrap:wrap; padding-top:10px !important; padding-bottom:10px !important; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px; padding:0 20px; }
+.dtitle { font-size:16px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.chip { font-family:ui-monospace,Menlo,monospace; font-size:11px; padding:2px 7px; border-radius:3px; border:1px solid var(--line); color:var(--mut); }
+.chip.acc { color:var(--acc); border-color:var(--acc); }
+.dbody { padding:18px 20px 28px; display:flex; flex-direction:column; gap:22px; }
+.side { border-left:1px solid var(--line); padding:16px; display:flex; flex-direction:column; gap:18px; }
+
+.kpis { display:grid; grid-template-columns:repeat(5,1fr); border:1px solid var(--line); border-radius:4px; }
+.kpi { padding:10px 12px; border-right:1px solid var(--line); }
+.kpi:last-child { border-right:none; }
+.kpi .n { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; line-height:1.2; }
+.kpi .d { font-size:11px; color:var(--mut); }
+
+h3 { margin:0 0 6px; display:flex; justify-content:space-between; align-items:baseline; }
+.rows { border-top:1px solid var(--line); }
+.row { display:grid; grid-template-columns:88px minmax(0,1fr) auto; gap:12px; padding:9px 0; border-bottom:1px solid var(--line); align-items:baseline; }
+.row .why { grid-column:2/-1; margin-top:-4px; }
+.row .r { text-align:right; }
+.two { display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+.needs { border:1px solid var(--bad); border-radius:4px; padding:12px 14px; }
+.needs .q { font-size:14px; margin:6px 0 8px; }
+.spark { display:flex; align-items:flex-end; gap:3px; height:44px; }
+.spark span { flex:1; background:var(--acc); opacity:.75; min-height:2px; }
+.spark span.neg { background:var(--warn); }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; }
+.kv .k { color:var(--mut); }
+.brief li { margin:0 0 6px; } .brief ul { margin:0; padding-left:16px; }
+.pbar { display:grid; grid-template-columns:92px 1fr 38px; gap:8px; align-items:center; margin:6px 0; }
+
+.prio-wrap { position:relative; }
+.prio-menu { position:absolute; right:0; top:36px; background:var(--bg); border:1px solid var(--line); border-radius:6px; z-index:5; padding:8px 0; width:260px; }
+.prio-menu .h { padding:2px 12px 6px; font-size:11.5px; color:var(--mut); }
+.prio-menu button { display:block; width:100%; padding:7px 12px; }
+.prio-menu button:hover { background:var(--surf); }
+.prio-banner { display:flex; gap:12px; align-items:center; padding:9px 12px; border:1px solid var(--acc); background:var(--accq); border-radius:4px; }
+.prio-banner b { color:var(--acc); }
+.kpis.five { grid-template-columns:repeat(6,1fr); }
+.kpis.five .kpi .n a { color:inherit; }
+.graph svg { width:100%; height:auto; display:block; }
+.graph text { font:11px ui-monospace,Menlo,monospace; fill:var(--ink); }
+.graph .lab { font:11px system-ui,sans-serif; fill:var(--mut); }
+.graph rect { fill:var(--bg); stroke:var(--line); }
+.graph rect.done { stroke:var(--good); } .graph rect.you { stroke:var(--bad); } .graph rect.run { stroke:var(--acc); } .graph rect.wait { stroke:var(--warn); }
+.graph path { stroke:var(--mut); fill:none; marker-end:url(#arr); }
+.legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; }
+.legend i { display:inline-block; width:10px; height:10px; border:1.5px solid; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+.pipe { width:100%; border-collapse:collapse; }
+.pipe th { font:10.5px ui-monospace,Menlo,monospace; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); font-weight:400; text-align:center; padding:4px 2px 8px; border-bottom:1px solid var(--line); }
+.pipe th:first-child, .pipe td:first-child { text-align:left; }
+.pipe td { border-bottom:1px solid var(--line); padding:9px 2px; text-align:center; vertical-align:middle; }
+.pipe td.it { width:34%; }
+.dot { display:inline-block; width:10px; height:10px; border-radius:50%; border:1.5px solid var(--line); }
+.dot.ok { background:var(--good); border-color:var(--good); }
+.dot.now { background:var(--acc); border-color:var(--acc); box-shadow:0 0 0 3px var(--accq); }
+.dot.bad { background:var(--bad); border-color:var(--bad); }
+.dot.wait { background:var(--warnq); border-color:var(--warn); }
+.pipe .st { display:block; font:10.5px ui-monospace,Menlo,monospace; color:var(--mut); margin-top:3px; }
+details.explain { margin-top:10px; border:1px solid var(--line); border-radius:4px; padding:8px 12px; }
+details.explain summary { cursor:pointer; color:var(--acc); font-size:12.5px; }
+details.explain ol { margin:8px 0 2px; padding-left:20px; } details.explain li { margin-bottom:5px; }
+.threads { display:flex; align-items:center; gap:6px; border:1px solid var(--line); border-radius:4px; padding:3px 4px 3px 10px; }
+.threads .stp { width:24px; height:24px; border:1px solid var(--line); border-radius:3px; text-align:center; }
+.threads b { font-variant-numeric:tabular-nums; min-width:12px; text-align:center; }
+/* phone */
+.ph-head { padding:12px 14px 0; border-bottom:1px solid var(--line); }
+.ph-top { display:flex; justify-content:space-between; align-items:center; }
+.ph-scope { font-size:16px; font-weight:650; }
+.ph-scope .car { font-size:11px; color:var(--mut); font-weight:400; }
+.ph-tabs { display:flex; gap:16px; margin-top:10px; overflow-x:auto; }
+.ph-tabs span { padding:8px 0; font-size:13px; color:var(--mut); white-space:nowrap; }
+.ph-tabs span.on { color:var(--ink); border-bottom:2px solid var(--acc); font-weight:600; }
+.ph-body { padding:14px; display:flex; flex-direction:column; gap:18px; }
+.ph-open .n { font-size:20px; font-weight:650; }
+.ph-body .kpis { grid-template-columns:repeat(3,1fr); }
+.ph-body .kpi:nth-child(3) { border-right:none; }
+.ph-body .kpi:nth-child(n+4) { display:none; }
+.ph-body .row { grid-template-columns:70px minmax(0,1fr); }
+.ph-body .row .r { grid-column:2; text-align:left; }
+
+@media (max-width: 1150px) { .dk { grid-template-columns:190px minmax(0,1fr); } .side { display:none; } .two { grid-template-columns:1fr; } .dhead a.meta { display:none; } }
+@media (max-width: 900px) { .dk { grid-template-columns:170px minmax(0,1fr); } .side { display:none; } .two { grid-template-columns:1fr; } .kpis{grid-template-columns:repeat(3,1fr)} .kpi:nth-child(n+4){display:none} .kpis.five{grid-template-columns:repeat(3,1fr)} .kpis.five .kpi:nth-child(3){border-right:none} .kpis.five .kpi:nth-child(-n+3){border-bottom:1px solid var(--line)} .kpis.five .kpi{display:block} .dbody .row{grid-template-columns:70px minmax(0,1fr)} .dbody .row .r{grid-column:2;text-align:left} }
+</style>
+</head>
+<body>
+
+<div class="mock-note">
+  <p><b>Mockup: project scope.</b> The name at the top of the rail is now a switcher: “Mahler · all projects” or one project. Choosing a project adds a <b>Project</b> overview page and scopes every other view (Backlog, Releases, Stats, Event stream) to that project. Round 3: shipping pipeline with a plain-English explainer, parallel-jobs control, and a waiting-on-you figure. Round 2: headline is the open count split into active/queued/blocked, plus done in 7d; <b>Prioritize</b> (1h / 1d / 1w) in the header; open PRs and the dependency graph added. All data is made up.</p>
+  <div class="seg" id="pst"><button class="on" data-p="off">Not prioritized</button><button data-p="on">Prioritized</button></div>
+  <div class="seg" id="lay"><button class="on" data-l="desk">Desktop</button><button data-l="phone">Phone</button></div>
+</div>
+
+<!-- ================= DESKTOP ================= -->
+<div class="frame" id="desk">
+<div class="dk">
+  <nav class="rail">
+    <div class="scope">
+      <button class="scope-btn" id="scopeBtn">
+        <span class="k">Project</span>
+        <span class="v"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">google-workspace-connector</span> <span class="car">▾</span></span>
+      </button>
+      <div class="menu" id="menu" hidden>
+        <button><span>Mahler · all projects</span><span class="mono t-acc">2 running</span></button>
+        <div class="sep"></div>
+        <button class="cur"><span>google-workspace-connector <span class="t-acc prio-on" hidden>▲</span></span><span class="mono t-bad">1 you</span><span class="sub">1 running · 4 queued · v0.6.2</span></button>
+        <button><span>mahler</span><span class="mono t-acc">1 running</span><span class="sub">12 queued · v1.14.0</span></button>
+        <button><span>groundwork</span><span class="mono t-mut">idle</span><span class="sub">4 queued · v2.3.1</span></button>
+        <button><span>couch-tour</span><span class="mono t-bad">1 you</span><span class="sub">3 queued · v0.9.0</span></button>
+        <button><span>hockey</span><span class="mono t-mut">idle</span><span class="sub">0 queued</span></button>
+        <button><span>sit-stand-walk</span><span class="mono t-mut">paused</span><span class="sub">2 queued</span></button>
+      </div>
+    </div>
+    <button class="rail-i on"><span>Overview</span><span></span></button>
+    <button class="rail-i"><span>Needs you</span><span class="mono t-bad">1</span></button>
+    <button class="rail-i"><span>Backlog</span><span class="mono t-mut">9</span></button>
+    <button class="rail-i"><span>Releases</span><span class="mono t-acc">1</span></button>
+    <button class="rail-i"><span>Stats</span><span></span></button>
+    <button class="rail-i"><span>Event stream</span><span class="mono t-acc">6 new</span></button>
+    <div class="rail-foot meta">Capacity, Models and Settings stay Mahler-wide — switch to “all projects” for them.</div>
+  </nav>
+
+  <main class="dmain">
+    <div class="dhead">
+      <span class="dtitle">google-workspace-connector</span>
+      <span class="chip acc">RUNNING · 1</span>
+      <span class="chip">v0.6.2</span>
+      <a class="meta" href="#">mkny13/google-workspace-connector ↗</a>
+      <span style="flex:1"></span>
+      <span class="threads" title="How many of this project's jobs may run at the same time"><span class="meta">Parallel jobs · 1 running · max</span>
+        <button class="stp" onclick="th(-1)">−</button><b id="thn">2</b><button class="stp" onclick="th(1)">+</button></span>
+      <span class="prio-wrap prio-off">
+        <button class="btn btn-acc" id="prioBtn" style="border-color:var(--acc);color:var(--acc)">Prioritize ▾</button>
+        <div class="prio-menu" id="prioMenu" hidden>
+          <div class="h">Put this project's jobs ahead of every other project's, until:</div>
+          <button data-dur="1h">1 hour</button>
+          <button data-dur="1d">1 day</button>
+          <button data-dur="1w">1 week</button>
+        </div>
+      </span>
+      <button class="btn">Pause project</button>
+      <button class="btn">+ Add issue</button>
+    </div>
+    <div class="dbody">
+
+      <div class="prio-banner prio-on" hidden>
+        <span>▲ <b>Prioritized</b> · 22h 40m left (until Wed 10:15). This project's jobs go ahead of every other project's. It still runs at most its own parallel-jobs limit; raise that above if you want more at once.</span>
+        <span style="flex:1"></span><button class="btn">Extend</button><button class="btn">Stop</button>
+      </div>
+
+      <div class="kpis five">
+        <div class="kpi"><div class="n">9</div><div class="d">open · <span class="t-good">−3 in 7d</span></div></div>
+        <div class="kpi"><div class="n t-acc">1</div><div class="d">active</div></div>
+        <div class="kpi"><div class="n">4</div><div class="d">queued · next #33</div></div>
+        <div class="kpi"><div class="n t-bad">1</div><div class="d">waiting on you · 2h 10m</div></div>
+        <div class="kpi"><div class="n t-warn">2</div><div class="d">blocked otherwise</div></div>
+        <div class="kpi"><div class="n t-good">7</div><div class="d">done 7d · last 3h ago</div></div>
+      </div>
+
+      <section>
+        <h3><span class="lbl">Needs you · 1</span></h3>
+        <div class="needs">
+          <div class="meta">gwc#31 · waiting 2h 10m</div>
+          <div class="q">Drive scope: request <span class="mono">drive.readonly</span> for all files, or only <span class="mono">drive.file</span> (files the app opened)?</div>
+          <button class="btn btn-pri">drive.file</button> <button class="btn">drive.readonly</button>
+        </div>
+      </section>
+
+      <section>
+        <h3><span class="lbl">Active now · 1</span></h3>
+        <div class="rows">
+          <div class="row"><span class="mono">gwc#28</span><span>Retry Gmail batch requests on 429 with backoff</span><span class="r mono t-acc">build · copilot · 14m of ~25m</span>
+            <span class="why"><span class="bar" style="width:200px"><span style="width:56%"></span></span></span></div>
+        </div>
+      </section>
+
+      <div class="two">
+        <section>
+          <h3><span class="lbl">Queued · 4</span><a class="meta" href="#">Backlog →</a></h3>
+          <div class="rows">
+            <div class="row"><span class="mono">gwc#33</span><span>Calendar: list events across shared calendars</span><span class="r meta">next · s</span></div>
+            <div class="row"><span class="mono">gwc#36</span><span>Gmail: send with attachments</span><span class="r meta">s</span></div>
+            <div class="row"><span class="mono">gwc#35</span><span>README: setup for Workspace admins</span><span class="r meta">s</span></div>
+            <div class="row"><span class="mono">gwc#24</span><span>Sheets read/write tools</span><span class="r meta">m · needs sort</span></div>
+          </div>
+        </section>
+        <section>
+          <h3><span class="lbl">Blocked · 3</span></h3>
+          <div class="rows">
+            <div class="row"><span class="mono">gwc#31</span><span>Drive search tool</span><span class="r meta t-bad">needs you</span></div>
+            <div class="row"><span class="mono">gwc#34</span><span>Drive file export</span><span class="r meta t-warn">waits on #31</span></div>
+            <div class="row"><span class="mono">gwc#26</span><span>Chat spaces: paginate members</span><span class="r meta t-bad">parked · CI red twice</span></div>
+          </div>
+        </section>
+      </div>
+
+      <section>
+        <h3><span class="lbl">Shipping · 4</span><a class="meta" href="#">Open PRs on GitHub ↗</a></h3>
+        <div style="overflow-x:auto"><table class="pipe">
+          <tr><th>Change</th><th>Built</th><th>PR</th><th>CI checks</th><th>Review</th><th>Merged</th><th>Confirmed live</th></tr>
+          <tr><td class="it"><span class="mono">gwc#29</span> Token refresh cache<span class="st">PR #43 · checks running 4m</span></td>
+            <td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot now"></span><span class="st">3 of 5</span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td></tr>
+          <tr><td class="it"><span class="mono">gwc#32</span> Calendar: create events<span class="st">PR #44 · agy-gemini reviewing</span></td>
+            <td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot now"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td></tr>
+          <tr><td class="it"><span class="mono">gwc#26</span> Chat: paginate members<span class="st t-bad">PR #38 · checks failed twice, fixes used up · parked</span></td>
+            <td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot bad"></span><span class="st t-bad">✕ test_chat</span></td><td><span class="dot"></span></td><td><span class="dot"></span></td><td><span class="dot"></span></td></tr>
+          <tr><td class="it"><span class="mono">gwc#27</span> Tasks: complete/reopen<span class="st">merged yesterday · no problem reported</span></td>
+            <td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot ok"></span></td><td><span class="dot wait"></span><span class="st">quiet 1/14d</span></td></tr>
+        </table></div>
+        <details class="explain" open>
+          <summary>How a change ships</summary>
+          <ol>
+            <li><b>Built.</b> An agent writes the change on its own branch and runs the project's own checks (for this project: pytest and ruff) before saying it's done.</li>
+            <li><b>PR.</b> Mahler (not the agent) pushes the branch and opens a pull request: the proposed change, waiting to be merged.</li>
+            <li><b>CI checks.</b> GitHub runs the project's automated tests on the PR. Green means they all passed. Red: Mahler first retries once if it looks like a flaky test, then starts a <i>fix</i> run with the failure log. If the fix limit runs out, the change is <span class="t-bad">parked</span> and shows under Blocked.</li>
+            <li><b>Review.</b> A different AI platform from the one that built it reads the change. Problems it finds go back for a fix, then through checks again.</li>
+            <li><b>Merged.</b> On green checks and a clean review, Mahler merges it into main and closes the issue. No one has to press a button.</li>
+            <li><b>Confirmed live.</b> Where a project has an automatic post-merge check, a pass marks it <span class="t-good">verified</span>. Otherwise it counts as done after 14 quiet days with no problem reported.</li>
+          </ol>
+        </details>
+      </section>
+
+      <section class="graph">
+        <h3><span class="lbl">Dependencies</span><span class="meta">only issues that block or wait on another</span></h3>
+        <svg viewBox="0 0 640 150" role="img" aria-label="Dependency graph">
+          <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--mut);stroke:none"/></marker></defs>
+          <rect class="done" x="10" y="15" width="170" height="40" rx="4"/><text x="22" y="32">#25 ✓</text><text class="lab" x="22" y="47">OAuth token store</text>
+          <rect class="you" x="235" y="15" width="170" height="40" rx="4"/><text x="247" y="32">#31 needs you</text><text class="lab" x="247" y="47">Drive search tool</text>
+          <rect class="wait" x="460" y="15" width="170" height="40" rx="4"/><text x="472" y="32">#34 waiting</text><text class="lab" x="472" y="47">Drive file export</text>
+          <rect class="run" x="235" y="95" width="170" height="40" rx="4"/><text x="247" y="112">#28 running</text><text class="lab" x="247" y="127">Gmail 429 retry</text>
+          <rect class="run" x="460" y="95" width="170" height="40" rx="4"/><text x="472" y="112">#29 in CI</text><text class="lab" x="472" y="127">Token refresh cache</text>
+          <path d="M180,35 L233,35"/><path d="M405,35 L458,35"/><path d="M180,45 C205,45 205,115 233,115"/><path d="M405,115 L458,115"/>
+        </svg>
+        <div class="legend meta"><span><i style="border-color:var(--bad)"></i>needs you</span><span><i style="border-color:var(--warn)"></i>waiting</span><span><i style="border-color:var(--acc)"></i>running</span><span><i style="border-color:var(--good)"></i>done</span></div>
+      </section>
+
+      <section>
+        <h3><span class="lbl">Completed · last 7 days · 7</span><a class="meta" href="#">All →</a></h3>
+        <div class="rows">
+          <div class="row"><span class="mono">gwc#30</span><span>Gmail: search with label filters</span><span class="r meta">merged 3h ago · agy-claude · <span class="t-good">verified</span></span></div>
+          <div class="row"><span class="mono">gwc#27</span><span>Tasks: complete and reopen tasks</span><span class="r meta">yesterday · copilot · quiet 1/14d</span></div>
+          <div class="row"><span class="mono">gwc#25</span><span>OAuth: per-account token store</span><span class="r meta">Mon · claude · <span class="t-good">verified</span></span></div>
+          <div class="row"><span class="mono">gwc#23</span><span>Fix: Chat message timestamps in local time</span><span class="r meta">Sun · cline-free · quiet 3/14d</span></div>
+        </div>
+      </section>
+
+      <section>
+        <h3><span class="lbl">Activity</span><a class="meta" href="#">Event stream →</a></h3>
+        <div class="rows meta">
+          <div class="row"><span>11:42</span><span style="color:var(--ink)">gwc#28 build started on copilot (claude-sonnet-5)</span><span></span></div>
+          <div class="row"><span>11:05</span><span style="color:var(--ink)">gwc#30 merged — PR #41, CI green</span><span></span></div>
+          <div class="row"><span>09:31</span><span style="color:var(--ink)">gwc#31 asked you a question</span><span></span></div>
+          <div class="row"><span>08:50</span><span style="color:var(--ink)">gwc#26 parked after second CI failure</span><span></span></div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <aside class="side">
+    <section class="brief">
+      <h3><span class="lbl">What's new · since you last looked</span></h3>
+      <ul>
+        <li>Gmail search now filters by label (#30)</li>
+        <li>Tasks can be completed and reopened (#27)</li>
+        <li>Multiple Google accounts each keep their own login (#25)</li>
+      </ul>
+      <button class="btn" style="margin-top:8px">Mark read</button>
+    </section>
+
+    <section>
+      <h3><span class="lbl">Releases</span></h3>
+      <div class="kv">
+        <span class="k">Current</span><span class="mono">v0.6.2 · 9 days ago</span>
+        <span class="k">Unreleased</span><span>5 merged changes</span>
+        <span class="k">Suggested</span><span class="mono t-acc">v0.7.0 (minor)</span>
+      </div>
+      <div style="margin-top:8px"><button class="btn">Cut v0.7.0</button></div>
+      <div class="meta" style="margin-top:10px">v0.6.2 · Oct 11 · 3 fixes<br>v0.6.0 · Oct 3 · Tasks tools<br>v0.5.0 · Sep 24 · Chat tools</div>
+    </section>
+
+    <section>
+      <h3><span class="lbl">Open issues · 30 days</span><span class="meta">−6</span></h3>
+      <div class="spark">
+        <span style="height:60%"></span><span style="height:70%"></span><span style="height:78%"></span><span style="height:85%"></span><span style="height:100%"></span><span style="height:92%"></span><span style="height:88%"></span><span style="height:80%"></span><span style="height:74%"></span><span style="height:70%"></span><span style="height:66%"></span><span style="height:62%"></span><span style="height:60%"></span><span style="height:55%"></span>
+      </div>
+      <div class="meta" style="display:flex;justify-content:space-between"><span>Sep 20</span><span>today</span></div>
+    </section>
+
+    <section>
+      <h3><span class="lbl">Who built it · 30 days</span></h3>
+      <div class="pbar"><span>copilot</span><span class="bar"><span style="width:45%"></span></span><span class="mono meta">9</span></div>
+      <div class="pbar"><span>agy-claude</span><span class="bar"><span style="width:30%"></span></span><span class="mono meta">6</span></div>
+      <div class="pbar"><span>claude</span><span class="bar"><span style="width:15%"></span></span><span class="mono meta">3</span></div>
+      <div class="pbar"><span>cline-free</span><span class="bar"><span style="width:10%"></span></span><span class="mono meta">2</span></div>
+    </section>
+
+    <section>
+      <h3><span class="lbl">Project settings</span></h3>
+      <div class="kv meta">
+        <span class="k">Account</span><span>work</span>
+        <span class="k">Verify</span><span>pytest · ruff</span>
+      </div>
+    </section>
+  </aside>
+</div>
+</div>
+
+<!-- ================= PHONE ================= -->
+<div class="phone-wrap" id="phone" hidden>
+<div class="phone">
+  <div class="ph-head">
+    <div class="ph-top">
+      <span class="ph-scope">google-workspace-connector <span class="car">▾</span></span>
+      <span class="chip acc">RUNNING · 1</span>
+    </div>
+    <div class="ph-tabs"><span class="on">Overview</span><span>Triage</span><span>Backlog</span><span>Releases</span><span>Stats</span></div>
+  </div>
+  <div class="ph-body">
+    <div class="prio-banner prio-on" hidden><span>▲ <b>Prioritized</b> · 22h 40m left</span><span style="flex:1"></span><button class="btn">Stop</button></div>
+    <button class="btn prio-off" style="color:var(--acc);border-color:var(--acc)">Prioritize · 1h / 1d / 1w</button>
+    <div class="ph-open"><span class="n">9 open</span> <span class="t-good meta">−3 in 7d</span>
+      <div class="meta" style="margin-top:2px"><span class="t-acc">1 active</span> · 4 queued · <span class="t-bad">1 on you</span> · <span class="t-warn">2 blocked</span> · <span class="t-good">7 done 7d</span></div></div>
+    <div class="needs">
+      <div class="lbl t-bad">Needs you · 1</div>
+      <div class="q">Drive scope: <span class="mono">drive.readonly</span> or <span class="mono">drive.file</span>?</div>
+      <button class="btn btn-pri">drive.file</button> <button class="btn">drive.readonly</button>
+    </div>
+    <section><h3><span class="lbl">Active · 1</span></h3><div class="rows">
+      <div class="row"><span class="mono">#28</span><span>Retry Gmail batch on 429</span><span class="r meta t-acc">copilot · 14m of ~25m</span></div></div></section>
+    <section><h3><span class="lbl">Queued 4 · Blocked 3</span></h3><div class="rows">
+      <div class="row"><span class="mono">#33</span><span>Calendar: shared calendars</span><span class="r meta">next</span></div>
+      <div class="row"><span class="mono">#34</span><span>Drive file export</span><span class="r meta t-warn">waits on #31</span></div>
+      <div class="row"><span class="mono">#26</span><span>Chat: paginate members</span><span class="r meta t-bad">parked · CI red twice</span></div></div></section>
+    <section><h3><span class="lbl">Shipping · 4</span></h3><div class="rows">
+      <div class="row"><span class="mono">#29</span><span>Token refresh cache</span><span class="r meta t-acc">CI checks 3 of 5</span></div>
+      <div class="row"><span class="mono">#32</span><span>Calendar: create events</span><span class="r meta t-acc">in review</span></div>
+      <div class="row"><span class="mono">#26</span><span>Chat: paginate members</span><span class="r meta t-bad">checks failed · parked</span></div>
+      <div class="row"><span class="mono">#27</span><span>Tasks: complete/reopen</span><span class="r meta">merged · quiet 1/14d</span></div></div></section>
+    <div class="meta">Parallel jobs: 1 running · max 2 <button class="btn" style="min-height:24px">−</button> <button class="btn" style="min-height:24px">+</button></div>
+    <section><h3><span class="lbl">What's new</span></h3><div class="brief"><ul>
+      <li>Gmail search filters by label</li><li>Tasks can be completed and reopened</li></ul></div></section>
+    <section><h3><span class="lbl">Release</span></h3><div>v0.6.2 · 5 unreleased · <span class="t-acc mono">suggest v0.7.0</span></div></section>
+  </div>
+</div>
+</div>
+
+<script>
+document.getElementById('scopeBtn').onclick = function(){ var m=document.getElementById('menu'); m.hidden=!m.hidden; };
+document.querySelectorAll('#lay button').forEach(function(b){ b.onclick=function(){
+  document.querySelectorAll('#lay button').forEach(function(x){x.classList.toggle('on',x===b)});
+  document.getElementById('desk').hidden = b.dataset.l!=='desk';
+  document.getElementById('phone').hidden = b.dataset.l!=='phone';
+};});
+function setPrio(on){ document.querySelectorAll('.prio-on').forEach(function(x){x.hidden=!on}); document.querySelectorAll('.prio-off').forEach(function(x){x.hidden=on});
+  document.querySelectorAll('#pst button').forEach(function(x){x.classList.toggle('on',(x.dataset.p==='on')===on)}); document.getElementById('prioMenu').hidden=true; }
+document.getElementById('prioBtn').onclick=function(){ var m=document.getElementById('prioMenu'); m.hidden=!m.hidden; };
+document.querySelectorAll('#prioMenu button').forEach(function(b){ b.onclick=function(){ setPrio(true); }; });
+document.querySelectorAll('#pst button').forEach(function(b){ b.onclick=function(){ setPrio(b.dataset.p==='on'); }; });
+function th(d){ var n=document.getElementById("thn"); n.textContent=Math.max(1,Math.min(8,+n.textContent+d)); }
+</script>
+</body>
+</html>
