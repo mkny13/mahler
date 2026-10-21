@@ -788,6 +788,9 @@ details.explain summary { cursor: pointer; color: var(--acc); font-size: 12.5px;
 details.explain ol { margin: 8px 0 2px; padding-left: 20px; }
 details.explain li { margin-bottom: 5px; }
 .threads { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 3px 4px 3px 10px; }
+.threads .stp:disabled { opacity: .4; }
+.wide { white-space: nowrap; }
+@media (pointer: coarse) { .threads .stp { width: 36px; height: 36px; } }
 .threads .stp { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 3px; text-align: center; }
 .pbar { display: grid; grid-template-columns: 92px 1fr 38px; gap: 8px; align-items: center; margin: 6px 0; }
 .spark { display: flex; align-items: flex-end; gap: 3px; height: 44px; }

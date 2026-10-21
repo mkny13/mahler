@@ -337,6 +337,9 @@ def _candidates(ctx, projects):
                 if r["role"] == "sort"}
     for p in projects:
         name = p["name"]
+        if led.get_kv(config.project_pause_key(name)) == "1":
+            ctx.hold("project_paused", project=name)
+            continue  # Active runs continue; this project supplies no new work.
         for it in led.items(name, ["inbox"]):
             if (name, it["parent"]) in planning:
                 continue  # The parent planner is still writing this child.

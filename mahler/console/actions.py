@@ -165,6 +165,53 @@ def save_settings(cfg, led, body):
     return {"settings": saved}
 
 
+def _enabled_project(cfg, body):
+    project = body.get("project")
+    if not isinstance(project, str) or \
+            project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ActionError("project must be enabled")
+    return project
+
+
+def set_max_parallel(cfg, led, body):
+    """Targeted stepper write: reloads config.toml and changes only this
+    project's max_parallel, never a stale full Settings projection."""
+    project = _enabled_project(cfg, body)
+    value = body.get("value")
+    if type(value) is not int or not 1 <= value <= 64:
+        raise ActionError("value must be a whole number from 1 to 64")
+    if value == config.project_policy(cfg, project).get("max_parallel", 1):
+        return {"project": project, "max_parallel": value, "deduplicated": True}
+    try:
+        value = config.set_project_max_parallel(project, value)
+    except (OSError, ValueError) as exc:
+        raise ActionError(str(exc)) from exc
+    led.event("max_parallel_set", project, detail={"max_parallel": value})
+    return {"project": project, "max_parallel": value}
+
+
+def _set_project_pause(cfg, led, body, paused):
+    project = _enabled_project(cfg, body)
+    key = config.project_pause_key(project)
+    with led._tx():
+        if (led.get_kv(key) == "1") == paused:
+            return {"project": project, "paused": paused, "deduplicated": True}
+        led.set_kv(key, "1" if paused else "0")
+        led.event("project_pause" if paused else "project_resume", project,
+                  detail="project paused from the console" if paused
+                  else "project resumed from the console")
+    return {"project": project, "paused": paused}
+
+
+def pause_project(cfg, led, body):
+    """Stop new launches for one project; its active runs keep going."""
+    return _set_project_pause(cfg, led, body, True)
+
+
+def resume_project(cfg, led, body):
+    return _set_project_pause(cfg, led, body, False)
+
+
 def brief_seen(cfg, led, body):
     """Acknowledge exactly the shipped-event cursor shown for one project."""
     project, upto = body.get("project"), body.get("upto")
@@ -494,7 +541,8 @@ def cut_release(cfg, led, body):
 ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_fail, attach, cut_release,
-                                   save_settings, client_log)}
+                                   save_settings, client_log, set_max_parallel,
+                                   pause_project, resume_project)}
 
 
 def run(cfg, led, name, body):

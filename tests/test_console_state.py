@@ -4,7 +4,8 @@ import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from mahler.console import state
+from mahler import config
+from mahler.console import actions, page, state
 from mahler.ledger import Ledger, iso
 
 
@@ -495,7 +496,8 @@ class ProjectScopeStateTests(unittest.TestCase):
                        if row["name"] == "groundwork")
         self.assertEqual(summary, {
             "name": "groundwork", "status": "running", "running": 1, "queued": 1,
-            "waiting_on_you": 1, "paused": False, "current_version": "2.4.1"})
+            "waiting_on_you": 1, "paused": False, "project_paused": False,
+        "current_version": "2.4.1"})
         queued_summary = next(row for row in selected["scope_options"]
                               if row["name"] == "mahler")
         self.assertEqual((queued_summary["status"], queued_summary["queued"],
@@ -767,3 +769,83 @@ class ProjectOverviewStateTests(unittest.TestCase):
         self.assertEqual(blocked[2]["tone"], "warn")
         self.assertEqual(blocked[3]["reason"], "parked · CI red twice")
         self.assertEqual(blocked[3]["tone"], "bad")
+
+
+class ProjectHeaderControlsTests(unittest.TestCase):
+    def setUp(self):
+        from test_console import make_cfg
+        self.cfg = make_cfg()
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+
+    def _html(self, phone):
+        s = state.build(self.cfg, self.led, project_scope="mahler")
+        return s, (page._project_overview(s, phone=True) if phone
+                   else page._project_desktop_head(s, 'overview'))
+
+    def test_state_and_both_layouts(self):
+        self.cfg["projects"]["mahler"]["max_parallel"] = 64
+        self.led.create_run(project="mahler", number=1, role="build", platform="x", epoch=1)
+        s, _ = self._html(False)
+        par = s["overview"]["parallel"]
+        self.assertEqual((par["running"], par["max"], par["mahler_active"],
+                          par["mahler_total"]), (1, 64, 1, self.cfg["concurrency"]["total"]))
+        for phone in (False, True):
+            html = self._html(phone)[1]
+            self.assertIn(f'Mahler-wide: 1 of {self.cfg["concurrency"]["total"]} in use', html)
+            self.assertIn('data-act="set_max_parallel" data-project="mahler" data-value="63"'
+                          ' aria-label="Fewer parallel jobs">', html)
+            self.assertRegex(html, r'data-value="65" aria-label="More parallel jobs" disabled')
+            self.assertIn('data-act="pause_project"', html)
+
+    def test_min_boundary_and_paused_project_stays_visible(self):
+        self.cfg["projects"]["mahler"]["max_parallel"] = 1
+        self.led.set_kv(config.project_pause_key("mahler"), "1")
+        s, _ = self._html(False)
+        self.assertEqual(next(o for o in s["scope_options"] if o["name"] == "mahler")["status"], "paused")
+        self.assertTrue(s["overview"]["project_paused"])
+        for phone in (False, True):
+            html = self._html(phone)[1]
+            self.assertRegex(html, r'data-value="0" aria-label="Fewer parallel jobs" disabled')
+            self.assertIn('data-act="resume_project"', html)
+            self.assertIn("Resume project", html)
+
+    def test_stepper_action_preserves_other_config_changed_after_render(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.toml"
+            path.write_text(config.dumps_toml({"concurrency": {"total": 3}, "projects": {
+                "mahler": {"enabled": True, "repo": "m/m", "path": "/tmp/m", "max_parallel": 2}}}))
+            cfg = config.load(path)
+            _ = page._project_desktop_head(state.build(cfg, self.led, project_scope="mahler"), "overview")
+            path.write_text(path.read_text().replace("total = 3", "total = 9"))  # edited elsewhere
+            with mock.patch.object(config, "CONFIG_PATH", path):
+                out = actions.run(cfg, self.led, "set_max_parallel", {"project": "mahler", "value": 3})
+                again = actions.run(config.load(path), self.led, "set_max_parallel",
+                                    {"project": "mahler", "value": 3})
+            self.assertEqual(out["max_parallel"], 3)
+            self.assertTrue(again["deduplicated"])
+            loaded = config.load(path)
+            self.assertEqual(loaded["concurrency"]["total"], 9)
+            self.assertEqual(loaded["projects"]["mahler"]["max_parallel"], 3)
+            self.assertEqual(len(self.led.q("SELECT 1 FROM events WHERE kind='max_parallel_set'")), 1)
+            for bad in ({"project": "ghost", "value": 2}, {"project": "mahler", "value": 65},
+                        {"project": "mahler", "value": True}, {"project": "mahler", "value": 0}):
+                with self.assertRaises(actions.ActionError):
+                    actions.run(cfg, self.led, "set_max_parallel", bad)
+
+    def test_pause_resume_idempotent_and_validated(self):
+        run = lambda n, p: actions.run(self.cfg, self.led, n, {"project": p})
+        self.assertNotIn("deduplicated", run("pause_project", "mahler"))
+        self.assertTrue(run("pause_project", "mahler")["deduplicated"])
+        self.assertNotIn("deduplicated", run("resume_project", "mahler"))
+        self.assertTrue(run("resume_project", "mahler")["deduplicated"])
+        kinds = [r["kind"] for r in self.led.q(
+            "SELECT kind FROM events WHERE kind LIKE 'project_%' AND project='mahler' ORDER BY id")]
+        self.assertEqual(kinds, ["project_pause", "project_resume"])
+        self.assertFalse(self.led.paused())
+        for name in ("pause_project", "resume_project"):
+            with self.assertRaises(actions.ActionError):
+                run(name, "ghost")
