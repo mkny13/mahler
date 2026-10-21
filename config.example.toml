@@ -8,20 +8,34 @@ routing_mode = "list"
 # Nothing is managed until a project here says enabled = true.
 
 # Optional daemon-only GitHub App identity. Omit the whole table to keep gh auth.
-# The global installation applies only to the effective personal GitHub account
+# The global [github_app] table applies to the effective personal GitHub account
 # (gh_account, else first account/accounts entry, else personal). Work accounts
-# use their own gh credentials unless explicitly opting into an installation below.
+# use their own gh credentials unless explicitly opting into an installation below
+# or selecting a named provider under [github_apps.<name>].
 # Requires openssl and an installed App with repository permissions for the
 # conductor's operations (contents, issues, pull requests, checks/actions reads).
 # The installed App must possess this permission superset; tokens minted for
 # agent runs (D47) are narrowed per repository and permissions at mint time
 # without placing the App id, installation id or private key in the run environment.
-# Store the private key securely; neither it nor tokens belong in account env.
+# Store the private key securely in an external owner-controlled 0600 file;
+# neither it nor tokens belong in Git, account env or issue bodies.
 # Tokens are cached privately under MAHLER_HOME/github-app-tokens (0700/0600).
 # [github_app]
 # app_id = 12345
 # installation_id = 67890
 # private_key_path = "/absolute/path/to/private-key.pem"
+#
+# Optional named GitHub App providers (D47 / #1145).
+# Represents a separately approved work-organization GitHub App without sharing
+# App IDs, installation IDs, private-key paths, token caches, or tokens with
+# the personal provider. Place the private key only in an external owner-controlled
+# file with mode 0600. Tokens are cached privately in MAHLER_HOME/github-app-tokens/<name>.
+# [github_apps.work]
+# app_id = 12345
+# installation_id = 67890
+# private_key_path = "/absolute/path/to/work-private-key.pem"
+# Optional repository restriction (repo basename or owner/repo):
+# repositories = ["google-chat-nav", "google-workspace-connector", "sit-stand-walk"]
 
 [defaults]
 # Distinct green heads with usable reviews; inclusive, positive integer.
@@ -92,6 +106,8 @@ dependency_prs_daily_cap = 3 # successful adoptions per local calendar day
 # review_context = "Multiple users upgrade their devices independently."
 # review_green_rounds = 3        # optional per-project override
 # github_app_installation_id = 98765  # explicit App opt-in/override for any account
+# github_provider = "work"       # explicit GitHub provider selection (defaults to personal/default App)
+# require_scoped_identity = true # fail closed if no approved scoped provider is available (D47 / #1145)
 # Explore unproven variants on a deterministic share of low-risk, unpinned items.
 # Defaults to true with a personal account, false for work-only projects.
 # explore = false
@@ -421,6 +437,44 @@ screenshot_path = []              # inherited operator absolute executable direc
 # repo = "acme-corp/app"
 # path = "/absolute/path/to/work/app"
 # size_target = "s"                 # "" or "s" (decompose to small PRs). Default: "s" for work projects, "" for others.
+#
+# Migration rollout for work projects to scoped identities (#1145):
+# To migrate the finite three-project work inventory (makastel_ncstate organization),
+# create or approve a GitHub App within the work organization, place its private key
+# exclusively in an external owner-controlled file with mode 0600 (e.g. ~/.mahler/work-app.pem),
+# configure [github_apps.work] above, and bind the projects here:
+#
+# [projects.google-chat-nav]
+# enabled = true
+# account = "work"
+# repo = "makastel_ncstate/google-chat-nav"
+# path = "/absolute/path/to/work/google-chat-nav"
+# github_provider = "work"
+# require_scoped_identity = true
+#
+# [projects.google-workspace-connector]
+# enabled = true
+# account = "work"
+# repo = "makastel_ncstate/google-workspace-connector"
+# path = "/absolute/path/to/work/google-workspace-connector"
+# github_provider = "work"
+# require_scoped_identity = true
+#
+# [projects.sit-stand-walk]
+# enabled = true
+# account = "work"
+# repo = "makastel_ncstate/sit-stand-walk"
+# path = "/absolute/path/to/work/sit-stand-walk"
+# github_provider = "work"
+# require_scoped_identity = true
+#
+# If [github_apps.work] is absent or incomplete, setting require_scoped_identity = true
+# ensures validation and autonomous launches fail closed without falling back to ambient
+# personal/work human credentials or the personal App.
+# Read-only qualification command (run without mutating configuration or launching):
+#   mahler status
+# or
+#   python3 -c "import mahler.config as c; cfg=c.load(); [print(p, c.project_github_app(cfg, p)) for p in ('google-chat-nav','google-workspace-connector','sit-stand-walk')]"
 
 # [claude_peak]
 # # Claude's peak window (D22): on weekdays 5-11am Pacific, Mahler starts no new
