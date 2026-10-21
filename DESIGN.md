@@ -514,10 +514,10 @@ contract across six core areas:
 4. *Authenticated $0 tier is unestablished for unattended CLI:* Live testing an authenticated $0 account requires creating and authenticating a live Nous Portal account, which requires unprovisioned owner credentials and is out of scope. Free-tier contract facts cannot be assumed from marketing copy.
 
 **Executable pinned-source verification:**
-Verification was **source-derived**, not an unauthenticated live run: Python 3.12+ standard library executed against the pinned upstream source (commit `d923a5eb487a17c0a68801bba9ef0f56c81040a8`), testing `HERMES_HOME` path isolation, CLI argument parser options (`-q`, `--format stream-json`, `--in`, `-z`), `_oneshot_exit_code` process exit code mappings, unconditional `approvals.deny` glob matching against Mahler `DENY_STEMS`, `auth.adopt_external_logins: false` disabling credential borrowing, and `free_inference_active()` refusing anonymous execution on CLI surfaces.
+Verification is **source-derived**, reproducible directly from this repository: Python 3.12+ standard library executed against the pinned upstream source (commit `d923a5eb487a17c0a68801bba9ef0f56c81040a8`, NousResearch/hermes-agent tag `v0.22.2`), resolved via `--src PATH` or `HERMES_PINNED_SRC` (falling back to a shallow git fetch of the pinned tag into a temporary directory). The script verifies `HERMES_HOME` path isolation, CLI argument parser options (`-q`, `--format stream-json`, `--in`, `-z`), `_oneshot_exit_code` process exit code mappings, unconditional `approvals.deny` glob matching against Mahler `DENY_STEMS`, `auth.adopt_external_logins: false` disabling credential borrowing, and `free_inference_active()` refusing anonymous execution on CLI surfaces.
 Command:
 ```bash
-python3 scratch/verify_hermes_contract.py
+python3 tests/verify_hermes_contract.py
 ```
 Exit status: `0`.
 Sanitized output:
