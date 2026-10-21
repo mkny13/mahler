@@ -1444,3 +1444,80 @@ class ProjectPauseTests(unittest.TestCase):
         item(led, "a", 2)
         led.set_kv(config.project_pause_key("a"), "0")
         self.assertEqual(plan(ctx, led), ["a#2: would build on agy-claude"])
+
+
+class PriorityBoostScheduleTests(unittest.TestCase):
+    def test_scheduler_tick_expires_stale_boost_with_zero_candidates(self):
+        ctx, led = mk_ctx({"a": proj(repo="x/a", path="/tmp/a")})
+        self.addCleanup(led.close)
+        # Store boost that expired 1 hour ago
+        stale_record = {
+            "project": "a",
+            "started_at": iso(NOW - timedelta(hours=2)),
+            "expires_at": iso(NOW - timedelta(hours=1)),
+        }
+        led.set_kv("priority_boost", json.dumps(stale_record))
+        # Tick with zero candidates
+        scheduler.tick(ctx)
+        self.assertIsNone(led.priority_boost())
+        self.assertIsNone(led.get_kv("priority_boost"))
+        events = led.q("SELECT * FROM events WHERE kind = 'priority_boost_expire'")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["project"], "a")
+
+    def test_scheduler_tick_survives_corrupt_priority_boost(self):
+        ctx, led = mk_ctx({"a": proj(repo="x/a", path="/tmp/a")})
+        self.addCleanup(led.close)
+        led.set_kv("priority_boost", "corrupt {not json")
+        scheduler.tick(ctx)
+        self.assertIsNone(led.priority_boost())
+        self.assertIsNone(led.get_kv("priority_boost"))
+
+    def test_boosted_project_candidate_sorts_ahead_of_all_including_p1(self):
+        ctx, led = mk_ctx({"other": proj(), "boosted": proj()}, total=1)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        # Priority boost for "boosted"
+        led.start_priority_boost("boosted", "1h")
+        item(led, "other", 1, priority=1, age_minutes=60)    # p1 in other project
+        item(led, "boosted", 42, priority=3, age_minutes=10) # p3 in boosted project
+        self.assertEqual(plan(ctx, led),
+                         ["boosted#42: would build on agy-claude"])
+
+    def test_boosted_project_candidate_beats_static_priority_projects(self):
+        ctx, led = mk_ctx({"mahler": proj(), "other": proj()}, total=1)
+        self.addCleanup(led.close)
+        ctx.cfg["scheduling"]["priority_projects"] = ["mahler"]
+        seed(led, **{"agy-claude": (10, 10)})
+        led.start_priority_boost("other", "1h")
+        item(led, "mahler", 1, priority=2, age_minutes=60)
+        item(led, "other", 42, priority=2, age_minutes=10)
+        self.assertEqual(plan(ctx, led),
+                         ["other#42: would build on agy-claude"])
+
+    def test_without_active_boost_candidate_ordering_is_unchanged(self):
+        ctx, led = mk_ctx({"other": proj(), "mahler": proj()}, total=1)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "other", 1, priority=1, age_minutes=10)
+        item(led, "mahler", 42, priority=2, age_minutes=60)
+        self.assertEqual(plan(ctx, led),
+                         ["other#1: would build on agy-claude"])
+
+    def test_boosted_project_at_capacity_is_skipped_and_other_project_takes_slot(self):
+        ctx, led = mk_ctx({"boosted": proj(max_parallel=1),
+                           "other": proj(max_parallel=1)}, total=2)
+        self.addCleanup(led.close)
+        seed(led, **{"agy-claude": (10, 10)})
+        led.start_priority_boost("boosted", "1h")
+        # Run already active on boosted project
+        item(led, "boosted", 1, state="working")
+        led.create_run(project="boosted", number=1, role="build", platform="agy-claude", epoch=1)
+        # Next candidates
+        item(led, "boosted", 2, priority=1, age_minutes=30)
+        item(led, "other", 10, priority=2, age_minutes=10)
+
+        lines = plan(ctx, led)
+        self.assertEqual(lines, ["other#10: would build on agy-claude"])
+        self.assertTrue(any(h["kind"] == "capacity" and h["project"] == "boosted" for h in ctx.holds))
+

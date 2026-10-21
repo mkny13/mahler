@@ -292,6 +292,10 @@ def sweep_orphans(ctx):
 
 def expire(ctx):
     led = ctx.led
+    try:
+        led.expire_priority_boost()
+    except Exception as e:
+        ctx.say(f"priority boost expiry failed — {e}")
     for lease in led.expired_leases():
         project, n = lease["project"], lease["number"]
         if lease["kind"] == "auto":
@@ -512,13 +516,17 @@ def _order_candidates(ctx, work, st, projects):
 
     sorts_wait = {acct: len(_headroom_groups(acct)) <= 1 for acct in buckets}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
+    boost = ctx.led.priority_boost()
+    boosted_project = boost["project"] if boost else None
 
     def key(c):
         p, role, it = c
         proj_idx = (priority_projects.index(p["name"])
                     if p["name"] in priority_projects
                     else len(priority_projects))
-        return (it["priority"],
+        boost_order = 0 if (boosted_project and p["name"] == boosted_project) else 1
+        return (boost_order,
+                it["priority"],
                 1 if (role == "sort" and all(sorts_wait[a] for a in
                                              config.accounts_of(p))) else 0,
                 proj_idx,
