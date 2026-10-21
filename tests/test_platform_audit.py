@@ -2,7 +2,9 @@
 
 import copy
 import json
+import os
 import subprocess
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -853,6 +855,49 @@ class AgyCatalogAudit(unittest.TestCase):
         self.assertEqual(cfg, before)
         self.assertIn("absent from `agy models`", body)
         self.assertIn("claude-opus-4-6-thinking", body)
+
+
+class CodexPlatformAuditTests(unittest.TestCase):
+    def test_audit_reports_skipped_variants_per_login(self):
+        with tempfile.TemporaryDirectory() as personal_dir, tempfile.TemporaryDirectory() as work_dir:
+            # Personal offers gpt-5.6-luna, not gpt-6-luna
+            with open(os.path.join(personal_dir, "models_cache.json"), "w") as f:
+                json.dump({"models": [{"slug": "gpt-5.6-luna"}]}, f)
+            # Work offers gpt-5.6-sol, not gpt-6-luna
+            with open(os.path.join(work_dir, "models_cache.json"), "w") as f:
+                json.dump({"models": [{"slug": "gpt-5.6-sol"}]}, f)
+
+            cfg = copy.deepcopy(config.DEFAULTS)
+            cfg["accounts"] = {
+                "personal": {"env": {"CODEX_HOME": personal_dir}},
+                "work": {"env": {"CODEX_HOME": work_dir}},
+            }
+            cfg["platforms"]["codex-low"] = {
+                "enabled": True, "kind": "codex", "model": "gpt-5.6-luna",
+                "tier": 1, "quota_group": "codex", "account": "personal",
+                "variants": ["gpt-5.6-luna", "gpt-6-luna@low"],
+            }
+            cfg["platforms"]["work-codex"] = {
+                "enabled": True, "kind": "codex", "model": "gpt-5.6-sol",
+                "tier": 2, "quota_group": "work-codex", "account": "work",
+                "variants": ["gpt-5.6-sol", "gpt-6-luna@high"],
+            }
+            cfg = config.resolve_platforms(cfg)
+
+            led = Ledger(":memory:", clock=lambda: NOW)
+            self.addCleanup(led.close)
+
+            pol = config.platform_audit_policy(cfg)
+            body = platform_audit.build_body(cfg, led, pol)
+
+            # Check that skipped variants are reported per login
+            self.assertIn("- skipped `codex-low/gpt-6-luna/low` (`gpt-6-luna`):", body)
+            self.assertIn("(personal)", body)
+            self.assertIn("- skipped `work-codex/gpt-6-luna/high` (`gpt-6-luna`):", body)
+            self.assertIn("(work)", body)
+            # Available variants are not reported skipped
+            self.assertNotIn("codex-low/gpt-5.6-luna/default", body)
+            self.assertNotIn("work-codex/gpt-5.6-sol/default", body)
 
 
 if __name__ == "__main__":
