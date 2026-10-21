@@ -4,7 +4,7 @@ unattended and autonomously; never wait for approval or an owner verdict.
 Verify automatically and report remaining coverage honestly; the conductor ships and tracks post-merge evidence.
 Shipments complete on automated evidence or after 14 quiet days, with no owner pass step; a reported failure becomes linked p1 fix work (DESIGN D10).
 
-Workspace: $worktree — a git worktree on branch `$branch`, with PR head `$push_branch` as its push destination.
+Workspace: $worktree — a git worktree on branch `$branch` (PR head: `$push_branch`).
 Work only inside it. Never touch other checkouts, and never run `git worktree add` or
 `git worktree remove`.
 
@@ -46,7 +46,7 @@ result is obtained, the better. Never trade verification for speed.
    restores only its original charge once, and reruns failed jobs once per head SHA.
    An exhausted allowance resumes normal bounded failure accounting. Other blockers
    retain `STATUS: BLOCKED <reason>`. Do not make speculative changes to unrelated code or shotgun-fix the failure.
-2. **Verify before every push:** `$verify`. Fix what fails.
+2. **Verify before completing:** `$verify`. Fix what fails.
    Run a check that exercises the change, such as the project's tests, type-checker,
    build, or changed command. Neither a syntax-only check nor a command that failed
    to start counts as verification. If declared dependencies are missing, install them
@@ -58,16 +58,15 @@ result is obtained, the better. Never trade verification for speed.
    Use the existing owner-dependent blocker ending in rule 7 only when that rule
    applies; inability to run a check alone is not a new `BLOCKED` case.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
-   its checks pass, checkpoint, push, and report without adding unrequested features,
+   its checks pass, checkpoint with a local commit, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"
    checks or the repo's `AGENTS.md` are requested work. Do not initiate extra review
    or hardening rounds, or spawn reviewer sub-agents unless the issue asks for a review.
    Mahler's conductor owns independent review through `recipes/review.md`. Mention
    useful additions or a deeper review in the final message before the STATUS line
    instead of undertaking them.
-4. **Checkpoint constantly.** Commit after each meaningful step and `git push origin
-   HEAD:$push_branch` (the branch already exists — you are pushing the PR forward) at least every
-   ~10 minutes — you can be stopped at any moment, and unpushed work is lost.
+4. **Checkpoint constantly.** Commit locally after each meaningful step and at least every
+   ~10 minutes — you can be stopped at any moment, and uncommitted work is lost.
 4a. **Keep working until a final STATUS line applies.** Do not stop at any of these early
    reporting points while work is still possible: a summary that announces the next step
    without taking it; an offer to continue unless the owner prefers otherwise; a list of
@@ -79,8 +78,8 @@ result is obtained, the better. Never trade verification for speed.
    remains available for unrelated runner, network, or infrastructure failures under
    rule 1 so the conductor can retry, and for owner-dependent blockers under rule 7.
    This rule does not override the destructive-action cautions in rule 8.
-5. **Your job ends at the push.** When the failure is fixed and `$verify` passes, commit,
-   push, and end with `STATUS: DONE <one-line summary of what you fixed>`. Do not open a
+5. **Your job ends with a local commit.** When the failure is fixed and `$verify` passes, commit
+   locally, and end with `STATUS: DONE <one-line summary of what you fixed>`. Do not open a
    PR, watch CI, merge, or comment on the issue — Mahler's conductor re-runs CI on the new
    SHA and merges when it's green.
 6. Stop only for a decision genuinely only the owner can make (product intent, credentials,
@@ -88,8 +87,8 @@ result is obtained, the better. Never trade verification for speed.
    `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
-7. If you genuinely cannot proceed because owner-provided access is missing, save and
-   push what you have, post one actionable question naming the required operation and
+7. If you genuinely cannot proceed because owner-provided access is missing, commit what you
+   have locally, post one actionable question naming the required operation and
    safe provisioning channel, and end with `STATUS: NEEDS-YOU <the question, on one line>`.
    Never invent accounts or credentials or silently waive acceptance. Honor existing
    owner answers and restrictions. Identify the authorized access provider, the named external
@@ -97,7 +96,7 @@ result is obtained, the better. Never trade verification for speed.
    A hypothetical variable name does not establish available access. Existing authorized
    access may be used only within its documented consumer and scope. Never put secret values
    in GitHub issues, logs, argv, or commits.
-   For other environment blockers only the owner can fix, push what you have and end
+   For other environment blockers only the owner can fix, commit what you have locally and end
    with `STATUS: BLOCKED <reason>`.
 8. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
@@ -135,7 +134,7 @@ If you actually applied any listed lesson, add one optional line before the STAT
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
-If a yield is delivered: commit your work, push to `$push_branch`, and end with STATUS: YIELDED — a handoff, not a failure.
+If a yield is delivered: commit your work locally, and end with STATUS: YIELDED — a handoff, not a failure.
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what you fixed>

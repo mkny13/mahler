@@ -107,7 +107,7 @@ class AccessRecipeTests(unittest.TestCase):
                     self.assertIn("first step must tell the fix agent", text)
                     self.assertIn("same DESIGNED JSON contract", text)
                 else:
-                    self.assertIn("save and push what you have", text)
+                    self.assertIn("commit what you have locally", text)
                     self.assertNotIn("(missing access, an environment only the owner can fix)", text)
 
 
@@ -255,6 +255,46 @@ class SortPromptScopeTests(unittest.TestCase):
         ):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, rendered)
+
+
+class RecipePushProhibitionTests(unittest.TestCase):
+    """DESIGN D47 / mahler#1144: build and fix recipes never instruct an agent to push;
+    all pushes are owned by the conductor (D18). Agents commit locally."""
+
+    def test_build_and_fix_never_instruct_push(self):
+        for role in ("build", "fix"):
+            with self.subTest(role=role):
+                rendered = prompt.render(
+                    role, number=1144, repo="mkny13/mahler",
+                    title="Replace agent GitHub identity and direct pushes",
+                    platform="codex", worktree="/tmp/wt", branch="mahler/1144-x",
+                    push_branch="mahler/1144-x", handoff="", rules="",
+                    verify="python3 -m unittest", base="main", whats_new="",
+                    issue_context="Issue body context",
+                )
+                self.assertNotIn("git push", rendered)
+                for bad_phrase in (
+                    "push -u", "push origin", "push what you have", "push the branch",
+                    "push to `$push_branch`", "Your job ends at the push",
+                ):
+                    self.assertNotIn(bad_phrase, rendered)
+
+    def test_build_and_fix_instruct_local_commits(self):
+        for role in ("build", "fix"):
+            with self.subTest(role=role):
+                rendered = prompt.render(
+                    role, number=1144, repo="mkny13/mahler",
+                    title="Replace agent GitHub identity and direct pushes",
+                    platform="codex", worktree="/tmp/wt", branch="mahler/1144-x",
+                    push_branch="mahler/1144-x", handoff="", rules="",
+                    verify="python3 -m unittest", base="main", whats_new="",
+                    issue_context="Issue body context",
+                )
+                text = " ".join(rendered.split())
+                self.assertIn("Commit locally after each meaningful step and at least every ~10 minutes", text)
+                self.assertIn("STATUS: DONE", text)
+                self.assertIn("STATUS: YIELDED", text)
+                self.assertIn("STATUS: BLOCKED", text)
 
 
 class BuildRecipeTests(unittest.TestCase):
@@ -512,9 +552,9 @@ class FixRecipeTests(unittest.TestCase):
         self.assertIn("STATUS: NEEDS-YOU <the question, on one line>", owner_rule)
 
     def test_real_fixes_still_require_verification_and_push(self):
-        self.assertIn("Verify before every push:** `python3 -m unittest`", self.text)
+        self.assertIn("Verify before completing:** `python3 -m unittest`", self.text)
         self.assertIn("When the failure is fixed and `python3 -m unittest` passes, "
-                      "commit, push, and end with `STATUS: DONE", self.text)
+                      "commit locally, and end with `STATUS: DONE", self.text)
 
     def test_unattended_run_keeps_working_without_trading_verification_for_speed(self):
         self.assertIn("Time matters here: do not spend time that can be avoided; the "
@@ -787,8 +827,8 @@ class CodingScopeRecipeTests(unittest.TestCase):
                     with self.subTest(fragment=fragment):
                         self.assertIn(fragment, verify)
                 for fragment in (
-                    "Once the issue's work is complete and its checks pass, checkpoint, "
-                    "push, and report",
+                    "Once the issue's work is complete and its checks pass, checkpoint with a local commit, "
+                    "and report",
                     "without adding unrequested features, tests, files, documentation, "
                     "or refactors",
                     "Tests required by the issue's \"Done when\" checks or the repo's "

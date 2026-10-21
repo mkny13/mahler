@@ -49,9 +49,19 @@ class FakeGH:
     def issue_body(self, number):
         return self.body
 
+    def push_branch(self, path, branch, ref):
+        return self.head
+
+    def pr_for_head(self, head):
+        return None
+
+    def pr_create(self, branch, base, title, body):
+        return 12
+
 
 class RunTests(unittest.TestCase):
     def setUp(self):
+        from types import SimpleNamespace
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
@@ -2002,6 +2012,7 @@ class ResumeNudgeTests(unittest.TestCase):
     2-resume cap, network error resumption, and kilo session-not-found fallback."""
 
     def setUp(self):
+        from types import SimpleNamespace
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
@@ -2207,6 +2218,85 @@ class ResumeNudgeTests(unittest.TestCase):
             prompt_content = fh.read()
         self.assertIn("You stopped before finishing. Carry on with the next step of your instructions, and end with the STATUS line.", prompt_content)
         self.assertIn("If your work is done, commit and push it first.", prompt_content)
+
+
+class FinalizeConductorPushTests(unittest.TestCase):
+    """DESIGN D18 / D47 / mahler#1144: local commits from DONE/YIELDED runs are
+    snapshotted and pushed by the conductor; stale runs observe the epoch fence."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = tmp.name
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"] = {"x": {"repo": "mkny13/x", "path": os.path.join(self.tmp, "repo"), "base": "main"}}
+        self.cfg["platforms"] = {"claude": {"kind": "claude", "account": "personal"}}
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("x", 5, title="Task", state="working", branch=None)
+        self.gh = FakeGH()
+        self.gh.repo = "mkny13/x"
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+        self.ctx.gh = lambda project: self.gh
+
+        self.run_id = self.led.create_run(project="x", number=5, role="build",
+                                          platform="claude", epoch=1, status="running")
+        self.led.claim("x", 5, f"run:{self.run_id}", "auto", 10,
+                       platform="claude", run_id=self.run_id)
+        self.log_path = os.path.join(self.tmp, "agent.log")
+        self.run = {"id": self.run_id, "project": "x", "number": 5, "role": "build",
+                    "platform": "claude", "epoch": 1, "pid": None,
+                    "worktree": os.path.join(self.tmp, "wt"), "branch": "mahler/5-x",
+                    "log_path": self.log_path, "status_path": os.path.join(self.tmp, "exit"),
+                    "started_at": iso(NOW), "stop_reason": None}
+        os.makedirs(self.run["worktree"], exist_ok=True)
+
+    def test_locally_committed_done_run_snapshotted_for_conductor_push(self):
+        Path(self.log_path).write_text("STATUS: DONE all done\n")
+        saved = {"ref": "mahler/snapshot/5-run1", "sha": "abc123456", "ahead": 2, "stat": "2 files"}
+        with mock.patch.object(runner, "snapshot", return_value=saved) as mock_snap, \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+
+        mock_snap.assert_called_once()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual(item["branch"], "mahler/snapshot/5-run1")
+
+        # Conductor ship pushes the branch from the snapshot
+        from mahler import ship
+        with mock.patch.object(self.gh, "push_branch", return_value="abc123456") as mock_push, \
+                mock.patch.object(self.gh, "pr_create", return_value=12):
+            ship._ship_item(self.ctx, "x", self.led.item("x", 5))
+            mock_push.assert_called_once_with(
+                self.cfg["projects"]["x"]["path"], "mahler/5-task", "mahler/snapshot/5-run1")
+
+    def test_locally_committed_yielded_run_snapshotted_for_conductor_push(self):
+        Path(self.log_path).write_text("STATUS: YIELDED checkpoint\n")
+        saved = {"ref": "mahler/snapshot/5-run1", "sha": "abc123456", "ahead": 1, "stat": "1 file"}
+        with mock.patch.object(runner, "snapshot", return_value=saved) as mock_snap, \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+
+        mock_snap.assert_called_once()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["branch"], "mahler/snapshot/5-run1")
+
+    def test_stale_run_observes_epoch_fence_on_finalize(self):
+        Path(self.log_path).write_text("STATUS: DONE all done\n")
+        saved = {"ref": "mahler/snapshot/5-run1", "sha": "abc123456", "ahead": 2, "stat": "2 files"}
+        # Supersede the epoch via a newer claim
+        self.led.claim("x", 5, "session:human", "interactive", 30)
+        with mock.patch.object(runner, "snapshot", return_value=saved), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+
+        item = self.led.item("x", 5)
+        # Item state and branch were not overwritten by the stale run
+        self.assertNotEqual(item["branch"], "mahler/snapshot/5-run1")
+        self.assertNotEqual(item["state"], "verifying")
 
 
 if __name__ == "__main__":

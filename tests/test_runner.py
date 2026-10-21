@@ -654,7 +654,8 @@ class PrepareAccountEnvTests(unittest.TestCase):
         self.assertEqual(prep["branch"], "pr-head-r2")
         self.assertEqual(prep["push_branch"], "pr-head")
         rendered = prompt.render("fix", branch=prep["branch"], push_branch=prep["push_branch"])
-        self.assertIn("git push origin HEAD:pr-head", " ".join(rendered.split()))
+        self.assertIn("(PR head: `pr-head`)", " ".join(rendered.split()))
+        self.assertNotIn("git push", rendered)
         sh(prep["worktree"], "git", "-c", "user.name=Test", "-c", "user.email=test@example.com",
            "commit", "--allow-empty", "-qm", "fix")
         sh(prep["worktree"], "git", "push", "origin", "HEAD:" + prep["push_branch"])
@@ -795,6 +796,170 @@ class RunEnvTests(unittest.TestCase):
                 env = runner.run_env(ctx, "acme", 10, "claude-work", 1, 2)
             self.assertEqual(env["CLAUDE_CONFIG_DIR"], os.path.expanduser("~/.claude-work"))
             self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.gh-work"))
+
+    def test_app_backed_run_env_drops_ambient_credentials_and_uses_scoped_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir, "repo": "mkny13/mahler", "base": "main",
+                "link": [], "rules": "", "run_timeout_minutes": 60,
+            }
+            app_mock = mock.MagicMock()
+            app_mock.agent_token.return_value = "ghs_scoped_token_xyz123"
+            app_mock.app_id = "12345"
+            app_mock.installation_id = "67890"
+            app_mock._key_path = "/secret/app_key.pem"
+            app_mock._cache_dir = Path("/secret/cache")
+
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"codex": {"kind": "codex"}},
+                    "accounts": {},
+                    "github_app": {"app_id": 12345, "installation_id": 67890,
+                                  "private_key_path": "/secret/app_key.pem"},
+                },
+                policy=lambda project: policy,
+            )
+            runs_dir = os.path.join(d, "runs")
+            ambient_env = {
+                "GH_TOKEN": "ambient_broad_personal_token",
+                "GITHUB_TOKEN": "ambient_broad_oauth_token",
+                "GH_CONFIG_DIR": os.path.join(d, "ambient_gh"),
+                "GH_HOST": "ambient.github.com",
+                "GITHUB_APP_ID": "12345",
+                "GITHUB_APP_PRIVATE_KEY_PATH": "/secret/ambient_key.pem",
+                "PATH": "/usr/bin:/bin",
+            }
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=app_mock), \
+                    mock.patch.dict(os.environ, ambient_env, clear=True):
+                env = runner.run_env(ctx, "mahler", 1144, "codex", 42, 7)
+
+            # Scoped token requested for repository
+            app_mock.agent_token.assert_called_once_with("mahler")
+
+            # Scoped token and isolated config dir present
+            self.assertEqual(env["GH_TOKEN"], "ghs_scoped_token_xyz123")
+            expected_gh_config = os.path.join(runs_dir, "42", "gh")
+            self.assertEqual(env["GH_CONFIG_DIR"], expected_gh_config)
+            self.assertTrue(os.path.isdir(expected_gh_config))
+            self.assertEqual(os.stat(expected_gh_config).st_mode & 0o777, 0o700)
+
+            # None of ambient GitHub identity survives
+            self.assertNotIn("GITHUB_TOKEN", env)
+            self.assertNotIn("GH_HOST", env)
+            self.assertNotIn("GITHUB_APP_ID", env)
+            self.assertNotIn("GITHUB_APP_PRIVATE_KEY_PATH", env)
+            self.assertNotIn("/secret/app_key.pem", env.values())
+            self.assertNotIn("12345", env.values())
+            self.assertNotIn("67890", env.values())
+
+    def test_app_backed_run_env_git_credential_fallback_disabled(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir, "repo": "mkny13/mahler", "base": "main",
+                "link": [], "rules": "", "run_timeout_minutes": 60,
+            }
+            app_mock = mock.MagicMock()
+            app_mock.agent_token.return_value = "ghs_scoped_token_xyz123"
+
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"codex": {"kind": "codex"}},
+                    "accounts": {},
+                    "github_app": {"app_id": 12345, "installation_id": 67890,
+                                  "private_key_path": "/secret/key.pem"},
+                },
+                policy=lambda project: policy,
+            )
+            runs_dir = os.path.join(d, "runs")
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=app_mock):
+                env = runner.run_env(ctx, "mahler", 1144, "codex", 42, 7)
+
+            self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+            self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")
+            self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/runs/42/hooks")
+            self.assertEqual(env["GIT_CONFIG_KEY_1"], "credential.helper")
+            self.assertEqual(env["GIT_CONFIG_VALUE_1"], "")
+            self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+
+            # Negative/abuse test: git credential fill with ambient operator helper configured
+            # must fail closed (code 128) and cannot select or return ambient credentials.
+            global_config = os.path.join(d, "operator.gitconfig")
+            with open(global_config, "w") as f:
+                f.write('[credential]\nhelper = "!f() { echo password=operator-broad-secret; }; f"\n')
+            test_env = dict(env, GIT_CONFIG_GLOBAL=global_config)
+            out = subprocess.run(["git", "credential", "fill"],
+                                 input="protocol=https\nhost=github.com\n\n",
+                                 env=test_env, capture_output=True, text=True)
+            self.assertNotEqual(out.returncode, 0)
+            self.assertNotIn("operator-broad-secret", out.stdout)
+
+    def test_scoped_run_token_least_privilege_permissions(self):
+        from mahler import github_app
+        # Must not contain write permissions for contents or pull requests
+        perms = github_app.AGENT_PERMISSIONS
+        self.assertEqual(perms.get("contents"), "read")
+        self.assertEqual(perms.get("pull_requests"), "read")
+        self.assertNotIn("workflows", perms)
+        self.assertNotIn("administration", perms)
+        self.assertNotIn("secrets", perms)
+
+    def test_non_app_project_emits_warning_and_uses_transitional_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir, "repo": "acme/work-project", "base": "main",
+                "account": "work", "link": [], "rules": "", "run_timeout_minutes": 60,
+            }
+            said = []
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"claude-work": {"kind": "claude", "account": "work"}},
+                    "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}},
+                },
+                policy=lambda project: policy,
+                say=lambda msg: said.append(msg),
+            )
+            runs_dir = os.path.join(d, "runs")
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=None):
+                env = runner.run_env(ctx, "acme", 1144, "claude-work", 42, 7)
+
+            self.assertEqual(env["GH_CONFIG_DIR"], os.path.expanduser("~/.config/gh-work"))
+            self.assertTrue(any("transitional" in s.lower() and "warning" in s.lower() for s in said),
+                            f"Expected transitional warning in {said}")
+
+    def test_undefined_account_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir, "repo": "acme/work-project", "base": "main",
+                "account": "undefined_work", "gh_account": "undefined_work",
+                "link": [], "rules": "", "run_timeout_minutes": 60,
+            }
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"claude": {"kind": "claude", "account": "personal"}},
+                    "accounts": {},
+                },
+                policy=lambda project: policy,
+            )
+            runs_dir = os.path.join(d, "runs")
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=None):
+                with self.assertRaises(ValueError):
+                    runner.run_env(ctx, "acme", 1144, "claude", 42, 7)
 
 
 class SpawnStdinTests(unittest.TestCase):
