@@ -102,6 +102,7 @@ class TrustGatedIntakeTests(unittest.TestCase):
         self.gh.issues_changed.return_value = (True, "new-etag")
         self.gh.blocked_by_of.return_value = []
         self.gh.authenticated_login.return_value = "configured-user"
+        self.gh.app_login.return_value = None
 
     def issue(self, number, *, association="NONE", login="outsider", labels=(),
               body=""):
@@ -155,6 +156,94 @@ class TrustGatedIntakeTests(unittest.TestCase):
         ]
         sync.sync(self.ctx, "x")
         self.assertEqual(self.led.item("x", 12)["state"], "parked")
+
+    def test_configured_app_is_admitted_but_other_apps_and_bots_are_held(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        self.gh.app_login.return_value = "app/project-conductor"
+        self.gh.open_issues.return_value = [
+            self.issue(20, login="app/project-conductor", association="CONTRIBUTOR"),
+            self.issue(21, login="app/other-app", association="CONTRIBUTOR"),
+            self.issue(22, login="github-actions[bot]", association="CONTRIBUTOR"),
+        ]
+        sync.sync(self.ctx, "x")
+
+        self.assertEqual(self.led.item("x", 20)["state"], "inbox")
+        for number in (21, 22):
+            with self.subTest(number=number):
+                self.assertEqual(self.led.item("x", number)["state"], "parked")
+                self.assertEqual(self.led.get_kv(f"intake_hold:x#{number}"), "untrusted")
+
+    def test_app_lookup_failure_holds_issue_without_breaking_sync(self):
+        from mahler.gh import GHError
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        self.gh.app_login.side_effect = GHError("offline")
+        self.gh.open_issues.return_value = [
+            self.issue(23, login="app/project-conductor", association="CONTRIBUTOR"),
+        ]
+        sync.sync(self.ctx, "x")
+
+        self.gh.app_login.assert_called_once_with()
+        self.assertEqual(self.led.item("x", 23)["state"], "parked")
+        self.assertEqual(self.led.get_kv("intake_hold:x#23"), "untrusted")
+
+    def test_existing_app_hold_releases_and_restores_body_fields(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        body = ("Part of #10\nDepends on: #20\n\n## Plan\n"
+                "Files: mahler/sync.py, tests/test_sync.py\n\n## Done when\n- [ ] fixed")
+        issue = self.issue(24, login="app/project-conductor",
+                           association="CONTRIBUTOR", body=body)
+        self.gh.open_issues.return_value = [issue]
+        sync.sync(self.ctx, "x")
+        held = self.led.item("x", 24)
+        self.assertEqual(held["state"], "parked")
+        self.assertIsNone(held["parent"])
+        self.assertEqual(json.loads(held["depends"]), [])
+        self.assertEqual(json.loads(held["files"]), [])
+
+        self.gh.app_login.return_value = "app/project-conductor"
+        sync.sync(self.ctx, "x")
+        released = self.led.item("x", 24)
+        self.assertEqual(released["state"], "inbox")
+        self.assertEqual(released["parent"], 10)
+        self.assertEqual(json.loads(released["depends"]), [20])
+        self.assertEqual(json.loads(released["files"]),
+                         ["mahler/sync.py", "tests/test_sync.py"])
+        self.assertEqual(self.led.get_kv("intake_hold:x#24"), "")
+
+    def test_app_hold_forces_post_upgrade_refresh_despite_unchanged_etag(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        body = ("Part of #10\nDepends on: #20\n\n## Plan\n"
+                "Files: mahler/sync.py, tests/test_sync.py\n\n## Done when\n- [ ] fixed")
+        issue = self.issue(25, login="app/project-conductor",
+                           association="CONTRIBUTOR", body=body)
+        self.led.upsert_item(
+            "x", 25, title=issue["title"], issue_body=body,
+            created_at=issue["createdAt"], parent=None, depends="[]", files="[]")
+        self.led.set_state("x", 25, "parked", "untrusted issue author")
+        self.led.set_kv("intake_hold:x#25", "untrusted")
+        # Simulate a ledger last synced by the pre-App-trust version: all older
+        # migrations and the collection ETag are current, but this migration is absent.
+        self.led.set_kv("intake_trust_format:x", "")
+        self.led.set_kv("etag:x", "unchanged-etag")
+        self.gh.issues_changed.return_value = (False, "unchanged-etag")
+        self.gh.app_login.return_value = "app/project-conductor"
+        self.gh.open_issues.return_value = [issue]
+
+        sync.sync(self.ctx, "x")
+
+        self.gh.open_issues.assert_called_once_with()
+        released = self.led.item("x", 25)
+        self.assertEqual(released["state"], "inbox")
+        self.assertEqual(released["parent"], 10)
+        self.assertEqual(json.loads(released["depends"]), [20])
+        self.assertEqual(json.loads(released["files"]),
+                         ["mahler/sync.py", "tests/test_sync.py"])
+        self.assertEqual(self.led.get_kv("intake_hold:x#25"), "")
+        self.assertEqual(self.led.get_kv("intake_trust_format:x"), "1")
+
+        self.gh.open_issues.reset_mock()
+        sync.sync(self.ctx, "x")
+        self.gh.open_issues.assert_not_called()
 
 
 class RepositoryAccessAlertTests(unittest.TestCase):

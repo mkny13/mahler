@@ -54,6 +54,7 @@ class DiscussionTools:
         self._check_binding()
         self.gh = project_client(cfg, self.pol)
         self._logins = None
+        self._admission_logins = None
 
     def _check_binding(self):
         project = self.session['project']
@@ -121,6 +122,18 @@ class DiscussionTools:
     def _trusted(self, login, association):
         return trusted_actor(login, association, self._trusted_logins())
 
+    def _trusted_for_admission(self, login, association):
+        if self._admission_logins is None:
+            self._admission_logins = self._trusted_logins()
+            try:
+                app_login = self.gh.app_login()
+            except GHError:
+                pass
+            else:
+                if isinstance(app_login, str) and app_login.strip():
+                    self._admission_logins += (app_login,)
+        return trusted_actor(login, association, self._admission_logins)
+
     @staticmethod
     def _login(actor):
         return actor.get('login') if isinstance(actor, dict) else actor
@@ -131,7 +144,7 @@ class DiscussionTools:
         if scope_label not in LABEL_STATES and scope_label in label_names(issue):
             return True
         login = issue.get('authorLogin') or self._login(issue.get('author'))
-        return self._trusted(login, issue.get('authorAssociation'))
+        return self._trusted_for_admission(login, issue.get('authorAssociation'))
 
     def _visible(self, issue):
         """The model's view: only D46-trusted comments; raw issues stay server-side."""
