@@ -786,7 +786,7 @@ def _runs(cfg, led, now):
                   else ls["text"])
         status_tone = ls["tone"] if r["status"] not in ("stopping",) and r["id"] not in stop_queued else "mut"
         out.append({
-            "id": r["id"], "project": project, "ref": _ref(project, n),
+            "id": r["id"], "project": project, "number": n, "ref": _ref(project, n),
             "url": _issue_url(cfg, project, n),
             "title": (item["title"] if item else None) or _ref(project, n),
             "platform": r["platform"], "role": r["role"], "role_label": role_label,
@@ -2326,6 +2326,7 @@ def _blocked_overview_rows(cfg, led, project, items, s, now):
             rows.append({
                 "ref": _ref(project, n),
                 "number": n,
+                "url": _issue_url(cfg, project, n),
                 "title": it["title"],
                 "reason": "needs you",
                 "tone": "bad",
@@ -2353,6 +2354,7 @@ def _blocked_overview_rows(cfg, led, project, items, s, now):
             rows.append({
                 "ref": _ref(project, n),
                 "number": n,
+                "url": _issue_url(cfg, project, n),
                 "title": row_get(it, "title") or _ref(project, n),
                 "reason": reason,
                 "tone": "warn",
@@ -2372,6 +2374,7 @@ def _blocked_overview_rows(cfg, led, project, items, s, now):
             rows.append({
                 "ref": _ref(project, n),
                 "number": n,
+                "url": _issue_url(cfg, project, n),
                 "title": row_get(it, "title") or _ref(project, n),
                 "reason": reason,
                 "tone": "bad",
@@ -2390,6 +2393,7 @@ def _blocked_overview_rows(cfg, led, project, items, s, now):
             rows.append({
                 "ref": _ref(project, n),
                 "number": n,
+                "url": _issue_url(cfg, project, n),
                 "title": (row_get(it, "title") if it else None) or _ref(project, n),
                 "reason": f"waits — {overlap} already in progress",
                 "tone": "warn",
@@ -2420,6 +2424,7 @@ def _queued_overview_rows(cfg, led, project, items, blocked_numbers):
         rows.append({
             "ref": _ref(project, n),
             "number": n,
+            "url": _issue_url(cfg, project, n),
             "title": it["title"] or _ref(project, n),
             "meta": meta,
             "tone": "meta",
@@ -2454,9 +2459,13 @@ def _completed_7d_rows(cfg, led, project, now):
             meta_parts.append(age_str)
         if plat:
             meta_parts.append(plat)
+        pr = row_get(sh, "pr")
         out.append({
             "ref": _ref(project, n),
             "number": n,
+            "url": _issue_url(cfg, project, n),
+            "pr": pr,
+            "pr_url": _pr_url(cfg, project, pr) if pr else None,
             "title": row_get(sh, "title") or _ref(project, n),
             "meta": " · ".join(meta_parts),
             "status": status_label,

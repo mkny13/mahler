@@ -3427,3 +3427,191 @@ class ProjectScopePageTests(unittest.TestCase):
         unavailable = page.app(scoped, "desktop", view="capacity")
         self.assertIn('data-rendered-section="overview"', unavailable)
         self.assertNotIn('section class="view view-capacity"', unavailable)
+
+
+class ProjectOverviewPageTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg()
+        self.cfg["projects"]["groundwork"]["verify"] = "pytest · ruff"
+        self.now = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+        # 1 active run on groundwork
+        self.led.upsert_item("groundwork", 1, title="Retry batch", state="working")
+        self.led.create_run(project="groundwork", number=1, role="build",
+                            platform="copilot", epoch=1, status="running",
+                            est_mins=25, started_at=iso(self.now - timedelta(minutes=14)))
+
+        # 1 needs_you item
+        self.led.upsert_item("groundwork", 2, title="Drive search", state="needs_you",
+                             question="Drive scope: drive.readonly or drive.file?")
+        self.led.set_state("groundwork", 2, "needs_you", "Drive scope: drive.readonly or drive.file?")
+        self.led.con.execute("UPDATE items SET state_changed_at=? WHERE project='groundwork' AND number=2",
+                             (iso(self.now - timedelta(hours=2, minutes=10)),))
+
+        # Queued & blocked items
+        self.led.upsert_item("groundwork", 33, title="Calendar shared", state="ready",
+                             labels=json.dumps(["size:s"]))
+        self.led.upsert_item("groundwork", 36, title="Gmail attachments", state="ready",
+                             labels=json.dumps(["size:s"]))
+        self.led.upsert_item("groundwork", 34, title="Drive export", state="ready",
+                             depends=json.dumps([2]))
+        self.led.upsert_item("groundwork", 26, title="Chat paginate", state="working")
+        self.led.set_state("groundwork", 26, "parked", "CI red twice")
+
+        # 7 finite shipping fixtures:
+        # 1. built/no PR
+        self.led.upsert_item("groundwork", 10, title="Built no PR", state="verifying", pr=None)
+        # 2. PR/checks running
+        self.led.upsert_item("groundwork", 20, title="Token cache", state="verifying", pr=43)
+        self.led.set_kv("ci:groundwork#20:43", json.dumps({
+            "state": "pending", "progress": "3 of 5",
+            "since": iso(self.now - timedelta(minutes=4))
+        }))
+        # 3. failed check with its name (parked)
+        self.led.upsert_item("groundwork", 26, pr=38)
+        self.led.set_kv("ci:groundwork#26:38", json.dumps({
+            "state": "red", "failed_check": "test_chat"
+        }))
+        # 4. review pending with platform
+        self.led.upsert_item("groundwork", 32, title="Calendar events", state="verifying", pr=44,
+                             labels=json.dumps(["size:m"]))
+        self.led.set_kv("ci:groundwork#32:44", json.dumps({"state": "green"}))
+        self.led.set_kv("review:groundwork#32", json.dumps({
+            "verdict": "pending", "platform": "agy-gemini", "pr": 44
+        }))
+        # 5. review failed/fixing
+        self.led.upsert_item("groundwork", 35, title="Fixing review", state="verifying", pr=45,
+                             labels=json.dumps(["size:m"]))
+        self.led.set_kv("ci:groundwork#35:45", json.dumps({"state": "green"}))
+        self.led.set_kv("review:groundwork#35", json.dumps({
+            "verdict": "fail", "platform": "claude", "pr": 45
+        }))
+        self.led.create_run(project="groundwork", number=35, role="fix",
+                            platform="claude", epoch=1, status="running",
+                            started_at=iso(self.now - timedelta(minutes=5)))
+        # 6. merged-unverified with quiet 1/14d
+        self.led.add_uat("groundwork", 27, 42, "sha27", "Tasks reopen", "- verify",
+                         shipped_at=iso(self.now - timedelta(days=1)))
+        # 7. verified
+        self.led.upsert_item("groundwork", 30, title="Gmail search", state="shipped")
+        self.led.add_uat("groundwork", 30, 41, "sha30", "Gmail search", "- verify",
+                         shipped_at=iso(self.now - timedelta(hours=3)))
+        self.led.accept_evidence("groundwork", 30, {
+            "source": "https://example.com/check/30",
+            "author": "ci",
+            "created_at": iso(self.now - timedelta(hours=3)),
+            "kind": "smoke",
+            "body": "Smoke passed",
+        })
+
+        # Releases / draft
+        self.led.create_release("groundwork", "2.4.1", checkpoint_sha="abc123",
+                                item_numbers=[27, 30])
+        self.led.snapshot_release_item("groundwork", 20, pr=43, title="Token cache",
+                                      merge_sha="sha20", labels=["type:feature"])
+        self.led.event("shipped", "groundwork", 20, detail={"pr": 43},
+                       at=iso(self.now - timedelta(hours=1)))
+
+        # Backlog snapshots
+        self.led.record_backlog("groundwork", 12, at=self.now - timedelta(days=7))
+        self.led.record_backlog("groundwork", 9, at=self.now)
+
+        # Other project (mahler) - must NOT appear in groundwork overview
+        self.led.upsert_item("mahler", 999, title="Mahler item should not leak", state="ready")
+        self.led.create_run(project="mahler", number=999, role="build",
+                            platform="claude", epoch=1, status="running")
+
+    def test_desktop_overview_renders_approved_hierarchy_and_reused_actions(self):
+        scoped = state.build(self.cfg, self.led, project_scope="groundwork")
+        html = page.app(scoped, "desktop", view="overview")
+
+        # 1. Header
+        self.assertIn("groundwork", html)
+        self.assertIn("RUNNING · 2", html)
+        self.assertIn("v2.4.1", html)
+        self.assertIn("mkny13/groundwork", html)
+        self.assertIn("Parallel jobs", html)
+        self.assertIn("+ Add issue", html)
+
+        # 2. Headline KPIs
+        self.assertIn("open · <span class=\"t-good\">−3 in 7d</span>", html)
+        self.assertIn("active", html)
+        self.assertIn("queued · next #33", html)
+        self.assertIn("waiting on you · 2h 10m", html)
+        self.assertIn("blocked otherwise", html)
+        self.assertIn("done 7d · last 3h ago", html)
+
+        # 3. Needs you inline
+        self.assertIn("Needs you", html)
+        self.assertIn("Drive scope: drive.readonly or drive.file?", html)
+        self.assertIn('data-act="answer"', html)
+
+        # 4. Active now
+        self.assertIn("Active now", html)
+        self.assertIn("Retry batch", html)
+        self.assertIn("14m of ~25m", html)
+
+        # 5. Queued and Blocked
+        self.assertIn("Queued", html)
+        self.assertIn("Calendar shared", html)
+        self.assertIn("Blocked", html)
+        self.assertIn("needs you", html)
+        self.assertIn("waits on #2", html)
+        self.assertIn("parked · CI red twice", html)
+
+        # 6. Shipping table and How a change ships
+        self.assertIn("Shipping", html)
+        self.assertIn('<table class="pipe">', html)
+        self.assertIn("Built", html)
+        self.assertIn("CI checks", html)
+        self.assertIn("Confirmed live", html)
+        self.assertIn("3 of 5", html)
+        self.assertIn("test_chat", html)
+        self.assertIn("agy-gemini reviewing", html)
+        self.assertIn("quiet 1/14d", html)
+        self.assertIn("verified", html)
+        self.assertIn("How a change ships", html)
+        self.assertIn("pytest · ruff", html)
+
+        # 7. Completed last 7 days
+        self.assertIn("Completed · last 7 days", html)
+        self.assertIn("Gmail search", html)
+
+        # 8. Activity
+        self.assertIn("Activity", html)
+
+        # 9. Right sidebar
+        self.assertIn("What's new · since you last looked", html)
+        self.assertIn('data-act="brief_seen"', html)
+        self.assertIn("Releases", html)
+        self.assertIn('data-open-release="groundwork"', html)
+        self.assertIn("Open issues · 30 days", html)
+        self.assertIn("Who built it · 30 days", html)
+        self.assertIn("Project settings", html)
+        self.assertIn("pytest · ruff", html)
+
+        # 10. Project isolation
+        self.assertNotIn("Mahler item should not leak", html)
+        self.assertNotIn("mahler#999", html)
+
+    def test_phone_overview_condensed_tab(self):
+        scoped = state.build(self.cfg, self.led, project_scope="groundwork")
+        html = page.app(scoped, "phone", tab="overview")
+
+        self.assertIn('class="ph-open"', html)
+        self.assertIn("open", html)
+        self.assertIn("−3 in 7d", html)
+        self.assertIn("2 active", html)
+        self.assertIn("1 on you", html)
+        self.assertIn("Needs you", html)
+        self.assertIn('data-act="answer"', html)
+        self.assertIn("Active", html)
+        self.assertIn("Queued", html)
+        self.assertIn("Blocked", html)
+        self.assertIn("Shipping", html)
+        self.assertIn("Parallel jobs", html)
+        self.assertIn("What's new", html)
+        self.assertIn("Release", html)
+        self.assertNotIn("Mahler item should not leak", html)
