@@ -435,8 +435,8 @@ class PlatformVariantTests(unittest.TestCase):
         cfg['platforms'] = {'codex': {
             'enabled': True, 'kind': 'codex', 'model': 'gpt-5.6-terra',
             'tier': 2, 'max_size': 'm', 'quota_group': 'codex', 'metered': False,
-            'variants': ['gpt-6-luna@low', 'gpt-6-luna@medium', 'gpt-5.6-luna'],
-            'variant_tiers': {'gpt-6-luna@medium': 4},
+            'variants': ['gpt-5.6-luna@low', 'gpt-5.6-luna@medium', 'gpt-5.6-luna'],
+            'variant_tiers': {'gpt-5.6-luna@medium': 4},
             **platform_over,
         }}
         return cfg
@@ -445,11 +445,11 @@ class PlatformVariantTests(unittest.TestCase):
         cfg = config.resolve_platforms(self.cfg())
         plats = cfg['platforms']
         self.assertEqual(set(plats), {
-            'codex', 'codex/gpt-6-luna/low', 'codex/gpt-6-luna/medium',
+            'codex', 'codex/gpt-5.6-luna/low', 'codex/gpt-5.6-luna/medium',
             'codex/gpt-5.6-luna/default',
         })
-        low = plats['codex/gpt-6-luna/low']
-        self.assertEqual(low['model'], 'gpt-6-luna')
+        low = plats['codex/gpt-5.6-luna/low']
+        self.assertEqual(low['model'], 'gpt-5.6-luna')
         self.assertEqual(low['effort'], 'low')
         self.assertEqual(low['slot'], 'codex')
         self.assertEqual(low['quota_group'], 'codex')
@@ -465,12 +465,12 @@ class PlatformVariantTests(unittest.TestCase):
         cfg = config.resolve_platforms(self.cfg())
         self.assertEqual(cfg['platforms']['codex']['model'], 'gpt-5.6-terra')
         self.assertEqual(cfg['platforms']['codex']['variants'],
-                         ['gpt-6-luna@low', 'gpt-6-luna@medium', 'gpt-5.6-luna'])
+                         ['gpt-5.6-luna@low', 'gpt-5.6-luna@medium', 'gpt-5.6-luna'])
 
     def test_variant_tiers_overrides_the_slots_tier(self):
         cfg = config.resolve_platforms(self.cfg())
-        self.assertEqual(cfg['platforms']['codex/gpt-6-luna/medium']['tier'], 4)
-        self.assertEqual(cfg['platforms']['codex/gpt-6-luna/low']['tier'], 2)
+        self.assertEqual(cfg['platforms']['codex/gpt-5.6-luna/medium']['tier'], 4)
+        self.assertEqual(cfg['platforms']['codex/gpt-5.6-luna/low']['tier'], 2)
 
     def test_claude_kind_expands_sort_and_build_model(self):
         cfg = copy.deepcopy(config.DEFAULTS)
@@ -506,11 +506,11 @@ class PlatformVariantTests(unittest.TestCase):
         cfg = self.cfg()
         del cfg['platforms']['codex']['quota_group']
         cfg = config.resolve_platforms(cfg)
-        self.assertEqual(cfg['platforms']['codex/gpt-6-luna/low']['quota_group'], 'codex')
+        self.assertEqual(cfg['platforms']['codex/gpt-5.6-luna/low']['quota_group'], 'codex')
 
     def test_variants_inherit_the_slots_cost_class(self):
         cfg = config.resolve_platforms(self.cfg(cost_class='paid'))
-        self.assertEqual(cfg['platforms']['codex/gpt-6-luna/low']['cost_class'], 'paid')
+        self.assertEqual(cfg['platforms']['codex/gpt-5.6-luna/low']['cost_class'], 'paid')
 
     def test_no_variants_declared_is_unchanged(self):
         before = set(config.DEFAULTS['platforms'])
@@ -540,21 +540,21 @@ class PlatformVariantTests(unittest.TestCase):
         check reads, so variant_tiers alone is enough to change which variant
         an escalated item lands on."""
         cfg = self.cfg()
-        cfg['routing'] = {'build': ['codex/gpt-6-luna/low', 'codex/gpt-6-luna/medium']}
+        cfg['routing'] = {'build': ['codex/gpt-5.6-luna/low', 'codex/gpt-5.6-luna/medium']}
         cfg = config.resolve_platforms(cfg)
         with closing(Ledger(':memory:')) as led:
             platform, reasons = router.pick(cfg, led, 'build', min_tier=3)
-        self.assertEqual(platform, 'codex/gpt-6-luna/medium')   # tier 4 (variant_tiers)
-        self.assertIn('codex/gpt-6-luna/low: tier 2 below escalation tier 3', reasons)
+        self.assertEqual(platform, 'codex/gpt-5.6-luna/medium')   # tier 4 (variant_tiers)
+        self.assertIn('codex/gpt-5.6-luna/low: tier 2 below escalation tier 3', reasons)
 
     def test_routing_and_pin_can_target_a_variant(self):
         cfg = self.cfg()
-        cfg['routing'] = {'build': ['codex/gpt-6-luna/low']}
+        cfg['routing'] = {'build': ['codex/gpt-5.6-luna/low']}
         cfg = config.resolve_platforms(cfg)
-        self.assertEqual(router.candidates(cfg, 'build'), ['codex/gpt-6-luna/low'])
+        self.assertEqual(router.candidates(cfg, 'build'), ['codex/gpt-5.6-luna/low'])
         with closing(Ledger(':memory:')) as led:
-            platform, reasons = router.pick(cfg, led, 'build', pin='codex/gpt-6-luna/low')
-        self.assertEqual(platform, 'codex/gpt-6-luna/low')
+            platform, reasons = router.pick(cfg, led, 'build', pin='codex/gpt-5.6-luna/low')
+        self.assertEqual(platform, 'codex/gpt-5.6-luna/low')
 
 
 if __name__ == '__main__':

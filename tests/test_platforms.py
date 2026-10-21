@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from mahler import config, platforms, router
+from mahler.ledger import Ledger
 
 
 def provider_error_events(message):
@@ -980,3 +981,75 @@ class AgentSdkTests(unittest.TestCase):
         self.assertEqual(conf["kind"], "agent-sdk")
         self.assertFalse(conf["enabled"])
         self.assertNotIn("provider", conf)
+
+
+class CodexOfferedModelsTests(unittest.TestCase):
+    def test_codex_offered_models_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "models_cache.json")
+            with open(cache_file, "w") as f:
+                json.dump({"models": [
+                    {"slug": "gpt-5.6-luna", "display_name": "Luna"},
+                    {"slug": "gpt-5.6-terra"},
+                    {"id": "gpt-reserve"},
+                ]}, f)
+            models = platforms.codex_offered_models(home=tmp)
+            self.assertEqual(models, {"gpt-5.6-luna", "gpt-5.6-terra", "gpt-reserve"})
+
+    def test_codex_offered_models_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(platforms.codex_offered_models(home=tmp))
+
+    def test_codex_offered_models_malformed_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "models_cache.json")
+            with open(cache_file, "w") as f:
+                f.write("not json")
+            self.assertIsNone(platforms.codex_offered_models(home=tmp))
+
+    def test_codex_offered_models_account_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "models_cache.json")
+            with open(cache_file, "w") as f:
+                json.dump({"models": [{"slug": "gpt-6-astra"}]}, f)
+            cfg = {"accounts": {"work": {"env": {"CODEX_HOME": tmp}}}}
+            models = platforms.codex_offered_models(account="work", cfg=cfg)
+            self.assertEqual(models, {"gpt-6-astra"})
+
+    def test_variant_routing_with_fixture_models_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_file = os.path.join(tmp, "models_cache.json")
+            with open(cache_file, "w") as f:
+                json.dump({"models": [{"slug": "gpt-5.6-luna"}]}, f)
+
+            cfg = copy.deepcopy(config.DEFAULTS)
+            cfg["accounts"] = {"personal": {"env": {"CODEX_HOME": tmp}}}
+            cfg["platforms"]["codex-low"] = {
+                "enabled": True, "kind": "codex", "model": "gpt-5.6-luna",
+                "tier": 1, "quota_group": "codex", "metered": False,
+                "variants": ["gpt-5.6-luna", "gpt-6-luna@low"],
+            }
+            cfg["routing"] = {"build": ["codex-low/gpt-5.6-luna/default", "codex-low/gpt-6-luna/low"]}
+            cfg = config.resolve_platforms(cfg)
+
+            # Available variant routes normally
+            self.assertIn("codex-low/gpt-5.6-luna/default", router.candidates(cfg, "build"))
+            # Unavailable variant is skipped during routing
+            self.assertNotIn("codex-low/gpt-6-luna/low", router.candidates(cfg, "build"))
+
+            led = Ledger(":memory:")
+            self.addCleanup(led.close)
+
+            # Picking available variant succeeds
+            picked, _ = router.pick(cfg, led, "build", candidate_order=["codex-low/gpt-5.6-luna/default"])
+            self.assertEqual(picked, "codex-low/gpt-5.6-luna/default")
+
+            # Picking unavailable variant is skipped with visible reason
+            picked, reasons = router.pick(cfg, led, "build", candidate_order=["codex-low/gpt-6-luna/low"])
+            self.assertIsNone(picked)
+            self.assertTrue(any("not in login's models_cache.json" in r for r in reasons))
+
+            # Pinned unavailable variant is skipped with visible reason
+            picked, reasons = router.pick(cfg, led, "build", pin="codex-low/gpt-6-luna/low")
+            self.assertIsNone(picked)
+            self.assertTrue(any("not in login's models_cache.json" in r for r in reasons))
