@@ -277,6 +277,12 @@ def refresh_usage(ctx, projects):
             for account in accounts:
                 routing = router.routing_for(cfg, account)
                 wanted |= {n for role in ("sort", "build", "plan", "review") for n in routing.get(role, [])}
+            if config.account_mode_of(p) == "priority":
+                for role, route in (p.get("routing") or {}).items():
+                    if isinstance(route, (list, tuple)):
+                        wanted |= {n for n in config.expand_route(cfg, route)
+                                   if n in cfg["platforms"]
+                                   and config.account_of(cfg["platforms"][n]) in accounts}
     wanted |= {r["platform"] for r in led.active_runs()}
     # A review wait that recorded stale candidates (ship._review_wait_followup)
     # re-probes exactly those platforms; each kind's own probe throttle still applies.

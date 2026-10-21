@@ -48,6 +48,77 @@ class VerifyingUsageTests(unittest.TestCase):
                     else:
                         probe.assert_not_called()
 
+    def test_priority_project_route_platform_is_probed(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["platforms"]["kiro"]["enabled"] = True
+        for role in cfg["routing"]:
+            cfg["routing"][role] = [n for n in cfg["routing"][role] if n != "kiro"]
+        cfg.setdefault("groups", {})["custom"] = ["kiro"]
+        cfg["projects"]["x"] = {
+            "path": "/tmp/x",
+            "repo": "x/y",
+            "account_mode": "priority",
+            "accounts": ["personal"],
+            "routing": {"build": ["@custom"]},
+        }
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.upsert_item("x", 1, state="ready", priority=2)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        with mock.patch.object(usage, "_usage_needs_refresh",
+                               side_effect=lambda led, name, conf: name == "kiro"), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(platforms, "probe_kiro", return_value=[]) as probe:
+            usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
+        probe.assert_called_once()
+
+    def test_non_priority_project_without_project_route_is_not_probed(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["platforms"]["kiro"]["enabled"] = True
+        for role in cfg["routing"]:
+            cfg["routing"][role] = [n for n in cfg["routing"][role] if n != "kiro"]
+        cfg["projects"]["x"] = {
+            "path": "/tmp/x",
+            "repo": "x/y",
+            "account_mode": "order",
+            "accounts": ["personal"],
+        }
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.upsert_item("x", 1, state="ready", priority=2)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        with mock.patch.object(usage, "_usage_needs_refresh",
+                               side_effect=lambda led, name, conf: name == "kiro"), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(platforms, "probe_kiro", return_value=[]) as probe:
+            usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
+        probe.assert_not_called()
+
+    def test_priority_project_route_other_account_platform_is_not_probed(self):
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg["platforms"]["kiro"]["enabled"] = True
+        cfg["platforms"]["kiro"]["account"] = "work"
+        for role in cfg["routing"]:
+            cfg["routing"][role] = [n for n in cfg["routing"][role] if n != "kiro"]
+        cfg["projects"]["x"] = {
+            "path": "/tmp/x",
+            "repo": "x/y",
+            "account_mode": "priority",
+            "accounts": ["personal"],
+            "routing": {"build": ["kiro"]},
+        }
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        led.upsert_item("x", 1, state="ready", priority=2)
+        ctx = scheduler.Ctx(cfg, led, dry_run=True)
+        with mock.patch.object(usage, "_usage_needs_refresh",
+                               side_effect=lambda led, name, conf: name == "kiro"), \
+                mock.patch.object(platforms, "probe_agy", return_value={}), \
+                mock.patch.object(platforms, "probe_kiro", return_value=[]) as probe:
+            usage.refresh_usage(ctx, [config.project_policy(cfg, "x")])
+        probe.assert_not_called()
+
+
 
 if __name__ == "__main__":
     unittest.main()
