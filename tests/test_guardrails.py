@@ -16,6 +16,10 @@ REQUIRED_STEMS = [
     "git filter-branch", "git filter-repo", "git reset --hard",
     "git worktree remove",
     "gh repo delete", "gh repo archive", "gh release delete", "gh issue delete",
+    "gh pr merge", "gh auth token", "gh auth status --show-token",
+    "gh secret", "gh variable", "gh api -X DELETE",
+    "gh api --method DELETE", "gh workflow run", "gh run rerun",
+    "gh repo edit", "gh api repos/*/branches/*/protection",
     "rm -rf /", "rm -rf ~", "rm -fr /", "rm -fr ~",
 ]
 
