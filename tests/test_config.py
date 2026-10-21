@@ -787,6 +787,173 @@ class ProjectGitHubAppConfigTests(unittest.TestCase):
                 config.project_github_app({"github_app": invalid}, {})
             self.assertNotIn("/secret", str(caught.exception))
 
+    def test_named_work_provider_coexists_with_personal_app(self):
+        cfg = {
+            "github_app": {
+                "app_id": 123,
+                "installation_id": 456,
+                "private_key_path": "/secret/personal.pem",
+            },
+            "github_apps": {
+                "work": {
+                    "app_id": 789,
+                    "installation_id": 1011,
+                    "private_key_path": "/secret/work.pem",
+                },
+            },
+            "defaults": {},
+            "projects": {
+                "personal_proj": {"repo": "owner/personal-proj"},
+                "work_proj": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                    "github_provider": "work",
+                },
+            },
+        }
+        personal_app = config.project_github_app(cfg, "personal_proj")
+        work_app = config.project_github_app(cfg, "work_proj")
+
+        self.assertIsNotNone(personal_app)
+        self.assertIsNotNone(work_app)
+        self.assertEqual(personal_app.app_id, "123")
+        self.assertEqual(personal_app.installation_id, "456")
+        self.assertEqual(personal_app._key_path, "/secret/personal.pem")
+
+        self.assertEqual(work_app.app_id, "789")
+        self.assertEqual(work_app.installation_id, "1011")
+        self.assertEqual(work_app._key_path, "/secret/work.pem")
+
+        # Cache dirs must be isolated
+        self.assertNotEqual(str(personal_app._cache_dir), str(work_app._cache_dir))
+        self.assertTrue(str(work_app._cache_dir).endswith("work"))
+
+    def test_provider_selection_independent_of_compute_account(self):
+        cfg = {
+            "github_app": {
+                "app_id": 123,
+                "installation_id": 456,
+                "private_key_path": "/secret/personal.pem",
+            },
+            "github_apps": {
+                "work": {
+                    "app_id": 789,
+                    "installation_id": 1011,
+                    "private_key_path": "/secret/work.pem",
+                },
+            },
+            "defaults": {},
+            "projects": {
+                # D26 multi-account project
+                "multi_proj": {
+                    "accounts": ["personal", "work"],
+                    "repo": "org/multi",
+                    "github_provider": "work",
+                },
+                # Compute account is personal, but github provider is work
+                "personal_compute_work_gh": {
+                    "account": "personal",
+                    "repo": "org/cross",
+                    "github_provider": "work",
+                },
+                # Work account with no github provider -> None (personal App never leaks)
+                "unmigrated_work": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/sit-stand-walk",
+                },
+            },
+        }
+        self.assertEqual(config.project_github_app(cfg, "multi_proj").app_id, "789")
+        self.assertEqual(config.project_github_app(cfg, "personal_compute_work_gh").app_id, "789")
+        self.assertIsNone(config.project_github_app(cfg, "unmigrated_work"))
+
+    def test_provider_repository_coverage_restriction(self):
+        cfg = {
+            "github_apps": {
+                "work": {
+                    "app_id": 789,
+                    "installation_id": 1011,
+                    "private_key_path": "/secret/work.pem",
+                    "repositories": ["google-chat-nav", "sit-stand-walk"],
+                },
+            },
+            "defaults": {},
+            "projects": {
+                "covered": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                    "github_provider": "work",
+                },
+                "uncovered": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-workspace-connector",
+                    "github_provider": "work",
+                },
+            },
+        }
+        self.assertIsNotNone(config.project_github_app(cfg, "covered"))
+        self.assertIsNone(config.project_github_app(cfg, "uncovered"))
+
+    def test_require_scoped_identity_validation_fails_closed(self):
+        # 1. Selected provider absent
+        cfg_absent = {
+            "github_app": {"app_id": 123, "installation_id": 456, "private_key_path": "/secret/key.pem"},
+            "projects": {
+                "google-chat-nav": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                    "require_scoped_identity": True,
+                },
+            },
+        }
+        with self.assertRaises(ValueError) as caught:
+            config.validate_github_app(cfg_absent)
+        self.assertIn("google-chat-nav", str(caught.exception))
+        self.assertNotIn("/secret", str(caught.exception))
+
+        # 2. Provider repository restriction does not cover project
+        cfg_uncovered = {
+            "github_apps": {
+                "work": {
+                    "app_id": 789,
+                    "installation_id": 1011,
+                    "private_key_path": "/secret/work.pem",
+                    "repositories": ["sit-stand-walk"],
+                },
+            },
+            "projects": {
+                "google-chat-nav": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                    "github_provider": "work",
+                    "require_scoped_identity": True,
+                },
+            },
+        }
+        with self.assertRaises(ValueError) as caught:
+            config.validate_github_app(cfg_uncovered)
+        self.assertIn("google-chat-nav", str(caught.exception))
+        self.assertNotIn("/secret", str(caught.exception))
+
+    def test_negative_unauthorized_provider_access_refused(self):
+        """Negative/abuse test: ambient or cross-account access refused."""
+        cfg = {
+            "github_app": {"app_id": 123, "installation_id": 456, "private_key_path": "/secret/personal.pem"},
+            "defaults": {},
+            "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}},
+            "projects": {
+                "work_repo": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                },
+            },
+        }
+        # Work project without approved provider must NEVER return personal App
+        app = config.project_github_app(cfg, "work_repo")
+        self.assertIsNone(app)
+        settings = config.github_app_settings(cfg, "work_repo")
+        self.assertIsNone(settings)
+
 
 class SetProjectMaxParallelTests(unittest.TestCase):
     def setUp(self):

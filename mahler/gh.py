@@ -134,8 +134,10 @@ def project_client(cfg, pol):
     from . import github_app
 
     settings = config.github_app_settings(cfg, pol)
-    app = (github_app.Installation(*settings,
-           cache_dir=os.path.join(config.STATE, "github-app-tokens")) if settings else None)
+    cache = (config.project_github_app_cache_dir(cfg, pol)
+             if hasattr(config, "project_github_app_cache_dir")
+             else os.path.join(config.STATE, "github-app-tokens"))
+    app = (github_app.Installation(*settings, cache_dir=cache) if settings else None)
     return GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)), app=app)
 
 
