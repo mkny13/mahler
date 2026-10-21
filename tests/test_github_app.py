@@ -77,7 +77,8 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.http.call_count, 1)
 
     def test_app_login_cache_is_scoped_to_exact_app(self):
-        self.http.side_effect = [app_response("first-app"), app_response("second-app")]
+        self.http.side_effect = [app_response("first-app"), app_response("second-app"),
+                                 app_response("first-app-refreshed")]
         self.assertEqual(self.app.app_login(), "app/first-app")
         other_app = github_app.Installation(321, 456, "/secret/key.pem", self.cache)
         self.assertEqual(other_app.app_login(), "app/second-app")
@@ -86,6 +87,13 @@ class InstallationTests(unittest.TestCase):
                          "first-app")
         self.assertEqual(json.loads((self.cache / "321-app.json").read_text())["slug"],
                          "second-app")
+
+        # A misplaced record naming another App is a miss, never a trusted guess.
+        (self.cache / "123-app.json").write_text(json.dumps(
+            {"app_id": "321", "slug": "second-app"}))
+        fresh = github_app.Installation(123, 999, "/secret/key.pem", self.cache)
+        self.assertEqual(fresh.app_login(), "app/first-app-refreshed")
+        self.assertEqual(self.http.call_count, 3)
 
     def test_app_login_errors_are_secret_safe_and_fail_closed(self):
         for result in ({}, {"slug": ""}, {"slug": "other/app"}, {"slug": 123}):
@@ -105,6 +113,15 @@ class InstallationTests(unittest.TestCase):
         rendered = ''.join(traceback.format_exception(caught.exception))
         self.assertNotIn("/secret/key.pem", rendered)
         self.assertNotIn(TOKEN, rendered)
+
+        self.http.reset_mock()
+        self.sign.side_effect = OSError("/secret/key.pem " + TOKEN)
+        with self.assertRaisesRegex(GHError, "JWT signing failed") as caught:
+            self.app.app_login()
+        rendered = ''.join(traceback.format_exception(caught.exception))
+        self.assertNotIn("/secret/key.pem", rendered)
+        self.assertNotIn(TOKEN, rendered)
+        self.http.assert_not_called()
 
     def test_disk_reuse_and_early_refresh(self):
         self.app.token()
