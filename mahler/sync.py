@@ -71,8 +71,19 @@ def sync(ctx, project):
     # self/ancestor deadlocks as well as preserving qualifiers.
     depends_key = f"depends_format:{project}"
     repair_key = f"unmerged_reconciled:{project}"
+    # Version 1 reclassifies issue authors against the configured App identity.
+    # Force one full poll after upgrade even when GitHub's collection ETag is
+    # unchanged, or pre-existing App holds would never reach the release path.
+    intake_trust_key = f"intake_trust_format:{project}"
+    intake_trust_current = led.get_kv(intake_trust_key) == "1"
+    intake_trust_repair = (not intake_trust_current and any(
+        led.get_kv(f"intake_hold:{project}#{item['number']}")
+        for item in led.items(project)))
     if (not poll_changed and led.get_kv(depends_key) == "4"
-            and led.get_kv(repair_key) == "1"):
+            and led.get_kv(repair_key) == "1"
+            and not intake_trust_repair):
+        if not ctx.dry_run and not intake_trust_current:
+            led.set_kv(intake_trust_key, "1")
         _record_backlog(ctx, project, None)
         reconcile_shipped(ctx, project)
         _resume_dependency_waits(ctx, project)
@@ -84,6 +95,7 @@ def sync(ctx, project):
     repo_owner = pol["repo"].split("/", 1)[0]
     trusted_logins = (repo_owner,)
     configured_logins_resolved = False
+    trust_resolution_failed = False
     admitted_issues = []
     untrusted_issues = []
     for iss in issues:
@@ -100,6 +112,7 @@ def sync(ctx, project):
                     try:
                         configured_login = identity()
                     except GHError:
+                        trust_resolution_failed = True
                         continue
                     if isinstance(configured_login, str) and configured_login.strip():
                         resolved.append(configured_login)
@@ -278,6 +291,8 @@ def sync(ctx, project):
     led.set_kv(depends_key, "4")
     if not ctx.dry_run:
         led.set_kv(repair_key, "1")
+        if not trust_resolution_failed:
+            led.set_kv(intake_trust_key, "1")
 
 
 def _reconcile_open_completion(ctx, project, item, issue):

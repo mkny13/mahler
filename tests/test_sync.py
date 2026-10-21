@@ -210,6 +210,41 @@ class TrustGatedIntakeTests(unittest.TestCase):
                          ["mahler/sync.py", "tests/test_sync.py"])
         self.assertEqual(self.led.get_kv("intake_hold:x#24"), "")
 
+    def test_app_hold_forces_post_upgrade_refresh_despite_unchanged_etag(self):
+        self.ctx.cfg["projects"]["x"]["scope"] = "all"
+        body = ("Part of #10\nDepends on: #20\n\n## Plan\n"
+                "Files: mahler/sync.py, tests/test_sync.py\n\n## Done when\n- [ ] fixed")
+        issue = self.issue(25, login="app/project-conductor",
+                           association="CONTRIBUTOR", body=body)
+        self.led.upsert_item(
+            "x", 25, title=issue["title"], issue_body=body,
+            created_at=issue["createdAt"], parent=None, depends="[]", files="[]")
+        self.led.set_state("x", 25, "parked", "untrusted issue author")
+        self.led.set_kv("intake_hold:x#25", "untrusted")
+        # Simulate a ledger last synced by the pre-App-trust version: all older
+        # migrations and the collection ETag are current, but this migration is absent.
+        self.led.set_kv("intake_trust_format:x", "")
+        self.led.set_kv("etag:x", "unchanged-etag")
+        self.gh.issues_changed.return_value = (False, "unchanged-etag")
+        self.gh.app_login.return_value = "app/project-conductor"
+        self.gh.open_issues.return_value = [issue]
+
+        sync.sync(self.ctx, "x")
+
+        self.gh.open_issues.assert_called_once_with()
+        released = self.led.item("x", 25)
+        self.assertEqual(released["state"], "inbox")
+        self.assertEqual(released["parent"], 10)
+        self.assertEqual(json.loads(released["depends"]), [20])
+        self.assertEqual(json.loads(released["files"]),
+                         ["mahler/sync.py", "tests/test_sync.py"])
+        self.assertEqual(self.led.get_kv("intake_hold:x#25"), "")
+        self.assertEqual(self.led.get_kv("intake_trust_format:x"), "1")
+
+        self.gh.open_issues.reset_mock()
+        sync.sync(self.ctx, "x")
+        self.gh.open_issues.assert_not_called()
+
 
 class RepositoryAccessAlertTests(unittest.TestCase):
     def setUp(self):
