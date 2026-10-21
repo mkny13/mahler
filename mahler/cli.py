@@ -1137,6 +1137,30 @@ def cmd_peak(a, cfg, led):
     return 0
 
 
+def cmd_prioritize(a, cfg, led):
+    enabled = {p["name"] for p in config.enabled_projects(cfg)}
+    if a.project not in enabled:
+        print(f"unknown or disabled project: {a.project}")
+        return 1
+
+    if a.duration == "off":
+        boost = led.priority_boost()
+        if not boost or boost["project"] != a.project:
+            print(f"no matching boost is active for {a.project}")
+            return 1
+        led.stop_priority_boost(a.project)
+        print(f"{a.project}: priority boost stopped")
+        return 0
+
+    try:
+        record = led.start_priority_boost(a.project, a.duration)
+        print(f"{a.project}: prioritized until {record['expires_at']}")
+        return 0
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+
+
 def cmd_console_walkthrough(a, cfg, led):
     from . import console_walkthrough
     return console_walkthrough.run(cfg, a.platform)
@@ -1375,6 +1399,11 @@ def build_parser(cfg=None):
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
     sub.add_parser("resume").set_defaults(fn=cmd_resume)
+
+    s = sub.add_parser("prioritize", help="prioritize a project's candidates for 1h, 1d, 1w, or off")
+    s.add_argument("project", help="enabled project name")
+    s.add_argument("duration", choices=["1h", "1d", "1w", "off"], help="duration (1h, 1d, 1w) or 'off'")
+    s.set_defaults(fn=cmd_prioritize)
 
     s = sub.add_parser("unhold", help="clear an explicit platform hold")
     s.add_argument("platform")
