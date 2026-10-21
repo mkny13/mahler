@@ -195,6 +195,7 @@ DEFAULTS = {
         "rules": "",                   # extra project rules appended to build/sort prompts
         "size_target": None,           # "" (no preference) or "s" (decompose to small PRs); default depends on accounts
         "maintenance": DEFAULT_MAINTENANCE,
+        "require_scoped_identity": False,
     },
     # `total` is the hard overall ceiling (blast radius). `by_tier` (optional,
     # mahler#200) layers a finer cap under it, keyed by the same `tier` field
@@ -787,32 +788,98 @@ def validate_post_merge(cfg):
                 raise ValueError(f"{prefix}: smoke must be a command string")
 
 
+def resolve_github_app_provider(cfg, pol):
+    """Resolve (provider_name, provider_dict) for a project policy, or (None, None)."""
+    if isinstance(pol, str):
+        pol = project_policy(cfg, pol)
+
+    explicit_provider = pol.get("github_provider") or (
+        pol.get("github_app") if isinstance(pol.get("github_app"), str) else None
+    )
+
+    named_apps = cfg.get("github_apps", {})
+    if named_apps and not isinstance(named_apps, dict):
+        raise ValueError("github_apps must be a table")
+
+    default_app = cfg.get("github_app", {})
+    if default_app and not isinstance(default_app, dict):
+        raise ValueError("github_app must be a table")
+
+    if explicit_provider:
+        if isinstance(named_apps, dict) and explicit_provider in named_apps:
+            p_dict = named_apps[explicit_provider]
+            if not isinstance(p_dict, dict):
+                raise ValueError(f"github_apps.{explicit_provider} must be a table")
+            return explicit_provider, p_dict
+        if isinstance(default_app, dict) and explicit_provider in default_app and isinstance(default_app[explicit_provider], dict):
+            return explicit_provider, default_app[explicit_provider]
+        if explicit_provider in ("default", "personal") and default_app:
+            return "default", default_app
+        return explicit_provider, None
+
+    # No explicit provider requested
+    if "github_app_installation_id" in pol or gh_account_of(pol) == DEFAULT_ACCOUNT:
+        if isinstance(default_app, dict) and any(k in default_app for k in ("app_id", "installation_id", "private_key_path")):
+            return "default", default_app
+        if isinstance(named_apps, dict) and "personal" in named_apps:
+            return "personal", named_apps["personal"]
+        if isinstance(named_apps, dict) and "default" in named_apps:
+            return "default", named_apps["default"]
+
+    return None, None
+
+
 def github_app_settings(cfg, pol):
     """Resolve only conductor configuration; never export it through run_env."""
     if isinstance(pol, str):
         pol = project_policy(cfg, pol)
-    app = cfg.get("github_app", {})
-    if not isinstance(app, dict):
-        raise ValueError("github_app must be a table")
-    installation = pol.get("github_app_installation_id", app.get("installation_id"))
+    provider_name, app = resolve_github_app_provider(cfg, pol)
+    if provider_name is not None and app is None:
+        proj_name = pol.get("name", "project")
+        raise ValueError(f"project {proj_name!r}: unknown github_provider {provider_name!r}")
+
+    installation = pol.get("github_app_installation_id", app.get("installation_id") if app else None)
     if not app and installation is None:
         return None
-    for key, value in (("app_id", app.get("app_id")), ("installation_id", installation)):
+
+    if app and "repositories" in app:
+        repos = app["repositories"]
+        if not isinstance(repos, (list, tuple)):
+            label = f"github_apps.{provider_name}" if provider_name and provider_name != "default" else "github_app"
+            raise ValueError(f"{label}: repositories must be a list of repository names")
+        proj_repo = pol.get("repo", "")
+        repo_base = proj_repo.rsplit("/", 1)[-1]
+        if proj_repo not in repos and repo_base not in repos:
+            return None
+
+    label = f"github_apps.{provider_name}" if provider_name and provider_name != "default" else "github_app"
+    for key, value in (("app_id", app.get("app_id") if app else None), ("installation_id", installation)):
         text = str(value or "")
         if isinstance(value, bool) or not text.isascii() or not text.isdigit() or int(value) <= 0:
-            raise ValueError(f"github_app requires a positive {key}; "
+            raise ValueError(f"{label} requires a positive {key}; "
                              "set it globally or override the project's installation id")
-    key_path = app.get("private_key_path")
-    if "private_key_path" not in app and "private_key" in app:
-        raise ValueError("github_app: private_key is unsupported; use private_key_path "
+    key_path = app.get("private_key_path") if app else None
+    if app and "private_key_path" not in app and "private_key" in app:
+        raise ValueError(f"{label}: private_key is unsupported; use private_key_path "
                          "with the path to the private key file")
     if not isinstance(key_path, str) or not key_path.strip() or "\x00" in key_path:
-        raise ValueError("github_app requires private_key_path")
-    # An installation override is explicit opt-in. The global installation
-    # belongs to the personal identity, never to an unrelated work login.
-    if "github_app_installation_id" not in pol and gh_account_of(pol) != DEFAULT_ACCOUNT:
+        raise ValueError(f"{label} requires private_key_path")
+
+    if "github_app_installation_id" not in pol and gh_account_of(pol) != DEFAULT_ACCOUNT and not (
+        pol.get("github_provider") or (pol.get("github_app") if isinstance(pol.get("github_app"), str) else None)
+    ):
         return None
     return str(app["app_id"]), str(installation), key_path
+
+
+def project_github_app_cache_dir(cfg, pol):
+    """Return the private token cache directory for the project's provider."""
+    if isinstance(pol, str):
+        pol = project_policy(cfg, pol)
+    provider_name, _ = resolve_github_app_provider(cfg, pol)
+    if provider_name in (None, "default", "personal"):
+        return os.path.join(STATE, "github-app-tokens")
+    return os.path.join(STATE, "github-app-tokens", provider_name)
 
 
 def project_github_app(cfg, pol, cache_dir=None):
@@ -829,17 +896,65 @@ def project_github_app(cfg, pol, cache_dir=None):
     settings = github_app_settings(cfg, pol)
     if settings is None:
         return None
-    cache = cache_dir or os.path.join(STATE, "github-app-tokens")
+    cache = cache_dir or project_github_app_cache_dir(cfg, pol)
     return github_app.Installation(*settings, cache_dir=cache)
 
 
 def validate_github_app(cfg):
-    projects = list(cfg.get("projects", {}).values())
+    named_apps = cfg.get("github_apps", {})
+    if named_apps:
+        if not isinstance(named_apps, dict):
+            raise ValueError("github_apps must be a table")
+        for name, p_dict in named_apps.items():
+            if not isinstance(p_dict, dict):
+                raise ValueError(f"github_apps.{name} must be a table")
+            if "app_id" in p_dict:
+                val = p_dict["app_id"]
+                text = str(val or "")
+                if isinstance(val, bool) or not text.isascii() or not text.isdigit() or int(val) <= 0:
+                    raise ValueError(f"github_apps.{name} requires a positive app_id; "
+                                     "set it globally or override the project's installation id")
+            if p_dict.get("installation_id") is not None:
+                val = p_dict["installation_id"]
+                text = str(val or "")
+                if isinstance(val, bool) or not text.isascii() or not text.isdigit() or int(val) <= 0:
+                    raise ValueError(f"github_apps.{name} requires a positive installation_id; "
+                                     "set it globally or override the project's installation id")
+            if "private_key_path" not in p_dict and "private_key" in p_dict:
+                raise ValueError(f"github_apps.{name}: private_key is unsupported; use private_key_path "
+                                 "with the path to the private key file")
+            if "private_key_path" in p_dict:
+                kp = p_dict["private_key_path"]
+                if not isinstance(kp, str) or not kp.strip() or "\x00" in kp:
+                    raise ValueError(f"github_apps.{name} requires private_key_path")
+            if "repositories" in p_dict:
+                if not isinstance(p_dict["repositories"], (list, tuple)) or not all(
+                    isinstance(r, str) and r.strip() for r in p_dict["repositories"]
+                ):
+                    raise ValueError(f"github_apps.{name}: repositories must be a list of repository names")
+
+    projects = list(cfg.get("projects", {}).items())
     app = cfg.get("github_app", {})
     if not projects or not isinstance(app, dict) or app.get("installation_id") is not None:
         github_app_settings(cfg, {})
-    for project in projects:
-        github_app_settings(cfg, project)
+    for proj_name, project in projects:
+        proj_policy = {**project, "name": proj_name}
+        settings = github_app_settings(cfg, proj_policy)
+        require_scoped = (
+            project.get("require_scoped_identity")
+            or project.get("require_scoped_run_identity")
+            or (cfg.get("defaults") or {}).get("require_scoped_identity")
+            or (cfg.get("defaults") or {}).get("require_scoped_run_identity")
+        )
+        if require_scoped:
+            if settings is None:
+                provider_name, p_dict = resolve_github_app_provider(cfg, proj_policy)
+                if provider_name and p_dict and "repositories" in p_dict:
+                    repo = project.get("repo", "")
+                    repo_base = repo.rsplit("/", 1)[-1]
+                    if repo not in p_dict["repositories"] and repo_base not in p_dict["repositories"]:
+                        raise ValueError(f"project {proj_name!r}: GitHub provider {provider_name!r} does not cover repository {repo!r}")
+                raise ValueError(f"project {proj_name!r}: requires scoped run identity but no approved GitHub provider is configured")
 
 
 def settings(cfg):
@@ -1387,7 +1502,8 @@ def run_env(cfg, account, base=None):
 
 def project_policy(cfg, name):
     """Defaults overlaid with one project's own entry."""
-    pol = {**_merge(cfg["defaults"], cfg["projects"].get(name, {})), "name": name}
+    defaults = cfg.get("defaults") or {}
+    pol = {**_merge(defaults, cfg.get("projects", {}).get(name, {})), "name": name}
     pol.setdefault("explore", DEFAULT_ACCOUNT in accounts_of(pol))
     return pol
 

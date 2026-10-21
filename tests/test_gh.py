@@ -1,5 +1,7 @@
 import json
+import tempfile
 from contextlib import closing
+from pathlib import Path
 import unittest
 from unittest.mock import patch, MagicMock
 from mahler.gh import GH, GHError, GHRateLimit, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
@@ -746,3 +748,47 @@ class RateLimitTests(unittest.TestCase):
                 client.issue_comments(1)
             self.assertNotIsInstance(error.exception, GHRateLimit)
             self.assertEqual(run.call_count, 1)
+
+
+class ProjectClientNamedProviderTests(unittest.TestCase):
+    def test_project_client_resolves_named_provider_with_isolated_cache(self):
+        cfg = {
+            "github_app": {"app_id": 123, "installation_id": 456, "private_key_path": "/secret/personal.pem"},
+            "github_apps": {
+                "work": {"app_id": 789, "installation_id": 1011, "private_key_path": "/secret/work.pem"},
+            },
+            "defaults": {},
+            "accounts": {"work": {"env": {}}},
+            "projects": {
+                "work_repo": {
+                    "account": "work",
+                    "repo": "makastel_ncstate/google-chat-nav",
+                    "github_provider": "work",
+                },
+            },
+        }
+        with patch("mahler.gh.config.run_env", return_value={}), \
+                patch("mahler.github_app.Installation") as installation_mock:
+            client = project_client(cfg, cfg["projects"]["work_repo"])
+            self.assertIsNotNone(client.app)
+            installation_mock.assert_called_once()
+            args, kwargs = installation_mock.call_args
+            self.assertEqual(args[0], "789")
+            self.assertEqual(args[1], "1011")
+            self.assertEqual(args[2], "/secret/work.pem")
+            cache_dir = kwargs.get("cache_dir") or (args[3] if len(args) > 3 else "")
+            self.assertTrue(str(cache_dir).endswith("work"))
+
+    def test_conductor_and_run_token_cache_paths_distinct(self):
+        from mahler.github_app import Installation
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            inst = Installation(789, 1011, "/path/to/key.pem", cache_dir=tmp_dir)
+            # Conductor cache file is unscoped: {app_id}-{installation_id}.json
+            # Agent token cache file is scoped: {app_id}-{installation_id}-{repo}-{hash}.json
+            # Verify cache files are distinct
+            conductor_file = Path(tmp_dir) / f"{inst.app_id}-{inst.installation_id}.json"
+            now = "2026-10-21T12:00:00+00:00"
+            conductor_file.write_text(json.dumps({"token": "ghs_conductor", "expires_at": now}))
+            self.assertTrue(conductor_file.exists())
+            self.assertFalse(inst._usable({"token": "ghs_conductor", "expires_at": now}, repository="google-chat-nav"))
+

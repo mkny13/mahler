@@ -986,6 +986,136 @@ class RunEnvTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     runner.run_env(ctx, "acme", 1144, "claude", 42, 7)
 
+    def test_require_scoped_identity_blocks_ambient_credentials_and_personal_app(self):
+        """Negative/abuse test: requiring scoped run identity refuses ambient credentials."""
+        for project_name, repo_name in (
+            ("google-chat-nav", "makastel_ncstate/google-chat-nav"),
+            ("google-workspace-connector", "makastel_ncstate/google-workspace-connector"),
+            ("sit-stand-walk", "makastel_ncstate/sit-stand-walk"),
+        ):
+            with self.subTest(project=project_name), tempfile.TemporaryDirectory() as d:
+                repo_dir = os.path.join(d, "repo")
+                os.makedirs(repo_dir, exist_ok=True)
+                policy = {
+                    "path": repo_dir,
+                    "repo": repo_name,
+                    "base": "main",
+                    "account": "work",
+                    "link": [],
+                    "rules": "",
+                    "run_timeout_minutes": 60,
+                    "require_scoped_identity": True,
+                }
+                ctx = SimpleNamespace(
+                    cfg={
+                        "platforms": {"work-claude": {"kind": "claude", "account": "work"}},
+                        "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}},
+                        # Personal App is configured, but should NEVER be used for work repo
+                        "github_app": {
+                            "app_id": 12345,
+                            "installation_id": 67890,
+                            "private_key_path": "/secret/personal.pem",
+                        },
+                    },
+                    policy=lambda p, pol=policy: pol,
+                )
+                runs_dir = os.path.join(d, "runs")
+                ambient_env = {
+                    "GH_TOKEN": "ambient_broad_personal_token",
+                    "GITHUB_TOKEN": "ambient_broad_oauth_token",
+                    "GH_CONFIG_DIR": os.path.join(d, "ambient_gh"),
+                    "PATH": "/usr/bin:/bin",
+                }
+                with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                        mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                        mock.patch.dict(os.environ, ambient_env, clear=True):
+                    with self.assertRaises(ValueError) as caught:
+                        runner.run_env(ctx, project_name, 1145, "work-claude", 42, 7)
+                    self.assertIn(project_name, str(caught.exception))
+                    self.assertNotIn("/secret", str(caught.exception))
+                    self.assertNotIn("ambient_broad", str(caught.exception))
+
+    def test_work_project_with_approved_work_provider_launches_scoped(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir,
+                "repo": "makastel_ncstate/google-chat-nav",
+                "base": "main",
+                "account": "work",
+                "github_provider": "work",
+                "require_scoped_identity": True,
+                "link": [],
+                "rules": "",
+                "run_timeout_minutes": 60,
+            }
+            app_mock = mock.MagicMock()
+            app_mock.agent_token.return_value = "ghs_work_scoped_token"
+
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"work-claude": {"kind": "claude", "account": "work"}},
+                    "accounts": {"work": {"env": {}}},
+                    "github_apps": {
+                        "work": {
+                            "app_id": 9999,
+                            "installation_id": 8888,
+                            "private_key_path": "/secret/work.pem",
+                        },
+                    },
+                },
+                policy=lambda p: policy,
+            )
+            runs_dir = os.path.join(d, "runs")
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=app_mock):
+                env = runner.run_env(ctx, "google-chat-nav", 1145, "work-claude", 42, 7)
+
+            app_mock.agent_token.assert_called_once_with("google-chat-nav")
+            self.assertEqual(env["GH_TOKEN"], "ghs_work_scoped_token")
+            self.assertTrue(env["GH_CONFIG_DIR"].endswith("gh"))
+            self.assertEqual(env.get("GIT_CONFIG_KEY_1"), "credential.helper")
+            self.assertEqual(env.get("GIT_CONFIG_VALUE_1"), "")
+
+    def test_provider_selection_follows_project_not_platform_account(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            # Project uses work github identity, but runs on personal AI platform
+            policy = {
+                "path": repo_dir,
+                "repo": "makastel_ncstate/google-chat-nav",
+                "base": "main",
+                "accounts": ["personal", "work"],
+                "github_provider": "work",
+                "require_scoped_identity": True,
+                "link": [],
+                "rules": "",
+                "run_timeout_minutes": 60,
+            }
+            work_app_mock = mock.MagicMock()
+            work_app_mock.agent_token.return_value = "ghs_work_scoped_token"
+
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"codex": {"kind": "codex", "account": "personal"}},
+                    "accounts": {"personal": {"env": {}}, "work": {"env": {}}},
+                    "github_app": {"app_id": 111, "installation_id": 222, "private_key_path": "/secret/p.pem"},
+                    "github_apps": {"work": {"app_id": 999, "installation_id": 888, "private_key_path": "/secret/w.pem"}},
+                },
+                policy=lambda p: policy,
+            )
+            runs_dir = os.path.join(d, "runs")
+            with mock.patch.object(config, "RUNS_DIR", runs_dir), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
+                    mock.patch.object(config, "project_github_app", return_value=work_app_mock):
+                env = runner.run_env(ctx, "google-chat-nav", 1145, "codex", 42, 7)
+
+            work_app_mock.agent_token.assert_called_once_with("google-chat-nav")
+            self.assertEqual(env["GH_TOKEN"], "ghs_work_scoped_token")
+
 
 class SpawnStdinTests(unittest.TestCase):
     """runner.spawn supports stdin_path redirection (mahler#426)."""
