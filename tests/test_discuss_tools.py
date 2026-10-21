@@ -51,6 +51,7 @@ class DiscussionToolsTests(unittest.TestCase):
                       'url': 'https://github.com/owner/repo/issues/12', 'version': 'v1'}
         self.gh.discussion_issue.side_effect = lambda n: copy.deepcopy(self.issue)
         self.gh.authenticated_login.return_value = 'mike'
+        self.gh.app_login.return_value = None
         self.gh.issue_by_marker.return_value = None
         self.gh.create_issue.return_value = self.issue['url']
         self.gh.discussion_edit.return_value = self.issue['url']
@@ -158,6 +159,34 @@ class DiscussionToolsTests(unittest.TestCase):
         self.gh.authenticated_login.side_effect = GHError('no identity')
         self.issue['comments'] = [{'body': 'x', 'author': {'login': 'mike'}, 'authorAssociation': 'NONE'}]
         self.assertEqual(self.call('get_item', number=12)['comments'], [])
+
+    def test_configured_app_issue_is_admitted_but_app_comments_stay_hidden(self):
+        self.gh.app_login.return_value = 'app/project-conductor'
+        self.cfg['projects']['p']['scope'] = 'all'
+        self.issue.update(authorLogin='app/project-conductor', authorAssociation='CONTRIBUTOR',
+                          labels=[])
+        self.issue['comments'] = [
+            {'body': 'agent output', 'author': {'login': 'app/project-conductor'},
+             'authorAssociation': 'CONTRIBUTOR'},
+            {'body': 'owner instruction', 'author': {'login': 'owner'},
+             'authorAssociation': 'OWNER'},
+        ]
+        visible = self.call('get_item', number=12)
+        self.assertEqual([comment['body'] for comment in visible['comments']],
+                         ['owner instruction'])
+
+        self.issue.update(authorLogin='app/other-app', authorAssociation='CONTRIBUTOR')
+        with self.assertRaisesRegex(ValueError, 'not admitted'):
+            self.call('get_item', number=12)
+
+    def test_app_identity_failure_does_not_break_or_widen_issue_admission(self):
+        self.gh.app_login.side_effect = GHError('offline')
+        self.cfg['projects']['p']['scope'] = 'all'
+        self.issue.update(authorLogin='app/project-conductor', authorAssociation='CONTRIBUTOR',
+                          labels=[])
+        with self.assertRaisesRegex(ValueError, 'not admitted'):
+            self.call('get_item', number=12)
+        self.gh.app_login.assert_called_once_with()
 
     def test_reconciliation_sees_raw_marker_not_exposed_to_model(self):
         def comment(number, body):

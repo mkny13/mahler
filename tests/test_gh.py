@@ -18,6 +18,14 @@ class TestGH(unittest.TestCase):
         self.assertTrue(body.startswith(AGENT_NOTE))
         self.assertIn("Superseded by #9", body)
 
+    def test_app_login_exposes_only_configured_app_identity(self):
+        self.assertIsNone(self.gh.app_login())
+        app = MagicMock()
+        app.app_login.return_value = "app/project-conductor"
+        client = GH("mkny13/mahler", app=app)
+        self.assertEqual(client.app_login(), "app/project-conductor")
+        app.app_login.assert_called_once_with()
+
     def test_parent_inventory_paginates_and_excludes_prs(self):
         self.gh._gh.side_effect = [json.dumps([{"number": n} for n in range(100)]),
                                   json.dumps([{"number": 101}, {"number": 102, "pull_request": {}}])]

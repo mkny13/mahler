@@ -25,6 +25,10 @@ def response(token=TOKEN, expiry=NOW + 3600):
         datetime.fromtimestamp(expiry, timezone.utc).isoformat()}).encode())
 
 
+def app_response(slug):
+    return io.BytesIO(json.dumps({"slug": slug}).encode())
+
+
 class InstallationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -54,6 +58,53 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(req.get_header("Authorization"),
                          "Bearer " + message + "." + github_app._b64(b"signature"))
         self.assertEqual(self.http.call_args.kwargs["timeout"], 30)
+
+    def test_app_login_resolves_from_metadata_and_reuses_private_cache(self):
+        self.http.side_effect = lambda *a, **kw: app_response("test-conductor")
+        self.assertEqual(self.app.app_login(), "app/test-conductor")
+        request = self.http.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.github.com/app")
+        self.assertEqual(request.get_method(), "GET")
+        self.assertTrue(request.get_header("Authorization").startswith("Bearer "))
+
+        path = self.cache / "123-app.json"
+        self.assertEqual(stat.S_IMODE(self.cache.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(self.app.app_login(), "app/test-conductor")
+        other_installation = github_app.Installation(
+            123, 999, "/different/key.pem", self.cache)
+        self.assertEqual(other_installation.app_login(), "app/test-conductor")
+        self.assertEqual(self.http.call_count, 1)
+
+    def test_app_login_cache_is_scoped_to_exact_app(self):
+        self.http.side_effect = [app_response("first-app"), app_response("second-app")]
+        self.assertEqual(self.app.app_login(), "app/first-app")
+        other_app = github_app.Installation(321, 456, "/secret/key.pem", self.cache)
+        self.assertEqual(other_app.app_login(), "app/second-app")
+        self.assertEqual(self.http.call_count, 2)
+        self.assertEqual(json.loads((self.cache / "123-app.json").read_text())["slug"],
+                         "first-app")
+        self.assertEqual(json.loads((self.cache / "321-app.json").read_text())["slug"],
+                         "second-app")
+
+    def test_app_login_errors_are_secret_safe_and_fail_closed(self):
+        for result in ({}, {"slug": ""}, {"slug": "other/app"}, {"slug": 123}):
+            with self.subTest(result=result):
+                self.http.side_effect = lambda *a, _result=result, **kw: io.BytesIO(
+                    json.dumps(_result).encode())
+                with self.assertRaisesRegex(GHError, "identity lookup failed") as caught:
+                    self.app.app_login()
+                rendered = ''.join(traceback.format_exception(caught.exception))
+                self.assertNotIn("/secret/key.pem", rendered)
+                self.assertNotIn(TOKEN, rendered)
+                self.assertFalse((self.cache / "123-app.json").exists())
+
+        self.http.side_effect = OSError(TOKEN + "/secret/key.pem")
+        with self.assertRaisesRegex(GHError, "identity lookup failed") as caught:
+            self.app.app_login()
+        rendered = ''.join(traceback.format_exception(caught.exception))
+        self.assertNotIn("/secret/key.pem", rendered)
+        self.assertNotIn(TOKEN, rendered)
 
     def test_disk_reuse_and_early_refresh(self):
         self.app.token()
