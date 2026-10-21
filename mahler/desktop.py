@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime
 
 from . import config
@@ -66,8 +67,9 @@ def parse_idle_ns(text):
 
 
 def probe_session():
-    """Raise Deferred unless this user owns an unlocked console GUI session,
-    read from `ioreg -n Root -d1 -a` (mahler#1172). A locked screen passes the
+    """Raise Deferred unless this user owns the console GUI session, read from
+    `ioreg -n Root -d1 -a` (mahler#1172); return True when the screen is
+    shielded (locked) and False when it is open. A locked screen passes the
     idle check, so without this a GUI run starts and fails on the lock screen."""
     if sys.platform != "darwin":
         raise Deferred("unsupported host: the console session is only readable on macOS")
@@ -102,15 +104,28 @@ def parse_session(root, uid):
     if user.get("kCGSessionLoginDoneKey") is not True:
         raise Deferred("no GUI session: console login has not finished")
     locked = (root.get("IOConsoleLocked"), user.get("CGSSessionScreenIsLocked"))
-    if True in locked:
-        raise Deferred("locked: the screen is locked (CGSSessionScreenIsLocked)")
-    if any(v not in (None, False) for v in locked):
+    if any(v not in (None, True, False) for v in locked):
         raise Deferred("session unknown: malformed screen-lock reading")
+    return True in locked
+
+
+def probe_password_free():
+    """True when waking needs no password (`sysadminctl -screenLock status`
+    says off). A sleeping display still raises the lock shield then, and any
+    user activity lifts it. Every failure reads as False (a password needed)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["sysadminctl", "-screenLock", "status"], capture_output=True,
+                             text=True, timeout=IOREG_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(re.search(r"\bscreenLock is off\b", (out.stdout or "") + (out.stderr or "")))
 
 
 def wake_display():
-    """Best effort: assert user activity briefly so a sleeping display wakes
-    before the GUI run starts. Never blocks the launch."""
+    """Best effort: declare user activity so a sleeping display wakes and a
+    password-free lock shield lifts before the GUI run starts."""
     if sys.platform != "darwin":
         return
     try:
@@ -129,11 +144,11 @@ def _fmt_idle(seconds):
     return f"{seconds:.0f}s" if seconds < 120 else f"{seconds / 60:.1f}m"
 
 
-def check(minutes, window, scheduled=False, probe=None, now=None, session=None):
-    """Return a one-line 'ok' reason, or raise Deferred. Reads the clock and
-    each probe at most once."""
+def _check(minutes, window, scheduled, probe, now, session, password_free):
+    """-> (reason, shielded); raises Deferred."""
     probe = probe or probe_idle_ns
     session = session or probe_session
+    password_free = password_free or probe_password_free
     if scheduled and window:
         t = (now or datetime.now)().time()
         if not in_window(window, t):
@@ -143,8 +158,23 @@ def check(minutes, window, scheduled=False, probe=None, now=None, session=None):
     need = minutes * 60
     if idle < need:
         raise Deferred(f"in use: idle {_fmt_idle(idle)} < {minutes:g}m")
-    session()
-    return f"free: idle {_fmt_idle(idle)} >= {minutes:g}m"
+    reason = f"free: idle {_fmt_idle(idle)} >= {minutes:g}m"
+    if not session():
+        return reason, False
+    if not password_free():
+        raise Deferred("locked: the screen is locked and waking it needs a password")
+    return reason + " (display asleep; the lock shield lifts on wake)", True
+
+
+def check(minutes, window, scheduled=False, probe=None, now=None, session=None,
+          password_free=None):
+    """Return a one-line 'ok' reason, or raise Deferred. Reads the clock and
+    each probe at most once. A shielded screen that needs no password counts as
+    open: it is only a sleeping display, and `run` wakes it before launching."""
+    return _check(minutes, window, scheduled, probe, now, session, password_free)[0]
+
+
+WAKE_SETTLE = 3     # seconds for loginwindow to lift the shield after a wake
 
 
 def settings(cfg, project=None):
@@ -190,8 +220,12 @@ def run_command(argv, minutes, window, scheduled=False, probe=None, now=None):
     if fd is None:
         raise _lock_busy()
     try:
-        check(minutes, window, scheduled, probe, now)
+        _, shielded = _check(minutes, window, scheduled, probe, now, None, None)
         wake_display()
+        if shielded:
+            time.sleep(WAKE_SETTLE)
+            if probe_session():
+                raise Deferred("locked: the screen stayed locked after waking the display")
         os.set_inheritable(fd, True)
         try:
             child = subprocess.Popen(argv, pass_fds=(fd,))

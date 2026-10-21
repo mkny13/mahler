@@ -2941,17 +2941,25 @@ project.
 ### D50 — Unattended macOS smoke: an unlocked session, a sleeping display (mahler#1172)
 
 Decided 2026-10-21 (owner). couch-tour#686 (smoke for
-v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. The mini's
-session locks overnight, so D40's idle check passed, the run started, and the smoke runner
-found the lock screen. Android passed on the `phishin_test` AVD, but macOS never ran.
+v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. A sleeping
+display looks idle, so D40's idle check passed, the run started, and the smoke runner found
+the lock shield. Android passed on the `phishin_test` AVD, but macOS never ran.
 couch-tour#251 wants promotion gated on a smoke PASS, so macOS smoke has to run with nobody
 present.
 
+- **Why it was "locked".** With "Require password" = Never, a sleeping display still raises
+  loginwindow's lock shield (`kLWLockFromDisplayDim`), and `CGSSessionScreenIsLocked` reads
+  true. Any user activity lifts it in under a second with no password; the 2026-10-20 20:26
+  unlock shows this. The display had been off since 08:03, so the 14:26 runs met the shield.
+  It was no manual lock, and no Screen Sharing session either: the MBP's session connected at
+  20:26 that evening and detached 2026-10-21 12:59.
 - **The gate checks the session too.** Besides HIDIdleTime, `mahler desktop` now requires
   that this user owns the one console session, that login has finished, and that the screen
-  is not locked (`ioreg -n Root -d1 -a`: `IOConsoleUsers`, `CGSSessionScreenIsLocked`,
-  `IOConsoleLocked`). These fail closed like the idle probe. Once the gate opens,
-  `caffeinate -u -t 2` wakes a sleeping display before the command starts (best effort).
+  is open (`ioreg -n Root -d1 -a`: `IOConsoleUsers`, `CGSSessionScreenIsLocked`,
+  `IOConsoleLocked`). Unreadable readings fail closed. A shielded screen counts as open
+  only when waking needs no password (`sysadminctl -screenLock status` says off). Then
+  `run` declares user activity (`caffeinate -u -t 2`), waits 3 s and reads the session
+  again, deferring if the shield is still up. A lock that needs a password always defers.
 - **A deferred GUI deliverable parks; it doesn't fail.** When the GUI run *is* the task, as
   with a smoke run, the recipe ends `STATUS: BLOCKED desktop gate: <message>`. Finalize
   recognises that (or "screen is still locked"), parks the item without charging an
@@ -2988,8 +2996,5 @@ present.
 - **Chosen: the unlocked session.** On 2026-10-21 the mini already had these settings:
   `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver begins
   or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system sleep
-  0, and the display off after 3 hours. The 2026-10-20 failures ran at about 14:26, in the
-  day. The power log shows the display on at 08:03:20 and off at 08:03:33, which is a
-  manual lock (⌃⌘Q) as the owner left, not a setting. **A manual lock is the owner's
-  choice. Smoke now waits it out instead of failing.** Agents never change these settings,
-  because security settings are the owner's.
+  0, and the display off after 3 hours. No change is needed beyond waking the display as
+  above. Agents never change these settings, because security settings are the owner's.
