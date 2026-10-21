@@ -496,7 +496,8 @@ class ProjectScopeStateTests(unittest.TestCase):
                        if row["name"] == "groundwork")
         self.assertEqual(summary, {
             "name": "groundwork", "status": "running", "running": 1, "queued": 1,
-            "waiting_on_you": 1, "paused": False, "current_version": "2.4.1"})
+            "waiting_on_you": 1, "paused": False, "project_paused": False,
+        "current_version": "2.4.1"})
         queued_summary = next(row for row in selected["scope_options"]
                               if row["name"] == "mahler")
         self.assertEqual((queued_summary["status"], queued_summary["queued"],
