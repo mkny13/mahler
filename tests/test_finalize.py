@@ -2217,7 +2217,9 @@ class ResumeNudgeTests(unittest.TestCase):
         with open(expected_path) as fh:
             prompt_content = fh.read()
         self.assertIn("You stopped before finishing. Carry on with the next step of your instructions, and end with the STATUS line.", prompt_content)
-        self.assertIn("If your work is done, commit and push it first.", prompt_content)
+        self.assertIn("commit it locally", prompt_content)
+        self.assertIn("the conductor snapshots and pushes", prompt_content.lower())
+        self.assertNotIn("push it", prompt_content.lower())
 
 
 class FinalizeConductorPushTests(unittest.TestCase):

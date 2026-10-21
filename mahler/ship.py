@@ -1910,18 +1910,21 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         plan_text = _format_design_plan(design_plan)
         context = (
             "- a design pass produced this implementation plan for the blocking review issues; "
-            f"execute every step, verify, push, and end with STATUS: DONE:\n\n{plan_text}"
+            f"execute every step, verify, commit locally, and end with STATUS: DONE; "
+            f"the conductor pushes the branch:\n\n{plan_text}"
         )
     elif findings:
         context = ("- an independent review of this PR found blocking issues (posted as a PR "
-                   f"comment already); address every one of them, verify, push, and end with "
-                   f"STATUS: DONE:\n\n{findings}")
+                   f"comment already); address every one of them, verify, commit locally, "
+                   f"and end with STATUS: DONE; the conductor pushes the branch:\n\n{findings}")
     else:
         context = ("- an independent review of this PR found blocking issues (see the PR "
-                   "comments); address them, verify, push, and end with STATUS: DONE")
+                   "comments); address them, verify, commit locally, and end with STATUS: DONE; "
+                   "the conductor pushes the branch")
     if previous_fix:
-        context = (f"- the previous fix run (run {previous_fix['id']}) pushed nothing to `{head}`. "
-                   f"Push to the PR head with `git push origin HEAD:{head}`.\n" + context)
+        context = (f"- the previous fix run (run {previous_fix['id']}) left no new commit on "
+                   f"`{head}`. Commit your work locally; the conductor pushes the PR branch.\n" +
+                   context)
     if base_conflict:
         context = findings
     if start(ctx, project, {**item, "branch": head}, "fix", platform,

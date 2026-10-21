@@ -793,6 +793,21 @@ class FixPromptToolchainHandoffTests(unittest.TestCase):
         self.assertLess(rendered.index(".github/workflows/ci.yml"),
                         rendered.index("Review finding: test failure"))
 
+    def test_ci_handoff_does_not_direct_run_to_push(self):
+        self.gh.pr_ci_toolchain_files.return_value = []
+        rendered = prompt.ci_handoff(self.ctx, "p", self.item, "mahler/681-fix")
+        for instruction in ("push your fixes", "git push", "commit and push"):
+            with self.subTest(instruction=instruction):
+                self.assertNotIn(instruction, rendered)
+        self.assertIn("conductor", rendered.lower())
+
+    def test_replayed_build_handoff_keeps_commits_local(self):
+        rendered = prompt.handoff_text("main", replayed=True, kept=None)
+        self.assertIn("commit locally", rendered.lower())
+        for instruction in ("git push", "commit, push", "commit and push"):
+            with self.subTest(instruction=instruction):
+                self.assertNotIn(instruction, rendered)
+
 
 class CodingScopeRecipeTests(unittest.TestCase):
     def test_verification_scope_and_review_in_both_rendered_prompts(self):

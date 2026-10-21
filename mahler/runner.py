@@ -331,6 +331,8 @@ def run_env(ctx, project, number, platform, run_id, epoch):
     if app is not None:
         for var in config.GH_IDENTITY_VARS:
             env.pop(var, None)
+        for var in ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"):
+            env.pop(var, None)
         for k in list(env):
             if k.startswith("GITHUB_APP_") or k.startswith("MAHLER_GITHUB_APP_"):
                 env.pop(k, None)
@@ -342,11 +344,13 @@ def run_env(ctx, project, number, platform, run_id, epoch):
         env["GH_CONFIG_DIR"] = gh_config_dir
         git_config = {
             "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_COUNT": "2",
+            "GIT_CONFIG_COUNT": "3",
             "GIT_CONFIG_KEY_0": "core.hooksPath",
             "GIT_CONFIG_VALUE_0": hooks,
             "GIT_CONFIG_KEY_1": "credential.helper",
             "GIT_CONFIG_VALUE_1": "",
+            "GIT_CONFIG_KEY_2": "core.askPass",
+            "GIT_CONFIG_VALUE_2": "",
         }
     else:
         getattr(ctx, "say", print)(f"{project}#{number}: warning: non-App project using transitional GitHub identity (migration tracked in #1145)")

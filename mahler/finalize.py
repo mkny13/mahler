@@ -1291,7 +1291,8 @@ def _try_cline_nudge(ctx, run, kind, log, pol):
     resume_file = os.path.join(run_dir, f"resume-{next_nudged}.md")
     nudge_prompt = ("You stopped before finishing. Carry on with the next step of "
                     "your instructions, and end with the STATUS line. "
-                    "If your work is done, commit and push it first.")
+                    "If your work is done, commit it locally first; the conductor snapshots "
+                    "and pushes the branch.")
     with open(resume_file, "w") as fh:
         fh.write(nudge_prompt)
 

@@ -436,7 +436,10 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
         self.assertEqual(self.item()["attempts"], 2)
-        self.assertIn("pushed nothing", self.same_head_calls[-1][2]["context"])
+        context = self.same_head_calls[-1][2]["context"]
+        self.assertIn("left no new commit", context)
+        self.assertIn("commit locally", context)
+        self.assertNotIn("git push", context)
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
         self.assertEqual(self.item()["attempts"], 2)
@@ -1811,6 +1814,10 @@ class ShipTests(unittest.TestCase):
         role, platform, context = calls[0]
         self.assertEqual(role, "fix")
         self.assertIn("auth.py: missing null check on session token", context)
+        self.assertIn("commit locally", context.lower())
+        for instruction in ("git push", "push to the PR head", "verify, push"):
+            with self.subTest(instruction=instruction):
+                self.assertNotIn(instruction, context)
         self.assertEqual(self.item()["attempts"], 1)
 
     def test_review_fix_trigger_links_verdict_and_distinguishes_cases(self):

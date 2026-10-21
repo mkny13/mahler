@@ -877,27 +877,52 @@ class RunEnvTests(unittest.TestCase):
                 policy=lambda project: policy,
             )
             runs_dir = os.path.join(d, "runs")
+            global_config = os.path.join(d, "operator.gitconfig")
+            with open(global_config, "w") as f:
+                f.write('[credential]\nhelper = "!f() { echo operator-broad-secret; }; f"\n')
+            askpass = os.path.join(d, "operator-askpass")
+            with open(askpass, "w") as f:
+                f.write("#!/bin/sh\nprintf '%s\\n' operator-broad-secret\n")
+            os.chmod(askpass, 0o700)
+            with open(global_config, "a") as f:
+                f.write(f"\n[core]\n\taskPass = {askpass}\n")
             with mock.patch.object(config, "RUNS_DIR", runs_dir), \
                     mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"), \
-                    mock.patch.object(config, "project_github_app", return_value=app_mock):
+                    mock.patch.object(config, "project_github_app", return_value=app_mock), \
+                    mock.patch.dict(os.environ, {
+                        "GIT_ASKPASS": askpass,
+                        "SSH_ASKPASS": askpass,
+                        "SSH_ASKPASS_REQUIRE": "force",
+                        "GIT_CONFIG_GLOBAL": global_config,
+                    }, clear=True):
                 env = runner.run_env(ctx, "mahler", 1144, "codex", 42, 7)
 
-            self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+            self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
             self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.hooksPath")
             self.assertEqual(env["GIT_CONFIG_VALUE_0"], "/runs/42/hooks")
             self.assertEqual(env["GIT_CONFIG_KEY_1"], "credential.helper")
             self.assertEqual(env["GIT_CONFIG_VALUE_1"], "")
+            self.assertEqual(env["GIT_CONFIG_KEY_2"], "core.askPass")
+            self.assertEqual(env["GIT_CONFIG_VALUE_2"], "")
             self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+            self.assertNotIn("GIT_ASKPASS", env)
+            self.assertNotIn("SSH_ASKPASS", env)
+            self.assertNotIn("SSH_ASKPASS_REQUIRE", env)
 
             # Negative/abuse test: git credential fill with ambient operator helper configured
             # must fail closed (code 128) and cannot select or return ambient credentials.
             global_config = os.path.join(d, "operator.gitconfig")
             with open(global_config, "w") as f:
                 f.write('[credential]\nhelper = "!f() { echo password=operator-broad-secret; }; f"\n')
-            test_env = dict(env, GIT_CONFIG_GLOBAL=global_config)
+            askpass = os.path.join(d, "operator-askpass")
+            with open(askpass, "w") as f:
+                f.write("#!/bin/sh\nprintf '%s\\n' operator-broad-secret\n")
+            os.chmod(askpass, 0o700)
+            with open(global_config, "a") as f:
+                f.write(f"\n[core]\n\taskPass = {askpass}\n")
             out = subprocess.run(["git", "credential", "fill"],
                                  input="protocol=https\nhost=github.com\n\n",
-                                 env=test_env, capture_output=True, text=True)
+                                 env=env, capture_output=True, text=True)
             self.assertNotEqual(out.returncode, 0)
             self.assertNotIn("operator-broad-secret", out.stdout)
 

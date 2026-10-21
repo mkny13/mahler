@@ -1368,8 +1368,8 @@ of the build recipe. Gemini skipped the PR and STATUS steps on groundwork#81 (ru
 on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:".
 
 - **A run does one job that needs judgment,** then ends:
-  - **build:** implement, run `verify`, commit and push, then end with `STATUS: DONE <one-line
-    summary>`. `NEEDS-YOU` and `BLOCKED` stay.
+  - **build:** implement, run `verify`, commit locally, then end with `STATUS: DONE <one-line
+    summary>`. `NEEDS-YOU` and `BLOCKED` stay; finalization snapshots and pushes the branch.
   - **fix:** CI failed on the PR; the run gets the failing log tail and starts from the branch.
   - **review:** D11's independent review by a different platform (shipped, mahler#395).
 - **Mahler does the mechanical steps in code** (Principle 7). It pushes the branch, then opens
@@ -2929,4 +2929,3 @@ project.
   returns `None`, and agent runs cannot silently inherit the conductor's global App
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
-
