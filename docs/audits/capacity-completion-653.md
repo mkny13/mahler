@@ -1,11 +1,22 @@
-# Capacity completion verification for #653 (issue #936)
+# Capacity completion verification for #653 (issue #1035)
 
 Verification only. No runtime code, policy or state was changed.
 
-- Tested SHA: `b0b60b6fcf46ce6dc021c203916b4138151d06e4` (main at start of #936 build)
+- Tested SHA: `241b406f12d517e9529a065a0f9f3582ed61935b` (this issue's checkout)
 - Python: 3.14.3 (darwin)
-- Date: 2026-10-11
+- Date: 2026-10-21
 - All tests use in-memory ledgers or temp dirs; no live daemon, provider login or `~/.mahler` access.
+
+## Accepted policy and criterion wording
+
+On 2026-10-21 the owner decided: **“Keep 24h backstop — narrow #653.”** The shipped
+24-hour `capacity_wait_max_hours` backstop remains for a capacity wait with no known
+recovery time. The accepted replacement wording for #653 criterion 2 is:
+
+> Capacity waits with a known recovery time retry on schedule without time-only escalation; waits with no known recovery time re-check until the configured 24-hour backstop, then may become owner-action `needs_you`.
+
+This is the policy evaluated below; it does not claim that unknown-recovery waits retry
+indefinitely.
 
 ## Child issues and merged PRs
 
@@ -24,7 +35,9 @@ All four issues are CLOSED and all four PRs MERGED. [#659](https://github.com/mk
 - Review/fix capacity waits are retryable and have their own backstop, `capacity_wait_max_hours` (default 24). It applies only when `_capacity_wait` (`ship.py`) is given no known recovery time; the item then moves to `capacity_wait_expired` and `needs_you` ("capacity wait exceeded N hours with no known recovery").
 - Waits with a known recovery time never expire by time. Missing-tier (no configured eligible platform) escalates immediately as a configuration problem.
 - #654 specifies this backstop explicitly. Tests assert the escalation: `test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head`, `test_fix_capacity_waits_retry_and_only_unknown_backstop_escalates`.
-- **Discrepancy:** the parent wording "do not become owner-action `needs_you` items solely because time passed" is broader than shipped policy. Read literally, it is unsupported: an unknown-recovery wait does become `needs_you` after 24h. It is supported if read as "known/ordinary waits never escalate on time, and unknown ones are re-checked until the 24h backstop".
+- The accepted narrowed criterion matches the shipped policy: known-recovery waits do not
+  escalate merely because time passes; unknown-recovery waits re-check until the 24-hour
+  backstop, where owner-action escalation is allowed.
 
 ## Six evidence rows (one per #653 checklist entry)
 
@@ -32,11 +45,14 @@ All four issues are CLOSED and all four PRs MERGED. [#659](https://github.com/mk
 - Evidence: table above; tests named in rows 2-6, all present in the tested SHA and executed below.
 - Verdict: **supported**.
 
-### 2. Temporary capacity waits retry on a schedule and do not become `needs_you` solely because time passed
+### 2. Capacity waits with a known recovery time retry on schedule without time-only escalation; waits with no known recovery time re-check until the configured 24-hour backstop, then may become owner-action `needs_you`
 - Source: `ship._capacity_wait`, `ship._fix_wait`, `ship._observe_wait`, `config` `capacity_wait_max_hours`.
 - Tests (`tests/test_ship.py`): `test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head`, `test_fix_capacity_waits_retry_and_only_unknown_backstop_escalates`, `test_fix_start_clears_wait_only_on_success`, `test_known_hold_skips_routing_then_recovers`, `test_capacity_recovery_waits_for_quota_and_required_fix_tier`, `test_missing_required_fix_tier_escalates_distinctly`; `tests/test_escalation.py`: `test_waiting_fix_uses_capacity_backstop_without_recounting`, `test_waiting_review_fix_resumes_when_capacity_returns`.
-- Result: waits of 3h stay `verifying`; review/fix waits beyond the 60-minute `verify_timeout_minutes` remain retryable; escalation happens only at the 24h unknown-recovery backstop (reset per head) or on a missing tier.
-- Verdict: **supported with caveat** - literal "solely because time passed" is **unsupported** (see timeout section).
+- Result: waits of 3h stay `verifying`; review/fix waits beyond the 60-minute
+  `verify_timeout_minutes` remain retryable; known-recovery waits do not time-escalate;
+  unknown-recovery waits re-check until the 24h backstop (reset per head); and missing
+  required tiers escalate immediately as configuration errors.
+- Verdict: **supported under the accepted narrowed wording**.
 
 ### 3. Known retry times visible in console and `mahler status`; unknown times trigger re-checks
 - Source: `mahler/console/state.py::capacity_wait_text` (shared copy: "retry around …", "retry due; will re-check", "retry time unknown; will re-check"), used by `mahler/cli.py` status (L272).
@@ -80,35 +96,24 @@ All four issues are CLOSED and all four PRs MERGED. [#659](https://github.com/mk
 
 ## Commands executed at the tested SHA (newly run, not historical)
 
-Focused (`python3 -m unittest discover -s tests -p 'test_<name>.py'`), all exit OK, no failures:
-
-| Module | Tests |
-|---|---|
-| routing | 118 |
-| config | 44 |
-| ship | 257 |
-| escalation | 19 |
-| sync | 8 |
-| console | 218 |
-| cli_status | 14 |
-| finalize | 84 |
-| tick_capacity | 14 |
+Focused command: `python3 -m unittest discover -s tests -p 'test_ship.py'` — exit 0,
+Ran 293 tests, 0 skipped, 0 failures.
 
 Repository checks:
 
 | Command | Result |
 |---|---|
-| `python3 -m mahler.repo_guard` | exit 0 |
-| `python3 -m unittest discover -s tests` | Ran 2672 tests, OK (skipped=1) |
-| `python3 tests/run_random.py 12345` | seed 12345; Ran 2672 tests, OK (skipped=1); exit 0 |
-| `python3 -X dev tests/run_strict.py` | Ran 2672 tests, OK (skipped=1) |
+| `python3 -m mahler.repo_guard` | exit 0; no findings |
+| `python3 -m unittest discover -s tests` | exit 0; Ran 3042 tests, OK (skipped=1), failures=0 |
+| `python3 tests/run_random.py 12345` | exit 0; seed 12345; Ran 3042 tests, OK (skipped=1), failures=0 |
+| `python3 -X dev tests/run_strict.py` | exit 0; Ran 3042 tests, OK (skipped=1), failures=0 |
 
-The single skip is in the unrelated full suite and was not investigated further. No failures occurred.
+The single skip is in the unrelated full suite and was not investigated further. No failures occurred in any command.
 
 ## Recommendation for the #653 checklist
 
 1. Children complete with regression tests: **check**.
-2. Waits retry on schedule, no `needs_you` solely from time: **do not check literally**. The 24h unknown-recovery backstop (#654, by design) escalates. Check only if the owner accepts the backstop as the intended policy or rewords the criterion.
+2. Known-recovery waits retry on schedule without time-only escalation; unknown-recovery waits re-check until the configured 24h backstop: **check**. This is the owner's accepted narrowed wording and matches the two explicit backstop tests.
 3. Retry times visible; unknown re-checks: **check**.
 4. Existing capacity `needs_you` self-heal, decisions untouched: **check**.
 5. Scheduler/finalizer paths audited: **check** (bounded to the four named areas; no gaps found).
