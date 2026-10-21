@@ -673,10 +673,22 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     role = route_role(role)
     reasons = []
     accts = list(accounts) if accounts is not None else [account]
-    if pin and pin in cfg["platforms"] and account_of(cfg["platforms"][pin]) not in accts:
-        target = accts[0] if len(accts) == 1 else ", ".join(accts)
-        reasons.append(f"{pin}: pinned, but it spends the "
-                       f"{account_of(cfg['platforms'][pin])} account, not {target}")
+    if pin and pin in cfg["platforms"]:
+        if account_of(cfg["platforms"][pin]) not in accts:
+            target = accts[0] if len(accts) == 1 else ", ".join(accts)
+            reasons.append(f"{pin}: pinned, but it spends the "
+                           f"{account_of(cfg['platforms'][pin])} account, not {target}")
+        elif not cfg["platforms"][pin].get("enabled"):
+            reasons.append(f"{pin}: {cfg['platforms'][pin].get('disabled_reason') or 'disabled'}")
+    if not pin and candidate_order is None:
+        routing_table = (cfg.get("accounts", {}).get(account, {}) if account != DEFAULT_ACCOUNT else cfg).get("routing", {})
+        raw_order = expand_route(cfg, routing_table.get(role) or routing_table.get("build") or [])
+        for name in raw_order:
+            if name in cfg["platforms"] and not cfg["platforms"][name].get("enabled") and account_of(cfg["platforms"][name]) in accts:
+                disabled_reason = cfg["platforms"][name].get("disabled_reason") or "disabled"
+                msg = f"{name}: {disabled_reason}"
+                if msg not in reasons:
+                    reasons.append(msg)
     peak_active, peak_until = peak_state(cfg, led)
     measured = (routing_mode or cfg.get("routing_mode", "list")) == "measured"
     # In measured mode burst promotion happens after ranking, including when
@@ -697,6 +709,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
             continue
         pconf = cfg["platforms"][name]
+        if not pconf.get("enabled"):
+            reasons.append(f"{name}: {pconf.get('disabled_reason') or 'disabled'}")
+            continue
         if pconf.get("approval") and name != pin:
             reasons.append(f"{name}: requires owner approval via a platform pin")
             continue

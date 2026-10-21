@@ -788,6 +788,61 @@ def consume_codex_credit(env=None, credit_id=None, idempotency_key=None, timeout
         return None
 
 
+def codex_home(account=None, cfg=None, env=None, home=None):
+    """Path to a Codex login's configuration directory."""
+    if home:
+        return os.path.expanduser(str(home))
+    if env and env.get("CODEX_HOME"):
+        return os.path.expanduser(str(env["CODEX_HOME"]))
+    if cfg is not None:
+        acct = account or "personal"
+        own_env = (cfg.get("accounts", {}).get(acct, {}).get("env") or {})
+        val = own_env.get("CODEX_HOME")
+        if val:
+            return os.path.expanduser(str(val))
+        if acct != "personal":
+            return None
+    val = os.environ.get("CODEX_HOME")
+    if val:
+        return os.path.expanduser(str(val))
+    return os.path.expanduser("~/.codex")
+
+
+def codex_offered_models(account=None, cfg=None, env=None, home=None):
+    """Read a Codex login's models_cache.json and return the set of offered model slugs.
+
+    Returns None if models_cache.json does not exist or is invalid.
+    """
+    h = codex_home(account=account, cfg=cfg, env=env, home=home)
+    if not h:
+        return None
+    path = os.path.join(h, "models_cache.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    models = data.get("models")
+    if not isinstance(models, list):
+        return None
+    slugs = set()
+    for m in models:
+        if isinstance(m, dict):
+            slug = m.get("slug") or m.get("id")
+            if slug and isinstance(slug, str):
+                slugs.add(slug.strip())
+        elif isinstance(m, str) and m.strip():
+            slugs.add(m.strip())
+    return slugs
+
+
+codex_models = codex_offered_models
+
+
 def probe_claude(env=None):
     exe = claude_exe()
     if not exe:

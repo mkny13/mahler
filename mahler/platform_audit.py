@@ -587,6 +587,34 @@ def missing_pins(cfg, catalog):
     return missing, skipped
 
 
+def codex_variant_pins(cfg):
+    """Codex variant platforms: [(name, model, account, slot)]."""
+    out = []
+    for name, pconf in sorted(cfg.get("platforms", {}).items()):
+        if pconf.get("kind") != "codex":
+            continue
+        if pconf.get("slot"):
+            out.append((name, pconf.get("model") or "", config.account_of(pconf), pconf["slot"]))
+    return out
+
+
+def codex_missing_variants(cfg):
+    """Compare Codex variants against each login's models_cache.json.
+
+    Returns skipped: [(platform, model, reason)].
+    """
+    skipped = []
+    account_caches = {}
+    for name, model, account, slot in codex_variant_pins(cfg):
+        if account not in account_caches:
+            account_caches[account] = platforms.codex_offered_models(account=account, cfg=cfg)
+        offered = account_caches[account]
+        if offered is not None:
+            if model and model not in offered:
+                skipped.append((name, model, f"model not in login's models_cache.json ({account})"))
+    return skipped
+
+
 def current_rejections(cfg, led):
     """Rejected-model records whose fingerprint still matches current config."""
     found = []
@@ -606,6 +634,7 @@ def _availability_lines(cfg, led, pol, catalog):
     lines = ["", "### Configured models flagged by availability evidence", ""]
     rejections = current_rejections(cfg, led)
     missing, skipped = missing_pins(cfg, catalog)
+    skipped.extend(codex_missing_variants(cfg))
     if rejections:
         lines += ["| Platform | Configured ID | Evidence source |", "|---|---|---|"]
         for name, rec in rejections:

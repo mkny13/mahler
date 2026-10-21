@@ -896,8 +896,8 @@ class CodexPlatformAuditTests(unittest.TestCase):
             self.assertIn("- skipped `work-codex/gpt-6-luna/high` (`gpt-6-luna`):", body)
             self.assertIn("(work)", body)
             # Available variants are not reported skipped
-            self.assertNotIn("codex-low/gpt-5.6-luna/default", body)
-            self.assertNotIn("work-codex/gpt-5.6-sol/default", body)
+            self.assertNotIn("- skipped `codex-low/gpt-5.6-luna/default`", body)
+            self.assertNotIn("- skipped `work-codex/gpt-5.6-sol/default`", body)
 
 
 if __name__ == "__main__":

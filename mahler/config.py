@@ -596,6 +596,10 @@ def expand_variants(cfg):
             continue
         tiers = pconf.get("variant_tiers") or {}
         quota_group = pconf.get("quota_group", slot)
+        offered = None
+        if pconf.get("kind") == "codex":
+            from . import platforms
+            offered = platforms.codex_offered_models(account=account_of(pconf), cfg=cfg)
         for spec in specs:
             if not isinstance(spec, str) or not spec:
                 continue
@@ -620,7 +624,18 @@ def expand_variants(cfg):
                 variant["model"] = model
             if spec in tiers:
                 variant["tier"] = tiers[spec]
-            additions[variant_name(slot, model, effort)] = variant
+            vname = variant_name(slot, model, effort)
+            if offered is not None and model not in offered:
+                reason = f"model {model!r} not in login's models_cache.json"
+                variant["enabled"] = False
+                variant["disabled_reason"] = reason
+                variant["skip_reason"] = reason
+                cfg.setdefault("skipped_variants", {})[vname] = {
+                    "slot": slot, "spec": spec, "model": model, "effort": effort,
+                    "account": account_of(pconf), "reason": reason,
+                }
+                pconf.setdefault("skipped_variants", {})[spec] = reason
+            additions[vname] = variant
     plats.update(additions)
     return cfg
 
