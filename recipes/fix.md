@@ -106,10 +106,14 @@ result is obtained, the better. Never trade verification for speed.
    foreground command `mahler desktop run -- <cmd> [args]`. A prior `mahler desktop` check,
    or wrapping a no-op, authorizes nothing later. Computer-use with no supervised command to
    wrap must be deferred, never run as unguarded tool calls. Exit 75 means the gate is closed
-   (in use or lock held): skip that local GUI step, record the reason and the coverage still
-   outstanding in your summary, and name the CI UI-test job only if you saw evidence it covers
-   the skipped work. Never call a skip a pass or invent CI coverage. Headless tests need no
-   gate. The gate does not unlock the screen.
+   (in use, screen locked, no GUI session, or lock held): skip that local GUI step, record the
+   reason and the coverage still outstanding in your summary, and name the CI UI-test job only
+   if you saw evidence it covers the skipped work. Never call a skip a pass or invent CI
+   coverage. When the GUI run is itself the deliverable (a smoke run, a smoke report), there
+   is nothing to skip to: commit what you have and end with
+   `STATUS: BLOCKED desktop gate: <the gate's message>`. That parks the item without using an
+   attempt, and Mahler retries it once the mini is idle, unlocked and inside `gui_window`.
+   Headless tests need no gate. The gate does not unlock the screen.
 10. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
 11. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
     <prefix>` to avoid collisions.

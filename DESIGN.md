@@ -2486,7 +2486,9 @@ in the risks list): agents may now drive the GUI, but only through the gate.
   defer computer-use that has no supervised command to wrap. The gate does not unlock the
   screen or grant macOS permissions.
 - **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
-  job only with evidence it covers the skipped work. A skip is never a pass.
+  job only with evidence it covers the skipped work. A skip is never a pass. A locked screen
+  or a missing GUI session also denies, and a run whose deliverable *is* the GUI step parks
+  until the gate opens instead of using up attempts (D50).
 - Scheduling a weekly smoke inside the window (using `--scheduled`) stays in couch-tour#358.
 
 ### D41 — Team-plan API credits: a $20 allowance, then the pool's rest before it expires (mahler#903)
@@ -2935,3 +2937,56 @@ project.
   returns `None`, and agent runs cannot silently inherit the conductor's global App
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
+
+### D50 — Unattended macOS smoke: an unlocked session, a sleeping display (mahler#1172)
+
+Proposed 2026-10-21; **the owner's settings step is pending.** couch-tour#686 (smoke for
+v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. The mini's
+session locks overnight, so D40's idle check passed, the run started, and the smoke runner
+found the lock screen. Android passed on the `phishin_test` AVD, but macOS never ran.
+couch-tour#251 wants promotion gated on a smoke PASS, so macOS smoke has to run with nobody
+present.
+
+- **The gate checks the session too.** Besides HIDIdleTime, `mahler desktop` now requires
+  that this user owns the one console session, that login has finished, and that the screen
+  is not locked (`ioreg -n Root -d1 -a`: `IOConsoleUsers`, `CGSSessionScreenIsLocked`,
+  `IOConsoleLocked`). These fail closed like the idle probe. Once the gate opens,
+  `caffeinate -u -t 2` wakes a sleeping display before the command starts (best effort).
+- **A deferred GUI deliverable parks; it doesn't fail.** When the GUI run *is* the task, as
+  with a smoke run, the recipe ends `STATUS: BLOCKED desktop gate: <message>`. Finalize
+  recognises that (or "screen is still locked"), parks the item without charging an
+  attempt, and pings once. Each tick, `recheck_blocked` asks the gate, as a `--scheduled` run
+  would see it (inside `gui_window`, idle, unlocked), and moves the item back to `ready` only
+  when the gate is open. A locked mini therefore costs no runs, only a wait. `/mahler go`
+  still resumes at once.
+- **Options weighed.**
+  - **Unlocked session, display asleep.** The display may sleep, but no screen saver, no
+    "require password" on wake, and no auto-logout. *Recommended.* Pros: it uses the real
+    signed-in beta, its fixtures and AX permissions, so every journey runs; it costs nothing
+    and needs no new code beyond the above. Con: anyone physically at the mini gets Mike's
+    signed-in session. The mini is in his home and personal (no other users). FileVault
+    stays on, so a reboot or a stolen disk is still protected, and after a reboot the gate
+    defers ("no GUI session") until he logs in once.
+  - **Compromise: "require password 8 hours after the display turns off".** This keeps a
+    lock, but the window drifts with his last use: if he stops at 17:00 the mini locks at
+    about 01:10, mid-window. It's less predictable, and runs then park rather than fail.
+  - **Headless dummy display (HDMI plug).** This solves a missing display, not a lock. It's
+    only needed if the monitor is unplugged rather than switched off.
+  - **GitHub-hosted macOS runner.** couch-tour is public, so `macos-14` minutes are free, and
+    `macos-tests.yml` already runs a small XCUITest suite there. But the smoke journeys need
+    a signed-in Phish.in fixture. That would mean real account credentials as secrets in a
+    public repo, which is a worse exposure than an unlocked mini at home. Without them, the
+    signed-in and sync journeys SKIP, and a SKIP is not a PASS. AX access for the
+    shell-driven runner isn't guaranteed on hosted images either. It suits deterministic UI
+    checks, not the promotion gate.
+  - **Local macOS VM (tart).** This gives the best isolation, with no lock and a disposable
+    signed-in state. But it needs a 50+ GB image with Xcode on the ExtSSD, its own fixture
+    account and TCC grants, and upkeep with each Xcode update. It's the fallback if the
+    owner won't run unlocked.
+  - **Hybrid (Android local, macOS in CI).** This inherits the hosted runner's coverage gap,
+    so it can't produce a full PASS.
+- **Owner step (unlocked option).** In System Settings: Lock Screen → "Start Screen Saver
+  when inactive" = Never; "Require password after screen saver begins or display is turned
+  off" = Never; "Turn display off when inactive" can stay as it is. Privacy & Security →
+  Advanced → "Log out automatically after inactivity" = off. Agents never change these
+  (security settings are the owner's).

@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, no_change, platforms, prompt, review, router, runner
+from . import config, desktop, failures, no_change, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -216,9 +216,45 @@ def _ended_blocked_external(e):
     return True
 
 
+# ---------- BLOCKED on the desktop gate (mahler#1172) ----------
+
+# A GUI step the task cannot finish without (a smoke run) found the gate closed:
+# `mahler desktop run` deferred, or the screen was locked. That says nothing about
+# the work, so it parks without an attempt until the gate would open again.
+_GUI_DEFERRED = re.compile(r"\bdesktop gate\b|\bscreen (?:is )?(?:still )?locked\b",
+                           re.IGNORECASE)
+
+
+def _ended_gui_deferred(e):
+    key = f"blocked:{e.project}#{e.number}"
+    previous = json.loads(e.led.get_kv(key) or "{}")
+    record = {"reason": e.rest, "since": previous.get("since") or iso(e.led.now()),
+              "checkable": False, "gui": True}
+    e.led.set_kv(key, json.dumps(record))
+    e.set_state("parked", f"GUI step deferred until the desktop gate opens: {e.rest}")
+    if not previous.get("gui"):
+        e.ping(f"GUI run deferred — {e.project} #{e.number}",
+               f"{e.rest} (retries when the mini is idle, unlocked and inside gui_window; "
+               "/mahler go resumes now)", priority="low")
+    return True
+
+
+def _gui_gate_open(ctx, project):
+    """-> (open, detail): the D40 gate as a --scheduled run would see it now."""
+    try:
+        pol = ctx.policy(project)
+        window = config.parse_gui_window(pol["gui_window"])
+        return True, desktop.check(pol["gui_idle_minutes"], window, scheduled=True)
+    except desktop.Deferred as exc:
+        return False, str(exc)
+    except (KeyError, ValueError) as exc:
+        return False, f"gate settings unreadable: {exc}"
+
+
 def recheck_blocked(ctx, projects):
     """Tick pass: move parked items back to ready once the checkable
-    condition in their BLOCKED reason is met."""
+    condition in their BLOCKED reason is met, or, for a deferred GUI step,
+    once the desktop gate would open."""
     if ctx.dry_run:
         return
     led = ctx.led
@@ -229,9 +265,12 @@ def recheck_blocked(ctx, projects):
             key = f"blocked:{project}#{n}"
             try:
                 record = json.loads(led.get_kv(key) or "null")
-                if not record or not record.get("checkable"):
+                if record and record.get("gui"):
+                    met, detail = _gui_gate_open(ctx, project)
+                elif not record or not record.get("checkable"):
                     continue
-                met, detail = _check_blocked_condition(ctx, project, n, record["reason"])
+                else:
+                    met, detail = _check_blocked_condition(ctx, project, n, record["reason"])
                 if met:
                     with led._tx():
                         cur = led.item(project, n)
@@ -696,6 +735,8 @@ ENDINGS = (
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
+     and _GUI_DEFERRED.search(e.rest or ""), _ended_gui_deferred),
+    (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and e.blocked_external, _ended_blocked_external),
@@ -1064,7 +1105,7 @@ def finalize(ctx, run):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review", "design"):
             if (verb == "BLOCKED" and run["role"] in ("build", "fix") and rest
-                    and not _ACCESS_BLOCKER.search(rest)):
+                    and not _ACCESS_BLOCKER.search(rest) and not _GUI_DEFERRED.search(rest)):
                 ending.blocked_external = _blocked_is_external(ending)
                 if ending.blocked_external:
                     ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)

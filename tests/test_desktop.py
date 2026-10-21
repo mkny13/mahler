@@ -1,5 +1,6 @@
 """The desktop gate (D40): parsing, thresholds, windows, CLI launch suppression and
-real-process mutual exclusion. `ioreg` is never run: the probe is stubbed."""
+real-process mutual exclusion. `ioreg` and `caffeinate` are never run: the probes
+and the display wake are stubbed."""
 
 import io
 import os
@@ -25,6 +26,29 @@ def cfg_with(defaults=None, projects=None):
         p = Path(tmp) / "config.toml"
         p.write_text(config.dumps_toml({"defaults": defaults or {}, "projects": projects or {}}))
         return config.load(p)
+
+
+REAL_PROBE_SESSION = desktop.probe_session
+_PATCHES = []
+
+
+def setUpModule():
+    # An unlocked console session unless a test says otherwise.
+    for name, value in (("probe_session", lambda: None), ("wake_display", lambda: None)):
+        p = patch.object(desktop, name, value)
+        p.start()
+        _PATCHES.append(p)
+
+
+def tearDownModule():
+    while _PATCHES:
+        _PATCHES.pop().stop()
+
+
+def console(**user):
+    base = {"kCGSSessionOnConsoleKey": True, "kCGSSessionUserIDKey": 501,
+            "kCGSessionLoginDoneKey": True}
+    return {"IOConsoleLocked": False, "IOConsoleUsers": [{**base, **user}]}
 
 
 def probe(ns):
@@ -55,6 +79,62 @@ class StateCase(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err):
             code = desktop.main(argv, **kw)
         return code, out.getvalue(), err.getvalue()
+
+
+class SessionTests(StateCase):
+    """mahler#1172: a locked screen or missing GUI session defers, it never launches."""
+
+    def test_unlocked_console_session_passes(self):
+        self.assertIsNone(desktop.parse_session(console(), 501))
+        self.assertIsNone(desktop.parse_session(console(CGSSessionScreenIsLocked=False), 501))
+
+    def test_locked_or_missing_session_denies(self):
+        cases = {
+            "locked": console(CGSSessionScreenIsLocked=True),
+            "console locked": {**console(), "IOConsoleLocked": True},
+            "nobody": {"IOConsoleUsers": []},
+            "off console": console(kCGSSessionOnConsoleKey=False),
+            "other user": console(kCGSSessionUserIDKey=502),
+            "login pending": console(kCGSessionLoginDoneKey=False),
+            "malformed lock": console(CGSSessionScreenIsLocked="Yes"),
+            "malformed root": ["not", "a", "dict"],
+            "malformed users": {"IOConsoleUsers": "mike"},
+            "ambiguous": {"IOConsoleUsers": console()["IOConsoleUsers"] * 2},
+        }
+        for label, root in cases.items():
+            with self.subTest(label), self.assertRaises(desktop.Deferred):
+                desktop.parse_session(root, 501)
+        with self.assertRaisesRegex(desktop.Deferred, "^locked"):
+            desktop.parse_session(console(CGSSessionScreenIsLocked=True), 501)
+
+    def test_probe_failures_deny(self):
+        real = REAL_PROBE_SESSION
+        with patch.object(sys, "platform", "linux"), self.assertRaises(desktop.Deferred):
+            real()
+        with patch.object(sys, "platform", "darwin"):
+            for kw in ({"side_effect": subprocess.TimeoutExpired("ioreg", 5)},
+                       {"side_effect": OSError("nope")},
+                       {"return_value": subprocess.CompletedProcess([], 1, b"", b"")},
+                       {"return_value": subprocess.CompletedProcess([], 0, b"<plist", b"")}):
+                with self.subTest(kw), patch.object(subprocess, "run", **kw), \
+                        self.assertRaises(desktop.Deferred):
+                    real()
+
+    def test_locked_screen_defers_run_and_spawns_nothing(self):
+        cmd = [sys.executable, "-c", f"open({os.path.join(self.state, 'ran')!r}, 'w')"]
+        with patch.object(desktop, "probe_session", deferring("locked: the screen is locked")):
+            code, _, err = self.run_main(["run", "--"] + cmd, cfg=cfg_with(),
+                                         probe=probe(20 * MIN))
+        self.assertEqual(code, desktop.EX_DEFERRED)
+        self.assertIn("locked", err)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "ran")))
+
+    def test_open_gate_wakes_display_before_launch(self):
+        order = []
+        with patch.object(desktop, "wake_display", lambda: order.append("wake")), \
+                patch.object(subprocess, "Popen", side_effect=OSError("stop")):
+            self.run_main(["run", "--", "true"], cfg=cfg_with(), probe=probe(20 * MIN))
+        self.assertEqual(order, ["wake"])
 
 
 class ParseTests(unittest.TestCase):
@@ -270,6 +350,8 @@ WRAPPER = """
 import sys
 from mahler import desktop
 desktop.probe_idle_ns = lambda: 10**18
+desktop.probe_session = lambda: None
+desktop.wake_display = lambda: None
 sys.exit(desktop.main(sys.argv[1:]))
 """
 

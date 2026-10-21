@@ -11,10 +11,10 @@ import os
 import tempfile
 from pathlib import Path
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from unittest import mock
 
-from mahler import model_availability, config, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
+from mahler import model_availability, config, desktop, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -602,6 +602,39 @@ class RunTests(unittest.TestCase):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         self.assertEqual(self.led.item("x", 5)["state"], "ready")
         self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_locked_screen_defers_gui_step_without_attempt_until_gate_opens(self):
+        # mahler#1172: couch-tour#686 used all three attempts on a locked screen.
+        reason = "desktop gate: locked: the screen is locked (CGSSessionScreenIsLocked)"
+        ping = self.blocked_done(reason)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual((item["attempts"], item["esc_tier"]), (0, 0))
+        ping.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv("blocked:x#5"))["gui"])
+        seen = []
+
+        def closed(minutes, window, scheduled=False, **_):
+            seen.append((minutes, window, scheduled))
+            raise desktop.Deferred("locked: the screen is locked")
+        with mock.patch.object(desktop, "check", side_effect=closed):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(seen, [(15, (dtime(0), dtime(6)), True)])
+        with mock.patch.object(desktop, "check", return_value="free: idle 40m >= 15m"):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"]), ("ready", 0))
+        self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_repeat_gui_deferral_pings_once(self):
+        self.blocked_done("Mac mini screen is still locked (CGSSessionScreenIsLocked=true)")
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.led.set_state("x", 5, "ready", "/mahler go")
+        self.next_no_work_run()
+        ping = self.blocked_done("desktop gate: in use: idle 2m < 15m")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        ping.assert_not_called()
 
     def test_blocked_condition_already_met_moves_straight_to_ready(self):
         reason = "needs PR #609 merged"

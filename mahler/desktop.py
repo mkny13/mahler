@@ -2,14 +2,15 @@
 
 `mahler desktop` is an advisory check; `mahler desktop run -- <cmd>` is the
 authoritative launch path. The wrapper takes one host-wide flock, then makes a
-single fresh idle (and, with --scheduled, preferred-window) check, then runs the
-command in the foreground. The child inherits the lock descriptor, so a killed
+single fresh idle, console-session (unlocked) and, with --scheduled,
+preferred-window check, then runs the command in the foreground. The child inherits the lock descriptor, so a killed
 wrapper cannot free the lock while the command still drives the desktop.
 """
 
 import argparse
 import fcntl
 import os
+import plistlib
 import re
 import signal
 import subprocess
@@ -64,6 +65,61 @@ def parse_idle_ns(text):
     return values.pop()
 
 
+def probe_session():
+    """Raise Deferred unless this user owns an unlocked console GUI session,
+    read from `ioreg -n Root -d1 -a` (mahler#1172). A locked screen passes the
+    idle check, so without this a GUI run starts and fails on the lock screen."""
+    if sys.platform != "darwin":
+        raise Deferred("unsupported host: the console session is only readable on macOS")
+    try:
+        out = subprocess.run(["ioreg", "-n", "Root", "-d1", "-a"], capture_output=True,
+                             timeout=IOREG_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Deferred(f"session unknown: ioreg timed out after {IOREG_TIMEOUT}s") from None
+    except OSError as e:
+        raise Deferred(f"session unknown: ioreg failed to run ({e.strerror or e})") from None
+    if out.returncode != 0:
+        raise Deferred(f"session unknown: ioreg exited {out.returncode}")
+    try:
+        root = plistlib.loads(out.stdout)
+    except Exception:                           # noqa: BLE001 — any bad plist denies
+        raise Deferred("session unknown: malformed ioreg output") from None
+    return parse_session(root, os.getuid())
+
+
+def parse_session(root, uid):
+    if not isinstance(root, dict) or not isinstance(root.get("IOConsoleUsers", []), list):
+        raise Deferred("session unknown: malformed console session reading")
+    on_console = [u for u in root.get("IOConsoleUsers", [])
+                  if isinstance(u, dict) and u.get("kCGSSessionOnConsoleKey") is True]
+    if not on_console:
+        raise Deferred("no GUI session: nobody is logged in at the console")
+    if len(on_console) > 1:
+        raise Deferred("session unknown: ambiguous console sessions")
+    user = on_console[0]
+    if user.get("kCGSSessionUserIDKey") != uid:
+        raise Deferred("no GUI session: the console belongs to another user")
+    if user.get("kCGSessionLoginDoneKey") is not True:
+        raise Deferred("no GUI session: console login has not finished")
+    locked = (root.get("IOConsoleLocked"), user.get("CGSSessionScreenIsLocked"))
+    if True in locked:
+        raise Deferred("locked: the screen is locked (CGSSessionScreenIsLocked)")
+    if any(v not in (None, False) for v in locked):
+        raise Deferred("session unknown: malformed screen-lock reading")
+
+
+def wake_display():
+    """Best effort: assert user activity briefly so a sleeping display wakes
+    before the GUI run starts. Never blocks the launch."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(["caffeinate", "-u", "-t", "2"], timeout=IOREG_TIMEOUT,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def in_window(window, t):
     start, end = window
     return start <= t < end if start < end else (t >= start or t < end)
@@ -73,10 +129,11 @@ def _fmt_idle(seconds):
     return f"{seconds:.0f}s" if seconds < 120 else f"{seconds / 60:.1f}m"
 
 
-def check(minutes, window, scheduled=False, probe=None, now=None):
-    """Return a one-line 'ok' reason, or raise Deferred. Reads the clock and the
-    probe at most once each."""
+def check(minutes, window, scheduled=False, probe=None, now=None, session=None):
+    """Return a one-line 'ok' reason, or raise Deferred. Reads the clock and
+    each probe at most once."""
     probe = probe or probe_idle_ns
+    session = session or probe_session
     if scheduled and window:
         t = (now or datetime.now)().time()
         if not in_window(window, t):
@@ -86,6 +143,7 @@ def check(minutes, window, scheduled=False, probe=None, now=None):
     need = minutes * 60
     if idle < need:
         raise Deferred(f"in use: idle {_fmt_idle(idle)} < {minutes:g}m")
+    session()
     return f"free: idle {_fmt_idle(idle)} >= {minutes:g}m"
 
 
@@ -133,6 +191,7 @@ def run_command(argv, minutes, window, scheduled=False, probe=None, now=None):
         raise _lock_busy()
     try:
         check(minutes, window, scheduled, probe, now)
+        wake_display()
         os.set_inheritable(fd, True)
         try:
             child = subprocess.Popen(argv, pass_fds=(fd,))
