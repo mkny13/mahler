@@ -163,7 +163,8 @@ def ci_handoff(ctx, project, item, branch, tail=150):
                 f"run — {e}")
     lines = [pr_ci_toolchain_handoff(ctx, project, item),
              f"- the PR (#{item['pr']})'s CI is red, and this branch is the PR's head "
-             "branch: push your fixes to it, and each push re-runs CI"]
+             "branch: commit your fixes locally; the conductor pushes the branch and "
+             "that push re-runs CI"]
     if run_id:
         lines.append(f"- run {run_id} is the latest failed one "
                      f"(full log: `gh run view {run_id} -R {gh.repo} --log-failed`)")
@@ -189,7 +190,7 @@ def handoff_text(base, replayed, kept):
     if kept is None:
         return (f"- earlier work on this item is already in your branch, replayed onto "
                 f"current `origin/{base}`. First run the test/verify command: if it passes, "
-                f"commit, push, and end with STATUS: DONE immediately. Otherwise run "
+                f"commit locally and end with STATUS: DONE immediately. Otherwise run "
                 f"`git log --oneline origin/{base}..HEAD` and read the latest "
                 f"`mahler:agent handoff` comment on the issue before continuing")
     return (f"- earlier work on this item no longer applies to current "

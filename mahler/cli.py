@@ -474,7 +474,8 @@ def main():
         runs_dir = os.environ.get("MAHLER_RUNS_DIR") or os.path.expanduser("~/.mahler/runs")
         yield_file = os.path.join(runs_dir, str(run_id), "yield")
         if os.path.exists(yield_file):
-            print("yield delivered: commit your work, push the branch, and end with STATUS: YIELDED")
+            print("yield delivered: commit your work locally and end with STATUS: YIELDED; "
+                  "the conductor snapshots and pushes the branch")
             sys.exit(1)
             
     tool_args = {{}}

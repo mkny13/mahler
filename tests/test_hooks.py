@@ -132,6 +132,9 @@ class TestHooks(unittest.TestCase):
                                  capture_output=True, text=True)
             self.assertEqual(res.returncode, 1)
             self.assertIn("yield delivered", res.stdout)
+            self.assertIn("commit your work locally", res.stdout)
+            self.assertIn("the conductor snapshots and pushes", res.stdout.lower())
+            self.assertNotIn("push the branch", res.stdout.lower())
 
             # Without the yield file the same tool call must go through: the
             # block above has to come from the yield check specifically, not

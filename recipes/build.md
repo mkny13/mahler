@@ -24,10 +24,10 @@ showing unauthorized or other-user access is refused.
 Time matters here: do not spend time that can be avoided; the earlier a correct, verified
 result is obtained, the better. Never trade verification for speed.
 
-1. **Checkpoint constantly.** Commit after each meaningful step and `git push -u origin
-   $branch` at least every ~10 minutes — you can be stopped at any moment, and unpushed
+1. **Checkpoint constantly.** Commit locally after each meaningful step and at
+   least every ~10 minutes — you can be stopped at any moment, and uncommitted
    work is lost.
-2. **Verify before every push:** `$verify`. Fix what fails.
+2. **Verify before completing:** `$verify`. Fix what fails.
    Run a check that exercises the change, such as the project's tests, type-checker,
    build, or changed command. Neither a syntax-only check nor a command that failed
    to start counts as verification. If declared dependencies are missing, install them
@@ -49,7 +49,7 @@ result is obtained, the better. Never trade verification for speed.
    agent marker below. A missing section is not an exemption, and the exception
    does not waive rule 2's verification of the fix.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
-   its checks pass, checkpoint, push, and report without adding unrequested features,
+   its checks pass, checkpoint with a local commit, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"
    checks or the repo's `AGENTS.md` are requested work. Do not initiate extra review
    or hardening rounds, or spawn reviewer sub-agents unless the issue asks for a review.
@@ -66,7 +66,7 @@ result is obtained, the better. Never trade verification for speed.
    STATUS lines. `NEEDS-YOU` and `BLOCKED` remain reserved for the cases defined in rules
    5–6, where nothing can move without the owner. This rule does not override the
    destructive-action cautions in rule 7.
-4. **Your job ends at the push.** When every "Done when" check passes, commit, push, and
+4. **Your job ends with a local commit.** When every "Done when" check passes, commit locally, and
    end with `STATUS: DONE <one-line summary of what changed>`. Do not open a PR, watch CI,
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
 5. Stop only for a decision genuinely only the owner can make (product intent, credentials,
@@ -81,8 +81,8 @@ result is obtained, the better. Never trade verification for speed.
    with a `STATUS: NEEDS-YOU` question and two or three concise `OPTIONS:` (for example,
    allow source changes | reduce journey target). First check authoritative owner comments
    for an existing resolution; routine technical choices remain yours to make.
-6. If you genuinely cannot proceed because owner-provided access is missing, save and
-   push what you have, post one actionable question naming the required operation and
+6. If you genuinely cannot proceed because owner-provided access is missing, commit what you
+   have locally, post one actionable question naming the required operation and
    safe provisioning channel, and end with `STATUS: NEEDS-YOU <the question, on one line>`.
    Never invent accounts or credentials or silently waive acceptance. Honor existing
    owner answers and restrictions. Identify the authorized access provider, the named external
@@ -90,7 +90,7 @@ result is obtained, the better. Never trade verification for speed.
    A hypothetical variable name does not establish available access. Existing authorized
    access may be used only within its documented consumer and scope. Never put secret values
    in GitHub issues, logs, argv, or commits.
-   For other environment blockers only the owner can fix, push what you have and end
+   For other environment blockers only the owner can fix, commit what you have locally and end
    with `STATUS: BLOCKED <reason>`.
 7. Never force-push `$base`, delete repos or releases, run destructive SQL against real
    data, or print secrets.
@@ -129,7 +129,7 @@ $whats_new
 $rules
 Every issue or PR comment you post must begin with the line `<!-- mahler:agent -->`.
 
-If a yield is delivered: commit your work, push the branch, and end with STATUS: YIELDED — a handoff, not a failure.
+If a yield is delivered: commit your work locally, and end with STATUS: YIELDED — a handoff, not a failure.
 
 If the requested work already exists and your clean checkout has no new commits,
 retain STATUS: DONE. Cite concrete source and verification evidence and explicitly

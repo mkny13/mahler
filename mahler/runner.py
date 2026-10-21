@@ -327,22 +327,56 @@ def run_env(ctx, project, number, platform, run_id, epoch):
     base_env = config.run_env(ctx.cfg, account) or os.environ
     env = dict(base_env)
 
-    if account != config.gh_account_of(pol):
-        overlay = config.gh_identity_env(ctx.cfg, pol)
-        if overlay is None:
-            for var in config.GH_IDENTITY_VARS:
-                env.pop(var, None)
-        else:
-            set_vars, drop_vars = overlay
-            for var in drop_vars:
-                env.pop(var, None)
-            env.update(set_vars)
+    app = config.project_github_app(ctx.cfg, pol)
+    if app is not None:
+        for var in config.GH_IDENTITY_VARS:
+            env.pop(var, None)
+        for var in ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"):
+            env.pop(var, None)
+        for k in list(env):
+            if k.startswith("GITHUB_APP_") or k.startswith("MAHLER_GITHUB_APP_"):
+                env.pop(k, None)
+        repo_name = pol.get("repo", "").rsplit("/", 1)[-1]
+        token = app.agent_token(repo_name)
+        gh_config_dir = os.path.join(run_dir, "gh")
+        config.ensure_private_dir(gh_config_dir)
+        env["GH_TOKEN"] = token
+        env["GH_CONFIG_DIR"] = gh_config_dir
+        git_config = {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": hooks,
+            "GIT_CONFIG_KEY_1": "credential.helper",
+            "GIT_CONFIG_VALUE_1": "",
+            "GIT_CONFIG_KEY_2": "core.askPass",
+            "GIT_CONFIG_VALUE_2": "",
+        }
+    else:
+        getattr(ctx, "say", print)(f"{project}#{number}: warning: non-App project using transitional GitHub identity (migration tracked in #1145)")
+        gh_acct = config.gh_account_of(pol)
+        if gh_acct != config.DEFAULT_ACCOUNT and gh_acct not in (ctx.cfg.get("accounts") or {}):
+            raise ValueError(f"account {gh_acct!r} is not defined under [accounts]")
+        if account != gh_acct:
+            overlay = config.gh_identity_env(ctx.cfg, pol)
+            if overlay is None:
+                for var in config.GH_IDENTITY_VARS:
+                    env.pop(var, None)
+            else:
+                set_vars, drop_vars = overlay
+                for var in drop_vars:
+                    env.pop(var, None)
+                env.update(set_vars)
+        git_config = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.hooksPath",
+            "GIT_CONFIG_VALUE_0": hooks,
+        }
 
     env.update(MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(number), MAHLER_EPOCH=str(epoch),
                MAHLER_HOME=config.STATE,
-               GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.hooksPath",
-               GIT_CONFIG_VALUE_0=hooks)
+               **git_config)
     if pconf["kind"] == "vibe":
         env.update(platforms.vibe_env(pconf, run_dir, env))
     if pconf.get("api_credits"):
