@@ -212,6 +212,55 @@ def resume_project(cfg, led, body):
     return _set_project_pause(cfg, led, body, False)
 
 
+def prioritize_project(cfg, led, body):
+    project = _enabled_project(cfg, body)
+    dur = body.get("duration")
+    if dur not in ("1h", "1d", "1w"):
+        raise ActionError("duration must be 1h, 1d, or 1w")
+    try:
+        record = led.start_priority_boost(project, dur)
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+    return {
+        "project": project,
+        "started_at": record["started_at"],
+        "expires_at": record["expires_at"],
+        "duration": dur,
+    }
+
+
+def extend_prioritize(cfg, led, body):
+    project = body.get("project")
+    if project:
+        project = _enabled_project(cfg, body)
+    else:
+        active = led.priority_boost()
+        if not active:
+            raise ActionError("no active priority boost to extend")
+        project = active["project"]
+    dur = body.get("duration", "1h")
+    if dur not in ("1h", "1d", "1w"):
+        raise ActionError("duration must be 1h, 1d, or 1w")
+    try:
+        record = led.extend_priority_boost(project, dur)
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+    return {
+        "project": project,
+        "started_at": record["started_at"],
+        "expires_at": record["expires_at"],
+        "duration": dur,
+    }
+
+
+def stop_prioritize(cfg, led, body):
+    project = body.get("project")
+    if project:
+        project = _enabled_project(cfg, body)
+    stopped = led.stop_priority_boost(project)
+    return {"project": project, "stopped": stopped}
+
+
 def brief_seen(cfg, led, body):
     """Acknowledge exactly the shipped-event cursor shown for one project."""
     project, upto = body.get("project"), body.get("upto")
@@ -542,7 +591,8 @@ ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, pe
                                    clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log, set_max_parallel,
-                                   pause_project, resume_project)}
+                                   pause_project, resume_project,
+                                   prioritize_project, extend_prioritize, stop_prioritize)}
 
 
 def run(cfg, led, name, body):

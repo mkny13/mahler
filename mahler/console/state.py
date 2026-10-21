@@ -196,6 +196,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
 
 def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
     """Expose each enabled project's one-line status from the existing snapshot."""
+    boost = led.priority_boost()
     options = []
     for name in project_names:
         running = sum(1 for row in runs if row["project"] == name)
@@ -206,6 +207,7 @@ def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
         release = next((row for row in releases if row["project"] == name), None)
         version = next((row["version"] for row in (release or {}).get("published", [])), "")
         project_paused = led.get_kv(config.project_pause_key(name)) == "1"
+        prioritized = (boost is not None and boost["project"] == name)
         status = ("paused" if paused or project_paused else "running" if running else
                   "waiting on you" if waiting else f"{queued} queued" if queued else "quiet")
         options.append({
@@ -216,6 +218,7 @@ def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
             "waiting_on_you": waiting,
             "paused": paused,
             "project_paused": project_paused,
+            "prioritized": prioritized,
             "current_version": version,
         })
     return options
@@ -2551,6 +2554,20 @@ def _project_overview_state(cfg, led, project, s, now):
     builders_30d = _builders_30d(led, project, now)
     settings_summary = _project_settings_summary(cfg, project)
 
+    boost = led.priority_boost()
+    boost_state = None
+    if boost:
+        exp_dt = parse(boost["expires_at"])
+        rem = max(timedelta(0), exp_dt - now)
+        boost_state = {
+            "project": boost["project"],
+            "is_active_project": (boost["project"] == project),
+            "started_at": boost["started_at"],
+            "expires_at": boost["expires_at"],
+            "time_left": router.fmt_countdown(rem),
+            "until": _when(exp_dt, now),
+        }
+
     runs = s.get("runs", [])
     active_count = len(runs)
     project_paused = led.get_kv(config.project_pause_key(project)) == "1"
@@ -2574,6 +2591,7 @@ def _project_overview_state(cfg, led, project, s, now):
             "mahler_total": cfg["concurrency"]["total"],
         },
         "project_paused": project_paused,
+        "priority_boost": boost_state,
         "kpis": {
             "open": open_count,
             "open_delta_7d": delta_7d,

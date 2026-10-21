@@ -1,5 +1,6 @@
 import console_snapshot
 """Models state from synthetic run history."""
+import copy
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -497,7 +498,7 @@ class ProjectScopeStateTests(unittest.TestCase):
         self.assertEqual(summary, {
             "name": "groundwork", "status": "running", "running": 1, "queued": 1,
             "waiting_on_you": 1, "paused": False, "project_paused": False,
-        "current_version": "2.4.1"})
+            "prioritized": False, "current_version": "2.4.1"})
         queued_summary = next(row for row in selected["scope_options"]
                               if row["name"] == "mahler")
         self.assertEqual((queued_summary["status"], queued_summary["queued"],
@@ -849,3 +850,91 @@ class ProjectHeaderControlsTests(unittest.TestCase):
         for name in ("pause_project", "resume_project"):
             with self.assertRaises(actions.ActionError):
                 run(name, "ghost")
+
+
+class PriorityBoostConsoleTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = copy.deepcopy(config.DEFAULTS)
+        self.cfg["projects"]["mahler"] = {"repo": "mkny13/mahler", "enabled": True}
+        self.cfg["projects"]["groundwork"] = {"repo": "mkny13/groundwork", "enabled": True}
+        self.now = datetime(2026, 10, 21, 12, 0, 0, tzinfo=timezone.utc)
+        self.led = Ledger(":memory:", clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+
+    def test_actions_prioritize_extend_stop(self):
+        # 1. Start boost
+        res = actions.run(self.cfg, self.led, "prioritize_project",
+                          {"project": "mahler", "duration": "1h"})
+        self.assertEqual(res["project"], "mahler")
+        self.assertEqual(res["expires_at"], "2026-10-21T13:00:00+00:00")
+        self.assertEqual(self.led.priority_boost()["project"], "mahler")
+
+        # 2. Extend boost
+        ext = actions.run(self.cfg, self.led, "extend_prioritize",
+                          {"project": "mahler", "duration": "1h"})
+        self.assertEqual(ext["expires_at"], "2026-10-21T14:00:00+00:00")
+        self.assertEqual(self.led.priority_boost()["expires_at"], "2026-10-21T14:00:00+00:00")
+
+        # 3. Stop boost
+        stop = actions.run(self.cfg, self.led, "stop_prioritize", {"project": "mahler"})
+        self.assertTrue(stop["stopped"])
+        self.assertIsNone(self.led.priority_boost())
+
+        # 4. Input validation
+        for bad_act, bad_body in [
+            ("prioritize_project", {"project": "ghost", "duration": "1h"}),
+            ("prioritize_project", {"project": "mahler", "duration": "2h"}),
+            ("extend_prioritize", {"project": "ghost"}),
+            ("extend_prioritize", {"project": "mahler", "duration": "invalid"}),
+            ("stop_prioritize", {"project": "ghost"}),
+        ]:
+            with self.subTest(action=bad_act, body=bad_body):
+                with self.assertRaises(actions.ActionError):
+                    actions.run(self.cfg, self.led, bad_act, bad_body)
+
+    def test_overview_duration_menu_when_not_boosted(self):
+        s = state.build(self.cfg, self.led, project_scope="mahler")
+        desktop = page.app(s, "desktop", view="overview")
+        phone = page.app(s, "phone", tab="overview")
+
+        for html in (desktop, phone):
+            self.assertIn('data-act="prioritize_project"', html)
+            self.assertIn('data-duration="1h"', html)
+            self.assertIn('data-duration="1d"', html)
+            self.assertIn('data-duration="1w"', html)
+            self.assertIn('1 hour', html)
+            self.assertIn('1 day', html)
+            self.assertIn('1 week', html)
+            # No confirmation markup because no boost is active
+            self.assertNotIn('data-confirm', html)
+
+    def test_overview_confirmation_markup_when_other_project_boosted(self):
+        # Boost groundwork
+        self.led.start_priority_boost("groundwork", "1h")
+        s = state.build(self.cfg, self.led, project_scope="mahler")
+        desktop = page.app(s, "desktop", view="overview")
+
+        # Opening mahler overview should have confirmation markup naming both projects
+        self.assertIn('data-confirm', desktop)
+        self.assertIn('groundwork', desktop)
+        self.assertIn('mahler', desktop)
+
+    def test_overview_active_banner_and_scope_marker(self):
+        self.led.start_priority_boost("mahler", "1h")
+        s = state.build(self.cfg, self.led, project_scope="mahler")
+        desktop = page.app(s, "desktop", view="overview")
+        phone = page.app(s, "phone", tab="overview")
+
+        for html in (desktop, phone):
+            # Active banner present
+            self.assertIn('Prioritized', html)
+            self.assertIn('data-act="stop_prioritize"', html)
+            self.assertIn('Stop', html)
+            self.assertIn('Extend', html)
+            # Time left and absolute expiry shown
+            self.assertIn('2026-10-21T13:00:00+00:00', html)
+
+        # Scope switcher: boosted project has ▲, other does not
+        self.assertIn('mahler ▲', desktop)
+        self.assertNotIn('groundwork ▲', desktop)
+

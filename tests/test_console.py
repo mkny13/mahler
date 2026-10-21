@@ -1366,6 +1366,30 @@ class ActionTests(unittest.TestCase):
         actions.run(cfg, led, "digest_seen", {"upto": 3})
         self.assertEqual(led.get_kv(state.SEEN_KEY), "9")
 
+    def test_prioritize_actions_lifecycle(self):
+        cfg, led = make_cfg(), make_led()
+        actions.run(cfg, led, "prioritize_project", {"project": "groundwork", "duration": "1d"})
+        boost = led.priority_boost()
+        self.assertIsNotNone(boost)
+        self.assertEqual(boost["project"], "groundwork")
+
+        actions.run(cfg, led, "extend_prioritize", {"duration": "1h"})
+        extended = led.priority_boost()
+        self.assertGreater(extended["expires_at"], boost["expires_at"])
+
+        actions.run(cfg, led, "stop_prioritize", {})
+        self.assertIsNone(led.priority_boost())
+
+        # Error cases
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "prioritize_project", {"project": "nonexistent", "duration": "1d"})
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "prioritize_project", {"project": "groundwork", "duration": "2h"})
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "extend_prioritize", {"duration": "bad"})
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "extend_prioritize", {"duration": "1h"})  # No active boost
+
 
 class StopRunTests(unittest.TestCase):
     """Stop & hand off from the run detail (mahler#252, DESIGN D27)."""
@@ -3615,3 +3639,38 @@ class ProjectOverviewPageTests(unittest.TestCase):
         self.assertIn("What's new", html)
         self.assertIn("Release", html)
         self.assertNotIn("Mahler item should not leak", html)
+
+    def test_prioritize_button_and_durations_rendered(self):
+        scoped = state.build(self.cfg, self.led, project_scope="groundwork")
+        html = page.app(scoped, "desktop", view="overview")
+        self.assertIn("Prioritize ▾", html)
+        self.assertIn('data-act="prioritize_project" data-project="groundwork" data-duration="1h"', html)
+        self.assertIn('data-act="prioritize_project" data-project="groundwork" data-duration="1d"', html)
+        self.assertIn('data-act="prioritize_project" data-project="groundwork" data-duration="1w"', html)
+        self.assertNotIn("data-confirm", html)
+
+    def test_prioritize_banner_and_extend_stop_rendered(self):
+        self.led.start_priority_boost("groundwork", "1d")
+        scoped = state.build(self.cfg, self.led, project_scope="groundwork")
+        html = page.app(scoped, "desktop", view="overview")
+        self.assertIn("▲ <b>Prioritized</b>", html)
+        self.assertIn("1d 0h left", html)
+        self.assertIn("Extend ▾", html)
+        self.assertIn('data-act="extend_prioritize" data-project="groundwork" data-duration="1h"', html)
+        self.assertIn('data-act="stop_prioritize" data-project="groundwork"', html)
+        # Switcher marks boosted project with ▲
+        self.assertIn('groundwork ▲', html)
+
+        # Phone overview rendering
+        p_html = page.app(scoped, "phone", tab="overview")
+        self.assertIn("▲ <b>Prioritized</b> · 1d 0h left", p_html)
+        self.assertIn('data-act="stop_prioritize"', p_html)
+
+    def test_prioritize_replacement_confirmation_when_other_project_boosted(self):
+        self.led.start_priority_boost("mahler", "1h")
+        scoped = state.build(self.cfg, self.led, project_scope="groundwork")
+        html = page.app(scoped, "desktop", view="overview")
+        self.assertIn('data-confirm="Prioritize groundwork and replace mahler?"', html)
+        # And switcher shows ▲ on mahler, not groundwork
+        self.assertIn('mahler ▲', html)
+        self.assertNotIn('groundwork ▲', html)

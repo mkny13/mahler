@@ -24,6 +24,7 @@ LEDGER_ONLY = {
     "clear_backoff", "unhold", "digest_seen", "brief_seen", "save_settings",
     "client_log", "attach", "answer_undo", "set_max_parallel",
     "pause_project", "resume_project",
+    "prioritize_project", "extend_prioritize", "stop_prioritize",
 }
 # The queued actions (D27): applied only by the tick's outbox drain.
 QUEUED = {"answer", "stop_run", "capture", "revert", "uat_fail",

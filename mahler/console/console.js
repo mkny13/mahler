@@ -690,6 +690,15 @@
     if (act === "pause_project" || act === "resume_project") {
       return { project: el.getAttribute("data-project") };
     }
+    if (act === "prioritize_project") {
+      return { project: el.getAttribute("data-project"), duration: el.getAttribute("data-duration") };
+    }
+    if (act === "extend_prioritize") {
+      return { project: el.getAttribute("data-project"), duration: el.getAttribute("data-duration") };
+    }
+    if (act === "stop_prioritize") {
+      return { project: el.getAttribute("data-project") || "" };
+    }
     if (act === "revert") { return { event: Number(el.getAttribute("data-event")) }; }
     if (act === "uat_fail") {
       var bug = el.closest(".bugov");
@@ -773,6 +782,9 @@
 
   document.addEventListener("click", function (ev) {
     if (ev.target.closest("[data-reload-console]")) { window.location.reload(); }
+    if (!ev.target.closest || !ev.target.closest(".prio-wrap")) {
+      app.querySelectorAll(".prio-menu").forEach(function (m) { m.hidden = true; });
+    }
   });
 
   document.addEventListener("click", function (ev) {
@@ -917,7 +929,23 @@
       }
       return;
     }
+    if (el.hasAttribute("data-prio-btn") || el.hasAttribute("data-prio-extend-btn")) {
+      var prioWrap = el.closest(".prio-wrap");
+      var prioM = prioWrap && prioWrap.querySelector(".prio-menu");
+      if (prioM) {
+        var wasHidden = prioM.hidden;
+        app.querySelectorAll(".prio-menu").forEach(function (m) { m.hidden = true; });
+        prioM.hidden = !wasHidden;
+      }
+      return;
+    }
     if (el.hasAttribute("data-act")) {
+      if (el.hasAttribute("data-confirm")) {
+        var msg = el.getAttribute("data-confirm");
+        if (!window.confirm(msg)) { return; }
+      }
+      var prioMenu = el.closest(".prio-menu");
+      if (prioMenu) { prioMenu.hidden = true; }
       var act = el.getAttribute("data-act");
       var verdict = act === "uat_fail";
       var payload = payloadFor(el, act);
@@ -1067,6 +1095,9 @@
   });
 
   document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") {
+      app.querySelectorAll(".prio-menu").forEach(function (m) { m.hidden = true; });
+    }
     if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
     if (ev.key === "Escape" && openBug) { openBug = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }

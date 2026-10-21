@@ -138,7 +138,8 @@ def _scope_switcher(s, cls):
                '>Mahler · all projects</option>']
     for project in s["scope_options"]:
         version = f'v{project["current_version"]}' if project["current_version"] else "no release"
-        label = f'{project["name"]} · {project["status"]} · {version}'
+        marker = " ▲" if project.get("prioritized") else ""
+        label = f'{project["name"]}{marker} · {project["status"]} · {version}'
         chosen = " selected" if project["name"] == selected else ""
         options.append(f'<option value="{e(project["name"])}"{chosen}>{e(label)}</option>')
     return (f'<label class="scope-wrap"><select class="{e(cls)}" aria-label="Project scope" '
@@ -175,6 +176,67 @@ def _project_pause_button(ov, cls="btn"):
         return (f'<button class="{cls} on" data-act="resume_project" data-project="{project}">'
                 f'Resume project</button>')
     return f'<button class="{cls}" data-act="pause_project" data-project="{project}">Pause project</button>'
+
+
+def _prioritize_button(ov, s):
+    prio = ov.get("priority_boost")
+    if prio and prio.get("is_active_project"):
+        return ""
+    project = e(ov.get("project", ""))
+    confirm_attr = ""
+    if prio and not prio.get("is_active_project"):
+        other_prio = e(prio["project"])
+        confirm_attr = f' data-confirm="Prioritize {project} and replace {other_prio}?"'
+    return (
+        f'<span class="prio-wrap prio-off">'
+        f'<button class="btn btn-acc" data-prio-btn style="border-color:var(--acc);color:var(--acc)">Prioritize ▾</button>'
+        f'<div class="prio-menu" hidden>'
+        f'<div class="h">Put this project\'s jobs ahead of every other project\'s, until:</div>'
+        f'<button data-act="prioritize_project" data-project="{project}" data-duration="1h"{confirm_attr}>1 hour</button>'
+        f'<button data-act="prioritize_project" data-project="{project}" data-duration="1d"{confirm_attr}>1 day</button>'
+        f'<button data-act="prioritize_project" data-project="{project}" data-duration="1w"{confirm_attr}>1 week</button>'
+        f'</div></span>'
+    )
+
+
+def _prioritize_banner(ov, phone=False):
+    prio = ov.get("priority_boost")
+    if not (prio and prio.get("is_active_project")):
+        return ""
+    project = e(ov.get("project", ""))
+    time_left = e(prio.get("time_left", ""))
+    until = e(prio.get("until", ""))
+    exp_abs = e(prio.get("expires_at", ""))
+
+    extend_ctrl = (
+        f'<span class="prio-wrap">'
+        f'<button class="btn" data-prio-extend-btn>Extend ▾</button>'
+        f'<div class="prio-menu prio-extend-menu" hidden>'
+        f'<div class="h">Extend priority boost by:</div>'
+        f'<button data-act="extend_prioritize" data-project="{project}" data-duration="1h">1 hour</button>'
+        f'<button data-act="extend_prioritize" data-project="{project}" data-duration="1d">1 day</button>'
+        f'<button data-act="extend_prioritize" data-project="{project}" data-duration="1w">1 week</button>'
+        f'</div></span>'
+    )
+    stop_ctrl = f'<button class="btn" data-act="stop_prioritize" data-project="{project}">Stop</button>'
+
+    if phone:
+        return (
+            f'<div class="prio-banner prio-on">'
+            f'<span>▲ <b>Prioritized</b> · {time_left} left (until {until} · {exp_abs})</span>'
+            f'<span style="flex:1"></span>'
+            f'{extend_ctrl}{stop_ctrl}'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="prio-banner prio-on">'
+        f'<span>▲ <b>Prioritized</b> · {time_left} left (until {until} · <span class="mono">{exp_abs}</span>). '
+        f'This project\'s jobs go ahead of every other project\'s. It still runs at most its own parallel-jobs limit; raise that above if you want more at once.</span>'
+        f'<span style="flex:1"></span>'
+        f'{extend_ctrl}{stop_ctrl}'
+        f'</div>'
+    )
 
 
 def _stale_note():
@@ -459,7 +521,7 @@ def _project_desktop_head(s, view):
     return (f'<div class="dhead"><span class="dtitle">{e(project)}</span>'
             f'<span class="chip {ov.get("status_tone", "")}">{e(ov.get("status_label", ""))}</span>'
             f'{ver_chip}{repo_link}<span style="flex:1"></span>'
-            f'{threads}{_project_pause_button(ov)}{_pause_button(s)}'
+            f'{threads}{_prioritize_button(ov, s)}{_project_pause_button(ov)}{_pause_button(s)}'
             f'<button class="btn btn-pri" data-open-capture>+ Add issue</button>'
             f'{_stale_note()}</div>')
 
@@ -622,7 +684,7 @@ def _desktop_overview(s):
         f'<div class="rows meta">{"".join(act_rows)}</div></section>'
     )
 
-    body = "".join([kpis_html, needs_html, active_html, two_sec, shipping_sec, dep_sec, comp_sec, act_sec])
+    body = "".join([_prioritize_banner(ov), kpis_html, needs_html, active_html, two_sec, shipping_sec, dep_sec, comp_sec, act_sec])
     return f'<section class="view view-overview"><div class="overview-body">{body}</div></section>'
 
 
@@ -736,7 +798,10 @@ def _phone_overview(s):
         f'<div>{e(cur_ver)} · {draft_cnt} unreleased{sugg}</div></section>'
     )
 
-    body = "".join([open_block, needs_html, active_html, qb_sec, shipping_sec, threads_div, whats_new, rel_sec])
+    prio_banner = _prioritize_banner(ov, phone=True)
+    prio_btn = _prioritize_button(ov, s)
+    prio_html = f'<div style="margin-bottom:12px">{prio_btn}</div>' if prio_btn else ""
+    body = "".join([prio_banner, prio_html, open_block, needs_html, active_html, qb_sec, shipping_sec, threads_div, whats_new, rel_sec])
     return f'<section class="tabv tabv-overview"><div class="ph-body">{body}</div></section>'
 
 
