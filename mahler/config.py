@@ -872,13 +872,14 @@ def resolve_github_app_provider(cfg, pol):
         pol.get("github_app") if isinstance(pol.get("github_app"), str) else None
     )
 
-    named_apps = cfg.get("github_apps", {})
-    if named_apps and not isinstance(named_apps, dict):
+    if "github_apps" in cfg and not isinstance(cfg["github_apps"], dict):
         raise ValueError("github_apps must be a table")
 
-    default_app = cfg.get("github_app", {})
-    if default_app and not isinstance(default_app, dict):
+    if "github_app" in cfg and not isinstance(cfg["github_app"], dict):
         raise ValueError("github_app must be a table")
+
+    named_apps = cfg.get("github_apps") or {}
+    default_app = cfg.get("github_app") or {}
 
     if explicit_provider:
         if isinstance(named_apps, dict) and explicit_provider in named_apps:
