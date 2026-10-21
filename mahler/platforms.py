@@ -162,13 +162,15 @@ def is_model_unavailable(text):
 
 # Guardrails (DESIGN D12): destructive command stems agents must never run.
 # Kept platform-neutral; each argv builder renders its own CLI's deny syntax.
-# These are prefix rules — a safety net against accidents, not a fence against
-# a determined agent (a reordered flag or `git push origin :branch` evades
-# them). Branch protection and the lease pre-push hook remain the real fence.
+# These are prefix rules — a speed bump against accidents, not a security
+# boundary for a determined agent (a reordered flag or `git push origin
+# :branch` evades them). The real boundary is the least-privilege token issued
+# to the run; branch protection and the lease pre-push hook remain additional
+# fences.
 # Known unmatchable-by-prefix gaps, accepted in mahler#77: mid-string refspec
 # deletions (`git push origin :branch`), `git checkout -- <path>`, `gh repo
-# edit --visibility`, and `gh api --method DELETE` (a `gh api` prefix rule
-# would block all API use).
+# edit --visibility`. The API rules below cover the known destructive forms
+# without blocking all read-only `gh api` use.
 DENY_STEMS = [
     # remote history and refs
     "git push --force", "git push -f", "git push --force-with-lease",
@@ -177,6 +179,11 @@ DENY_STEMS = [
     "git worktree remove",
     # GitHub data
     "gh repo delete", "gh repo archive", "gh release delete", "gh issue delete",
+    # D18 and credential access: agents cannot merge, mutate workflows, or read secrets.
+    "gh pr merge", "gh auth token", "gh auth status --show-token",
+    "gh secret", "gh variable", "gh api -X DELETE",
+    "gh api --method DELETE", "gh workflow run", "gh run rerun",
+    "gh repo edit", "gh api repos/*/branches/*/protection",
     # filesystem (both flag orders)
     "rm -rf /", "rm -rf ~", "rm -fr /", "rm -fr ~",
 ]
