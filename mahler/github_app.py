@@ -45,6 +45,7 @@ class Installation:
         self.installation_id = str(installation_id)
         self._key_path = os.path.expanduser(private_key_path)
         self._cache_dir = Path(cache_dir)
+        self._app_login = None
 
     def _jwt(self):
         now = int(time.time())
@@ -61,6 +62,72 @@ class Installation:
         except (OSError, subprocess.SubprocessError, ValueError):
             raise GHError("GitHub App JWT signing failed; check openssl and private_key_path") from None
         return f"{message}.{_b64(signed.stdout)}"
+
+    @staticmethod
+    def _app_slug(data, app_id):
+        if (not isinstance(data, dict) or data.get("app_id") != app_id
+                or not isinstance(data.get("slug"), str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?",
+                                    data["slug"])):
+            return None
+        return data["slug"]
+
+    def app_login(self):
+        """Resolve the exact login GitHub attributes to this configured App."""
+        if self._app_login is not None:
+            return self._app_login
+        try:
+            self._cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if self._cache_dir.is_symlink():
+                raise OSError("unsafe cache")
+            self._cache_dir.chmod(0o700)
+            path = self._cache_dir / f"{self.app_id}-app.json"
+            if path.is_symlink():
+                raise OSError("unsafe cache")
+            try:
+                path.chmod(0o600)
+                cached = json.loads(path.read_text())
+            except (FileNotFoundError, ValueError):
+                cached = None
+            slug = self._app_slug(cached, self.app_id)
+            if slug is None:
+                jwt = self._jwt()
+                request = urllib.request.Request(
+                    "https://api.github.com/app", method="GET", headers={
+                        "Authorization": f"Bearer {jwt}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                        "User-Agent": "mahler",
+                    })
+                try:
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        metadata = json.load(response)
+                    metadata = {"app_id": self.app_id,
+                                "slug": metadata.get("slug") if isinstance(metadata, dict) else None}
+                    slug = self._app_slug(metadata, self.app_id)
+                    if slug is None:
+                        raise ValueError("invalid app metadata")
+                except Exception:
+                    raise GHError(
+                        "GitHub App identity lookup failed; check app id, private key and network") from None
+                tmp = None
+                try:
+                    with tempfile.NamedTemporaryFile(mode="w", dir=self._cache_dir,
+                                                     delete=False) as fh:
+                        tmp = fh.name
+                        os.fchmod(fh.fileno(), 0o600)
+                        json.dump(metadata, fh)
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    os.replace(tmp, path)
+                finally:
+                    if tmp and os.path.exists(tmp):
+                        os.unlink(tmp)
+            self._app_login = f"app/{slug}"
+            return self._app_login
+        except OSError:
+            raise GHError(
+                "GitHub App identity cache unavailable; check cache directory permissions") from None
 
     @staticmethod
     def _usable(data, repository=None, permissions=None):

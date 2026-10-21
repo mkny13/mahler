@@ -82,7 +82,8 @@ def sync(ctx, project):
 
     scope_label = pol.get("scope_label", "mahler")
     repo_owner = pol["repo"].split("/", 1)[0]
-    configured_login = None
+    trusted_logins = (repo_owner,)
+    configured_logins_resolved = False
     admitted_issues = []
     untrusted_issues = []
     for iss in issues:
@@ -90,12 +91,21 @@ def sync(ctx, project):
         login = iss.get("authorLogin")
         opted_in = scope_label not in LABEL_STATES and scope_label in labels
         admitted = (opted_in
-                    or trusted_actor(login, iss.get("authorAssociation"), (repo_owner,)))
+                    or trusted_actor(login, iss.get("authorAssociation"), trusted_logins))
         if (not admitted and isinstance(login, str) and login.strip()):
-            if configured_login is None:
-                configured_login = gh.authenticated_login()
+            if not configured_logins_resolved:
+                configured_logins_resolved = True
+                resolved = []
+                for identity in (gh.authenticated_login, gh.app_login):
+                    try:
+                        configured_login = identity()
+                    except GHError:
+                        continue
+                    if isinstance(configured_login, str) and configured_login.strip():
+                        resolved.append(configured_login)
+                trusted_logins += tuple(resolved)
             admitted = trusted_actor(login, iss.get("authorAssociation"),
-                                     (repo_owner, configured_login))
+                                     trusted_logins)
         (admitted_issues if admitted else untrusted_issues).append(iss)
 
     open_nums = {iss["number"] for iss in issues}

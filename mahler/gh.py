@@ -274,6 +274,10 @@ class GH:
             self._login = login
         return self._login
 
+    def app_login(self):
+        """The configured App's GitHub issue-author login, if this project has one."""
+        return self.app.app_login() if self.app is not None else None
+
     def _relationships_of(self, number):
         """Both native GitHub dependency directions for one issue.
 

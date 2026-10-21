@@ -2869,9 +2869,15 @@ minus closed, so no separate cumulative counters are kept.
 
 An issue is admitted when its GitHub `authorAssociation` is `OWNER`, `MEMBER`,
 or `COLLABORATOR`, or its author login matches the repository owner or the
-authenticated GitHub identity configured for that project. Association and
-login matching use one shared deterministic actor predicate. Failure to resolve
-the configured identity cannot turn an unknown author into a trusted one.
+authenticated GitHub identity configured for that project. For issue admission
+only, a configured GitHub App's `app/<slug>` author login is trusted too. The
+slug is derived from that App's authenticated metadata and cached per App; it is
+never hard-coded or inferred from another installation. Association and login
+matching use one shared deterministic actor predicate. Failure to resolve either
+configured identity cannot turn an unknown author into a trusted one, and other
+Apps and bots (including repository Actions identities) remain untrusted. The
+App identity is not added to comment trust: Mahler-authored agent notes remain
+outputs rather than instructions in later agent context.
 
 An otherwise-untrusted issue is admitted only when it carries the project's
 configured `scope_label`, a collaborator-controlled GitHub action. Mahler state
