@@ -2929,3 +2929,38 @@ project.
   returns `None`, and agent runs cannot silently inherit the conductor's global App
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
+
+### D49 — Timed project prioritize (mahler#1123)
+
+Allocated with `mahler next-id mahler D`. The owner can give one enabled project
+a temporary boost across the scheduler, CLI, and operator console without changing
+priority labels, issue backlogs, project concurrency (`max_parallel`), or running work.
+
+- **Precedence over priority labels and static priority projects.** When active,
+  candidates from the boosted project sort ahead of candidates from every other
+  project in `tick._order_candidates`, preceding other projects' p1 issues, scarce-builder
+  protections, and static `scheduling.priority_projects`. Candidates within the
+  boosted project preserve their standard relative order (priority, age).
+- **Concurrency invariants.** Boosting never raises `max_parallel` or global concurrency,
+  and never preempts, stops, or interrupts active runs. If the boosted project reaches
+  its project limit (`max_parallel`) or available platform capacity, the scheduler
+  skips it and free slots remain available to candidates from other eligible projects.
+- **Single active boost and atomic replacement.** At most one project can be boosted at a
+  time. A new boost replaces any existing boost atomically. Starting a boost for a different
+  project in the console requires explicit browser confirmation naming both projects.
+- **Durable UTC timestamps.** State is stored durably under a single ledger KV key
+  (`priority_boost`) containing `{project, started_at, expires_at}` in UTC. Durations are
+  constrained to `1h`, `1d`, or `1w`. Extension extends the existing expiry by that duration;
+  countdown and remaining time are derived dynamically and never stored.
+- **Scheduler tick reconciliation.** The scheduler checks and reconciles expiry once near
+  the start of each tick, even when there are zero candidates to schedule. A stale boost
+  record is removed immediately and emits exactly one `priority_boost_expire` event.
+- **Structured audit events.** Lifecycle transitions write ledger events:
+  `priority_boost_start`, `priority_boost_replace`, `priority_boost_extend`,
+  `priority_boost_stop`, and `priority_boost_expire`, recording project, timestamps,
+  and duration detail.
+- **Console and CLI surfaces.** CLI exposes `mahler prioritize <project> 1h|1d|1w|off`.
+  Project Overview displays the duration selection menu, active status banner with
+  remaining time, absolute expiry, Extend and Stop controls, and a `▲` marker on the
+  project in the scope switcher.
+

@@ -755,3 +755,25 @@ is localized separately across daylight-saving changes.
 
 The schedule is built only for Capacity, phone Browse, and the full state API;
 other page fragments omit it. The existing Weekly mode toggle is unchanged.
+
+### Timed project prioritize (mahler#1123, DESIGN D49)
+
+In project scope Overview, the header includes a **Prioritize ▾** button with durations
+**1 hour, 1 day, 1 week**. Selecting a duration boosts that project's candidates so they
+sort ahead of all other projects across the conductor.
+
+- **Active banner.** While a boost is active on the current project, a highlighted banner
+  replaces the header button and displays `▲ Prioritized · {time_left} left (until {until}, {expires_at})`,
+  explaining that this project's jobs go ahead of every other project's while still respecting
+  its parallel-jobs limit. The banner provides **Extend ▾** (1h, 1d, 1w) and **Stop** buttons.
+- **Switcher indicator.** The project scope switcher displays a `▲` marker next to the
+  currently boosted project.
+- **Single boost replacement.** Only one project may be prioritized at a time. Starting a
+  boost on a project while another project is already boosted prompts for confirmation naming
+  both projects (`Prioritize {new} and replace {old}?`) before atomically replacing the boost.
+- **Phone layout.** On phone screens, the banner renders in condensed form with countdown
+  and action buttons, fitting within the phone overview layout.
+- **Local ledger actions.** All prioritize operations (`prioritize_project`, `extend_prioritize`,
+  `stop_prioritize`) are local ledger-only actions under DESIGN D27, taking effect immediately
+  without queuing tick outbox actions.
+
