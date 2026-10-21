@@ -544,6 +544,10 @@ class GH:
         return json.loads(self._gh(
             "api", f"repos/{self.repo}/rules/branches/{quote(branch, safe='')}"))
 
+    def ruleset(self, ruleset_id):
+        """Full ruleset (the only place `bypass_actors` appears); read-only."""
+        return json.loads(self._gh("api", f"repos/{self.repo}/rulesets/{int(ruleset_id)}"))
+
     # ---------- the conductor ships (DESIGN D18) ----------
 
     def issue_body(self, number):

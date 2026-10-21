@@ -1072,14 +1072,22 @@ def _flag(mapping, key, safe_value):
     return value is safe_value
 
 
-def _hardening(protection, rules, jobs):
+def _ruleset_unbypassable(gh, rule):
+    try:
+        actors = gh.ruleset(rule["ruleset_id"]).get("bypass_actors")
+    except (GHError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return None if not isinstance(actors, list) else not actors
+
+
+def _hardening(protection, rules, jobs, gh):
     """Per safeguard: True safe, False known unsafe, None unknown.
 
     Classic protection and effective rules are alternative mechanisms. Strictness
     and bypass protection are judged on each mechanism that supplies a PR test
     gate, so an unrelated classic value cannot vouch for a ruleset-sourced gate.
-    Effective rules do not report bypass actors, so those stay unknown unless
-    the rule carries `bypass_actors`."""
+    Effective rules do not report bypass actors, so each gating rule's full
+    ruleset is read; if that is denied or lacks the field the result is unknown."""
     status = protection.get("required_status_checks")
     status = status if isinstance(status, dict) else {}
     by_type = {}
@@ -1098,8 +1106,7 @@ def _hardening(protection, rules, jobs):
             continue
         value = params.get("strict_required_status_checks_policy")
         strict.append(value if isinstance(value, bool) else None)
-        actors = rule.get("bypass_actors")
-        bypass.append(None if not isinstance(actors, list) else not actors)
+        bypass.append(_ruleset_unbypassable(gh, rule))
 
     def combine(votes):
         if any(v is False for v in votes):
@@ -1160,7 +1167,7 @@ def _protection(gh, jobs, ci_unknown):
         return _finding("branch-protection", "gap",
                         "No identified PR test job is a required check.", [*evidence, f"test jobs: {jobs}"])
     unsafe, missing = [], []
-    for name, vote in _hardening(protection, rules, jobs).items():
+    for name, vote in _hardening(protection, rules, jobs, gh).items():
         if vote is True:
             evidence.append(f"{name}: enabled")
         elif vote is False:

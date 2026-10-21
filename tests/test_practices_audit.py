@@ -52,6 +52,7 @@ class FakeGH:
             "allow_deletions": {"enabled": False},
         }
         self.rules = []
+        self.rulesets = {}
 
     def default_branch_settings(self):
         if self.unavailable:
@@ -63,6 +64,11 @@ class FakeGH:
 
     def branch_rules(self, branch):
         return copy.deepcopy(self.rules)
+
+    def ruleset(self, ruleset_id):
+        if ruleset_id not in self.rulesets:
+            raise GHError("HTTP 403")
+        return copy.deepcopy(self.rulesets[ruleset_id])
 
     def issue_by_marker(self, marker):
         self.calls.append(("lookup", marker))
@@ -866,7 +872,8 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.settings["allow_squash_merge"] = True
         self.gh.protection["required_status_checks"]["contexts"] = ["build"]
         self.assertEqual(self.results()["branch-protection"].state, "gap")
-        self.gh.rules = [{"type": "required_status_checks", "bypass_actors": [], "parameters": {
+        self.gh.rulesets[7] = {"bypass_actors": []}
+        self.gh.rules = [{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
             "strict_required_status_checks_policy": True,
             "required_status_checks": [{"context": "test"}]}}]
         self.assertEqual(self.results()["branch-protection"].state, "pass")
@@ -910,8 +917,9 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(self._protection_state(), "gap")
 
     def _safe_rules(self, bypass=()):
+        self.gh.rulesets[7] = {"bypass_actors": list(bypass)}
         return [
-            {"type": "required_status_checks", "bypass_actors": list(bypass), "parameters": {
+            {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
                 "strict_required_status_checks_policy": True,
                 "required_status_checks": [{"context": "test"}]}},
             {"type": "non_fast_forward"},
@@ -925,7 +933,10 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.rules = self._safe_rules(bypass=[{"actor_type": "RepositoryRole"}])
         self.assertEqual(self._protection_state(), "gap")
         self.gh.rules = self._safe_rules()
-        del self.gh.rules[0]["bypass_actors"]
+        del self.gh.rulesets[7]["bypass_actors"]
+        self.assertEqual(self._protection_state(), "unknown")
+        self.gh.rules = self._safe_rules()
+        del self.gh.rulesets[7]  # full ruleset denied
         self.assertEqual(self._protection_state(), "unknown")
         self.gh.rules = self._safe_rules()[:1]
         self.assertEqual(self._protection_state(), "unknown")
@@ -944,7 +955,7 @@ class TestPracticesAudit(unittest.TestCase):
                               "allow_force_pushes": {"enabled": False},
                               "allow_deletions": {"enabled": False}}
         self.gh.rules = self._safe_rules()
-        del self.gh.rules[0]["bypass_actors"]
+        del self.gh.rulesets[7]
         self.assertEqual(self._protection_state(), "unknown")
 
     def test_ruleset_only_repo_with_classic_404_matches_classic_result(self):
@@ -1814,6 +1825,8 @@ class TestPracticesGHReads(unittest.TestCase):
         self.gh._gh.assert_called_with("api", "repos/owner/repo/branches/release%2Fmain/protection")
         self.gh.branch_rules("release/main")
         self.gh._gh.assert_called_with("api", "repos/owner/repo/rules/branches/release%2Fmain")
+        self.gh.ruleset(7)
+        self.gh._gh.assert_called_with("api", "repos/owner/repo/rulesets/7")
 
     def test_all_pages_open_closed_reuse_and_lookup_error(self):
         self.gh._gh.return_value = json.dumps([
