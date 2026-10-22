@@ -1038,7 +1038,8 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
         return False
     if led.q("SELECT 1 FROM kv WHERE key LIKE ? LIMIT 1", (f"design:{project}#{n}:{pr}:%",)):
         return False
-    if led.q("SELECT 1 FROM runs WHERE project=? AND number=? AND role='design' LIMIT 1", (project, n)):
+    if led.q("SELECT 1 FROM runs WHERE project=? AND number=? AND role='design' AND base_ref=? LIMIT 1",
+              (project, n, sha)):
         return False
 
     # Require review failure round threshold and drift or attempt exhaustion evidence
