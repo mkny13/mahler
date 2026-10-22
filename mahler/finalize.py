@@ -669,23 +669,50 @@ def _ended_out_of_reach(e):
     return True
 
 
-_GATE_RUN = re.compile(r"mahler desktop(?:\s+--\S+(?:\s+\S+)?)*\s+run\b")
+_GATE_CALL = re.compile(r"mahler desktop(?!:)")
+_GATE_IS_RUN = re.compile(r"(?:\s+--project(?:=|\s+)\S+|\s+--scheduled)*\s+run\b")
 _GATE_DENIAL = re.compile(r"GATE-DENIED no-child category=(?:locked|unavailable|busy|idle|outside-window)\b")
 _LOG_TAIL_BYTES = 8 * 1024 * 1024
 
 
+def _flatten(obj, out):
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _flatten(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _flatten(v, out)
+
+
 def _gui_denial_evidence(path):
-    """True only when the run's log shows a `mahler desktop run` invocation and the
-    gate's own no-child denial line. A STATUS line alone, an advisory check, an
-    unrelated failure or a launched child's exit 75 (no marker) never qualify."""
+    """True only when the denial line belongs to a `mahler desktop run` call: the
+    text between that call and the next `mahler desktop` call must carry the gate's
+    no-child line and no "command ran" line. A STATUS line alone, an advisory
+    check's denial, an unrelated failure or a launched child's exit 75 never qualify."""
     try:
         with open(path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             fh.seek(max(0, fh.tell() - _LOG_TAIL_BYTES))
-            text = fh.read().decode("utf-8", errors="replace")
+            raw = fh.read().decode("utf-8", errors="replace")
     except (OSError, TypeError):
         return False
-    return bool(_GATE_RUN.search(text) and _GATE_DENIAL.search(text))
+    chunks = []
+    for line in raw.splitlines():
+        try:
+            _flatten(json.loads(line), chunks)
+        except ValueError:
+            chunks.append(line)
+    text = "\n".join(chunks)
+    calls = list(_GATE_CALL.finditer(text))
+    for i, call in enumerate(calls):
+        end = calls[i + 1].start() if i + 1 < len(calls) else len(text)
+        segment = text[call.end():end]
+        if (_GATE_IS_RUN.match(segment) and _GATE_DENIAL.search(segment)
+                and "command ran and exited" not in segment):
+            return True
+    return False
 
 
 _GUI_REASON = re.compile(r"\b(locked|unavailable|busy|idle|outside[- ](?:preferred[- ])?window)\b",

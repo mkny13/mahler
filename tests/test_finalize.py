@@ -585,11 +585,27 @@ class RunTests(unittest.TestCase):
         ping.assert_not_called()
         self.assertIsNone(self.led.lease("x", 5))
 
+    def test_gui_denial_evidence_reads_stream_json_and_survives_later_advisory(self):
+        lines = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "input": {
+                      "command": "mahler desktop run -- scripts/smoke/run-mac.sh"}}]}},
+                 {"type": "user", "message": {"content": [{"type": "tool_result", "content":
+                      "mahler desktop: GATE-DENIED no-child category=locked: x"}]}},
+                 {"type": "assistant", "message": {"content": [{"type": "tool_use", "input": {
+                      "command": "mahler desktop"}}]}}]
+        Path(self.log).write_text("\n".join(json.dumps(l) for l in lines))
+        self.assertTrue(finalize._gui_denial_evidence(self.log))
+
     def test_gui_deferred_needs_real_denial_evidence(self):
         cases = {
             "status only": "",
             "advisory check": "$ mahler desktop\nmahler desktop: GATE-DENIED no-child category=locked: x\n",
             "launched child 75": "$ mahler desktop run -- t\nmahler desktop: command ran and exited 75\n",
+            "child 75 then advisory denial": (
+                "$ mahler desktop run -- t\nmahler desktop: command ran and exited 75\n"
+                "$ mahler desktop\nmahler desktop: GATE-DENIED no-child category=busy: x\n"),
+            "run call without its own marker, later advisory denial": (
+                "$ mahler desktop run -- t\n$ mahler desktop --project x\n"
+                "mahler desktop: GATE-DENIED no-child category=idle: x\n"),
             "marker without wrapper": "mahler desktop: GATE-DENIED no-child category=locked: x\n",
         }
         for name, evidence in cases.items():

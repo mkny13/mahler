@@ -2489,8 +2489,8 @@ in the risks list): agents may now drive the GUI, but only through the gate.
   the same result and still reserves nothing. (A host whose unlocked session omits the key
   therefore denies until the evidence is explicit; that is the fail-closed choice.)
 - **GUI-DEFERRED outcome.** A build or fix agent whose `mahler desktop run` was denied (exit 75
-  plus the marker, GUI coverage outstanding) ends `STATUS: GUI-DEFERRED <reason>`. Finalization honours it only when the run log shows a
-  `mahler desktop run` invocation and the gate's `GATE-DENIED no-child` line; otherwise the
+  plus the marker, GUI coverage outstanding) ends `STATUS: GUI-DEFERRED <reason>`. Finalization honours it only when the run log shows, for a
+  `mahler desktop run` invocation itself, the gate's `GATE-DENIED no-child` line; otherwise the
   status is unauthorized and takes the ordinary retry path. Finalization
   keeps the work (snapshot, branch, PR), never charges an attempt, and persists one wait per
   item in ledger KV (`gui-wait:<project>#<n>`: source run, bound failure cycle, role, bound
