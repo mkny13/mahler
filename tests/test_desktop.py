@@ -330,7 +330,7 @@ class SettingsTests(unittest.TestCase):
         os.environ["MAHLER_PROJECT"] = "app"
         self.assertEqual(desktop.settings(self.cfg)[0], 5)
         self.assertEqual(desktop.settings(self.cfg, "app")[1],
-                         (dtime(1, 0), dtime(2, 0)))
+                         ((None, dtime(1, 0), dtime(2, 0)),))
 
     def test_project_flag_beats_env(self):
         cfg = cfg_with({}, {"a": {"gui_idle_minutes": 1}, "b": {"gui_idle_minutes": 2}})
@@ -346,7 +346,9 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         cfg = cfg_with()
-        self.assertEqual(desktop.settings(cfg), (15, (dtime(0, 0), dtime(6, 0))))
+        self.assertEqual(desktop.settings(cfg),
+                         (15, ((None, dtime(0, 0), dtime(6, 0)),
+                               (frozenset({0, 1, 2, 3, 4}), dtime(11, 30), dtime(13, 30)))))
 
 
 class CliTests(StateCase):
@@ -386,7 +388,7 @@ class CliTests(StateCase):
         marker, cmd = self.spawn_marker()
         code, _, err = self.run_main(["run", "--scheduled", "--"] + cmd, cfg=cfg_with(),
                                      probe=probe(20 * MIN),
-                                     now=lambda: datetime(2026, 1, 1, 12, 0))
+                                     now=lambda: datetime(2026, 1, 1, 9, 0))
         self.assertEqual(code, 75)
         self.assertIn("preferred window", err)
         self.assertFalse(os.path.exists(marker))

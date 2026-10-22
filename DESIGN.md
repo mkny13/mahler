@@ -2472,10 +2472,12 @@ in the risks list): agents may now drive the GUI, but only through the gate.
 
 - **Policy.** GUI-driving work (XCUITest including mixed `xcodebuild` schemes with UI targets,
   `scripts/smoke/run-mac.sh`, `run-smoke.sh`, computer-use) starts only when HIDIdleTime is at
-  least `gui_idle_minutes` (default 15). The preferred window is `gui_window` (default
-  00:00–06:00 local, start inclusive, end exclusive, overnight allowed, `""` disables); it is
-  enforced only for explicitly `--scheduled` calls, which also keep the idle check. Both
-  settings are global `[defaults]` with per-project overrides.
+  least `gui_idle_minutes` (default 15). The preferred windows are configured in `gui_window`
+  (default `"00:00-06:00, Mon-Fri 11:30-13:30"` local, comma-separated list of ranges, optionally
+  prefixed by a weekday filter like `Mon-Fri`, `Sat-Sun`, single day, or `Mon/Wed/Fri`, start
+  inclusive, end exclusive, cross-midnight allowed and judged by the start day, `""` disables);
+  it is enforced only for explicitly `--scheduled` calls (passing if any range matches), which also
+  keep the idle check. Both settings are global `[defaults]` with per-project overrides.
 - **Mechanism.** `mahler desktop` is advisory and reserves nothing; `mahler desktop run -- cmd`
   is authoritative: take one nonblocking `flock` (`desktop.lock` in the state dir, independent
   of project, account and worktree), make one fresh check, run `cmd` (no shell) in the
@@ -2979,9 +2981,9 @@ present.
   run would (desktop lock free, inside `gui_window`, idle, session open). Only when that
   passes does the item go back to `ready`, or to `verifying` for a PR fix run, so ship.py
   resumes its CI/review cycle instead of starting a fresh build. A gate that opens again
-  the same night is used that night: the issue asked for a retry in the next idle overnight
-  window, and that is the next one. A locked mini costs no runs, only a wait. `/mahler go`
-  still resumes at once.
+  the same night or during a preferred weekday window is used then: the issue asked for a retry
+  in the next idle window, and that is the next one. A locked mini costs no runs, only a wait.
+  `/mahler go` still resumes at once.
 - **Options weighed.**
   - **Unlocked session, display asleep.** The display may sleep, but no screen saver, no
     "require password" on wake, and no auto-logout. *Chosen* (already configured). Pros: it uses the real

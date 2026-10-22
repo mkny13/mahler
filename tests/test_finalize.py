@@ -620,7 +620,8 @@ class RunTests(unittest.TestCase):
         with mock.patch.object(desktop, "run_check", side_effect=closed):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         self.assertEqual(self.led.item("x", 5)["state"], "parked")
-        self.assertEqual(seen, [(15, (dtime(0), dtime(6)), True)])
+        self.assertEqual(seen, [(15, ((None, dtime(0), dtime(6)),
+                                       (frozenset({0, 1, 2, 3, 4}), dtime(11, 30), dtime(13, 30))), True)])
         with mock.patch.object(desktop, "run_check", return_value="free: idle 40m >= 15m"):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         item = self.led.item("x", 5)

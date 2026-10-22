@@ -184,7 +184,7 @@ DEFAULTS = {
         "post_merge": DEFAULT_POST_MERGE,
         "smoke": "",                  # optional post-release command; schema only (D11)
         "gui_idle_minutes": 15,        # D40: GUI-driving work needs this much keyboard/mouse idle
-        "gui_window": "00:00-06:00",   # D40: preferred window for --scheduled GUI jobs; "" disables
+        "gui_window": "00:00-06:00, Mon-Fri 11:30-13:30",   # D40: preferred window for --scheduled GUI jobs; "" disables
         # which open issues Mahler manages: "all", or "label" = only those
         # carrying scope_label (for repos with a big pre-Mahler backlog)
         "scope": "all",
@@ -690,25 +690,100 @@ def routing_warnings(cfg):
 
 
 _GUI_WINDOW_RE = re.compile(r"^(\d{2}):(\d{2})-(\d{2}):(\d{2})$")
+_DAY_ABBR = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_DAYS = {name.lower(): i for i, name in enumerate(_DAY_ABBR)}
+
+
+def _format_days(days):
+    if days is None:
+        return ""
+    if len(days) == 1:
+        return _DAY_ABBR[next(iter(days))]
+    s = sorted(days)
+    if s == list(range(s[0], s[-1] + 1)):
+        return f"{_DAY_ABBR[s[0]]}-{_DAY_ABBR[s[-1]]}"
+    return "/".join(_DAY_ABBR[d] for d in s)
+
+
+def format_gui_window(windows):
+    """Format parsed windows tuple back to canonical string representation."""
+    if not windows:
+        return ""
+    if isinstance(windows, tuple) and len(windows) in (2, 3) and isinstance(windows[-1], time):
+        windows = (windows,)
+    parts = []
+    for win in windows:
+        days, start, end = (None, win[0], win[1]) if len(win) == 2 else win
+        d_str = _format_days(days)
+        prefix = f"{d_str} " if d_str else ""
+        parts.append(f"{prefix}{start:%H:%M}-{end:%H:%M}")
+    return ", ".join(parts)
+
+
+def _parse_days_filter(filter_str, value):
+    day_set = set()
+    for tok in filter_str.split("/"):
+        tok = tok.strip()
+        if not tok:
+            raise ValueError(f"gui_window {value!r} has unknown day {tok!r}")
+        if "-" in tok:
+            sub = tok.split("-")
+            if len(sub) != 2:
+                raise ValueError(f"gui_window {value!r} has unknown day {tok!r}")
+            s_name, e_name = sub[0].strip().lower(), sub[1].strip().lower()
+            if s_name not in _DAYS:
+                raise ValueError(f"gui_window {value!r} has unknown day {sub[0]!r}")
+            if e_name not in _DAYS:
+                raise ValueError(f"gui_window {value!r} has unknown day {sub[1]!r}")
+            d1, d2 = _DAYS[s_name], _DAYS[e_name]
+            if d1 > d2:
+                raise ValueError(f"gui_window {value!r} has reversed day range {tok!r}")
+            if d1 == d2:
+                raise ValueError(f"gui_window {value!r} has equal endpoints")
+            day_set.update(range(d1, d2 + 1))
+        else:
+            d_name = tok.lower()
+            if d_name not in _DAYS:
+                raise ValueError(f"gui_window {value!r} has unknown day {tok!r}")
+            day_set.add(_DAYS[d_name])
+    return frozenset(day_set)
 
 
 def parse_gui_window(value):
-    """"HH:MM-HH:MM" -> (start, end) times (start inclusive, end exclusive, may
-    cross midnight); "" -> None. Raises ValueError."""
+    """Accepts a comma-separated list of ranges; each range HH:MM-HH:MM,
+    optionally prefixed by a weekday filter (Mon-Fri, Sat-Sun, single day, or
+    comma-free list like Mon/Wed/Fri). Return tuple of (days: frozenset[int] | None, start, end)
+    or None for "". Raises ValueError."""
     if not isinstance(value, str):
         raise ValueError("gui_window must be a string like \"00:00-06:00\" or \"\"")
     if value == "":
         return None
-    m = _GUI_WINDOW_RE.match(value)
-    if not m:
-        raise ValueError(f"gui_window {value!r} must look like HH:MM-HH:MM")
-    h1, m1, h2, m2 = map(int, m.groups())
-    if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
-        raise ValueError(f"gui_window {value!r} has an invalid time")
-    start, end = time(h1, m1), time(h2, m2)
-    if start == end:
-        raise ValueError(f"gui_window {value!r} has equal endpoints")
-    return start, end
+    ranges = []
+    for raw in value.split(","):
+        part = raw.strip()
+        if not part:
+            raise ValueError(f"gui_window {value!r} has an empty item")
+        tokens = part.split()
+        if len(tokens) == 1:
+            days = None
+            time_part = tokens[0]
+        elif len(tokens) == 2:
+            time_part = tokens[1]
+            days = _parse_days_filter(tokens[0], value)
+        else:
+            raise ValueError(f"gui_window {value!r} must look like HH:MM-HH:MM")
+
+        m = _GUI_WINDOW_RE.match(time_part)
+        if not m:
+            raise ValueError(f"gui_window {value!r} must look like HH:MM-HH:MM")
+        h1, m1, h2, m2 = map(int, m.groups())
+        if h1 > 23 or h2 > 23 or m1 > 59 or m2 > 59:
+            raise ValueError(f"gui_window {value!r} has an invalid time")
+        start, end = time(h1, m1), time(h2, m2)
+        if start == end:
+            raise ValueError(f"gui_window {value!r} has equal endpoints")
+        ranges.append((days, start, end))
+    return tuple(ranges)
 
 
 def validate_gui_gate(cfg):

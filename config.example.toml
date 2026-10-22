@@ -31,9 +31,10 @@ review_context = "Personal project: a single user owns and controls all devices 
 # Desktop gate (D40): GUI-driving commands run only when the mini's keyboard/mouse have
 # been idle this many minutes. Positive number; per-project override allowed.
 gui_idle_minutes = 15
-# Preferred local window (start inclusive, end exclusive, may cross midnight) enforced only
-# for `mahler desktop ... --scheduled`; "" disables it. Per-project override allowed.
-gui_window = "00:00-06:00"
+# Preferred local windows (comma-separated ranges with optional weekday filter like Mon-Fri;
+# start inclusive, end exclusive, may cross midnight) enforced only for `mahler desktop ... --scheduled`;
+# "" disables it. Per-project override allowed.
+gui_window = "00:00-06:00, Mon-Fri 11:30-13:30"
 
 [ntfy]
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
