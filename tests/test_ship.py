@@ -889,6 +889,79 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 4)
 
+    def test_ci_rerun_post_403_notifies_and_starts_fix_run_next_tick(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError(
+            "gh api --method POST: gh: Resource not accessible by integration (HTTP 403)"
+        )
+        start = self.patch_start()
+        ping = self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+        rerun_pings = [c for c in ping.call_args_list if "Actions: write" in str(c)]
+        self.assertEqual(len(rerun_pings), 1)
+
+        ping2 = self.ship()
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["fix_reason"], "ci")
+        self.assertNotEqual(self.item()["state"], "needs_you")
+        rerun_pings2 = [c for c in ping2.call_args_list if "Actions: write" in str(c)]
+        self.assertEqual(len(rerun_pings2), 0)
+
+    def test_ci_rerun_403_ping_throttled_per_project_per_day(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("HTTP 403")
+        ping = self.ship()
+        self.assertEqual(len([c for c in ping.call_args_list if "Actions: write" in str(c)]), 1)
+
+        self.led.upsert_item("x", 6, pr=89, state="verifying")
+        ping2 = self.ship()
+        self.assertEqual(len([c for c in ping2.call_args_list if "Actions: write" in str(c)]), 0)
+
+        self.led.clock = lambda: NOW + timedelta(days=1, seconds=1)
+        key = "ci-rerun:x#5:88:abc123"
+        self.led.set_kv(key, None)
+        ping3 = self.ship()
+        self.assertEqual(len([c for c in ping3.call_args_list if "Actions: write" in str(c)]), 1)
+
+    def test_ci_rerun_post_permanent_error_404_or_422_starts_fix_run_next_tick_without_permission_ping(self):
+        for code in ("HTTP 404", "HTTP 422"):
+            with self.subTest(code=code):
+                key = self.retry_setup()
+                self.gh.rerun_failed_jobs.side_effect = gh_module.GHError(f"gh api --method POST: {code}")
+                start = self.patch_start()
+                ping = self.ship()
+                start.assert_not_called()
+                self.assertEqual(len([c for c in ping.call_args_list if "Actions: write" in str(c)]), 0)
+                self.ship()
+                start.assert_called_once()
+                self.assertNotEqual(self.item()["state"], "needs_you")
+                self.led.release("x", 5)
+                self.led.set_state("x", 5, "verifying", "re-test")
+                self.led.set_kv("red:x#5:88:abc123", None)
+                self.led.set_kv("red:x#5:88:abc123:charged", None)
+                self.led.set_kv("ci-rerun:x#5:88:abc123", None)
+
+    def test_ci_rerun_requested_attempt_never_advances_starts_fix_after_grace_period(self):
+        self.retry_setup()
+        self.gh.actions_run = mock.Mock(return_value={"head_sha": "abc123", "run_attempt": 1,
+                                                      "status": "completed", "conclusion": "failure"})
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+
+        self.led.clock = lambda: NOW + timedelta(minutes=2)
+        self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+
+        self.led.clock = lambda: NOW + timedelta(minutes=6)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["fix_reason"], "ci")
+        self.assertNotEqual(self.item()["state"], "needs_you")
+
     def test_ci_rerun_uncertain_post_reconciles_and_times_out(self):
         self.retry_setup()
         self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
@@ -898,6 +971,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
         self.ship()
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
         self.led.clock = lambda: NOW + timedelta(days=1)
         self.ship()
         self.assertEqual(self.item()["state"], "needs_you")

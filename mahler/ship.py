@@ -41,6 +41,25 @@ def ship(ctx, projects):
 
 UNOWNED_SCAN_MINUTES = 15
 _BOT_BRANCHES = ("dependabot/", "renovate/")
+RERUN_ATTEMPT_GRACE_MINUTES = 5
+_PERMANENT_RERUN_ERRORS = re.compile(r"\b(403|404|422)\b")
+
+
+def _notify_rerun_403(ctx, project):
+    key = f"ci-rerun-403:{project}"
+    last = ctx.led.get_kv(key)
+    if last:
+        try:
+            if ctx.led.now() - parse(last) < timedelta(days=1):
+                return
+        except Exception:
+            pass
+    ctx.led.set_kv(key, iso(ctx.led.now()))
+    ctx.ping(
+        f"GitHub Actions rerun refused — {project}",
+        "GitHub returned HTTP 403: the conductor needs Actions: write permission "
+        "to rerun failed workflows; falling back to fix runs.",
+        project=project, priority="high", tags="warning")
 
 
 _VERSION = r"v?\d+\.\d+(?:\.\d+)?"
@@ -2010,13 +2029,25 @@ def _ci_rerun(ctx, project, item, pr, view):
                     return True
                 # Reserve before POST: a crash or lost response cannot duplicate it.
                 run["requested"] = True
+                run["requested_at"] = iso(led.now())
                 led.set_kv(key, json.dumps(record))
                 gh.rerun_failed_jobs(run["id"])
                 pending = True
                 continue
             observed = gh.actions_run(run["id"])
-            if (observed.get("head_sha") != sha
-                    or observed.get("run_attempt", 0) <= run["attempt"]
+            if observed.get("run_attempt", 0) <= run["attempt"]:
+                req_str = run.get("requested_at") or record.get("since") or iso(led.now())
+                try:
+                    elapsed = led.now() - parse(req_str)
+                except Exception:
+                    elapsed = timedelta(0)
+                if elapsed >= timedelta(minutes=RERUN_ATTEMPT_GRACE_MINUTES):
+                    record["done"] = True
+                    record["unavailable"] = True
+                    led.set_kv(key, json.dumps(record))
+                    return False
+                pending = True
+            elif (observed.get("head_sha") != sha
                     or observed.get("status") != "completed"):
                 pending = True
             conclusions.append(observed.get("conclusion"))
@@ -2042,6 +2073,17 @@ def _ci_rerun(ctx, project, item, pr, view):
             led.set_kv(key, json.dumps(record))
             return False
     except (GHError, ValueError, TypeError) as exc:
+        if isinstance(exc, GHError) and _PERMANENT_RERUN_ERRORS.search(str(exc)):
+            if re.search(r"\b403\b", str(exc)):
+                _notify_rerun_403(ctx, project)
+            if not record:
+                record = {"runs": [], "since": iso(led.now())}
+            record["done"] = True
+            record["unavailable"] = True
+            led.set_kv(key, json.dumps(record))
+            _ci_pending(ctx, project, item, pr, view,
+                        reason=f"CI rerun unavailable: {exc}")
+            return True
         _ci_pending(ctx, project, item, pr, view, reason=f"CI rerun lookup/request uncertain: {exc}")
         return True
     _ci_pending(ctx, project, item, pr, view, reason="waiting for failed-job rerun attempt")
