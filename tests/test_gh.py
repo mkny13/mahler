@@ -582,12 +582,37 @@ class TestGH(unittest.TestCase):
         client.branch_protection.assert_not_called()
         client.branch_rules.assert_not_called()
 
-    def test_required_status_checks_gracefully_handles_missing_or_errors(self):
+    def test_required_status_checks_tolerates_explicit_403_and_404_absence(self):
         client = GH("mkny13/mahler")
         client.branch_protection = MagicMock(side_effect=GHError("Branch not protected (HTTP 404)"))
         client.branch_rules = MagicMock(side_effect=GHError("Rulesets not accessible (HTTP 403)"))
         self.assertEqual(client.required_status_checks("main"), set())
         self.assertEqual(client.required_status_checks(""), set())
+
+    def test_required_status_checks_rejects_malformed_response_without_caching(self):
+        client = GH("mkny13/mahler")
+        client.branch_protection = MagicMock(return_value=[])
+        client.branch_rules = MagicMock(return_value=[])
+
+        with self.assertRaisesRegex(ValueError, "malformed branch protection response"):
+            client.required_status_checks("main")
+        self.assertNotIn("main", getattr(client, "_required_status_checks_cache", {}))
+
+    def test_required_status_checks_retries_transient_failure_without_caching_empty(self):
+        client = GH("mkny13/mahler")
+        client.branch_protection = MagicMock(side_effect=[
+            GHError("connection reset"),
+            {"required_status_checks": {"contexts": ["checks"]}},
+        ])
+        client.branch_rules = MagicMock(return_value=[])
+
+        with self.assertRaisesRegex(GHError, "connection reset"):
+            client.required_status_checks("main")
+        self.assertNotIn("main", getattr(client, "_required_status_checks_cache", {}))
+
+        self.assertEqual(client.required_status_checks("main"), {"checks"})
+        self.assertEqual(client.branch_protection.call_count, 2)
+        self.assertEqual(client.branch_rules.call_count, 2)
 
 
 if __name__ == '__main__':
@@ -790,5 +815,3 @@ class RateLimitTests(unittest.TestCase):
                 client.issue_comments(1)
             self.assertNotIsInstance(error.exception, GHRateLimit)
             self.assertEqual(run.call_count, 1)
-
-

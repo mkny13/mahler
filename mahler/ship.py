@@ -30,14 +30,22 @@ def _required_checks(ctx, project, base_branch):
     if key in cache:
         return set(cache[key])
     gh = ctx.gh(project)
-    checks = set()
-    if hasattr(gh, "required_status_checks"):
-        try:
-            checks = set(gh.required_status_checks(base_branch) or ())
-        except Exception:
-            checks = set()
+    if not hasattr(gh, "required_status_checks"):
+        raise GHError("required status check discovery is unavailable")
+    checks = set(gh.required_status_checks(base_branch) or ())
     cache[key] = checks
     return set(checks)
+
+
+def _required_checks_or_defer(ctx, project, item, pr, view):
+    """Return authoritative requirements, or record an API uncertainty wait."""
+    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
+    try:
+        return _required_checks(ctx, project, base)
+    except (GHError, ValueError, TypeError) as exc:
+        _ci_pending(ctx, project, item, pr, view,
+                    reason=f"required check discovery failed: {exc}", lookup=True)
+        return None
 
 
 
@@ -402,7 +410,12 @@ def _dependency_prs(ctx, project):
             issue_key = f"dependency-issue:{project}:{n}"
             identity_key = f"dependency-identity:{project}:{n}"
             base = view.get("baseRefName") or pol.get("base", "main")
-            req = _required_checks(ctx, project, base)
+            try:
+                req = _required_checks(ctx, project, base)
+            except (GHError, ValueError, TypeError) as exc:
+                ctx.say(f"{project}: dependency PR #{n} — required check discovery "
+                        f"failed; deferring: {exc}")
+                continue
             identity = _dependency_identity(view)
             if led.get_kv(issue_key):
                 stored = led.get_kv(identity_key)
@@ -740,12 +753,13 @@ def _watch_pr(ctx, project, item, pr):
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
         return
-    if _ci_rerun(ctx, project, item, pr, view):
+    req = _required_checks_or_defer(ctx, project, item, pr, view)
+    if req is None:
+        return
+    if _ci_rerun(ctx, project, item, pr, view, req):
         return
     if not _ship_lease(ctx, project, item):
         return
-    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
-    req = _required_checks(ctx, project, base)
     state = checks_state(view.get("statusCheckRollup"), required=req)
     # Keep the console's explanation in step with the state this watcher saw.
     # The timestamp for a pending head is initialized by _ci_pending; recording
@@ -782,7 +796,7 @@ def _watch_pr(ctx, project, item, pr):
         return
     screenshots.capture(ctx, project, item, pr, view)
     screenshot_delivery.deliver(ctx, project, item, pr, view)
-    _review_gate(ctx, project, item, pr, view)
+    _review_gate(ctx, project, item, pr, view, req)
 
 
 def _ship_item(ctx, project, item):
@@ -847,7 +861,7 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", look
     led.release(project, n, holder=CONDUCTOR)
 
 
-def _merge_queued(ctx, project, item, pr, view):
+def _merge_queued(ctx, project, item, pr, view, required=None):
     """Checks are acceptable: request the merge, then watch for it to land.
 
     mahler#211 — GitHub's native merge queue (once enabled on the base branch)
@@ -862,6 +876,10 @@ def _merge_queued(ctx, project, item, pr, view):
     led, n = ctx.led, item["number"]
     gh = ctx.gh(project)
     pol = ctx.policy(project)
+    if required is None:
+        required = _required_checks_or_defer(ctx, project, item, pr, view)
+        if required is None:
+            return
     key = f"queue:{project}#{n}:{pr}"
     sha = view.get("headRefOid") or ""
     seen = led.get_kv(key)
@@ -869,14 +887,12 @@ def _merge_queued(ctx, project, item, pr, view):
     if not info or info.get("sha") != sha:
         try:
             fresh = gh.pr_view(pr)
-            base = fresh.get("baseRefName") or view.get("baseRefName") or pol.get("base", "main")
-            req = _required_checks(ctx, project, base)
             if (not sha or not view.get("baseRefName") or
                     fresh.get("headRefOid") != sha or
                     fresh.get("baseRefName") != view.get("baseRefName") or
                     fresh.get("state") != "OPEN" or
                     fresh.get("mergeable") != "MERGEABLE" or
-                    checks_state(fresh.get("statusCheckRollup"), required=req) not in ("green", "none")):
+                    checks_state(fresh.get("statusCheckRollup"), required=required) not in ("green", "none")):
 
                 _ci_pending(ctx, project, item, pr, fresh,
                             reason="PR changed or metadata incomplete; retrying verification")
@@ -1160,24 +1176,26 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     return True
 
 
-def _review_gate(ctx, project, item, pr, view):
+def _review_gate(ctx, project, item, pr, view, required=None):
     """Between CI-green and merge, DESIGN D11's independent review: CI-green
     proves the tests that exist pass, not that the diff is sound, so a
     review run on a platform other than the builder's gates the merge
     alongside it. Low-risk items (`_review_required` false) skip straight to
     `_merge_queued`, same as before this existed."""
     led, n = ctx.led, item["number"]
+    if required is None:
+        required = _required_checks_or_defer(ctx, project, item, pr, view)
+        if required is None:
+            return
     if (not _review_required(item)
             and led.get_kv(f"reviewed-pr:{project}#{n}") != str(pr)):
-        _merge_queued(ctx, project, item, pr, view)
+        _merge_queued(ctx, project, item, pr, view, required)
         return
     sha = view.get("headRefOid") or ""
     key = f"review:{project}#{n}"
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else {}
-    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
-    req = _required_checks(ctx, project, base)
-    if checks_state(view.get("statusCheckRollup"), required=req) not in {"green", "none"}:
+    if checks_state(view.get("statusCheckRollup"), required=required) not in {"green", "none"}:
         return
 
     status = review.effective_for_item(led, project, n, pr=pr, sha=sha)
@@ -1189,7 +1207,7 @@ def _review_gate(ctx, project, item, pr, view):
     if status == "pass":
         if not review.file_followups(ctx, project, item):
             return
-        _merge_queued(ctx, project, item, pr, view)
+        _merge_queued(ctx, project, item, pr, view, required)
         return
     if status == "fail":
         if any(r["project"] == project and r["number"] == n and r["role"] == "design"
@@ -2061,7 +2079,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                     })
 
 
-def _ci_rerun(ctx, project, item, pr, view):
+def _ci_rerun(ctx, project, item, pr, view, required=None):
     """One durable allowance; uncertain POSTs are reconciled, never replayed."""
     if ctx.dry_run:
         return False
@@ -2071,11 +2089,12 @@ def _ci_rerun(ctx, project, item, pr, view):
     record = _kv_json(led, key)
     if record.get("done"):
         return False
-    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
-    req = _required_checks(ctx, project, base)
     try:
+        if required is None:
+            required = _required_checks(ctx, project,
+                                        view.get("baseRefName") or ctx.policy(project).get("base", "main"))
         if not record:
-            if checks_state(view.get("statusCheckRollup"), required=req) != "red":
+            if checks_state(view.get("statusCheckRollup"), required=required) != "red":
                 return False
             selected = gh.ci_retry_runs(sha, view.get("baseRefName"))
 
@@ -2117,14 +2136,14 @@ def _ci_rerun(ctx, project, item, pr, view):
                     or observed.get("status") != "completed"):
                 pending = True
             conclusions.append(observed.get("conclusion"))
-        rollup = checks_state(view.get("statusCheckRollup"), required=req)
+        rollup = checks_state(view.get("statusCheckRollup"), required=required)
         selected_ids = {str(run["id"]) for run in record["runs"]}
         unmatched_red = False
         for check in view.get("statusCheckRollup") or []:
-            if req:
+            if required:
                 name = check.get("name")
                 context = check.get("context")
-                if not ((name and name in req) or (context and context in req)):
+                if not ((name and name in required) or (context and context in required)):
                     continue
             if checks_state([check]) != "red":
                 continue
