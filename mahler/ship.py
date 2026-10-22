@@ -1021,7 +1021,7 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
 
 
 def _maybe_start_design(ctx, project, item, pr, view, sha, info):
-    """Route non-converging blocking reviews through a single design pass (issue #715).
+    """Route non-converging blocking reviews through a single design pass (issue #715, #1179).
 
     Returns True if design routing handled the current gate pass (a run was started,
     capacity wait was recorded, or launch was attempted and will be retried),
@@ -1036,14 +1036,28 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     design_kv_key = f"design:{project}#{n}:{pr}:{sha}"
     if led.get_kv(design_kv_key):
         return False
-    # Require review failure round threshold and drift evidence
+    if led.q("SELECT 1 FROM kv WHERE key LIKE ? LIMIT 1", (f"design:{project}#{n}:{pr}:%",)):
+        return False
+    if led.q("SELECT 1 FROM runs WHERE project=? AND number=? AND role='design' LIMIT 1", (project, n)):
+        return False
+
+    # Require review failure round threshold and drift or attempt exhaustion evidence
     pol = ctx.policy(project)
     threshold = pol.get("review_green_rounds", 2)
     rounds = review.window(led, project, n, pr)
     round_num = review.round_number(rounds, sha)
     if round_num < threshold:
         return False
-    if not led.get_kv(f"reviewdrift:{project}#{n}:{pr}"):
+
+    has_drift = bool(led.get_kv(f"reviewdrift:{project}#{n}:{pr}"))
+    explore_failure = _explored_head(led, project, n)
+    fix_key = f"reviewfix:{project}#{n}:{pr}:{sha}"
+    attempts = item["attempts"]
+    if not led.get_kv(f"{fix_key}:charged"):
+        attempts += (0 if explore_failure else 1)
+    exhausted = not explore_failure and attempts >= pol["max_attempts"]
+
+    if not (has_drift or exhausted):
         return False
 
     cfg = ctx.cfg
@@ -1860,17 +1874,20 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                       "platform": last_platform, "reason": "failed review"})
 
         if not explore_failure and attempts >= pol["max_attempts"]:
-            led.set_state(project, n, "failed",
-                          f"review still failing on PR #{pr} after {attempts} attempts",
-                          attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
-            failures.report(ctx, project, n, "review_rejected",
-                            run=led.last_run(project, n, roles=("review",)),
-                            output=findings, branch=head)
-            ctx.ping(f"Stuck — {project} #{n}",
-                     f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
-                     project, n, priority="high", tags="warning")
-            led.release(project, n, holder=CONDUCTOR)
-            return
+            if not design_plan and _maybe_start_design(ctx, project, item, pr, view, sha, {"findings": findings}):
+                return
+            if not design_plan:
+                led.set_state(project, n, "failed",
+                              f"review still failing on PR #{pr} after {attempts} attempts",
+                              attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+                failures.report(ctx, project, n, "review_rejected",
+                                run=led.last_run(project, n, roles=("review",)),
+                                output=findings, branch=head)
+                ctx.ping(f"Stuck — {project} #{n}",
+                         f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
+                         project, n, priority="high", tags="warning")
+                led.release(project, n, holder=CONDUCTOR)
+                return
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
         cur_tier = new_tier
