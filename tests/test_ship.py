@@ -477,6 +477,25 @@ class ShipTests(unittest.TestCase):
         ping.assert_called_once()
         self.assertEqual(ping.call_args[0][0], "Shipped — x #5")
 
+    def test_shipping_ignores_failing_non_required_checks_and_merges(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "Vercel", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        with mock.patch.object(ship, "_red_ci") as mock_red:
+            self.ship()
+            mock_red.assert_not_called()
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(self.item()["state"], "shipped")
+        ci_raw = self.led.get_kv("ci:x#5:88")
+        self.assertIsNotNone(ci_raw)
+        ci_info = json.loads(ci_raw)
+        self.assertEqual(ci_info.get("state"), "green")
+        self.assertIn("Vercel", ci_info.get("non_required_failures", []))
+
+
     def test_confirmed_merge_registers_post_merge_after_shipped(self):
         from mahler import post_merge
         self.led.upsert_item("x", 5, pr=88)
@@ -3229,6 +3248,32 @@ class HelpersTests(unittest.TestCase):
             [{"state": "SUCCESS"}, {"state": "PENDING"}]), "pending")
         self.assertEqual(gh_module.checks_state(
             [{"state": "NEUTRAL"}, {"state": "FAILURE"}]), "red")
+
+    def test_checks_state_with_required_checks(self):
+        # 1. checks_state with required=["checks"] returns "green" when checks=SUCCESS and Vercel=FAILURE
+        rollup = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "Vercel", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        self.assertEqual(gh_module.checks_state(rollup, required=["checks"]), "green")
+
+        # 2. checks_state with required=["checks"] returns "red" when checks=FAILURE
+        rollup_fail = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"},
+            {"name": "Vercel", "status": "COMPLETED", "conclusion": "SUCCESS"},
+        ]
+        self.assertEqual(gh_module.checks_state(rollup_fail, required=["checks"]), "red")
+
+        # 3. checks_state with required=None returns "red" when any check in rollup fails
+        self.assertEqual(gh_module.checks_state(rollup, required=None), "red")
+
+        # 4. checks_state with required=["checks"] returns "pending" when checks is pending or missing
+        self.assertEqual(gh_module.checks_state([], required=["checks"]), "pending")
+        self.assertEqual(gh_module.checks_state([{"name": "checks", "status": "IN_PROGRESS"}], required=["checks"]), "pending")
+
+        # 5. non_required_failures helper identifies failing non-required checks
+        self.assertEqual(gh_module.non_required_failures(rollup, required=["checks"]), ["Vercel"])
+
 
 
 class MigrationTests(unittest.TestCase):
