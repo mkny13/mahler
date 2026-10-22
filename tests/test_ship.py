@@ -3855,6 +3855,50 @@ class TestGreenReviewRounds(unittest.TestCase):
             self.assertEqual(start_mock.call_args.args[3], "design")
             self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
 
+    def test_same_file_new_blockers_reproducing_1137_sequence_starts_design_instead_of_failing(self):
+        # Reproduce mahler#1137 sequence: 3 green rounds with fresh blockers in the same file
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+
+        # Round 1: build (attempts=0), review fails with blocker in mahler/dependency_vetting.py
+        f1 = {**self.finding("blocking"), "category": "behavior",
+              "location": "mahler/dependency_vetting.py:100", "scenario": "First edge case"}
+        self.complete_head("head-1", [f1], 1)
+        _, fix1, _ = self.gate()
+        fix1.assert_called_once()
+        self.led.upsert_item("x", 5, attempts=1)
+
+        # Round 2: fix 1 pushed head-2 (attempts=1), review fails with new blocker in same file
+        f2 = {**self.finding("blocking"), "category": "security",
+              "location": "mahler/dependency_vetting.py:250", "scenario": "Second edge case"}
+        self.complete_head("head-2", [f2], 2)
+        _, fix2, _ = self.gate()
+        fix2.assert_called_once()
+        self.led.upsert_item("x", 5, attempts=2)
+
+        # Round 3: fix 2 pushed head-3 (attempts=2), review fails with third blocker in same file
+        f3 = {**self.finding("blocking"), "category": "behavior",
+              "location": "mahler/dependency_vetting.py:512", "scenario": "Third edge case"}
+        self.complete_head("head-3", [f3], 3)
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:88"))  # same file, no drift
+
+        # On round 3, attempts + 1 reaches max_attempts (3). Without design, it would fail.
+        # With #1179, it starts one design run instead of failing with review_rejected.
+        from mahler import failures
+        with mock.patch.object(ship, "start", return_value=True) as start_mock, \
+                mock.patch.object(failures, "report") as report_mock:
+            merge, fix3, _ = self.gate()
+            merge.assert_not_called()
+            fix3.assert_not_called()
+            report_mock.assert_not_called()
+            self.assertNotEqual(self.item()["state"], "failed")
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "design")
+            self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
+
     def test_failed_design_start_retries_without_fix_or_competing_review(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         later = NOW + timedelta(hours=2)
@@ -3952,6 +3996,29 @@ class TestGreenReviewRounds(unittest.TestCase):
             with mock.patch.object(self.ctx, "gh", return_value=self.gh):
                 ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
             start_review.assert_called_once()
+
+    def test_planned_fix_consumption_runs_at_max_attempts_without_failing(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        plan = {
+            "summary": "Fix all bugs",
+            "files": ["a.py", "b.py"],
+            "steps": ["step 1", "step 2"],
+            "tests": "pytest"
+        }
+        self.led.upsert_item("x", 5, attempts=2)
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({
+            "head": "head-3", "disposition": "fix", "plan": plan, "consumed": False
+        }))
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "fix")
+            context = start_mock.call_args.kwargs["context"]
+            self.assertIn("Fix all bugs", context)
+        self.assertNotEqual(self.item()["state"], "failed")
+        self.assertEqual(self.led.get_kv("design-consumed:x#5:88:head-3"), "1")
 
     def test_design_result_followups_files_deduped_issues_and_merges(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
