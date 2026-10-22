@@ -4272,6 +4272,21 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.assertEqual(len(self.design_window(89, prefix="pr89")[3]), 1)
         self.assertEqual(self.led.get_kv("design:x#5:88:head-3"), record)
 
+    def test_design_dedup_is_scoped_to_reviewed_head(self):
+        self.led.create_run(project="x", number=5, role="design", platform="agy-gemini",
+                            status="ended", outcome="DESIGNED", epoch=1,
+                            base_ref="head-1", ended_at=iso(NOW))
+
+        # A completed design on an earlier head must not suppress the current head.
+        self.assertEqual(len(self.design_window()[3]), 1)
+
+        # The same completed design head remains deduplicated.
+        self.led.q("DELETE FROM runs WHERE project='x' AND number=5 AND role='design'")
+        self.led.create_run(project="x", number=5, role="design", platform="agy-gemini",
+                            status="ended", outcome="DESIGNED", epoch=1,
+                            base_ref="head-3", ended_at=iso(NOW))
+        self.assertEqual(len(self.gate_pr()[3]), 0)
+
     def test_manual_reship_does_not_restart_consumed_design(self):
         self.assertEqual(len(self.design_window()[3]), 1)  # control: design would start
         self.led.set_kv("design:x#5:88:head-3", json.dumps({"disposition": "fix", "consumed": True}))
