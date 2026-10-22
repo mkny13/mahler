@@ -23,6 +23,9 @@ from . import config
 EX_OK = 0
 EX_INVALID = 2
 EX_DEFERRED = 75   # EX_TEMPFAIL: gate closed or lock held; nothing was launched
+# Printed with every denial. A child that itself exits 75 never prints it, so a
+# run's BLOCKED reason can prove that nothing was launched (mahler#1172).
+DENIED_MARKER = "GATE-DENIED"
 IOREG_TIMEOUT = 5
 LOCK_NAME = "desktop.lock"
 _IDLE_RE = re.compile(r'"HIDIdleTime"\s*=\s*(\S+)')
@@ -291,5 +294,5 @@ def main(argv, cfg=None, probe=None, now=None):
         print(run_check(minutes, window, a.scheduled, probe, now))
         return EX_OK
     except Deferred as e:
-        print(f"mahler desktop: {e}", file=sys.stderr)
+        print(f"mahler desktop: {DENIED_MARKER} {e}", file=sys.stderr)
         return EX_DEFERRED

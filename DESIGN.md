@@ -2480,15 +2480,17 @@ in the risks list): agents may now drive the GUI, but only through the gate.
   is authoritative: take one nonblocking `flock` (`desktop.lock` in the state dir, independent
   of project, account and worktree), make one fresh check, run `cmd` (no shell) in the
   foreground. The child inherits the lock descriptor, so killing the wrapper does not free the
-  lock while the command still runs. No wait loop and no ledger or scheduler changes.
-  Exit 75 = deferred, 2 = invalid, otherwise the child's status.
+  lock while the command still runs. The wrapper has no wait loop; a deferred deliverable
+  waits in the ledger instead (D50). Exit 75 with a `GATE-DENIED <reason>` line = deferred,
+  nothing launched; 2 = invalid; otherwise the child's status.
 - **Fail closed.** A missing, malformed, negative, ambiguous, failed or timed-out (5 s) probe,
   an unsupported host, bad config or an unknown project denies.
 - **Launch-only.** The idle reading is taken once at launch: synthetic test input may reset
   HIDIdleTime, and returning human activity does not abort a running test. It is an
   enforcement boundary for commands that participate, not OS-wide interception; recipes must
-  defer computer-use that has no supervised command to wrap. The gate does not unlock the
-  screen or grant macOS permissions.
+  defer computer-use that has no supervised command to wrap. The gate never enters a
+  password or grants macOS permissions. It may wake a display whose lock shield needs no
+  password (D50).
 - **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
   job only with evidence it covers the skipped work. A skip is never a pass. A locked screen
   or a missing GUI session also denies, and a run whose deliverable *is* the GUI step parks
@@ -2966,11 +2968,19 @@ present.
   `run` declares user activity (`caffeinate -u -t 2`), waits 3 s and reads the session
   again, deferring if the shield is still up. A lock that needs a password always defers.
 - **A deferred GUI deliverable parks; it doesn't fail.** When the GUI run *is* the task, as
-  with a smoke run, the recipe ends `STATUS: BLOCKED desktop gate: <message>`. Finalize
-  recognises that (or "screen is still locked"), parks the item without charging an
-  attempt, and pings once. Each tick, `recheck_blocked` asks the gate, as a `--scheduled` run
-  would see it (inside `gui_window`, idle, unlocked), and moves the item back to `ready` only
-  when the gate is open. A locked mini therefore costs no runs, only a wait. `/mahler go`
+  with a smoke run, the recipe ends `STATUS: BLOCKED desktop gate: GATE-DENIED <reason>`.
+  Finalize accepts only that marker, which the gate prints with every denial and a child that
+  itself exits 75 never prints. Prose about a locked screen keeps the ordinary BLOCKED path.
+  It applies to build and fix runs after the usual stale-epoch checks. The item parks without
+  charging an attempt and pings once. A PR fix run that ship.py charged at launch gets that
+  charge back: `fix-charge:<run>` holds the counters from before and after, and the cycle's
+  `:charged` mark is cleared so the relaunch is charged exactly once.
+- **Unparking.** Each tick, `recheck_blocked` asks `desktop.run_check` as a `--scheduled`
+  run would (desktop lock free, inside `gui_window`, idle, session open). Only when that
+  passes does the item go back to `ready`, or to `verifying` for a PR fix run, so ship.py
+  resumes its CI/review cycle instead of starting a fresh build. A gate that opens again
+  the same night is used that night: the issue asked for a retry in the next idle overnight
+  window, and that is the next one. A locked mini costs no runs, only a wait. `/mahler go`
   still resumes at once.
 - **Options weighed.**
   - **Unlocked session, display asleep.** The display may sleep, but no screen saver, no

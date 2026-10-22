@@ -163,7 +163,7 @@ class SessionTests(StateCase):
     def test_locked_with_password_spawns_nothing(self):
         code, err, ran, order = self.run_flagged([True], password_free=False)
         self.assertEqual((code, ran, order), (desktop.EX_DEFERRED, False, []))
-        self.assertIn("locked", err)
+        self.assertIn("mahler desktop: GATE-DENIED locked", err)
 
     def test_sleeping_display_is_woken_then_run(self):
         code, _, ran, order = self.run_flagged([True, False])

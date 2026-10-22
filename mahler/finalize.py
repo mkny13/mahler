@@ -218,11 +218,12 @@ def _ended_blocked_external(e):
 
 # ---------- BLOCKED on the desktop gate (mahler#1172) ----------
 
-# A GUI step the task cannot finish without (a smoke run) found the gate closed:
-# `mahler desktop run` deferred, or the screen was locked. That says nothing about
-# the work, so it parks without an attempt until the gate would open again.
-_GUI_DEFERRED = re.compile(r"\bdesktop gate\b|\bscreen (?:is )?(?:still )?locked\b",
-                           re.IGNORECASE)
+# A GUI step the task cannot finish without (a smoke run) found the gate closed.
+# Only the gate's own denial marker counts, so a GUI child that itself exited 75
+# (or prose about a locked screen) keeps the ordinary BLOCKED handling. Waiting
+# says nothing about the work, so it parks without an attempt until the gate
+# would open again.
+_GUI_DEFERRED = re.compile(rf"\b{desktop.DENIED_MARKER}\b")
 
 
 def _fix_charge_refund(e):
@@ -242,8 +243,10 @@ def _fix_charge_refund(e):
 def _ended_gui_deferred(e):
     key = f"blocked:{e.project}#{e.number}"
     previous = json.loads(e.led.get_kv(key) or "{}")
+    # A PR's fix run resumes its verify cycle (ship.py), not a fresh build.
+    resume = "verifying" if e.run["role"] == "fix" and e.item["pr"] else "ready"
     record = {"reason": e.rest, "since": previous.get("since") or iso(e.led.now()),
-              "checkable": False, "gui": True}
+              "checkable": False, "gui": True, "resume": resume}
     e.led.set_kv(key, json.dumps(record))
     e.set_state("parked", f"GUI step deferred until the desktop gate opens: {e.rest}",
                 **_fix_charge_refund(e))
@@ -291,7 +294,8 @@ def recheck_blocked(ctx, projects):
                         cur = led.item(project, n)
                         if cur["state"] == "parked" and led.get_kv(key):
                             led.set_kv(key, None)
-                            led.set_state(project, n, "ready",
+                            back = (record.get("resume") or "ready") if cur["pr"] else "ready"
+                            led.set_state(project, n, back,
                                           f"blocked condition met ({detail})")
             except Exception as exc:            # noqa: BLE001 — never break the tick
                 ctx.say(f"{project}#{n}: blocked recheck failed: {type(exc).__name__}")
