@@ -2476,8 +2476,38 @@ in the risks list): agents may now drive the GUI, but only through the gate.
   is authoritative: take one nonblocking `flock` (`desktop.lock` in the state dir, independent
   of project, account and worktree), make one fresh check, run `cmd` (no shell) in the
   foreground. The child inherits the lock descriptor, so killing the wrapper does not free the
-  lock while the command still runs. No wait loop and no ledger or scheduler changes.
-  Exit 75 = deferred, 2 = invalid, otherwise the child's status.
+  lock while the command still runs. No wait loop. Exit 75 = deferred, 2 = invalid, otherwise
+  the child's status. A denial prints one stderr line containing `GATE-DENIED no-child
+  category=<locked|unavailable|busy|idle|outside-window>`; a child that itself exits 75 prints
+  no such line, so the two are distinguishable.
+- **GUI-session preflight (mahler#1173).** After taking the lock and before `Popen`, the
+  wrapper reads the console session dictionary (`ioreg -n Root -d1 -a`, 5 s bound, stdlib
+  plist parsing) and requires exactly one on-console session whose `CGSSessionScreenIsLocked`
+  is explicitly `false`. Locked, off-console, absent, malformed, ambiguous, failed, timed-out
+  and unsupported-host evidence all deny; a missing lock key is never read as unlocked. The
+  dictionary, user names and account identifiers are never logged. The advisory check reports
+  the same result and still reserves nothing. (A host whose unlocked session omits the key
+  therefore denies until the evidence is explicit; that is the fail-closed choice.)
+- **GUI-DEFERRED outcome.** A build or fix agent whose `mahler desktop run` was denied (exit 75
+  plus the marker, GUI coverage outstanding) ends `STATUS: GUI-DEFERRED <reason>`. Finalization
+  keeps the work (snapshot, branch, PR), never charges an attempt, and persists one wait per
+  item in ledger KV (`gui-wait:<project>#<n>`: source run, bound failure cycle, role, bound
+  state, a sanitized reason category and `retry_at`). The item stays `ready` (build) or
+  `verifying` (fix with a PR). For a fix, only that run's own CI/review charge is undone, once
+  (`ci-fix:`/`review-fix:` before/after records), and never if later work changed the
+  counters. No blocker, no-progress, exhausted-attempt or owner-question handling is involved,
+  and ordinary `BLOCKED` is unchanged.
+- **Retry window.** `retry_at` is the next strictly future start of the project's effective
+  `gui_window` in host-local time (a denial inside the window, even exactly at its start, waits
+  for the following start), stored as an absolute timestamp. Candidate selection, shipping's
+  fix processing and `start()` all refuse to launch before it; at the timestamp the item is
+  eligible under normal policy. A disabled or invalid window stores a configuration hold: no
+  launch, no charge, one low-priority ping; once the window is valid again the next future
+  start is scheduled rather than launching immediately. This changes item retry semantics only;
+  a standalone `mahler desktop` call still treats `""` as "no window". The wait is cleared by a
+  successful relaunch, closing, parking, explicit requeue (`/mahler go`) or any state change
+  away from its bound state, and by a fix moving to a different failure cycle. Passive sync and
+  failed launches leave it alone, and a global resume does not override it.
 - **Fail closed.** A missing, malformed, negative, ambiguous, failed or timed-out (5 s) probe,
   an unsupported host, bad config or an unknown project denies.
 - **Launch-only.** The idle reading is taken once at launch: synthetic test input may reset

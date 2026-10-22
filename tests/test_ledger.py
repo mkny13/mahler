@@ -840,6 +840,39 @@ class RemoteLedgerTests(unittest.TestCase):
 
 
 
+class GuiWaitLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:")
+        self.addCleanup(self.led.close)
+        self.led.upsert_item("p", 1, state="ready")
+        self.rec = {"run": 1, "cycle": None, "role": "build", "state": "ready",
+                    "reason": "locked", "retry_at": "2030-01-01T00:00:00+00:00", "hold": False}
+        self.led.set_gui_wait("p", 1, self.rec)
+
+    def test_round_trip_and_garbage_is_no_wait(self):
+        self.assertEqual(self.led.gui_wait("p", 1), self.rec)
+        self.led.set_kv("gui-wait:p#1", "{not json")
+        self.assertIsNone(self.led.gui_wait("p", 1))
+
+    def test_same_state_writes_keep_the_wait(self):
+        self.led.set_state("p", 1, "ready")
+        self.led.upsert_item("p", 1, title="passive sync refresh")
+        self.assertEqual(self.led.gui_wait("p", 1), self.rec)
+
+    def test_leaving_the_bound_state_clears_it(self):
+        for state in ("working", "parked", "done", "failed", "inbox", "verifying"):
+            with self.subTest(state=state):
+                self.led.set_gui_wait("p", 1, self.rec)
+                self.led.set_state("p", 1, state)
+                self.assertIsNone(self.led.gui_wait("p", 1))
+                self.led.set_state("p", 1, "ready")
+
+    def test_explicit_resume_clears_even_in_the_same_state(self):
+        from mahler import sync
+        sync.resume_item(self.led, "p", 1)
+        self.assertIsNone(self.led.gui_wait("p", 1))
+
+
 class StateTests(unittest.TestCase):
     def test_set_state_logs_transition(self):
         led = Ledger(":memory:")

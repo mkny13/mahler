@@ -103,7 +103,14 @@ result is obtained, the better. Never trade verification for speed.
    (in use or lock held): skip that local GUI step, record the reason and the coverage still
    outstanding in your summary, and name the CI UI-test job only if you saw evidence it covers
    the skipped work. Never call a skip a pass or invent CI coverage. Headless tests need no
-   gate. The gate does not unlock the screen.
+   gate. The gate does not unlock the screen. **`STATUS: GUI-DEFERRED`:** only after an actual
+   `mahler desktop run` denial that exited 75 and printed the `GATE-DENIED no-child` line (no
+   child launched), while required GUI coverage is still outstanding, finish with exactly
+   `STATUS: GUI-DEFERRED <gate reason>` (reason: locked, unavailable, busy, idle or
+   outside-window). First finish every feasible headless check and commit your work. Mahler
+   then retries in the next GUI window without spending an attempt. An advisory `mahler desktop`
+   check, unwrapped computer-use, an unrelated failure, or a launched child that itself exited 75
+   (no `GATE-DENIED` line) never authorizes this status; never call skipped GUI coverage passing.
 9. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
 10. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
    <prefix>` to avoid collisions.

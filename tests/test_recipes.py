@@ -988,6 +988,22 @@ class DesktopGateRecipeTests(unittest.TestCase):
                 self.assertNotIn("screen is locked", text)
 
 
+    def test_gui_deferred_only_after_a_no_child_gate_denial(self):
+        for name in ("build", "fix"):
+            text = " ".join(self.rendered()[name].split())
+            with self.subTest(recipe=name):
+                for fragment in (
+                    "`STATUS: GUI-DEFERRED <gate reason>`", "exited 75", "`GATE-DENIED no-child` line",
+                    "no child launched", "GUI coverage is still outstanding",
+                    "feasible headless check", "without spending an attempt",
+                    "advisory `mahler desktop` check", "unwrapped computer-use",
+                    "unrelated failure", "launched child that itself exited 75",
+                    "never call skipped GUI coverage passing",
+                ):
+                    self.assertIn(fragment, text)
+        self.assertNotIn("GUI-DEFERRED", self.rendered()["review"])
+
+
 class DesignRecipeTests(unittest.TestCase):
     def test_contract_is_plan_only_and_always_requires_a_fix_plan(self):
         rendered = prompt.render(
