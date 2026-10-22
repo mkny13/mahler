@@ -554,6 +554,119 @@ class RunTests(unittest.TestCase):
         self.run.update(id=run_id, epoch=epoch, role=role)
         self.led.set_state("x", 5, "working", "test run")
 
+    # ---------- GUI-DEFERRED (D40, mahler#1173) ----------
+
+    def gui_deferred(self, rest="locked: the console screen is locked"):
+        Path(self.log).write_text(f"STATUS: GUI-DEFERRED {rest}\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"):
+            finalize.finalize(self.ctx, self.run)
+        return ping
+
+    def expected_retry(self):
+        from mahler import desktop
+        return desktop.next_window_start(config.parse_gui_window("00:00-06:00"),
+                                         NOW).astimezone(timezone.utc).isoformat()
+
+    def test_gui_deferred_build_keeps_ready_without_charge_and_persists_wait(self):
+        self.led.upsert_item("x", 5, attempts=1, esc_fails=1)
+        ping = self.gui_deferred()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"], item["esc_fails"]), ("ready", 1, 1))
+        wait = self.led.gui_wait("x", 5)
+        self.assertEqual((wait["run"], wait["role"], wait["state"], wait["reason"], wait["hold"]),
+                         (self.run_id, "build", "ready", "locked", False))
+        self.assertEqual(wait["retry_at"], self.expected_retry())
+        ping.assert_not_called()
+        self.assertIsNone(self.led.lease("x", 5))
+
+    def test_gui_deferred_reason_is_sanitised_and_repeat_is_idempotent(self):
+        self.gui_deferred("session of user mike token=abc123")
+        self.assertEqual(self.led.gui_wait("x", 5)["reason"], "unknown")
+        first = self.led.gui_wait("x", 5)
+        self.gui_deferred("busy: another GUI run holds the desktop lock")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.assertEqual(self.led.gui_wait("x", 5), first)
+
+    def test_gui_deferred_survives_reopening_the_ledger(self):
+        self.gui_deferred()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "l.db")
+            disk = Ledger(path, clock=lambda: NOW)
+            disk.set_gui_wait("x", 5, self.led.gui_wait("x", 5))
+            disk.close()
+            again = Ledger(path, clock=lambda: NOW)
+            self.addCleanup(again.close)
+            self.assertEqual(again.gui_wait("x", 5), self.led.gui_wait("x", 5))
+
+    def test_ordinary_blocked_still_charges(self):
+        self.blocked_done("flaky thing")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+        self.assertIsNone(self.led.gui_wait("x", 5))
+
+    def test_gui_deferred_ignored_for_other_roles(self):
+        self.run["role"] = "sort"
+        self.led.update_run(self.run_id, role="sort")
+        self.gui_deferred()
+        self.assertIsNone(self.led.gui_wait("x", 5))
+
+    def test_gui_deferred_disabled_window_holds_with_one_ping(self):
+        self.cfg["defaults"]["gui_window"] = ""
+        ping = self.gui_deferred()
+        wait = self.led.gui_wait("x", 5)
+        self.assertEqual((wait["hold"], wait["retry_at"]), (True, None))
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        ping.assert_called_once()
+
+    def test_gui_deferred_stale_run_leaves_item_alone(self):
+        self.led.claim("x", 5, "session:human", "interactive", 30)
+        self.gui_deferred()
+        self.assertIsNone(self.led.gui_wait("x", 5))
+        self.assertEqual(self.led.item("x", 5)["state"], "working")
+
+    def fix_fixture(self, kind):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 5, pr=88, attempts=1, esc_fails=1)
+        prefix = "red" if kind == "ci" else "reviewfix"
+        cycle = f"{prefix}:x#5:88:" + self.gh.head
+        self.led.set_kv(cycle, iso(NOW))
+        self.led.set_kv(cycle + ":charged", "1")
+        self.led.set_kv(f"{'ci-fix' if kind == 'ci' else 'review-fix'}:{self.run_id}", json.dumps({
+            "cycle": cycle, "pr": 88, "sha": self.gh.head,
+            "before": {"attempts": 0, "esc_tier": 0, "esc_fails": 0},
+            "after": {"attempts": 1, "esc_tier": 0, "esc_fails": 1}}))
+        return cycle
+
+    def check_fix_refund(self, kind):
+        cycle = self.fix_fixture(kind)
+        self.gui_deferred()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"], item["esc_fails"], item["pr"]),
+                         ("verifying", 0, 0, 88))
+        self.assertIsNone(self.led.get_kv(cycle))
+        self.assertIsNone(self.led.get_kv(cycle + ":charged"))
+        self.assertEqual(self.led.gui_wait("x", 5)["cycle"], cycle)
+        self.assertEqual(self.led.gui_wait("x", 5)["state"], "verifying")
+        self.gui_deferred()                     # duplicate finalization
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
+    def test_gui_deferred_ci_fix_refunds_only_its_own_charge_once(self):
+        self.check_fix_refund("ci")
+
+    def test_gui_deferred_review_fix_refunds_only_its_own_charge_once(self):
+        self.check_fix_refund("review")
+
+    def test_gui_deferred_fix_never_refunds_newer_work(self):
+        cycle = self.fix_fixture("ci")
+        self.led.upsert_item("x", 5, attempts=2, esc_fails=0)    # a newer cycle charged since
+        self.gui_deferred()
+        item = self.led.item("x", 5)
+        self.assertEqual((item["attempts"], item["esc_fails"], item["state"]), (2, 0, "verifying"))
+        self.assertEqual(self.led.get_kv(cycle + ":charged"), "1")
+
     def blocked_done(self, reason, check=None):
         with open(self.log, "w") as stream:
             stream.write("STATUS: BLOCKED " + reason + "\n")

@@ -1192,6 +1192,24 @@ class Ledger:
     def set_kv(self, key, value):
         self.con.execute("INSERT OR REPLACE INTO kv (key, value) VALUES (?,?)", (key, value))
 
+    # ---------- GUI waits (D40) ----------
+    # One KV record per item: {run, cycle, role, state, reason, retry_at|None, hold}.
+    # `state` is the item state it is bound to; leaving that state ends the wait.
+
+    def gui_wait(self, project, number):
+        try:
+            rec = json.loads(self.get_kv(f"gui-wait:{project}#{number}") or "null")
+        except ValueError:
+            return None
+        return rec if isinstance(rec, dict) else None
+
+    def set_gui_wait(self, project, number, rec):
+        self.set_kv(f"gui-wait:{project}#{number}", json.dumps(rec, sort_keys=True))
+
+    def clear_gui_wait(self, project, number):
+        if self.get_kv(f"gui-wait:{project}#{number}") is not None:
+            self.set_kv(f"gui-wait:{project}#{number}", None)
+
     def record_lesson_exposure(self, project, account, run_id, safe):
         """The run's safe launch inventory: [{name, hash}]. Idempotent."""
         now = iso(self.now())
@@ -1386,6 +1404,9 @@ class Ledger:
             raise ValueError("shipped work requires verification evidence before done")
         if cur is not None and cur["state"] == state and not extra:
             return cur
+        wait = self.gui_wait(project, number)
+        if wait and wait.get("state") != state:
+            self.clear_gui_wait(project, number)     # left the state the wait is bound to
         self.upsert_item(project, number, state=state,
                          state_changed_at=iso(self.now()), **extra)
         self.event("state", project, number,

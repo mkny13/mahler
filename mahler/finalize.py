@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, no_change, platforms, prompt, review, router, runner
+from . import config, desktop, failures, no_change, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -668,6 +668,63 @@ def _ended_out_of_reach(e):
     return True
 
 
+_GUI_REASON = re.compile(r"\b(locked|unavailable|busy|idle|outside[- ](?:preferred[- ])?window)\b",
+                         re.IGNORECASE)
+
+
+def _gui_reason(rest):
+    """Only a known category is stored; agent text is never copied."""
+    m = _GUI_REASON.search(rest or "")
+    return "outside-window" if m and m[1].lower().startswith("outside") else (
+        m[1].lower() if m else "unknown")
+
+
+def _refund_gui_fix(e):
+    """Undo this run's own fix-cycle charge, once. -> the cycle key it was bound to."""
+    led = e.led
+    for prefix in ("ci-fix", "review-fix"):
+        key = f"{prefix}:{e.run['id']}"
+        rec = json.loads(led.get_kv(key) or "{}")
+        if not rec:
+            continue
+        cycle = rec.get("cycle")
+        latest = led.last_run(e.project, e.number, roles=("build", "fix"))
+        counters = ("attempts", "esc_tier", "esc_fails")
+        if (not rec.get("refunded") and rec.get("pr") == e.item["pr"] and latest
+                and latest["id"] == e.run["id"] and led.get_kv(cycle) and led.get_kv(f"{cycle}:charged")
+                and set(rec.get("before", {})) == set(counters) == set(rec.get("after", {}))
+                and all(e.item[k] == v for k, v in rec["after"].items())):
+            rec["refunded"] = True
+            led.set_kv(key, json.dumps(rec))
+            led.set_kv(cycle, None)
+            led.set_kv(f"{cycle}:charged", None)
+            return cycle, rec["before"]
+        return cycle, {}
+    return None, {}
+
+
+def _ended_gui_deferred(e):
+    """The desktop gate refused a launch (D40): keep the work, spend nothing,
+    and wait for the next overnight window."""
+    led = e.led
+    existing = led.gui_wait(e.project, e.number)
+    if existing and existing.get("run") == e.run["id"]:
+        return True                             # duplicate finalization
+    fix = e.run["role"] == "fix"
+    state = "verifying" if fix and e.item["pr"] else "ready"
+    cycle, before = _refund_gui_fix(e) if fix else (None, {})
+    retry_at, hold = desktop.plan_wait(led, e.pol)
+    e.set_state(state, "desktop gate closed — waiting for the next GUI window", **before)
+    led.set_gui_wait(e.project, e.number, {
+        "run": e.run["id"], "cycle": cycle, "role": e.run["role"], "state": state,
+        "reason": _gui_reason(e.rest), "retry_at": retry_at, "hold": hold})
+    if hold and not (existing and existing.get("hold")):
+        e.ping(f"GUI work on hold — {e.project} #{e.number}",
+               "gui_window is disabled or invalid, so GUI-deferred work waits until it is repaired",
+               priority="low")
+    return True
+
+
 def _ended_unconfirmed(e):
     """D18 fallback: no STATUS line (or a timeout after DONE), but the branch
     may still be done — both when the run exited cleanly without STATUS and
@@ -695,6 +752,8 @@ ENDINGS = (
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
+    (lambda e: e.verb == "GUI-DEFERRED" and e.run["role"] in ("build", "fix")
+     and e.reason is None, _ended_gui_deferred),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
