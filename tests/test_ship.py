@@ -37,6 +37,10 @@ class FakeGH:
         self.pushed, self.created, self.merged, self.comments = [], [], [], []
         self.fail_view = set()
         self.queue = False    # simulate a merge queue: pr_merge only enqueues
+        self.required_checks = set()
+
+    def required_status_checks(self, branch):
+        return getattr(self, "required_checks", None) or set()
 
     def ci_retry_runs(self, head, base, *, reported=False):
         return []

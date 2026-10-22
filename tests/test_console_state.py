@@ -731,6 +731,20 @@ class ProjectOverviewStateTests(unittest.TestCase):
         self.assertEqual(shipping[30]["stages"][5]["status"], "ok")
         self.assertEqual(shipping[30]["stages"][5]["text"], "verified")
 
+    def test_ci_green_with_optional_failures_surfaces_note_without_blocking_merge(self):
+        self.led.upsert_item("groundwork", 55, title="Optional failure item", state="verifying", pr=155)
+        self.led.set_kv("ci:groundwork#55:155", json.dumps({
+            "state": "green",
+            "non_required_failures": ["Vercel"],
+        }))
+        s = state.build(self.cfg, self.led, project_scope="groundwork")
+        shipping = {r["number"]: r for r in s["overview"]["shipping_rows"]}
+        ci_stage = shipping[55]["stages"][2]
+        self.assertEqual(ci_stage["status"], "ok")
+        self.assertIn("optional check failed: Vercel", ci_stage["text"])
+        self.assertIn("ready to merge", shipping[55]["change_subtitle"])
+
+
     def test_how_a_change_ships_explainer_copy(self):
         s = state.build(self.cfg, self.led, project_scope="groundwork")
         explainer = s["overview"]["how_a_change_ships"]

@@ -554,6 +554,42 @@ class TestGH(unittest.TestCase):
             "--notes-file", "-", input="Notes content"
         )
 
+    def test_required_status_checks_extracts_from_protection_and_rulesets(self):
+        client = GH("mkny13/mahler")
+        client.branch_protection = MagicMock(return_value={
+            "required_status_checks": {
+                "contexts": ["checks", "lint"],
+                "checks": [{"context": "build"}, {"context": "checks"}],
+            }
+        })
+        client.branch_rules = MagicMock(return_value=[
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [{"context": "test"}, {"context": "lint"}],
+                },
+            },
+            {
+                "type": "pull_request",
+            },
+        ])
+        reqs = client.required_status_checks("main")
+        self.assertEqual(reqs, {"checks", "lint", "build", "test"})
+        # Cached: second call does not re-query
+        client.branch_protection.reset_mock()
+        client.branch_rules.reset_mock()
+        self.assertEqual(client.required_status_checks("main"), {"checks", "lint", "build", "test"})
+        client.branch_protection.assert_not_called()
+        client.branch_rules.assert_not_called()
+
+    def test_required_status_checks_gracefully_handles_missing_or_errors(self):
+        client = GH("mkny13/mahler")
+        client.branch_protection = MagicMock(side_effect=GHError("Branch not protected (HTTP 404)"))
+        client.branch_rules = MagicMock(side_effect=GHError("Rulesets not accessible (HTTP 403)"))
+        self.assertEqual(client.required_status_checks("main"), set())
+        self.assertEqual(client.required_status_checks(""), set())
+
+
 if __name__ == '__main__':
     unittest.main()
 
@@ -754,3 +790,5 @@ class RateLimitTests(unittest.TestCase):
                 client.issue_comments(1)
             self.assertNotIsInstance(error.exception, GHRateLimit)
             self.assertEqual(run.call_count, 1)
+
+
