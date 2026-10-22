@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
-from mahler.ledger import CONDUCTOR, Ledger, iso
+from mahler.ledger import CONDUCTOR, Ledger, iso, parse
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -925,6 +925,83 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.gh.rerun_failed_jobs.assert_not_called()
         self.assertIsNone(self.led.get_kv(key))
+
+    # ---------- GUI waits (D40, mahler#1173) ----------
+
+    def gui_wait(self, retry_at, cycle="red:x#5:88:red1", **kw):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"state": "FAILURE"}]
+        self.gh.head_sha = "red1"
+        rec = {"run": 3, "cycle": cycle, "role": "fix", "state": "verifying", "reason": "locked",
+               "retry_at": retry_at and iso(retry_at), "hold": retry_at is None, **kw}
+        self.led.set_gui_wait("x", 5, rec)
+
+    def test_gui_wait_blocks_red_ci_before_retry_time_without_charging(self):
+        self.gui_wait(NOW + timedelta(seconds=1))
+        start = self.patch_start()
+        ping = self.ship()
+        start.assert_not_called()
+        ping.assert_not_called()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (0, 0))
+        self.assertIsNone(self.led.get_kv("red:x#5:88:red1"))
+        self.assertIsNotNone(self.led.gui_wait("x", 5))
+
+    def test_gui_wait_permits_launch_at_the_boundary(self):
+        self.gui_wait(NOW)
+        start = self.patch_start()
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(self.item()["attempts"], 1)           # normal policy charges again
+        self.assertIsNone(self.led.gui_wait("x", 5))            # state left 'verifying'
+
+    def test_gui_wait_for_another_cycle_is_dropped(self):
+        self.gui_wait(NOW + timedelta(hours=5), cycle="red:x#5:88:old")
+        start = self.patch_start()
+        self.ship()
+        start.assert_called_once()
+
+    def test_gui_hold_blocks_until_window_is_repaired_then_waits_for_next_start(self):
+        self.cfg["defaults"]["gui_window"] = ""
+        self.gui_wait(None)
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.assertTrue(self.led.gui_wait("x", 5)["hold"])
+        self.cfg["defaults"]["gui_window"] = "00:00-06:00"
+        self.ship()
+        start.assert_not_called()                              # repaired: next *future* start
+        wait = self.led.gui_wait("x", 5)
+        self.assertFalse(wait["hold"])
+        self.assertGreater(parse(wait["retry_at"]), NOW)
+
+    def test_review_fix_records_attribution_for_gui_refund(self):
+        self.resume_builder()
+        self.led.claim("x", 5, CONDUCTOR, "auto", 60, capacity=False)
+        fix = self.led.create_run(project="x", number=5, role="fix", platform="claude",
+                                  status="ended", outcome="DONE", epoch=1, branch="mahler/5-x")
+        view = {**self.gh.pr_view(88), "headRefOid": "rev1"}
+        with mock.patch.object(ship, "start", return_value=True) as start, \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "_repeat_finding", return_value=None):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking")
+        start.assert_called_once()
+        rec = json.loads(self.led.get_kv(f"review-fix:{fix}"))
+        self.assertEqual(rec["cycle"], "reviewfix:x#5:88:rev1")
+        self.assertEqual(rec["before"]["attempts"], 0)
+        self.assertEqual(rec["after"]["attempts"], 1)
+
+    def test_gui_wait_blocks_review_fix(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_gui_wait("x", 5, {"run": 3, "cycle": "reviewfix:x#5:88:rev1", "role": "fix",
+                                       "state": "verifying", "reason": "locked",
+                                       "retry_at": iso(NOW + timedelta(hours=1)), "hold": False})
+        view = {**self.gh.pr_view(88), "headRefOid": "rev1"}
+        with mock.patch.object(ship, "start", return_value=True) as start, \
+                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(ship, "_repeat_finding", return_value=None):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, view, "blocking")
+        start.assert_not_called()
+        ping.assert_not_called()
+        self.assertEqual(self.item()["attempts"], 0)
 
     def test_red_ci_pings_once_and_starts_a_fix_run(self):
         self.led.upsert_item("x", 5, pr=88)

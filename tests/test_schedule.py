@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, platforms, presence, router, scheduler, ship, tick, usage
+from mahler import config, desktop, platforms, presence, router, scheduler, ship, tick, usage
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from mahler.gh import depends_of
 
@@ -1177,6 +1177,64 @@ class InteractiveLeaseRenewalTests(unittest.TestCase):
             tick.expire(self.ctx)
         self.assertIsNone(self.led.lease("a", 1))
         self.assertEqual(self.led.item("a", 1)["state"], "ready")
+
+
+class GuiWaitScheduleTests(unittest.TestCase):
+    def setUp(self):
+        self.ctx, self.led = mk_ctx({"a": proj()})
+        self.addCleanup(self.led.close)
+        item(self.led, "a", 1)
+
+    def wait(self, retry_at, **kw):
+        self.led.set_gui_wait("a", 1, {"run": 9, "cycle": None, "role": "build", "state": "ready",
+                                       "reason": "locked", "retry_at": retry_at and iso(retry_at),
+                                       "hold": retry_at is None, **kw})
+
+    def test_candidate_is_suppressed_until_exactly_the_retry_time(self):
+        self.wait(NOW + timedelta(seconds=1))
+        self.assertEqual([i["number"] for _, _, i in tick._candidates(self.ctx, config.enabled_projects(self.ctx.cfg))], [])
+        self.wait(NOW)
+        self.assertEqual([i["number"] for _, _, i in tick._candidates(self.ctx, config.enabled_projects(self.ctx.cfg))], [1])
+
+    def test_wait_survives_a_reopened_ledger(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/l.db"
+            led = Ledger(path, clock=lambda: NOW)
+            item(led, "a", 1)
+            led.set_gui_wait("a", 1, {"state": "ready", "retry_at": iso(NOW + timedelta(hours=1)), "hold": False})
+            led.close()
+            again = Ledger(path, clock=lambda: NOW)
+            self.addCleanup(again.close)
+            ctx = scheduler.Ctx(self.ctx.cfg, again, dry_run=True)
+            self.assertEqual(tick._candidates(ctx, config.enabled_projects(ctx.cfg)), [])
+
+    def test_start_launches_nothing_while_waiting_and_keeps_the_marker(self):
+        self.wait(NOW + timedelta(hours=1))
+        with mock.patch.object(self.led, "create_run") as create, \
+                mock.patch.object(self.led, "claim") as claim:
+            self.assertFalse(tick.start(self.ctx, "a", self.led.item("a", 1), "build", "claude"))
+        create.assert_not_called()
+        claim.assert_not_called()
+        self.assertIsNotNone(self.led.gui_wait("a", 1))
+
+    def test_project_override_window_sets_the_wait(self):
+        ctx, led = mk_ctx({"a": proj(gui_window="09:00-10:00")})
+        self.addCleanup(led.close)
+        from mahler import desktop
+        retry_at, hold = desktop.plan_wait(led, ctx.policy("a"))
+        self.assertFalse(hold)
+        self.assertEqual(desktop.next_window_start((__import__("datetime").time(9), __import__("datetime").time(10)), NOW)
+                         .astimezone(timezone.utc).isoformat(), retry_at)
+
+    def test_hold_stays_blocked_with_invalid_config_and_repairs_to_a_future_start(self):
+        self.wait(None)
+        self.ctx.cfg["projects"]["a"]["gui_window"] = "garbage"
+        self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("a")]), [])
+        self.ctx.cfg["projects"]["a"]["gui_window"] = "00:00-06:00"
+        self.assertEqual(tick._candidates(self.ctx, [self.ctx.policy("a")]), [])
+        rec = self.led.gui_wait("a", 1)
+        self.assertFalse(rec["hold"])
+        self.assertGreater(datetime.fromisoformat(rec["retry_at"]), NOW)
 
 
 class ScheduleHoldTests(unittest.TestCase):

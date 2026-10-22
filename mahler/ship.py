@@ -11,7 +11,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import capacity, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
+from . import capacity, config, desktop, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -1219,6 +1219,19 @@ def _clear_charged_if_fix_completed(led, project, number, key):
         led.set_kv(f"{key}:resume", None)
 
 
+def _gui_waiting(ctx, project, n, key):
+    """True while the item's GUI wait (D40) bound to this failure cycle forbids a
+    fix launch. A wait for another cycle is stale and removed."""
+    led = ctx.led
+    rec = led.gui_wait(project, n)
+    if not rec:
+        return False
+    if rec.get("cycle") not in (None, key):
+        led.clear_gui_wait(project, n)
+        return False
+    return desktop.gui_wait_blocks(led, ctx.policy(project), project, n)
+
+
 def _mark_capacity_wait(led, project, item, role):
     # Tie the marker to this particular pause, so a later owner decision cannot
     # inherit it. Question wording is deliberately not part of recovery.
@@ -1814,6 +1827,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"reviewfix:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    if _gui_waiting(ctx, project, n, key):
+        return
     launched = _kv_json(led, f"{key}:run")
     previous_fix = led.run(launched["run_id"]) if launched.get("run_id") else None
     if previous_fix and (previous_fix["status"] != "ended" or not previous_fix["outcome"]):
@@ -1822,6 +1837,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):
+        led.set_kv(f"{key}:before", json.dumps({k: item[k] for k in ("attempts", "esc_tier", "esc_fails")}))
         led.set_kv(key, iso(led.now()))
 
         cur_fails = row_get(item, "esc_fails", 0)
@@ -1934,6 +1950,12 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        launched_fix = led.last_run(project, n, roles=("fix",))
+        if launched_fix:
+            led.set_kv(f"review-fix:{launched_fix['id']}", json.dumps({
+                "cycle": key, "pr": pr, "sha": view.get("headRefOid"),
+                "before": _kv_json(led, f"{key}:before"),
+                "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
         if design_plan:
             design_key = f"design:{project}#{n}:{pr}:{sha}"
             rec = _kv_json(led, design_key)
@@ -2077,6 +2099,8 @@ def _red_ci(ctx, project, item, pr, view):
     if cur_tier != row_get(item, "esc_tier", 0):
         led.upsert_item(project, n, esc_tier=cur_tier)
     key = f"red:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+    if _gui_waiting(ctx, project, n, key):
+        return
     _clear_charged_if_fix_completed(led, project, n, key)
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]

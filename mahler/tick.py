@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import capacity, config, model_availability, launch_health, platforms, presence, prompt, router, runner
+from . import capacity, config, desktop, model_availability, launch_health, platforms, presence, prompt, router, runner
 from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
@@ -356,6 +356,9 @@ def _candidates(ctx, projects):
             if deps:
                 ctx.hold("deps", project=name, number=it["number"], on=deps)
                 _observe(ctx, p, "build", it, "deps")
+                continue
+            if desktop.gui_wait_blocks(led, p, name, it["number"]):
+                ctx.say(f"{name}#{it['number']}: waiting — GUI work deferred to the next window")
                 continue
             work.append((p, "build", it))
     return work
@@ -737,6 +740,8 @@ def schedule(ctx, projects):
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
           fix_reason="ci", explore=False, resume_from=None, resume_cycle=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
+    if role in ("build", "fix") and desktop.gui_wait_blocks(led, pol, project, n):
+        return False            # D40: deferred GUI work launches nothing before its window
     if not launch_health.allowed(ctx, project, n):
         return False
     ests = led.estimates()

@@ -686,6 +686,7 @@ def _process_comments(ctx, project, item, comments):
 
 def resume_item(led, project, number, why="you said go"):
     """Apply the same reset as ``/mahler go`` to a waiting item."""
+    led.clear_gui_wait(project, number)
     led.set_state(project, number, "ready", why, attempts=0, setup_fails=0,
                   esc_tier=0, esc_fails=0,
                   sorted_at=iso(led.now() - timedelta(days=1)))
