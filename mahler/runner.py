@@ -353,6 +353,13 @@ def run_env(ctx, project, number, platform, run_id, epoch):
             "GIT_CONFIG_VALUE_2": "",
         }
     else:
+        if (
+            pol.get("require_scoped_identity")
+            or pol.get("require_scoped_run_identity")
+            or (ctx.cfg.get("defaults") or {}).get("require_scoped_identity")
+            or (ctx.cfg.get("defaults") or {}).get("require_scoped_run_identity")
+        ):
+            raise ValueError(f"project {project!r} requires scoped run identity but no approved GitHub provider is available")
         getattr(ctx, "say", print)(f"{project}#{number}: warning: non-App project using transitional GitHub identity (migration tracked in #1145)")
         gh_acct = config.gh_account_of(pol)
         if gh_acct != config.DEFAULT_ACCOUNT and gh_acct not in (ctx.cfg.get("accounts") or {}):
