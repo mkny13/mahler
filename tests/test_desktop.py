@@ -1,5 +1,6 @@
 """The desktop gate (D40): parsing, thresholds, windows, CLI launch suppression and
-real-process mutual exclusion. `ioreg` is never run: the probe is stubbed."""
+real-process mutual exclusion. `ioreg` and `caffeinate` are never run: the probes
+and the display wake are stubbed."""
 
 import io
 import os
@@ -25,6 +26,31 @@ def cfg_with(defaults=None, projects=None):
         p = Path(tmp) / "config.toml"
         p.write_text(config.dumps_toml({"defaults": defaults or {}, "projects": projects or {}}))
         return config.load(p)
+
+
+REAL_PROBE_SESSION = desktop.probe_session
+REAL_PASSWORD_FREE = desktop.probe_password_free
+_PATCHES = []
+
+
+def setUpModule():
+    # An unlocked console session unless a test says otherwise.
+    for name, value in (("probe_session", lambda: False), ("wake_display", lambda: None),
+                        ("probe_password_free", lambda: False)):
+        p = patch.object(desktop, name, value)
+        p.start()
+        _PATCHES.append(p)
+
+
+def tearDownModule():
+    while _PATCHES:
+        _PATCHES.pop().stop()
+
+
+def console(**user):
+    base = {"kCGSSessionOnConsoleKey": True, "kCGSSessionUserIDKey": 501,
+            "kCGSessionLoginDoneKey": True}
+    return {"IOConsoleLocked": False, "IOConsoleUsers": [{**base, **user}]}
 
 
 def probe(ns):
@@ -55,6 +81,103 @@ class StateCase(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err):
             code = desktop.main(argv, **kw)
         return code, out.getvalue(), err.getvalue()
+
+
+class SessionTests(StateCase):
+    """mahler#1172: a locked screen or missing GUI session defers, it never launches."""
+
+    def test_session_reading(self):
+        self.assertFalse(desktop.parse_session(console(), 501))
+        self.assertFalse(desktop.parse_session(console(CGSSessionScreenIsLocked=False), 501))
+        self.assertTrue(desktop.parse_session(console(CGSSessionScreenIsLocked=True), 501))
+        self.assertTrue(desktop.parse_session({**console(), "IOConsoleLocked": True}, 501))
+
+    def test_missing_or_unreadable_session_denies(self):
+        cases = {
+            "nobody": {"IOConsoleUsers": []},
+            "off console": console(kCGSSessionOnConsoleKey=False),
+            "other user": console(kCGSSessionUserIDKey=502),
+            "login pending": console(kCGSessionLoginDoneKey=False),
+            "malformed lock": console(CGSSessionScreenIsLocked="Yes"),
+            "no console lock key": {k: v for k, v in console().items() if k != "IOConsoleLocked"},
+            "malformed console lock": {**console(), "IOConsoleLocked": "No"},
+            "malformed root": ["not", "a", "dict"],
+            "malformed users": {"IOConsoleUsers": "mike"},
+            "ambiguous": {"IOConsoleUsers": console()["IOConsoleUsers"] * 2},
+        }
+        for label, root in cases.items():
+            with self.subTest(label), self.assertRaises(desktop.Deferred):
+                desktop.parse_session(root, 501)
+
+    def test_lock_needing_a_password_defers(self):
+        with self.assertRaisesRegex(desktop.Deferred, "^locked"):
+            desktop.check(15, None, probe=probe(20 * MIN), session=lambda: True,
+                          password_free=lambda: False)
+
+    def test_password_free_shield_is_a_sleeping_display(self):
+        # 2026-10-20: "Require password" = Never, yet the display-sleep shield
+        # reported CGSSessionScreenIsLocked=true; any user activity lifted it.
+        reason = desktop.check(15, None, probe=probe(20 * MIN), session=lambda: True,
+                               password_free=lambda: True)
+        self.assertIn("display asleep", reason)
+
+    def test_password_free_probe_reads_sysadminctl(self):
+        run = subprocess.CompletedProcess
+        with patch.object(sys, "platform", "darwin"):
+            for out, want in (("2026 sysadminctl[1] screenLock is off\n", True),
+                              ("screenLock delay is immediate\n", False), ("", False)):
+                with self.subTest(out), patch.object(subprocess, "run",
+                                                     return_value=run([], 0, "", out)):
+                    self.assertIs(REAL_PASSWORD_FREE(), want)
+            with patch.object(subprocess, "run", side_effect=OSError("nope")):
+                self.assertFalse(REAL_PASSWORD_FREE())
+        with patch.object(sys, "platform", "linux"):
+            self.assertFalse(REAL_PASSWORD_FREE())
+
+    def test_probe_failures_deny(self):
+        real = REAL_PROBE_SESSION
+        with patch.object(sys, "platform", "linux"), self.assertRaises(desktop.Deferred):
+            real()
+        with patch.object(sys, "platform", "darwin"):
+            for kw in ({"side_effect": subprocess.TimeoutExpired("ioreg", 5)},
+                       {"side_effect": OSError("nope")},
+                       {"return_value": subprocess.CompletedProcess([], 1, b"", b"")},
+                       {"return_value": subprocess.CompletedProcess([], 0, b"<plist", b"")}):
+                with self.subTest(kw), patch.object(subprocess, "run", **kw), \
+                        self.assertRaises(desktop.Deferred):
+                    real()
+
+    def run_flagged(self, readings, password_free=True):
+        """Run with the session probe returning `readings` in turn."""
+        flag = os.path.join(self.state, "ran")
+        cmd = [sys.executable, "-c", f"open({flag!r}, 'w')"]
+        seen, order = iter(readings), []
+        with patch.object(desktop, "probe_session", lambda: next(seen)), \
+                patch.object(desktop, "probe_password_free", lambda: password_free), \
+                patch.object(desktop, "wake_display", lambda: order.append("wake")), \
+                patch.object(desktop.time, "sleep", lambda s: order.append(f"sleep {s}")):
+            code, _, err = self.run_main(["run", "--"] + cmd, cfg=cfg_with(),
+                                         probe=probe(20 * MIN))
+        return code, err, os.path.exists(flag), order
+
+    def test_locked_with_password_spawns_nothing(self):
+        code, err, ran, order = self.run_flagged([True], password_free=False)
+        self.assertEqual((code, ran, order), (desktop.EX_DEFERRED, False, []))
+        self.assertIn("mahler desktop: GATE-DENIED locked", err)
+
+    def test_sleeping_display_is_woken_then_run(self):
+        code, _, ran, order = self.run_flagged([True, False])
+        self.assertEqual((code, ran), (0, True))
+        self.assertEqual(order, ["wake", f"sleep {desktop.WAKE_SETTLE}"])
+
+    def test_shield_that_stays_up_after_wake_spawns_nothing(self):
+        code, err, ran, _ = self.run_flagged([True, True])
+        self.assertEqual((code, ran), (desktop.EX_DEFERRED, False))
+        self.assertIn("stayed locked", err)
+
+    def test_open_screen_wakes_without_waiting(self):
+        code, _, ran, order = self.run_flagged([False])
+        self.assertEqual((code, ran, order), (0, True, ["wake"]))
 
 
 class ParseTests(unittest.TestCase):
@@ -270,6 +393,9 @@ WRAPPER = """
 import sys
 from mahler import desktop
 desktop.probe_idle_ns = lambda: 10**18
+desktop.probe_session = lambda: False
+desktop.wake_display = lambda: None
+desktop.probe_password_free = lambda: False
 sys.exit(desktop.main(sys.argv[1:]))
 """
 

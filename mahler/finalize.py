@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, failures, no_change, platforms, prompt, review, router, runner
+from . import config, desktop, failures, no_change, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -216,9 +216,63 @@ def _ended_blocked_external(e):
     return True
 
 
+# ---------- BLOCKED on the desktop gate (mahler#1172) ----------
+
+# A GUI step the task cannot finish without (a smoke run) found the gate closed.
+# Only the gate's own denial marker counts, so a GUI child that itself exited 75
+# (or prose about a locked screen) keeps the ordinary BLOCKED handling. Waiting
+# says nothing about the work, so it parks without an attempt until the gate
+# would open again.
+_GUI_DEFERRED = re.compile(rf"\b{desktop.DENIED_MARKER}\b")
+
+
+def _fix_charge_refund(e):
+    """Counters to restore when a PR fix run (charged at launch by ship.py)
+    never got to work; {} when nothing was charged or it was already moved on."""
+    counters = ("attempts", "esc_tier", "esc_fails")
+    charge = json.loads(e.led.get_kv(f"fix-charge:{e.run['id']}") or "{}")
+    before, after = charge.get("before") or {}, charge.get("after") or {}
+    if (e.run["role"] != "fix" or set(before) != set(counters) or set(after) != set(counters)
+            or any(e.item[k] != after[k] for k in counters)):
+        return {}
+    e.led.set_kv(f"fix-charge:{e.run['id']}", None)
+    e.led.set_kv(f"{charge['cycle']}:charged", None)   # the relaunch charges once
+    return before
+
+
+def _ended_gui_deferred(e):
+    key = f"blocked:{e.project}#{e.number}"
+    previous = json.loads(e.led.get_kv(key) or "{}")
+    # A PR's fix run resumes its verify cycle (ship.py), not a fresh build.
+    resume = "verifying" if e.run["role"] == "fix" and e.item["pr"] else "ready"
+    record = {"reason": e.rest, "since": previous.get("since") or iso(e.led.now()),
+              "checkable": False, "gui": True, "resume": resume}
+    e.led.set_kv(key, json.dumps(record))
+    e.set_state("parked", f"GUI step deferred until the desktop gate opens: {e.rest}",
+                **_fix_charge_refund(e))
+    if not previous.get("gui"):
+        e.ping(f"GUI run deferred — {e.project} #{e.number}",
+               f"{e.rest} (retries when the mini is idle, unlocked and inside gui_window; "
+               "/mahler go resumes now)", priority="low")
+    return True
+
+
+def _gui_gate_open(ctx, project):
+    """-> (open, detail): the D40 gate as a --scheduled run would see it now."""
+    try:
+        pol = ctx.policy(project)
+        window = config.parse_gui_window(pol["gui_window"])
+        return True, desktop.run_check(pol["gui_idle_minutes"], window, scheduled=True)
+    except desktop.Deferred as exc:
+        return False, str(exc)
+    except (KeyError, ValueError) as exc:
+        return False, f"gate settings unreadable: {exc}"
+
+
 def recheck_blocked(ctx, projects):
     """Tick pass: move parked items back to ready once the checkable
-    condition in their BLOCKED reason is met."""
+    condition in their BLOCKED reason is met, or, for a deferred GUI step,
+    once the desktop gate would open."""
     if ctx.dry_run:
         return
     led = ctx.led
@@ -229,15 +283,19 @@ def recheck_blocked(ctx, projects):
             key = f"blocked:{project}#{n}"
             try:
                 record = json.loads(led.get_kv(key) or "null")
-                if not record or not record.get("checkable"):
+                if record and record.get("gui"):
+                    met, detail = _gui_gate_open(ctx, project)
+                elif not record or not record.get("checkable"):
                     continue
-                met, detail = _check_blocked_condition(ctx, project, n, record["reason"])
+                else:
+                    met, detail = _check_blocked_condition(ctx, project, n, record["reason"])
                 if met:
                     with led._tx():
                         cur = led.item(project, n)
                         if cur["state"] == "parked" and led.get_kv(key):
                             led.set_kv(key, None)
-                            led.set_state(project, n, "ready",
+                            back = (record.get("resume") or "ready") if cur["pr"] else "ready"
+                            led.set_state(project, n, back,
                                           f"blocked condition met ({detail})")
             except Exception as exc:            # noqa: BLE001 — never break the tick
                 ctx.say(f"{project}#{n}: blocked recheck failed: {type(exc).__name__}")
@@ -696,6 +754,8 @@ ENDINGS = (
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
+     and _GUI_DEFERRED.search(e.rest or ""), _ended_gui_deferred),
+    (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and e.blocked_external, _ended_blocked_external),
@@ -1064,7 +1124,7 @@ def finalize(ctx, run):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review", "design"):
             if (verb == "BLOCKED" and run["role"] in ("build", "fix") and rest
-                    and not _ACCESS_BLOCKER.search(rest)):
+                    and not _ACCESS_BLOCKER.search(rest) and not _GUI_DEFERRED.search(rest)):
                 ending.blocked_external = _blocked_is_external(ending)
                 if ending.blocked_external:
                     ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)

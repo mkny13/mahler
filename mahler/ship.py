@@ -1969,8 +1969,10 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
              **({"explore": True} if explore else {}),
              **({"resume_from": source["id"], "resume_cycle": key} if source else {})):
         led.set_kv(f"reviewfix-status:{project}#{n}", None)
+        before = {k: item[k] for k in ("attempts", "esc_tier", "esc_fails")}
         led.upsert_item(project, n, attempts=attempts)
         led.set_kv(f"{key}:charged", "1")
+        _record_fix_charge(led, project, n, key, before)
         if design_plan:
             design_key = f"design:{project}#{n}:{pr}:{sha}"
             rec = _kv_json(led, design_key)
@@ -2237,6 +2239,17 @@ def _red_ci(ctx, project, item, pr, view):
                 "cycle": key, "pr": pr, "sha": view.get("headRefOid"),
                 "before": _kv_json(led, f"{key}:before"),
                 "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
+        _record_fix_charge(led, project, n, key, _kv_json(led, f"{key}:before"))
+
+
+def _record_fix_charge(led, project, n, cycle, before):
+    """What launching this fix run charged, so a run that never got to work
+    (a closed desktop gate, mahler#1172) can be refunded by finalize."""
+    launched = led.last_run(project, n, roles=("fix",))
+    if launched and before:
+        led.set_kv(f"fix-charge:{launched['id']}", json.dumps({
+            "cycle": cycle, "before": before,
+            "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
 
 
 def _open_pr(ctx, project, item, gh, pol, unconfirmed=False):

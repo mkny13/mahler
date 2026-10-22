@@ -99,11 +99,18 @@ result is obtained, the better. Never trade verification for speed.
    and computer-use take over the mini's mouse and keyboard, so run each only as the full
    foreground command `mahler desktop run -- <cmd> [args]`. A prior `mahler desktop` check,
    or wrapping a no-op, authorizes nothing later. Computer-use with no supervised command to
-   wrap must be deferred, never run as unguarded tool calls. Exit 75 means the gate is closed
-   (in use or lock held): skip that local GUI step, record the reason and the coverage still
-   outstanding in your summary, and name the CI UI-test job only if you saw evidence it covers
-   the skipped work. Never call a skip a pass or invent CI coverage. Headless tests need no
-   gate. The gate does not unlock the screen.
+   wrap must be deferred, never run as unguarded tool calls. The gate refuses with exit 75
+   and a `mahler desktop: GATE-DENIED <reason>` line (in use, screen locked, no GUI session,
+   or lock held); then nothing ran. A command that ran and itself exited 75 prints
+   `command ran and exited 75` instead and is an ordinary failure. On a denial, skip that
+   local GUI step, record the reason and the coverage still outstanding in your summary, and
+   name the CI UI-test job only if you saw evidence it covers the skipped work. Never call a
+   skip a pass or invent CI coverage. When the GUI run is itself the deliverable (a smoke
+   run, a smoke report), there is nothing to skip to: commit what you have and end with
+   `STATUS: BLOCKED desktop gate: GATE-DENIED <reason>`, copied from the gate's line. Only
+   that marker parks the item without using an attempt; Mahler retries it once the mini is
+   idle, unlocked and inside `gui_window`. Headless tests need no gate. The gate never
+   types a password: it only wakes a display whose lock shield needs none (D50).
 9. **No protected folders** like `~/Documents` — they can hang on macOS privacy dialogs.
 10. **Use `mahler next-id`.** For shared sequential IDs, run `mahler next-id <project>
    <prefix>` to avoid collisions.

@@ -2480,17 +2480,21 @@ in the risks list): agents may now drive the GUI, but only through the gate.
   is authoritative: take one nonblocking `flock` (`desktop.lock` in the state dir, independent
   of project, account and worktree), make one fresh check, run `cmd` (no shell) in the
   foreground. The child inherits the lock descriptor, so killing the wrapper does not free the
-  lock while the command still runs. No wait loop and no ledger or scheduler changes.
-  Exit 75 = deferred, 2 = invalid, otherwise the child's status.
+  lock while the command still runs. The wrapper has no wait loop; a deferred deliverable
+  waits in the ledger instead (D50). Exit 75 with a `GATE-DENIED <reason>` line = deferred,
+  nothing launched; 2 = invalid; otherwise the child's status.
 - **Fail closed.** A missing, malformed, negative, ambiguous, failed or timed-out (5 s) probe,
   an unsupported host, bad config or an unknown project denies.
 - **Launch-only.** The idle reading is taken once at launch: synthetic test input may reset
   HIDIdleTime, and returning human activity does not abort a running test. It is an
   enforcement boundary for commands that participate, not OS-wide interception; recipes must
-  defer computer-use that has no supervised command to wrap. The gate does not unlock the
-  screen or grant macOS permissions.
+  defer computer-use that has no supervised command to wrap. The gate never enters a
+  password or grants macOS permissions. It may wake a display whose lock shield needs no
+  password (D50).
 - **Denial.** Skip the local GUI step, say so with the outstanding coverage, and name a CI UI
-  job only with evidence it covers the skipped work. A skip is never a pass.
+  job only with evidence it covers the skipped work. A skip is never a pass. A locked screen
+  or a missing GUI session also denies, and a run whose deliverable *is* the GUI step parks
+  until the gate opens instead of using up attempts (D50).
 - Scheduling a weekly smoke inside the window (using `--scheduled`) stays in couch-tour#358.
 
 ### D41 — Team-plan API credits: a $20 allowance, then the pool's rest before it expires (mahler#903)
@@ -2939,3 +2943,74 @@ project.
   returns `None`, and agent runs cannot silently inherit the conductor's global App
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
+
+### D50 — Unattended macOS smoke: the desktop gate and a sleeping display (mahler#1172, #1173)
+
+Decided 2026-10-21 (gate) and 2026-10-22 (posture, owner): full local macOS smoke runs on the
+signed-in mini with its current settings, with no password on wake. couch-tour#686 (smoke for
+v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. A sleeping
+display looks idle, so D40's idle check passed, the run started, and the smoke runner found
+the lock shield. Android passed on the `phishin_test` AVD, but macOS never ran.
+couch-tour#251 wants promotion gated on a smoke PASS, so macOS smoke has to run with nobody
+present.
+
+- **Why it was "locked".** With "Require password" = Never, a sleeping display still raises
+  loginwindow's lock shield (`kLWLockFromDisplayDim`), and `CGSSessionScreenIsLocked` reads
+  true. Any user activity lifts it in under a second with no password; the 2026-10-20 20:26
+  unlock shows this. The display had been off since 08:03, so the 14:26 runs met the shield.
+  It was no manual lock, and no Screen Sharing session either: the MBP's session connected at
+  20:26 that evening and detached 2026-10-21 12:59.
+- **The gate checks the session too.** Besides HIDIdleTime, `mahler desktop` now requires
+  that this user owns the one console session, that login has finished, and that the screen
+  is open (`ioreg -n Root -d1 -a`: `IOConsoleUsers`, `CGSSessionScreenIsLocked`,
+  `IOConsoleLocked`). Unreadable readings fail closed. A shielded screen counts as open
+  only when waking needs no password (`sysadminctl -screenLock status` says off). Then
+  `run` declares user activity (`caffeinate -u -t 2`), waits 3 s and reads the session
+  again, deferring if the shield is still up. A lock that needs a password always defers.
+- **A deferred GUI deliverable parks; it doesn't fail.** When the GUI run *is* the task, as
+  with a smoke run, the recipe ends `STATUS: BLOCKED desktop gate: GATE-DENIED <reason>`.
+  Finalize accepts only that marker, which the gate prints with every denial and a child that
+  itself exits 75 never prints. Prose about a locked screen keeps the ordinary BLOCKED path.
+  It applies to build and fix runs after the usual stale-epoch checks. The item parks without
+  charging an attempt and pings once. A PR fix run that ship.py charged at launch gets that
+  charge back: `fix-charge:<run>` holds the counters from before and after, and the cycle's
+  `:charged` mark is cleared so the relaunch is charged exactly once.
+- **Unparking.** Each tick, `recheck_blocked` asks `desktop.run_check` as a `--scheduled`
+  run would (desktop lock free, inside `gui_window`, idle, session open). Only when that
+  passes does the item go back to `ready`, or to `verifying` for a PR fix run, so ship.py
+  resumes its CI/review cycle instead of starting a fresh build. A gate that opens again
+  the same night is used that night: the issue asked for a retry in the next idle overnight
+  window, and that is the next one. A locked mini costs no runs, only a wait. `/mahler go`
+  still resumes at once.
+- **Options weighed.**
+  - **Unlocked session, display asleep.** The display may sleep, but no screen saver, no
+    "require password" on wake, and no auto-logout. *Chosen* (already configured). Pros: it uses the real
+    signed-in beta, its fixtures and AX permissions, so every journey runs; it costs nothing
+    and needs no new code beyond the above. Con: anyone physically at the mini gets Mike's
+    signed-in session. The mini is in his home and personal (no other users). FileVault
+    stays on, so a reboot or a stolen disk is still protected, and after a reboot the gate
+    defers ("no GUI session") until he logs in once.
+  - **Compromise: "require password 8 hours after the display turns off".** This keeps a
+    lock, but the window drifts with his last use: if he stops at 17:00 the mini locks at
+    about 01:10, mid-window. It's less predictable, and runs then park rather than fail.
+  - **Headless dummy display (HDMI plug).** This solves a missing display, not a lock. It's
+    only needed if the monitor is unplugged rather than switched off.
+  - **GitHub-hosted macOS runner.** couch-tour is public, so `macos-14` minutes are free, and
+    `macos-tests.yml` already runs a small XCUITest suite there. But the smoke journeys need
+    a signed-in Phish.in fixture. That would mean real account credentials as secrets in a
+    public repo, which is a worse exposure than an unlocked mini at home. Without them, the
+    signed-in and sync journeys SKIP, and a SKIP is not a PASS. AX access for the
+    shell-driven runner isn't guaranteed on hosted images either. It suits deterministic UI
+    checks, not the promotion gate.
+  - **Local macOS VM (tart).** This gives the best isolation, with no lock and a disposable
+    signed-in state. But it needs a 50+ GB image with Xcode on the ExtSSD, its own fixture
+    account and TCC grants, and upkeep with each Xcode update. It's the fallback if the
+    owner won't run unlocked.
+  - **Hybrid (Android local, macOS in CI).** This inherits the hosted runner's coverage gap,
+    so it can't produce a full PASS.
+- **Chosen (owner, 2026-10-22): the existing unlocked-on-wake session.** In the owner's
+  words: "full local macOS smoke on the signed-in mini, with my current settings (no
+  password on wake), is acceptable." On 2026-10-21 the mini already
+  had `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver
+  begins or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system
+  sleep 0, and the display off after 3 hours. No settings change was needed. Agents never change these settings, because security settings are the owner's.

@@ -11,10 +11,10 @@ import os
 import tempfile
 from pathlib import Path
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from unittest import mock
 
-from mahler import model_availability, config, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
+from mahler import model_availability, config, desktop, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -602,6 +602,90 @@ class RunTests(unittest.TestCase):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         self.assertEqual(self.led.item("x", 5)["state"], "ready")
         self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_locked_screen_defers_gui_step_without_attempt_until_gate_opens(self):
+        # mahler#1172: couch-tour#686 used all three attempts on a locked screen.
+        reason = "desktop gate: GATE-DENIED locked: the screen is locked and waking it needs a password"
+        ping = self.blocked_done(reason)
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual((item["attempts"], item["esc_tier"]), (0, 0))
+        ping.assert_called_once()
+        self.assertTrue(json.loads(self.led.get_kv("blocked:x#5"))["gui"])
+        seen = []
+
+        def closed(minutes, window, scheduled=False, **_):
+            seen.append((minutes, window, scheduled))
+            raise desktop.Deferred("locked: the screen is locked")
+        with mock.patch.object(desktop, "run_check", side_effect=closed):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(seen, [(15, (dtime(0), dtime(6)), True)])
+        with mock.patch.object(desktop, "run_check", return_value="free: idle 40m >= 15m"):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        item = self.led.item("x", 5)
+        self.assertEqual((item["state"], item["attempts"]), ("ready", 0))
+        self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_gui_deferred_pr_fix_run_refunds_its_launch_charge(self):
+        # Review of PR #1174: ship.py charges a PR fix run at launch, so a closed
+        # gate must give that charge back and let the relaunch charge once.
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        cycle = "red:x#5:88:abc"
+        self.led.upsert_item("x", 5, pr=88, attempts=2, esc_tier=1, esc_fails=1)
+        self.led.set_kv(f"{cycle}:charged", "1")
+        self.led.set_kv(f"fix-charge:{self.run_id}", json.dumps({
+            "cycle": cycle, "before": {"attempts": 1, "esc_tier": 1, "esc_fails": 0},
+            "after": {"attempts": 2, "esc_tier": 1, "esc_fails": 1}}))
+        self.blocked_done("desktop gate: GATE-DENIED locked: the screen stayed locked after waking the display")
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual((item["attempts"], item["esc_tier"], item["esc_fails"]), (1, 1, 0))
+        self.assertIsNone(self.led.get_kv(f"{cycle}:charged"))
+        self.assertIsNone(self.led.get_kv(f"fix-charge:{self.run_id}"))
+
+    def test_gui_deferred_pr_fix_run_resumes_its_verify_cycle(self):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 5, pr=88)
+        self.blocked_done("desktop gate: GATE-DENIED in use: idle 2m < 15m")
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        with mock.patch.object(desktop, "run_check", return_value="free"):
+            finalize.recheck_blocked(self.ctx, [{"name": "x"}])
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+
+    def test_blocked_without_gate_marker_is_an_ordinary_blocked(self):
+        # A GUI child that itself exited 75, or prose about a lock, proves
+        # nothing was launched by the gate: it keeps the ordinary handling.
+        for reason in ("Mac mini screen is still locked (CGSSessionScreenIsLocked=true)",
+                       "desktop gate: command ran and exited 75"):
+            with self.subTest(reason):
+                self.led.set_state("x", 5, "working", "test run")
+                before = self.led.item("x", 5)["attempts"]
+                self.blocked_done(reason)
+                self.assertEqual(self.led.item("x", 5)["attempts"], before + 1)
+                self.assertNotEqual(self.led.item("x", 5)["state"], "parked")
+                self.next_no_work_run()
+
+    def test_gui_deferral_keeps_counters_that_moved_on(self):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 5, pr=88, attempts=3)
+        self.led.set_kv(f"fix-charge:{self.run_id}", json.dumps({
+            "cycle": "red:x#5:88:abc", "before": {"attempts": 1, "esc_tier": 0, "esc_fails": 0},
+            "after": {"attempts": 2, "esc_tier": 0, "esc_fails": 0}}))
+        self.blocked_done("desktop gate: GATE-DENIED in use: idle 2m < 15m")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 3)
+
+    def test_repeat_gui_deferral_pings_once(self):
+        self.blocked_done("desktop gate: GATE-DENIED locked: the screen is locked and waking it needs a password")
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.led.set_state("x", 5, "ready", "/mahler go")
+        self.next_no_work_run()
+        ping = self.blocked_done("desktop gate: GATE-DENIED in use: idle 2m < 15m")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        ping.assert_not_called()
 
     def test_blocked_condition_already_met_moves_straight_to_ready(self):
         reason = "needs PR #609 merged"
