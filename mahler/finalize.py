@@ -225,13 +225,28 @@ _GUI_DEFERRED = re.compile(r"\bdesktop gate\b|\bscreen (?:is )?(?:still )?locked
                            re.IGNORECASE)
 
 
+def _fix_charge_refund(e):
+    """Counters to restore when a PR fix run (charged at launch by ship.py)
+    never got to work; {} when nothing was charged or it was already moved on."""
+    counters = ("attempts", "esc_tier", "esc_fails")
+    charge = json.loads(e.led.get_kv(f"fix-charge:{e.run['id']}") or "{}")
+    before, after = charge.get("before") or {}, charge.get("after") or {}
+    if (e.run["role"] != "fix" or set(before) != set(counters) or set(after) != set(counters)
+            or any(e.item[k] != after[k] for k in counters)):
+        return {}
+    e.led.set_kv(f"fix-charge:{e.run['id']}", None)
+    e.led.set_kv(f"{charge['cycle']}:charged", None)   # the relaunch charges once
+    return before
+
+
 def _ended_gui_deferred(e):
     key = f"blocked:{e.project}#{e.number}"
     previous = json.loads(e.led.get_kv(key) or "{}")
     record = {"reason": e.rest, "since": previous.get("since") or iso(e.led.now()),
               "checkable": False, "gui": True}
     e.led.set_kv(key, json.dumps(record))
-    e.set_state("parked", f"GUI step deferred until the desktop gate opens: {e.rest}")
+    e.set_state("parked", f"GUI step deferred until the desktop gate opens: {e.rest}",
+                **_fix_charge_refund(e))
     if not previous.get("gui"):
         e.ping(f"GUI run deferred — {e.project} #{e.number}",
                f"{e.rest} (retries when the mini is idle, unlocked and inside gui_window; "
@@ -244,7 +259,7 @@ def _gui_gate_open(ctx, project):
     try:
         pol = ctx.policy(project)
         window = config.parse_gui_window(pol["gui_window"])
-        return True, desktop.check(pol["gui_idle_minutes"], window, scheduled=True)
+        return True, desktop.run_check(pol["gui_idle_minutes"], window, scheduled=True)
     except desktop.Deferred as exc:
         return False, str(exc)
     except (KeyError, ValueError) as exc:

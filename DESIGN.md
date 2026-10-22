@@ -2938,9 +2938,10 @@ project.
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
 
-### D50 — Unattended macOS smoke: an unlocked session, a sleeping display (mahler#1172)
+### D50 — Unattended macOS smoke: the desktop gate and a sleeping display (mahler#1172, #1173)
 
-Decided 2026-10-21 (owner). couch-tour#686 (smoke for
+Gate behaviour decided 2026-10-21. **The security posture is the owner's choice and is still
+open** (the NEEDS-YOU on mahler#1172). couch-tour#686 (smoke for
 v0.91) used all three attempts on 2026-10-20 at `CGSSessionScreenIsLocked=true`. A sleeping
 display looks idle, so D40's idle check passed, the run started, and the smoke runner found
 the lock shield. Android passed on the `phishin_test` AVD, but macOS never ran.
@@ -2969,7 +2970,7 @@ present.
   still resumes at once.
 - **Options weighed.**
   - **Unlocked session, display asleep.** The display may sleep, but no screen saver, no
-    "require password" on wake, and no auto-logout. *Recommended.* Pros: it uses the real
+    "require password" on wake, and no auto-logout. *Recommended* (already configured). Pros: it uses the real
     signed-in beta, its fixtures and AX permissions, so every journey runs; it costs nothing
     and needs no new code beyond the above. Con: anyone physically at the mini gets Mike's
     signed-in session. The mini is in his home and personal (no other users). FileVault
@@ -2993,8 +2994,9 @@ present.
     owner won't run unlocked.
   - **Hybrid (Android local, macOS in CI).** This inherits the hosted runner's coverage gap,
     so it can't produce a full PASS.
-- **Chosen: the unlocked session.** On 2026-10-21 the mini already had these settings:
-  `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver begins
-  or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system sleep
-  0, and the display off after 3 hours. No change is needed beyond waking the display as
-  above. Agents never change these settings, because security settings are the owner's.
+- **Recommended: the existing unlocked-on-wake session.** On 2026-10-21 the mini already
+  had `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver
+  begins or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system
+  sleep 0, and the display off after 3 hours. This option needs no settings change, only the
+  owner's confirmation that full local execution on the signed-in host is acceptable.
+  Agents never change these settings, because security settings are the owner's.

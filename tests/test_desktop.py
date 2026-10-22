@@ -99,6 +99,8 @@ class SessionTests(StateCase):
             "other user": console(kCGSSessionUserIDKey=502),
             "login pending": console(kCGSessionLoginDoneKey=False),
             "malformed lock": console(CGSSessionScreenIsLocked="Yes"),
+            "no console lock key": {k: v for k, v in console().items() if k != "IOConsoleLocked"},
+            "malformed console lock": {**console(), "IOConsoleLocked": "No"},
             "malformed root": ["not", "a", "dict"],
             "malformed users": {"IOConsoleUsers": "mike"},
             "ambiguous": {"IOConsoleUsers": console()["IOConsoleUsers"] * 2},

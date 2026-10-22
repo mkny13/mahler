@@ -617,15 +617,43 @@ class RunTests(unittest.TestCase):
         def closed(minutes, window, scheduled=False, **_):
             seen.append((minutes, window, scheduled))
             raise desktop.Deferred("locked: the screen is locked")
-        with mock.patch.object(desktop, "check", side_effect=closed):
+        with mock.patch.object(desktop, "run_check", side_effect=closed):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         self.assertEqual(self.led.item("x", 5)["state"], "parked")
         self.assertEqual(seen, [(15, (dtime(0), dtime(6)), True)])
-        with mock.patch.object(desktop, "check", return_value="free: idle 40m >= 15m"):
+        with mock.patch.object(desktop, "run_check", return_value="free: idle 40m >= 15m"):
             finalize.recheck_blocked(self.ctx, [{"name": "x"}])
         item = self.led.item("x", 5)
         self.assertEqual((item["state"], item["attempts"]), ("ready", 0))
         self.assertIsNone(self.led.get_kv("blocked:x#5"))
+
+    def test_gui_deferred_pr_fix_run_refunds_its_launch_charge(self):
+        # Review of PR #1174: ship.py charges a PR fix run at launch, so a closed
+        # gate must give that charge back and let the relaunch charge once.
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        cycle = "red:x#5:88:abc"
+        self.led.upsert_item("x", 5, pr=88, attempts=2, esc_tier=1, esc_fails=1)
+        self.led.set_kv(f"{cycle}:charged", "1")
+        self.led.set_kv(f"fix-charge:{self.run_id}", json.dumps({
+            "cycle": cycle, "before": {"attempts": 1, "esc_tier": 1, "esc_fails": 0},
+            "after": {"attempts": 2, "esc_tier": 1, "esc_fails": 1}}))
+        self.blocked_done("desktop gate: locked: the screen stayed locked after waking the display")
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "parked")
+        self.assertEqual((item["attempts"], item["esc_tier"], item["esc_fails"]), (1, 1, 0))
+        self.assertIsNone(self.led.get_kv(f"{cycle}:charged"))
+        self.assertIsNone(self.led.get_kv(f"fix-charge:{self.run_id}"))
+
+    def test_gui_deferral_keeps_counters_that_moved_on(self):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 5, pr=88, attempts=3)
+        self.led.set_kv(f"fix-charge:{self.run_id}", json.dumps({
+            "cycle": "red:x#5:88:abc", "before": {"attempts": 1, "esc_tier": 0, "esc_fails": 0},
+            "after": {"attempts": 2, "esc_tier": 0, "esc_fails": 0}}))
+        self.blocked_done("desktop gate: in use: idle 2m < 15m")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 3)
 
     def test_repeat_gui_deferral_pings_once(self):
         self.blocked_done("Mac mini screen is still locked (CGSSessionScreenIsLocked=true)")

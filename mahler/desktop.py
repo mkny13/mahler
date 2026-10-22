@@ -103,10 +103,11 @@ def parse_session(root, uid):
         raise Deferred("no GUI session: the console belongs to another user")
     if user.get("kCGSessionLoginDoneKey") is not True:
         raise Deferred("no GUI session: console login has not finished")
-    locked = (root.get("IOConsoleLocked"), user.get("CGSSessionScreenIsLocked"))
-    if any(v not in (None, True, False) for v in locked):
-        raise Deferred("session unknown: malformed screen-lock reading")
-    return True in locked
+    # IOConsoleLocked is always present; CGSSessionScreenIsLocked only while locked.
+    console_locked, screen_locked = root.get("IOConsoleLocked"), user.get("CGSSessionScreenIsLocked")
+    if not isinstance(console_locked, bool) or screen_locked not in (None, True, False):
+        raise Deferred("session unknown: missing or malformed screen-lock reading")
+    return console_locked or screen_locked is True
 
 
 def probe_password_free():
