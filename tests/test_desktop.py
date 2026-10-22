@@ -240,11 +240,71 @@ class CheckTests(unittest.TestCase):
     def test_cross_midnight_and_empty_window(self):
         w = config.parse_gui_window("22:00-02:00")
         ok = probe(20 * MIN)
+        # 2026-01-01 was Thursday
         for t, allowed in (((22, 0), True), ((1, 59), True), ((2, 0), False), ((21, 59), False)):
             with self.subTest(t=t):
-                self.assertEqual(desktop.in_window(w, dtime(*t)), allowed)
+                self.assertEqual(desktop.in_window(w, datetime(2026, 1, 1, *t)), allowed)
         noon = lambda: datetime(2026, 1, 1, 12, 0)
         self.assertIn("free", desktop.check(15, None, True, ok, noon))
+
+    def test_cross_midnight_with_weekday_filter_judged_by_start_day(self):
+        # Fri 22:00-02:00 window
+        w = config.parse_gui_window("Fri 22:00-02:00")
+        # 2026-01-02 was Friday (weekday 4), 2026-01-03 was Saturday (weekday 5)
+        # Friday 22:00 -> in window (started Friday)
+        self.assertTrue(desktop.in_window(w, datetime(2026, 1, 2, 22, 0)))
+        # Friday 23:59 -> in window (started Friday)
+        self.assertTrue(desktop.in_window(w, datetime(2026, 1, 2, 23, 59)))
+        # Saturday 00:00 -> in window (range started Friday)
+        self.assertTrue(desktop.in_window(w, datetime(2026, 1, 3, 0, 0)))
+        # Saturday 01:59 -> in window (range started Friday)
+        self.assertTrue(desktop.in_window(w, datetime(2026, 1, 3, 1, 59)))
+        # Saturday 02:00 -> out of window (past end)
+        self.assertFalse(desktop.in_window(w, datetime(2026, 1, 3, 2, 0)))
+        # Saturday 22:00 -> out of window (would start Saturday, not Friday)
+        self.assertFalse(desktop.in_window(w, datetime(2026, 1, 3, 22, 0)))
+        # Sunday 01:00 -> out of window (would start Saturday, not Friday)
+        self.assertFalse(desktop.in_window(w, datetime(2026, 1, 4, 1, 0)))
+        # Friday 01:00 -> out of window (would start Thursday, not Friday)
+        self.assertFalse(desktop.in_window(w, datetime(2026, 1, 2, 1, 0)))
+
+        # Mon-Fri 22:00-02:00
+        w_mf = config.parse_gui_window("Mon-Fri 22:00-02:00")
+        # Friday 22:00 -> in window
+        self.assertTrue(desktop.in_window(w_mf, datetime(2026, 1, 2, 22, 0)))
+        # Saturday 01:00 -> in window (started Friday)
+        self.assertTrue(desktop.in_window(w_mf, datetime(2026, 1, 3, 1, 0)))
+        # Saturday 22:00 -> out (starts Saturday)
+        self.assertFalse(desktop.in_window(w_mf, datetime(2026, 1, 3, 22, 0)))
+        # Sunday 01:00 -> out (started Saturday)
+        self.assertFalse(desktop.in_window(w_mf, datetime(2026, 1, 4, 1, 0)))
+        # Sunday 22:00 -> out (starts Sunday)
+        self.assertFalse(desktop.in_window(w_mf, datetime(2026, 1, 4, 22, 0)))
+        # Monday 01:00 -> out (started Sunday)
+        self.assertFalse(desktop.in_window(w_mf, datetime(2026, 1, 5, 1, 0)))
+        # Monday 22:00 -> in window (starts Monday)
+        self.assertTrue(desktop.in_window(w_mf, datetime(2026, 1, 5, 22, 0)))
+
+    def test_multi_window_any_match_and_deferred_message(self):
+        w = config.parse_gui_window("00:00-06:00, Mon-Fri 11:30-13:30")
+        ok = probe(20 * MIN)
+        # 2026-01-06 was Tuesday
+        # Tuesday 03:00 -> in window (matches 00:00-06:00)
+        self.assertIn("free", desktop.check(15, w, True, ok, lambda: datetime(2026, 1, 6, 3, 0)))
+        # Tuesday 12:00 -> in window (matches Mon-Fri 11:30-13:30)
+        self.assertIn("free", desktop.check(15, w, True, ok, lambda: datetime(2026, 1, 6, 12, 0)))
+        # Saturday 03:00 (2026-01-10) -> in window (matches 00:00-06:00)
+        self.assertIn("free", desktop.check(15, w, True, ok, lambda: datetime(2026, 1, 10, 3, 0)))
+        # Saturday 12:00 -> outside (Mon-Fri 11:30-13:30 does not match Saturday)
+        with self.assertRaises(desktop.Deferred) as cm:
+            desktop.check(15, w, True, ok, lambda: datetime(2026, 1, 10, 12, 0))
+        self.assertEqual(str(cm.exception),
+                         "outside preferred windows 00:00-06:00, Mon-Fri 11:30-13:30 (now Sat 12:00)")
+        # Tuesday 09:12 -> outside both
+        with self.assertRaises(desktop.Deferred) as cm:
+            desktop.check(15, w, True, ok, lambda: datetime(2026, 1, 6, 9, 12))
+        self.assertEqual(str(cm.exception),
+                         "outside preferred windows 00:00-06:00, Mon-Fri 11:30-13:30 (now Tue 09:12)")
 
     def test_window_checked_before_probe(self):
         calls = []
@@ -270,7 +330,7 @@ class SettingsTests(unittest.TestCase):
         os.environ["MAHLER_PROJECT"] = "app"
         self.assertEqual(desktop.settings(self.cfg)[0], 5)
         self.assertEqual(desktop.settings(self.cfg, "app")[1],
-                         (dtime(1, 0), dtime(2, 0)))
+                         ((None, dtime(1, 0), dtime(2, 0)),))
 
     def test_project_flag_beats_env(self):
         cfg = cfg_with({}, {"a": {"gui_idle_minutes": 1}, "b": {"gui_idle_minutes": 2}})
@@ -286,7 +346,9 @@ class SettingsTests(unittest.TestCase):
 
     def test_defaults(self):
         cfg = cfg_with()
-        self.assertEqual(desktop.settings(cfg), (15, (dtime(0, 0), dtime(6, 0))))
+        self.assertEqual(desktop.settings(cfg),
+                         (15, ((None, dtime(0, 0), dtime(6, 0)),
+                               (frozenset({0, 1, 2, 3, 4}), dtime(11, 30), dtime(13, 30)))))
 
 
 class CliTests(StateCase):
@@ -326,7 +388,7 @@ class CliTests(StateCase):
         marker, cmd = self.spawn_marker()
         code, _, err = self.run_main(["run", "--scheduled", "--"] + cmd, cfg=cfg_with(),
                                      probe=probe(20 * MIN),
-                                     now=lambda: datetime(2026, 1, 1, 12, 0))
+                                     now=lambda: datetime(2026, 1, 1, 9, 0))
         self.assertEqual(code, 75)
         self.assertIn("preferred window", err)
         self.assertFalse(os.path.exists(marker))

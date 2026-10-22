@@ -73,7 +73,7 @@ class SmokePolicyTests(unittest.TestCase):
     def test_gui_gate_defaults_overrides_and_validation(self):
         pol = config.project_policy(self.load({}), "app")
         self.assertEqual(pol["gui_idle_minutes"], 15)
-        self.assertEqual(pol["gui_window"], "00:00-06:00")
+        self.assertEqual(pol["gui_window"], "00:00-06:00, Mon-Fri 11:30-13:30")
         cfg = self.load({"defaults": {"gui_idle_minutes": 20, "gui_window": ""},
                          "projects": {"app": {"gui_idle_minutes": 2.5,
                                               "gui_window": "22:00-02:00"}}})
@@ -82,12 +82,65 @@ class SmokePolicyTests(unittest.TestCase):
         self.assertIsNone(config.parse_gui_window(cfg["defaults"]["gui_window"]))
         for key, values in (("gui_idle_minutes", (0, -1, True, "15", float("inf"), float("nan"))),
                             ("gui_window", ("0-6", "24:00-01:00", "00:60-01:00", "06:00-06:00",
-                                            "00:00-6:00", 5))):
+                                            "00:00-6:00", 5,
+                                            "Foo 11:30-13:30", "Fri-Mon 11:30-13:30",
+                                            "Mon-Mon 11:30-13:30", "00:00-06:00, ",
+                                            "00:00-06:00,,11:30-13:30", ","))):
             for value in values:
                 for section in ({"defaults": {key: value}},
                                 {"projects": {"app": {key: value}}}):
-                    with self.subTest(section=section), self.assertRaises(ValueError):
+                    with self.subTest(section=section, value=value), self.assertRaises(ValueError):
                         self.load(section)
+
+    def test_parse_gui_window_multiple_ranges_and_weekdays(self):
+        from datetime import time
+        self.assertIsNone(config.parse_gui_window(""))
+        # Single range without weekday
+        self.assertEqual(config.parse_gui_window("00:00-06:00"),
+                         ((None, time(0, 0), time(6, 0)),))
+        # Weekday range
+        self.assertEqual(config.parse_gui_window("Mon-Fri 11:30-13:30"),
+                         ((frozenset({0, 1, 2, 3, 4}), time(11, 30), time(13, 30)),))
+        # Weekend range
+        self.assertEqual(config.parse_gui_window("Sat-Sun 00:00-06:00"),
+                         ((frozenset({5, 6}), time(0, 0), time(6, 0)),))
+        # Single day
+        self.assertEqual(config.parse_gui_window("Tue 12:00-14:00"),
+                         ((frozenset({1}), time(12, 0), time(14, 0)),))
+        # Slash-separated days
+        self.assertEqual(config.parse_gui_window("Mon/Wed/Fri 12:00-13:00"),
+                         ((frozenset({0, 2, 4}), time(12, 0), time(13, 0)),))
+        # Multiple comma-separated ranges with whitespace
+        res = config.parse_gui_window(" 00:00-06:00 , Mon-Fri 11:30-13:30 ")
+        self.assertEqual(res,
+                         ((None, time(0, 0), time(6, 0)),
+                          (frozenset({0, 1, 2, 3, 4}), time(11, 30), time(13, 30))))
+        # Formatter produces expected representation
+        self.assertEqual(config.format_gui_window(res), "00:00-06:00, Mon-Fri 11:30-13:30")
+
+    def test_parse_gui_window_bad_input_error_messages(self):
+        cases = [
+            ("Foo 11:30-13:30", "unknown day"),
+            ("Mon-Bar 11:30-13:30", "unknown day"),
+            ("Fri-Mon 11:30-13:30", "reversed day range"),
+            ("Sun-Sat 11:30-13:30", "reversed day range"),
+            ("Mon-Mon 11:30-13:30", "equal endpoints"),
+            ("06:00-06:00", "equal endpoints"),
+            ("Mon 06:00-06:00", "equal endpoints"),
+            ("24:00-01:00", "invalid time"),
+            ("00:60-01:00", "invalid time"),
+            ("0-6", "must look like HH:MM-HH:MM"),
+            ("00:00-6:00", "must look like HH:MM-HH:MM"),
+            ("00:00-06:00, ", "empty item"),
+            (",00:00-06:00", "empty item"),
+            ("00:00-06:00,,11:30-13:30", "empty item"),
+            (",", "empty item"),
+            ("  ", "empty item"),
+        ]
+        for val, expected_phrase in cases:
+            with self.subTest(val=val), self.assertRaises(ValueError) as cm:
+                config.parse_gui_window(val)
+            self.assertIn(expected_phrase, str(cm.exception))
 
     def test_post_merge_defaults_and_nested_overlays(self):
         cfg = self.load({})

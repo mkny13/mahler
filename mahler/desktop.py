@@ -16,7 +16,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
 
 from . import config
 
@@ -139,9 +139,37 @@ def wake_display():
         pass
 
 
-def in_window(window, t):
-    start, end = window
-    return start <= t < end if start < end else (t >= start or t < end)
+def _match_single_window(win, dt):
+    days, start, end = (None, win[0], win[1]) if len(win) == 2 else win
+    t = dt.time() if isinstance(dt, datetime) else dt
+    weekday = dt.weekday() if isinstance(dt, datetime) else None
+
+    if start < end:
+        if not (start <= t < end):
+            return False
+        return days is None or (weekday is not None and weekday in days)
+    else:  # cross-midnight: start > end
+        if t >= start:
+            start_day = weekday
+            return days is None or (start_day is not None and start_day in days)
+        if t < end:
+            start_day = (weekday - 1) % 7 if weekday is not None else None
+            return days is None or (start_day is not None and start_day in days)
+        return False
+
+
+def in_window(windows, dt):
+    """True if dt falls inside any range in windows.
+    windows is a tuple/list of (days, start, end) tuples (or a single window tuple).
+    Cross-midnight ranges with weekday filters are judged by the start day."""
+    if not windows:
+        return False
+    if isinstance(windows, tuple) and len(windows) in (2, 3) and isinstance(windows[-1], (datetime, dtime)):
+        windows = (windows,)
+    for win in windows:
+        if _match_single_window(win, dt):
+            return True
+    return False
 
 
 def _fmt_idle(seconds):
@@ -154,10 +182,10 @@ def _check(minutes, window, scheduled, probe, now, session, password_free):
     session = session or probe_session
     password_free = password_free or probe_password_free
     if scheduled and window:
-        t = (now or datetime.now)().time()
-        if not in_window(window, t):
-            raise Deferred(f"outside preferred window {window[0]:%H:%M}-{window[1]:%H:%M} "
-                           f"(now {t:%H:%M})")
+        dt = now() if callable(now) else (now or datetime.now())
+        if not in_window(window, dt):
+            raise Deferred(f"outside preferred windows {config.format_gui_window(window)} "
+                           f"(now {config._DAY_ABBR[dt.weekday()]} {dt:%H:%M})")
     idle = probe() / 1e9
     need = minutes * 60
     if idle < need:
