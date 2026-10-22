@@ -840,6 +840,14 @@ def _verify_matches(inventory, number):
     return sorted(out, key=lambda r: r["number"])
 
 
+def _verify_reusable(row):
+    """An unresolved owner question remains live even if GitHub is closed."""
+    labels = {(label.get("name") if isinstance(label, dict) else label)
+              for label in row.get("labels") or []}
+    return (str(row.get("state")).upper() == "OPEN"
+            or "mahler:needs-you" in labels)
+
+
 def _verify_managed(number, blockers, fingerprint):
     return (f"{VERIFY_START}\n<!-- mahler:parent-verify:{number}:{fingerprint} -->\n"
             f"Current unresolved criteria for parent #{number}:\n" +
@@ -863,22 +871,24 @@ def _verify_refresh(gh, row, number, blockers, fingerprint):
 def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comments=()):
     """Give unresolved criteria and child evidence one verifier per parent.
 
-    Reuse any open item for the parent (updating its blocker section). If only
-    closed ones remain and the same blockers stand, file one linked follow-up;
-    if that also closes unresolved, raise one diagnostic instead of a chain.
+    Reuse any open or needs-you item for the parent (updating its blocker
+    section). A needs-you label keeps the item reusable even if GitHub closed
+    it, because the owner question is still unresolved. If only other closed
+    items remain and the same blockers stand, file one linked follow-up; if
+    that also closes unresolved, raise one diagnostic instead of a chain.
     """
     led, gh = ctx.led, ctx.gh(project)
     matches = _verify_matches(inventory, number)
-    open_rows = [r for r in matches if str(r.get("state")).upper() == "OPEN"]
+    reusable_rows = [r for r in matches if _verify_reusable(r)]
     item_key = f"parent_verify_item:{project}:{number}"
-    if open_rows:
-        row = open_rows[0]
+    if reusable_rows:
+        row = reusable_rows[0]
         url = row.get("html_url") or row.get("url") or ""
         _verify_refresh(gh, row, number, blockers, fingerprint)
         led.set_kv(item_key, url)
-        if len(open_rows) > 1:
+        if len(reusable_rows) > 1:
             dup_key = f"parent_verify_dups:{project}:{number}"
-            ids = ",".join(str(r["number"]) for r in open_rows)
+            ids = ",".join(str(r["number"]) for r in reusable_rows)
             if led.get_kv(dup_key) != ids:
                 ctx.say(f"{project}#{number}: duplicate verify items {ids}; using #{row['number']}")
                 led.set_kv(dup_key, ids)
