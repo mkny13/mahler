@@ -192,12 +192,14 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.create_issue.assert_not_called()
         self.gh.close_issue.assert_not_called()
 
-    def test_markerless_open_item_reused_across_fingerprint_change(self):
-        for labels in ((), ("needs_you",)):
-            with self.subTest(labels=labels):
+    def test_markerless_reusable_item_reused_across_fingerprint_change(self):
+        for state, labels in (("open", ()), ("closed", ("mahler:needs-you",))):
+            with self.subTest(state=state, labels=labels):
                 self.setUp()
                 self.bodies[10] = self.FREE
-                row = self.add_remote(40, body="> **Original request:** x\n\n## Plan\nsorted")
+                row = self.add_remote(
+                    40, state=state,
+                    body="> **Original request:** x\n\n## Plan\nsorted")
                 row["labels"] += [{"name": l} for l in labels]
                 before_labels = list(row["labels"])
                 self.run_pass()

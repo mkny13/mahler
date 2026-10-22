@@ -889,6 +889,79 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 4)
 
+    def test_ci_rerun_post_403_notifies_and_starts_fix_run_next_tick(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError(
+            "gh api --method POST: gh: Resource not accessible by integration (HTTP 403)"
+        )
+        start = self.patch_start()
+        ping = self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+        rerun_pings = [c for c in ping.call_args_list if "Actions: write" in str(c)]
+        self.assertEqual(len(rerun_pings), 1)
+
+        ping2 = self.ship()
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["fix_reason"], "ci")
+        self.assertNotEqual(self.item()["state"], "needs_you")
+        rerun_pings2 = [c for c in ping2.call_args_list if "Actions: write" in str(c)]
+        self.assertEqual(len(rerun_pings2), 0)
+
+    def test_ci_rerun_403_ping_throttled_per_project_per_day(self):
+        self.retry_setup()
+        self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("HTTP 403")
+        ping = self.ship()
+        self.assertEqual(len([c for c in ping.call_args_list if "Actions: write" in str(c)]), 1)
+
+        self.led.upsert_item("x", 6, pr=89, state="verifying")
+        ping2 = self.ship()
+        self.assertEqual(len([c for c in ping2.call_args_list if "Actions: write" in str(c)]), 0)
+
+        self.led.clock = lambda: NOW + timedelta(days=1, seconds=1)
+        key = "ci-rerun:x#5:88:abc123"
+        self.led.set_kv(key, None)
+        ping3 = self.ship()
+        self.assertEqual(len([c for c in ping3.call_args_list if "Actions: write" in str(c)]), 1)
+
+    def test_ci_rerun_post_permanent_error_404_or_422_starts_fix_run_next_tick_without_permission_ping(self):
+        for code in ("HTTP 404", "HTTP 422"):
+            with self.subTest(code=code):
+                key = self.retry_setup()
+                self.gh.rerun_failed_jobs.side_effect = gh_module.GHError(f"gh api --method POST: {code}")
+                start = self.patch_start()
+                ping = self.ship()
+                start.assert_not_called()
+                self.assertEqual(len([c for c in ping.call_args_list if "Actions: write" in str(c)]), 0)
+                self.ship()
+                start.assert_called_once()
+                self.assertNotEqual(self.item()["state"], "needs_you")
+                self.led.release("x", 5)
+                self.led.set_state("x", 5, "verifying", "re-test")
+                self.led.set_kv("red:x#5:88:abc123", None)
+                self.led.set_kv("red:x#5:88:abc123:charged", None)
+                self.led.set_kv("ci-rerun:x#5:88:abc123", None)
+
+    def test_ci_rerun_requested_attempt_never_advances_starts_fix_after_grace_period(self):
+        self.retry_setup()
+        self.gh.actions_run = mock.Mock(return_value={"head_sha": "abc123", "run_attempt": 1,
+                                                      "status": "completed", "conclusion": "failure"})
+        start = self.patch_start()
+        self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+
+        self.led.clock = lambda: NOW + timedelta(minutes=2)
+        self.ship()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "verifying")
+
+        self.led.clock = lambda: NOW + timedelta(minutes=6)
+        self.ship()
+        start.assert_called_once()
+        self.assertEqual(start.call_args.kwargs["fix_reason"], "ci")
+        self.assertNotEqual(self.item()["state"], "needs_you")
+
     def test_ci_rerun_uncertain_post_reconciles_and_times_out(self):
         self.retry_setup()
         self.gh.rerun_failed_jobs.side_effect = gh_module.GHError("response lost")
@@ -898,6 +971,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
         self.ship()
         self.assertEqual(self.gh.rerun_failed_jobs.call_count, 2)
+        self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
         self.led.clock = lambda: NOW + timedelta(days=1)
         self.ship()
         self.assertEqual(self.item()["state"], "needs_you")
@@ -3781,6 +3855,50 @@ class TestGreenReviewRounds(unittest.TestCase):
             self.assertEqual(start_mock.call_args.args[3], "design")
             self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
 
+    def test_same_file_new_blockers_reproducing_1137_sequence_starts_design_instead_of_failing(self):
+        # Reproduce mahler#1137 sequence: 3 green rounds with fresh blockers in the same file
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        later = NOW + timedelta(hours=2)
+        self.led.record_usage("claude-opus", "5h", 10, later)
+        self.led.record_usage("claude-opus", "weekly", 10, later)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+
+        # Round 1: build (attempts=0), review fails with blocker in mahler/dependency_vetting.py
+        f1 = {**self.finding("blocking"), "category": "behavior",
+              "location": "mahler/dependency_vetting.py:100", "scenario": "First edge case"}
+        self.complete_head("head-1", [f1], 1)
+        _, fix1, _ = self.gate()
+        fix1.assert_called_once()
+        self.led.upsert_item("x", 5, attempts=1)
+
+        # Round 2: fix 1 pushed head-2 (attempts=1), review fails with new blocker in same file
+        f2 = {**self.finding("blocking"), "category": "security",
+              "location": "mahler/dependency_vetting.py:250", "scenario": "Second edge case"}
+        self.complete_head("head-2", [f2], 2)
+        _, fix2, _ = self.gate()
+        fix2.assert_called_once()
+        self.led.upsert_item("x", 5, attempts=2)
+
+        # Round 3: fix 2 pushed head-3 (attempts=2), review fails with third blocker in same file
+        f3 = {**self.finding("blocking"), "category": "behavior",
+              "location": "mahler/dependency_vetting.py:512", "scenario": "Third edge case"}
+        self.complete_head("head-3", [f3], 3)
+        self.assertIsNone(self.led.get_kv("reviewdrift:x#5:88"))  # same file, no drift
+
+        # On round 3, attempts + 1 reaches max_attempts (3). Without design, it would fail.
+        # With #1179, it starts one design run instead of failing with review_rejected.
+        from mahler import failures
+        with mock.patch.object(ship, "start", return_value=True) as start_mock, \
+                mock.patch.object(failures, "report") as report_mock:
+            merge, fix3, _ = self.gate()
+            merge.assert_not_called()
+            fix3.assert_not_called()
+            report_mock.assert_not_called()
+            self.assertNotEqual(self.item()["state"], "failed")
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "design")
+            self.assertEqual(start_mock.call_args.kwargs["handoff_from"][0], CONDUCTOR)
+
     def test_failed_design_start_retries_without_fix_or_competing_review(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
         later = NOW + timedelta(hours=2)
@@ -3878,6 +3996,29 @@ class TestGreenReviewRounds(unittest.TestCase):
             with mock.patch.object(self.ctx, "gh", return_value=self.gh):
                 ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
             start_review.assert_called_once()
+
+    def test_planned_fix_consumption_runs_at_max_attempts_without_failing(self):
+        self.cfg["projects"]["x"]["review_green_rounds"] = 2
+        plan = {
+            "summary": "Fix all bugs",
+            "files": ["a.py", "b.py"],
+            "steps": ["step 1", "step 2"],
+            "tests": "pytest"
+        }
+        self.led.upsert_item("x", 5, attempts=2)
+        self.complete_head("head-3", [{**self.finding("blocking"), "location": "c.py:30"}], 3)
+        self.led.set_kv("design:x#5:88:head-3", json.dumps({
+            "head": "head-3", "disposition": "fix", "plan": plan, "consumed": False
+        }))
+        with mock.patch.object(ship, "start", return_value=True) as start_mock:
+            with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+                ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            start_mock.assert_called_once()
+            self.assertEqual(start_mock.call_args.args[3], "fix")
+            context = start_mock.call_args.kwargs["context"]
+            self.assertIn("Fix all bugs", context)
+        self.assertNotEqual(self.item()["state"], "failed")
+        self.assertEqual(self.led.get_kv("design-consumed:x#5:88:head-3"), "1")
 
     def test_design_result_followups_files_deduped_issues_and_merges(self):
         self.cfg["projects"]["x"]["review_green_rounds"] = 2
@@ -4130,6 +4271,21 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("design:x#5:89:head-3"))
         self.assertEqual(len(self.design_window(89, prefix="pr89")[3]), 1)
         self.assertEqual(self.led.get_kv("design:x#5:88:head-3"), record)
+
+    def test_design_dedup_is_scoped_to_reviewed_head(self):
+        self.led.create_run(project="x", number=5, role="design", platform="agy-gemini",
+                            status="ended", outcome="DESIGNED", epoch=1,
+                            base_ref="head-1", ended_at=iso(NOW))
+
+        # A completed design on an earlier head must not suppress the current head.
+        self.assertEqual(len(self.design_window()[3]), 1)
+
+        # The same completed design head remains deduplicated.
+        self.led.q("DELETE FROM runs WHERE project='x' AND number=5 AND role='design'")
+        self.led.create_run(project="x", number=5, role="design", platform="agy-gemini",
+                            status="ended", outcome="DESIGNED", epoch=1,
+                            base_ref="head-3", ended_at=iso(NOW))
+        self.assertEqual(len(self.gate_pr()[3]), 0)
 
     def test_manual_reship_does_not_restart_consumed_design(self):
         self.assertEqual(len(self.design_window()[3]), 1)  # control: design would start

@@ -1106,9 +1106,12 @@ are best-effort and never gate finalization or prompt construction.
   dispositions after head/CI validation and before fix/design routing; mixed reviews fix
   remaining blockers. Demoted findings must complete durable follow-up creation and PR
   linking before entry to the normal merge gate. The disjoint-file design path is unchanged.
-- **Design pass for non-converging reviews** (mahler#715): at or after the
-  `review_green_rounds` threshold, the existing disjoint-location convergence signal
-  replaces serial local patching with exactly one plan-only `design` run.
+- **Design pass for non-converging reviews** (mahler#715, mahler#1179): at or after the
+  `review_green_rounds` threshold, non-converging blocking reviews replace serial local
+  patching with exactly one plan-only `design` run before exhausting attempts. This applies
+  to disjoint-location scope drift (`reviewdrift`) and to persistent same-file blocking
+  findings that cannot be demoted (e.g. behavior, security, or unverified edge cases) before
+  the item fails.
   - **State transition and routing:** routed via `routing.plan`. If no planning platform
     is currently available, the conductor records a design capacity wait rather than
     launching a fix run. A design run already active or completed for the same
@@ -1116,7 +1119,7 @@ are best-effort and never gate finalization or prompt construction.
     alternate same-head reviewers, and manual re-ship cannot start a second design run.
   - **Plan consumption (`fix`):** a durable `fix` design result starts exactly one normal
     fix run with the complete ordered finite plan in its handoff. That plan is consumed
-    idempotently; the subsequent head is independently reviewed.
+    idempotently even at the attempt ceiling; the subsequent head is independently reviewed.
   - **Follow-up merge path (`followups`):** an acceptable `followups` design result
     ingests findings through deduplicated follow-up intake, posts classification evidence
     to the PR, and permits merge only after follow-up filing, current-head review, fresh
@@ -1124,8 +1127,9 @@ are best-effort and never gate finalization or prompt construction.
   - **Protected blockers:** security, an unsatisfied Done-when criterion, and silent
     unrecoverable normal-flow data loss can never enter the design follow-up merge path
     and remain on the bounded fix path.
-  - **Reset bounds:** overlapping findings reset drift, missing locations remain
-    inconclusive, and a new PR starts a fresh convergence and design window.
+  - **Reset bounds:** overlapping findings reset disjoint-drift tracking and remain in the
+    normal fix flow until attempt exhaustion, missing locations remain inconclusive, and a
+    new PR starts a fresh convergence and design window.
 - **Review has a blocking bar** (mahler#499). Only a *realistic* scenario with a real
   consequence (a broken "Done when" item, a regression, data loss, unrecoverable state) or
   any security issue blocks a merge. Contrived edge cases, hardening and heuristic misses on
