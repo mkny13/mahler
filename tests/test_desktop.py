@@ -3,6 +3,8 @@ real-process mutual exclusion. `ioreg` is never run: the probe is stubbed."""
 
 import io
 import os
+import plistlib
+import time as _time
 import signal
 import subprocess
 import sys
@@ -52,6 +54,7 @@ class StateCase(unittest.TestCase):
 
     def run_main(self, argv, **kw):
         out, err = io.StringIO(), io.StringIO()
+        kw.setdefault("session", lambda: None)
         with redirect_stdout(out), redirect_stderr(err):
             code = desktop.main(argv, **kw)
         return code, out.getvalue(), err.getvalue()
@@ -266,10 +269,178 @@ class CliTests(StateCase):
         self.assertEqual(code, 0)
 
 
+def console(*sessions, wrap=list):
+    return plistlib.dumps(wrap([{"IOConsoleUsers": list(sessions)}]) if wrap else {"IOConsoleUsers": list(sessions)})
+
+
+def sess(on=True, locked=False, **kw):
+    d = {"kCGSSessionOnConsoleKey": on, "kCGSSessionUserNameKey": "secret-user"}
+    if locked is not None:
+        d["CGSSessionScreenIsLocked"] = locked
+    d.update(kw)
+    return d
+
+
+class SessionParseTests(unittest.TestCase):
+    def test_unlocked_on_console_is_ok(self):
+        self.assertIsNone(desktop.parse_session(console(sess())))
+        self.assertIsNone(desktop.parse_session(console(sess(), sess(on=False), wrap=None)))
+
+    def test_locked(self):
+        with self.assertRaises(desktop.Deferred) as cm:
+            desktop.parse_session(console(sess(locked=True)))
+        self.assertEqual(cm.exception.category, "locked")
+
+    def test_every_other_evidence_is_unavailable(self):
+        cases = {
+            "off-console": console(sess(on=False)),
+            "missing lock key": console(sess(locked=None)),
+            "non-bool lock": console(sess(locked="NO")),
+            "no sessions": console(),
+            "ambiguous": console(sess(), sess()),
+            "malformed": b"not a plist",
+            "empty": b"",
+            "no key": plistlib.dumps([{"other": 1}]),
+            "not a list": plistlib.dumps([{"IOConsoleUsers": "x"}]),
+            "two roots": plistlib.dumps([{"IOConsoleUsers": [sess()]}, {"IOConsoleUsers": [sess()]}]),
+        }
+        for name, data in cases.items():
+            with self.subTest(name), self.assertRaises(desktop.Deferred) as cm:
+                desktop.parse_session(data)
+            self.assertEqual(cm.exception.category, "unavailable")
+            self.assertNotIn("secret-user", str(cm.exception))
+
+    def test_probe_failures_deny(self):
+        with patch.object(desktop.sys, "platform", "linux"), self.assertRaises(desktop.Deferred) as cm:
+            desktop.probe_session()
+        self.assertEqual(cm.exception.category, "unavailable")
+        with patch.object(desktop.sys, "platform", "darwin"):
+            for effect in (subprocess.TimeoutExpired("ioreg", 5), OSError("no"),
+                           subprocess.CompletedProcess([], 1, "", "")):
+                with self.subTest(effect=repr(effect)), \
+                        patch.object(desktop.subprocess, "run",
+                                     **({"side_effect": effect} if isinstance(effect, Exception)
+                                        else {"return_value": effect})), \
+                        self.assertRaises(desktop.Deferred) as cm:
+                    desktop.probe_session()
+                self.assertEqual(cm.exception.category, "unavailable")
+            done = subprocess.CompletedProcess([], 0, console(sess()), b"")
+            with patch.object(desktop.subprocess, "run", return_value=done) as run:
+                self.assertIsNone(desktop.probe_session())
+            self.assertLessEqual(run.call_args.kwargs["timeout"], 5)
+
+
+class SessionGateTests(StateCase):
+    def spawn_marker(self):
+        marker = os.path.join(self.state, "ran")
+        return marker, [sys.executable, "-c", f"open({marker!r}, 'w').close()"]
+
+    def deny(self, session, extra=()):
+        marker, cmd = self.spawn_marker()
+        with patch.object(desktop.subprocess, "Popen") as popen:
+            code, _, err = self.run_main(["run", *extra, "--"] + cmd, cfg=cfg_with(),
+                                         probe=probe(20 * MIN), session=session)
+        popen.assert_not_called()
+        return code, err
+
+    def test_session_denials_launch_nothing_and_say_so(self):
+        for name, data, cat in (("locked", console(sess(locked=True)), "locked"),
+                                ("off", console(sess(on=False)), "unavailable"),
+                                ("garbage", b"x", "unavailable")):
+            with self.subTest(name):
+                code, err = self.deny(lambda d=data: desktop.parse_session(d))
+                self.assertEqual(code, 75)
+                self.assertEqual(len(err.strip().splitlines()), 1)
+                self.assertIn(desktop.DENIED_MARKER, err)
+                self.assertIn(f"category={cat}", err)
+                self.assertNotIn("secret-user", err)
+
+    def test_other_categories_carry_the_marker(self):
+        fd = desktop._open_lock()
+        code, err = self.deny(lambda: None)
+        self.assertIn("category=busy", err)
+        os.close(fd)
+        marker, cmd = self.spawn_marker()
+        for p, extra, cat, now in ((probe(MIN), (), "idle", None),
+                                   (probe(20 * MIN), ("--scheduled",), "outside-window",
+                                    lambda: datetime(2026, 1, 1, 12, 0))):
+            with self.subTest(cat):
+                code, _, err = self.run_main(["run", *extra, "--"] + cmd, cfg=cfg_with(),
+                                             probe=p, now=now)
+                self.assertEqual(code, 75)
+                self.assertIn(f"category={cat}", err)
+                self.assertIn(desktop.DENIED_MARKER, err)
+
+    def test_session_checked_after_lock_before_launch(self):
+        calls = []
+        marker, cmd = self.spawn_marker()
+        def session():
+            calls.append(desktop._open_lock() is None)   # the lock is already ours
+        code, _, _ = self.run_main(["run", "--"] + cmd, cfg=cfg_with(), probe=probe(20 * MIN),
+                                   session=session)
+        self.assertEqual((code, calls), (0, [True]))
+        self.assertTrue(os.path.exists(marker))
+
+    def test_launched_child_75_is_not_a_denial(self):
+        code, _, err = self.run_main(["run", "--", sys.executable, "-c", "raise SystemExit(75)"],
+                                     cfg=cfg_with(), probe=probe(20 * MIN))
+        self.assertEqual(code, 75)
+        self.assertNotIn(desktop.DENIED_MARKER, err)
+        self.assertIn("command ran and exited 75", err)
+
+    def test_advisory_check_also_reports_session(self):
+        code, out, err = self.run_main([], cfg=cfg_with(), probe=probe(20 * MIN),
+                                       session=lambda: desktop.parse_session(console(sess(locked=True))))
+        self.assertEqual(code, 75)
+        self.assertIn("category=locked", err)
+
+
+class NextWindowStartTests(unittest.TestCase):
+    def setUp(self):
+        if not hasattr(_time, "tzset"):
+            self.skipTest("no tzset")
+        old = os.environ.get("TZ")
+        def restore():
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            _time.tzset()
+        self.addCleanup(restore)
+        os.environ["TZ"] = "America/New_York"
+        _time.tzset()
+
+    def local(self, *a):
+        return datetime(*a).astimezone()
+
+    def test_strictly_future(self):
+        w = (dtime(0), dtime(6))
+        n = desktop.next_window_start
+        self.assertEqual(n(w, self.local(2026, 1, 1, 12)), self.local(2026, 1, 2, 0))
+        self.assertEqual(n(w, self.local(2026, 1, 1, 3)), self.local(2026, 1, 2, 0))
+        self.assertEqual(n(w, self.local(2026, 1, 2, 0)), self.local(2026, 1, 3, 0))
+        self.assertEqual(n((dtime(23), dtime(5)), self.local(2026, 1, 1, 22)),
+                         self.local(2026, 1, 1, 23))
+        self.assertEqual(n((dtime(23), dtime(5)), self.local(2026, 1, 1, 2)),
+                         self.local(2026, 1, 1, 23))
+
+    def test_dst_boundary(self):
+        w = (dtime(0), dtime(6))
+        got = desktop.next_window_start(w, self.local(2026, 3, 7, 12))   # spring forward on the 8th
+        self.assertEqual(got, self.local(2026, 3, 8, 0))
+        self.assertEqual(desktop.next_window_start(w, got), self.local(2026, 3, 9, 0))
+        got = desktop.next_window_start((dtime(2, 30), dtime(5)), self.local(2026, 3, 7, 12))
+        self.assertGreater(got, self.local(2026, 3, 7, 12))
+        got = desktop.next_window_start(w, self.local(2026, 10, 31, 12))  # fall back on Nov 1
+        self.assertEqual(got, self.local(2026, 11, 1, 0))
+        self.assertEqual(desktop.next_window_start(w, got), self.local(2026, 11, 2, 0))
+
+
 WRAPPER = """
 import sys
 from mahler import desktop
 desktop.probe_idle_ns = lambda: 10**18
+desktop.probe_session = lambda: None
 sys.exit(desktop.main(sys.argv[1:]))
 """
 
