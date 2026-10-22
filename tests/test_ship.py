@@ -499,6 +499,35 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(ci_info.get("state"), "green")
         self.assertIn("Vercel", ci_info.get("non_required_failures", []))
 
+    def test_required_check_discovery_failure_defers_without_charging_then_retries(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"name": "Vercel", "status": "COMPLETED", "conclusion": "FAILURE"},
+        ]
+        discovery = mock.Mock(side_effect=[
+            gh_module.GHError("temporary GitHub outage"),
+            {"checks"},
+        ])
+        self.gh.required_status_checks = discovery
+
+        with mock.patch.object(ship, "_red_ci") as mock_red:
+            self.ship()
+            mock_red.assert_not_called()
+            self.assertEqual(self.gh.merged, [])
+            self.assertEqual(self.item()["attempts"], 0)
+            pending = json.loads(self.led.get_kv("pr-lookup:x#5:88"))
+            self.assertEqual(pending["state"], "pending")
+            self.assertIn("required check discovery failed", " ".join(self.ctx.lines).lower())
+
+            self.ship()
+            mock_red.assert_not_called()
+
+        self.assertEqual(discovery.call_count, 2)
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(self.item()["state"], "shipped")
+        self.assertEqual(self.item()["attempts"], 0)
+
 
     def test_confirmed_merge_registers_post_merge_after_shipped(self):
         from mahler import post_merge
@@ -4653,6 +4682,7 @@ class DependencyPRTests(unittest.TestCase):
         self.views = {}
         self.gh.open_prs.side_effect = lambda: list(self.views.values())
         self.gh.dependency_pr_view.side_effect = lambda n: copy.deepcopy(self.views[n])
+        self.gh.required_status_checks.return_value = set()
         self.gh.base_in_head.return_value = True
         self.gh.pr_merge.side_effect = self.merge
         self.gh.issue_by_marker.return_value = None

@@ -552,8 +552,9 @@ class GH:
         """Return the set of required status check contexts for `branch`.
 
         Queries classic branch protection and repository rulesets, returning
-        a set of check context names. If protection is unconfigured, disabled,
-        or unavailable (404/403/etc.), returns an empty set.
+        a set of check context names. Explicit 403/404 responses mean the
+        configuration is absent or unavailable to this installation. Other
+        lookup and response failures are uncertain and must be retried.
         """
         if not branch:
             return set()
@@ -563,29 +564,68 @@ class GH:
             return set(self._required_status_checks_cache[branch])
 
         contexts = set()
+        errors = []
+
+        def tolerated_absence(exc):
+            return bool(re.search(r"\bHTTP\s+(?:403|404)\b", str(exc), re.IGNORECASE))
+
+        def required_list(value, where):
+            if value is None:
+                return []
+            if not isinstance(value, list):
+                raise ValueError(f"malformed {where}: expected a list")
+            return value
+
         try:
             protection = self.branch_protection(branch)
-            status = (protection.get("required_status_checks") or {}) if isinstance(protection, dict) else {}
-            for c in status.get("contexts") or []:
-                if isinstance(c, str) and c:
-                    contexts.add(c)
-            for c in status.get("checks") or []:
-                if isinstance(c, dict) and c.get("context"):
-                    contexts.add(c["context"])
-        except (GHError, ValueError, TypeError, KeyError, AttributeError):
-            pass
+            if not isinstance(protection, dict):
+                raise ValueError("malformed branch protection response: expected an object")
+            status = protection.get("required_status_checks")
+            if status is not None:
+                if not isinstance(status, dict):
+                    raise ValueError("malformed required_status_checks protection: expected an object")
+                for context in required_list(status.get("contexts"), "protection contexts"):
+                    if not isinstance(context, str):
+                        raise ValueError("malformed protection context: expected a string")
+                    if context:
+                        contexts.add(context)
+                for check in required_list(status.get("checks"), "protection checks"):
+                    if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                        raise ValueError("malformed protection check: expected a context string")
+                    if check["context"]:
+                        contexts.add(check["context"])
+        except GHError as exc:
+            if not tolerated_absence(exc):
+                errors.append(exc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(exc)
 
         try:
             rules = self.branch_rules(branch)
-            if isinstance(rules, list):
-                for rule in rules:
-                    if isinstance(rule, dict) and rule.get("type") == "required_status_checks":
-                        params = rule.get("parameters") or {}
-                        for c in params.get("required_status_checks") or []:
-                            if isinstance(c, dict) and c.get("context"):
-                                contexts.add(c["context"])
-        except (GHError, ValueError, TypeError, KeyError, AttributeError):
-            pass
+            if not isinstance(rules, list):
+                raise ValueError("malformed branch rules response: expected a list")
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    raise ValueError("malformed branch rule: expected an object")
+                if rule.get("type") != "required_status_checks":
+                    continue
+                params = rule.get("parameters")
+                if not isinstance(params, dict):
+                    raise ValueError("malformed required status check rule parameters")
+                for check in required_list(
+                        params.get("required_status_checks"), "ruleset required checks"):
+                    if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                        raise ValueError("malformed ruleset check: expected a context string")
+                    if check["context"]:
+                        contexts.add(check["context"])
+        except GHError as exc:
+            if not tolerated_absence(exc):
+                errors.append(exc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(exc)
+
+        if errors:
+            raise errors[0]
 
         self._required_status_checks_cache[branch] = set(contexts)
         return set(contexts)
