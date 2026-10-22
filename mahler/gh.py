@@ -548,6 +548,49 @@ class GH:
         return json.loads(self._gh(
             "api", f"repos/{self.repo}/rules/branches/{quote(branch, safe='')}"))
 
+    def required_status_checks(self, branch):
+        """Return the set of required status check contexts for `branch`.
+
+        Queries classic branch protection and repository rulesets, returning
+        a set of check context names. If protection is unconfigured, disabled,
+        or unavailable (404/403/etc.), returns an empty set.
+        """
+        if not branch:
+            return set()
+        if not hasattr(self, "_required_status_checks_cache"):
+            self._required_status_checks_cache = {}
+        if branch in self._required_status_checks_cache:
+            return set(self._required_status_checks_cache[branch])
+
+        contexts = set()
+        try:
+            protection = self.branch_protection(branch)
+            status = (protection.get("required_status_checks") or {}) if isinstance(protection, dict) else {}
+            for c in status.get("contexts") or []:
+                if isinstance(c, str) and c:
+                    contexts.add(c)
+            for c in status.get("checks") or []:
+                if isinstance(c, dict) and c.get("context"):
+                    contexts.add(c["context"])
+        except (GHError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+
+        try:
+            rules = self.branch_rules(branch)
+            if isinstance(rules, list):
+                for rule in rules:
+                    if isinstance(rule, dict) and rule.get("type") == "required_status_checks":
+                        params = rule.get("parameters") or {}
+                        for c in params.get("required_status_checks") or []:
+                            if isinstance(c, dict) and c.get("context"):
+                                contexts.add(c["context"])
+        except (GHError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+
+        self._required_status_checks_cache[branch] = set(contexts)
+        return set(contexts)
+
+
     # ---------- the conductor ships (DESIGN D18) ----------
 
     def issue_body(self, number):
@@ -1264,18 +1307,75 @@ _BAD_CHECKS = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", 
 _WAIT_CHECKS = {"PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING", "EXPECTED"}
 
 
-def checks_state(rollup):
-    """A PR's statusCheckRollup -> green | pending | red | none."""
-    states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
-              for c in (rollup or [])]
-    if not states:
-        return "none"                       # no CI configured: nothing to wait for
-    if any(s in _BAD_CHECKS for s in states):
+def checks_state(rollup, required=None):
+    """A PR's statusCheckRollup -> green | pending | red | none.
+
+    When `required` is provided and non-empty, evaluation is filtered to only
+    those check runs or status contexts whose name or context matches `required`.
+    If any required check is bad, returns "red". If any required check is waiting
+    or has not reported yet, returns "pending". If all required checks have
+    completed successfully (SUCCESS, NEUTRAL, SKIPPED), returns "green".
+    Non-required check failures do not affect the result.
+
+    When `required` is None or empty, falls back to evaluating all rollup checks.
+    """
+    req_names = {str(r) for r in required if r} if required else set()
+    if not req_names:
+        states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+                  for c in (rollup or [])]
+        if not states:
+            return "none"                       # no CI configured: nothing to wait for
+        if any(s in _BAD_CHECKS for s in states):
+            return "red"
+        if any(s in _WAIT_CHECKS or s not in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+               for s in states):
+            return "pending"
+        return "green"
+
+    matched_reqs = set()
+    req_states = []
+    for c in (rollup or []):
+        name = c.get("name")
+        ctx = c.get("context")
+        is_req = False
+        if name and name in req_names:
+            is_req = True
+            matched_reqs.add(name)
+        if ctx and ctx in req_names:
+            is_req = True
+            matched_reqs.add(ctx)
+        if is_req:
+            state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+            req_states.append(state)
+
+    if any(s in _BAD_CHECKS for s in req_states):
         return "red"
+    if matched_reqs != req_names:
+        return "pending"
     if any(s in _WAIT_CHECKS or s not in {"SUCCESS", "NEUTRAL", "SKIPPED"}
-           for s in states):
+           for s in req_states):
         return "pending"
     return "green"
+
+
+def non_required_failures(rollup, required=None):
+    """Return a list of failing non-required check names/contexts from rollup."""
+    req_names = {str(r) for r in required if r} if required else set()
+    if not req_names:
+        return []
+    failing = []
+    for c in (rollup or []):
+        name = c.get("name")
+        ctx = c.get("context")
+        if (name and name in req_names) or (ctx and ctx in req_names):
+            continue
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if state in _BAD_CHECKS:
+            check_name = name or ctx or "unknown"
+            if check_name not in failing:
+                failing.append(check_name)
+    return failing
+
 
 
 UAT_PASS_COMMENT = "✅ **UAT passed** (from the console)."
