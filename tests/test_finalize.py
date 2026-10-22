@@ -556,8 +556,11 @@ class RunTests(unittest.TestCase):
 
     # ---------- GUI-DEFERRED (D40, mahler#1173) ----------
 
-    def gui_deferred(self, rest="locked: the console screen is locked"):
-        Path(self.log).write_text(f"STATUS: GUI-DEFERRED {rest}\n")
+    DENIAL = ("$ mahler desktop run -- scripts/smoke/run-mac.sh\n"
+              "mahler desktop: GATE-DENIED no-child category=locked: session locked\n")
+
+    def gui_deferred(self, rest="locked: the console screen is locked", evidence=DENIAL):
+        Path(self.log).write_text(f"{evidence}STATUS: GUI-DEFERRED {rest}\n")
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.ctx, "ping") as ping, \
                 mock.patch.object(runner, "snapshot", return_value=None), \
@@ -581,6 +584,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(wait["retry_at"], self.expected_retry())
         ping.assert_not_called()
         self.assertIsNone(self.led.lease("x", 5))
+
+    def test_gui_deferred_needs_real_denial_evidence(self):
+        cases = {
+            "status only": "",
+            "advisory check": "$ mahler desktop\nmahler desktop: GATE-DENIED no-child category=locked: x\n",
+            "launched child 75": "$ mahler desktop run -- t\nmahler desktop: command ran and exited 75\n",
+            "marker without wrapper": "mahler desktop: GATE-DENIED no-child category=locked: x\n",
+        }
+        for name, evidence in cases.items():
+            with self.subTest(name):
+                run_id = self.led.create_run(project="x", number=5, role="build",
+                                             platform="cline-free", epoch=1, status="running")
+                self.led.upsert_item("x", 5, state="working", attempts=0)
+                self.led.claim("x", 5, f"run:{run_id}", "auto", 30,
+                               platform="cline-free", run_id=run_id)
+                self.run = {**self.run, "id": run_id}
+                self.gui_deferred(evidence=evidence)
+                self.assertIsNone(self.led.gui_wait("x", 5))
+                self.assertEqual(self.led.item("x", 5)["attempts"], 1)
 
     def test_gui_deferred_reason_is_sanitised_and_repeat_is_idempotent(self):
         self.gui_deferred("session of user mike token=abc123")

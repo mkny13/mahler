@@ -61,6 +61,7 @@ class Ending:
         self.after_commit = []
         self.verify_green = False
         self.blocked_external = False   # prepared before the write lock
+        self.gui_denied = False         # log shows a real no-child desktop-gate denial
         self.blocked_check = (None, "")
         self.duration_mins = None
         started_at = row_get(run, "started_at")
@@ -668,6 +669,25 @@ def _ended_out_of_reach(e):
     return True
 
 
+_GATE_RUN = re.compile(r"mahler desktop(?:\s+--\S+(?:\s+\S+)?)*\s+run\b")
+_GATE_DENIAL = re.compile(r"GATE-DENIED no-child category=(?:locked|unavailable|busy|idle|outside-window)\b")
+_LOG_TAIL_BYTES = 8 * 1024 * 1024
+
+
+def _gui_denial_evidence(path):
+    """True only when the run's log shows a `mahler desktop run` invocation and the
+    gate's own no-child denial line. A STATUS line alone, an advisory check, an
+    unrelated failure or a launched child's exit 75 (no marker) never qualify."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - _LOG_TAIL_BYTES))
+            text = fh.read().decode("utf-8", errors="replace")
+    except (OSError, TypeError):
+        return False
+    return bool(_GATE_RUN.search(text) and _GATE_DENIAL.search(text))
+
+
 _GUI_REASON = re.compile(r"\b(locked|unavailable|busy|idle|outside[- ](?:preferred[- ])?window)\b",
                          re.IGNORECASE)
 
@@ -753,7 +773,7 @@ ENDINGS = (
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
     (lambda e: e.verb == "GUI-DEFERRED" and e.run["role"] in ("build", "fix")
-     and e.reason is None, _ended_gui_deferred),
+     and e.reason is None and e.gui_denied, _ended_gui_deferred),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
@@ -1122,6 +1142,8 @@ def finalize(ctx, run):
                 and (item["pr"] or not no_change.read(led, project, n))):
             prepared_review = _prepare_review(ending, "pass" if verb == "REVIEW-PASS" else "fail")
         elif run["role"] not in ("sort", "review", "design"):
+            if verb == "GUI-DEFERRED" and run["role"] in ("build", "fix"):
+                ending.gui_denied = _gui_denial_evidence(run["log_path"])
             if (verb == "BLOCKED" and run["role"] in ("build", "fix") and rest
                     and not _ACCESS_BLOCKER.search(rest)):
                 ending.blocked_external = _blocked_is_external(ending)
