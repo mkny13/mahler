@@ -45,8 +45,14 @@ class FakeGH:
         self.lookup_error = False
         self.create_error = False
         self.settings = {"default_branch": "main", "allow_squash_merge": True}
-        self.protection = {"required_status_checks": {"contexts": ["test"]}}
+        self.protection = {
+            "required_status_checks": {"contexts": ["test"], "strict": True},
+            "enforce_admins": {"enabled": True},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
         self.rules = []
+        self.rulesets = {}
 
     def default_branch_settings(self):
         if self.unavailable:
@@ -58,6 +64,11 @@ class FakeGH:
 
     def branch_rules(self, branch):
         return copy.deepcopy(self.rules)
+
+    def ruleset(self, ruleset_id):
+        if ruleset_id not in self.rulesets:
+            raise GHError("HTTP 403")
+        return copy.deepcopy(self.rulesets[ruleset_id])
 
     def issue_by_marker(self, marker):
         self.calls.append(("lookup", marker))
@@ -868,13 +879,162 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.settings["allow_squash_merge"] = False
         self.assertEqual(self.results()["branch-protection"].state, "gap")
         self.gh.settings["allow_squash_merge"] = True
-        self.gh.protection = {"required_status_checks": {"contexts": ["build"]}}
+        self.gh.protection["required_status_checks"]["contexts"] = ["build"]
         self.assertEqual(self.results()["branch-protection"].state, "gap")
-        self.gh.rules = [{"type": "required_status_checks", "parameters": {
+        self.gh.rulesets[7] = {"bypass_actors": []}
+        self.gh.rules = [{"type": "required_status_checks", "ruleset_id": 7, "parameters": {
+            "strict_required_status_checks_policy": True,
             "required_status_checks": [{"context": "test"}]}}]
-        self.assertEqual(self.results()["branch-protection"].state, "pass")
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "pass")
+        for safeguard in (
+                "strict required checks", "administrator enforcement",
+                "force pushes disabled", "deletion disabled"):
+            self.assertIn(f"{safeguard}: enabled", finding.evidence)
+        self.gh.protection["enforce_admins"] = {"enabled": False}
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
+        self.gh.protection["enforce_admins"] = {"enabled": True}
         self.gh.protection["required_pull_request_reviews"] = {"required_approving_review_count": 1}
         self.assertEqual(self.results()["branch-protection"].state, "unknown")
+
+    def _protection_state(self):
+        return self.results()["branch-protection"].state
+
+    def test_each_unsafe_protection_setting_is_a_gap(self):
+        cases = {
+            "non-strict": lambda p: p["required_status_checks"].update(strict=False),
+            "admins": lambda p: p.update(enforce_admins={"enabled": False}),
+            "force-push": lambda p: p.update(allow_force_pushes={"enabled": True}),
+            "deletion": lambda p: p.update(allow_deletions={"enabled": True}),
+        }
+        self.assertEqual(self._protection_state(), "pass")
+        for name, flip in cases.items():
+            with self.subTest(name):
+                flip(self.gh.protection)
+                self.assertEqual(self._protection_state(), "gap")
+                self.gh.protection = {
+                    "required_status_checks": {"contexts": ["test"], "strict": True},
+                    "enforce_admins": {"enabled": True},
+                    "allow_force_pushes": {"enabled": False},
+                    "allow_deletions": {"enabled": False},
+                }
+
+    def test_missing_protection_fields_are_unknown_not_pass(self):
+        for key in ("enforce_admins", "allow_force_pushes", "allow_deletions"):
+            with self.subTest(key):
+                del self.gh.protection[key]
+                self.assertEqual(self._protection_state(), "unknown")
+                self.setUp()
+        del self.gh.protection["required_status_checks"]["strict"]
+        self.assertEqual(self._protection_state(), "unknown")
+
+    def test_known_unsafe_wins_over_unknown(self):
+        del self.gh.protection["allow_deletions"]
+        self.gh.protection["enforce_admins"] = {"enabled": False}
+        self.assertEqual(self._protection_state(), "gap")
+
+    def _safe_rules(self, bypass=()):
+        self.gh.rulesets[7] = {"bypass_actors": list(bypass)}
+        return [
+            {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": "test"}]}},
+            {"type": "non_fast_forward", "ruleset_id": 7},
+            {"type": "deletion", "ruleset_id": 7},
+        ]
+
+    def test_ruleset_alone_matches_classic_protection(self):
+        self.gh.protection = {}
+        self.gh.rules = self._safe_rules()
+        self.assertEqual(self._protection_state(), "pass")
+        self.gh.rules = self._safe_rules(bypass=[{"actor_type": "RepositoryRole"}])
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
+        self.gh.rules = self._safe_rules()
+        del self.gh.rulesets[7]["bypass_actors"]
+        self.assertEqual(self._protection_state(), "unknown")
+        self.gh.rules = self._safe_rules()
+        del self.gh.rulesets[7]  # full ruleset denied
+        self.assertEqual(self._protection_state(), "unknown")
+        self.gh.rules = self._safe_rules()[:1]
+        self.assertEqual(self._protection_state(), "unknown")
+        self.gh.rules[0]["parameters"]["strict_required_status_checks_policy"] = False
+        self.assertEqual(self._protection_state(), "gap")
+
+    def test_bypassable_ruleset_cannot_supply_force_push_or_deletion_safeguards(self):
+        self.gh.protection = {}
+        self.gh.rulesets = {
+            7: {"bypass_actors": []},
+            8: {"bypass_actors": [{"actor_type": "RepositoryRole", "bypass_mode": "always"}]},
+        }
+        self.gh.rules = [
+            {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": "test"}]}},
+            {"type": "non_fast_forward", "ruleset_id": 8},
+            {"type": "deletion", "ruleset_id": 8},
+        ]
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
+
+    def test_ruleset_test_gate_cannot_vouch_for_bypassable_classic_hardening(self):
+        self.gh.protection = {
+            "required_status_checks": {"contexts": ["lint"], "strict": True},
+            "enforce_admins": {"enabled": False},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        self.gh.rulesets[7] = {"bypass_actors": []}
+        self.gh.rules = [{
+            "type": "required_status_checks",
+            "ruleset_id": 7,
+            "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": "test"}],
+            },
+        }]
+
+        finding = self.results()["branch-protection"]
+
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
+
+    def test_classic_and_ruleset_mix_without_requiring_both(self):
+        self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": False},
+                              "enforce_admins": {"enabled": True}}
+        self.gh.rules = self._safe_rules()
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "pass")
+        for safeguard in (
+                "strict required checks", "administrator enforcement",
+                "force pushes disabled", "deletion disabled"):
+            self.assertIn(f"{safeguard}: enabled", finding.evidence)
+        self.gh.rulesets[7]["bypass_actors"] = [{"actor_type": "RepositoryRole"}]
+        self.assertEqual(self._protection_state(), "gap")
+
+    def test_classic_admin_enforcement_does_not_vouch_for_ruleset_gate(self):
+        self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": True},
+                              "enforce_admins": {"enabled": True},
+                              "allow_force_pushes": {"enabled": False},
+                              "allow_deletions": {"enabled": False}}
+        self.gh.rules = self._safe_rules()
+        del self.gh.rulesets[7]
+        self.assertEqual(self._protection_state(), "unknown")
+
+    def test_ruleset_only_repo_with_classic_404_matches_classic_result(self):
+        self.gh.rules = self._safe_rules()
+        with patch.object(self.gh, "branch_protection", side_effect=GHError("HTTP 404")):
+            self.assertEqual(self._protection_state(), "pass")
+        with patch.object(self.gh, "branch_protection", side_effect=GHError("HTTP 403")):
+            self.assertEqual(self._protection_state(), "unknown")
 
     def test_npm_test_node_script_runner_is_recognized(self):
         self.write("package.json", json.dumps({"scripts": {"test": "node scripts/run_tests.js"}}))
@@ -1736,6 +1896,8 @@ class TestPracticesGHReads(unittest.TestCase):
         self.gh._gh.assert_called_with("api", "repos/owner/repo/branches/release%2Fmain/protection")
         self.gh.branch_rules("release/main")
         self.gh._gh.assert_called_with("api", "repos/owner/repo/rules/branches/release%2Fmain")
+        self.gh.ruleset(7)
+        self.gh._gh.assert_called_with("api", "repos/owner/repo/rulesets/7")
 
     def test_all_pages_open_closed_reuse_and_lookup_error(self):
         self.gh._gh.return_value = json.dumps([

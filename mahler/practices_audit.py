@@ -1062,6 +1062,104 @@ def _secrets(tree):
     return _finding("tracked-secrets", state, reason, evidence)
 
 
+def _flag(mapping, key, safe_value):
+    """True when `key` holds the safe value, False when unsafe, None when absent/odd."""
+    value = mapping.get(key) if isinstance(mapping, dict) else None
+    if isinstance(value, dict):
+        value = value.get("enabled")
+    if not isinstance(value, bool):
+        return None
+    return value is safe_value
+
+
+def _ruleset_unbypassable(gh, rule, cache=None):
+    try:
+        ruleset_id = rule["ruleset_id"]
+        if cache is not None and ruleset_id in cache:
+            return cache[ruleset_id]
+        actors = gh.ruleset(ruleset_id).get("bypass_actors")
+    except (GHError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    result = None if not isinstance(actors, list) else not actors
+    if cache is not None:
+        cache[ruleset_id] = result
+    return result
+
+
+def _hardening(protection, rules, jobs, gh):
+    """Per safeguard: True safe, False known unsafe, None unknown.
+
+    Classic protection and effective rules are alternative providers, but every
+    provider must be internally non-bypassable. Thus classic safeguards are
+    coupled to classic administrator enforcement, while each ruleset safeguard
+    is coupled to that ruleset's bypass actors. Effective rules omit bypass
+    actors, so the supplying ruleset is read in full; denied or missing metadata
+    stays unknown."""
+    status = protection.get("required_status_checks")
+    status = status if isinstance(status, dict) else {}
+    by_type = {}
+    for rule in rules:
+        by_type.setdefault(rule.get("type"), []).append(rule)
+
+    classic = set(status.get("contexts") or [])
+    classic |= {c["context"] for c in status.get("checks", [])}
+    gate_providers = []
+    ruleset_bypass = {}
+    if classic & set(jobs):
+        gate_providers.append(_all((
+            _flag(status, "strict", True),
+            _flag(protection, "enforce_admins", True),
+        )))
+    for rule in by_type.get("required_status_checks", []):
+        params = rule.get("parameters") or {}
+        if not {c["context"] for c in params.get("required_status_checks", [])} & set(jobs):
+            continue
+        value = params.get("strict_required_status_checks_policy")
+        gate_providers.append(_all((
+            value if isinstance(value, bool) else None,
+            _ruleset_unbypassable(gh, rule, ruleset_bypass),
+        )))
+
+    gate = _alternative(gate_providers)
+    classic_admin = _flag(protection, "enforce_admins", True)
+    classic_force_push = _all((
+        _flag(protection, "allow_force_pushes", False), classic_admin))
+    classic_deletion = _all((
+        _flag(protection, "allow_deletions", False), classic_admin))
+
+    return {
+        # These are two evidence labels for the same coherent test-gate provider;
+        # neither half can be borrowed from a different mechanism.
+        "strict required checks": gate,
+        "administrator enforcement": gate,
+        "force pushes disabled": _alternative([
+            classic_force_push,
+            *(_ruleset_unbypassable(gh, rule, ruleset_bypass)
+              for rule in by_type.get("non_fast_forward", [])),
+        ]),
+        "deletion disabled": _alternative([
+            classic_deletion,
+            *(_ruleset_unbypassable(gh, rule, ruleset_bypass)
+              for rule in by_type.get("deletion", [])),
+        ]),
+    }
+
+
+def _all(votes):
+    if any(v is False for v in votes):
+        return False
+    return True if votes and all(v is True for v in votes) else None
+
+
+def _alternative(votes):
+    """Combine interchangeable providers without treating unknown as safe."""
+    if any(v is True for v in votes):
+        return True
+    if any(v is False for v in votes):
+        return False
+    return None
+
+
 def _protection(gh, jobs, ci_unknown):
     evidence = ["GitHub API: repository default_branch/allow_squash_merge",
                 "GitHub API: branches/<default>/protection; rules/branches/<default>"]
@@ -1071,8 +1169,14 @@ def _protection(gh, jobs, ci_unknown):
         if not branch:
             raise ValueError("missing default branch")
         evidence.append(f"default_branch={branch}; allow_squash_merge={settings.get('allow_squash_merge')}")
-        protection = gh.branch_protection(branch)
         rules = gh.branch_rules(branch)
+        try:
+            protection = gh.branch_protection(branch)
+        except GHError as exc:
+            # Ruleset-only repos answer 404 here; denial or other errors stay unknown.
+            if not (rules and "404" in str(exc)):
+                raise
+            protection = {}
         status = protection.get("required_status_checks") or {}
         contexts = list(status.get("contexts") or [])
         contexts += [c["context"] for c in status.get("checks", [])]
@@ -1095,6 +1199,22 @@ def _protection(gh, jobs, ci_unknown):
     if not gated:
         return _finding("branch-protection", "gap",
                         "No identified PR test job is a required check.", [*evidence, f"test jobs: {jobs}"])
+    unsafe, missing = [], []
+    for name, vote in _hardening(protection, rules, jobs, gh).items():
+        if vote is True:
+            evidence.append(f"{name}: enabled")
+        elif vote is False:
+            unsafe.append(name)
+        else:
+            missing.append(name)
+    if unsafe:
+        return _finding("branch-protection", "gap",
+                        "Default-branch protection can be bypassed: " + ", ".join(unsafe) + ".",
+                        [*evidence, "unsafe: " + ", ".join(unsafe)])
+    if missing:
+        return _finding("branch-protection", "unknown",
+                        "Cannot establish: " + ", ".join(missing) + ".",
+                        [*evidence, "unavailable: " + ", ".join(missing)])
     incompatible = [r.get("type") for r in rules if r.get("type") in
                     ("required_signatures", "required_deployments", "pull_request")]
     if protection.get("required_pull_request_reviews") or incompatible:
@@ -1102,7 +1222,7 @@ def _protection(gh, jobs, ci_unknown):
                         "Additional review/signature/deployment rules need D18 compatibility review.",
                         [*evidence, f"additional rules: {incompatible}"])
     return _finding("branch-protection", "pass",
-                    "Squash merging enabled and a PR test check is required.", evidence)
+                    "Squash merging enabled, a PR test check is required, and the default branch is non-bypassable.", evidence)
 
 
 _EXEMPTION_KW = re.compile(
