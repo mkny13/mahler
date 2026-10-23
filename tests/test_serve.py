@@ -890,3 +890,62 @@ class DiscussionSupervisorTests(unittest.TestCase):
         supervisor.return_value.start.assert_called_once()
         supervisor.return_value.close.assert_called_once()
         server.return_value.server_close.assert_called_once()
+
+
+class RestartWaitsForRequestsTests(unittest.TestCase):
+    def test_self_update_restart_finishes_requests_before_ledger_closes(self):
+        # mahler#1219: a HEAD change shut the server down and cmd_serve closed
+        # the shared connection while a /fragment render was still querying it,
+        # which segfaulted. serve() must return only after in-flight requests.
+        led = make_led()
+        started, servers, results = threading.Event(), [], queue.Queue()
+        heads = iter(["old"])
+        real_build = serve.state.build
+
+        def slow_build(*args, **kwargs):
+            started.set()
+            time.sleep(1)  # longer than serve_forever's 0.5 s shutdown poll
+            return real_build(*args, **kwargs)
+
+        def get_head():
+            for head in heads:
+                return head
+            started.wait(5)
+            return "new"
+
+        def make_server(*args, **kwargs):
+            servers.append(ThreadingHTTPServer(*args, **kwargs))
+            return servers[0]
+
+        def run():
+            try:
+                serve.serve(make_cfg(), led, port=0, get_head=get_head, check_interval=0.02)
+            finally:
+                led.close()  # what cmd_serve does as soon as serve() returns
+                results.put("closed")
+
+        def fetch():
+            started_at = time.monotonic()
+            while not servers and time.monotonic() - started_at < 5:
+                time.sleep(0.01)
+            url = f"http://127.0.0.1:{servers[0].server_address[1]}/fragment"
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    results.put(r.status)
+            except urllib.error.HTTPError as e:
+                results.put(e.code)
+
+        with mock.patch("mahler.discuss.Supervisor"), \
+                mock.patch.object(serve, "ThreadingHTTPServer", side_effect=make_server), \
+                mock.patch.object(serve.state, "build", side_effect=slow_build), \
+                mock.patch.object(serve.config, "load", side_effect=make_cfg), \
+                mock.patch("sys.stdout", io.StringIO()), \
+                mock.patch("sys.stderr", io.StringIO()):
+            server_thread = threading.Thread(target=run)
+            client = threading.Thread(target=fetch)
+            server_thread.start()
+            client.start()
+            client.join(10)
+            server_thread.join(10)
+        self.assertFalse(server_thread.is_alive())
+        self.assertEqual([results.get(timeout=1), results.get(timeout=1)], [200, "closed"])

@@ -82,6 +82,9 @@ class _Handler(BaseHTTPRequestHandler):
     led = None
     lock = None
     load_cfg = None
+    # A socket read timeout, so a stalled client cannot hold up the
+    # shutdown join in serve() (mahler#1219).
+    timeout = 30
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -442,6 +445,11 @@ def serve(cfg, led, host="127.0.0.1", port=8787,
                    {"led": led, "lock": threading.Lock(),
                     "load_cfg": staticmethod(config.load)})
     httpd = ThreadingHTTPServer((host, port), handler)
+    # ThreadingHTTPServer's request threads are daemons, which server_close()
+    # does not wait for. The caller closes `led` as soon as we return, and
+    # closing the connection under a running query segfaults (mahler#1219),
+    # so track the threads and let server_close() join them.
+    httpd.daemon_threads = False
     print(f"mahler console: http://{host}:{port}/ (Ctrl-C to stop)")
     old_head = [get_head()]
     if old_head[0] is not None:
