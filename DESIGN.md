@@ -3026,3 +3026,24 @@ present.
   had `sysadminctl -screenLock` off (Lock Screen → "Require password after screen saver
   begins or display is turned off" = Never), screen saver idleTime 0, no auto-logout, system
   sleep 0, and the display off after 3 hours. No settings change was needed. Agents never change these settings, because security settings are the owner's.
+
+### D51 — Timed project priority (mahler#1123)
+
+One enabled project's waiting candidates may temporarily sort before every other
+project's candidates. The owner chooses exactly one hour, one day or one week; one
+durable `priority_boost` JSON KV record stores the project and UTC start/expiry
+timestamps. Starting the same project extends it from the current time. Starting a
+different project atomically replaces the old boost and records which project was
+replaced. The console must name that project and require confirmation before replacement.
+
+- The boost is the first candidate sort key, ahead of issue priority, scarce-builder
+  protection and the configured `scheduling.priority_projects`. Without a live boost,
+  the existing ordering is unchanged.
+- Every scheduler tick reconciles expiry before other passes, even if there are no
+  candidates. Expiry removes the record and emits one `priority_boost_expired` event;
+  malformed KV is discarded safely. Start, same-project extension, replacement and
+  stop are also ledger events with project and UTC timestamps.
+- `mahler prioritize <project> 1h|1d|1w|off` and the console use the same ledger
+  operations. Remaining time is derived from expiry and never stored.
+- This changes only who receives the next eligible free slot. It does not raise
+  project or global concurrency, change eligibility, or stop/preempt running work.

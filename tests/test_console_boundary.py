@@ -24,6 +24,7 @@ LEDGER_ONLY = {
     "clear_backoff", "unhold", "digest_seen", "brief_seen", "save_settings",
     "client_log", "attach", "answer_undo", "set_max_parallel",
     "pause_project", "resume_project",
+    "priority_boost_start", "priority_boost_extend", "priority_boost_stop",
 }
 # The queued actions (D27): applied only by the tick's outbox drain.
 QUEUED = {"answer", "stop_run", "capture", "revert", "uat_fail",
@@ -74,3 +75,32 @@ class LedgerOnlyActionsStayLocalTests(unittest.TestCase):
                                  f"{name} touched runs")
                 self.assertEqual(led.q("SELECT * FROM leases"), [],
                                  f"{name} touched leases")
+
+    def test_priority_boost_actions_require_confirmation_for_replacement(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        cfg = make_cfg()
+        cfg["projects"]["other"] = {"enabled": True, "repo": "x/other",
+                                    "path": "/unused"}
+        actions.run(cfg, led, "priority_boost_start",
+                    {"project": "mahler", "duration": "1h"})
+        self.assertEqual(led.priority_boost()["project"], "mahler")
+        actions.run(cfg, led, "priority_boost_extend",
+                    {"project": "mahler", "duration": "1w"})
+        self.assertEqual(led.priority_boost()["project"], "mahler")
+        with self.assertRaises(actions.ActionError):
+            actions.run(cfg, led, "priority_boost_start",
+                        {"project": "other", "duration": "1d"})
+        self.assertEqual(led.priority_boost()["project"], "mahler")
+        actions.run(cfg, led, "priority_boost_start",
+                    {"project": "other", "duration": "1d", "confirm_replace": True,
+                     "active_project": "mahler"})
+        self.assertEqual(led.priority_boost()["project"], "other")
+        with self.assertRaisesRegex(actions.ActionError, "must name other"):
+            actions.run(cfg, led, "priority_boost_start",
+                        {"project": "mahler", "duration": "1h",
+                         "confirm_replace": True, "active_project": "stale"})
+        self.assertEqual(led.priority_boost()["project"], "other")
+        self.assertEqual(
+            actions.run(cfg, led, "priority_boost_stop", {"project": "other"}),
+            {"stopped": True, "project": "other"})

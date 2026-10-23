@@ -57,3 +57,36 @@ class UnstickTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 args.fn(args, cfg, led)
             self.assertEqual(led.item("p", 3)["state"], "ready")
+
+
+class PrioritizeTests(unittest.TestCase):
+    def setUp(self):
+        self.led = Ledger(":memory:", clock=lambda: datetime(
+            2026, 10, 1, tzinfo=timezone.utc))
+        self.addCleanup(self.led.close)
+        self.cfg = {"defaults": {}, "projects": {
+            "enabled": {"enabled": True}, "disabled": {"enabled": False}}}
+
+    def invoke(self, project, duration):
+        args = build_parser(self.cfg).parse_args(["prioritize", project, duration])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            args.fn(args, self.cfg, self.led)
+        return out.getvalue()
+
+    def test_start_and_stop_use_shared_ledger_state(self):
+        out = self.invoke("enabled", "1d")
+        self.assertIn("enabled: prioritized until 2026-10-02T00:00:00+00:00", out)
+        self.assertEqual(self.led.priority_boost()["project"], "enabled")
+        self.assertEqual(self.invoke("enabled", "off").strip(),
+                         "enabled: priority boost stopped")
+        self.assertIsNone(self.led.priority_boost())
+
+    def test_rejects_disabled_unknown_invalid_and_nonmatching_stop(self):
+        for project in ("disabled", "unknown"):
+            with self.subTest(project=project), self.assertRaisesRegex(ValueError, "not enabled"):
+                self.invoke(project, "1h")
+        with self.assertRaises(SystemExit):
+            build_parser(self.cfg).parse_args(["prioritize", "enabled", "2h"])
+        with self.assertRaisesRegex(ValueError, "no matching priority boost"):
+            self.invoke("enabled", "off")

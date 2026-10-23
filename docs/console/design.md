@@ -755,3 +755,20 @@ is localized separately across daylight-saving changes.
 
 The schedule is built only for Capacity, phone Browse, and the full state API;
 other page fragments omit it. The existing Weekly mode toggle is unchanged.
+
+### Timed project priority (mahler#1123)
+
+Project Overview offers only **1 hour**, **1 day** and **1 week**. When active,
+the banner names the one boosted project, shows derived time remaining and the
+absolute UTC expiry, and offers Extend and Stop. The scope switcher marks that
+project with `▲`. A different project can be selected for priority from its
+Overview, but replacing the active boost first asks for confirmation naming both
+projects; the server enforces the confirmation too.
+
+There is one durable boost. Its candidates sort before every other project's
+candidates, including p1 work, and before static `scheduling.priority_projects`.
+After that first key, existing issue-priority, scarce-builder and static-project
+ordering remains unchanged. Expiry is reconciled by every scheduler tick, not by
+page refresh, and logged once. This affects only the next free slot: project/global
+concurrency limits and running work are unchanged. The console writes locally to
+the shared ledger and makes no GitHub call.
