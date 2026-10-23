@@ -1089,12 +1089,12 @@ def _ruleset_unbypassable(gh, rule, cache=None):
 def _hardening(protection, rules, jobs, gh):
     """Per safeguard: True safe, False known unsafe, None unknown.
 
-    Classic protection and effective rules are alternative mechanisms. Strictness
-    and bypass protection are judged on each mechanism that supplies a PR test
-    gate, so an unrelated classic value cannot vouch for a ruleset-sourced gate.
-    Effective rules do not report bypass actors, so every ruleset supplying a
-    required safeguard is read in full; if that is denied or lacks the field the
-    result is unknown."""
+    Classic protection and effective rules are alternative providers, but every
+    provider must be internally non-bypassable. Thus classic safeguards are
+    coupled to classic administrator enforcement, while each ruleset safeguard
+    is coupled to that ruleset's bypass actors. Effective rules omit bypass
+    actors, so the supplying ruleset is read in full; denied or missing metadata
+    stays unknown."""
     status = protection.get("required_status_checks")
     status = status if isinstance(status, dict) else {}
     by_type = {}
@@ -1103,40 +1103,59 @@ def _hardening(protection, rules, jobs, gh):
 
     classic = set(status.get("contexts") or [])
     classic |= {c["context"] for c in status.get("checks", [])}
-    strict, bypass = [], []
+    gate_providers = []
     ruleset_bypass = {}
     if classic & set(jobs):
-        strict.append(_flag(status, "strict", True))
-        bypass.append(_flag(protection, "enforce_admins", True))
+        gate_providers.append(_all((
+            _flag(status, "strict", True),
+            _flag(protection, "enforce_admins", True),
+        )))
     for rule in by_type.get("required_status_checks", []):
         params = rule.get("parameters") or {}
         if not {c["context"] for c in params.get("required_status_checks", [])} & set(jobs):
             continue
         value = params.get("strict_required_status_checks_policy")
-        strict.append(value if isinstance(value, bool) else None)
-        bypass.append(_ruleset_unbypassable(gh, rule, ruleset_bypass))
+        gate_providers.append(_all((
+            value if isinstance(value, bool) else None,
+            _ruleset_unbypassable(gh, rule, ruleset_bypass),
+        )))
 
-    def combine(votes):
-        if any(v is False for v in votes):
-            return False
-        return True if votes and all(v is True for v in votes) else None
+    gate = _alternative(gate_providers)
+    classic_admin = _flag(protection, "enforce_admins", True)
+    classic_force_push = _all((
+        _flag(protection, "allow_force_pushes", False), classic_admin))
+    classic_deletion = _all((
+        _flag(protection, "allow_deletions", False), classic_admin))
 
     return {
-        "strict required checks": combine(strict),
-        "administrator enforcement": combine(bypass),
-        "force pushes disabled": _either(_flag(protection, "allow_force_pushes", False),
-                                         combine([_ruleset_unbypassable(gh, rule, ruleset_bypass)
-                                                  for rule in by_type.get("non_fast_forward", [])])),
-        "deletion disabled": _either(_flag(protection, "allow_deletions", False),
-                                     combine([_ruleset_unbypassable(gh, rule, ruleset_bypass)
-                                              for rule in by_type.get("deletion", [])])),
+        # These are two evidence labels for the same coherent test-gate provider;
+        # neither half can be borrowed from a different mechanism.
+        "strict required checks": gate,
+        "administrator enforcement": gate,
+        "force pushes disabled": _alternative([
+            classic_force_push,
+            *(_ruleset_unbypassable(gh, rule, ruleset_bypass)
+              for rule in by_type.get("non_fast_forward", [])),
+        ]),
+        "deletion disabled": _alternative([
+            classic_deletion,
+            *(_ruleset_unbypassable(gh, rule, ruleset_bypass)
+              for rule in by_type.get("deletion", [])),
+        ]),
     }
 
 
-def _either(classic, ruleset):
-    if classic is True or ruleset is True:
+def _all(votes):
+    if any(v is False for v in votes):
+        return False
+    return True if votes and all(v is True for v in votes) else None
+
+
+def _alternative(votes):
+    """Combine interchangeable providers without treating unknown as safe."""
+    if any(v is True for v in votes):
         return True
-    if classic is False or ruleset is False:
+    if any(v is False for v in votes):
         return False
     return None
 
