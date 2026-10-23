@@ -64,6 +64,15 @@ class MissingScopeTests(unittest.TestCase):
                 "labels": [{"name": label} for label in labels], "comments": [],
                 "authorAssociation": "OWNER"}
 
+    def test_sync_preserves_run_reported_dependencies(self):
+        self.led.upsert_item("x", 1, state="ready", depends="[2]")
+        self.led.upsert_item("x", 2, state="ready")
+        self.led.set_kv("blocked-deps:x#1", "[2]")
+        self.gh.open_issues.return_value = [self.issue(1, 25, ["custom"]),
+                                            self.issue(2, 25, ["custom"])]
+        sync.sync(self.ctx, "x")
+        self.assertEqual(json.loads(self.led.item("x", 1)["depends"]), [2])
+
     def test_counts_only_over_24_hours_without_configured_label(self):
         self.gh.open_issues.return_value = [
             self.issue(1, 25), self.issue(2, 23), self.issue(3, 24),

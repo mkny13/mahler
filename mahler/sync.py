@@ -10,7 +10,7 @@ import hashlib
 import re
 from datetime import timedelta
 
-from . import config, releases
+from . import ci_blockers, config, releases
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
@@ -196,6 +196,9 @@ def sync(ctx, project):
         ctx._labels[(project, n)] = labels
         parent = parents[n]
         deps = depends_of(iss.get("body"))
+        for blocker in ci_blockers.recorded(led, project, n):
+            if blocker not in deps:
+                deps.append(blocker)
         for blocker in gh.blocked_by_of(n):
             if blocker not in deps:
                 deps.append(blocker)

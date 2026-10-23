@@ -581,6 +581,17 @@ class RunTests(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("red:charged"))
         self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 289)
 
+    def test_blocker_reference_scope_and_phrases(self):
+        from mahler import ci_blockers
+        self.led.upsert_item("x", 289, state="ready")
+        for phrase in ("waiting for", "blocked by", "blocked on", "depends on"):
+            for ref in ("#289", "x#289", "x/y#289"):
+                self.assertEqual(ci_blockers.references(self.led, "x", 5,
+                    f"{phrase} {ref}", "x/y"), [289])
+        for text in ("waiting for other#289", "waiting for #5", "waiting for #999",
+                     "PR #289 failed", "waiting for other/repo#289"):
+            self.assertEqual(ci_blockers.references(self.led, "x", 5, text, "x/y"), [])
+
     def test_named_build_dependency_without_project_hold(self):
         self.led.upsert_item("x", 289, state="ready")
         self.blocked_done("blocked on x#289")

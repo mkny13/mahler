@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import capacity, config, model_availability, launch_health, platforms, presence, prompt, router, runner
+from . import capacity, ci_blockers, config, model_availability, launch_health, platforms, presence, prompt, router, runner
 from .gh import GHError, dependency_target
 from .ledger import iso, parse, row_get
 from .usage import compute_burst
@@ -344,7 +344,11 @@ def _candidates(ctx, projects):
             if (name, it["parent"]) in planning:
                 continue  # The parent planner is still writing this child.
             work.append((p, "sort", it))
+        blocker = ci_blockers.active(led, name, clear=not ctx.dry_run)
         for it in led.items(name, ["ready"]):
+            if blocker and it["number"] != blocker["number"]:
+                ctx.hold("ci_blocker", project=name, number=it["number"], on=[blocker["number"]])
+                continue
             sorted_at = parse(it["sorted_at"])
             if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):
                 ctx.hold("settling", project=name, number=it["number"],

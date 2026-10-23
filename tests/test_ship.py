@@ -159,6 +159,26 @@ class ShipTests(unittest.TestCase):
             red.assert_called_once()
             self.assertIsNone(self.led.get_kv("ci_blocker:x"))
 
+    def test_named_dependency_holds_fix_without_project_hold(self):
+        self.led.upsert_item("x", 5, pr=88, depends="[289]")
+        self.led.upsert_item("x", 289, state="ready")
+        self.led.set_kv("blocked-deps:x#5", "[289]")
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            red.assert_not_called()
+            self.led.set_state("x", 289, "done")
+            self.ship()
+            red.assert_called_once()
+
+    def test_blocker_itself_can_run_ci_fix(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_kv("ci_blocker:x", '{"number": 5}')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            red.assert_called_once()
+
     def test_legacy_rerun_parking_is_swept_once(self):
         self.led.upsert_item("x", 5, pr=88, state="needs_you",
             question="PR #88: waiting for failed-job rerun attempt after 60 min")

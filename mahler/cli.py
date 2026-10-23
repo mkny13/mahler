@@ -921,6 +921,14 @@ def cmd_resume(a, cfg, led):
     return 0
 
 
+def cmd_unstick(a, cfg, led):
+    from .ship import unstick
+    if a.project not in cfg.get("projects", {}):
+        raise ValueError(f"unknown project {a.project!r}")
+    count = unstick(scheduler.Ctx(cfg, led, dry_run=False), a.project)
+    print(f"{a.project}: re-evaluated {count} stranded items")
+
+
 def cmd_unhold(a, cfg, led):
     """Preview or clear one platform's explicit scheduler hold."""
     try:
@@ -1375,6 +1383,10 @@ def build_parser(cfg=None):
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
     sub.add_parser("resume").set_defaults(fn=cmd_resume)
+
+    s = sub.add_parser("unstick", help="re-evaluate recognized parked conductor waits")
+    s.add_argument("project")
+    s.set_defaults(fn=cmd_unstick)
 
     s = sub.add_parser("unhold", help="clear an explicit platform hold")
     s.add_argument("platform")
