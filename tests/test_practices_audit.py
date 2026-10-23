@@ -931,8 +931,8 @@ class TestPracticesAudit(unittest.TestCase):
             {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
                 "strict_required_status_checks_policy": True,
                 "required_status_checks": [{"context": "test"}]}},
-            {"type": "non_fast_forward"},
-            {"type": "deletion"},
+            {"type": "non_fast_forward", "ruleset_id": 7},
+            {"type": "deletion", "ruleset_id": 7},
         ]
 
     def test_ruleset_alone_matches_classic_protection(self):
@@ -940,7 +940,10 @@ class TestPracticesAudit(unittest.TestCase):
         self.gh.rules = self._safe_rules()
         self.assertEqual(self._protection_state(), "pass")
         self.gh.rules = self._safe_rules(bypass=[{"actor_type": "RepositoryRole"}])
-        self.assertEqual(self._protection_state(), "gap")
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
         self.gh.rules = self._safe_rules()
         del self.gh.rulesets[7]["bypass_actors"]
         self.assertEqual(self._protection_state(), "unknown")
@@ -951,6 +954,24 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertEqual(self._protection_state(), "unknown")
         self.gh.rules[0]["parameters"]["strict_required_status_checks_policy"] = False
         self.assertEqual(self._protection_state(), "gap")
+
+    def test_bypassable_ruleset_cannot_supply_force_push_or_deletion_safeguards(self):
+        self.gh.protection = {}
+        self.gh.rulesets = {
+            7: {"bypass_actors": []},
+            8: {"bypass_actors": [{"actor_type": "RepositoryRole", "bypass_mode": "always"}]},
+        }
+        self.gh.rules = [
+            {"type": "required_status_checks", "ruleset_id": 7, "parameters": {
+                "strict_required_status_checks_policy": True,
+                "required_status_checks": [{"context": "test"}]}},
+            {"type": "non_fast_forward", "ruleset_id": 8},
+            {"type": "deletion", "ruleset_id": 8},
+        ]
+        finding = self.results()["branch-protection"]
+        self.assertEqual(finding.state, "gap")
+        self.assertIn("force pushes disabled", finding.reason)
+        self.assertIn("deletion disabled", finding.reason)
 
     def test_classic_and_ruleset_mix_without_requiring_both(self):
         self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": False},

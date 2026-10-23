@@ -1072,12 +1072,18 @@ def _flag(mapping, key, safe_value):
     return value is safe_value
 
 
-def _ruleset_unbypassable(gh, rule):
+def _ruleset_unbypassable(gh, rule, cache=None):
     try:
-        actors = gh.ruleset(rule["ruleset_id"]).get("bypass_actors")
+        ruleset_id = rule["ruleset_id"]
+        if cache is not None and ruleset_id in cache:
+            return cache[ruleset_id]
+        actors = gh.ruleset(ruleset_id).get("bypass_actors")
     except (GHError, ValueError, TypeError, KeyError, AttributeError):
         return None
-    return None if not isinstance(actors, list) else not actors
+    result = None if not isinstance(actors, list) else not actors
+    if cache is not None:
+        cache[ruleset_id] = result
+    return result
 
 
 def _hardening(protection, rules, jobs, gh):
@@ -1086,8 +1092,9 @@ def _hardening(protection, rules, jobs, gh):
     Classic protection and effective rules are alternative mechanisms. Strictness
     and bypass protection are judged on each mechanism that supplies a PR test
     gate, so an unrelated classic value cannot vouch for a ruleset-sourced gate.
-    Effective rules do not report bypass actors, so each gating rule's full
-    ruleset is read; if that is denied or lacks the field the result is unknown."""
+    Effective rules do not report bypass actors, so every ruleset supplying a
+    required safeguard is read in full; if that is denied or lacks the field the
+    result is unknown."""
     status = protection.get("required_status_checks")
     status = status if isinstance(status, dict) else {}
     by_type = {}
@@ -1097,6 +1104,7 @@ def _hardening(protection, rules, jobs, gh):
     classic = set(status.get("contexts") or [])
     classic |= {c["context"] for c in status.get("checks", [])}
     strict, bypass = [], []
+    ruleset_bypass = {}
     if classic & set(jobs):
         strict.append(_flag(status, "strict", True))
         bypass.append(_flag(protection, "enforce_admins", True))
@@ -1106,7 +1114,7 @@ def _hardening(protection, rules, jobs, gh):
             continue
         value = params.get("strict_required_status_checks_policy")
         strict.append(value if isinstance(value, bool) else None)
-        bypass.append(_ruleset_unbypassable(gh, rule))
+        bypass.append(_ruleset_unbypassable(gh, rule, ruleset_bypass))
 
     def combine(votes):
         if any(v is False for v in votes):
@@ -1117,14 +1125,20 @@ def _hardening(protection, rules, jobs, gh):
         "strict required checks": combine(strict),
         "administrator enforcement": combine(bypass),
         "force pushes disabled": _either(_flag(protection, "allow_force_pushes", False),
-                                         bool(by_type.get("non_fast_forward"))),
+                                         combine([_ruleset_unbypassable(gh, rule, ruleset_bypass)
+                                                  for rule in by_type.get("non_fast_forward", [])])),
         "deletion disabled": _either(_flag(protection, "allow_deletions", False),
-                                     bool(by_type.get("deletion"))),
+                                     combine([_ruleset_unbypassable(gh, rule, ruleset_bypass)
+                                              for rule in by_type.get("deletion", [])])),
     }
 
 
-def _either(classic, rule_enforced):
-    return True if (classic is True or rule_enforced) else classic
+def _either(classic, ruleset):
+    if classic is True or ruleset is True:
+        return True
+    if classic is False or ruleset is False:
+        return False
+    return None
 
 
 def _protection(gh, jobs, ci_unknown):
