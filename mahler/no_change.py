@@ -23,7 +23,7 @@ def begin(e):
     if old.get("claim_run") != e.run["id"]:
         save(e.led, e.project, e.number, {
             "mode": "claim", "claim_run": e.run["id"], "base_sha": e.no_work_base,
-            "evidence": e.rest or "", "build_evidence": e.log.get("last_text") or "",
+            "evidence": e.rest or "", "build_evidence": e.log.get("final") or e.log.get("last_text") or "",
             "human_checks": [], "phase": "waiting", "inconclusive": 0})
     e.set_state("verifying", "no-change DONE awaiting independent base review",
                 summary=e.rest or e.item["title"])
@@ -50,6 +50,22 @@ def parse_payload(text):
     return payload
 
 
+def _inconclusive(led, project, number, record, run):
+    from .finalize import REVIEW_INCONCLUSIVE_CAP
+
+    key = f"reviewinconclusive:{project}#{number}:{record['base_sha']}"
+    seen = json.loads(led.get_kv(key) or "[]")
+    if run and run["id"] not in [r.get("run_id") for r in seen]:
+        seen.append({"run_id": run["id"], "platform": run["platform"]})
+        led.set_kv(key, json.dumps(seen))
+        record["inconclusive"] += 1
+    elif not run:
+        record["inconclusive"] += 1
+    if record["inconclusive"] >= REVIEW_INCONCLUSIVE_CAP:
+        led.set_kv(f"reviewescalate:{project}#{number}:{record['base_sha']}", "1")
+    record["phase"] = "waiting"
+
+
 def finish(e):
     """Called inside finalization's epoch-fenced transaction; no external writes."""
     record = read(e.led, e.project, e.number)
@@ -62,8 +78,7 @@ def finish(e):
             raise ValueError("no completed verdict")
         payload = parse_payload(e.rest)
     except (ValueError, TypeError):
-        record["inconclusive"] += 1
-        record["phase"] = "waiting"
+        _inconclusive(e.led, e.project, e.number, record, e.run)
     else:
         record.update(phase="verdict", verdict="pass" if e.verb == "REVIEW-PASS" else "fail",
                       review_evidence=payload["evidence"], human_checks=payload["human_checks"],
@@ -90,7 +105,7 @@ def _owned(ctx, project, number, epoch):
 def advance(ctx, project, item):
     """Return true for claim mode so it can never fall through to PR shipping."""
     from . import ship
-    from .finalize import retry_or_fail
+    from .finalize import retry_or_fail, REVIEW_INCONCLUSIVE_CAP
 
     led, n = ctx.led, item["number"]
     record = read(led, project, n)
@@ -110,13 +125,12 @@ def advance(ctx, project, item):
     if not _owned(ctx, project, n, epoch):
         return True
     if sha != record["base_sha"]:
-        record.update(base_sha=sha, phase="waiting", run_id=None, epoch=None)
+        record.update(base_sha=sha, phase="waiting", run_id=None, epoch=None, inconclusive=0)
         record.pop("verdict", None)
         save(led, project, n, record)
     if record["phase"] == "reviewing":
         # A launch interrupted before its receipt or an expired run is inconclusive.
-        record["inconclusive"] += 1
-        record["phase"] = "waiting"
+        _inconclusive(led, project, n, record, led.run(record["run_id"]))
         save(led, project, n, record)
     if record["phase"] == "verdict":
         gh = ctx.gh(project)
@@ -193,11 +207,12 @@ def advance(ctx, project, item):
                     led.set_state(project, n, "done", "independently verified on configured base")
                 led.release(project, n, holder=CONDUCTOR)
         return True
-    if record["inconclusive"] >= ctx.policy(project)["max_attempts"]:
+    if record["inconclusive"] > REVIEW_INCONCLUSIVE_CAP:
         record["phase"] = "exhausted"
         with led._tx():
             save(led, project, n, record)
-            led.set_state(project, n, "failed", "no-change review exhausted inconclusive attempts")
+            question = "Independent no-change reviews exhausted inconclusive attempts. Review manually or retry?"
+            led.set_state(project, n, "needs_you", question, question=question, options="[]")
         led.release(project, n, holder=CONDUCTOR)
         ctx.ping(f"Claim review stuck — {project} #{n}",
                  "Independent reviews produced no usable evidence; automatic reviews stopped.",
@@ -209,12 +224,13 @@ def advance(ctx, project, item):
     pin, size, exclude = ship._review_route(ctx, project, item, sha)
     busy = ship.busy_platforms(ctx.cfg, active)
     pol = ctx.policy(project)
+    min_tier = 2 if led.get_kv(f"reviewescalate:{project}#{n}:{sha}") else 0
     capacity = router.capacity_recovery(ctx.cfg, led, pol, "review", pin, busy,
-                                       size=size, burst_lines=ctx.burst_lines, exclude=exclude)
+                                       size=size, burst_lines=ctx.burst_lines, exclude=exclude, min_tier=min_tier)
     if not capacity[0] or capacity[2]:
         return True
     platform, _ = router.pick_for_project(
-        ctx.cfg, led, pol, "review", pin, busy, size=size, exclude=exclude,
+        ctx.cfg, led, pol, "review", pin, busy, size=size, exclude=exclude, min_tier=min_tier,
         scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines)
     if platform:
         ship.start(ctx, project, {**item, "claim_base_sha": sha}, "review", platform,

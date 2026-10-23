@@ -100,13 +100,16 @@ class ClaimTests(unittest.TestCase):
                      '{"mode":"claim","evidence":["x"],"human_checks":"none"}'):
             with self.subTest(text=text):
                 e = self.ending(text)
+                e.run['id'] = 20 + self.record['inconclusive']
+                self.record['run_id'] = e.run['id']
+                self.save()
                 no_change.finish(e)
                 self.record = self.read()
                 self.assertEqual(self.record["phase"], "waiting")
         self.advance()
         self.advance()
         self.assertEqual(self.read()["phase"], "exhausted")
-        self.assertEqual(self.led.item("x", 5)["state"], "failed")
+        self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
         self.ctx.ping.assert_called_once()
 
@@ -273,7 +276,7 @@ class ClaimTests(unittest.TestCase):
                 self.assertTrue(self.read()["practices_error"])
                 self.gh.close_issue.assert_not_called()
         self.record = self.read()
-        self.record["inconclusive"] = self.ctx.policy("x")["max_attempts"]
+        self.record["inconclusive"] = finalize.REVIEW_INCONCLUSIVE_CAP + 1
         self.save()
         self.advance()
         self.assertEqual(self.read()["phase"], "exhausted")
@@ -357,3 +360,58 @@ class ClaimTests(unittest.TestCase):
         self.advance()
         self.assertEqual(self.read()["phase"], "waiting")
         self.gh.close_issue.assert_not_called()
+
+    def test_inconclusive_rotates_and_escalates_before_parking(self):
+        for index in range(4):
+            e = self.ending('')
+            e.run['id'] = index + 20
+            e.run['platform'] = f'reviewer-{index}'
+            self.record.update(run_id=e.run['id'])
+            self.save()
+            no_change.finish(e)
+            no_change.finish(e)  # replay is not another attempt
+            self.record = self.read()
+            seen = json.loads(self.led.get_kv('reviewinconclusive:x#5:base') or '[]')
+            self.assertEqual(len(seen), index + 1)
+            with mock.patch.object(no_change.router, 'capacity_recovery', return_value=(True, None, None)) as capacity, \
+                    mock.patch.object(no_change.router, 'pick_for_project', return_value=('next-reviewer', [])) as pick, \
+                    mock.patch.object(ship, 'start') as start:
+                self.advance()
+            if index < 3:
+                self.assertEqual(pick.call_args.kwargs['exclude'], {f'reviewer-{i}' for i in range(index + 1)})
+                self.assertEqual(pick.call_args.kwargs['min_tier'], 2 if index == 2 else 0)
+                self.assertEqual(capacity.call_args.kwargs['min_tier'], 2 if index == 2 else 0)
+                start.assert_called_once()
+            else:
+                start.assert_not_called()
+                self.assertEqual(self.led.item('x', 5)['state'], 'needs_you')
+            if index == 2:
+                self.assertEqual(self.led.get_kv('reviewescalate:x#5:base'), '1')
+
+    def test_begin_preserves_full_final_evidence(self):
+        e = self.ending('done', verb='DONE')
+        e.no_work_base = 'base'
+        evidence = 'https://github.com/x/y/issues/653#issuecomment-1\n' + 'output\n' * 400
+        e.log.update(final=evidence, last_text=evidence[-1500:])
+        no_change.begin(e)
+        self.assertEqual(self.read()['build_evidence'], evidence)
+
+    def test_parent_verify_github_only_claim_closes_without_historical_diff(self):
+        from mahler import prompt
+        self.led.upsert_item('x', 653, issue_body='- [x] Six completion criteria')
+        self.led.upsert_item('x', 5, issue_body='<!-- mahler:parent-verify:653:abc -->')
+        self.gh.authenticated_login.return_value = 'owner'
+        self.gh.issue_body.return_value = '- [x] Six completion criteria'
+        url = 'https://github.com/x/y/issues/653#issuecomment-1'
+        self.gh.issue_comments.side_effect = lambda n: [
+            {'body': 'Evidence: all six checks passed', 'author': {'login': 'owner'}, 'url': url}]
+        context = prompt.issue_context(self.ctx, 'x', self.led.item('x', 5), 'x/y')
+        self.assertIn('- [x] Six completion criteria', context)
+        self.assertIn(url, context)
+        payload = json.dumps({'mode': 'claim', 'evidence': [
+            f'Parent #653 checklist complete; evidence comment verified at {url}; '
+            'GitHub-only task exempt from historical diff sensitivity'], 'human_checks': []})
+        no_change.finish(self.ending(payload))
+        self.advance()
+        self.assertEqual(self.led.item('x', 5)['state'], 'done')
+        self.assertIn(url, self.comments[0])
