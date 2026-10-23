@@ -52,3 +52,10 @@ No manual checks remain for this evidence-only follow-up; live authenticated
 inference remains outside the investigation's scope. The conductor publishes
 this committed evidence in the follow-up PR audit trail; this build does not
 edit the original PR or post issue comments.
+
+Repository verification on this evidence-only change (all exit status 0):
+
+- `python3 -m mahler.repo_guard`: passed.
+- `python3 -m unittest discover -s tests`: 3,111 tests, OK (skipped=1).
+- `python3 tests/run_random.py`: seed `405811458`, 3,111 tests, OK (skipped=1).
+- `python3 -X dev tests/run_strict.py`: 3,111 tests, OK (skipped=1).
