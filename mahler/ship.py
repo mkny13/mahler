@@ -1290,7 +1290,8 @@ def _clear_charged_if_fix_completed(led, project, number, key):
         "AND status='ended' AND ((? IS NOT NULL AND id=?) OR (? IS NULL AND started_at > ?)) "
         "AND outcome IS NOT NULL AND outcome != 'not claimed' "
         "AND outcome NOT LIKE 'launch failed:%' "
-        "AND coalesce(stop_reason, '') NOT IN (?, ?, ?, 'resume_rejected') LIMIT 1",
+        f"AND coalesce(stop_reason, '') NOT IN ({', '.join('?' * len(CAPACITY_STOPS))}, "
+        "'resume_rejected') LIMIT 1",
         (project, number, run_id, run_id, run_id, cycle_ts, *CAPACITY_STOPS))
     if run:
         led.set_kv(f"{key}:accounted", str(run["id"]))

@@ -374,6 +374,24 @@ def hold_label(led, name):
     return HOLD_REASON_TEXT.get(led.get_kv(f"hold_reason:{name}"), "a run never started")
 
 
+def project_hold_key(project, name):
+    """kv key for a hold on one platform for one project only (mahler#1211)."""
+    return f"auth_hold:{project}:{name}"
+
+
+def project_hold(led, project, name):
+    """When a project-scoped hold on `name` lifts, or None when none is active.
+
+    A platform whose login a project's run environment can't use (Copilot's
+    "Access denied by policy settings") is held for that project alone: the
+    same platform keeps serving projects whose runs it can authenticate in.
+    """
+    if not project:
+        return None
+    until = _ts(led.get_kv(project_hold_key(project, name)))
+    return until if until and until > led.now() else None
+
+
 def usage_state(led, name, pconf, burst_lines=None, role=None):
     block = model_availability.blocked(led, name, pconf, role)
     state, detail = _quota_usage_state(led, name, pconf, burst_lines)
@@ -649,7 +667,8 @@ def pick_reason(cfg, rows, role, size, name):
 
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
          account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
-         exclude=(), explore=False, scorecard_rows=None, routing_mode=None):
+         exclude=(), explore=False, scorecard_rows=None, routing_mode=None,
+         project=None):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -669,6 +688,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     model/effort variant cannot review another variant on its underlying
     builder slot. This applies even to a pinned platform, since a pinned
     reviewer identical to the builder would defeat the point.
+
+    `project`, when given, also applies that project's own platform holds
+    (`project_hold`), pins included.
     """
     role = route_role(role)
     reasons = []
@@ -714,6 +736,11 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
             continue
         if pconf.get("approval") and name != pin:
             reasons.append(f"{name}: requires owner approval via a platform pin")
+            continue
+        held = project_hold(led, project, name)
+        if held:
+            reasons.append(f"{name}: on hold for {project} until {held.astimezone():%H:%M} "
+                           f"(in {fmt_countdown(held - led.now())}) (its login was refused here)")
             continue
         # Explicit tier floors apply to build, fix and review; pins retain their override.
         if min_tier and not pin and role in ("build", "fix", "review"):
@@ -823,7 +850,7 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
         state, _ = usage_state(led, name, pconf, burst_lines=claude_lines, role=role)
         if state == "no_credit":
             why.append("no_credit")
-        elif model_availability.blocked(led, name, pconf, role):
+        elif model_availability.blocked(led, name, pconf, role) or project_hold(led, pol.get("name"), name):
             why.append("hold")
         elif state in ("soft", "hard"):
             why.append("hold" if _hold_active(led, name) else "quota")
@@ -855,19 +882,22 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
             order = [n for account in accts for n in candidates(cfg, role, pin, account=account)]
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
                     min_tier=min_tier, accounts=accts, candidate_order=order,
-                    exclude=exclude, scorecard_rows=scorecard_rows, routing_mode="measured")
+                    exclude=exclude, scorecard_rows=scorecard_rows, routing_mode="measured", project=pol.get("name"))
     if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, exclude=exclude, routing_mode="list")
+                    min_tier=min_tier, accounts=accts, exclude=exclude, routing_mode="list",
+                    project=pol.get("name"))
     if mode == "priority":
         order = candidates_for_priority(
             cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude, routing_mode="list")
+                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude, routing_mode="list",
+                    project=pol.get("name"))
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                             account=account, min_tier=min_tier, exclude=exclude, routing_mode="list")
+                             account=account, min_tier=min_tier, exclude=exclude, routing_mode="list",
+                    project=pol.get("name"))
         reasons += why
         if platform:
             return platform, reasons
@@ -885,7 +915,8 @@ def preferred_for_project(cfg, led, pol, role, preferred, pin=None, busy=(),
     if preferred not in names:
         return None
     return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                min_tier=min_tier, accounts=accts, candidate_order=[preferred], exclude=exclude)[0]
+                min_tier=min_tier, accounts=accts, candidate_order=[preferred], exclude=exclude,
+                project=pol.get("name"))[0]
 
 
 def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
@@ -926,6 +957,9 @@ def capacity_recovery(cfg, led, pol, role, pin=None, busy=(), size=None,
             continue
         usage = led.usage(name)
         hold = _ts(usage.pop(HOLD, {}).get("resets_at"))
+        held = project_hold(led, pol.get("name"), name)
+        if held and not (hold and hold > held):
+            hold = held
         # Holds (including no-credit retries) are explicit retry promises,
         # independent of the freshness of quota samples beneath them.
         if hold and hold > now:
@@ -991,6 +1025,8 @@ def stale_candidates(cfg, led, pol, role, pin=None, busy=(), size=None,
         if not pin and role == "review" and tier_of(pc) < min_tier:
             continue
         if model_availability.blocked(led, name, pc, role) or name in busy:
+            continue
+        if project_hold(led, pol.get("name"), name):
             continue
         if usage_state(led, name, pc, burst_lines)[0] == "stale":
             out.append(name)
@@ -1094,7 +1130,8 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
             continue
         candidate, _ = pick(cfg, led, role, busy=busy, size=size,
                             burst_lines=burst_lines, min_tier=min_tier,
-                            accounts=accts, candidate_order=[name], explore=True)
+                            accounts=accts, candidate_order=[name], explore=True,
+                            project=project)
         if candidate:
             cost = run_usage.columns({"tokens": tokens}, {"model": model}, cfg)["cost_usd"]
             group = pconf.get("quota_group", name)

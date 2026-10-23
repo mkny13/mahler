@@ -540,7 +540,7 @@ class ReadLogContractTests(unittest.TestCase):
         return dict(final=None, ok=None, usage=[], quota_hit=False,
                     credit_exhausted=False, overage=False, retry_after=None,
                     last_text='', model='configured', session_id=None,
-                    last_error=None, model_unavailable=False,
+                    last_error=None, model_unavailable=False, auth_denied=False,
                     tokens=dict.fromkeys(('in', 'cached', 'out', 'reasoning')),
                     cost_usd=None, credits=None, quota_used={}, requests=None, request_buckets=None,
                     request_coverage=None, rate_limited=None)
