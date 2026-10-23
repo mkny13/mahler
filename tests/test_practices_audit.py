@@ -727,9 +727,18 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn(".mahler/secret-reviews.json: 1 reviewed non-secret candidate", finding.evidence)
 
     def test_tracked_binary_assets_and_clean_text_return_pass(self):
-        self.write("screenshot.png", "png\0data")
-        self.write("icon.ico", "ico\0data")
-        self.write("doc.pdf", "pdf\0data")
+        assets = {
+            "screenshot.png": "png\0data",
+            "icon.ico": "ico\0data",
+            "photo.jpg": f"{chr(84)}OKEN=synthetic-token-that-must-not-be-scanned\n",
+            "doc.pdf": "pdf\0data",
+        }
+        for name, content in assets.items():
+            self.write(name, content)
+        self.assertEqual(
+            {Path(name).suffix for name in assets},
+            {".png", ".ico", ".jpg", ".pdf"},
+        )
         self.write("clean.txt", "normal application code\n")
         finding = self.results()["tracked-secrets"]
         self.assertEqual(finding.state, "pass")
