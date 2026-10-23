@@ -295,6 +295,42 @@ class DependencyVettingTests(unittest.TestCase):
         self.assertEqual(vetting.vet(before, after, opener=opener), ((), None))
         opener.assert_not_called()
 
+    def test_cvss_vectors_classify_low_medium_and_high(self):
+        prefix = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/"
+        for impact, expected in (("C:L/I:N/A:N", "MODERATE"),
+                                 ("C:H/I:H/A:H", "CRITICAL")):
+            with self.subTest(impact=impact):
+                advisory = {"severity": [{"type": "CVSS_V3", "score": prefix + impact}]}
+                self.assertEqual(vetting._severity(advisory), expected)
+
+    def test_workspace_lock_changes_are_not_silently_ignored(self):
+        before = {"package.json": '{"workspaces": ["packages/*"]}',
+                  "package-lock.json": '{"packages": {}}',
+                  "packages/app/package.json": '{"dependencies": {"foo": "*"}}'}
+        after = dict(before)
+        after["package-lock.json"] = '{"packages": {"node_modules/foo": {"version": "2.0.0"}}}'
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies(before, after)
+
+    def test_pypi_empty_release_is_not_an_existing_version(self):
+        def opener(request, timeout):
+            return Response({"info": {}, "releases": {"2.31.0": [],
+                "1.0": [{"upload_time_iso_8601": "2020-01-01T00:00:00Z"}]}})
+        with self.assertRaises(vetting.VettingError):
+            vetting.vet({}, python_files(), now=NOW, opener=opener)
+
+    def test_npm_version_publisher_and_repository_are_reported(self):
+        def opener(request, timeout):
+            if request.full_url == "https://api.osv.dev/v1/query":
+                return Response({})
+            return Response({"versions": {"1.2.3": {
+                "_npmUser": {"name": "release-publisher"},
+                "repository": {"url": "https://example.test/version-source"}}},
+                "time": {"created": "2020-01-01T00:00:00Z"}})
+        report = vetting.vet({}, npm_files(), now=NOW, opener=opener)[0][0].report()
+        self.assertIn("release-publisher", report)
+        self.assertIn("https://example.test/version-source", report)
+
     def test_unsupported_lockfile_change_is_ambiguous(self):
         with self.assertRaisesRegex(vetting.VettingError, "unsupported dependency lockfile"):
             vetting.changed_dependencies({}, {"pnpm-lock.yaml": "lockfileVersion: 9"})
