@@ -13,9 +13,40 @@ from datetime import timedelta
 
 from . import capacity, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
-from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
+from .gh import GHError, checks_state, needs_human_of, non_required_failures, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .tick import busy_platforms, start
+
+
+def _required_checks(ctx, project, base_branch):
+    """Retrieve and cache required status checks for a project's base branch."""
+    if not base_branch:
+        return set()
+    cache = getattr(ctx, "_required_checks_cache", None)
+    if cache is None:
+        cache = {}
+        ctx._required_checks_cache = cache
+    key = (project, base_branch)
+    if key in cache:
+        return set(cache[key])
+    gh = ctx.gh(project)
+    if not hasattr(gh, "required_status_checks"):
+        raise GHError("required status check discovery is unavailable")
+    checks = set(gh.required_status_checks(base_branch) or ())
+    cache[key] = checks
+    return set(checks)
+
+
+def _required_checks_or_defer(ctx, project, item, pr, view):
+    """Return authoritative requirements, or record an API uncertainty wait."""
+    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
+    try:
+        return _required_checks(ctx, project, base)
+    except (GHError, ValueError, TypeError) as exc:
+        _ci_pending(ctx, project, item, pr, view,
+                    reason=f"required check discovery failed: {exc}", lookup=True)
+        return None
+
 
 
 def ship(ctx, projects):
@@ -240,11 +271,12 @@ def _dependency_update_full(view, with_versions):
                  with_versions, [[u[0], u[1], u[2]] for u in updates])
 
 
-def _dependency_ready(view):
+def _dependency_ready(view, required=None):
     return (view.get("state") == "OPEN" and view.get("isDraft") is False
             and view.get("mergeable") == "MERGEABLE"
             and bool(view.get("headRefOid")) and bool(view.get("baseRefName"))
-            and checks_state(view.get("statusCheckRollup")) == "green")
+            and checks_state(view.get("statusCheckRollup"), required=required) == "green")
+
 
 
 
@@ -377,6 +409,13 @@ def _dependency_prs(ctx, project):
             marker = f"<!-- mahler:dependency-pr:{n} -->"
             issue_key = f"dependency-issue:{project}:{n}"
             identity_key = f"dependency-identity:{project}:{n}"
+            base = view.get("baseRefName") or pol.get("base", "main")
+            try:
+                req = _required_checks(ctx, project, base)
+            except (GHError, ValueError, TypeError) as exc:
+                ctx.say(f"{project}: dependency PR #{n} — required check discovery "
+                        f"failed; deferring: {exc}")
+                continue
             identity = _dependency_identity(view)
             if led.get_kv(issue_key):
                 stored = led.get_kv(identity_key)
@@ -388,13 +427,13 @@ def _dependency_prs(ctx, project):
                     # now-adoptable update (e.g. rewritten to a patch) is reclassified.
                     if (update["classification"] == "major" or (
                             update["classification"] == "github-actions"
-                            and checks_state(view.get("statusCheckRollup")) == "red")):
+                            and checks_state(view.get("statusCheckRollup"), required=req) == "red")):
                         led.set_kv(identity_key, identity)
                         continue
                 # Dependabot rewrote this PR to a different update: reclassify it.
                 led.set_kv(issue_key, None)
             red_action = (update["classification"] == "github-actions"
-                          and checks_state(view.get("statusCheckRollup")) == "red")
+                          and checks_state(view.get("statusCheckRollup"), required=req) == "red")
             if update["classification"] == "major" or red_action:
                 issue = gh.issue_by_marker(marker)
                 if not issue:
@@ -415,10 +454,11 @@ def _dependency_prs(ctx, project):
                 led.set_kv(issue_key, issue)
                 led.set_kv(identity_key, identity)
                 continue
-            if count >= pol.get("dependency_prs_daily_cap", 3) or not _dependency_ready(view):
+            if count >= pol.get("dependency_prs_daily_cap", 3) or not _dependency_ready(view, required=req):
                 continue
             fresh = gh.dependency_pr_view(n)
-            if (not _dependency_ready(fresh) or _dependency_update(fresh) != update
+            if (not _dependency_ready(fresh, required=req) or _dependency_update(fresh) != update
+
                     or any(fresh.get(k) != view.get(k) for k in
                            ("headRefOid", "baseRefName", "headRefName"))):
                 continue
@@ -713,11 +753,14 @@ def _watch_pr(ctx, project, item, pr):
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
         return
-    if _ci_rerun(ctx, project, item, pr, view):
+    req = _required_checks_or_defer(ctx, project, item, pr, view)
+    if req is None:
+        return
+    if _ci_rerun(ctx, project, item, pr, view, req):
         return
     if not _ship_lease(ctx, project, item):
         return
-    state = checks_state(view.get("statusCheckRollup"))
+    state = checks_state(view.get("statusCheckRollup"), required=req)
     # Keep the console's explanation in step with the state this watcher saw.
     # The timestamp for a pending head is initialized by _ci_pending; recording
     # the terminal state here prevents an old pending timestamp from being
@@ -732,8 +775,16 @@ def _watch_pr(ctx, project, item, pr):
     ci_info["base"] = view.get("baseRefName")
     if view.get("headRefOid"):
         ci_info["sha"] = view["headRefOid"]
+    opt_failures = non_required_failures(view.get("statusCheckRollup"), required=req)
+    if opt_failures:
+        ci_info["optional_failures"] = opt_failures
+        ci_info["non_required_failures"] = opt_failures
+    else:
+        ci_info.pop("optional_failures", None)
+        ci_info.pop("non_required_failures", None)
     led.set_kv(ci_key, json.dumps(ci_info))
     if state == "red":
+
         # D18 (mahler#18): red CI starts a fix run from the PR branch, with the
         # failing log in its prompt. The conductor's lease goes to the run.
         _red_ci(ctx, project, item, pr, view)
@@ -745,7 +796,7 @@ def _watch_pr(ctx, project, item, pr):
         return
     screenshots.capture(ctx, project, item, pr, view)
     screenshot_delivery.deliver(ctx, project, item, pr, view)
-    _review_gate(ctx, project, item, pr, view)
+    _review_gate(ctx, project, item, pr, view, req)
 
 
 def _ship_item(ctx, project, item):
@@ -810,7 +861,7 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", look
     led.release(project, n, holder=CONDUCTOR)
 
 
-def _merge_queued(ctx, project, item, pr, view):
+def _merge_queued(ctx, project, item, pr, view, required=None):
     """Checks are acceptable: request the merge, then watch for it to land.
 
     mahler#211 — GitHub's native merge queue (once enabled on the base branch)
@@ -825,6 +876,10 @@ def _merge_queued(ctx, project, item, pr, view):
     led, n = ctx.led, item["number"]
     gh = ctx.gh(project)
     pol = ctx.policy(project)
+    if required is None:
+        required = _required_checks_or_defer(ctx, project, item, pr, view)
+        if required is None:
+            return
     key = f"queue:{project}#{n}:{pr}"
     sha = view.get("headRefOid") or ""
     seen = led.get_kv(key)
@@ -837,7 +892,8 @@ def _merge_queued(ctx, project, item, pr, view):
                     fresh.get("baseRefName") != view.get("baseRefName") or
                     fresh.get("state") != "OPEN" or
                     fresh.get("mergeable") != "MERGEABLE" or
-                    checks_state(fresh.get("statusCheckRollup")) not in ("green", "none")):
+                    checks_state(fresh.get("statusCheckRollup"), required=required) not in ("green", "none")):
+
                 _ci_pending(ctx, project, item, pr, fresh,
                             reason="PR changed or metadata incomplete; retrying verification")
                 return
@@ -1120,23 +1176,28 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     return True
 
 
-def _review_gate(ctx, project, item, pr, view):
+def _review_gate(ctx, project, item, pr, view, required=None):
     """Between CI-green and merge, DESIGN D11's independent review: CI-green
     proves the tests that exist pass, not that the diff is sound, so a
     review run on a platform other than the builder's gates the merge
     alongside it. Low-risk items (`_review_required` false) skip straight to
     `_merge_queued`, same as before this existed."""
     led, n = ctx.led, item["number"]
+    if required is None:
+        required = _required_checks_or_defer(ctx, project, item, pr, view)
+        if required is None:
+            return
     if (not _review_required(item)
             and led.get_kv(f"reviewed-pr:{project}#{n}") != str(pr)):
-        _merge_queued(ctx, project, item, pr, view)
+        _merge_queued(ctx, project, item, pr, view, required)
         return
     sha = view.get("headRefOid") or ""
     key = f"review:{project}#{n}"
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else {}
-    if checks_state(view.get("statusCheckRollup")) not in {"green", "none"}:
+    if checks_state(view.get("statusCheckRollup"), required=required) not in {"green", "none"}:
         return
+
     status = review.effective_for_item(led, project, n, pr=pr, sha=sha)
     if status in {"pass", "fail"}:
         review.record_green(ctx, project, item, pr, info)
@@ -1146,7 +1207,7 @@ def _review_gate(ctx, project, item, pr, view):
     if status == "pass":
         if not review.file_followups(ctx, project, item):
             return
-        _merge_queued(ctx, project, item, pr, view)
+        _merge_queued(ctx, project, item, pr, view, required)
         return
     if status == "fail":
         if any(r["project"] == project and r["number"] == n and r["role"] == "design"
@@ -2018,7 +2079,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                     })
 
 
-def _ci_rerun(ctx, project, item, pr, view):
+def _ci_rerun(ctx, project, item, pr, view, required=None):
     """One durable allowance; uncertain POSTs are reconciled, never replayed."""
     if ctx.dry_run:
         return False
@@ -2029,10 +2090,14 @@ def _ci_rerun(ctx, project, item, pr, view):
     if record.get("done"):
         return False
     try:
+        if required is None:
+            required = _required_checks(ctx, project,
+                                        view.get("baseRefName") or ctx.policy(project).get("base", "main"))
         if not record:
-            if checks_state(view.get("statusCheckRollup")) != "red":
+            if checks_state(view.get("statusCheckRollup"), required=required) != "red":
                 return False
             selected = gh.ci_retry_runs(sha, view.get("baseRefName"))
+
             if not selected:
                 return False
             record = {"runs": selected, "since": iso(led.now())}
@@ -2071,12 +2136,18 @@ def _ci_rerun(ctx, project, item, pr, view):
                     or observed.get("status") != "completed"):
                 pending = True
             conclusions.append(observed.get("conclusion"))
-        rollup = checks_state(view.get("statusCheckRollup"))
+        rollup = checks_state(view.get("statusCheckRollup"), required=required)
         selected_ids = {str(run["id"]) for run in record["runs"]}
         unmatched_red = False
         for check in view.get("statusCheckRollup") or []:
+            if required:
+                name = check.get("name")
+                context = check.get("context")
+                if not ((name and name in required) or (context and context in required)):
+                    continue
             if checks_state([check]) != "red":
                 continue
+
             match = re.search(r"/actions/runs/(\d+)(?:/|$)", check.get("detailsUrl") or "")
             if not match or match[1] not in selected_ids:
                 unmatched_red = True
