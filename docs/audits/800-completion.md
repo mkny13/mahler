@@ -155,3 +155,22 @@ Evaluated on 2026-10-22 using `practices_audit.scan_project` on isolated tempora
 - **Target:** `mental-jukebox` (`mkny13/mental-jukebox`)
 - **Finding:** `tracked-secrets: gap` on `tests/test_contracts.py:61` and `tests/test_contracts.py:62` (`detector=credential-assignment; context=<redacted>`).
 - **Follow-up action:** Review the two synthetic test fixture token values in `tests/test_contracts.py` and record their SHA-256 digests in `.mahler/secret-reviews.json` (or record an exemption in `.mahler/project.toml` per the #806 resolution protocol). Once merged, `practices_audit.scan_project` for `mental-jukebox` will return `pass` for `tracked-secrets`, fully clearing all 9 items and satisfying the final criterion.
+
+
+## Replayed-branch verification (2026-10-23)
+
+The existing evidence report was reverified at Mahler SHA
+`e81f9d7fbcfb68c1593dcc3171fbe3442b320740` with Python 3.14.3.
+This verifies the replayed branch; it does not refresh the dated remote inventory
+or resolve the outstanding ninth target finding above.
+
+| Command | Result | Exit code |
+|---|---|---|
+| `python3 -m mahler.repo_guard` | Clean, no output | 0 |
+| `python3 -m unittest discover -s tests` | 3084 tests in 175.315s; OK (skipped=1) | 0 |
+| `python3 tests/run_random.py` | Seed `1906047960`; 3084 tests in 174.509s; OK (skipped=1) | 0 |
+| `python3 -X dev tests/run_strict.py` | 3084 tests in 184.712s; OK (skipped=1) | 0 |
+
+No manual owner check is required. The conductor retains the GitHub evidence
+comment/checklist handoff under this run's local-commit-only instructions.
+Parent criterion 6 remains unresolved pending the technical follow-up above.
