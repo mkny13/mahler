@@ -32,7 +32,8 @@ def _exclusion(run):
         return 'setup failed'
     if outcome == 'not claimed':
         return 'not claimed'
-    if run['stop_reason'] in {'quota', 'no_credit', 'preempted', 'closed', 'parked', 'model_unavailable'}:
+    if run['stop_reason'] in {'quota', 'no_credit', 'preempted', 'closed', 'parked', 'model_unavailable',
+                             'auth_denied'}:
         return run['stop_reason']
     if outcome.split(' ', 1)[0] == 'MERGED':
         return 'agent merged'

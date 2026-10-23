@@ -125,6 +125,25 @@ def is_network_error(text):
     return any(p in lower for p in NETWORK_ERRORS)
 
 
+# The CLI's GitHub login is refused outright (mahler#1211): Copilot prints
+# "Error: Access denied by policy settings" when the token it authenticated
+# with has no Copilot seat — e.g. a GitHub App installation token. This is
+# the platform's login failing for this run's environment, not the item.
+AUTH_DENIED_WORDS = (
+    "access denied by policy settings",
+)
+
+
+def is_auth_denied(text):
+    """Whether error text says the CLI's login was refused by policy."""
+    if not text:
+        return False
+    if not isinstance(text, str):
+        text = json.dumps(text)
+    lower = text.lower()
+    return any(word in lower for word in AUTH_DENIED_WORDS)
+
+
 # A CLI rejecting the configured model is a permanent problem for that
 # variant, not a rate limit — distinct from QUOTA_WORDS so a bad model pin
 # never gets treated as a quota hit (issue #420, D33). Phrasing collected
@@ -1109,6 +1128,9 @@ def _note_log_error(res, ev):
     error = _extract_error_message(ev) if isinstance(ev, dict) else str(ev)
     if resume_rejected({"last_error": error}):
         res["last_error"] = error
+    if is_auth_denied(ev):
+        res["auth_denied"] = True
+        res["last_error"] = error
     if is_model_unavailable(ev):
         res["model_unavailable"] = True
         res["model_diagnostic"] = error
@@ -1344,6 +1366,7 @@ def read_log(path, kind, model=None):
              'retry_after': int|None,
              'last_text': str, 'model': str|None, 'session_id': str|None,
              'last_error': str|None, 'model_unavailable': bool,
+             'auth_denied': bool,
              'tokens': {in, cached, out, reasoning},
              'cost_usd': float|None, 'credits': float|None, 'quota_used': dict,
              'requests': int|None, 'request_buckets': {day: {model: n}}|None,
@@ -1356,7 +1379,7 @@ def read_log(path, kind, model=None):
     res = {"final": None, "ok": None, "usage": [], "quota_hit": False,
            "credit_exhausted": False, "overage": False,
            "retry_after": None, "last_text": "", "model": model, "session_id": None,
-           "last_error": None, "model_unavailable": False,
+           "last_error": None, "model_unavailable": False, "auth_denied": False,
            "tokens": dict.fromkeys(("in", "cached", "out", "reasoning")),
            "cost_usd": None, "credits": None, "quota_used": {}}
     from .run_usage import collect, finish_requests, new_requests, note_request

@@ -315,6 +315,36 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
     return proc.pid
 
 
+def keep_copilot_login(env, base_env, run_dir):
+    """Keep Copilot signed in with its own login (mahler#1211).
+
+    Copilot authenticates with COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN
+    ahead of the login stored under COPILOT_HOME. So a token this run sets
+    for `gh` — the project's App token (D47), or another account's token
+    (D26) — would become Copilot's login too, and Copilot refuses it with
+    "Access denied by policy settings". `gh` reads the same token from
+    hosts.yml in its config dir, so the token moves there: `gh` still acts
+    as the project's identity, and Copilot falls back to its own login. No
+    other credential is handed to the run. A token the platform's own
+    account env sets is left alone."""
+    token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")
+    if not token or all(env.get(var) == base_env.get(var)
+                        for var in ("GH_TOKEN", "GITHUB_TOKEN")):
+        return
+    gh_config_dir = os.path.join(run_dir, "gh")
+    config.ensure_private_dir(gh_config_dir)
+    host = env.get("GH_HOST") or "github.com"
+    fd = os.open(os.path.join(gh_config_dir, "hosts.yml"),
+                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # JSON strings are valid YAML double-quoted scalars.
+        fh.write(f"{json.dumps(host)}:\n    oauth_token: {json.dumps(token)}\n"
+                 f"    user: x-access-token\n")
+    env["GH_CONFIG_DIR"] = gh_config_dir
+    env.pop("GH_TOKEN", None)
+    env.pop("GITHUB_TOKEN", None)
+
+
 def run_env(ctx, project, number, platform, run_id, epoch):
     """Shared environment for a run: platform account env, GH identity
     overlay (D25/D26), MAHLER_* vars, and the pre-push fence hooks (DESIGN D6)."""
@@ -372,6 +402,9 @@ def run_env(ctx, project, number, platform, run_id, epoch):
             "GIT_CONFIG_KEY_0": "core.hooksPath",
             "GIT_CONFIG_VALUE_0": hooks,
         }
+
+    if pconf["kind"] == "copilot":
+        keep_copilot_login(env, base_env, run_dir)
 
     env.update(MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(number), MAHLER_EPOCH=str(epoch),
