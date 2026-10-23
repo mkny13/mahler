@@ -1,3 +1,4 @@
+from contextlib import closing
 """Scorecard CLI contract, using only an isolated ledger."""
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
@@ -33,3 +34,26 @@ class ScorecardTests(unittest.TestCase):
         self.assertIn('1 autonomous · 0 human-assisted · 1 unknown', text)
         self.assertIn(payload['completion']['limitation'], text)
         self.assertIn('No attempts in this window.', text)
+
+
+class UnstickTests(unittest.TestCase):
+    def test_recognized_waits_only_and_blocker_is_respected(self):
+        with closing(Ledger(":memory:")) as led:
+            led.upsert_item("p", 1, state="needs_you", pr=10,
+                question="PR #10: waiting for failed-job rerun attempt after 60 min")
+            led.upsert_item("p", 2, state="needs_you", question="Which account?")
+            led.upsert_item("p", 3, state="parked", depends="[4]")
+            led.upsert_item("p", 4, state="ready")
+            led.set_kv("blocked-deps:p#3", "[4]")
+            led.set_kv("ci_blocker:p", '{"number": 4}')
+            args = build_parser({}).parse_args(["unstick", "p"])
+            cfg = {"projects": {"p": {"repo": "p/r", "path": "/unused"}}}
+            with redirect_stdout(io.StringIO()):
+                args.fn(args, cfg, led)
+            self.assertEqual(led.item("p", 1)["state"], "verifying")
+            self.assertEqual(led.item("p", 2)["state"], "needs_you")
+            self.assertEqual(led.item("p", 3)["state"], "parked")
+            led.set_state("p", 4, "done")
+            with redirect_stdout(io.StringIO()):
+                args.fn(args, cfg, led)
+            self.assertEqual(led.item("p", 3)["state"], "ready")

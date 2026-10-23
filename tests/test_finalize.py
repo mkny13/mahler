@@ -564,6 +564,42 @@ class RunTests(unittest.TestCase):
             finalize.finalize(self.ctx, self.run)
         return ping
 
+    def test_named_ci_blocker_refunds_fix_and_records_dependency(self):
+        self.run["role"] = "fix"
+        self.led.update_run(self.run_id, role="fix")
+        self.led.upsert_item("x", 289, state="ready")
+        self.led.upsert_item("x", 5, pr=88, attempts=2, esc_tier=1, esc_fails=1)
+        self.led.set_kv("red:charged", "1")
+        self.led.set_kv(f"fix-charge:{self.run_id}", json.dumps({
+            "cycle": "red", "before": {"attempts": 1, "esc_tier": 1, "esc_fails": 0},
+            "after": {"attempts": 2, "esc_tier": 1, "esc_fails": 1}}))
+        self.blocked_done("vite blocks pnpm audit across all PRs; waiting for #289")
+        item = self.led.item("x", 5)
+        self.assertEqual(json.loads(item["depends"]), [289])
+        self.assertEqual(item["state"], "verifying")
+        self.assertEqual((item["attempts"], item["esc_tier"], item["esc_fails"]), (1, 1, 0))
+        self.assertIsNone(self.led.get_kv("red:charged"))
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 289)
+
+    def test_blocker_reference_scope_and_phrases(self):
+        from mahler import ci_blockers
+        self.led.upsert_item("x", 289, state="ready")
+        for phrase in ("waiting for", "blocked by", "blocked on", "depends on"):
+            for ref in ("#289", "x#289", "x/y#289"):
+                self.assertEqual(ci_blockers.references(self.led, "x", 5,
+                    f"{phrase} {ref}", "x/y"), [289])
+        for text in ("waiting for other#289", "waiting for #5", "waiting for #999",
+                     "PR #289 failed", "waiting for other/repo#289"):
+            self.assertEqual(ci_blockers.references(self.led, "x", 5, text, "x/y"), [])
+
+    def test_named_build_dependency_without_project_hold(self):
+        self.led.upsert_item("x", 289, state="ready")
+        self.blocked_done("blocked on x#289")
+        self.assertEqual(json.loads(self.led.item("x", 5)["depends"]), [289])
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+
     def test_blocked_stop_gate_text_parks_without_attempt_or_escalation(self):
         reason = "a beta must be cut after #609 merges"
         self.led.upsert_item("x", 5, issue_body=f"stop with `STATUS: BLOCKED {reason}`")

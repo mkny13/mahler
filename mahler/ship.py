@@ -11,7 +11,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import capacity, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
+from . import capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -509,7 +509,41 @@ def _unowned_prs(ctx, project):
         ctx.say(f"{project}: PR #{n} is open with no item tracking it — pinged")
 
 
+_LEGACY_RERUN_WAIT = re.compile(
+    r"^PR #\d+: waiting for failed-job rerun attempt after \d+ min$")
+
+
+def unstick(ctx, project):
+    """Re-evaluate recognized conductor waits, never arbitrary owner questions."""
+    if ctx.dry_run:
+        return 0
+    led, changed = ctx.led, 0
+    with led._tx():
+        blocker = ci_blockers.active(led, project)
+        for item in led.items(project, ["needs_you", "parked"]):
+            n = item["number"]
+            legacy = bool(item["pr"] and _LEGACY_RERUN_WAIT.fullmatch(item["question"] or ""))
+            dependency = ci_blockers.recorded(led, project, n)
+            if not legacy and not (dependency and item["state"] == "parked"
+                    and not ci_blockers.pending(led, project, n)
+                    and (not blocker or blocker["number"] == n)):
+                continue
+            if legacy:
+                prefix = f"ci-rerun:{project}#{n}:{item['pr']}:"
+                for row in led.q("SELECT key, value FROM kv WHERE substr(key, 1, ?)=?",
+                                 (len(prefix), prefix)):
+                    record = json.loads(row["value"] or "{}")
+                    record.update(done=True, unavailable=True)
+                    led.set_kv(row["key"], json.dumps(record))
+                led.set_kv(f"ci:{project}#{n}:{item['pr']}", None)
+            led.set_state(project, n, "verifying" if item["pr"] else "ready",
+                          "re-evaluating conductor wait", question=None, options="[]")
+            changed += 1
+    return changed
+
+
 def _ship_project(ctx, project):
+    unstick(ctx, project)
     no_change.recover_legacy(ctx, project)
     migrate_capacity_waits(ctx, project)
     recover_capacity_waits(ctx, project)
@@ -708,6 +742,14 @@ def _watch_pr(ctx, project, item, pr):
     if view["state"] != "OPEN":
         _closed_pr(ctx, project, item, pr, view)
         return
+    blocker = ci_blockers.active(led, project)
+    waiting = ci_blockers.pending(led, project, n)
+    if waiting or (blocker and blocker["number"] != n and
+                   checks_state(view.get("statusCheckRollup")) == "red"):
+        on = waiting or [blocker["number"]]
+        _ci_pending(ctx, project, item, pr, view,
+                    reason=f"held waiting for CI blocker {on}", held=True)
+        return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
         if not _update_reviewed_pr(ctx, project, item, pr, view):
@@ -774,7 +816,7 @@ def _ship_item(ctx, project, item):
              unconfirmed=unconfirmed)
 
 
-def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", lookup=False):
+def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", lookup=False, held=False):
     """CI still running. It is watched across ticks (the 30s loop never blocks
     a tick), but a hung CI must not park the item silently: past
     verify_timeout_minutes it goes to needs-you with a ping. A new head SHA
@@ -791,7 +833,11 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", look
     info = json.loads(seen) if seen else None
     if not info or not info.get("since") or (sha and info.get("sha") != sha):
         info = {"sha": sha, "since": iso(led.now())}
+    if held or info.pop("held", False):
+        info["since"] = iso(led.now())
     info["state"] = "pending"
+    if held:
+        info["held"] = True
     led.set_kv(key, json.dumps(info))
     if led.now() - parse(info["since"]) <= timedelta(minutes=pol["verify_timeout_minutes"]):
         ctx.say(f"{project}#{n}: PR #{pr} — {reason}")
@@ -2400,6 +2446,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
         ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
     ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
     led.set_state(project, n, "shipped", f"shipped via PR #{pr}")
+    ci_blockers.active(led, project)
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
     led.event("shipped", project, n, {"pr": pr, "merged": pr_merged(view)}, passes=passes)

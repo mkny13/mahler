@@ -142,6 +142,56 @@ class ShipTests(unittest.TestCase):
             ship.ship(self.ctx, [{"name": "x"}])
         return ping
 
+    def test_ci_blocker_holds_without_timeout_then_resumes(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 289, state="ready")
+        self.led.set_kv("ci_blocker:x", json.dumps({"number": 289}))
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(ship, "_red_ci") as red, mock.patch.object(ship, "_ci_rerun", return_value=False) as rerun:
+            self.ship()
+            self.led.clock = lambda: NOW + timedelta(days=2)
+            self.ship()
+            red.assert_not_called()
+            rerun.assert_not_called()
+            self.assertEqual(self.item()["state"], "verifying")
+            self.led.set_state("x", 289, "shipped")
+            self.ship()
+            red.assert_called_once()
+            self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+
+    def test_named_dependency_holds_fix_without_project_hold(self):
+        self.led.upsert_item("x", 5, pr=88, depends="[289]")
+        self.led.upsert_item("x", 289, state="ready")
+        self.led.set_kv("blocked-deps:x#5", "[289]")
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            red.assert_not_called()
+            self.led.set_state("x", 289, "done")
+            self.ship()
+            red.assert_called_once()
+
+    def test_blocker_itself_can_run_ci_fix(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.set_kv("ci_blocker:x", '{"number": 5}')
+        self.gh.rollup = [{"state": "FAILURE"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            red.assert_called_once()
+
+    def test_legacy_rerun_parking_is_swept_once(self):
+        self.led.upsert_item("x", 5, pr=88, state="needs_you",
+            question="PR #88: waiting for failed-job rerun attempt after 60 min")
+        key = "ci-rerun:x#5:88:abc123"
+        self.led.set_kv(key, json.dumps({"runs": [], "since": iso(NOW)}))
+        with mock.patch.object(ship, "_ship_item") as watch:
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.item()["question"])
+        self.assertTrue(json.loads(self.led.get_kv(key))["unavailable"])
+        self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+        watch.assert_called_once()
+
     def resume_builder(self):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/5-x", labels='["size:m"]')
         return self.led.create_run(project="x", number=5, role="build", platform="claude",

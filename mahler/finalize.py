@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import config, desktop, failures, no_change, platforms, prompt, review, router, runner
+from . import ci_blockers, config, desktop, failures, no_change, platforms, prompt, review, router, runner
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -135,6 +135,17 @@ def _access_blocked(e):
 
 def _norm(text):
     return " ".join((text or "").lower().split())
+
+
+def _blocked_dependencies(e):
+    return ci_blockers.references(e.led, e.project, e.number, e.rest, e.pol['repo'])
+
+
+def _ended_blocked_dependency(e):
+    deps = ci_blockers.record(e, _blocked_dependencies(e))
+    e.set_state("verifying" if e.item["pr"] else "ready", e.rest,
+                depends=json.dumps(deps), **_fix_charge_refund(e))
+    return True
 
 
 def _blocked_is_external(e):
@@ -758,6 +769,8 @@ ENDINGS = (
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and _ACCESS_BLOCKER.search(e.rest or ""), _access_blocked),
     (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
+     and _blocked_dependencies(e), _ended_blocked_dependency),
+    (lambda e: e.verb == "BLOCKED" and e.run["role"] in ("build", "fix")
      and e.blocked_external, _ended_blocked_external),
     (lambda e: e.verb == "BLOCKED", _retry),
     (lambda e: (e.verb is None or e.verb == "DONE") and e.reason in (None, "timeout"),
@@ -1126,7 +1139,7 @@ def finalize(ctx, run):
             if (verb == "BLOCKED" and run["role"] in ("build", "fix") and rest
                     and not _ACCESS_BLOCKER.search(rest) and not _GUI_DEFERRED.search(rest)):
                 ending.blocked_external = _blocked_is_external(ending)
-                if ending.blocked_external:
+                if ending.blocked_external and not _blocked_dependencies(ending):
                     ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed and not log.get("gateway_failed"):
