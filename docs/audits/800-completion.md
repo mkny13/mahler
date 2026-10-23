@@ -30,7 +30,7 @@ All four implementation child issues (#803, #804, #805, #806) were merged to `ma
   - `tests/test_practices_audit.py::TestPracticesAudit.test_protection_passes_with_script_test_job_context`: Verifies required branch protection checks matching script-based test jobs evaluate to `pass`.
 
 - **#805 (Eliminate false positives for binary assets, schema definitions, and type annotations while reporting `gap` for real secrets):**
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_tracked_binary_assets_and_clean_text_return_pass`: Proves tracked binary assets (`.png`, `.ico`, `.pdf`, null bytes) alongside clean code return `pass` without generating uninspected-binary errors.
+  - `tests/test_practices_audit.py::TestPracticesAudit.test_tracked_binary_assets_and_clean_text_return_pass`: Proves tracked binary assets (`.png`, `.ico`, `.jpg`, `.pdf`) alongside clean code return `pass` without generating uninspected-binary errors. The text-like `.jpg` fixture contains a synthetic credential-shaped assignment, proving its binary extension is skipped rather than accidentally passing through null-byte detection.
   - `tests/test_practices_audit.py::TestPracticesAudit.test_binary_file_alongside_reviewed_text_passes`: Proves binary assets alongside reviewed non-secret candidates in `.mahler/secret-reviews.json` evaluate to `pass`.
   - `tests/test_practices_audit.py::TestPracticesAudit.test_drizzle_schema_definitions_return_pass`: Proves Drizzle ORM column definitions (`password: text("password")`, `token: varchar("token")`) pass cleanly.
   - `tests/test_practices_audit.py::TestPracticesAudit.test_language_type_annotations_return_pass`: Proves type annotations across TypeScript, Kotlin, and Python return `pass`.
