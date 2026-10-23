@@ -58,11 +58,7 @@ def extract_hermes_verification_block(markdown_text: str) -> tuple[str, list[str
     )
     if not output_match:
         raise ValueError("Sanitized output block not found in DESIGN.md")
-    output_lines = [
-        line.strip()
-        for line in output_match.group(1).splitlines()
-        if line.strip()
-    ]
+    output_lines = output_match.group(1).splitlines()
     return commit_sha, output_lines
 
 
@@ -91,6 +87,18 @@ class DesignCommandsTests(unittest.TestCase):
         content = DESIGN_PATH.read_text(encoding="utf-8")
         _, output_lines = extract_hermes_verification_block(content)
         self.assertEqual(output_lines, list(EXPECTED_OUTPUT))
+
+    def test_sanitized_output_guard_detects_trailing_spaces(self):
+        content = DESIGN_PATH.read_text(encoding="utf-8")
+        mutated = content.replace(EXPECTED_OUTPUT[0], EXPECTED_OUTPUT[0] + " ", 1)
+        _, output_lines = extract_hermes_verification_block(mutated)
+        self.assertNotEqual(output_lines, list(EXPECTED_OUTPUT))
+
+    def test_sanitized_output_guard_detects_inserted_blank_line(self):
+        content = DESIGN_PATH.read_text(encoding="utf-8")
+        mutated = content.replace(EXPECTED_OUTPUT[0], EXPECTED_OUTPUT[0] + "\n", 1)
+        _, output_lines = extract_hermes_verification_block(mutated)
+        self.assertNotEqual(output_lines, list(EXPECTED_OUTPUT))
 
     def test_pinned_commit_matches_hermes_contract(self):
         content = DESIGN_PATH.read_text(encoding="utf-8")
