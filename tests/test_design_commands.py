@@ -63,6 +63,26 @@ def extract_hermes_verification_block(markdown_text: str) -> tuple[str, list[str
 
 
 class DesignCommandsTests(unittest.TestCase):
+    def test_hermes_contract_constants_import_without_runtime_side_effects(self):
+        probe = subprocess.run(
+            [
+                "python3",
+                "-c",
+                (
+                    "import sys\n"
+                    "before = list(sys.path)\n"
+                    "from tests.verify_hermes_contract import EXPECTED_OUTPUT, PINNED_COMMIT\n"
+                    "assert EXPECTED_OUTPUT and PINNED_COMMIT\n"
+                    "assert sys.path == before, (before, sys.path)\n"
+                    "assert 'mahler.platforms' not in sys.modules\n"
+                ),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(probe.returncode, 0, probe.stderr or probe.stdout)
+
     def test_documented_python_commands_exist_and_not_ignored(self):
         content = DESIGN_PATH.read_text(encoding="utf-8")
         paths = extract_python_script_paths(content)

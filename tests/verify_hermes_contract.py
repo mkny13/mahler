@@ -15,10 +15,6 @@ import tempfile
 import types
 
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent)
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
-from mahler.platforms import DENY_STEMS
 
 PINNED_COMMIT = "d923a5eb487a17c0a68801bba9ef0f56c81040a8"
 PINNED_TAG = "v0.22.2"
@@ -150,6 +146,10 @@ def check_oneshot_exit_codes():
 
 def check_unconditional_deny_floors():
     """Verify approvals.deny matching against Mahler DENY_STEMS."""
+    if _REPO_ROOT not in sys.path:
+        sys.path.insert(0, _REPO_ROOT)
+    from mahler.platforms import DENY_STEMS
+
     deny_globs = [stem + "*" for stem in DENY_STEMS]
     mock_ctx = types.ModuleType("tools.approval_context")
     mock_ctx._get_approval_config = lambda: {"deny": deny_globs}
