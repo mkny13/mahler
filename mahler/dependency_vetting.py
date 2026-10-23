@@ -1,6 +1,7 @@
 """Fail-closed vetting of changed direct npm and PyPI dependencies."""
 
 import json
+import math
 import re
 import tomllib
 from dataclasses import dataclass
@@ -84,6 +85,8 @@ def _package_manifest(text, path, direct):
     data = _json(text, path)
     if not isinstance(data, dict):
         raise VettingError(f"ambiguous dependency manifest {path}")
+    if data.get("workspaces"):
+        raise VettingError(f"workspace dependency resolution is ambiguous in {path}")
     for group in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         entries = data.get(group, {})
         if entries is None:
@@ -135,7 +138,8 @@ def _pyproject(text, path, direct):
                     raise VettingError(f"missing dependency group in {path}")
                 continue
             _pep_requirement(requirement, path, direct)
-    if data.get("tool", {}).get("uv", {}).get("sources"):
+    if (data.get("tool", {}).get("uv", {}).get("sources")
+            or data.get("tool", {}).get("uv", {}).get("workspace")):
         raise VettingError(f"custom Python dependency sources are ambiguous in {path}")
     if isinstance(project, dict):
         for requirement in project.get("dependencies", []):
@@ -509,17 +513,22 @@ def _metadata(dep, opener):
         if not isinstance(versions, dict) or not isinstance(times, dict) or not isinstance(maintainers, list):
             raise VettingError(f"invalid registry response for npm {dep.name}")
         version_data = versions.get(dep.version)
-        dates = [_date(d) for d in times.values()]
+        dates = [_date(d) for key, d in times.items() if key != "modified"]
         publisher = ", ".join(m.get("name", "") for m in maintainers
                               if isinstance(m, dict) and m.get("name")) or "unavailable"
-        repository = result.get("repository", {})
-        source = repository.get("url", "unavailable") if isinstance(repository, dict) else "unavailable"
+        if isinstance(version_data, dict):
+            user = version_data.get("_npmUser")
+            if isinstance(user, dict) and user.get("name"):
+                publisher = str(user["name"])
+        repository = (version_data.get("repository") if isinstance(version_data, dict)
+                      else None) or result.get("repository", {})
+        source = repository.get("url", "unavailable") if isinstance(repository, dict) else str(repository)
     else:
         info = result.get("info", {})
         releases = result.get("releases", {})
         if not isinstance(info, dict) or not isinstance(releases, dict):
             raise VettingError(f"invalid registry response for PyPI {dep.name}")
-        version_data = ({"exists": True} if dep.version in releases
+        version_data = ({"exists": True} if isinstance(releases.get(dep.version), list) and releases[dep.version]
                         else None)
         dates = [_date(upload.get("upload_time_iso_8601") or upload.get("upload_time"))
                  for uploads in releases.values() if isinstance(uploads, list)
@@ -539,6 +548,34 @@ def _metadata(dep, opener):
     return first, str(publisher), str(source)
 
 
+def _cvss3(vector):
+    """CVSS 3.0/3.1 base score (FIRST specification section 7.1).
+
+    Unknown/malformed vectors remain ambiguous and cannot authorize a merge.
+    https://www.first.org/cvss/v3.1/specification-document
+    """
+    try:
+        parts = vector.split("/")[1:]
+        metrics = dict(part.split(":") for part in parts)
+        if len(metrics) != len(parts) or metrics["S"] not in {"U", "C"}:
+            return None
+        changed = metrics["S"] == "C"
+        av = {"N": .85, "A": .62, "L": .55, "P": .2}[metrics["AV"]]
+        ac = {"L": .77, "H": .44}[metrics["AC"]]
+        pr = {"N": .85, "L": .68 if changed else .62,
+              "H": .5 if changed else .27}[metrics["PR"]]
+        ui = {"N": .85, "R": .62}[metrics["UI"]]
+        impact_values = {"N": 0, "L": .22, "H": .56}
+        iss = 1 - math.prod(1 - impact_values[metrics[k]] for k in ("C", "I", "A"))
+        impact = 7.52 * (iss - .029) - 3.25 * (iss - .02) ** 15 if changed else 6.42 * iss
+        if impact <= 0:
+            return 0
+        total = min((1.08 if changed else 1) * (impact + 8.22 * av * ac * pr * ui), 10)
+        return math.ceil(round(total, 5) * 10) / 10
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
 def _severity(advisory):
     levels = {"NONE": 0, "LOW": 1, "MODERATE": 2, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
     found = []
@@ -556,16 +593,21 @@ def _severity(advisory):
         if not isinstance(item, dict):
             raise VettingError(f"invalid severity evidence for {advisory.get('id', 'advisory')}")
         score = item.get("score")
-        if isinstance(score, (int, float)):
-            found.append("CRITICAL" if score >= 9 else "HIGH" if score >= 7 else "MODERATE")
-        elif isinstance(score, str) and score.upper() in levels:
+        if isinstance(score, str) and score.upper() in levels:
             found.append(score.upper())
-        elif isinstance(score, str):
-            match = re.search(r"(?:^|/)CVSS:3(?:\.\d)?/.*?AV:", score)
-            if match:
-                # OSV often supplies the vector but not its numeric score.
-                # Treat a vector without a published score conservatively.
-                found.append("UNKNOWN")
+            continue
+        if isinstance(score, str) and score.startswith(("CVSS:3.0/", "CVSS:3.1/")):
+            score = _cvss3(score)
+        try:
+            numeric = float(score)
+        except (ValueError, TypeError):
+            found.append("UNKNOWN")
+            continue
+        if not math.isfinite(numeric) or not 0 <= numeric <= 10:
+            found.append("UNKNOWN")
+        else:
+            found.append("CRITICAL" if numeric >= 9 else "HIGH" if numeric >= 7
+                         else "MODERATE" if numeric >= 4 else "LOW" if numeric > 0 else "NONE")
     return max(found, key=lambda level: levels.get(level, 5), default="UNKNOWN")
 
 
@@ -603,8 +645,12 @@ def vet(before, after, *, now=None, opener=None):
             raise VettingError(f"unresolved exact version for {dependency.ecosystem} "
                                f"{dependency.name}: {dependency.version or 'missing'}")
     for dependency in dependencies:
-        published, publisher, source = _metadata(dependency, opener)
-        advisories, advisory_block = _advisories(dependency, opener)
+        try:
+            published, publisher, source = _metadata(dependency, opener)
+            advisories, advisory_block = _advisories(dependency, opener)
+        except (TypeError, AttributeError, KeyError, ValueError) as exc:
+            raise VettingError(f"{dependency.ecosystem} {dependency.name}@{dependency.version}: "
+                               f"invalid registry/advisory evidence: {exc}") from None
         recent = published > now - timedelta(days=14)
         blocked = recent or advisory_block
         findings.append(Finding(dependency, published.isoformat(),
