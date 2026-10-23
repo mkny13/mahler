@@ -807,10 +807,16 @@ details.explain li { margin-bottom: 5px; }
 .project-side h3 { margin: 0 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
 .project-side .brief li { margin: 0 0 6px; }
 .project-side .brief ul { margin: 0; padding-left: 16px; }
+.priority-boost { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px; border: 1px solid var(--acc); border-radius: 6px; background: var(--accq); }
+.priority-boost > strong { color: var(--acc); }
+.priority-boost > span { color: var(--mut); }
+.priority-boost-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.priority-boost-actions .btn { min-height: 32px; }
+.scope-switcher option { font-family: ui-monospace, Menlo, monospace; }
+@media (pointer: coarse) { .priority-boost-actions .btn { min-height: 40px; } }
 @media (max-width: 900px) {
   .two { grid-template-columns: 1fr; }
   .kpis.five { grid-template-columns: repeat(3, 1fr); }
   .kpis.five .kpi:nth-child(3) { border-right: none; }
   .kpis.five .kpi:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
 }
-

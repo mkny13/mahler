@@ -10,6 +10,7 @@ import copy
 import json
 import subprocess
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 import unittest
 from collections import defaultdict
@@ -451,6 +452,68 @@ class FairnessTests(unittest.TestCase):
         item(led, "custom", 3, priority=2, age_minutes=10)
         self.assertEqual(plan(ctx, led),
                          ["custom#3: would build on agy-claude"])
+
+    def test_boost_precedes_priority_labels_and_static_priority_projects(self):
+        ctx, led = mk_ctx({"boosted": proj(), "p1": proj(), "custom": proj()}, total=1)
+        ctx.cfg["scheduling"]["priority_projects"] = ["custom", "boosted"]
+        led.start_priority_boost("boosted", "1h")
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "boosted", 1, priority=3, age_minutes=60)
+        item(led, "p1", 2, priority=1, age_minutes=50)
+        item(led, "custom", 3, priority=2, age_minutes=40)
+        self.assertEqual(plan(ctx, led), ["boosted#1: would build on agy-claude"])
+
+    def test_boost_does_not_bypass_project_capacity(self):
+        ctx, led = mk_ctx({"boosted": proj(max_parallel=1), "other": proj()}, total=2)
+        led.start_priority_boost("boosted", "1h")
+        led.create_run(project="boosted", number=99, role="build",
+                       platform="agy-claude", epoch=1)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "boosted", 1, age_minutes=60)
+        item(led, "other", 2, age_minutes=50)
+        self.assertEqual(plan(ctx, led), ["other#2: would build on agy-claude"])
+
+    def test_expired_boost_does_not_affect_candidate_order(self):
+        ctx, led = mk_ctx({"boosted": proj(), "p1": proj()}, total=1)
+        led.start_priority_boost("boosted", "1h")
+        led.clock = lambda: NOW + timedelta(hours=1)
+        seed(led, **{"agy-claude": (10, 10)})
+        item(led, "boosted", 1, priority=3, age_minutes=60)
+        item(led, "p1", 2, priority=1, age_minutes=50)
+        self.assertEqual(plan(ctx, led), ["p1#2: would build on agy-claude"])
+
+
+class SchedulerPriorityBoostExpiryTests(unittest.TestCase):
+    def test_tick_expires_boost_with_no_candidates_and_ignores_corruption(self):
+        ctx, led = mk_ctx({})
+        self.addCleanup(led.close)
+        led.start_priority_boost("gone", "1h")
+        led.clock = lambda: NOW + timedelta(hours=1)
+        with ExitStack() as stack:
+            for name in ("watchdog", "compute_burst", "sync", "expire",
+                         "recheck_blocked", "close_finished_parents",
+                         "refresh_usage", "warmup_pass", "queue_maintenance",
+                         "schedule", "record_holds", "ship"):
+                stack.enter_context(mock.patch.object(scheduler, name))
+            for module, method in (
+                    (scheduler.failures, "backfill"),
+                    (scheduler.resets, "spend_banked"),
+                    (scheduler.platform_audit, "queue"),
+                    (scheduler.practices_audit, "queue"),
+                    (scheduler.digest, "maybe_send"),
+                    (scheduler.janitor, "maybe_run")):
+                stack.enter_context(mock.patch.object(module, method))
+            stack.enter_context(mock.patch.object(scheduler, "relearn_due", return_value=False))
+            stack.enter_context(mock.patch.object(scheduler.post_merge, "advance"))
+            scheduler.tick(ctx)
+            scheduler.tick(ctx)
+            led.set_kv("priority_boost", "not json")
+            scheduler.tick(ctx)
+        self.assertIsNone(led.priority_boost())
+        self.assertEqual([row["kind"] for row in led.q(
+            "SELECT kind FROM events WHERE kind='priority_boost_expired'")],
+            ["priority_boost_expired"])
+        self.assertIsNone(led.get_kv("priority_boost"))
 
 
 class QuotaGroupTests(unittest.TestCase):

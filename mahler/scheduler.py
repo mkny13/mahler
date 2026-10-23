@@ -21,7 +21,7 @@ from .ledger import iso
 from .finalize import recheck_blocked
 from .ship import ship
 from .sync import close_finished_parents, mirror_labels, sync
-from .tick import expire, queue_maintenance, schedule
+from .tick import expire, queue_maintenance, reconcile_priority_boost, schedule
 from .usage import compute_burst, refresh_usage
 from .watchdog import watchdog
 from .warmup import relearn, relearn_due, warmup_pass
@@ -107,6 +107,7 @@ def tick(ctx):
     ctx.holds = []
     ctx._scorecard_rows = None
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
+    reconcile_priority_boost(ctx)
     outbox.drain(ctx)
     compute_burst(ctx, projects)    # D23: before watchdog so running runs
     watchdog(ctx)                   #   see burst lines too

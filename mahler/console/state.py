@@ -95,6 +95,12 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     now = led.now()
     projects = config.enabled_projects(cfg)
     project_names = [p["name"] for p in projects]
+    priority_boost = led.priority_boost()
+    if priority_boost:
+        priority_boost = {
+            **priority_boost,
+            "remaining": _dur(parse(priority_boost["expires_at"]) - now),
+        }
     if project_scope not in project_names:
         project_scope = None
     peak = _peak(cfg, led)
@@ -120,6 +126,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
                    {"label": f"RUNNING · {len(runs)}", "tone": "acc"} if runs else
                    {"label": "IDLE", "tone": "mut"}),
         "peak": peak,
+        "priority_boost": priority_boost,
         "runs": runs,
         "needs": needs,
         "needs_count": sum(n["pending"] is None for n in needs),
@@ -160,7 +167,8 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     s["all_projects_landing"] = dict(all_projects_landing)
     s["project_scope"] = project_scope
     s["scope_options"] = _scope_options(led, project_names, runs, needs, backlog,
-                                         releases_data, paused)
+                                         releases_data, paused,
+                                         priority_boost["project"] if priority_boost else None)
     if project_scope:
         s["runs"] = [row for row in runs if row["ref"].startswith(project_scope + "#")]
         s["needs"] = [row for row in needs if row["project"] == project_scope]
@@ -194,7 +202,8 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
     return s
 
 
-def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
+def _scope_options(led, project_names, runs, needs, backlog, releases, paused,
+                   boosted_project=None):
     """Expose each enabled project's one-line status from the existing snapshot."""
     options = []
     for name in project_names:
@@ -217,6 +226,7 @@ def _scope_options(led, project_names, runs, needs, backlog, releases, paused):
             "paused": paused,
             "project_paused": project_paused,
             "current_version": version,
+            "priority_boosted": name == boosted_project,
         })
     return options
 
