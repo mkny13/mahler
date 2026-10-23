@@ -2945,6 +2945,16 @@ project.
   returns `None`, and agent runs cannot silently inherit the conductor's global App
   key or ambient human tokens. Migration of non-App and work accounts to scoped
   identities is deferred to #1145.
+- **Copilot keeps its own login** (amended mahler#1211). Copilot CLI signs in with
+  `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN` before its stored login, and it
+  refuses an App installation token ("Access denied by policy settings"). So for a
+  `kind = "copilot"` run, a token the run sets for `gh` (this App token, or another
+  account's overlay token) goes into `hosts.yml` in the run's private `GH_CONFIG_DIR`
+  instead of the environment. `gh` still acts as the project's identity, and Copilot
+  uses the login under its own `COPILOT_HOME`. No other credential reaches the run. A
+  refusal that still happens ends the run as `auth_denied`: no attempt is charged,
+  and that platform is held for that project only (`auth_hold:<project>:<platform>`,
+  6 h), so it keeps serving projects where its login works.
 
 ### D50 — Unattended macOS smoke: the desktop gate and a sleeping display (mahler#1172, #1173)
 

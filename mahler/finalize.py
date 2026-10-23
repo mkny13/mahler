@@ -17,10 +17,15 @@ from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
 
-CAPACITY_STOPS = ("quota", "no_credit", "model_unavailable")
+CAPACITY_STOPS = ("quota", "no_credit", "model_unavailable", "auth_denied")
 
 NO_ATTEMPT = ("quota", "no_credit", "preempted", "closed", "parked", "lost-lease", "silent", "handoff",
-              "model_unavailable", "resume_rejected")
+              "model_unavailable", "resume_rejected", "auth_denied")
+
+# How long a platform whose login a project's runs can't use stays off that
+# project (mahler#1211). A refused login doesn't clear by itself, so this is a
+# retry promise, not an estimate.
+AUTH_DENIED_HOLD_MINUTES = 6 * 60
 
 MAX_OPTIONS = 3
 MAX_OPTION_LEN = 40
@@ -730,7 +735,7 @@ def _ended_out_of_reach(e):
     # Credit exhaustion is deliberately quiet until it lasts a day. The
     # platform-level alert is emitted by _record_credit_failure, not once per
     # item that happened to be leased when the outage was discovered.
-    if e.reason not in ("no_credit", "model_unavailable"):
+    if e.reason not in ("no_credit", "model_unavailable", "auth_denied"):
         e.ping(f"Handoff — {e.project} #{e.number}",
                f"{e.run['platform']} stopped ({e.reason}); next platform picks it up",
                priority="low")
@@ -1077,7 +1082,8 @@ def finalize(ctx, run):
     _record_lessons(ctx, run, log)
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
-    reason = run["stop_reason"] or ("no_credit" if log.get("credit_exhausted")
+    reason = run["stop_reason"] or ("auth_denied" if _auth_denied(log, code, verb) else None) or \
+             ("no_credit" if log.get("credit_exhausted")
                                      or log.get("auth_failed") else
                                      "quota" if log["quota_hit"] else None) or \
              ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
@@ -1099,6 +1105,8 @@ def finalize(ctx, run):
         _hold_platform(ctx, run)
     elif reason == "model_unavailable":
         _hold_model_unavailable(ctx, run, log)
+    elif reason == "auth_denied":
+        _hold_auth_denied(ctx, run, log)
     ending = Ending(ctx, run, item, pol, log, kind, verb, rest, reason, outcome)
     _mark_stale(ending)
     resume = json.loads(led.get_kv(f"resume-run:{run['id']}") or "{}")
@@ -1234,6 +1242,32 @@ def _hold_platform(ctx, run):
              "access for python3 after a Homebrew upgrade): click Allow. "
              f"{run['platform']} is on hold until {until.astimezone():%H:%M}.",
              run["project"], run["number"], priority="high", tags="warning")
+
+
+def _auth_denied(log, code, verb):
+    """The CLI's login was refused (mahler#1211) and the run produced nothing:
+    a failed exit with no STATUS line. A run that got going and reported is
+    judged on its report instead."""
+    return bool(log.get("auth_denied") and code != 0
+                and log.get("ok") is not True and not verb)
+
+
+def _hold_auth_denied(ctx, run, log):
+    """Hold the platform for this project only: its login works elsewhere
+    (work-copilot on work projects), so a global hold would idle it there."""
+    led, platform, project = ctx.led, run["platform"], run["project"]
+    fresh = router.project_hold(led, project, platform) is None
+    until = led.now() + timedelta(minutes=AUTH_DENIED_HOLD_MINUTES)
+    led.set_kv(router.project_hold_key(project, platform), iso(until))
+    led.event("auth_denied", project, run["number"],
+              {"platform": platform, "run": run["id"], "until": iso(until)})
+    if fresh:
+        detail = (log.get("last_error") or "access denied").strip()[-240:]
+        ctx.ping(f"Mahler: {platform} is refused on {project}",
+                 f"Run {run['id']} failed at startup: the CLI's login was refused "
+                 f"({detail}). {platform} is off {project} until "
+                 f"{until.astimezone():%H:%M}; other projects keep using it.",
+                 project, run["number"], tags="warning")
 
 
 def _hold_model_unavailable(ctx, run, log=None):
@@ -1526,6 +1560,7 @@ REASON_TEXT = {
     "setup-failed": "the project's setup step failed (exit 97)",
     "model_unavailable": "the CLI rejected its model",
     "no_credit": "the platform is out of credits",
+    "auth_denied": "the platform's login was refused for this project",
 }
 
 
