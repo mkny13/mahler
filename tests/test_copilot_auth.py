@@ -231,9 +231,11 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(name)
         self.assertIsNone(router.preferred_for_project(
             self.cfg, self.led, mine, "build", "work-copilot", size="s"))
-        self.assertIn("hold", router.diagnose(self.cfg, self.led, mine, "build", size="s")["work-copilot"])
-        self.assertEqual(router.diagnose(self.cfg, self.led, acme, "build", size="s")["work-copilot"],
-                         ["eligible"])
+        # diagnose also checks the CLI is installed; CI has no copilot binary
+        with mock.patch.object(platforms, "available", return_value=True):
+            self.assertIn("hold", router.diagnose(self.cfg, self.led, mine, "build", size="s")["work-copilot"])
+            self.assertEqual(router.diagnose(self.cfg, self.led, acme, "build", size="s")["work-copilot"],
+                             ["eligible"])
 
     def test_capacity_recovery_reports_when_the_hold_lifts(self):
         mine = config.project_policy(self.cfg, "mine")
