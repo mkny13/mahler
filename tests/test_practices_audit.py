@@ -891,12 +891,28 @@ class TestPracticesAudit(unittest.TestCase):
                 "strict required checks", "administrator enforcement",
                 "force pushes disabled", "deletion disabled"):
             self.assertIn(f"{safeguard}: enabled", finding.evidence)
-        self.gh.protection["enforce_admins"] = {"enabled": False}
-        finding = self.results()["branch-protection"]
-        self.assertEqual(finding.state, "gap")
-        self.assertIn("force pushes disabled", finding.reason)
-        self.assertIn("deletion disabled", finding.reason)
-        self.gh.protection["enforce_admins"] = {"enabled": True}
+
+        # Check each classic safeguard without a ruleset provider that could
+        # mask the individual regression.
+        self.gh.rules = []
+        self.gh.rulesets = {}
+        safe_protection = copy.deepcopy(self.gh.protection)
+        safe_protection["required_status_checks"] = {"contexts": ["test"], "strict": True}
+        cases = {
+            "strict required checks": lambda p: p["required_status_checks"].update(strict=False),
+            "administrator enforcement": lambda p: p.update(enforce_admins={"enabled": False}),
+            "force pushes disabled": lambda p: p.update(allow_force_pushes={"enabled": True}),
+            "deletion disabled": lambda p: p.update(allow_deletions={"enabled": True}),
+        }
+        for safeguard, remove in cases.items():
+            with self.subTest(safeguard=safeguard):
+                self.gh.protection = copy.deepcopy(safe_protection)
+                remove(self.gh.protection)
+                finding = self.results()["branch-protection"]
+                self.assertEqual(finding.state, "gap")
+                self.assertIn(safeguard, finding.reason)
+
+        self.gh.protection = copy.deepcopy(safe_protection)
         self.gh.protection["required_pull_request_reviews"] = {"required_approving_review_count": 1}
         self.assertEqual(self.results()["branch-protection"].state, "unknown")
 
@@ -1008,17 +1024,43 @@ class TestPracticesAudit(unittest.TestCase):
         self.assertIn("deletion disabled", finding.reason)
 
     def test_classic_and_ruleset_mix_without_requiring_both(self):
-        self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": False},
-                              "enforce_admins": {"enabled": True}}
-        self.gh.rules = self._safe_rules()
+        self.gh.protection = {
+            "required_status_checks": {"contexts": ["test"], "strict": True},
+            "enforce_admins": {"enabled": True},
+        }
+        self.gh.rulesets = {
+            7: {"bypass_actors": []},
+            8: {"bypass_actors": []},
+        }
+        self.gh.rules = [
+            {"type": "non_fast_forward", "ruleset_id": 7},
+            {"type": "deletion", "ruleset_id": 8},
+        ]
         finding = self.results()["branch-protection"]
         self.assertEqual(finding.state, "pass")
         for safeguard in (
                 "strict required checks", "administrator enforcement",
                 "force pushes disabled", "deletion disabled"):
             self.assertIn(f"{safeguard}: enabled", finding.evidence)
-        self.gh.rulesets[7]["bypass_actors"] = [{"actor_type": "RepositoryRole"}]
-        self.assertEqual(self._protection_state(), "gap")
+
+        safe_protection = copy.deepcopy(self.gh.protection)
+        safe_rulesets = copy.deepcopy(self.gh.rulesets)
+        cases = {
+            "strict required checks": lambda p, r: p["required_status_checks"].update(strict=False),
+            "administrator enforcement": lambda p, r: p.update(enforce_admins={"enabled": False}),
+            "force pushes disabled": lambda p, r: r[7].update(
+                bypass_actors=[{"actor_type": "RepositoryRole"}]),
+            "deletion disabled": lambda p, r: r[8].update(
+                bypass_actors=[{"actor_type": "RepositoryRole"}]),
+        }
+        for safeguard, remove in cases.items():
+            with self.subTest(safeguard=safeguard):
+                self.gh.protection = copy.deepcopy(safe_protection)
+                self.gh.rulesets = copy.deepcopy(safe_rulesets)
+                remove(self.gh.protection, self.gh.rulesets)
+                finding = self.results()["branch-protection"]
+                self.assertEqual(finding.state, "gap")
+                self.assertIn(safeguard, finding.reason)
 
     def test_classic_admin_enforcement_does_not_vouch_for_ruleset_gate(self):
         self.gh.protection = {"required_status_checks": {"contexts": ["lint"], "strict": True},
