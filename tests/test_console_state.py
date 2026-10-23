@@ -43,6 +43,7 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(data['groups'], [])
         self.assertEqual(data['empty'], 'No attempts in this window.')
 
+
     def test_large_history_has_bounded_outcomes_and_fragment(self):
         from mahler.console import page
         from mahler.scorecard import table
@@ -99,6 +100,43 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
 })().catch(err => { console.error(err); process.exit(1); });
 '''
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
+
+
+class PriorityBoostConsoleTests(unittest.TestCase):
+    def test_overview_menu_active_controls_and_switcher_marker(self):
+        from test_serve import make_cfg
+
+        now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+        led = Ledger(":memory:", clock=lambda: now)
+        self.addCleanup(led.close)
+        cfg = make_cfg()
+        cfg["projects"]["other"] = {"enabled": True, "repo": "x/other",
+                                    "path": "/unused"}
+        led.start_priority_boost("mahler", "1d")
+        snapshot = state.build(cfg, led, project_scope="other")
+        for layout, selection in (("desktop", {"view": "overview"}),
+                                  ("phone", {"tab": "overview"})):
+            rendered = page.app(snapshot, layout, **selection)
+            self.assertIn("left", rendered)
+            self.assertIn("2026-10-02T12:00:00+00:00", rendered)
+            self.assertIn("Extend", rendered)
+            self.assertIn("Stop", rendered)
+            self.assertIn("Replace with 1 hour", rendered)
+            self.assertIn("Replace with 1 day", rendered)
+            self.assertIn("Replace with 1 week", rendered)
+            self.assertIn("▲", rendered)
+            self.assertEqual(rendered.count("▲"), 1)
+            self.assertIn('data-active-project="mahler"', rendered)
+        self.assertIn("Replace the active priority boost for ", page.JS)
+        self.assertIn("with \" + payload.project", page.JS)
+        led.stop_priority_boost("mahler")
+        inactive = state.build(cfg, led, project_scope="other")
+        rendered = page.app(inactive, "desktop", view="overview")
+        self.assertEqual(rendered.count('data-act="priority_boost_start"'), 3)
+        self.assertEqual(rendered.count("1 hour"), 1)
+        self.assertEqual(rendered.count("1 day"), 1)
+        self.assertEqual(rendered.count("1 week"), 1)
+        self.assertNotIn("▲", rendered)
 
 
 class RecentProblemsTests(unittest.TestCase):
@@ -497,7 +535,7 @@ class ProjectScopeStateTests(unittest.TestCase):
         self.assertEqual(summary, {
             "name": "groundwork", "status": "running", "running": 1, "queued": 1,
             "waiting_on_you": 1, "paused": False, "project_paused": False,
-        "current_version": "2.4.1"})
+            "current_version": "2.4.1", "priority_boosted": False})
         queued_summary = next(row for row in selected["scope_options"]
                               if row["name"] == "mahler")
         self.assertEqual((queued_summary["status"], queued_summary["queued"],

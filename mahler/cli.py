@@ -907,6 +907,19 @@ def cmd_next_id(a, cfg, led):
     return 0
 
 
+def cmd_prioritize(a, cfg, led):
+    if a.project not in {p["name"] for p in config.enabled_projects(cfg)}:
+        raise ValueError(f"project {a.project!r} is not enabled")
+    if a.duration == "off":
+        if not led.stop_priority_boost(a.project):
+            raise ValueError(f"no matching priority boost is active for {a.project}")
+        print(f"{a.project}: priority boost stopped")
+        return 0
+    record = led.start_priority_boost(a.project, a.duration)
+    print(f"{record['project']}: prioritized until {record['expires_at']}")
+    return 0
+
+
 def cmd_pause(a, cfg, led):
     led.set_kv("paused", "1")
     led.event("pause", detail="paused by command")
@@ -1380,6 +1393,11 @@ def build_parser(cfg=None):
     s.add_argument("name")
     s.add_argument("--floor", type=int, default=0)
     s.set_defaults(fn=cmd_next_id)
+
+    s = sub.add_parser("prioritize", help="temporarily prioritize one project for 1h, 1d, or 1w")
+    s.add_argument("project")
+    s.add_argument("duration", choices=("1h", "1d", "1w", "off"))
+    s.set_defaults(fn=cmd_prioritize)
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
     sub.add_parser("resume").set_defaults(fn=cmd_resume)
