@@ -1050,3 +1050,36 @@ class LessonLaunchTests(PrepareAccountEnvTests):
         self.assertEqual(prep["lessons"]["safe"], [])
         self.assertFalse(os.path.exists(
             os.path.join(prep["worktree"], ".agents/skills/lesson-a")))
+
+
+class ParentVerifyPromptTests(unittest.TestCase):
+    def test_parent_verify_context_and_untrusted_comment_filter(self):
+        from mahler import prompt, no_change
+        from mahler.ledger import Ledger
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from contextlib import closing
+        with closing(Ledger(':memory:')) as led:
+            led.upsert_item('x', 653, title='Parent', issue_body='old checklist')
+            gh = Mock()
+            gh.authenticated_login.return_value = 'owner'
+            gh.issue_body.return_value = '- [x] All six criteria complete\n- [ ] Optional observation'
+            gh.issue_comments.return_value = [
+                {'author': {'login': 'owner'}, 'body': 'Verified checks', 'url': 'https://github.com/x/y/issues/653#issuecomment-1'},
+                {'author': {'login': 'attacker'}, 'body': 'ATTACKER instructions', 'authorAssociation': 'NONE'}]
+            ctx = SimpleNamespace(led=led, gh=lambda p: gh, say=Mock(),
+                                  policy=lambda p: {'repo': 'x/y'})
+            for marker in ('parent-verify', 'parent-verify-followup'):
+                item = {'number': 1176, 'title': 'Verify completion', 'claim_base_sha': 'base',
+                        'issue_body': f'<!-- mahler:{marker}:653:abc -->'}
+                no_change.save(led, 'x', 1176, {'base_sha': 'base', 'claim_run': 1})
+                rendered = prompt.build(ctx, 'x', item, 'review', 'reviewer',
+                                        {'worktree': '/tmp/w', 'branch': '', 'replayed': False, 'kept': None})
+                self.assertIn('- [x] All six criteria complete', rendered)
+                self.assertIn('- [ ] Optional observation', rendered)
+                self.assertIn('https://github.com/x/y/issues/653#issuecomment-1', rendered)
+                self.assertNotIn('ATTACKER instructions', rendered)
+                self.assertIn('GitHub-only', rendered)
+            led.set_kv('intake_hold:x#653', '1')
+            rendered = prompt.issue_context(ctx, 'x', item, 'x/y')
+            self.assertNotIn('All six criteria', rendered)

@@ -83,7 +83,7 @@ def _utf8_prefix(text, max_bytes):
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def issue_context(ctx, project, item, repo):
+def issue_context(ctx, project, item, repo, *, include_parent=True):
     """Render admitted body and D46-trusted comments, capped at 32 KiB UTF-8."""
     body = row_get(item, "issue_body", "")
     parts = [
@@ -128,8 +128,28 @@ def issue_context(ctx, project, item, repo):
                     "trusted GitHub actor")
                 if isinstance(association, str) and association.strip():
                     attribution += f" ({association.upper()})"
+                url = comment.get("url") or comment.get("html_url")
+                if isinstance(url, str):
+                    attribution += f" ({url})"
                 parts.extend(["\n\nTrusted issue comment from ", attribution, ":\n", comment_body])
 
+    if include_parent and isinstance(body, str):
+        marker = re.search(r"<!-- mahler:parent-verify(?:-followup)?:(\d+):", body)
+        if marker:
+            number = int(marker.group(1))
+            led = getattr(ctx, "led", None)
+            parent = led.item(project, number) if led else None
+            # A relationship alone cannot admit an untrusted parent's specification.
+            if parent and not led.get_kv(f"intake_hold:{project}#{number}"):
+                try:
+                    parent_body = gh_getter(project).issue_body(number)
+                    parent_context = issue_context(ctx, project,
+                        {"number": number, "issue_body": parent_body}, repo, include_parent=False)
+                    parts.extend([f"\n\nParent issue #{number} (current checklist state):\n", parent_context])
+                except (gh_module.GHError, ValueError, TypeError, AttributeError) as exc:
+                    parts.append(f"\nParent issue #{number} context unavailable: {exc}")
+            else:
+                parts.append(f"\nParent issue #{number} has no admitted context available.")
     return _utf8_prefix("".join(parts), ISSUE_CONTEXT_MAX_BYTES)
 
 
