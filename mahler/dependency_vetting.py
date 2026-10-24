@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 
 class VettingError(RuntimeError):
@@ -602,6 +603,9 @@ def _request_json(url, *, data=None, opener=None):
         raise VettingError(f"registry/advisory lookup failed: {exc}") from None
 
 
+_POM_LIMIT = 1_000_000
+
+
 def _date(value):
     if not isinstance(value, str):
         return None
@@ -671,6 +675,60 @@ def _metadata(dep, opener):
     return first, str(publisher), str(source)
 
 
+def _request_text(url, opener):
+    request = Request(url, headers={"User-Agent": "Mahler dependency vetting"})
+    try:
+        with opener(request, timeout=20) as response:
+            return response.read(_POM_LIMIT + 1).decode("utf-8")
+    except HTTPError as exc:
+        code = exc.code
+        exc.close()
+        if code == 404:
+            return None
+        raise VettingError(f"registry/advisory lookup returned HTTP {code}") from None
+    except (URLError, TimeoutError, OSError, UnicodeError) as exc:
+        raise VettingError(f"registry/advisory lookup failed: {exc}") from None
+
+
+def _pom_metadata(pom_url, group, artifact, opener):
+    """Publisher and source declared in the artifact's POM, else Maven fallbacks.
+
+    The POM is only trusted when it names the requested artifact. An absent,
+    oversized, unparsable or mismatched POM falls back to the namespace and the
+    POM URL, which the review recipe treats as unverified metadata.
+    """
+    fallback = (f"Maven Central namespace {group}", pom_url)
+    text = _request_text(pom_url, opener)
+    if text is None or len(text) > _POM_LIMIT or "<!DOCTYPE" in text or "<!ENTITY" in text:
+        return fallback
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        return fallback
+
+    def child(node, name):
+        for element in node:
+            if element.tag.rpartition("}")[2] == name:
+                return element
+        return None
+
+    def value(node, *path):
+        for name in path:
+            node = child(node, name) if node is not None else None
+        return (node.text or "").strip() if node is not None and node.text else ""
+
+    declared_group = value(root, "groupId") or value(root, "parent", "groupId")
+    if value(root, "artifactId") != artifact or (declared_group and declared_group != group):
+        return fallback
+    developers = child(root, "developers")
+    names = [value(developer, "name") or value(developer, "id")
+             for developer in (developers if developers is not None else ())]
+    publisher = (value(root, "organization", "name")
+                 or ", ".join(n for n in names if n) or fallback[0])
+    source = value(root, "scm", "url") or value(root, "scm", "connection") or fallback[1]
+    return publisher, source
+
+
 def _resolved_metadata(dep, opener):
     if dep.ecosystem == "swift":
         repository = dep.name.removeprefix("https://github.com/")
@@ -712,9 +770,9 @@ def _resolved_metadata(dep, opener):
                 published = datetime.fromtimestamp(stamp / 1000, timezone.utc)
             except (ValueError, OverflowError, OSError):
                 pass
-        publisher = f"Maven Central namespace {group}"
-        source = ("https://repo1.maven.org/maven2/" + group.replace(".", "/")
-                  + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
+        pom_url = ("https://repo1.maven.org/maven2/" + group.replace(".", "/")
+                   + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
+        publisher, source = _pom_metadata(pom_url, group, artifact, opener)
     if published is None:
         raise VettingError(f"missing publication date: {dep.ecosystem} {dep.name}@{dep.version}")
     return published, publisher, source

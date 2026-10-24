@@ -29,8 +29,8 @@ def python_files(declaration="requests>=2.30", version="2.31.0"):
 
 
 class Response:
-    def __init__(self, body):
-        self.body = json.dumps(body).encode()
+    def __init__(self, body, raw=False):
+        self.body = body.encode() if raw else json.dumps(body).encode()
 
     def __enter__(self):
         return self
@@ -38,7 +38,7 @@ class Response:
     def __exit__(self, *args):
         return False
 
-    def read(self):
+    def read(self, size=-1):
         return self.body
 
 
@@ -355,11 +355,19 @@ def gradle_files(version="1.2.3"):
 
 
 class SwiftGradleTests(unittest.TestCase):
-    def opener(self, date="2020-01-01T00:00:00Z", vulns=(), broken=None):
+    POM = ("<project xmlns='http://maven.apache.org/POM/4.0.0'><groupId>org.example</groupId>"
+           "<artifactId>demo</artifactId><organization><name>Example Org</name></organization>"
+           "<scm><url>https://github.com/example/demo</url></scm></project>")
+
+    def opener(self, date="2020-01-01T00:00:00Z", vulns=(), broken=None, pom=POM):
         def open_request(request, timeout):
             url = request.full_url
             if broken and broken in url:
                 raise URLError("offline")
+            if url.endswith(".pom"):
+                if pom is None:
+                    raise HTTPError(url, 404, "not found", None, None)
+                return Response(pom, raw=True)
             if url == "https://api.osv.dev/v1/query":
                 payload = json.loads(request.data)
                 self.assertIn(payload["package"]["ecosystem"], ("SwiftURL", "Maven"))
@@ -469,6 +477,40 @@ class SwiftGradleTests(unittest.TestCase):
                                           opener=self.opener(date="2026-10-19T00:00:00Z"))
             self.assertIn("less than 14 days", reason)
             self.assertTrue(findings[0].recent)
+
+    def gradle_report(self, pom):
+        findings, _ = vetting.vet({}, gradle_files(), now=NOW, opener=self.opener(pom=pom))
+        return findings[0].report()
+
+    def test_gradle_pom_publisher_and_source(self):
+        report = self.gradle_report(self.POM)
+        self.assertIn("publisher Example Org; source https://github.com/example/demo", report)
+        devs = self.POM.replace("<organization><name>Example Org</name></organization>",
+                                "<developers><developer><name>Ada</name></developer>"
+                                "<developer><id>bob</id></developer></developers>")
+        self.assertIn("publisher Ada, bob;", self.gradle_report(devs))
+
+    def test_gradle_pom_fallback_when_unavailable_or_untrusted(self):
+        pom_url = "https://repo1.maven.org/maven2/org/example/demo/1.2.3/demo-1.2.3.pom"
+        wrong = self.POM.replace("<artifactId>demo", "<artifactId>other")
+        other_group = self.POM.replace("<groupId>org.example", "<groupId>evil.example")
+        for label, pom in (("missing", None), ("malformed", "<project>"),
+                           ("entity", "<!DOCTYPE x [<!ENTITY a 'b'>]><project/>"),
+                           ("empty", "<project><artifactId>demo</artifactId></project>"),
+                           ("wrong artifact", wrong), ("wrong group", other_group)):
+            with self.subTest(label):
+                report = self.gradle_report(pom)
+                self.assertIn("publisher Maven Central namespace org.example", report)
+                self.assertIn("source " + pom_url, report)
+
+    def test_gradle_pom_server_error_blocks(self):
+        clean = self.opener()
+        def opener(request, timeout):
+            if request.full_url.endswith(".pom"):
+                raise HTTPError(request.full_url, 500, "boom", None, None)
+            return clean(request, timeout)
+        with self.assertRaises(vetting.VettingError):
+            vetting.vet({}, gradle_files(), now=NOW, opener=opener)
 
     def test_missing_metadata_and_endpoint_failures(self):
         for files, endpoint in ((swift_files, "api.github.com"), (gradle_files, "search.maven.org")):
@@ -584,8 +626,7 @@ class CompletionEvidenceTests(unittest.TestCase):
         metadata = {"npm": ("Publisher", "https://example.test/source"),
                     "pypi": ("Publisher", "https://example.test/source"),
                     "swift": ("example", "https://github.com/example/demo"),
-                    "gradle": ("Maven Central namespace org.example",
-                               "https://repo1.maven.org/maven2/org/example/demo/1.2.3/demo-1.2.3.pom")}
+                    "gradle": ("Example Org", "https://github.com/example/demo")}
         for ecosystem in ECOSYSTEM_FILES:
             for scenario in ("clean", "high", "critical"):
                 with self.subTest(ecosystem=ecosystem, scenario=scenario):

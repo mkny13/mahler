@@ -131,6 +131,10 @@ is refused. Missing such a test is a blocking finding.
     Cite the gate evidence and confirm it applies to the reviewed head.
     Identify missing or inconsistent publisher/source details and explain their
     effect on the finding. Metadata presence alone does not prove legitimacy.
+    For Gradle/Maven, a publisher of "Maven Central namespace <group>" with the POM
+    URL as source means the POM declared no verified publisher/repository; treat it
+    as unverified. Also flag a publisher or source that contradicts the package
+    identity (for example a repository owned by an unrelated account).
     Missing, stale, incomplete, or blocking gate evidence is a blocking finding;
     do not waive it because CI is green or the dependency seems familiar.
     Do not demote it to a PR-description-only request or a follow-up.
