@@ -399,7 +399,7 @@ class SwiftGradleTests(unittest.TestCase):
     def test_paths_enter_shared_gate(self):
         for path in ("Package.swift", "app/Package.resolved", "build.gradle", "build.gradle.kts",
                      "gradle.lockfile", "gradle/dependency-locks/test.lockfile", "gradle/libs.versions.toml"):
-            self.assertTrue(vetting.relevant_path(path), path)
+            self.assertTrue(vetting.relevant_path(path), f"Expected dependency path: {path}")
 
     def test_clean_metadata_and_advisory_evidence(self):
         for files in (swift_files, gradle_files):
