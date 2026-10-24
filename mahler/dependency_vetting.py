@@ -1,4 +1,4 @@
-"""Fail-closed vetting of changed direct npm and PyPI dependencies."""
+"""Fail-closed vetting of changed npm, PyPI, Swift and Gradle dependencies."""
 
 import json
 import math
@@ -21,6 +21,7 @@ class Dependency:
     name: str
     declaration: str
     version: str | None
+    revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,10 @@ class Finding:
 
     def report(self):
         advisories = "; ".join(self.advisories) if self.advisories else "none"
+        publication = ("version published" if self.dependency.ecosystem in {"swift", "gradle"}
+                       else "first published")
         return (f"{self.dependency.ecosystem} {self.dependency.name}@"
-                f"{self.dependency.version}: first published "
+                f"{self.dependency.version}: {publication} "
                 f"{self.first_published}; publisher {self.publisher}; "
                 f"source {self.source}; advisories {advisories}"
                 f"{' [BLOCKED]' if self.blocked else ''}")
@@ -46,11 +49,15 @@ _RELEVANT = re.compile(
     r"(?:^|/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|"
     r"pyproject\.toml|uv\.lock|poetry\.lock|requirements[^/]*\.(?:txt|in)|"
     r"constraints[^/]*\.txt|setup\.py|setup\.cfg|"
-    r"pnpm-lock\.yaml|yarn\.lock|Pipfile|Pipfile\.lock)$"
+    r"Package\.swift|Package\.resolved|build\.gradle(?:\.kts)?|"
+    r"settings\.gradle(?:\.kts)?|gradle\.properties|libs\.versions\.toml|"
+    r"gradle\.lockfile|gradle/dependency-locks/[^/]+\.lockfile|pnpm-lock\.yaml|yarn\.lock|Pipfile|Pipfile\.lock)$"
 )
 _UNSUPPORTED_LOCKS = {
     "pnpm-lock.yaml", "yarn.lock", "Pipfile", "Pipfile.lock",
     "setup.py", "setup.cfg",
+    "Package.swift", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts", "gradle.properties", "libs.versions.toml",
 }
 _PEP_REQ = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*(.*)$")
@@ -405,6 +412,65 @@ def _version_matches(dependency):
     return _pep_spec_matches(dependency.declaration, dependency.version)
 
 
+def _resolved_dependencies(path, text):
+    """Read resolved pins without executing Swift or Gradle build scripts.
+
+    These lock formats do not label direct dependencies. Compare pins individually
+    so unchanged entries/configuration-only churn never trigger network checks.
+    """
+    pins = {}
+    if path.endswith("Package.resolved"):
+        data = _json(text, path)
+        schema = data.get("version")
+        if schema not in (1, 2, 3):
+            raise VettingError(f"unsupported Swift lock schema in {path}")
+        entries = data.get("object", {}).get("pins") if schema == 1 else data.get("pins")
+        if not isinstance(entries, list):
+            raise VettingError(f"invalid Swift pins in {path}")
+        for pin in entries:
+            if schema != 1 and pin.get("kind") != "remoteSourceControl":
+                raise VettingError(f"unsupported Swift source in {path}")
+            source = pin.get("repositoryURL" if schema == 1 else "location")
+            if not isinstance(source, str) or not re.fullmatch(
+                    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", source):
+                raise VettingError(f"unsupported Swift repository in {path}: {source}")
+            source = source.removesuffix(".git")
+            state = pin.get("state", {})
+            dep = Dependency("swift", source, source, state.get("version"), state.get("revision"))
+            if source in pins:
+                raise VettingError(f"duplicate Swift pin in {path}: {source}")
+            pins[source] = dep
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("empty="):
+                continue
+            coordinate = line.split("=", 1)[0]
+            match = re.fullmatch(r"([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([0-9][A-Za-z0-9._-]*)", coordinate)
+            if not match or match.group(3).upper().endswith("-SNAPSHOT"):
+                raise VettingError(f"unresolved Gradle coordinate in {path}: {coordinate}")
+            group, artifact, version = match.groups()
+            name = f"{group}:{artifact}"
+            if name in pins:
+                raise VettingError(f"duplicate Gradle pin in {path}: {name}")
+            pins[name] = Dependency("gradle", name, coordinate, version)
+    return pins
+
+
+def _changed_resolved_dependencies(before, after):
+    changed = []
+    for path, text in after.items():
+        if not (path.endswith("/Package.resolved") or path == "Package.resolved"
+                or path.rsplit("/", 1)[-1] == "gradle.lockfile"
+                or re.search(r"(?:^|/)gradle/dependency-locks/[^/]+\.lockfile$", path)
+                ) or before.get(path) == text:
+            continue
+        new = _resolved_dependencies(path, text)
+        old = _resolved_dependencies(path, before[path]) if path in before else {}
+        changed.extend(dep for name, dep in new.items() if old.get(name) != dep)
+    return changed
+
+
 def _changed_project_dependencies(before, after):
     """Return only added or changed direct dependencies, without network access."""
     for path in set(before) | set(after):
@@ -417,7 +483,7 @@ def _changed_project_dependencies(before, after):
     old_direct, new_direct = _direct_dependencies(before), _direct_dependencies(after)
     old_versions = {"npm": _npm_versions(before, old_direct), "pypi": _python_versions(before, old_direct)}
     new_versions = {"npm": _npm_versions(after, new_direct), "pypi": _python_versions(after, new_direct)}
-    changed = []
+    changed = _changed_resolved_dependencies(before, after)
     for key, (name, declaration) in new_direct.items():
         old = old_direct.get(key)
         version = new_versions[key[0]].get(key[1])
@@ -494,6 +560,8 @@ def _date(value):
 
 
 def _metadata(dep, opener):
+    if dep.ecosystem in {"swift", "gradle"}:
+        return _resolved_metadata(dep, opener)
     if dep.ecosystem == "npm":
         url = f"https://registry.npmjs.org/{quote(dep.name, safe='')}"
     else:
@@ -546,6 +614,55 @@ def _metadata(dep, opener):
     if first is None:
         raise VettingError(f"missing first-publication date: {dep.ecosystem} {dep.name}@{dep.version}")
     return first, str(publisher), str(source)
+
+
+def _resolved_metadata(dep, opener):
+    if dep.ecosystem == "swift":
+        repository = dep.name.removeprefix("https://github.com/")
+        base = f"https://api.github.com/repos/{repository}"
+        repo = _request_json(base, opener=opener)
+        if (not isinstance(repo, dict) or repo.get("full_name", "").lower() != repository.lower()
+                or not repo.get("owner", {}).get("login")):
+            raise VettingError(f"missing Swift source metadata: {dep.name}")
+        release = None
+        for tag in (dep.version, "v" + dep.version):
+            release = _request_json(base + "/releases/tags/" + quote(tag, safe=""), opener=opener)
+            if release is not None:
+                break
+        if (not isinstance(release, dict) or release.get("draft") is not False
+                or release.get("tag_name") not in {dep.version, "v" + dep.version}):
+            raise VettingError(f"missing Swift release metadata: {dep.name}@{dep.version}")
+        published = _date(release.get("published_at"))
+        commit = _request_json(base + "/commits/" + quote(release["tag_name"], safe=""),
+                               opener=opener)
+        if not isinstance(commit, dict) or commit.get("sha") != dep.revision:
+            raise VettingError(f"Swift revision does not match release: {dep.name}@{dep.version}")
+        publisher, source = repo["owner"]["login"], dep.name
+    else:
+        group, artifact = dep.name.split(":")
+        query = f'g:"{group}" AND a:"{artifact}" AND v:"{dep.version}"'
+        url = "https://search.maven.org/solrsearch/select?q=" + quote(query, safe="") + "&core=gav&rows=2&wt=json"
+        result = _request_json(url, opener=opener)
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        docs = response.get("docs", [])
+        if response.get("numFound") != 1 or not isinstance(docs, list) or len(docs) != 1:
+            raise VettingError(f"missing Maven artifact metadata: {dep.name}@{dep.version}")
+        doc = docs[0]
+        if (doc.get("g"), doc.get("a"), doc.get("v")) != (group, artifact, dep.version):
+            raise VettingError(f"mismatched Maven artifact metadata: {dep.name}@{dep.version}")
+        stamp = doc.get("timestamp")
+        published = None
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp) and stamp > 0:
+            try:
+                published = datetime.fromtimestamp(stamp / 1000, timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                pass
+        publisher = f"Maven Central namespace {group}"
+        source = ("https://repo1.maven.org/maven2/" + group.replace(".", "/")
+                  + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
+    if published is None:
+        raise VettingError(f"missing publication date: {dep.ecosystem} {dep.name}@{dep.version}")
+    return published, publisher, source
 
 
 def _cvss3(vector):
@@ -612,7 +729,7 @@ def _severity(advisory):
 
 
 def _advisories(dep, opener):
-    package = {"name": dep.name, "ecosystem": "npm" if dep.ecosystem == "npm" else "PyPI"}
+    package = {"name": dep.name, "ecosystem": {"npm": "npm", "pypi": "PyPI", "swift": "SwiftURL", "gradle": "Maven"}[dep.ecosystem]}
     payload = json.dumps({"version": dep.version, "package": package}).encode()
     try:
         result = _request_json("https://api.osv.dev/v1/query", data=payload, opener=opener)
@@ -641,9 +758,16 @@ def vet(before, after, *, now=None, opener=None):
     now = now or datetime.now(timezone.utc)
     findings = []
     for dependency in dependencies:
-        if not dependency.version or not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]*", dependency.version):
+        if (not isinstance(dependency.version, str)
+                or not re.fullmatch(r"[0-9][A-Za-z0-9.+_-]*", dependency.version)):
             raise VettingError(f"unresolved exact version for {dependency.ecosystem} "
                                f"{dependency.name}: {dependency.version or 'missing'}")
+        if dependency.ecosystem == "swift" and (
+                not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?",
+                                 dependency.version)
+                or not isinstance(dependency.revision, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", dependency.revision)):
+            raise VettingError(f"unresolved Swift version/revision: {dependency.name}")
     for dependency in dependencies:
         try:
             published, publisher, source = _metadata(dependency, opener)

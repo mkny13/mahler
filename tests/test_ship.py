@@ -2742,6 +2742,27 @@ class ShipTests(unittest.TestCase):
                     self.ship()
                 self.assertEqual(self.gh.merged, [])
 
+    def _assert_resolved_dependency_gate(self, files):
+        from tests.test_dependency_vetting import SwiftGradleTests
+        for blocked in (True, False):
+            with self.subTest(blocked=blocked):
+                self.led.upsert_item("x", 5, pr=88, state="verifying")
+                opener = SwiftGradleTests().opener(vulns=[{
+                    "id": "OSV-test", "database_specific": {"severity": "HIGH"}
+                }] if blocked else [])
+                with mock.patch.object(self.gh, "dependency_files", return_value=({}, files())), \
+                        mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener):
+                    self.ship()
+                self.assertEqual(self.gh.merged, [] if blocked else [88])
+
+    def test_swift_gate_runs_before_merge(self):
+        from tests.test_dependency_vetting import swift_files
+        self._assert_resolved_dependency_gate(swift_files)
+
+    def test_gradle_gate_runs_before_merge(self):
+        from tests.test_dependency_vetting import gradle_files
+        self._assert_resolved_dependency_gate(gradle_files)
+
     def test_clean_dependency_gate_proceeds_to_merge(self):
         from tests.test_dependency_vetting import npm_files, DependencyVettingTests
         self.led.upsert_item("x", 5, pr=88)

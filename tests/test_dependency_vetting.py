@@ -336,8 +336,6 @@ class DependencyVettingTests(unittest.TestCase):
             vetting.changed_dependencies({}, {"pnpm-lock.yaml": "lockfileVersion: 9"})
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 def swift_files(version="1.2.3", schema=3):
@@ -367,6 +365,8 @@ class SwiftGradleTests(unittest.TestCase):
                 self.assertIn(payload["package"]["ecosystem"], ("SwiftURL", "Maven"))
                 self.assertEqual(payload["version"], "1.2.3")
                 return Response({"vulns": list(vulns)})
+            if "/commits/" in url:
+                return Response({"sha": "a" * 40})
             if "/releases/tags/" in url:
                 return Response({"tag_name": "1.2.3", "published_at": date, "draft": False})
             if url.startswith("https://api.github.com/repos/"):
@@ -443,3 +443,46 @@ class SwiftGradleTests(unittest.TestCase):
                 with self.assertRaises(vetting.VettingError):
                     vetting.vet({}, files, opener=opener)
                 opener.assert_not_called()
+
+    def test_swift_revision_must_match_release(self):
+        files = swift_files()
+        files["Package.resolved"] = files["Package.resolved"].replace("a" * 40, "b" * 40)
+        with self.assertRaises(vetting.VettingError):
+            vetting.vet({}, files, opener=self.opener())
+
+    def test_invalid_revision_and_version_types_fail_before_network(self):
+        for version in (123, [], "1.2", "1.2.3/evil"):
+            with self.subTest(version=version):
+                opener = mock.Mock()
+                with self.assertRaises(vetting.VettingError):
+                    vetting.vet({}, swift_files(version), opener=opener)
+                opener.assert_not_called()
+
+    def test_wrong_artifact_or_source_metadata_blocks(self):
+        for files in (swift_files, gradle_files):
+            clean = self.opener()
+            def opener(request, timeout):
+                response = clean(request, timeout)
+                data = json.loads(response.body)
+                if "full_name" in data:
+                    data["full_name"] = "other/repo"
+                if "response" in data:
+                    data["response"]["docs"][0]["v"] = "9.0.0"
+                return Response(data)
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, files(), opener=opener)
+
+    def test_missing_source_and_release_http_404_blocks(self):
+        for target in ("/repos/example/demo", "/releases/tags/", "search.maven.org"):
+            clean = self.opener()
+            def opener(request, timeout):
+                if target in request.full_url:
+                    raise HTTPError(request.full_url, 404, "not found", None, None)
+                return clean(request, timeout)
+            files = gradle_files() if target == "search.maven.org" else swift_files()
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, files, opener=opener)
+
+
+if __name__ == "__main__":
+    unittest.main()
