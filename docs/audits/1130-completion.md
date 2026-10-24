@@ -153,3 +153,43 @@ All five verification commands were executed from the worktree root using Python
 
 The single skipped test in the full test suites is the standard pre-existing platform skip, unrelated to dependency vetting. All 48 generated completion gate methods in `tests.test_ship.ShipTests`, the adapter fixtures in `tests.test_dependency_vetting`, and the review recipe contracts in `tests.test_recipes` passed without failure or error.
 
+## Reverification at base `6a40d24ec4a77d4423b2bf27ae0494968b35bec8`
+
+The three child PRs remain merged, and PR #1238 is merged. Its rendered-review
+prompt assertion is
+`tests.test_recipes.DependencyRecipeTests.test_review_requires_dependency_diff_and_gate_evidence`;
+the report field
+assertions remain in `CompletionEvidenceTests.test_report_fields_for_every_ecosystem`.
+This establishes the report and prompt contract, not that a language model
+always follows it. Keep the criterion unchecked if requiring observed reviewer
+behavior rather than the tested prompt contract.
+
+The first-publication criterion remains unsupported for Swift and Gradle:
+`_resolved_metadata` reports the selected GitHub release or Maven artifact
+version timestamp, and `test_completion_gate_swift_recent` /
+`test_completion_gate_gradle_recent` exercise those selected-version dates.
+They do not establish the first publication date of the package. npm and PyPI
+use their earliest returned release/upload dates. This remains an actionable
+technical gap; add a linked P1 fix issue before treating the criterion as
+complete.
+
+On Python 3.14.3, the focused command passed (469 tests), and
+`python3 -m mahler.repo_guard` exited 0. The three full-suite commands each
+initially failed the same four unrelated purge-history tests because this host
+has `safe.bareRepository=explicit`; Git refuses their temporary bare fixture
+repositories. The failure is reproducible in `tests.test_purge_calendar_profile_history`.
+With a command-scoped override only (no persistent Git configuration change),
+the module passed all 5 tests, and the full suite, randomized suite, and strict
+suite each passed 3219 tests with one skipped. The random seed was `624717300`.
+Commands used for the successful reruns:
+
+- `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 -m unittest discover -s tests`
+- `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 tests/run_random.py 624717300`
+- `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=all python3 -X dev tests/run_strict.py`
+
+GitHub write access was unavailable during this reverification: `gh auth status`
+reported the active `x-access-token` credential invalid, and `gh issue create`
+returned HTTP 401. Therefore this update records evidence locally only; it has
+not been posted to #1130, its supported checklist items have not been edited,
+and no linked P1 issue was created. Do not represent the parent-side recording
+as complete until an authorized GitHub CLI credential is provisioned.
