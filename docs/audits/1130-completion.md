@@ -141,4 +141,15 @@ that a model will follow it. No owner verdict is requested or counted as evidenc
 
 ## Verification results
 
-Results on the tested commit above are recorded below after all commands finish.
+All five verification commands were executed from the worktree root using Python 3.14.3 on macOS:
+
+| # | Command | Tests / Scope | Duration | Result | Exit |
+|---|---|---|---|---|---|
+| 1 | `python3 -m unittest tests.test_dependency_vetting tests.test_ship tests.test_recipes` | 465 tests | 12.877s | OK | 0 |
+| 2 | `python3 -m mahler.repo_guard` | Tracked files / repo guard checks | < 1s | OK (no output) | 0 |
+| 3 | `python3 -m unittest discover -s tests` | 3215 tests (skipped=1) | 205.022s | OK | 0 |
+| 4 | `python3 tests/run_random.py` | 3215 tests (skipped=1), seed `866945489` | 202.864s | OK | 0 |
+| 5 | `python3 -X dev tests/run_strict.py` | 3215 tests (skipped=1) | 220.005s | OK | 0 |
+
+The single skipped test in the full test suites is the standard pre-existing platform skip, unrelated to dependency vetting. All 48 generated completion gate methods in `tests.test_ship.ShipTests`, the adapter fixtures in `tests.test_dependency_vetting`, and the review recipe contracts in `tests.test_recipes` passed without failure or error.
+
