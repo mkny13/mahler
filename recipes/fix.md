@@ -57,6 +57,10 @@ result is obtained, the better. Never trade verification for speed.
    why it could not run in your final message; do not claim the change is verified.
    Use the existing owner-dependent blocker ending in rule 7 only when that rule
    applies; inability to run a check alone is not a new `BLOCKED` case.
+2a. **Explain dependency additions.** Do not add dependencies outside the issue's
+   requirements without first explaining why they are needed to complete this issue.
+   For each dependency addition, report the package name, exact version, and
+   issue-related rationale in your completion summary before the STATUS line.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
    its checks pass, checkpoint with a local commit, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"

@@ -1087,3 +1087,35 @@ class GitHubClaimRecipeTests(unittest.TestCase):
                             'do not require a historical', 'Cite verified checklist criteria'):
             self.assertIn(requirement, text)
         self.assertIn('Do not edit files, commit, push, post comments', text)
+
+
+class DependencyRecipeTests(unittest.TestCase):
+    def test_build_and_fix_require_dependency_rationale(self):
+        for role in ("build", "fix"):
+            text = " ".join(prompt.render(role).split())
+            for requirement in (
+                "Do not add dependencies outside the issue's requirements without first explaining",
+                "why they are needed to complete this issue",
+                "For each dependency addition, report the package name, exact version",
+                "issue-related rationale in your completion summary before the STATUS line",
+            ):
+                with self.subTest(role=role, requirement=requirement):
+                    self.assertIn(requirement, text)
+
+    def test_review_requires_dependency_diff_and_gate_evidence(self):
+        text = " ".join(prompt.render("review").split())
+        for requirement in (
+            "Compare the PR's dependency changes in manifests and lockfiles against the issue",
+            "Check the build/fix rationale for each addition",
+            "npm, PyPI, Swift Package Manager, and Gradle/Maven",
+            "Report each changed package's name and exact version",
+            "registry/source, publisher/repository, publication date, and advisory evidence",
+            "conductor's dependency-vetting gate",
+            "Cite the gate evidence and confirm it applies to the reviewed head",
+            "Missing, stale, incomplete, or blocking gate evidence is a blocking finding",
+            "do not waive it because CI is green",
+            "Do not demote it to a PR-description-only request or a follow-up",
+            "If there are no dependency changes, state that explicitly",
+        ):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, text)

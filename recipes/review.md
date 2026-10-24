@@ -121,6 +121,18 @@ is refused. Missing such a test is a blocking finding.
 2a. **Lesson checklist.** For changed `.agents/skills/lesson-*/SKILL.md` files, check
     the `incident-log` advisory warning and ask for a rewrite when the body reads like an
     incident log; the warning alone does not make the lesson unsafe or block the merge.
+2b. **Inspect dependency changes.** Compare the PR's dependency changes in manifests
+    and lockfiles against the issue. Check the build/fix rationale for each addition,
+    including additions the issue did not explicitly request. The supported gate
+    sources are npm, PyPI, Swift Package Manager, and Gradle/Maven.
+    Report each changed package's name and exact version, plus the
+    registry/source, publisher/repository, publication date, and advisory evidence
+    from the conductor's dependency-vetting gate in your review summary.
+    Cite the gate evidence and confirm it applies to the reviewed head.
+    Missing, stale, incomplete, or blocking gate evidence is a blocking finding;
+    do not waive it because CI is green or the dependency seems familiar.
+    Do not demote it to a PR-description-only request or a follow-up.
+    If there are no dependency changes, state that explicitly.
 3. **Keep the review checkout read-only.** The sensitivity check above must run in a
    separate isolated baseline; do not skip it because this review checkout is read-only
    or because CI is green. Trust CI's already-green result for the PR's ordinary test
