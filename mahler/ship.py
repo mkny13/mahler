@@ -11,7 +11,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
+from . import dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from .gh import GHError, checks_state, needs_human_of, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
@@ -900,6 +900,10 @@ def _merge_queued(ctx, project, item, pr, view):
             if not _update_reviewed_pr(ctx, project, item, pr, fresh):
                 _rebuild_on_base(ctx, project, item, pr, fresh["baseRefName"], stale=True)
             return
+        if not _vet_pr_dependencies(ctx, project, item, pr, gh, fresh):
+            return
+        if not _ship_lease(ctx, project, item):
+            return
         ctx.merge_requested = True  # even an uncertain API failure consumes this tick
         gh.pr_merge(pr, sha)
         led.set_kv(key, json.dumps({"sha": sha, "since": iso(led.now())}))
@@ -923,6 +927,26 @@ def _merge_queued(ctx, project, item, pr, view):
              "(the merge queue?); the PR stays open, unmerged",
              project, n, priority="high", tags="question", console=True)
     led.release(project, n, holder=CONDUCTOR)
+
+
+def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
+    """Hold an agent PR merge when changed direct dependencies lack safe evidence."""
+    n = item["number"]
+    try:
+        before, after = gh.dependency_files(
+            ctx.policy(project)["path"], view["baseRefName"], view["headRefOid"])
+        if not dependency_vetting.changed_dependencies(before, after):
+            return True
+        findings, blocked = dependency_vetting.vet(before, after)
+    except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
+        ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting failed; merge held: {exc}")
+        return False
+    for finding in findings:
+        ctx.say(f"{project}#{n}: PR #{pr} — {finding.report()}")
+    if blocked:
+        ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting blocked merge: {blocked}")
+        return False
+    return True
 
 
 def _review_required(item):

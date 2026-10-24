@@ -86,6 +86,9 @@ class FakeGH:
     def base_in_head(self, path, base, head):
         return True
 
+    def dependency_files(self, path, base, head):
+        return {}, {}
+
     def pr_merge(self, number, head):
         assert head == self.head_sha
         self.merged.append(number)
@@ -2698,6 +2701,77 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.merged, [88])
 
+    def test_dependency_vetting_block_prevents_merge_request(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(
+                self.gh, "dependency_files",
+                return_value=({}, {"package.json": '{"dependencies":{"unsafe":"*"}}'})), \
+                mock.patch.object(ship.dependency_vetting, "vet",
+                                  return_value=((), "recent package publication")) as vet:
+            self.ship()
+        vet.assert_called_once()
+        self.assertEqual(self.gh.merged, [])
+
+    def test_dependency_gate_failures_never_request_merge(self):
+        from tests.test_dependency_vetting import npm_files, Response
+        from urllib.error import URLError
+        for failure in ("missing", "recent", "high", "critical", "unresolved",
+                        "ambiguous", "registry", "osv"):
+            with self.subTest(failure=failure):
+                self.led.upsert_item("x", 5, pr=88)
+                files = npm_files()
+                if failure == "unresolved":
+                    del files["package-lock.json"]
+                if failure == "ambiguous":
+                    files["yarn.lock"] = "unsupported"
+                def opener(request, timeout):
+                    if request.full_url == "https://api.osv.dev/v1/query":
+                        if failure == "osv":
+                            raise URLError("OSV offline")
+                        return Response({"vulns": [{"id": "OSV-1", "database_specific": {
+                            "severity": failure.upper()}}]} if failure in ("high", "critical") else {})
+                    if failure == "registry":
+                        raise URLError("registry offline")
+                    if failure == "missing":
+                        return Response({})
+                    return Response({"versions": {"1.2.3": {}}, "time": {
+                        "created": "2999-01-01T00:00:00Z" if failure == "recent"
+                        else "2020-01-01T00:00:00Z"}})
+                with mock.patch.object(self.gh, "dependency_files", return_value=({}, files)), \
+                        mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener):
+                    self.ship()
+                self.assertEqual(self.gh.merged, [])
+
+    def test_clean_dependency_gate_proceeds_to_merge(self):
+        from tests.test_dependency_vetting import npm_files, DependencyVettingTests
+        self.led.upsert_item("x", 5, pr=88)
+        opener, calls = DependencyVettingTests().opener()
+        with mock.patch.object(self.gh, "dependency_files", return_value=({}, npm_files())), \
+                mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener):
+            self.ship()
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(len(calls), 2)
+
+    def test_manifest_formatting_change_skips_vetter(self):
+        from tests.test_dependency_vetting import npm_files
+        self.led.upsert_item("x", 5, pr=88)
+        before = npm_files()
+        after = dict(before)
+        after["package.json"] += "\n"
+        with mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet") as vet:
+            self.ship()
+        vet.assert_not_called()
+        self.assertEqual(self.gh.merged, [88])
+
+    def test_unchanged_dependency_set_skips_vetter_and_keeps_merge_flow(self):
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "dependency_files", return_value=({}, {})), \
+                mock.patch.object(ship.dependency_vetting, "vet") as vet:
+            self.ship()
+        vet.assert_not_called()
+        self.assertEqual(self.gh.merged, [88])
+
     def test_stale_base_rebuild_preserves_attempts_and_work(self):
         self.led.upsert_item("x", 5, pr=88, attempts=2)
         with mock.patch.object(self.gh, "base_in_head", return_value=False):
@@ -3303,6 +3377,51 @@ class MigrationTests(unittest.TestCase):
 
 
 class FreshnessAdapterTests(unittest.TestCase):
+    def test_dependency_file_snapshots_only_include_changed_dependency_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, origin = os.path.join(d, "repo"), os.path.join(d, "origin.git")
+            subprocess.run(["git", "init", "-b", "main", repo], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "init", "--bare", origin], check=True,
+                           capture_output=True)
+
+            def git(*args):
+                return subprocess.run(["git", "-C", repo, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            git("remote", "add", "origin", origin)
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+
+            def commit(message):
+                git("add", "-A")
+                git("commit", "-m", message)
+                return git("rev-parse", "HEAD")
+
+            with open(os.path.join(repo, "README.md"), "w") as file:
+                file.write("base\n")
+            commit("base")
+            git("push", "origin", "HEAD:main")
+            with open(os.path.join(repo, "package.json"), "w") as file:
+                file.write('{"dependencies":{"safe-package":"^1.2.0"}}\n')
+            with open(os.path.join(repo, "package-lock.json"), "w") as file:
+                file.write('{"packages":{"node_modules/safe-package":{"version":"1.2.3"}}}\n')
+            head = commit("add npm dependency")
+            git("push", "origin", "HEAD:topic")
+            gh = gh_module.GH("test/repo")
+            self.assertTrue(gh.base_in_head(repo, "main", head))
+            before, after = gh.dependency_files(repo, "main", head)
+            self.assertEqual(before, {})
+            self.assertEqual(set(after), {"package.json", "package-lock.json"})
+            git("push", "origin", "HEAD:main")
+
+            with open(os.path.join(repo, "README.md"), "a") as file:
+                file.write("unchanged dependencies\n")
+            source_only_head = commit("change documentation")
+            git("push", "origin", "HEAD:topic")
+            self.assertTrue(gh.base_in_head(repo, "main", source_only_head))
+            self.assertEqual(gh.dependency_files(repo, "main", source_only_head), ({}, {}))
+
     def test_real_origin_drift_and_replacement_head(self):
         with tempfile.TemporaryDirectory() as d:
             repo, origin = os.path.join(d, "repo"), os.path.join(d, "origin.git")
