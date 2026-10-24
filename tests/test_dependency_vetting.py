@@ -336,5 +336,201 @@ class DependencyVettingTests(unittest.TestCase):
             vetting.changed_dependencies({}, {"pnpm-lock.yaml": "lockfileVersion: 9"})
 
 
+
+
+def swift_files(version="1.2.3", schema=3):
+    pin = {"identity": "demo", "kind": "remoteSourceControl",
+           "location": "https://github.com/example/demo.git",
+           "state": {"version": version, "revision": "a" * 40}}
+    if schema == 1:
+        pin = {"package": "Demo", "repositoryURL": pin["location"], "state": pin["state"]}
+        data = {"version": 1, "object": {"pins": [pin]}}
+    else:
+        data = {"version": schema, "pins": [pin]}
+    return {"Package.resolved": json.dumps(data)}
+
+
+def gradle_files(version="1.2.3"):
+    return {"gradle.lockfile": f"# Gradle lock\norg.example:demo:{version}=runtimeClasspath\nempty=compileClasspath\n"}
+
+
+class SwiftGradleTests(unittest.TestCase):
+    def opener(self, date="2020-01-01T00:00:00Z", vulns=(), broken=None):
+        def open_request(request, timeout):
+            url = request.full_url
+            if broken and broken in url:
+                raise URLError("offline")
+            if url == "https://api.osv.dev/v1/query":
+                payload = json.loads(request.data)
+                self.assertIn(payload["package"]["ecosystem"], ("SwiftURL", "Maven"))
+                self.assertEqual(payload["version"], "1.2.3")
+                return Response({"vulns": list(vulns)})
+            if "/commits/" in url:
+                return Response({"sha": "a" * 40})
+            if "/releases/tags/" in url:
+                return Response({"tag_name": "1.2.3", "published_at": date, "draft": False})
+            if url.startswith("https://api.github.com/repos/"):
+                return Response({"full_name": "example/demo", "html_url": "https://github.com/example/demo",
+                                 "owner": {"login": "example"}})
+            if url.startswith("https://search.maven.org/solrsearch/select?"):
+                stamp = datetime.fromisoformat(date.replace("Z", "+00:00")).timestamp() * 1000 if date else None
+                return Response({"response": {"numFound": 1, "docs": [
+                    {"g": "org.example", "a": "demo", "v": "1.2.3", "timestamp": stamp}]}})
+            raise AssertionError(url)
+        return open_request
+
+    def test_additions_versions_and_unchanged_entries(self):
+        for files, ecosystem in ((swift_files, "swift"), (gradle_files, "gradle")):
+            with self.subTest(ecosystem=ecosystem):
+                for before in ({}, files("1.2.2")):
+                    deps = vetting.changed_dependencies(before, files())
+                    self.assertEqual([(d.ecosystem, d.version) for d in deps], [(ecosystem, "1.2.3")])
+                after = {p: t + "\n" for p, t in files().items()}
+                opener = mock.Mock()
+                self.assertEqual(vetting.vet(files(), after, opener=opener), ((), None))
+                opener.assert_not_called()
+
+    def test_manifest_plus_lock_updates_pass_and_manifest_only_fails(self):
+        # Swift bump with both Package.swift and Package.resolved
+        swift_before = swift_files("1.2.2")
+        swift_before["Package.swift"] = '.package(url: "https://github.com/example/demo", from: "1.2.2")'
+        swift_after = swift_files("1.2.3")
+        swift_after["Package.swift"] = '.package(url: "https://github.com/example/demo", from: "1.2.3")'
+        deps = vetting.changed_dependencies(swift_before, swift_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("swift", "1.2.3")])
+        findings, reason = vetting.vet(swift_before, swift_after, now=NOW, opener=self.opener())
+        self.assertIsNone(reason)
+        self.assertEqual(len(findings), 1)
+
+        # Gradle bump with both build.gradle and gradle.lockfile
+        gradle_before = gradle_files("1.2.2")
+        gradle_before["build.gradle"] = 'dependencies { implementation "org.example:demo:1.2.2" }'
+        gradle_after = gradle_files("1.2.3")
+        gradle_after["build.gradle"] = 'dependencies { implementation "org.example:demo:1.2.3" }'
+        deps = vetting.changed_dependencies(gradle_before, gradle_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("gradle", "1.2.3")])
+        findings, reason = vetting.vet(gradle_before, gradle_after, now=NOW, opener=self.opener())
+        self.assertIsNone(reason)
+        self.assertEqual(len(findings), 1)
+
+        # Gradle bump with both libs.versions.toml and gradle/dependency-locks
+        gradle_lock_before = {"gradle/dependency-locks/runtime.lockfile": "org.example:demo:1.2.2\n",
+                              "gradle/libs.versions.toml": '[versions]\ndemo = "1.2.2"\n'}
+        gradle_lock_after = {"gradle/dependency-locks/runtime.lockfile": "org.example:demo:1.2.3\n",
+                             "gradle/libs.versions.toml": '[versions]\ndemo = "1.2.3"\n'}
+        deps = vetting.changed_dependencies(gradle_lock_before, gradle_lock_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("gradle", "1.2.3")])
+
+        # Swift and Gradle removals with both manifest and lockfile
+        swift_removed = {"Package.swift": "// empty", "Package.resolved": '{"version": 2, "pins": []}'}
+        self.assertEqual(vetting.changed_dependencies(swift_before, swift_removed), [])
+        gradle_removed = {"build.gradle": "// empty", "gradle.lockfile": "# empty\n"}
+        self.assertEqual(vetting.changed_dependencies(gradle_before, gradle_removed), [])
+
+        # Manifest change with unchanged lockfile fails closed
+        swift_stale = dict(swift_before)
+        swift_stale["Package.swift"] = swift_after["Package.swift"]
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies(swift_before, swift_stale)
+
+        gradle_stale = dict(gradle_before)
+        gradle_stale["build.gradle"] = gradle_after["build.gradle"]
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies(gradle_before, gradle_stale)
+
+    def test_swift_schemas_and_gradle_legacy_lock(self):
+        for schema in (1, 2, 3):
+            self.assertEqual(len(vetting.changed_dependencies({}, swift_files(schema=schema))), 1)
+        self.assertEqual(len(vetting.changed_dependencies({}, {
+            "gradle/dependency-locks/runtimeClasspath.lockfile": "org.example:demo:1.2.3\n"})), 1)
+
+    def test_paths_enter_shared_gate(self):
+        for path in ("Package.swift", "app/Package.resolved", "build.gradle", "build.gradle.kts",
+                     "gradle.lockfile", "gradle/dependency-locks/test.lockfile", "gradle/libs.versions.toml"):
+            self.assertTrue(vetting.relevant_path(path), f"Expected dependency path: {path}")
+
+    def test_clean_metadata_and_advisory_evidence(self):
+        for files in (swift_files, gradle_files):
+            findings, reason = vetting.vet({}, files(), now=NOW, opener=self.opener())
+            self.assertIsNone(reason)
+            self.assertEqual(len(findings), 1)
+            report = findings[0].report()
+            for value in ("1.2.3", "2020-01-01", "example", "advisories none"):
+                self.assertIn(value, report)
+
+    def test_recent_and_advisories_block(self):
+        for files in (swift_files, gradle_files):
+            for severity in ("HIGH", "CRITICAL", "LOW"):
+                findings, reason = vetting.vet({}, files(), now=NOW, opener=self.opener(vulns=[
+                    {"id": "OSV-test", "database_specific": {"severity": severity}}]))
+                self.assertEqual(bool(reason), severity != "LOW")
+                self.assertIn("OSV-test", findings[0].report())
+            findings, reason = vetting.vet({}, files(), now=NOW,
+                                          opener=self.opener(date="2026-10-19T00:00:00Z"))
+            self.assertIn("less than 14 days", reason)
+            self.assertTrue(findings[0].recent)
+
+    def test_missing_metadata_and_endpoint_failures(self):
+        for files, endpoint in ((swift_files, "api.github.com"), (gradle_files, "search.maven.org")):
+            for opener in (self.opener(date=None), self.opener(broken=endpoint),
+                           self.opener(broken="api.osv.dev"), lambda request, timeout: Response({}),
+                           lambda request, timeout: Response(None)):
+                with self.subTest(files=files.__name__, opener=opener):
+                    with self.assertRaises(vetting.VettingError):
+                        vetting.vet({}, files(), now=NOW, opener=opener)
+
+    def test_malformed_unresolved_pins_and_manifest_only_changes(self):
+        cases = [swift_files(None), swift_files("main"), gradle_files("1.+"),
+                 {"Package.resolved": '{"version": 3, "pins": {}}'},
+                 {"gradle.lockfile": "not-a-coordinate=runtimeClasspath"},
+                 {"Package.swift": '.package(url: "https://github.com/example/demo", from: "1.0.0")'},
+                 {"build.gradle": 'dependencies { implementation "org.example:demo:1.+" }'}]
+        for files in cases:
+            with self.subTest(files=files):
+                opener = mock.Mock()
+                with self.assertRaises(vetting.VettingError):
+                    vetting.vet({}, files, opener=opener)
+                opener.assert_not_called()
+
+    def test_swift_revision_must_match_release(self):
+        files = swift_files()
+        files["Package.resolved"] = files["Package.resolved"].replace("a" * 40, "b" * 40)
+        with self.assertRaises(vetting.VettingError):
+            vetting.vet({}, files, opener=self.opener())
+
+    def test_invalid_revision_and_version_types_fail_before_network(self):
+        for version in (123, [], "1.2", "1.2.3/evil"):
+            with self.subTest(version=version):
+                opener = mock.Mock()
+                with self.assertRaises(vetting.VettingError):
+                    vetting.vet({}, swift_files(version), opener=opener)
+                opener.assert_not_called()
+
+    def test_wrong_artifact_or_source_metadata_blocks(self):
+        for files in (swift_files, gradle_files):
+            clean = self.opener()
+            def opener(request, timeout):
+                response = clean(request, timeout)
+                data = json.loads(response.body)
+                if "full_name" in data:
+                    data["full_name"] = "other/repo"
+                if "response" in data:
+                    data["response"]["docs"][0]["v"] = "9.0.0"
+                return Response(data)
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, files(), opener=opener)
+
+    def test_missing_source_and_release_http_404_blocks(self):
+        for target in ("/repos/example/demo", "/releases/tags/", "search.maven.org"):
+            clean = self.opener()
+            def opener(request, timeout):
+                if target in request.full_url:
+                    raise HTTPError(request.full_url, 404, "not found", None, None)
+                return clean(request, timeout)
+            files = gradle_files() if target == "search.maven.org" else swift_files()
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, files, opener=opener)
+
+
 if __name__ == "__main__":
     unittest.main()
