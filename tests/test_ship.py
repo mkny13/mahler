@@ -3335,6 +3335,63 @@ class TestRepeatReviewFinding(unittest.TestCase):
                 self.setUp()
 
 
+def _completion_gate_test(ecosystem, scenario):
+    """Generate isolated unittest cases: each gets ShipTests.setUp/cleanup."""
+    def test(self):
+        from tests.test_dependency_vetting import completion_fixture, NOW as CHECK_TIME
+        files, opener = completion_fixture(ecosystem, scenario)
+        before = {}
+        if scenario == "unchanged":
+            before = dict(files)
+            files = {path: content + "\n" for path, content in files.items()}
+        if scenario in ("boundary", "inside_boundary"):
+            date = ("2026-10-06T12:00:00Z" if scenario == "boundary"
+                    else "2026-10-06T12:00:01Z")
+            files, opener = completion_fixture(ecosystem, date=date)
+        self.led.upsert_item("x", 5, pr=88)
+        real_vet = ship.dependency_vetting.vet
+        with mock.patch.object(self.gh, "dependency_files", return_value=(before, files)), \
+                mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=opener) as http, \
+                mock.patch.object(ship.dependency_vetting, "datetime", wraps=datetime) as clock, \
+                mock.patch.object(ship.dependency_vetting, "vet", wraps=real_vet) as vet, \
+                mock.patch.object(ship, "_vet_pr_dependencies", wraps=ship._vet_pr_dependencies) as gate, \
+                mock.patch.object(self.ctx, "say") as say:
+            clock.now.return_value = CHECK_TIME
+            self.ship()
+        gate.assert_called_once()
+        allowed = scenario in ("clean", "unchanged", "boundary")
+        self.assertEqual(self.gh.merged, [88] if allowed else [])
+        messages = "\n".join(str(call.args[0]) for call in say.call_args_list)
+        if scenario in ("identity", "version", "unchanged"):
+            http.assert_not_called()
+        else:
+            vet.assert_called_once_with(before, files)
+            self.assertTrue(http.called)
+        if scenario == "unchanged":
+            vet.assert_not_called()
+        elif scenario in ("recent", "inside_boundary"):
+            self.assertIn("less than 14 days", messages)
+        elif scenario in ("high", "critical"):
+            self.assertIn(f"OSV-completion ({scenario})", messages)
+        elif scenario in ("registry", "osv"):
+            self.assertIn("fixture lookup unavailable", messages)
+        elif scenario in ("identity", "version", "nonexistent"):
+            self.assertIn("dependency vetting failed; merge held", messages)
+        if scenario == "osv" or allowed and scenario != "unchanged":
+            self.assertIn("https://api.osv.dev/v1/query",
+                          [call.args[0].full_url for call in http.call_args_list])
+    return test
+
+
+# Named methods make each ecosystem/scenario independently reproducible and ensure
+# no ledger, merge list, gate cache, or mock state carries over between scenarios.
+for _ecosystem in ("npm", "pypi", "swift", "gradle"):
+    for _scenario in ("nonexistent", "recent", "high", "critical", "identity", "version",
+                      "registry", "osv", "clean", "unchanged", "boundary", "inside_boundary"):
+        setattr(ShipTests, f"test_completion_gate_{_ecosystem}_{_scenario}",
+                _completion_gate_test(_ecosystem, _scenario))
+
+
 class HelpersTests(unittest.TestCase):
     def test_pr_body_round_trip(self):
         body = gh_module.pr_body(5, "wired the exporter", "- the new ping arrives")

@@ -1112,6 +1112,8 @@ class DependencyRecipeTests(unittest.TestCase):
             "registry/source, publisher/repository, publication date, and advisory evidence",
             "conductor's dependency-vetting gate",
             "Cite the gate evidence and confirm it applies to the reviewed head",
+            "Identify missing or inconsistent publisher/source details",
+            "Metadata presence alone does not prove legitimacy",
             "Missing, stale, incomplete, or blocking gate evidence is a blocking finding",
             "do not waive it because CI is green",
             "Do not demote it to a PR-description-only request or a follow-up",

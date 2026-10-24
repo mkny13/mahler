@@ -129,6 +129,8 @@ is refused. Missing such a test is a blocking finding.
     registry/source, publisher/repository, publication date, and advisory evidence
     from the conductor's dependency-vetting gate in your review summary.
     Cite the gate evidence and confirm it applies to the reviewed head.
+    Identify missing or inconsistent publisher/source details and explain their
+    effect on the finding. Metadata presence alone does not prove legitimacy.
     Missing, stale, incomplete, or blocking gate evidence is a blocking finding;
     do not waive it because CI is green or the dependency seems familiar.
     Do not demote it to a PR-description-only request or a follow-up.
