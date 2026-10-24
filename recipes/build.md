@@ -48,6 +48,10 @@ result is obtained, the better. Never trade verification for speed.
    (preserving owner wording and relationship lines); any comment must use the
    agent marker below. A missing section is not an exemption, and the exception
    does not waive rule 2's verification of the fix.
+2b. **Explain dependency additions.** Do not add dependencies outside the issue's
+   requirements without first explaining why they are needed to complete this issue.
+   For each dependency addition, report the package name, exact version, and
+   issue-related rationale in your completion summary before the STATUS line.
 3. **Finish the requested scope, then report.** Once the issue's work is complete and
    its checks pass, checkpoint with a local commit, and report without adding unrequested features,
    tests, files, documentation, or refactors. Tests required by the issue's "Done when"
