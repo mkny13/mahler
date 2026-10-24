@@ -56,8 +56,11 @@ _RELEVANT = re.compile(
 _UNSUPPORTED_LOCKS = {
     "pnpm-lock.yaml", "yarn.lock", "Pipfile", "Pipfile.lock",
     "setup.py", "setup.cfg",
-    "Package.swift", "build.gradle", "build.gradle.kts",
-    "settings.gradle", "settings.gradle.kts", "gradle.properties", "libs.versions.toml",
+}
+_GRADLE_MANIFESTS = {
+    "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts",
+    "gradle.properties", "libs.versions.toml",
 }
 _PEP_REQ = re.compile(
     r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?\s*(.*)$")
@@ -457,18 +460,35 @@ def _resolved_dependencies(path, text):
     return pins
 
 
+def _project_dir(path):
+    if path.startswith("gradle/dependency-locks/"):
+        return ""
+    if "/gradle/dependency-locks/" in path:
+        return path.split("/gradle/dependency-locks/")[0]
+    if path == "gradle/libs.versions.toml":
+        return ""
+    if path.endswith("/gradle/libs.versions.toml"):
+        return path[:-len("/gradle/libs.versions.toml")]
+    return path.rpartition("/")[0]
+
+
 def _changed_resolved_dependencies(before, after):
-    changed = []
+    changed = {}
     for path, text in after.items():
-        if not (path.endswith("/Package.resolved") or path == "Package.resolved"
+        if not (path.endswith("Package.resolved")
                 or path.rsplit("/", 1)[-1] == "gradle.lockfile"
                 or re.search(r"(?:^|/)gradle/dependency-locks/[^/]+\.lockfile$", path)
                 ) or before.get(path) == text:
             continue
         new = _resolved_dependencies(path, text)
         old = _resolved_dependencies(path, before[path]) if path in before else {}
-        changed.extend(dep for name, dep in new.items() if old.get(name) != dep)
-    return changed
+        for name, dep in new.items():
+            if old.get(name) != dep:
+                key = (dep.ecosystem, dep.name)
+                if key in changed and (changed[key].version != dep.version or changed[key].revision != dep.revision):
+                    raise VettingError(f"ambiguous lockfile resolution for {dep.ecosystem} {dep.name}: {path}")
+                changed[key] = dep
+    return list(changed.values())
 
 
 def _changed_project_dependencies(before, after):
@@ -480,6 +500,41 @@ def _changed_project_dependencies(before, after):
                        or re.fullmatch(r"constraints[^/]*\.txt", basename))
         if unsupported and before.get(path) != after.get(path):
             raise VettingError(f"unsupported dependency lockfile change: {path}")
+
+    swift_manifests = [p for p in set(before) | set(after)
+                       if p.endswith("Package.swift") and before.get(p) != after.get(p)]
+    if swift_manifests:
+        swift_locks = [p for p in set(before) | set(after)
+                       if p.endswith("Package.resolved") and p in after
+                       and before.get(p) != after.get(p)]
+        has_resolved_change = False
+        for lock in swift_locks:
+            old_pins = _resolved_dependencies(lock, before[lock]) if lock in before else {}
+            new_pins = _resolved_dependencies(lock, after[lock])
+            if old_pins != new_pins:
+                has_resolved_change = True
+                break
+        if not has_resolved_change:
+            raise VettingError(f"unresolved Swift dependency manifest change without lockfile: {swift_manifests[0]}")
+
+    gradle_manifests = [p for p in set(before) | set(after)
+                        if p.rsplit("/", 1)[-1] in _GRADLE_MANIFESTS
+                        and before.get(p) != after.get(p)]
+    if gradle_manifests:
+        gradle_locks = [p for p in set(before) | set(after)
+                        if (p.rsplit("/", 1)[-1] == "gradle.lockfile"
+                            or re.search(r"(?:^|/)gradle/dependency-locks/[^/]+\.lockfile$", p))
+                        and p in after and before.get(p) != after.get(p)]
+        has_resolved_change = False
+        for lock in gradle_locks:
+            old_pins = _resolved_dependencies(lock, before[lock]) if lock in before else {}
+            new_pins = _resolved_dependencies(lock, after[lock])
+            if old_pins != new_pins:
+                has_resolved_change = True
+                break
+        if not has_resolved_change:
+            raise VettingError(f"unresolved Gradle dependency manifest change without lockfile: {gradle_manifests[0]}")
+
     old_direct, new_direct = _direct_dependencies(before), _direct_dependencies(after)
     old_versions = {"npm": _npm_versions(before, old_direct), "pypi": _python_versions(before, old_direct)}
     new_versions = {"npm": _npm_versions(after, new_direct), "pypi": _python_versions(after, new_direct)}
@@ -516,11 +571,11 @@ def changed_dependencies(before, after):
     resolved locally. Unchanged directories need no parsing or registry traffic.
     """
     try:
-        directories = {path.rpartition("/")[0] for path in set(before) | set(after)}
+        directories = {_project_dir(path) for path in set(before) | set(after)}
         changed = []
         for directory in sorted(directories):
-            old = {p: t for p, t in before.items() if p.rpartition("/")[0] == directory}
-            new = {p: t for p, t in after.items() if p.rpartition("/")[0] == directory}
+            old = {p: t for p, t in before.items() if _project_dir(p) == directory}
+            new = {p: t for p, t in after.items() if _project_dir(p) == directory}
             if old != new:
                 changed.extend(_changed_project_dependencies(old, new))
         return changed

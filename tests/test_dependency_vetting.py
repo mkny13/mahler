@@ -390,6 +390,54 @@ class SwiftGradleTests(unittest.TestCase):
                 self.assertEqual(vetting.vet(files(), after, opener=opener), ((), None))
                 opener.assert_not_called()
 
+    def test_manifest_plus_lock_updates_pass_and_manifest_only_fails(self):
+        # Swift bump with both Package.swift and Package.resolved
+        swift_before = swift_files("1.2.2")
+        swift_before["Package.swift"] = '.package(url: "https://github.com/example/demo", from: "1.2.2")'
+        swift_after = swift_files("1.2.3")
+        swift_after["Package.swift"] = '.package(url: "https://github.com/example/demo", from: "1.2.3")'
+        deps = vetting.changed_dependencies(swift_before, swift_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("swift", "1.2.3")])
+        findings, reason = vetting.vet(swift_before, swift_after, now=NOW, opener=self.opener())
+        self.assertIsNone(reason)
+        self.assertEqual(len(findings), 1)
+
+        # Gradle bump with both build.gradle and gradle.lockfile
+        gradle_before = gradle_files("1.2.2")
+        gradle_before["build.gradle"] = 'dependencies { implementation "org.example:demo:1.2.2" }'
+        gradle_after = gradle_files("1.2.3")
+        gradle_after["build.gradle"] = 'dependencies { implementation "org.example:demo:1.2.3" }'
+        deps = vetting.changed_dependencies(gradle_before, gradle_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("gradle", "1.2.3")])
+        findings, reason = vetting.vet(gradle_before, gradle_after, now=NOW, opener=self.opener())
+        self.assertIsNone(reason)
+        self.assertEqual(len(findings), 1)
+
+        # Gradle bump with both libs.versions.toml and gradle/dependency-locks
+        gradle_lock_before = {"gradle/dependency-locks/runtime.lockfile": "org.example:demo:1.2.2\n",
+                              "gradle/libs.versions.toml": '[versions]\ndemo = "1.2.2"\n'}
+        gradle_lock_after = {"gradle/dependency-locks/runtime.lockfile": "org.example:demo:1.2.3\n",
+                             "gradle/libs.versions.toml": '[versions]\ndemo = "1.2.3"\n'}
+        deps = vetting.changed_dependencies(gradle_lock_before, gradle_lock_after)
+        self.assertEqual([(d.ecosystem, d.version) for d in deps], [("gradle", "1.2.3")])
+
+        # Swift and Gradle removals with both manifest and lockfile
+        swift_removed = {"Package.swift": "// empty", "Package.resolved": '{"version": 2, "pins": []}'}
+        self.assertEqual(vetting.changed_dependencies(swift_before, swift_removed), [])
+        gradle_removed = {"build.gradle": "// empty", "gradle.lockfile": "# empty\n"}
+        self.assertEqual(vetting.changed_dependencies(gradle_before, gradle_removed), [])
+
+        # Manifest change with unchanged lockfile fails closed
+        swift_stale = dict(swift_before)
+        swift_stale["Package.swift"] = swift_after["Package.swift"]
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies(swift_before, swift_stale)
+
+        gradle_stale = dict(gradle_before)
+        gradle_stale["build.gradle"] = gradle_after["build.gradle"]
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies(gradle_before, gradle_stale)
+
     def test_swift_schemas_and_gradle_legacy_lock(self):
         for schema in (1, 2, 3):
             self.assertEqual(len(vetting.changed_dependencies({}, swift_files(schema=schema))), 1)
