@@ -532,5 +532,88 @@ class SwiftGradleTests(unittest.TestCase):
                 vetting.vet({}, files, opener=opener)
 
 
+ECOSYSTEM_FILES = {"npm": npm_files, "pypi": python_files,
+                   "swift": swift_files, "gradle": gradle_files}
+BLOCKERS = ("nonexistent", "recent", "high", "critical", "identity",
+            "version", "registry", "osv")
+
+
+def completion_fixture(ecosystem, scenario="clean", date="2020-01-01T00:00:00Z"):
+    """Fresh manifest and HTTP fixtures shared by checker and real ship tests."""
+    files = ECOSYSTEM_FILES[ecosystem]()
+    if scenario == "identity":
+        files = {
+            "npm": {"package.json": '{"dependencies":{"demo":"github:example/demo"}}'},
+            "pypi": {"requirements.txt": "https://example.test/unknown.whl"},
+            "swift": {"Package.resolved": json.dumps({"version": 3, "pins": [{
+                "kind": "remoteSourceControl", "state": {"version": "1.2.3"}}]})},
+            "gradle": {"gradle.lockfile": "unknown=runtimeClasspath"},
+        }[ecosystem]
+    elif scenario == "version":
+        if ecosystem == "npm":
+            del files["package-lock.json"]
+        elif ecosystem == "pypi":
+            del files["uv.lock"]
+        elif ecosystem == "swift":
+            files = swift_files(None)
+        else:
+            files = gradle_files("1.+")
+    if scenario == "recent":
+        date = "2026-10-07T12:00:00Z"  # exactly 13 days before NOW
+    vulns = ([{"id": "OSV-completion", "database_specific": {"severity": scenario.upper()}}]
+             if scenario in ("high", "critical") else [])
+    basic, _ = DependencyVettingTests().opener(npm_date=date, pypi_date=date, vulns=vulns)
+    resolved = SwiftGradleTests().opener(date=date, vulns=vulns)
+
+    def opener(request, timeout):
+        osv = request.full_url == "https://api.osv.dev/v1/query"
+        if scenario == "nonexistent" and not osv:
+            raise HTTPError(request.full_url, 404, "not found", None, None)
+        if (scenario == "registry" and not osv) or (scenario == "osv" and osv):
+            raise URLError("fixture lookup unavailable")
+        return (basic if ecosystem in ("npm", "pypi") else resolved)(request, timeout)
+
+    return files, opener
+
+
+class CompletionEvidenceTests(unittest.TestCase):
+    def test_report_fields_for_every_ecosystem(self):
+        identities = {"npm": "safe-package@1.2.3", "pypi": "requests@2.31.0",
+                      "swift": "https://github.com/example/demo@1.2.3",
+                      "gradle": "org.example:demo@1.2.3"}
+        metadata = {"npm": ("Publisher", "https://example.test/source"),
+                    "pypi": ("Publisher", "https://example.test/source"),
+                    "swift": ("example", "https://github.com/example/demo"),
+                    "gradle": ("Maven Central namespace org.example",
+                               "https://repo1.maven.org/maven2/org/example/demo/1.2.3/demo-1.2.3.pom")}
+        for ecosystem in ECOSYSTEM_FILES:
+            for scenario in ("clean", "high", "critical"):
+                with self.subTest(ecosystem=ecosystem, scenario=scenario):
+                    files, opener = completion_fixture(ecosystem, scenario)
+                    findings, reason = vetting.vet({}, files, now=NOW, opener=opener)
+                    self.assertEqual(bool(reason), scenario != "clean")
+                    report = findings[0].report()
+                    for value in (ecosystem, identities[ecosystem], *metadata[ecosystem],
+                                  "2020-01-01T00:00:00+00:00", "publisher", "source",
+                                  "advisories none" if scenario == "clean"
+                                  else f"OSV-completion ({scenario})"):
+                        self.assertIn(value, report)
+
+    def test_missing_optional_publisher_source_are_reported_as_unavailable(self):
+        for ecosystem in ("npm", "pypi"):
+            with self.subTest(ecosystem=ecosystem):
+                files, clean = completion_fixture(ecosystem)
+                def opener(request, timeout):
+                    data = json.loads(clean(request, timeout).body)
+                    for key in ("maintainers", "repository"):
+                        data.pop(key, None)
+                    if "info" in data:
+                        data["info"] = {}
+                    return Response(data)
+                findings, reason = vetting.vet({}, files, now=NOW, opener=opener)
+                self.assertIsNone(reason)  # legitimacy remains a review judgment
+                self.assertIn("publisher unavailable; source unavailable", findings[0].report())
+
+
 if __name__ == "__main__":
     unittest.main()
