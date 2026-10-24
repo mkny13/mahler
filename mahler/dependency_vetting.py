@@ -676,6 +676,7 @@ def _metadata(dep, opener):
 
 
 def _request_text(url, opener):
+    opener = opener or urlopen
     request = Request(url, headers={"User-Agent": "Mahler dependency vetting"})
     try:
         with opener(request, timeout=20) as response:
