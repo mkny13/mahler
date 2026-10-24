@@ -4,6 +4,7 @@ import sqlite3
 import unittest
 
 from mahler import prompt, config
+from mahler.dependency_vetting import Dependency, Finding
 
 
 class SortRecipeTests(unittest.TestCase):
@@ -619,6 +620,40 @@ class ReviewOperatingContextTests(unittest.TestCase):
                 self.assertIn(fragment, text)
 
 
+class ReviewMetadataScrutinyFixtureTests(unittest.TestCase):
+    """Fixtures a reviewer evaluation must flag; each pairs gate output with the
+    review-prompt rule that applies. A model's compliance is not automated here:
+    these prove the gate report carries the signal and the prompt names the rule."""
+
+    NS = "Maven Central namespace org.example"
+    POM = "https://repo1.maven.org/maven2/org/example/demo/1.2.3/demo-1.2.3.pom"
+    FIXTURES = (
+        ("missing", "gradle", "org.example:demo", NS, POM,
+         "means the POM declared no verified publisher/repository; treat it as unverified"),
+        ("missing", "npm", "demo", "unavailable", "unavailable",
+         "Identify missing or inconsistent publisher/source details"),
+        ("contradictory", "npm", "demo", "alice", "https://github.com/unrelated-owner/other",
+         "contradicts the package identity"),
+        ("misleading", "pypi", "requests", "Kenneth Reitz",
+         "https://github.com/evil-fork/requests",
+         "Metadata presence alone does not prove legitimacy"),
+    )
+
+    def test_fixtures_report_signal_and_prompt_names_rule(self):
+        text = " ".join(prompt.render("review").split())
+        kinds = set()
+        for kind, eco, name, publisher, source, rule in self.FIXTURES:
+            with self.subTest(kind=kind, ecosystem=eco):
+                kinds.add(kind)
+                finding = Finding(Dependency(eco, name, "1.2.3", "1.2.3"), "2020-01-01",
+                                  publisher, source, (), False, False)
+                report = finding.report()
+                self.assertIn(f"publisher {publisher}", report)
+                self.assertIn(f"source {source}", report)
+                self.assertIn(rule, text)
+        self.assertEqual(kinds, {"missing", "contradictory", "misleading"})
+
+
 class ReviewEvidenceTests(unittest.TestCase):
     def test_convergence_evidence_contract(self):
         text = " ".join(prompt.render("review", handoff="").split())
@@ -1114,6 +1149,8 @@ class DependencyRecipeTests(unittest.TestCase):
             "Cite the gate evidence and confirm it applies to the reviewed head",
             "Identify missing or inconsistent publisher/source details",
             "Metadata presence alone does not prove legitimacy",
+            "means the POM declared no verified publisher/repository; treat it as unverified",
+            "contradicts the package identity",
             "Missing, stale, incomplete, or blocking gate evidence is a blocking finding",
             "do not waive it because CI is green",
             "Do not demote it to a PR-description-only request or a follow-up",
