@@ -568,6 +568,24 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "shipped")
         self.assertEqual(self.item()["attempts"], 0)
 
+    def test_repeated_required_check_discovery_failures_timeout(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_status_checks = mock.Mock(
+            side_effect=gh_module.GHError("temporary GitHub outage"))
+
+        self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        first = json.loads(self.led.get_kv("pr-lookup:x#5:88"))
+        self.assertEqual(first["since"], iso(NOW))
+
+        self.led.now = lambda: NOW + timedelta(minutes=90)
+        self.ship()
+
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertIsNone(self.led.lease("x", 5))
+        self.assertIn("required check discovery failed", self.item()["question"])
+
     def test_pr_opening_is_idempotent(self):
         """A tick that died after `gh pr create` must not open a second PR."""
         self.led.upsert_item("x", 5, branch="mahler/snapshot/5-run7")

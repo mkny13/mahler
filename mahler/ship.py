@@ -770,14 +770,15 @@ def _watch_pr(ctx, project, item, pr):
         return
     if not _ship_lease(ctx, project, item):
         return
-    led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
     view = _mergeability_observation(ctx, project, item, pr, view)
     if not _ship_lease(ctx, project, item):
         return
     if view["state"] == "MERGED":
+        led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
         _shipped(ctx, project, n, pr, led.item(project, n), view, merged=False)
         return
     if view["state"] != "OPEN":
+        led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
         _closed_pr(ctx, project, item, pr, view)
         return
     blocker = ci_blockers.active(led, project)
@@ -789,6 +790,7 @@ def _watch_pr(ctx, project, item, pr):
     req = _required_checks_or_defer(ctx, project, item, pr, view)
     if req is None:
         return
+    led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
     if (blocker and blocker["number"] != n and
             checks_state(view.get("statusCheckRollup"), required=req) == "red"):
         _ci_pending(ctx, project, item, pr, view,
