@@ -1385,6 +1385,9 @@ def read_log(path, kind, model=None):
     from .run_usage import collect, finish_requests, new_requests, note_request
     res["_requests"] = new_requests()
     first_quota = {}
+    if path is None:
+        finish_requests(res, kind, False)
+        return res
     try:
         fh = open(path, encoding="utf-8", errors="replace")
     except OSError:

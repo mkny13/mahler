@@ -544,6 +544,8 @@ def alive(pid):
 
 
 def signal_group(pid, sig):
+    if not pid:
+        return
     try:
         os.killpg(pid, sig)
     except (ProcessLookupError, PermissionError):
@@ -569,6 +571,8 @@ def exit_code(run):
 def setup_tail(run, lines=20):
     """The last `lines` lines of the run's setup.log ('' when there isn't one) —
     surfaced in handoffs and `mahler status` when setup failed (issue #8)."""
+    if not run["log_path"]:
+        return ""
     path = os.path.join(os.path.dirname(run["log_path"]), "setup.log")
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:

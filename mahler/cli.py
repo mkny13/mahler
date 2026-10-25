@@ -1060,6 +1060,9 @@ def cmd_log(a, cfg, led):
     if not run:
         print("no such run")
         return 1
+    if not run["log_path"]:
+        print(f"run {run['id']}: no log recorded")
+        return 0
     from . import platforms
     kind = cfg["platforms"][run["platform"]]["kind"]
     s = platforms.read_log(run["log_path"], kind)
