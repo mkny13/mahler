@@ -594,12 +594,12 @@ def _review_inconclusive(e, count=True):
         except ValueError:
             seen = []
         if e.run["id"] not in [r.get("run_id") for r in seen]:
-            if count and getattr(e, "reason", None) not in CAPACITY_STOPS:
+            if count and getattr(e, "reason", None) not in (*CAPACITY_STOPS, "silent"):
                 seen.append({"run_id": e.run["id"], "platform": e.run["platform"]})
                 e.led.set_kv(key, json.dumps(seen))
     e.led.set_kv(_review_kv_key(e.project, e.number), None)
-    if not count or getattr(e, "reason", None) in CAPACITY_STOPS:
-        # Credit/quota failures and parse-rejected verdicts say nothing about
+    if not count or getattr(e, "reason", None) in (*CAPACITY_STOPS, "silent"):
+        # Launch/credit/quota failures and parse-rejected verdicts say nothing about
         # the PR head; they must not push it toward the cap.
         e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
         return True
@@ -894,6 +894,8 @@ def _save_work(e):
         _mark_stale(e)
         if e.closed and not e.stale:
             return
+    if not e.run["worktree"]:
+        return
     try:
         e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
                                   e.pol.get("base", "main"),
@@ -955,7 +957,7 @@ def _close_the_books(e, code):
     except Exception as exc:
         ctx.say(f"{e.project}#{e.number}: run note unavailable: {type(exc).__name__}")
     _check_estimate_calibration(ctx)
-    if not e.keep_worktree:
+    if not e.keep_worktree and run["worktree"]:
         runner.remove_worktree(e.pol["path"], run["worktree"], run["branch"],
                                runner.worktree_root(e.pol))
 
@@ -1087,7 +1089,9 @@ def finalize(ctx, run):
                                      or log.get("auth_failed") else
                                      "quota" if log["quota_hit"] else None) or \
              ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
-             ("setup-failed" if setup_failed else None)
+             ("setup-failed" if setup_failed else None) or \
+             ("silent" if not verb and (not run["log_path"] or not run["status_path"]
+                                         or (not run["pid"] and not run["worktree"])) else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
     if verb == "BLOCKED" and rest and not setup_failed:

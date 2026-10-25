@@ -34,6 +34,17 @@ def watchdog(ctx):
 def _watch_one(ctx, run, now):
     led = ctx.led
     pol = ctx.policy(run["project"])
+    # A crash can leave the initial row without the launch result. Give an
+    # in-progress launch its normal startup grace, then reclaim its slot.
+    incomplete = any(key in run.keys() and not run[key]
+                     for key in ("pid", "log_path", "status_path"))
+    if incomplete:
+        if now - parse(run["started_at"]) <= timedelta(minutes=pol["startup_timeout_minutes"]):
+            return
+        if not ctx.dry_run:
+            runner.kill(run["pid"])
+        finalize(ctx, run)
+        return
     if not runner.alive(run["pid"]):
         # The shell is gone, but a child can outlive it: a SIGTERM that lands
         # while the agent is blocked in a syscall is only acted on later, if
@@ -77,6 +88,8 @@ def _log_idle(run, now):
     run. When not even setup.log exists, nothing has started: return
     (None, None) and let the caller apply the startup rule to the run's age.
     """
+    if not run["log_path"]:
+        return None, None
     try:
         st = os.stat(run["log_path"])
         return now.timestamp() - st.st_mtime, st.st_size
