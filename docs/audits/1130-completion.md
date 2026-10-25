@@ -10,15 +10,15 @@ commit records these results; it does not change the tested code.
 | # | Criterion | Assessment | Evidence and limits |
 | --- | --- | --- | --- |
 | 1 | Children merged with focused tests | SUPPORTED | Merge ancestry and named child assertions below; all focused tests pass on the tested commit. |
-| 2 | Four ecosystems × eight blocking scenarios | COVERAGE GAP | All 32 ship fixture cases pass, including 13-day publication, but Swift/Gradle prove selected-version age, not package first-publication age. See the publication limitation below. |
+| 2 | Four ecosystems × eight blocking scenarios | SUPPORTED | All 48 ship fixture cases pass across npm, PyPI, Swift, and Gradle. PR #1245 (#1235) walks Swift release history and Maven Solr artifact history to check true first publication and fails closed on invalid/missing history. |
 | 3 | Old clean packages merge; unchanged dependencies make no requests | SUPPORTED | Twelve named clean/unchanged/exact-boundary ship tests, plus four one-second-inside-boundary blockers. Assertions exercise real parsing/vetting and merge requests. |
-| 4 | Evidence fields and publisher/source scrutiny | COVERAGE GAP | Deterministic report and rendered-prompt contracts pass. Actual model identification of inconsistent publisher/source metadata is not established by these tests. Gradle supplies a namespace and POM URL, not verified publisher identity or repository metadata. |
+| 4 | Evidence fields and publisher/source scrutiny | SUPPORTED | PR #1238 (#1236) extracts POM-declared publisher and repository metadata for Gradle with namespace fallback, adds reviewer instructions in recipes/review.md for contradictory/unverified metadata, and adds ReviewMetadataScrutinyFixtureTests in tests/test_recipes.py covering missing, contradictory, and misleading metadata. |
 | 5 | No installation, credentials, or non-stdlib runtime dependency required | SUPPORTED | Source inspection below, scoped to the dependency checker and its added integration, not Mahler's existing authenticated GitHub operations. No dependencies added. |
 | 6 | Five verification commands pass | SUPPORTED | Recorded results below. |
 
-No runtime repair is included in this verification task. Criteria 2 and 4 must
-remain unchecked as full parent claims; completing this audit does not mean the
-parent is fully supported. There is no owner approval or manual UI check pending.
+With PR #1238 (#1236) and PR #1245 (#1235) merged into main, Criteria 2 and 4
+are fully supported by automated fixtures and tests. All six parent criteria
+are supported by recorded evidence. There is no owner approval or manual UI check pending.
 
 ## Child merge evidence
 
@@ -33,6 +33,8 @@ were introduced/extended in the corresponding merge. No raw comments were fetche
 | #1137 | [#1230](https://github.com/mkny13/mahler/pull/1230) | 2026-10-24T00:46:06Z | `ae3ad735be79f0fe27cf70ac1569d510855b53a0` | `DependencyVettingTests.test_npm_addition_uses_exact_lock_resolution_and_reports_metadata`, `test_pypi_version_change_is_resolved_from_lock_and_vetted`, `test_missing_lock_resolution_fails_closed_without_registry_calls`; `ShipTests.test_dependency_gate_failures_never_request_merge`; `FreshnessAdapterTests.test_dependency_file_snapshots_only_include_changed_dependency_files` |
 | #1138 | [#1231](https://github.com/mkny13/mahler/pull/1231) | 2026-10-24T03:49:09Z | `5d7883dcf6c06c0a3c2840f0d21f1a2f7b0a6518` | `SwiftGradleTests.test_manifest_plus_lock_updates_pass_and_manifest_only_fails`, `test_swift_revision_must_match_release`, `test_wrong_artifact_or_source_metadata_blocks`; `ShipTests.test_swift_gate_runs_before_merge`, `test_gradle_gate_runs_before_merge` |
 | #1139 | [#1232](https://github.com/mkny13/mahler/pull/1232) | 2026-10-24T05:38:52Z | `c6a2b1778053de334a359eaf7a38c58cea67390f` | `DependencyRecipeTests.test_build_and_fix_require_dependency_rationale`, `test_review_requires_dependency_diff_and_gate_evidence` |
+| #1236 | [#1238](https://github.com/mkny13/mahler/pull/1238) | 2026-10-24T08:19:26Z | `6a40d24ec4a77d4423b2bf27ae0494968b35bec8` | `SwiftGradleTests.test_gradle_report_extracts_pom_developer_and_scm`, `test_gradle_report_falls_back_to_namespace_when_pom_metadata_missing`; `ReviewMetadataScrutinyFixtureTests.test_fixtures_report_signal_and_prompt_names_rule` |
+| #1235 | [#1245](https://github.com/mkny13/mahler/pull/1245) | 2026-10-25T19:30:55Z | `d542006f909d6fbfc7c4d44eb9543f8687725afb` | `SwiftGradleTests.test_established_package_with_recent_version_passes_new_package_blocks`, `test_invalid_or_missing_release_history_fails_closed`; all 48 `ShipTests.test_completion_gate_<ecosystem>_<scenario>` methods |
 
 ## Fixture matrix and merge integration
 
@@ -153,3 +155,43 @@ All five verification commands were executed from the worktree root using Python
 
 The single skipped test in the full test suites is the standard pre-existing platform skip, unrelated to dependency vetting. All 48 generated completion gate methods in `tests.test_ship.ShipTests`, the adapter fixtures in `tests.test_dependency_vetting`, and the review recipe contracts in `tests.test_recipes` passed without failure or error.
 
+## Final reverification and criteria resolution at base `d542006f909d6fbfc7c4d44eb9543f8687725afb`
+
+Both follow-up repairs (#1236 and #1235) have been shipped and merged into main,
+resolving all remaining criteria for parent #1130:
+
+1. **Criterion 2 resolved by PR #1245 (#1235):**
+   Swift Package Manager and Gradle first-publication date checking was implemented
+   across full release/version history. Swift paginates non-draft GitHub releases up to
+   50 pages (`_swift_first_release`), and Gradle queries Maven Central Solr search
+   across all version documents (`_maven_first_publication`) to find the minimum
+   timestamp, failing closed on missing or invalid history. `Finding.report` now reports
+   "first published" across all four ecosystems.
+   - Verified by `tests.test_dependency_vetting.SwiftGradleTests.test_established_package_with_recent_version_passes_new_package_blocks`
+   - Verified by `tests.test_dependency_vetting.SwiftGradleTests.test_invalid_or_missing_release_history_fails_closed`
+   - Verified by all 48 `tests.test_ship.ShipTests.test_completion_gate_<ecosystem>_<scenario>` methods.
+
+2. **Criterion 4 resolved by PR #1238 (#1236):**
+   Gradle vetting was upgraded to extract POM-declared publisher and repository metadata
+   via `_pom_metadata`, falling back to Maven Central namespace and POM URL when
+   unverified. `recipes/review.md` instructs reviewers on identifying unverified fallback
+   metadata and contradictory publisher/source details. Reviewer evaluation fixtures were
+   added in `tests.test_recipes.ReviewMetadataScrutinyFixtureTests` covering missing,
+   contradictory, and misleading metadata.
+   - Verified by `tests.test_recipes.ReviewMetadataScrutinyFixtureTests.test_fixtures_report_signal_and_prompt_names_rule`
+   - Verified by `tests.test_recipes.DependencyRecipeTests.test_review_requires_dependency_diff_and_gate_evidence`
+   - Verified by `tests.test_dependency_vetting.CompletionEvidenceTests.test_report_fields_for_every_ecosystem`
+
+### Final verification test execution
+
+Executed from the worktree root using Python 3.14.3 on macOS:
+
+| # | Command | Tests / Scope | Duration | Result | Exit |
+|---|---|---|---|---|---|
+| 1 | `python3 -m unittest tests.test_dependency_vetting tests.test_ship tests.test_recipes` | 475 tests | 11.591s | OK | 0 |
+| 2 | `python3 -m mahler.repo_guard` | Tracked files / repo guard checks | < 1s | OK | 0 |
+| 3 | `python3 -m unittest discover -s tests` | 3235 tests (skipped=1) | 195.158s | OK | 0 |
+| 4 | `python3 tests/run_random.py` | 3235 tests (skipped=1), seed `929548371` | 193.385s | OK | 0 |
+| 5 | `python3 -X dev tests/run_strict.py` | 3235 tests (skipped=1) | 206.624s | OK | 0 |
+
+All six parent completion criteria for #1130 are fully supported by code and test evidence.
