@@ -2751,6 +2751,11 @@ class CapturePageTests(unittest.TestCase):
         )
         self.assertIn('skip.indexOf(k) === -1', script)
 
+    def test_priority_boost_replacement_reads_hyphenated_active_project(self):
+        script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
+        self.assertIn('el.getAttribute("data-active-project")', script)
+        self.assertIn('payload.confirm_replace = true;', script)
+
     def test_capture_posts_are_timed_idempotent_and_confirmed(self):
         script = (Path(__file__).parents[1] / "mahler" / "console" / "console.js").read_text()
         post = script[script.index("  function post("):script.index("  function numberValue")]

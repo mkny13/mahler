@@ -207,6 +207,17 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(detail["started_at"], iso(self.clock() - timedelta(hours=1)))
         self.assertEqual(detail["expires_at"], iso(self.clock()))
 
+    def test_priority_boost_non_string_timestamps_are_discarded(self):
+        for _ in range(2):
+            self.led.set_kv("priority_boost", json.dumps(
+                {"project": "alpha", "started_at": 123, "expires_at": 456}))
+            self.assertIsNone(self.led.priority_boost())
+            self.assertIsNone(self.led.get_kv("priority_boost"))
+        self.led.set_kv("priority_boost", json.dumps(
+            {"project": "alpha", "started_at": 123, "expires_at": 456}))
+        self.assertFalse(self.led.expire_priority_boost())
+        self.assertIsNone(self.led.get_kv("priority_boost"))
+
     def test_priority_boost_rejects_invalid_duration_and_records(self):
         with self.assertRaises(ValueError):
             self.led.start_priority_boost("alpha", "2h")

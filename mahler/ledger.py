@@ -1211,12 +1211,15 @@ class Ledger:
                     "project", "started_at", "expires_at"} or
                     not isinstance(record["project"], str) or not record["project"]):
                 raise ValueError("invalid priority boost record")
+            if not (isinstance(record["started_at"], str)
+                    and isinstance(record["expires_at"], str)):
+                raise ValueError("invalid priority boost timestamps")
             started = parse(record["started_at"])
             expires = parse(record["expires_at"])
             if started is None or expires is None or expires <= started:
                 raise ValueError("invalid priority boost timestamps")
             return record
-        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
             self.set_kv(self.PRIORITY_BOOST_KEY, None)
             return None
 
