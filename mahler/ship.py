@@ -610,9 +610,14 @@ def refresh_ci_blocker(ctx, project):
             led.set_kv(f"ci_blocker:{project}", None)
             return None
         base = blocker.get("base") or ctx.policy(project).get("base", "main")
+        if blocker.get("source") != "base":
+            return blocker      # PR-only breakage: only its tracker or bot PR ends it
         rollup = gh.base_checks(base)
-        if blocker["check"] not in gh_module.failing_checks(rollup, _required_checks(ctx, project, base)):
+        required = _required_checks(ctx, project, base)
+        if (blocker["check"] not in gh_module.failing_checks(rollup, required)
+                and checks_state(rollup, required=required or None) in ("green", "none")):
             led.set_kv(f"ci_blocker:{project}", None)
+            led.set_kv(f"ci_blocker_stale:{project}", json.dumps(blocker.get("heads") or {}))
             return None
     except (GHError, ValueError, TypeError, AttributeError) as exc:
         ctx.say(f"{project}: CI blocker refresh failed — {exc}")
@@ -634,21 +639,31 @@ def detect_ci_blocker(ctx, project):
             return
         required = _required_checks(ctx, project, base)
         base_red = gh_module.failing_checks(base_rollup, required)
-        base_ok = {c.get("name") or c.get("context") for c in base_rollup
-                   if (c.get("conclusion") or c.get("state") or "").upper() == "SUCCESS"}
-        red_by_pr = {}
+        stale = json.loads(led.get_kv(f"ci_blocker_stale:{project}") or "{}")
+        red_by_pr, heads = {}, {}
         for pr in prs:
             view = gh.pr_view(pr)
             if view.get("state") == "OPEN":
-                red_by_pr[pr] = [n for n in gh_module.failing_checks(
-                    view.get("statusCheckRollup"), required) if n not in base_ok]
+                sha = view.get("headRefOid") or ""
+                # a PR head already seen red when a base-sourced hold cleared is stale
+                red_by_pr[pr] = ([] if sha and stale.get(str(pr)) == sha else
+                                 gh_module.failing_checks(view.get("statusCheckRollup"), required))
+                heads[str(pr)] = sha
         found = ci_blockers.repo_wide_checks(red_by_pr, base_red)
         if not found:
             return
         check = found[0]
         number = None
-        bot_pr = _bot_pr(gh, led, project, check)
-        if not bot_pr:
+        bot_pr = None
+        for it in led.items(project):
+            if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
+                    and check.casefold() in (it["title"] or "").casefold()
+                    and it["pr"] not in red_by_pr):
+                number = it["number"]
+                break
+        if number is None:
+            bot_pr = _bot_pr(gh, led, project, check)
+        if number is None and not bot_pr:
             prs = ", ".join(f"#{p}" for p, names in red_by_pr.items() if check in names)
             title = f"Repo-wide CI failure: {check} is red"
             body = (f"The required check `{check}` fails repo-wide "
@@ -667,6 +682,7 @@ def detect_ci_blocker(ctx, project):
         return
     led.set_kv(f"ci_blocker:{project}", json.dumps({
         "number": number, "bot_pr": bot_pr, "check": check, "base": base,
+        "source": "base" if check in base_red else "prs", "heads": heads,
         "reason": f"required check {check} fails repo-wide", "since": iso(led.now())}))
     ctx.say(f"{project}: repo-wide CI failure ({check}) — holding builds and fix runs")
 

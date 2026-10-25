@@ -186,6 +186,39 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["attempts"], 0)
         self.assertEqual(self.item()["state"], "verifying")
 
+    def test_pr_only_shared_failure_holds_while_base_passes(self):
+        self.two_red_prs()
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            self.ship()
+        red.assert_not_called()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["source"], "prs")
+
+    def test_pending_base_does_not_release_hold(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.create_issue = lambda title, body="", labels=(): "https://github.com/x/y/issues/300"
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.ship()
+        self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "IN_PROGRESS", "conclusion": ""}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        red.assert_not_called()
+        self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
+
+    def test_existing_local_fix_item_is_adopted(self):
+        self.two_red_prs()
+        self.led.upsert_item("x", 42, state="ready", title="Fix checks audit failure")
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 42)
+        self.assertEqual(self.gh.issues, [])
+
     def test_ci_blocker_detected_from_base_branch_failure(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}
@@ -208,6 +241,8 @@ class ShipTests(unittest.TestCase):
 
     def test_ci_blocker_auto_resumes_on_green_base(self):
         self.two_red_prs()
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
         self.ship()
         self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
         self.gh.base_checks = lambda branch: [
