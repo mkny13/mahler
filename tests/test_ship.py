@@ -166,6 +166,26 @@ class ShipTests(unittest.TestCase):
             red.assert_called_once()
             self.assertIsNone(self.led.get_kv("ci_blocker:x"))
 
+    def test_ci_blocker_does_not_hold_for_non_required_failure(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 289, state="ready")
+        self.led.set_kv("ci_blocker:x", json.dumps({"number": 289}))
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"context": "Vercel", "state": "FAILURE"},
+        ]
+
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+
+        red.assert_not_called()
+        self.assertEqual(self.gh.merged, [88])
+        self.assertEqual(self.item()["state"], "shipped")
+        ci_info = json.loads(self.led.get_kv("ci:x#5:88"))
+        self.assertEqual(ci_info["state"], "green")
+        self.assertEqual(ci_info["non_required_failures"], ["Vercel"])
+
     def test_named_dependency_holds_fix_without_project_hold(self):
         self.led.upsert_item("x", 5, pr=88, depends="[289]")
         self.led.upsert_item("x", 289, state="ready")

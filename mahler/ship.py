@@ -782,19 +782,22 @@ def _watch_pr(ctx, project, item, pr):
         return
     blocker = ci_blockers.active(led, project)
     waiting = ci_blockers.pending(led, project, n)
-    if waiting or (blocker and blocker["number"] != n and
-                   checks_state(view.get("statusCheckRollup")) == "red"):
-        on = waiting or [blocker["number"]]
+    if waiting:
         _ci_pending(ctx, project, item, pr, view,
-                    reason=f"held waiting for CI blocker {on}", held=True)
+                    reason=f"held waiting for CI blocker {waiting}", held=True)
+        return
+    req = _required_checks_or_defer(ctx, project, item, pr, view)
+    if req is None:
+        return
+    if (blocker and blocker["number"] != n and
+            checks_state(view.get("statusCheckRollup"), required=req) == "red"):
+        _ci_pending(ctx, project, item, pr, view,
+                    reason=f"held waiting for CI blocker {[blocker['number']]}", held=True)
         return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
-        return
-    req = _required_checks_or_defer(ctx, project, item, pr, view)
-    if req is None:
         return
     if _ci_rerun(ctx, project, item, pr, view, req):
         return
