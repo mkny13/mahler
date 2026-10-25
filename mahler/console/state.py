@@ -2243,7 +2243,15 @@ def _shipping_rows(cfg, led, project, s, now):
                 sub = f"checks running {elapsed}m" if elapsed is not None else "checks running"
                 change_subtitle = f"PR #{pr} · {sub}"
             elif ci_state in ("green", "none"):
-                ci_stage = {"key": "ci", "label": "CI checks", "status": "ok", "text": ""}
+                opt = ci_data.get("non_required_failures") or ci_data.get("optional_failures")
+                if opt:
+                    names = ", ".join(opt) if isinstance(opt, list) else str(opt)
+                    ci_stage = {
+                        "key": "ci", "label": "CI checks", "status": "ok",
+                        "text": f"optional check failed: {names}",
+                    }
+                else:
+                    ci_stage = {"key": "ci", "label": "CI checks", "status": "ok", "text": ""}
                 if rev_status == "fail" or active_fix:
                     rev_stage = {"key": "review", "label": "Review", "status": "bad", "text": ""}
                     change_subtitle = (f"PR #{pr} · review failed; fixing"
