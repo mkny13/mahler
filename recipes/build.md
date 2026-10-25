@@ -73,6 +73,11 @@ result is obtained, the better. Never trade verification for speed.
 4. **Your job ends with a local commit.** When every "Done when" check passes, commit locally, and
    end with `STATUS: DONE <one-line summary of what changed>`. Do not open a PR, watch CI,
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
+   Runs hold no GitHub write token (least privilege): a refused push or `gh` write
+   (HTTP 403) is expected, not a blocker, because the conductor pushes your saved branch.
+   Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access. For parent-verify
+   items, put the evidence in your DONE summary or an evidence file; the conductor
+   posts it and ticks the parent's criteria.
 5. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data). Post it as an issue comment and end with
    `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
@@ -85,7 +90,8 @@ result is obtained, the better. Never trade verification for speed.
    with a `STATUS: NEEDS-YOU` question and two or three concise `OPTIONS:` (for example,
    allow source changes | reduce journey target). First check authoritative owner comments
    for an existing resolution; routine technical choices remain yours to make.
-6. If you genuinely cannot proceed because owner-provided access is missing, commit what you
+6. If you genuinely cannot proceed because owner-provided access is missing (never GitHub
+   push or issue-write access, which the conductor owns — see rule 4), commit what you
    have locally, post one actionable question naming the required operation and
    safe provisioning channel, and end with `STATUS: NEEDS-YOU <the question, on one line>`.
    Never invent accounts or credentials or silently waive acceptance. Honor existing
