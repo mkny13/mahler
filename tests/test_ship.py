@@ -196,6 +196,26 @@ class ShipTests(unittest.TestCase):
         red.assert_not_called()
         self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["source"], "prs")
 
+    def test_bot_pr_merge_resumes_without_new_blocker(self):
+        self.two_red_prs()
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        calls = []
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number == 292:
+                v = {**v, "statusCheckRollup": [], "state": calls and "MERGED" or "OPEN"}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["bot_pr"], 292)
+        calls.append(1)
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+        self.assertEqual(self.gh.issues, [])
+        self.assertEqual(red.call_count, 2)
+
     def test_pending_base_does_not_release_hold(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}

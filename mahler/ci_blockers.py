@@ -42,9 +42,15 @@ def active(led, project, *, clear=True):
     record = json.loads(led.get_kv(key) or "null")
     if record and record.get('number') and resolved(led, project, record['number']):
         if clear:
-            led.set_kv(key, None)
+            clear_hold(led, project, record)
         return None
     return record
+
+
+def clear_hold(led, project, record):
+    """End a hold; PR heads seen red under it must not re-trigger detection."""
+    led.set_kv(f"ci_blocker:{project}", None)
+    led.set_kv(f"ci_blocker_stale:{project}", json.dumps((record or {}).get('heads') or {}))
 
 
 def record(ending, numbers):

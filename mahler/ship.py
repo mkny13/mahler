@@ -607,7 +607,7 @@ def refresh_ci_blocker(ctx, project):
     gh = ctx.gh(project)
     try:
         if blocker.get("bot_pr") and gh.pr_view(blocker["bot_pr"])["state"] != "OPEN":
-            led.set_kv(f"ci_blocker:{project}", None)
+            ci_blockers.clear_hold(led, project, blocker)
             return None
         base = blocker.get("base") or ctx.policy(project).get("base", "main")
         if blocker.get("source") != "base":
@@ -616,8 +616,7 @@ def refresh_ci_blocker(ctx, project):
         required = _required_checks(ctx, project, base)
         if (blocker["check"] not in gh_module.failing_checks(rollup, required)
                 and checks_state(rollup, required=required or None) in ("green", "none")):
-            led.set_kv(f"ci_blocker:{project}", None)
-            led.set_kv(f"ci_blocker_stale:{project}", json.dumps(blocker.get("heads") or {}))
+            ci_blockers.clear_hold(led, project, blocker)
             return None
     except (GHError, ValueError, TypeError, AttributeError) as exc:
         ctx.say(f"{project}: CI blocker refresh failed — {exc}")
