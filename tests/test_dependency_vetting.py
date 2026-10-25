@@ -359,7 +359,13 @@ class SwiftGradleTests(unittest.TestCase):
            "<artifactId>demo</artifactId><organization><name>Example Org</name></organization>"
            "<scm><url>https://github.com/example/demo</url></scm></project>")
 
-    def opener(self, date="2020-01-01T00:00:00Z", vulns=(), broken=None, pom=POM):
+    def opener(self, date="2020-01-01T00:00:00Z", vulns=(), broken=None, pom=POM,
+               selected=None, history=True):
+        """`date` is the first publication; `selected` the pinned version's (default: same)."""
+        selected = selected or date
+        def stamp_of(value):
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() * 1000 if value else None
+
         def open_request(request, timeout):
             url = request.full_url
             if broken and broken in url:
@@ -376,14 +382,23 @@ class SwiftGradleTests(unittest.TestCase):
             if "/commits/" in url:
                 return Response({"sha": "a" * 40})
             if "/releases/tags/" in url:
-                return Response({"tag_name": "1.2.3", "published_at": date, "draft": False})
+                return Response({"tag_name": "1.2.3", "published_at": selected, "draft": False})
+            if "/releases?" in url:
+                if history is not True:
+                    return Response(history)
+                return Response([{"tag_name": "1.2.3", "published_at": selected, "draft": False},
+                                 {"tag_name": "1.0.0", "published_at": date, "draft": False},
+                                 {"tag_name": "2.0.0-rc", "published_at": None, "draft": True}])
             if url.startswith("https://api.github.com/repos/"):
                 return Response({"full_name": "example/demo", "html_url": "https://github.com/example/demo",
                                  "owner": {"login": "example"}})
             if url.startswith("https://search.maven.org/solrsearch/select?"):
-                stamp = datetime.fromisoformat(date.replace("Z", "+00:00")).timestamp() * 1000 if date else None
-                return Response({"response": {"numFound": 1, "docs": [
-                    {"g": "org.example", "a": "demo", "v": "1.2.3", "timestamp": stamp}]}})
+                if history is not True:
+                    return Response(history)
+                docs = [{"g": "org.example", "a": "demo", "v": "1.2.3", "timestamp": stamp_of(selected)}]
+                if date != selected:
+                    docs.append({"g": "org.example", "a": "demo", "v": "1.0.0", "timestamp": stamp_of(date)})
+                return Response({"response": {"numFound": len(docs), "docs": docs}})
             raise AssertionError(url)
         return open_request
 
@@ -477,6 +492,39 @@ class SwiftGradleTests(unittest.TestCase):
                                           opener=self.opener(date="2026-10-19T00:00:00Z"))
             self.assertIn("less than 14 days", reason)
             self.assertTrue(findings[0].recent)
+
+    def test_established_package_with_recent_version_passes_new_package_blocks(self):
+        for files in (swift_files, gradle_files):
+            with self.subTest(files=files.__name__):
+                findings, reason = vetting.vet({}, files(), now=NOW, opener=self.opener(
+                    date="2020-01-01T00:00:00Z", selected="2026-10-19T00:00:00Z"))
+                self.assertIsNone(reason)
+                self.assertFalse(findings[0].recent)
+                self.assertIn("first published 2020-01-01", findings[0].report())
+                findings, reason = vetting.vet({}, files(), now=NOW, opener=self.opener(
+                    date="2026-10-18T00:00:00Z", selected="2026-10-19T00:00:00Z"))
+                self.assertIn("less than 14 days", reason)
+                self.assertTrue(findings[0].recent)
+
+    def test_invalid_or_missing_release_history_fails_closed(self):
+        bad = {
+            swift_files: [None, [], {}, "x", [{"draft": False, "published_at": "nope"}],
+                          [{"draft": False}], [{"published_at": "2020-01-01T00:00:00Z"}],
+                          [{"draft": True, "published_at": None}] * 100],
+            gradle_files: [None, {}, {"response": {"numFound": 0, "docs": []}},
+                           {"response": {"numFound": 2, "docs": [
+                               {"g": "org.example", "a": "demo", "v": "1.2.3", "timestamp": 1}]}},
+                           {"response": {"numFound": 2, "docs": [
+                               {"g": "org.example", "a": "demo", "v": "1.2.3", "timestamp": 1.6e12},
+                               {"g": "org.example", "a": "demo", "v": "1.0.0", "timestamp": "x"}]}},
+                           {"response": {"numFound": 1, "docs": [
+                               {"g": "other", "a": "demo", "v": "1.2.3", "timestamp": 1.6e12}]}}],
+        }
+        for files, histories in bad.items():
+            for history in histories:
+                with self.subTest(files=files.__name__, history=history):
+                    with self.assertRaises(vetting.VettingError):
+                        vetting.vet({}, files(), now=NOW, opener=self.opener(history=history))
 
     def gradle_report(self, pom):
         findings, _ = vetting.vet({}, gradle_files(), now=NOW, opener=self.opener(pom=pom))
