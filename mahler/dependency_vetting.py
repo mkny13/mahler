@@ -37,10 +37,8 @@ class Finding:
 
     def report(self):
         advisories = "; ".join(self.advisories) if self.advisories else "none"
-        publication = ("version published" if self.dependency.ecosystem in {"swift", "gradle"}
-                       else "first published")
         return (f"{self.dependency.ecosystem} {self.dependency.name}@"
-                f"{self.dependency.version}: {publication} "
+                f"{self.dependency.version}: first published "
                 f"{self.first_published}; publisher {self.publisher}; "
                 f"source {self.source}; advisories {advisories}"
                 f"{' [BLOCKED]' if self.blocked else ''}")
@@ -730,6 +728,72 @@ def _pom_metadata(pom_url, group, artifact, opener):
     return publisher, source
 
 
+_HISTORY_PAGES = 50
+
+
+def _swift_first_release(base, selected, dep, opener):
+    """Earliest publication across all non-draft releases, failing closed."""
+    dates = [selected]
+    for page in range(1, _HISTORY_PAGES + 1):
+        releases = _request_json(f"{base}/releases?per_page=100&page={page}", opener=opener)
+        if not isinstance(releases, list) or (page == 1 and not releases):
+            raise VettingError(f"missing Swift release history: {dep.name}")
+        for release in releases:
+            if not isinstance(release, dict) or not isinstance(release.get("draft"), bool):
+                raise VettingError(f"invalid Swift release history: {dep.name}")
+            if not release["draft"]:
+                dates.append(_date(release.get("published_at")))
+        if len(releases) < 100:
+            break
+    else:
+        raise VettingError(f"Swift release history too long to verify: {dep.name}")
+    if any(d is None for d in dates):
+        raise VettingError(f"invalid Swift release history: {dep.name}")
+    return min(dates)
+
+
+def _maven_first_publication(group, artifact, dep, opener):
+    """Earliest timestamp across every version of the artifact, failing closed.
+
+    The selected version must be present exactly once with matching coordinates.
+    """
+    query = f'g:"{group}" AND a:"{artifact}"'
+    docs, start = [], 0
+    for _ in range(_HISTORY_PAGES):
+        url = ("https://search.maven.org/solrsearch/select?q=" + quote(query, safe="")
+               + f"&core=gav&rows=200&start={start}&wt=json")
+        result = _request_json(url, opener=opener)
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        page = response.get("docs")
+        total = response.get("numFound")
+        if (not isinstance(page, list) or not isinstance(total, int) or isinstance(total, bool)
+                or (not page and total)):
+            raise VettingError(f"missing Maven artifact history: {dep.name}@{dep.version}")
+        docs.extend(page)
+        start += len(page)
+        if start >= total:
+            break
+    else:
+        raise VettingError(f"Maven artifact history too long to verify: {dep.name}")
+    if not docs or len(docs) != total:
+        raise VettingError(f"missing Maven artifact history: {dep.name}@{dep.version}")
+    stamps = []
+    for doc in docs:
+        if not isinstance(doc, dict) or (doc.get("g"), doc.get("a")) != (group, artifact):
+            raise VettingError(f"mismatched Maven artifact metadata: {dep.name}@{dep.version}")
+        stamp = doc.get("timestamp")
+        if not (isinstance(stamp, (int, float)) and not isinstance(stamp, bool)
+                and math.isfinite(stamp) and stamp > 0):
+            raise VettingError(f"invalid Maven artifact history: {dep.name}@{dep.version}")
+        try:
+            stamps.append(datetime.fromtimestamp(stamp / 1000, timezone.utc))
+        except (ValueError, OverflowError, OSError):
+            raise VettingError(f"invalid Maven artifact history: {dep.name}@{dep.version}") from None
+    if sum(1 for doc in docs if doc.get("v") == dep.version) != 1:
+        raise VettingError(f"missing Maven artifact metadata: {dep.name}@{dep.version}")
+    return min(stamps)
+
+
 def _resolved_metadata(dep, opener):
     if dep.ecosystem == "swift":
         repository = dep.name.removeprefix("https://github.com/")
@@ -746,7 +810,7 @@ def _resolved_metadata(dep, opener):
         if (not isinstance(release, dict) or release.get("draft") is not False
                 or release.get("tag_name") not in {dep.version, "v" + dep.version}):
             raise VettingError(f"missing Swift release metadata: {dep.name}@{dep.version}")
-        published = _date(release.get("published_at"))
+        published = _swift_first_release(base, _date(release.get("published_at")), dep, opener)
         commit = _request_json(base + "/commits/" + quote(release["tag_name"], safe=""),
                                opener=opener)
         if not isinstance(commit, dict) or commit.get("sha") != dep.revision:
@@ -754,23 +818,7 @@ def _resolved_metadata(dep, opener):
         publisher, source = repo["owner"]["login"], dep.name
     else:
         group, artifact = dep.name.split(":")
-        query = f'g:"{group}" AND a:"{artifact}" AND v:"{dep.version}"'
-        url = "https://search.maven.org/solrsearch/select?q=" + quote(query, safe="") + "&core=gav&rows=2&wt=json"
-        result = _request_json(url, opener=opener)
-        response = result.get("response", {}) if isinstance(result, dict) else {}
-        docs = response.get("docs", [])
-        if response.get("numFound") != 1 or not isinstance(docs, list) or len(docs) != 1:
-            raise VettingError(f"missing Maven artifact metadata: {dep.name}@{dep.version}")
-        doc = docs[0]
-        if (doc.get("g"), doc.get("a"), doc.get("v")) != (group, artifact, dep.version):
-            raise VettingError(f"mismatched Maven artifact metadata: {dep.name}@{dep.version}")
-        stamp = doc.get("timestamp")
-        published = None
-        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool) and math.isfinite(stamp) and stamp > 0:
-            try:
-                published = datetime.fromtimestamp(stamp / 1000, timezone.utc)
-            except (ValueError, OverflowError, OSError):
-                pass
+        published = _maven_first_publication(group, artifact, dep, opener)
         pom_url = ("https://repo1.maven.org/maven2/" + group.replace(".", "/")
                    + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
         publisher, source = _pom_metadata(pom_url, group, artifact, opener)
