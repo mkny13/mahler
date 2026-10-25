@@ -497,8 +497,8 @@ def _init_schedule_state(ctx, projects):
 
 
 def _order_candidates(ctx, work, st, projects):
-    """Deterministic candidate sort: priority → builds-before-sorts when
-    headroom is scarce → priority projects → oldest state_changed_at."""
+    """Deterministic sort: timed project boost → priority → scarcity →
+    configured priority projects → oldest state_changed_at."""
     cfg = ctx.cfg
     # each account has its own builders, so "a sort must not eat the last
     # builder" is judged per account (D25); a multi-account project competes
@@ -516,19 +516,30 @@ def _order_candidates(ctx, work, st, projects):
 
     sorts_wait = {acct: len(_headroom_groups(acct)) <= 1 for acct in buckets}
     priority_projects = cfg.get("scheduling", {}).get("priority_projects", ["mahler"])
+    boost = ctx.led.priority_boost()
+    boosted_project = boost["project"] if boost else None
 
     def key(c):
         p, role, it = c
         proj_idx = (priority_projects.index(p["name"])
                     if p["name"] in priority_projects
                     else len(priority_projects))
-        return (it["priority"],
+        return (0 if p["name"] == boosted_project else 1,
+                it["priority"],
                 1 if (role == "sort" and all(sorts_wait[a] for a in
                                              config.accounts_of(p))) else 0,
                 proj_idx,
                 parse(it["state_changed_at"]) or datetime.min.replace(tzinfo=timezone.utc),
                 p["name"], it["number"])
     work.sort(key=key)
+
+
+def reconcile_priority_boost(ctx):
+    """Expire timed project priority once per tick, even without candidates."""
+    try:
+        ctx.led.expire_priority_boost()
+    except Exception as exc:
+        ctx.say(f"couldn't reconcile project priority boost — {exc}")
 
 
 def _check_eligible(ctx, p, role, it, st):

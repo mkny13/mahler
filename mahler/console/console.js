@@ -921,6 +921,17 @@
       var act = el.getAttribute("data-act");
       var verdict = act === "uat_fail";
       var payload = payloadFor(el, act);
+      if (act === "priority_boost_start" && el.hasAttribute("data-active-project")) {
+        payload.active_project = el.getAttribute("data-active-project");
+      }
+      if (act === "priority_boost_start" && payload.active_project &&
+          payload.active_project !== payload.project) {
+        if (!window.confirm("Replace the active priority boost for " + payload.active_project +
+            " with " + payload.project + "? Only one project can be prioritized at a time.")) {
+          return;
+        }
+        payload.confirm_replace = true;
+      }
       var key = verdict ? verdictKey(payload) : null;
       if (verdict && verdictRequests[key]) { return; }
       if (verdict) { verdictRequests[key] = true; }

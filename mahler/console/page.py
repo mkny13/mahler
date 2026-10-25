@@ -138,7 +138,8 @@ def _scope_switcher(s, cls):
                '>Mahler · all projects</option>']
     for project in s["scope_options"]:
         version = f'v{project["current_version"]}' if project["current_version"] else "no release"
-        label = f'{project["name"]} · {project["status"]} · {version}'
+        marker = "▲ " if project.get("priority_boosted") else ""
+        label = f'{marker}{project["name"]} · {project["status"]} · {version}'
         chosen = " selected" if project["name"] == selected else ""
         options.append(f'<option value="{e(project["name"])}"{chosen}>{e(label)}</option>')
     return (f'<label class="scope-wrap"><select class="{e(cls)}" aria-label="Project scope" '
@@ -175,6 +176,39 @@ def _project_pause_button(ov, cls="btn"):
         return (f'<button class="{cls} on" data-act="resume_project" data-project="{project}">'
                 f'Resume project</button>')
     return f'<button class="{cls}" data-act="pause_project" data-project="{project}">Pause project</button>'
+
+
+def _priority_boost_panel(s, project):
+    boost = s.get("priority_boost")
+    durations = (("1h", "1 hour"), ("1d", "1 day"), ("1w", "1 week"))
+    if boost:
+        active_project = boost["project"]
+        controls = "".join(
+            f'<button class="btn" data-act="priority_boost_extend" '
+            f'data-project="{e(active_project)}" data-duration="{duration}">'
+            f'Extend {label}</button>' for duration, label in durations)
+        replace = ""
+        if active_project != project:
+            replace = ('<div class="priority-boost-actions"><span>Prioritize this project instead:</span>' +
+                       "".join(
+                           f'<button class="btn" data-act="priority_boost_start" '
+                           f'data-project="{e(project)}" data-duration="{duration}" '
+                           f'data-active-project="{e(active_project)}">Replace with {label}</button>'
+                           for duration, label in durations) + '</div>')
+        return (f'<section class="priority-boost" aria-label="Project priority boost">'
+                f'<strong>Priority boost active for {e(active_project)}</strong>'
+                f'<span>{e(boost["remaining"])} left · expires '
+                f'<time datetime="{e(boost["expires_at"])}">{e(boost["expires_at"])}</time></span>'
+                f'<div class="priority-boost-actions">{controls}'
+                f'<button class="btn" data-act="priority_boost_stop" '
+                f'data-project="{e(active_project)}">Stop</button></div>{replace}</section>')
+    controls = "".join(
+        f'<button class="btn" data-act="priority_boost_start" '
+        f'data-project="{e(project)}" data-duration="{duration}">{label}</button>'
+        for duration, label in durations)
+    return (f'<section class="priority-boost" aria-label="Prioritize project">'
+            f'<strong>Prioritize {e(project)} temporarily</strong>'
+            f'<div class="priority-boost-actions">{controls}</div></section>')
 
 
 def _stale_note():
@@ -622,7 +656,9 @@ def _desktop_overview(s):
         f'<div class="rows meta">{"".join(act_rows)}</div></section>'
     )
 
-    body = "".join([kpis_html, needs_html, active_html, two_sec, shipping_sec, dep_sec, comp_sec, act_sec])
+    body = "".join([_priority_boost_panel(s, ov.get("project", "")),
+                    kpis_html, needs_html, active_html, two_sec, shipping_sec,
+                    dep_sec, comp_sec, act_sec])
     return f'<section class="view view-overview"><div class="overview-body">{body}</div></section>'
 
 
@@ -736,7 +772,9 @@ def _phone_overview(s):
         f'<div>{e(cur_ver)} · {draft_cnt} unreleased{sugg}</div></section>'
     )
 
-    body = "".join([open_block, needs_html, active_html, qb_sec, shipping_sec, threads_div, whats_new, rel_sec])
+    body = "".join([_priority_boost_panel(s, ov.get("project", "")),
+                    open_block, needs_html, active_html, qb_sec, shipping_sec,
+                    threads_div, whats_new, rel_sec])
     return f'<section class="tabv tabv-overview"><div class="ph-body">{body}</div></section>'
 
 

@@ -155,6 +155,93 @@ class LeaseTests(unittest.TestCase):
         self.led.event("source_reopened", "p", 1, {}, at=observed)
         self.assertEqual(self.led.q("SELECT at FROM events")[0]["at"], observed)
 
+    def test_priority_boost_durations_replacement_stop_and_expiry(self):
+        for duration, hours in (("1h", 1), ("1d", 24), ("1w", 168)):
+            with self.subTest(duration=duration):
+                boost = self.led.start_priority_boost("alpha", duration)
+                self.assertEqual(boost["project"], "alpha")
+                self.assertEqual(boost["started_at"], iso(self.clock()))
+                self.assertEqual(boost["expires_at"],
+                                 iso(self.clock() + timedelta(hours=hours)))
+                self.led.stop_priority_boost("alpha")
+        first = self.led.start_priority_boost("alpha", "1h")
+        self.clock.advance(minutes=15)
+        extended = self.led.start_priority_boost("alpha", "1d")
+        self.assertNotEqual(extended["started_at"], first["started_at"])
+        self.assertEqual(extended["started_at"], iso(self.clock()))
+        self.assertEqual(extended["expires_at"], iso(self.clock() + timedelta(days=1)))
+        replaced = self.led.start_priority_boost("beta", "1w")
+        self.assertEqual(replaced["project"], "beta")
+        self.assertEqual(self.led.priority_boost(), replaced)
+        self.assertFalse(self.led.stop_priority_boost("alpha"))
+        self.assertTrue(self.led.stop_priority_boost("beta"))
+        self.assertIsNone(self.led.priority_boost())
+        rows = self.led.q("SELECT kind,project,detail FROM events "
+                          "WHERE kind LIKE 'priority_boost_%' ORDER BY id")
+        kinds = {row["kind"] for row in rows}
+        self.assertTrue({"priority_boost_started", "priority_boost_extended",
+                         "priority_boost_replaced", "priority_boost_stopped"} <= kinds)
+        for row in rows:
+            detail = json.loads(row["detail"])
+            self.assertEqual(detail["project"], row["project"])
+            self.assertIn("started_at", detail)
+            self.assertIn("expires_at", detail)
+        replacement = next(json.loads(row["detail"]) for row in rows
+                           if row["kind"] == "priority_boost_replaced")
+        self.assertEqual(replacement["replaced_project"], "alpha")
+
+    def test_priority_boost_corruption_and_expiry_are_safe_and_idempotent(self):
+        self.led.set_kv("priority_boost", "{bad json")
+        self.assertIsNone(self.led.priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+        self.led.start_priority_boost("alpha", "1h")
+        self.clock.advance(hours=1)
+        self.assertTrue(self.led.expire_priority_boost())
+        self.assertFalse(self.led.expire_priority_boost())
+        self.assertIsNone(self.led.priority_boost())
+        rows = self.led.q("SELECT kind,project,detail FROM events "
+                          "WHERE kind='priority_boost_expired'")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["project"], "alpha")
+        detail = json.loads(rows[0]["detail"])
+        self.assertEqual(detail["started_at"], iso(self.clock() - timedelta(hours=1)))
+        self.assertEqual(detail["expires_at"], iso(self.clock()))
+
+    def test_priority_boost_non_string_timestamps_are_discarded(self):
+        for _ in range(2):
+            self.led.set_kv("priority_boost", json.dumps(
+                {"project": "alpha", "started_at": 123, "expires_at": 456}))
+            self.assertIsNone(self.led.priority_boost())
+            self.assertIsNone(self.led.get_kv("priority_boost"))
+        self.led.set_kv("priority_boost", json.dumps(
+            {"project": "alpha", "started_at": 123, "expires_at": 456}))
+        self.assertFalse(self.led.expire_priority_boost())
+        self.assertIsNone(self.led.get_kv("priority_boost"))
+
+    def test_priority_boost_rejects_invalid_duration_and_records(self):
+        with self.assertRaises(ValueError):
+            self.led.start_priority_boost("alpha", "2h")
+        self.led.set_kv("priority_boost", json.dumps(
+            {"project": "", "started_at": "bad", "expires_at": "bad"}))
+        self.assertIsNone(self.led.priority_boost())
+
+    def test_priority_boost_survives_ledger_reopen_as_one_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ledger.db")
+            led = Ledger(path, clock=self.clock)
+            try:
+                led.start_priority_boost("alpha", "1w")
+                self.assertEqual([row["key"] for row in led.q(
+                    "SELECT key FROM kv WHERE key='priority_boost'")],
+                    ["priority_boost"])
+            finally:
+                led.close()
+            reopened = Ledger(path, clock=self.clock)
+            try:
+                self.assertEqual(reopened.priority_boost()["project"], "alpha")
+            finally:
+                reopened.close()
+
     def test_completion_evidence_is_atomic_idempotent_and_preserves_failure(self):
         self.led.upsert_item("p", 1, state="shipped")
         with self.assertRaisesRegex(ValueError, "requires verification evidence"):
