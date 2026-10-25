@@ -886,7 +886,7 @@ class GH:
         """Open PRs, for the unowned-PR check (mahler#407)."""
         return json.loads(self._gh("pr", "list", "-R", self.repo, "--state", "open",
                                    "--limit", str(limit), "--json",
-                                   "number,title,headRefName,createdAt,isDraft"))
+                                   "number,title,headRefName,createdAt,isDraft,author"))
 
     def dependency_pr_view(self, number):
         """Bot identity, complete update description, files and exact merge gates."""
@@ -1094,6 +1094,18 @@ class GH:
         out = self._gh("api", f"repos/{self.repo}/commits/{branch}")
         data = json.loads(out)
         return data["sha"]
+
+    def base_checks(self, branch):
+        """Check runs and commit statuses on `branch`'s head, as rollup-style dicts."""
+        sha = self.branch_sha(branch)
+        runs = json.loads(self._gh("api", f"repos/{self.repo}/commits/{sha}/check-runs?per_page=100"))
+        status = json.loads(self._gh("api", f"repos/{self.repo}/commits/{sha}/status"))
+        rollup = [{"name": r.get("name"), "status": (r.get("status") or "").upper(),
+                   "conclusion": (r.get("conclusion") or "").upper()}
+                  for r in runs.get("check_runs", [])]
+        rollup += [{"context": c.get("context"), "state": (c.get("state") or "").upper()}
+                   for c in status.get("statuses", [])]
+        return rollup
 
     def get_release(self, tag):
         """Information about a GitHub release for `tag`, or None if not found."""
@@ -1424,6 +1436,17 @@ def checks_state(rollup, required=None):
            for s in states):
         return "pending"
     return "green"
+
+
+def failing_checks(rollup, required=None):
+    """Names of failed checks (only required ones when `required` is given)."""
+    names = []
+    for c in (rollup or []):
+        name = c.get("name") or c.get("context")
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if name and state in _BAD_CHECKS and (not required or name in required) and name not in names:
+            names.append(name)
+    return names
 
 
 def non_required_failures(rollup, required=None):

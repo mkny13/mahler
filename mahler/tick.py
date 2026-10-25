@@ -346,8 +346,8 @@ def _candidates(ctx, projects):
             work.append((p, "sort", it))
         blocker = ci_blockers.active(led, name, clear=not ctx.dry_run)
         for it in led.items(name, ["ready"]):
-            if blocker and it["number"] != blocker["number"]:
-                ctx.hold("ci_blocker", project=name, number=it["number"], on=[blocker["number"]])
+            if ci_blockers.holds(blocker, it["number"]):
+                ctx.hold("ci_blocker", project=name, number=it["number"], on=ci_blockers.label(blocker))
                 continue
             sorted_at = parse(it["sorted_at"])
             if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):

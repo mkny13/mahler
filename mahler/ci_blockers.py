@@ -40,7 +40,7 @@ def resolved(led, project, number):
 def active(led, project, *, clear=True):
     key = f"ci_blocker:{project}"
     record = json.loads(led.get_kv(key) or "null")
-    if record and resolved(led, project, record['number']):
+    if record and record.get('number') and resolved(led, project, record['number']):
         if clear:
             led.set_kv(key, None)
         return None
@@ -64,3 +64,22 @@ def record(ending, numbers):
             e.led.set_kv(f"ci_blocker:{e.project}", json.dumps({
                 'number': unresolved[0], 'reason': e.rest, 'since': iso(e.led.now())}))
     return deps
+
+
+def holds(blocker, number):
+    """True when a project hold applies to item `number` (the blocker item is exempt)."""
+    return bool(blocker) and (blocker.get('number') is None or blocker['number'] != number)
+
+
+def label(blocker):
+    return [blocker.get('number') or blocker.get('bot_pr') or blocker.get('check')]
+
+
+def repo_wide_checks(red_by_pr, base_red):
+    """Checks failing on >=2 open PRs, or on the base branch: facts, not prose."""
+    counts = {}
+    for names in red_by_pr.values():
+        for name in set(names):
+            counts[name] = counts.get(name, 0) + 1
+    found = [n for n, c in sorted(counts.items()) if c >= 2]
+    return found + [n for n in base_red if n not in found]
