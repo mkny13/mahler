@@ -552,6 +552,88 @@ class GH:
         """Full ruleset (the only place `bypass_actors` appears); read-only."""
         return json.loads(self._gh("api", f"repos/{self.repo}/rulesets/{int(ruleset_id)}"))
 
+    def required_status_checks(self, branch):
+        """Return the set of required status check contexts for `branch`.
+
+        Queries classic branch protection and repository rulesets, returning
+        a set of check context names. Explicit 403/404 responses mean the
+        configuration is absent or unavailable to this installation. Other
+        lookup and response failures are uncertain and must be retried.
+        """
+        if not branch:
+            return set()
+        if not hasattr(self, "_required_status_checks_cache"):
+            self._required_status_checks_cache = {}
+        if branch in self._required_status_checks_cache:
+            return set(self._required_status_checks_cache[branch])
+
+        contexts = set()
+        errors = []
+
+        def tolerated_absence(exc):
+            return bool(re.search(r"\bHTTP\s+(?:403|404)\b", str(exc), re.IGNORECASE))
+
+        def required_list(value, where):
+            if value is None:
+                return []
+            if not isinstance(value, list):
+                raise ValueError(f"malformed {where}: expected a list")
+            return value
+
+        try:
+            protection = self.branch_protection(branch)
+            if not isinstance(protection, dict):
+                raise ValueError("malformed branch protection response: expected an object")
+            status = protection.get("required_status_checks")
+            if status is not None:
+                if not isinstance(status, dict):
+                    raise ValueError("malformed required_status_checks protection: expected an object")
+                for context in required_list(status.get("contexts"), "protection contexts"):
+                    if not isinstance(context, str):
+                        raise ValueError("malformed protection context: expected a string")
+                    if context:
+                        contexts.add(context)
+                for check in required_list(status.get("checks"), "protection checks"):
+                    if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                        raise ValueError("malformed protection check: expected a context string")
+                    if check["context"]:
+                        contexts.add(check["context"])
+        except GHError as exc:
+            if not tolerated_absence(exc):
+                errors.append(exc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(exc)
+
+        try:
+            rules = self.branch_rules(branch)
+            if not isinstance(rules, list):
+                raise ValueError("malformed branch rules response: expected a list")
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    raise ValueError("malformed branch rule: expected an object")
+                if rule.get("type") != "required_status_checks":
+                    continue
+                params = rule.get("parameters")
+                if not isinstance(params, dict):
+                    raise ValueError("malformed required status check rule parameters")
+                for check in required_list(
+                        params.get("required_status_checks"), "ruleset required checks"):
+                    if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                        raise ValueError("malformed ruleset check: expected a context string")
+                    if check["context"]:
+                        contexts.add(check["context"])
+        except GHError as exc:
+            if not tolerated_absence(exc):
+                errors.append(exc)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            errors.append(exc)
+
+        if errors:
+            raise errors[0]
+
+        self._required_status_checks_cache[branch] = set(contexts)
+        return set(contexts)
+
     # ---------- the conductor ships (DESIGN D18) ----------
 
     def issue_body(self, number):
@@ -1298,8 +1380,40 @@ _BAD_CHECKS = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", 
 _WAIT_CHECKS = {"PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING", "EXPECTED"}
 
 
-def checks_state(rollup):
-    """A PR's statusCheckRollup -> green | pending | red | none."""
+def checks_state(rollup, required=None):
+    """A PR's statusCheckRollup -> green | pending | red | none.
+
+    When `required` is provided and non-empty, evaluation is filtered to only
+    those check runs or status contexts whose name or context matches `required`.
+    If any required check is bad, returns "red". If any required check is waiting
+    or has not reported yet, returns "pending". If all required checks succeed,
+    returns "green" even if optional checks fail.
+
+    When `required` is None or empty, falls back to evaluating all items in `rollup`.
+    """
+    if required:
+        req_set = set(required)
+        relevant = []
+        matched_reqs = set()
+        for c in (rollup or []):
+            name = c.get("name")
+            context = c.get("context")
+            match = (name in req_set if name else False) or (context in req_set if context else False)
+            if match:
+                relevant.append(c)
+                if name and name in req_set:
+                    matched_reqs.add(name)
+                if context and context in req_set:
+                    matched_reqs.add(context)
+        states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+                  for c in relevant]
+        if any(s in _BAD_CHECKS for s in states):
+            return "red"
+        if matched_reqs != req_set or any(s in _WAIT_CHECKS or s not in {"SUCCESS", "NEUTRAL", "SKIPPED"}
+                                          for s in states):
+            return "pending"
+        return "green"
+
     states = [(c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
               for c in (rollup or [])]
     if not states:
@@ -1310,6 +1424,25 @@ def checks_state(rollup):
            for s in states):
         return "pending"
     return "green"
+
+
+def non_required_failures(rollup, required=None):
+    """Return a list of non-required check names/contexts that have failed."""
+    if not required:
+        return []
+    req_set = set(required)
+    failures = []
+    for c in (rollup or []):
+        name = c.get("name")
+        context = c.get("context")
+        is_req = (name in req_set if name else False) or (context in req_set if context else False)
+        if not is_req:
+            state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+            if state in _BAD_CHECKS:
+                identifier = name or context or "unknown"
+                if identifier not in failures:
+                    failures.append(identifier)
+    return failures
 
 
 UAT_PASS_COMMENT = "✅ **UAT passed** (from the console)."
