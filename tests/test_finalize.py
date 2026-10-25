@@ -1417,6 +1417,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 1)
         self.assertIn("attempt 1 failed", self.last_event())
 
+    def test_needs_you_asking_github_write_access_is_not_parked(self):
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU Please grant the run's GitHub identity write access "
+                     "so git push stops returning 403\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertNotEqual(item["state"], "needs_you")
+        self.assertFalse(any(c.kwargs.get("priority") == "high" for c in ping.call_args_list))
+
     def test_needs_you_still_beats_done(self):
         with open(self.log, "w") as fh:
             fh.write("STATUS: NEEDS-YOU which licence key?\n")

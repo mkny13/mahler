@@ -280,6 +280,26 @@ class RecipePushProhibitionTests(unittest.TestCase):
                 ):
                     self.assertNotIn(bad_phrase, rendered)
 
+    def test_build_says_refused_push_is_expected_not_needs_you(self):
+        rendered = prompt.render(
+            "build", number=1241, repo="mkny13/mahler", title="t", platform="codex",
+            worktree="/tmp/wt", branch="mahler/1241-x", push_branch="mahler/1241-x",
+            handoff="", rules="", verify="python3 -m unittest", base="main",
+            whats_new="", issue_context="ctx")
+        text = " ".join(rendered.split())
+        self.assertIn("a refused push or `gh` write (HTTP 403) is expected", text)
+        self.assertIn("Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access", text)
+        self.assertIn("the conductor posts it and ticks the parent's criteria", text)
+
+    def test_sort_recipe_forbids_agent_writes_in_parent_verify_plans(self):
+        rendered = prompt.render(
+            "sort", number=1, repo="mkny13/mahler", title="t", platform="codex",
+            worktree="/tmp/wt", branch="", handoff="", rules="", base="main",
+            issue_context="ctx", sizing="", scope_rules="", history="", verify="x",
+            whats_new="")
+        self.assertIn("never plan or write Done-when criteria that need the run to comment",
+                      " ".join(rendered.split()))
+
     def test_build_and_fix_instruct_local_commits(self):
         for role in ("build", "fix"):
             with self.subTest(role=role):

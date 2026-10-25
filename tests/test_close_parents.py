@@ -939,3 +939,14 @@ class MaintenanceQueueAfterParentCloseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParentVerifyNoAgentWritesTests(unittest.TestCase):
+    def test_templates_have_no_issue_write_instructions(self):
+        import inspect
+        from mahler import sync
+        src = inspect.getsource(sync._parent_verify)
+        for bad in ("Record evidence on the parent", "record evidence on the parent",
+                    "tick supported criteria", "record evidence or a concrete"):
+            self.assertNotIn(bad, src)
+        self.assertIn("make no GitHub comments or edits", src.replace('"\n               "', ""))

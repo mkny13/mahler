@@ -907,13 +907,15 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
         url = gh.create_issue(_verify_title(number), body, labels)
         led.set_kv(item_key, url)
         return url
-    tail = ("\n\n## Done when\n- [ ] Each remaining parent criterion has recorded evidence "
-            "or an explicit actionable owner question.\n\n## Needs a human to check\nNothing")
+    tail = ("\n\n## Done when\n- [ ] Each remaining parent criterion has evidence in the run's "
+            "summary or an explicit actionable owner question.\n\n## Needs a human to check\nNothing")
     if not matches:
         create(f"{_verify_managed(number, blockers, fingerprint)}\n\n## Problem / goal\n"
                f"Parent #{number} has completed children but still needs evidence for:\n" +
                "\n".join(f"- {b}" for b in blockers) +
-               "\n\n## Plan\nCollect and record evidence for each criterion on the parent. "
+               "\n\n## Plan\nCollect evidence for each criterion and report it in your DONE summary "
+               "(or an evidence file) as a structured block; make no GitHub comments or edits, "
+               "the conductor posts it on the parent. "
                "Investigate closed unmerged children for supersession and record the successor and "
                "its merge evidence. Tick only criteria supported by that evidence; "
                "identify any owner-only decision."
@@ -933,8 +935,9 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                      f"#{number} closed, but the parent still lists unresolved criteria:\n" +
                      "\n".join(f"- {b}" for b in blockers) +
                      f"\n\n## Plan\nRead the previous result on #{prior['number']} and parent "
-                     f"#{number}. Record evidence on the parent and tick supported criteria, or "
-                     "raise a genuine owner-only question. Do not close without one of these."
+                     f"#{number}. Report evidence per supported criterion in your DONE summary (or an "
+                     "evidence file); the conductor posts it and ticks criteria. Make no GitHub "
+                     "comments or edits. Otherwise raise a genuine owner-only question."
                      + tail)
         led.set_kv(follow_key, url)
         return
@@ -991,7 +994,8 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
                 create(f"{_verify_managed(number, blockers, fingerprint)}\n{retry_marker}\n\n"
                        f"## Plan\nNew merge evidence after the diagnostic: {evidence}. "
                        f"Re-verify parent #{number}, read prior verification results, and "
-                       "record evidence or a concrete actionable question on the parent." + tail)
+                       "report evidence in your DONE summary or a concrete actionable question; "
+                       "make no GitHub writes, the conductor posts it." + tail)
             led.set_kv(diag_key, max(merges.values(), key=parse))
             return
         # A merge watermark may have been stored before any diagnostic was

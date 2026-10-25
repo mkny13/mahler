@@ -51,6 +51,9 @@ $issue_context
    Likewise keep any `<!-- mahler:parent-verify:... -->` comments and the
    `<!-- mahler:verify-blockers:start -->`…`<!-- mahler:verify-blockers:end -->` section
    unquoted and unchanged: Mahler maintains that section itself.
+   For parent-verify items, never plan or write Done-when criteria that need the run to comment
+   on or edit GitHub issues or tick checklists: the run reports structured evidence in its DONE
+   summary and the conductor posts it.
    The `Files:` list right under `## Plan` is parsed
    mechanically on every sync (`gh.files_of`, mahler#210): the scheduler blocks two
    `ready`/`working` issues from building at once whenever their `Files:` lists share a path —

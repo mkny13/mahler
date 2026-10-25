@@ -108,6 +108,35 @@ def _needs_you(e):
     return True
 
 
+# A NEEDS-YOU whose only ask is GitHub write/push access (#1241). Runs hold no
+# such token by design (D18/D47): the conductor pushes the saved branch and
+# posts issue/parent evidence, so there is nothing for the owner to answer.
+_GH_WRITE_ASK = re.compile(
+    r"\b(?:github|gh\b|git\s+push|push\s+(?:access|path|permission)|403|"
+    r"issue\s+(?:comment|write|update|edit)|(?:comment|edit)\w*\s+(?:on|the)\s+(?:the\s+)?(?:parent|issue)|"
+    r"parent\s+evidence)", re.IGNORECASE)
+_GH_WRITE_ACCESS = re.compile(
+    r"\b(?:grant|restore|provide|enable|permit|allow|authori[sz]e|write\s+access|"
+    r"push\s+(?:access|path|permission)|permissions?|credentials?|tokens?|403|forbidden|"
+    r"refused|cannot\s+push|couldn.t\s+push)\b", re.IGNORECASE)
+
+
+def _asks_github_write_access(e):
+    if e.verb != "NEEDS-YOU" or e.run["role"] not in ("build", "fix"):
+        return False
+    question, _ = split_needs_you(e.rest)
+    return bool(question and _GH_WRITE_ASK.search(question)
+                and _GH_WRITE_ACCESS.search(question))
+
+
+def _ended_write_access_ask(e):
+    """The conductor owns pushes and issue writes: skip the owner, ship what's saved."""
+    e.ctx.say(f"{e.project}#{e.number}: NEEDS-YOU only asked for GitHub write access; "
+              "the conductor handles it — not paging the owner")
+    e.rest = ""
+    return _ended_done(e)
+
+
 # Match unavailable access phrases, never bare words such as token or protection.
 _ACCESS_BLOCKER = re.compile(
     r"\bdeployment[ -]protection\b|"
@@ -763,6 +792,7 @@ def _ended_unconfirmed(e):
 # a confirmed yield outranks watchdog stop reasons. The verify-green fallback
 # is the last word before an attempt is counted.
 ENDINGS = (
+    (_asks_github_write_access, _ended_write_access_ask),
     (lambda e: e.verb == "NEEDS-YOU", _needs_you),
     (lambda e: e.verb == "DONE" and e.reason in (None, "quota"), _ended_done),
     (lambda e: e.verb == "YIELDED", _ended_preempted),
