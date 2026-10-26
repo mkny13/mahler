@@ -16,12 +16,12 @@ it does not imply a real-browser visual walkthrough. Criterion 7 tracks that sep
 | Parent criterion (in checklist order) | Assessment | Evidence / remaining work |
 | --- | --- | --- |
 | 1. #1121 merged; URL scope for Needs you, Backlog, Releases, Stats and Event stream on desktop/phone; global views remain global | SUPPORTED | Merge ancestry; exact two-project filtering, HTTP query/fragment persistence, both layout navigation contracts |
-| 2. #1122 merged; six headline measures, inline questions, active/queued/blocked, six shipping stages/explainer, dependencies, completion/activity, briefs/releases/trend for one project | UNSUPPORTED in the full integrated desktop/phone experience | Desktop and shared state supported; phone omits several required sections. Linked p1 repair [#1254](https://github.com/mkny13/mahler/issues/1254) |
+| 2. #1122 merged; six headline measures, inline questions, active/queued/blocked, six shipping stages/explainer, dependencies, completion/activity, briefs/releases/trend for one project | SUPPORTED (re-verified by #1257 after #1254/#1256) | Probe and tests on `c7ccb4787a4ffd7a20ea74faf2215ea78cd8611b`, plus browser journey step `b` at desktop and phone; see "Criterion 2 re-verification" |
 | 3. #1123 merged; one durable 1h/1d/1w boost, replacement/stop/expiry events, ordering ahead of issue/static priority, CLI/console, unchanged concurrency/running work | SUPPORTED | Ledger, scheduler, CLI, console action and rendering contracts below |
 | 4. #1124 merged; targeted atomic 1–64 max_parallel; project pause/resume preserves runs and visibility | SUPPORTED | Config boundaries/byte preservation, fresh config reload, atomic replacement, scheduler and both layout contracts |
 | 5. Committed approved mockup, integrated console design, allocated Prioritize decision | SUPPORTED | Mockup introduced by #1161; console design sections and DESIGN D51 |
 | 6. Four required checks pass on merged base | SUPPORTED | All four commands exited 0; 3,259 tests per suite, one opt-in browser smoke skipped |
-| 7. Gated integrated desktop/phone walkthrough | OUTSTANDING | Gate allowed driver preflight, but Playwright unavailable; no browser journey ran. Exact command and outstanding coverage below |
+| 7. Gated integrated desktop/phone walkthrough | OUTSTANDING (#1257: journey ran; one product defect) | Journey ran through the gate; every step passed except `a1`, which failed on product defect [#1274](https://github.com/mkny13/mahler/issues/1274). See "Criterion 7 re-run" |
 
 No owner-only decision is needed to finish this audit. Existing visual/taste notes
 on #1119 are not an owner-pass gate: shipments complete through automated evidence
@@ -262,3 +262,70 @@ Parent #1119 checklist updated to tick **1, 3, 4, 5 and 6** only; **2 and 7** re
 reserves issue comments, branch push and PR shipping for the conductor. No agent
 comment or PR is posted by this build run; the conductor can link this committed
 audit when reporting the checklist evidence. No owner pass is required.
+
+## Criterion 2 re-verification (#1257)
+
+On `main` at `c7ccb4787a4ffd7a20ea74faf2215ea78cd8611b` (`HEAD` and `origin/main` agreed),
+2026-10-26. The probe above, re-run unchanged, exited 0 and printed
+`desktop= True phone= True` for all five labels (`How a change ships`,
+`Dependencies`, `Completed · last 7 days`, `Activity`, `Open issues · 30 days`).
+`PYTHONPATH=tests python3 -m unittest -v test_console.ProjectOverviewPageTests
+test_console_state.ProjectOverviewStateTests` ran 7 tests, OK (exit 0).
+
+The browser journey (below) step `b` also passed at both widths against the seeded
+fixture: six headline measures, inline answer button, active/queued/blocked rows,
+explainer, dependencies, completed, activity, what's new, release v2.4.1 and the
+30-day trend, with the other project's rows absent. On desktop it additionally
+asserted six stage dots on each of the six shipping rows plus the red check name,
+reviewing platform, `quiet 1/14d` and `verified`.
+
+Caveat, not a failure of the criterion: the phone Overview shows shipping rows as
+subtitle evidence (`PR #44 · agy-gemini reviewing`) plus the six-stage explainer, not a
+row of six dots. The parent wording is "six-stage shipping evidence/explainer", which this
+satisfies. Verdict: **SUPPORTED** on both layouts.
+
+## Criterion 7 re-run (#1257)
+
+Tooling (no dependency added, no `package.json`): `examples/console_journey/seed.py`
+(stdlib; writes a two-project config with `concurrency.total = 8` and a seeded ledger into a
+temp `MAHLER_HOME`, and refuses to run otherwise) and `journey.mjs` (Node built-ins only:
+global `WebSocket`, `node:sqlite`; drives Google Chrome 156 headless over CDP). `run.sh`
+starts the seed, runs the journey and tears down. Contract test:
+`tests/test_console_journey.py`.
+
+Command, always through the gate:
+
+```sh
+mahler desktop run -- sh examples/console_journey/run.sh
+```
+
+The gate allowed it; the journey exited 1 and the wrapper printed
+`mahler desktop: command ran and exited 1`. Per-step output (desktop 1280x900, phone
+390x844 mobile emulation):
+
+| Step | Desktop | Phone |
+| --- | --- | --- |
+| a1 all-projects page offers the scope switcher | **FAIL** | **FAIL** |
+| a2 switcher moves scope, URL `?project=` follows, reload keeps it, Needs you/Backlog/Releases/Stats/Event stream show only the project | pass | pass |
+| b Overview content | pass | pass |
+| c Prioritize 1 hour, banner, ▲ in switcher; replacement on the other project asked for confirmation; Stop; ledger has `priority_boost_started`/`replaced`/`stopped` | pass | pass |
+| d Parallel jobs + then −; only that project's `max_parallel` changes in the fixture config | pass | pass |
+| e Pause then resume; project stays listed (switcher shows paused), running item stays active; events recorded | pass | pass |
+| f Overview in dark mode | pass | pass |
+
+PNGs for each step and layout are in `docs/audits/1119-journey/`
+(`02-FAILED-a1-*` shows the all-projects page with no switcher).
+
+**Product defect found:** the Mahler-wide view renders a plain "Mahler" brand, not the
+switcher, so a project can only be entered by typing `?project=`. `design.md` and #1119 §1
+say the rail/phone brand is the dropdown. Filed as p1 `type:bug`
+[#1274](https://github.com/mkny13/mahler/issues/1274), `Part of #1119`. Step a2 therefore
+enters by URL. Criterion 7 stays **unchecked** until #1274 merges and the journey passes
+`a1`; re-run the same gated command then. Ordering and expiry are not repeated by the
+journey; criterion 3's scheduler and ledger tests cover them. Visual note, not an
+assertion: on the phone Overview the lower sections sit flush against the left edge and ref
+numbers run into titles; taste notes are not a gate (D10).
+
+## Parent checklist handoff (#1257)
+
+Criterion 2 ticked on #1119 from the evidence above. Criterion 7 left unchecked.
