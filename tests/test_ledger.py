@@ -37,6 +37,16 @@ class LeaseTests(unittest.TestCase):
         return {"enabled": True, "post_merge": {
             **config.DEFAULT_POST_MERGE, "enabled": True, "live_command": "./live"}}
 
+    def test_post_merge_strategy_deadlines(self):
+        for number, (strategy, timeout, expected) in enumerate((
+            ("mahler", 1800, 3600), ("mahler", 7200, 7200), ("github", 1800, 1800)
+        ), 1):
+            with self.subTest(strategy=strategy, timeout=timeout):
+                policy = self.post_merge_policy()
+                policy["post_merge"].update(live_strategy=strategy, timeout_seconds=timeout)
+                row = self.led.create_post_merge_check("p", number, "a" * 40, policy)
+                self.assertEqual(row["deadline_at"], iso(self.clock() + timedelta(seconds=expected)))
+
     def test_post_merge_disabled_and_exact_identity(self):
         sha = "a" * 40
         for policy in ({}, {"enabled": True},
