@@ -1676,6 +1676,7 @@ _SETTING_LABELS = {
     "settle_minutes": "Settle delay (minutes)",
     "max_attempts": "Maximum attempts",
     "verify_timeout_minutes": "Verify timeout (minutes)",
+    "wait_escalate_hours": "Wait backstop (hours)",
     "run_timeout_minutes": "Run timeout (minutes)",
     "progress_timeout_minutes": "Progress timeout (minutes)",
     "startup_timeout_minutes": "Startup timeout (minutes)",

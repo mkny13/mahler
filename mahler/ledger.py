@@ -358,7 +358,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_estimate_samples
     WHERE {ESTIMATE_SAMPLE_SQL};
 """
 
-STATES = ("inbox", "ready", "working", "verifying", "needs_you", "parked", "failed",
+STATES = ("inbox", "ready", "working", "verifying", "needs_you", "waiting", "parked", "failed",
           "parent", "shipped", "done")
 
 CONDUCTOR = "conductor"          # the lease holder that ships (DESIGN D18)

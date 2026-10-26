@@ -29,7 +29,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAHLER_BIN = os.path.join(REPO_ROOT, "bin", "mahler")
 
 SETTING_TIMERS = (
-    "settle_minutes", "max_attempts", "verify_timeout_minutes", "capacity_wait_max_hours",
+    "settle_minutes", "max_attempts", "verify_timeout_minutes", "capacity_wait_max_hours", "wait_escalate_hours",
     "run_timeout_minutes", "progress_timeout_minutes", "startup_timeout_minutes",
     "auto_lease_minutes", "interactive_lease_minutes", "hot_hold_minutes",
     "yield_grace_seconds",
@@ -165,6 +165,7 @@ DEFAULTS = {
                            "and upgrades them together."),
         "review_green_rounds": 2,      # inclusive convergence threshold per PR
         "capacity_wait_max_hours": 24,  # unknown recovery backstop for review/fix capacity
+        "wait_escalate_hours": 72,     # conductor-side wait -> needs-you backstop (D52)
         "verify_timeout_minutes": 60,  # CI pending longer than this -> needs-you (mahler#18)
         "run_timeout_minutes": 60,
         "progress_timeout_minutes": 20,

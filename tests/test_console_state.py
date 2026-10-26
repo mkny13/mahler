@@ -900,3 +900,17 @@ class ProjectHeaderControlsTests(unittest.TestCase):
         for name in ("pause_project", "resume_project"):
             with self.assertRaises(actions.ActionError):
                 run(name, "ghost")
+
+
+class WaitingStateTests(unittest.TestCase):
+    def test_waiting_item_renders_and_is_not_a_needs_you(self):
+        from test_serve import make_cfg
+
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.upsert_item("mahler", 7, title="held", state="waiting")
+        snapshot = state.build(make_cfg(), led)
+        self.assertEqual(snapshot["needs_count"], 0)
+        self.assertEqual([n for n in snapshot["needs"] if n["number"] == 7], [])
+        for layout, selection in (("desktop", {"view": "backlog"}), ("phone", {"tab": "backlog"})):
+            page.app(snapshot, layout, **selection)

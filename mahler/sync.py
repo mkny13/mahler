@@ -10,7 +10,7 @@ import hashlib
 import re
 from datetime import timedelta
 
-from . import ci_blockers, config, releases
+from . import ci_blockers, config, releases, waits
 from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
@@ -689,6 +689,7 @@ def _process_comments(ctx, project, item, comments):
 
 def resume_item(led, project, number, why="you said go"):
     """Apply the same reset as ``/mahler go`` to a waiting item."""
+    waits.clear(led, project, number)
     led.set_state(project, number, "ready", why, attempts=0, setup_fails=0,
                   esc_tier=0, esc_fails=0,
                   sorted_at=iso(led.now() - timedelta(days=1)))
@@ -700,6 +701,7 @@ def _apply_instruction(ctx, project, item, verb, arg, *, is_owner=False):
         resume_item(led, project, n)
     elif verb == "park":
         led.set_state(project, n, "parked", "you parked it")
+        waits.clear(led, project, n)
         for run in led.active_runs(project):
             if run["number"] == n:
                 request_stop(ctx, run, "parked")
