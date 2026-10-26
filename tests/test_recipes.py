@@ -273,7 +273,7 @@ class RecipePushProhibitionTests(unittest.TestCase):
                     verify="python3 -m unittest", base="main", whats_new="",
                     issue_context="Issue body context",
                 )
-                self.assertNotIn("git push", rendered)
+                self.assertNotIn("git push", rendered.replace("`git push` or `gh` write (HTTP 403) is expected", ""))
                 for bad_phrase in (
                     "push -u", "push origin", "push what you have", "push the branch",
                     "push to `$push_branch`", "Your job ends at the push",
@@ -497,6 +497,21 @@ class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
     def status_lines(self, rendered):
         return [line.strip() for line in rendered.splitlines()
                 if line.startswith("STATUS:")]
+
+    def test_parent_verify_contract_has_no_agent_issue_writes(self):
+        for marker in ("parent-verify", "parent-verify-followup"):
+            text = " ".join(self.rendered("Verify remaining completion criteria for #1",
+                    f"<!-- mahler:{marker}:1:abc -->").split())
+            self.assertIn("structured evidence block", text)
+            self.assertIn("the conductor posts parent evidence and ticks checkboxes", text)
+            self.assertIn("a refused `git push` or `gh` write (HTTP 403) is expected", text)
+            self.assertIn("Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access", text)
+            self.assertNotIn("Post it as an issue comment", text)
+            self.assertNotIn("post one actionable question", text)
+
+    def test_sort_forbids_parent_verify_issue_writes(self):
+        text = " ".join(prompt.render("sort").split())
+        self.assertIn("never plan or write Done-when criteria that need the run to comment", text)
 
     def test_relevant_issue_gets_the_full_contract(self):
         for title, body in (("Add a What's New surface to the app", ""),

@@ -97,6 +97,16 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.gh.edit_issue_body.assert_called_once()
                 self.gh.comment.assert_called_once()
 
+    def assert_evidence_contract(self, body):
+        self.assertIn("structured evidence block", body)
+        self.assertIn("met/unmet", body)
+        self.assertIn("DONE summary or an evidence file", body)
+        self.assertIn("the conductor posts", body)
+        for forbidden in ("record evidence for each criterion on the parent",
+                          "Record evidence on the parent", "tick supported criteria",
+                          "Tick only criteria", "question on the parent"):
+            self.assertNotIn(forbidden, body)
+
     def test_mixed_criteria_tick_and_file_one_verify_issue(self):
         self.bodies[10] = "## Done when\n- [ ] #11 closed\n- [ ] approve security review"
         self.run_pass()
@@ -111,6 +121,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         _, body, labels = self.gh.create_issue.call_args.args
         self.assertIn("approve security review", body)
         self.assertIn("pass:verify", labels)
+        self.assert_evidence_contract(body)
         # A different merged PR must not change the free-text dedupe identity.
         self.led.upsert_item("mahler", 11, pr=100)
         self.run_pass()
@@ -237,6 +248,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.create_issue.assert_called_once()
         body = self.gh.create_issue.call_args.args[1]
         self.assertIn("#43", body)
+        self.assert_evidence_contract(body)
         self.assertIn("approve security review", body)
         self.run_pass()
         self.gh.create_issue.assert_called_once()
@@ -409,6 +421,7 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.run_pass()
                 self.assertEqual(self.gh.create_issue.call_count, 2)
                 self.assertIn("PR #78", self.gh.create_issue.call_args.args[1])
+                self.assert_evidence_contract(self.gh.create_issue.call_args.args[1])
                 self.run_pass()  # reuse open verification
                 self.remote[-1]["state"] = "closed"
                 self.run_pass()  # the same merge cannot create a chain
