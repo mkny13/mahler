@@ -230,7 +230,7 @@ class ClaimTests(unittest.TestCase):
         return scanner
 
     def test_mechanical_pass_and_mixed_owner_question(self):
-        for question in (None, "Which account should own this integration?"):
+        for question in (None, "[credentials] Which account should own this integration?"):
             with self.subTest(question=question):
                 self.closed = False
                 self.comments.clear()
@@ -243,19 +243,28 @@ class ClaimTests(unittest.TestCase):
                                  "needs_you" if question else "done")
                 self.assertIn("Practices ci-tests: pass at base", self.comments[0])
                 if question:
-                    self.assertEqual(self.led.item("x", 5)["question"], question)
+                    self.assertEqual(self.led.item("x", 5)["question"], question.split("] ", 1)[1])
                     self.assertFalse(self.closed)
                     self.ctx.ping.assert_called_once()
 
     def test_owner_question_without_mechanical_check(self):
         self.verdict()
-        self.record["owner_question"] = "Which account should own this integration?"
+        self.record["owner_question"] = "[credentials] Which account should own this integration?"
         self.save()
         self.advance()
         self.advance()
         self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
         self.ctx.ping.assert_called_once()
         self.gh.close_issue.assert_not_called()
+
+    def test_non_owner_question_becomes_a_human_check_not_a_park(self):
+        self.verdict()
+        self.record["owner_question"] = "Should I file a follow-up?"
+        self.save()
+        self.advance()
+        self.assertNotEqual(self.led.item("x", 5)["state"], "needs_you")
+        self.assertIn("Should I file a follow-up?", self.comments[0])
+        self.assertTrue(self.closed)
 
     def test_mechanical_gap_rejects_once(self):
         self.practices("gap")

@@ -1419,7 +1419,7 @@ class RunTests(unittest.TestCase):
 
     def test_needs_you_still_beats_done(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: NEEDS-YOU which licence key?\n")
+            fh.write("STATUS: NEEDS-YOU [product] which licence key?\n")
         with mock.patch.object(self.ctx, "ping") as ping:
             self.finalize()
         item = self.led.item("x", 5)
@@ -1431,9 +1431,70 @@ class RunTests(unittest.TestCase):
         self.assertEqual(ping.call_args.kwargs["tags"], "question")
         self.assertTrue(ping.call_args.kwargs["console"])
 
+    def run_untagged(self, text="STATUS: NEEDS-YOU May I file a follow-up?\n"):
+        with open(self.log, "w") as fh:
+            fh.write(text)
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        return ping
+
+    def test_untagged_needs_you_goes_back_to_the_agent_once(self):
+        ping = self.run_untagged()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        self.assertEqual(item["attempts"], 0)
+        self.assertIn("deciding it (D52)", self.last_event())
+        ping.assert_not_called()
+        self.assertEqual(json.loads(self.led.get_kv("decide-yourself:x#5"))["question"],
+                         "May I file a follow-up?")
+
+    def test_unknown_category_counts_as_untagged(self):
+        self.run_untagged("STATUS: NEEDS-YOU [scope] Which one?\n")
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+
+    def test_second_untagged_needs_you_in_the_cycle_reaches_the_owner(self):
+        self.run_untagged()
+        ping = self.run_untagged()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["question"], "May I file a follow-up?")
+        ping.assert_called_once()
+
+    def test_new_attempt_cycle_resets_the_strike(self):
+        self.run_untagged()
+        self.led.set_kv("attempt_cycle:x#5", "c2")
+        self.run_untagged()
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+
+    def test_allowed_category_is_stripped_and_parks(self):
+        ping = self.run_untagged("STATUS: NEEDS-YOU [Money] Pay for it? OPTIONS: yes | no\n")
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["question"], "Pay for it?")
+        self.assertEqual(json.loads(item["options"]), ["yes", "no"])
+        ping.assert_called_once()
+        self.assertIsNone(self.led.get_kv("decide-yourself:x#5"))
+
+    def test_unsorted_untagged_returns_to_inbox(self):
+        self.led.upsert_item("x", 5, sorted_at=None)
+        self.run_untagged()
+        self.assertEqual(self.led.item("x", 5)["state"], "inbox")
+
+    def test_done_clears_the_decide_yourself_record(self):
+        self.led.set_kv("decide-yourself:x#5", json.dumps({"question": "q", "cycle": ""}))
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: DONE did it\n")
+        self.finalize()
+        self.assertIsNone(self.led.get_kv("decide-yourself:x#5"))
+
+    def test_parse_needs_you_category(self):
+        self.assertEqual(finalize.parse_needs_you_category("[credentials] key?"), ("credentials", "key?"))
+        self.assertEqual(finalize.parse_needs_you_category("key?"), (None, "key?"))
+        self.assertEqual(finalize.parse_needs_you_category(""), (None, ""))
+
     def test_needs_you_without_options_stores_the_whole_rest_as_the_question(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: NEEDS-YOU which licence key?\n")
+            fh.write("STATUS: NEEDS-YOU [product] which licence key?\n")
         self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual(item["question"], "which licence key?")
@@ -1441,7 +1502,7 @@ class RunTests(unittest.TestCase):
 
     def test_needs_you_options_split_from_the_question(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: NEEDS-YOU Create a staging key or reuse prod? "
+            fh.write("STATUS: NEEDS-YOU [product] Create a staging key or reuse prod? "
                      "OPTIONS: I'll create it | Reuse prod\n")
         with mock.patch.object(self.ctx, "ping") as ping:
             self.finalize()
@@ -1458,7 +1519,7 @@ class RunTests(unittest.TestCase):
 
     def test_needs_you_options_case_insensitive_marker(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: NEEDS-YOU pick one options: A | B\n")
+            fh.write("STATUS: NEEDS-YOU [product] pick one options: A | B\n")
         self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual(item["question"], "pick one")
@@ -1466,7 +1527,7 @@ class RunTests(unittest.TestCase):
 
     def test_needs_you_options_capped_at_three_and_blanks_dropped(self):
         with open(self.log, "w") as fh:
-            fh.write("STATUS: NEEDS-YOU pick one OPTIONS: A ||  B  | | C | D\n")
+            fh.write("STATUS: NEEDS-YOU [product] pick one OPTIONS: A ||  B  | | C | D\n")
         self.finalize()
         item = self.led.item("x", 5)
         self.assertEqual(json.loads(item["options"]), ["A", "B", "C"])
@@ -1474,7 +1535,7 @@ class RunTests(unittest.TestCase):
     def test_needs_you_option_text_cut_to_forty_characters(self):
         long_choice = "x" * 60
         with open(self.log, "w") as fh:
-            fh.write(f"STATUS: NEEDS-YOU pick one OPTIONS: {long_choice} | short\n")
+            fh.write(f"STATUS: NEEDS-YOU [product] pick one OPTIONS: {long_choice} | short\n")
         self.finalize()
         item = self.led.item("x", 5)
         options = json.loads(item["options"])

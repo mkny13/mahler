@@ -132,6 +132,15 @@ def advance(ctx, project, item):
         # A launch interrupted before its receipt or an expired run is inconclusive.
         _inconclusive(led, project, n, record, led.run(record["run_id"]))
         save(led, project, n, record)
+    if record["phase"] == "verdict" and record.get("owner_question"):
+        from .finalize import OWNER_CATEGORIES, parse_needs_you_category
+        category, text = parse_needs_you_category(record["owner_question"])
+        if category in OWNER_CATEGORIES:
+            record["owner_question"] = text
+        else:       # not an owner decision (D52): evidence for the human check, not a park
+            record["human_checks"] = record["human_checks"] + [text]
+            record["owner_question"] = None
+        save(led, project, n, record)
     if record["phase"] == "verdict":
         gh = ctx.gh(project)
         if record["verdict"] == "pass":

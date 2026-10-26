@@ -47,6 +47,23 @@ def split_needs_you(rest):
     return question, options[:MAX_OPTIONS]
 
 
+OWNER_CATEGORIES = ("product", "money", "credentials", "data-policy", "irreversible")
+
+_CATEGORY_TAG = re.compile(r"^\s*\[([A-Za-z-]+)\]\s*")
+
+
+def parse_needs_you_category(rest):
+    """A NEEDS-YOU rest -> (category|None, rest_without_tag). The category is
+    the lowercased leading `[tag]`; an unknown tag is still reported (and
+    stripped) so the caller can refuse it, and no tag gives None (D52)."""
+    if not rest:
+        return None, rest
+    m = _CATEGORY_TAG.match(rest)
+    if not m:
+        return None, rest
+    return m.group(1).lower(), rest[m.end():]
+
+
 class Ending:
     """One run's ending, as the outcome handlers below need it.
 
@@ -99,8 +116,38 @@ def _retry(e):
     return True
 
 
+def _decide_key(project, number):
+    return f"decide-yourself:{project}#{number}"
+
+
 def _needs_you(e):
-    """The agent asked a question only the owner can answer (DESIGN D13)."""
+    """The agent asked a question only the owner can answer (DESIGN D13). A
+    sort/build/fix question must declare an owner-only category; without one it
+    goes back to the agent once per attempt cycle, to decide itself (D52)."""
+    category, rest = parse_needs_you_category(e.rest)
+    if e.run["role"] in ("sort", "build", "fix"):
+        if category in OWNER_CATEGORIES:
+            e.rest = rest
+        else:
+            question, _ = split_needs_you(rest)
+            key = _decide_key(e.project, e.number)
+            cycle = e.led.get_kv(f"attempt_cycle:{e.project}#{e.number}") or ""
+            try:
+                prior = json.loads(e.led.get_kv(key) or "{}")
+            except ValueError:
+                prior = {}
+            if prior.get("cycle") != cycle:
+                e.led.set_kv(key, json.dumps({"question": question, "cycle": cycle}))
+                e.set_state("ready" if e.item["sorted_at"] else "inbox",
+                            "agent asked a non-owner question — deciding it (D52)")
+                return True
+            e.rest = rest
+    else:
+        e.rest = rest
+    return _park_needs_you(e)
+
+
+def _park_needs_you(e):
     question, options = split_needs_you(e.rest)
     e.set_state("needs_you", question, question=question, options=json.dumps(options))
     e.ping(f"Mahler needs you — {e.project} #{e.number}", question or e.item["title"],
@@ -133,7 +180,7 @@ def _access_blocked(e):
     if e.item["state"] == "needs_you" and e.item["question"] == question:
         return True
     e.rest = question
-    return _needs_you(e)
+    return _park_needs_you(e)
 
 
 # ---------- BLOCKED on an external precondition ----------
@@ -676,6 +723,7 @@ def _ended_done(e):
     agent) ships it from here: push, PR, CI, merge. A DONE build is a success,
     not a failed attempt — no attempt is counted, and the item leaves the ready
     queue into `verifying`."""
+    e.led.set_kv(_decide_key(e.project, e.number), None)
     if e.run["role"] == "fix":
         # A fix's DONE goes back to verifying on the same PR: the new SHA
         # re-triggers CI. The summary stays the build's.
