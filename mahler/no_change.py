@@ -2,7 +2,7 @@
 
 import json
 
-from . import config, practices_audit, redact, router, runner
+from . import config, practices_audit, redact, router, runner, waits
 from .ledger import CONDUCTOR
 
 
@@ -220,12 +220,11 @@ def advance(ctx, project, item):
         record["phase"] = "exhausted"
         with led._tx():
             save(led, project, n, record)
-            question = "Independent no-change reviews exhausted inconclusive attempts. Review manually or retry?"
-            led.set_state(project, n, "needs_you", question, question=question, options="[]")
+            reason = ("Independent no-change reviews exhausted inconclusive attempts; "
+                      "retrying later with another reviewer")
+            waits.hold(led, project, n, "review_inconclusive", reason, resume="verifying",
+                       wake={"sha": record["base_sha"]})
         led.release(project, n, holder=CONDUCTOR)
-        ctx.ping(f"Claim review stuck — {project} #{n}",
-                 "Independent reviews produced no usable evidence; automatic reviews stopped.",
-                 project, n)
         return True
     active = led.active_runs()
     if len(active) >= ctx.cfg["concurrency"]["total"]:
