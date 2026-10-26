@@ -10,7 +10,7 @@ import hashlib
 import re
 from datetime import timedelta
 
-from . import ci_blockers, config, releases, waits
+from . import ci_blockers, config, no_change, releases, waits
 from .gh import (GHError, AGENT_MARK, AGENT_NOTE, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
@@ -962,6 +962,11 @@ def post_parent_evidence(ctx, projects):
             try:
                 record = json.loads(row["value"] or "{}")
                 if record and not record.get("done"):
+                    # A clean-worktree claim is unverified until its independent
+                    # no-change review passes; evidence must not close the parent first.
+                    review = no_change.read(ctx.led, project, record["verify"])
+                    if review and review.get("phase") != "done":
+                        continue
                     _apply_parent_evidence(ctx, project, record)
                     record["done"] = True
                     ctx.led.set_kv(row["key"], json.dumps(record))

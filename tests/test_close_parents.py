@@ -814,6 +814,18 @@ class ParentEvidenceTests(unittest.TestCase):
         self.assertEqual(self.gh.create_issue.call_count, 1)
         self.assertTrue(json.loads(self.led.get_kv(sync.evidence_key("mahler", 20, 41)))["done"])
 
+    def test_waits_for_no_change_review_before_applying(self):
+        from mahler import no_change
+        for phase in ("waiting", "reviewing", "verdict", "rejected"):
+            no_change.save(self.led, "mahler", 20, {"phase": phase})
+            self.post()
+            self.assertEqual(self.evidence_comments(), [], phase)
+            self.assertEqual(self.gh.edit_issue_body.call_count, 0, phase)
+            self.assertEqual(self.gh.create_issue.call_count, 0, phase)
+        no_change.save(self.led, "mahler", 20, {"phase": "done"})
+        self.post()
+        self.assertEqual(len(self.evidence_comments()), 1)
+
     def test_reprocessing_same_run_posts_ticks_and_files_nothing_twice(self):
         self.post()
         edits = self.gh.edit_issue_body.call_count
