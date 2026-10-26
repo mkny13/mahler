@@ -135,6 +135,7 @@ def process_turn(cfg, led, turn, *, runner=run_engine, lock_fd=None, config_path
         mutations = led.q('SELECT operation_id,kind,payload,status FROM chat_mutations WHERE session_id=?',
                           (session['id'],))
         prompt = json.dumps({'message': turn['user_text'], 'retry_of': turn['retry_of'],
+                             'issue_number': json.loads(led.get_kv('chat-item:' + session['id']) or 'null'),
                              'existing_mutations': [dict(m) for m in mutations]}, ensure_ascii=False)
         if len(prompt.encode()) > MAX_OUTPUT:
             raise TurnError('invalid_result', 'Discussion retry context exceeds its limit.')

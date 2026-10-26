@@ -1420,7 +1420,8 @@ def _capture(cfg, led, project_names, now):
         recent.append({"id": r["id"], "project": r["project"],
                        "repo": config.project_policy(cfg, r["project"]).get("repo"),
                        "status": r["status"]})
-    return {"projects": project_names, "recent": recent}
+    return {"projects": project_names, "recent": recent,
+            "accounts": {p: ", ".join(config.accounts_of(config.project_policy(cfg, p))) for p in project_names}}
 
 
 # ---------- events ----------

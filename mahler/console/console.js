@@ -1122,3 +1122,170 @@
   setInterval(function () { refresh(); }, REFRESH_MS);
   window.addEventListener("hashchange", applyHash);
 })();
+
+// Persistent discussion controller. Only server-rendered transcript fragments use HTML.
+function initDiscussion() {
+  'use strict';
+  const dialog = document.getElementById('discussion');
+  if (!dialog) return;
+  const el = name => document.getElementById('discussion-' + name);
+  const draft = el('draft'), project = el('project'), transcript = el('transcript');
+  let saved = {}, key = '', current = null, busy = false, timer = null, generation = 0;
+  let readSequence = 0;
+  let cursor = 0, pending = false, failure = null, turn = null, readFailed = false;
+  try { saved = JSON.parse(sessionStorage.getItem('mahler.discussions') || '{}'); } catch (_) {}
+  function persist() {
+    if (!current) return;
+    current.draft = draft.value;
+    current.project = project.value;
+    current.scroll = transcript.scrollTop;
+    saved[key] = current;
+    if (!current.number && current.project) saved['capture:' + current.project] = current;
+    try { sessionStorage.setItem('mahler.discussions', JSON.stringify(saved)); } catch (_) {}
+  }
+  function controls() {
+    project.disabled = !!(current && (current.session || current.number || current.job)) || busy;
+    el('send').disabled = busy || pending || !navigator.onLine || !project.value || !draft.value.trim() || !!(current && current.job);
+    el('retry').hidden = !(failure && failure.retryable) && !(current && current.job);
+    el('retry').disabled = busy || pending || !navigator.onLine;
+    el('new').disabled = busy;
+  }
+  async function request(method, body) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch('/api/chat' + (method === 'GET' ? '?' + new URLSearchParams(body) : ''), {
+        method, cache: 'no-store', signal: controller.signal,
+        headers: {'X-Mahler-Console': '1', 'Content-Type': 'application/json'},
+        body: method === 'POST' ? JSON.stringify(body) : undefined
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Discussion unavailable');
+      return data;
+    } finally { clearTimeout(timeout); }
+  }
+  function display(data) {
+    const bottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 60;
+    if (data.html) {
+      transcript.insertAdjacentHTML('beforeend', data.html);
+      if (bottom) transcript.scrollTop = transcript.scrollHeight;
+      else el('new-reply').hidden = false;
+    }
+    cursor = data.after;
+    pending = data.pending; failure = data.error; turn = data.turn_id; readFailed = false;
+    if (!pending && !failure && current.sent !== undefined && draft.value === current.sent) {
+      draft.value = ''; delete current.sent;
+    }
+    el('context').textContent = data.context;
+    el('account').textContent = 'Funding account: ' + data.account;
+    const elapsed = data.accepted_at ? Math.max(0, Math.floor((Date.now() - Date.parse(data.accepted_at)) / 1000)) : 0;
+    el('status').textContent = pending ? 'Thinking… ' + elapsed + 's · Up to 2 minutes' : (turn ? 'Reply received' : 'Ready');
+    const messages = {timeout: 'No reply within 2 minutes. Your message is saved.',
+      worker_lost: 'Discussion worker restarted. Your message is saved.',
+      gateway_restarted: 'Gateway restarted. Your message is saved.',
+      quota_unavailable: 'Discussion quota is unavailable. Your draft is saved.'};
+    el('error').textContent = failure ? (messages[failure.code] || failure.message) : '';
+    controls(); persist();
+  }
+  async function poll() {
+    clearTimeout(timer);
+    if (!dialog.open || !current || !current.session) return;
+    const version = generation, sequence = ++readSequence;
+    try {
+      const data = await request('GET', {project: current.project, session_id: current.session, after: cursor});
+      if (version !== generation || sequence !== readSequence || !dialog.open) return;
+      display(data);
+      if (data.more || data.pending) timer = setTimeout(poll, data.more ? 0 : 2000);
+    } catch (error) {
+      if (version !== generation || sequence !== readSequence) return;
+      el('error').textContent = 'Discussion unavailable. Your draft is saved. ' + error.message;
+      readFailed = true; failure = {retryable: true}; controls();
+    }
+  }
+  async function send(retry) {
+    if (!current || busy || pending || !navigator.onLine) return;
+    if (!current.job && !retry && (!project.value || !draft.value.trim() || Array.from(draft.value).length > 8000)) {
+      el('error').textContent = 'Choose a project and enter 1–8000 characters.'; return;
+    }
+    busy = true; controls();
+    try {
+      // Save the exact request before transmission. An explicit retry after a lost
+      // response reuses it, so both start and send are durably idempotent.
+      if (!current.job) current.job = {op: retry ? 'retry' : 'send', request_id: crypto.randomUUID(),
+        text: draft.value, retry_of: retry ? turn : undefined};
+      persist();
+      if (!current.session) {
+        current.start = current.start || crypto.randomUUID(); persist();
+        const started = await request('POST', {op: 'start', project: current.project,
+          number: current.number, request_id: current.start});
+        current.session = started.session_id; persist();
+      }
+      await request('POST', {...current.job, project: current.project, number: current.number, session_id: current.session});
+      // Draft remains in local storage while pending/error; it clears on a successful reply.
+      current.sent = current.job.text;
+      current.job = null; pending = true; failure = null; persist();
+      await poll();
+    } catch (error) {
+      el('error').textContent = 'Could not confirm this turn. Your message is saved. Try again to reconcile. ' + error.message;
+    } finally { busy = false; controls(); persist(); }
+  }
+  function select(nextKey, number, selectedProject, text, title, restore, fresh) {
+    persist(); clearTimeout(timer); generation++;
+    key = nextKey;
+    if (fresh) delete saved[key];
+    current = saved[key] || {project: selectedProject || '', number: number || null, draft: text || ''};
+    project.value = current.project; draft.value = current.draft;
+    cursor = 0; pending = false; failure = null; turn = null;
+    transcript.innerHTML = ''; el('new-reply').hidden = true;
+    el('context').textContent = title || (number ? selectedProject + '#' + number : 'Capture a new issue');
+    el('error').textContent = ''; el('status').textContent = 'Ready';
+    el('account').textContent = 'Funding account: ' + ((project.selectedOptions[0] || {}).dataset || {}).account;
+    controls();
+    if (!restore) { dialog.showModal(); (project.value ? draft : project).focus(); }
+    if (dialog.open) poll();
+    persist();
+  }
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-discuss]');
+    if (!button || busy) return;
+    const number = Number(button.dataset.number) || null;
+    const cap = button.closest('.cap, .box');
+    const selected = button.dataset.project || (cap && cap.querySelector('[data-capture-select]') || {}).value || '';
+    const text = cap && cap.querySelector('.cap-ta');
+    select(number ? selected + '#' + number : 'capture:' + selected, number, selected, text && text.value, button.dataset.context || button.dataset.title);
+  });
+  dialog.addEventListener('close', () => {
+    clearTimeout(timer); generation++; persist();
+    // A fragment refresh may have replaced the native dialog's original invoker.
+    if (document.activeElement === document.body) {
+      const invoker = Array.from(document.querySelectorAll('[data-discuss]')).find(button =>
+        current.number ? button.dataset.project === current.project && Number(button.dataset.number) === current.number : !button.dataset.number);
+      if (invoker) invoker.focus();
+    }
+  });
+  draft.addEventListener('input', () => { persist(); controls(); });
+  draft.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); send(false); }
+  });
+  project.addEventListener('change', () => {
+    persist();
+    el('account').textContent = 'Funding account: ' + ((project.selectedOptions[0] || {}).dataset || {}).account;
+    controls();
+  });
+  el('send').addEventListener('click', () => send(false));
+  el('retry').addEventListener('click', () => {
+    if (current.job) send(false);
+    else if (!readFailed && failure && turn) send(true);
+    else poll();
+  });
+  el('new').addEventListener('click', () => {
+    select('capture:', null, '', '', 'Capture a new issue', false, true);
+  });
+  el('new-reply').addEventListener('click', () => { transcript.scrollTop = transcript.scrollHeight; el('new-reply').hidden = true; });
+  transcript.addEventListener('scroll', persist);
+  window.addEventListener('offline', () => { el('error').textContent = 'Offline. Your draft is saved.'; controls(); });
+  window.addEventListener('online', () => { controls(); poll(); });
+  // Reloads keep sessions/drafts, but do not reopen a modal or steal focus.
+  return {select, send, poll};
+}
+initDiscussion();

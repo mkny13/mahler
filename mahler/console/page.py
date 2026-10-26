@@ -304,7 +304,7 @@ def _peak_act(peak):
 
 def _capture_opts(cap):
     opts = ['<option value="" disabled>Project</option>']
-    opts += [f'<option value="{e(p)}">{e(p)}</option>' for p in cap["projects"]]
+    opts += [f'<option value="{e(p)}" data-account="{e(cap.get("accounts", {}).get(p, "personal"))}">{e(p)}</option>' for p in cap["projects"]]
     return "".join(opts)
 
 
@@ -1056,7 +1056,7 @@ def _answer_buttons(n):
         f'data-project="{e(n["project"])}" data-number="{n["number"]}" '
         f'data-text="{e(o["text"])}">{e(o["label"])}</button>'
         for i, o in enumerate(n["options"])) + (f'<button class="btn" data-discuss data-project="{e(n["project"])}" '
-        f'data-number="{n["number"]}" data-title="{e(n["title"])}">Talk it through</button></div>')
+        f'data-number="{n["number"]}" data-title="{e(n["title"])}" data-context="{e(n["title"] + chr(10) + (n.get("body") or "")[:8000] + chr(10) + n.get("question", "") + chr(10) + n.get("last_comment", ""))}">Talk it through</button></div>')
 
 
 def _answer_input(n, phone=False):
@@ -2104,7 +2104,7 @@ def _discussion(s):
     return ('<dialog id="discussion" aria-labelledby="discussion-title">'
             '<header><h2 id="discussion-title">Talk it through</h2>'
             '<form method="dialog"><button class="btn">Close</button></form></header>'
-            '<label>Project <select id="discussion-project">' + _capture_opts(s['capture']) + '</select></label>'
+            '<label>Project <select id="discussion-project">' + _capture_opts(s['capture']).replace('value="" disabled', 'value="" disabled selected') + '</select></label>'
             '<p id="discussion-account"></p><p id="discussion-context"></p>'
             '<div id="discussion-transcript" tabindex="0" aria-label="Conversation"></div>'
             '<button class="btn" id="discussion-new-reply" hidden>New reply ↓</button>'

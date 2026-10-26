@@ -49,6 +49,11 @@ class DiscussionTests(unittest.TestCase):
         discuss.process_turn(self.cfg, self.led, turn, runner=runner or self.fake)
         return json.loads(self.led.chat_turn(turn['id'])['result'])
 
+    def test_console_item_context_reaches_worker(self):
+        self.led.set_kv('chat-item:' + self.sid, '9')
+        self.run_turn(self.turn())
+        self.assertEqual(json.loads(self.calls[0][2])['issue_number'], 9)
+
     def test_two_turn_resume_operator_usage(self):
         self.assertEqual(self.run_turn(self.turn())['status'], 'success')
         self.assertEqual(self.run_turn(self.turn('two'))['status'], 'success')
