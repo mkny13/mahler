@@ -4,6 +4,8 @@ Verified on **2026-10-26**, scanner and test source commit [`a33f4350ce353281ac8
 
 **Result: seven of nine target checks pass; two remain gap. Keep the final #800 criterion unchecked.** All nine original proposals and five named dependents are currently closed. Closure does not establish a passing scan. This report completes #949’s evidence collection, not #800’s remaining remediation.
 
+This refresh supersedes the report’s 2026-10-22 inventory and 2026-10-23 replay. Those historical runs reported eight passing target checks; the current scanner reports seven. Historical results remain in Git history. No inference about a repository regression is made solely from that difference.
+
 ## Parent criteria
 
 | #800 criterion | Evidence / disposition |
@@ -12,12 +14,12 @@ Verified on **2026-10-26**, scanner and test source commit [`a33f4350ce353281ac8
 | #804 script runners and required checks | Supported by merged #834 and named regression tests below. |
 | #805 assets, source constructs and real credentials | Supported by merged #835 and named regression tests below. |
 | #806 verified false-positive resolution | Supported by merged #836 and named regression tests below. |
-| Repository verification | See command results below; only successful completed commands count. |
+| Repository verification | **Supported:** all four isolated commands below exit 0; each suite runs 3297 tests, with one skip. Initial failed/interrupted attempts remain recorded. |
 | Inventory rerun clears all nine and unblocks dependents | **Unchecked:** mental-jukebox/tracked-secrets and movebreak/branch-protection are gap. Dependents are closed; scanner evidence is still incomplete for the parent. |
 
 ## Merged fixes and regression coverage
 
-Fresh read-only `GET /repos/mkny13/mahler/pulls/{number}` confirmed `merged=true` for all four PRs. All named tests are methods of `TestPracticesAudit` in [tests/test_practices_audit.py](../../tests/test_practices_audit.py). The full-suite runs below exercise these tests. No behavior change or new test was needed for this evidence-only task.
+Fresh read-only `GET /repos/mkny13/mahler/pulls/{number}` confirmed `merged=true` for all four PRs. `git merge-base --is-ancestor <merge-sha> a33f4350ce353281ac824fe3678104b1d628f7a8` exited 0 for each merge. All named tests are methods of `TestPracticesAudit` in [tests/test_practices_audit.py](../../tests/test_practices_audit.py). The full-suite runs below exercise these tests. No behavior change or new test was needed for this evidence-only task.
 
 | Issue | Merged PR | Merge SHA | Merged at (UTC) |
 |---|---|---|---|
@@ -61,14 +63,16 @@ The #803 fixture also uses a primary workflow with a push/main filter. Negative 
 
 ## Repository verification
 
-Each command runs in this worktree with a fresh temporary `MAHLER_HOME`; tests use their isolated fixtures. No live ledger is opened. Only Mahler’s own verification commands run; no scanned project test, build or release command runs.
+The completed rerun executes at documentation-only commit `7d15dd701360fc97cec671d534ea691b68cb7cd2`, whose Python/test source is identical to the named `a33f4350ce353281ac824fe3678104b1d628f7a8` source. Each command runs in this worktree with a fresh temporary `MAHLER_HOME`; tests use their isolated fixtures. In the test subprocess environment only, inherited `MAHLER_*` run identity variables are removed and the inherited `core.hooksPath` override is set to `/dev/null`, preventing the live lease hook from running against fixture repositories. No live ledger is opened. Only Mahler’s own verification commands run; no scanned project test, build or release command runs.
 
 | Command | Exit | Result |
 |---|---|---|
 | `python3 -m mahler.repo_guard` | 0 | PASS |
-| `python3 -m unittest discover -s tests` | 1 | Ran 3297 tests in 172.921s; FAILED (failures=6, errors=17, skipped=1) |
-| `python3 tests/run_random.py` | pending | random order seed: 1923564150 |
-| `python3 -X dev tests/run_strict.py` | pending | Still running; not yet claimed |
+| `python3 -m unittest discover -s tests` | 0 | Ran 3297 tests in 169.936s; OK (skipped=1) |
+| `python3 tests/run_random.py` | 0 | random order seed: 1561352242; Ran 3297 tests in 169.291s; OK (skipped=1) |
+| `python3 -X dev tests/run_strict.py` | 0 | Ran 3297 tests in 186.481s; OK (skipped=1) |
+
+Initial isolation attempt: repo_guard exited 0; unittest ran 3297 tests in 172.921s and exited 1 (6 failures, 17 errors, 1 skip). Its inherited lease hook refused fixture Git pushes against the empty temporary Mahler state. The randomized attempt (seed `1923564150`) was interrupted after identifying the same environment issue; it is not a completed pass. The table above records the subsequent isolated run. No production or test code was changed to obtain that result.
 
 ## Inventory and identity boundary
 
@@ -76,7 +80,7 @@ The finite inventory is exactly `config.enabled_projects(config.load())` at coll
 
 Each client is created by `gh.project_client(cfg, pol)`. Personal projects use the configured App through `github_app.Installation`, consuming the authorized external key path `~/.mahler/secrets/github-app.pem`; only a temporary token cache is used by redirecting process-local `config.STATE`. Work projects retain account `work` and `GH_CONFIG_DIR=/Users/mike/.config/gh-work`, without a personal App or alternate login. No token or key value is recorded.
 
-Personal snapshots use an isolated shallow fetch of the exact SHA. Work-account Git fetch initially failed (exit 128); the successful fallback downloads the exact-SHA archive with `gh api repos/{repo}/tarball/{sha}` through that same client environment, safely extracts it and builds a temporary Git index (`git add --all --force`) so `git ls-files` enumerates the archive. Archives omit Git submodule contents, as does the scanner’s non-recursive tracked-file inventory. Temporary snapshots/cache are removed after collection.
+Personal snapshots use an isolated shallow fetch of the exact SHA. Work-account Git fetch initially failed (exit 128); the successful fallback downloads the exact-SHA archive with `gh api repos/{repo}/tarball/{sha}` through that same client environment, safely extracts it and builds a temporary Git index (`git add --all --force`) so `git ls-files` enumerates the archive. A separate read-only comparison with `GET repos/{repo}/git/trees/{sha}?recursive=1` confirmed non-truncated trees and exact archive path coverage: sit-stand-walk 30/30 blobs, google-chat-nav 23/23, google-workspace-connector 121/121; zero missing paths, extra paths or submodules in all three. Thus no export-ignore or archive omission reduced these scans. Temporary snapshots/cache are removed after collection.
 
 | Project / repository | Identity | Default branch | Configured checkout SHA | Scanned remote SHA | Checkout comparison |
 |---|---|---|---|---|---|
@@ -99,14 +103,14 @@ Historical closure evidence: [sorting report](https://github.com/mkny13/mahler/i
 
 | Proposal | Check | Current issue state (closed at UTC) | Scanner | Redacted evidence |
 |---|---|---|---|---|
-| [groundwork#190](https://github.com/mkny13/groundwork/issues/190) | ci-tests | closed (2026-10-08T13:27:11Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/.github/workflows/ci.yml#L68) |
+| [groundwork#190](https://github.com/mkny13/groundwork/issues/190) | ci-tests | closed (2026-10-08T13:27:11Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/.github/workflows/ci.yml#L129) |
 | [groundwork#193](https://github.com/mkny13/groundwork/issues/193) | verify-command | closed (2026-10-08T12:47:08Z) | **pass** | Documented effective verify command is invoked by PR CI. [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/AGENTS.md#L109) |
 | [groundwork#194](https://github.com/mkny13/groundwork/issues/194) | tracked-secrets | closed (2026-10-08T12:31:40Z) | **pass** | Documented architectural decision or exemption accepts tracked-secrets: 2026-10-08 — Practices audit tracked-secrets verification and false positive review (Issue #194) — **Context:** [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/docs/DECISIONS.md#L19) |
 | [phish-in#555](https://github.com/mkny13/couch-tour/issues/555) | ci-tests | closed (2026-10-08T12:25:59Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/couch-tour/blob/48a81a27dc1a130226d0c60f2e7d998ea90cbd7b/.github/workflows/checks.yml#L18) |
 | [phish-in#558](https://github.com/mkny13/couch-tour/issues/558) | tracked-secrets | closed (2026-10-08T14:21:30Z) | **pass** | Documented architectural decision or exemption accepts tracked-secrets: D339: Practices audit tracked-secrets reviewed false positives (.mahler/secret-reviews.json) (#558) — The Mahler practices audit (mahler#780) flagged heuristic candidates for `tracked-secrets`. A manual audit confirmed that zero real secrets, credentials, or private personal data exist in git-tracked files. All flagged lines fall into clean non-secret categories: [source](https://github.com/mkny13/couch-tour/blob/48a81a27dc1a130226d0c60f2e7d998ea90cbd7b/DECISIONS.md#L592) |
 | [hockey#79](https://github.com/mkny13/hockey-draft-copilot/issues/79) | ci-tests | closed (2026-10-08T11:57:31Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/hockey-draft-copilot/blob/d37ae87604443eb57c4baf64768459bd26f8b2d6/.github/workflows/ci.yml#L20) |
 | [hockey#82](https://github.com/mkny13/hockey-draft-copilot/issues/82) | tracked-secrets | closed (2026-10-08T00:46:19Z) | **pass** | No candidates in inspected tracked text; heuristics do not prove absence of credentials or private data. Git history is not inspected. [source](https://github.com/mkny13/hockey-draft-copilot/tree/d37ae87604443eb57c4baf64768459bd26f8b2d6) |
-| [mental-jukebox#13](https://github.com/mkny13/mental-jukebox/issues/13) | tracked-secrets | closed (2026-10-08T12:15:06Z) | **gap** | Suspected credentials require review. tests/test_contracts.py:61 and :62: detector=credential-assignment; context=<redacted>; six reviewed candidates already recorded in .mahler/secret-reviews.json. [source](https://github.com/mkny13/mental-jukebox/blob/8a4c114dc9ebc0668c1b779c96cbc368567ce9d5/tests/test_contracts.py#L61) |
+| [mental-jukebox#13](https://github.com/mkny13/mental-jukebox/issues/13) | tracked-secrets | closed (2026-10-08T12:15:06Z) | **gap** | Suspected credentials require review. tests/test_contracts.py:61 and :62: detector=credential-assignment; context=&lt;redacted&gt;; six reviewed candidates already recorded in .mahler/secret-reviews.json. [source](https://github.com/mkny13/mental-jukebox/blob/8a4c114dc9ebc0668c1b779c96cbc368567ce9d5/tests/test_contracts.py#L61) |
 | [movebreak#87](https://github.com/mkny13/movebreak/issues/87) | branch-protection | closed (2026-10-07T16:28:03Z) | **gap** | Default-branch protection can be bypassed: strict required checks, administrator enforcement, force pushes disabled, deletion disabled. Required context: verify; squash merge enabled; both API reads HTTP 200. [source](https://api.github.com/repos/mkny13/movebreak/branches/main/protection) |
 
 Groundwork and phish-in tracked-secrets pass through **pre-existing documented decisions**, as the scanner explicitly reports; neither result means its raw candidate detector found zero candidates. This run added no exemption or review entry. Hockey’s tracked-secrets result reports no candidates in inspected tracked text. These are heuristic scans, not proof of secret absence or history scans.
@@ -187,7 +191,7 @@ Non-target gap/unknown reasons (redacted scanner summaries):
 2. Set process-local `config.STATE` to a temporary directory before constructing `gh.project_client` instances. Do not modify live configuration or read/write the ledger.
 3. Resolve each repository’s default branch and commit through its own client. Record the configured checkout HEAD, then materialize the exact remote commit in an isolated snapshot using that client’s credentials. Preserve all effective project policy fields except the snapshot path.
 4. Call `practices_audit.scan(snapshot_cfg, lambda name: clients[name])`. Save only check states, safe reasons and redacted citations. Never execute scanned repository commands.
-5. Read issue state/closed timestamps and merged PR metadata separately; read both movebreak protection endpoints and record HTTP status separately. Re-run the four Mahler verification commands with fresh temporary `MAHLER_HOME` directories; use the recorded random seed to reproduce order.
+5. Read issue state/closed timestamps and merged PR metadata separately; read both movebreak protection endpoints and record HTTP status separately. Re-run the four Mahler verification commands with fresh temporary `MAHLER_HOME` directories and the test-only run-identity/hook isolation described above; use the recorded random seed to reproduce order.
 
 ## Needs a human to check
 
