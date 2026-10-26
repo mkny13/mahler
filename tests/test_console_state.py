@@ -914,3 +914,46 @@ class WaitingStateTests(unittest.TestCase):
         self.assertEqual([n for n in snapshot["needs"] if n["number"] == 7], [])
         for layout, selection in (("desktop", {"view": "backlog"}), ("phone", {"tab": "backlog"})):
             page.app(snapshot, layout, **selection)
+
+    def test_world_group_both_layouts_and_scope(self):
+        from test_serve import make_cfg
+        from mahler import waits
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.upsert_item("mahler", 7, title="Held <change>")
+        waits.hold(led, "mahler", 7, "github", "unavailable", resume="ready")
+        for scope in (None, "mahler"):
+            snapshot = state.build(make_cfg(), led, project_scope=scope)
+            self.assertEqual(snapshot["needs_count"], 0)
+            row = snapshot["conductor_waits"][0]
+            self.assertEqual(row["cause"], "github")
+            self.assertTrue(row["since"])
+            self.assertTrue(row["next_at"])
+            for layout in ("phone", "desktop"):
+                selection = {"tab" if layout == "phone" else "view": "overview" if scope else "now"}
+                html = page.app(snapshot, layout, **selection)
+                self.assertIn("Waiting on the world", html)
+                self.assertIn("Retry now", html)
+                self.assertIn('data-text="/mahler go"', html)
+                self.assertIn("Held &lt;change&gt;", html)
+                self.assertIn("github", html)
+
+    def test_wait_retry_uses_existing_answer_path_and_rejects_other_text(self):
+        from test_serve import make_cfg
+        from mahler.console import outbox
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.upsert_item("mahler", 7, state="waiting")
+        cfg = make_cfg()
+        body = {"project": "mahler", "number": 7, "text": "/mahler go"}
+        actions.answer(cfg, led, body)
+        ctx = SimpleNamespace(cfg=cfg, led=led, gh=Mock())
+        row = led.q1("SELECT * FROM outbox WHERE kind='answer'")
+        self.assertEqual(outbox.answer(ctx, row, body)[0], "done")
+        ctx.gh.return_value.comment.assert_called_once_with(7, "/mahler go", agent=False)
+        for text in ("arbitrary answer", "/mahler park"):
+            with self.assertRaises(actions.ActionError):
+                actions.answer(cfg, led, {**body, "text": text})
+            self.assertEqual(outbox.answer(ctx, row, {"text": text})[0], "skipped")
