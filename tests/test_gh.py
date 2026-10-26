@@ -206,8 +206,21 @@ class TestGH(unittest.TestCase):
         self.assertNotIn("sha=", calls[0].args[-1])
         self.assertTrue(all(c.kwargs["timeout"] == 2 for c in calls))
         self.gh._gh.reset_mock()
-        self.assertIsNone(self.gh.exact_preview(sha, "Production"))
-        self.gh._gh.assert_not_called()
+        for environment in ("Production", "production", "PROD"):
+            prod = {**deployment, "environment": environment, "production_environment": True}
+            status = {**success, "environment": environment}
+            for deployments, expected in (
+                ([prod], success["environment_url"]),
+                ([{**prod, "production_environment": False}], None),
+                ([{**prod, "production_environment": 1}], None),
+                ([prod, {**prod, "id": 101}], None),
+                ([prod, {**prod, "id": 101, "sha": "b" * 40}], None),
+            ):
+                with self.subTest(environment=environment, deployments=deployments):
+                    self.gh._gh.reset_mock()
+                    self.gh._gh.side_effect = [json.dumps(deployments), json.dumps([status])]
+                    self.assertEqual(self.gh.exact_preview(sha, environment), expected)
+                    self.assertNotIn("sha=", self.gh._gh.call_args_list[0].args[-1])
 
     def test_screenshot_preview_filters_and_newest_status(self):
         sha = 'a' * 40

@@ -170,9 +170,13 @@ class SmokePolicyTests(unittest.TestCase):
                 self.load({"projects": {"app": {"post_merge": {
                     "live_strategy": strategy, "live_command": "./live"}}}})
         for environment in ("prod", "Production"):
-            with self.assertRaisesRegex(ValueError, "non-production"):
+            cfg = self.load({"projects": {"app": {"post_merge": {
+                "live_strategy": "github", "environment": environment}}}})
+            self.assertEqual(config.project_policy(cfg, "app")["post_merge"]["environment"], environment)
+            with self.assertRaisesRegex(ValueError, "live_command"):
                 self.load({"projects": {"app": {"post_merge": {
-                    "live_strategy": "github", "environment": environment}}}})
+                    "live_strategy": "github", "environment": environment,
+                    "live_command": "./live"}}}})
 
     def test_post_merge_invalid_contracts_are_project_scoped(self):
         cases = [("enabled", "yes"), ("auto_revert", 1),
