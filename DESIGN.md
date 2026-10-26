@@ -1261,6 +1261,8 @@ are best-effort and never gate finalization or prompt construction.
   - anything needing your credentials, payment or a new account
   - a destructive data operation beyond the guardrails
   - three failed attempts
+  - Conductor-side waits (CI red repo-wide, capacity, GitHub, setup…) are **not** on
+    this list: they use `waiting` (D52).
 - **Local apps** (e.g. mental-jukebox runs from its checkout): "deploy" means Mahler
   fast-forwards the primary checkout, but only when it's clean and has no lease. Otherwise it
   pings you.
@@ -3047,3 +3049,23 @@ replaced. The console must name that project and require confirmation before rep
   operations. Remaining time is derived from expiry and never stored.
 - This changes only who receives the next eligible free slot. It does not raise
   project or global concurrency, change eligibility, or stop/preempt running work.
+
+### D52 — Waiting on the world is not waiting on you (mahler#1259)
+
+`needs_you` is only for D13 owner-only decisions. About 84% of stuck items were not that:
+the conductor hit something outside the item (repo-wide CI red, capacity, GitHub, setup)
+and gave up onto the owner. Those now use a separate `waiting` state (label
+`mahler:waiting`).
+
+- `waits.hold(led, project, n, cause, reason, resume=…)` sets `waiting` and writes a
+  `wait:<project>#<n>` KV record: machine-readable `cause` (one of `waits.CAUSES`), the
+  state to `resume` into, `since`, a `wake` check, `checks` and `next_at`. It never pings.
+- Each tick `waits.recheck` evaluates the cause's wake in `waits.WAKES`. When met, the item
+  resumes by itself; otherwise `next_at` backs off 15m, 30m, 1h, 2h, 4h, capped at 6h.
+  Causes without a specific wake simply retry when `next_at` arrives.
+- A record that is missing or whose `bound_at` no longer matches `state_changed_at`
+  (the item moved on) is treated as cause `other` with a fresh record.
+- Backstop: after `wait_escalate_hours` (default 72) the item becomes `needs_you` once
+  with "Retry now or park?" and one ping. `/mahler go` and `/mahler park` work on a
+  waiting item and clear the record.
+- The console groups `waiting` with in-progress work and does not count it as needs-you.

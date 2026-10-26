@@ -18,6 +18,7 @@ from . import config, redact
 STATE_LABELS = {
     "inbox": "mahler:inbox", "ready": "mahler:ready", "working": "mahler:working",
     "shipped": "mahler:shipped", "verifying": "mahler:verifying", "needs_you": "mahler:needs-you",
+    "waiting": "mahler:waiting",
     "parked": "mahler:parked", "failed": "mahler:failed", "parent": "mahler:parent",
 }
 LABEL_STATES = {v: k for k, v in STATE_LABELS.items()}
@@ -25,7 +26,7 @@ LABEL_STATES["mahler:tracking"] = "parent"  # backward compatibility
 TRUSTED_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 LABEL_COLORS = {
     "mahler:inbox": "ededed", "mahler:ready": "0e8a16", "mahler:working": "1d76db",
-    "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:parked": "c5def5",
+    "mahler:verifying": "00b8d9", "mahler:needs-you": "d93f0b", "mahler:waiting": "fbca04", "mahler:parked": "c5def5",
     "mahler:shipped": "0e8a16", "mahler:failed": "b60205", "mahler:parent": "5319e7",
     "type:bug": "d73a4a", "type:feature": "a2eeef", "type:chore": "fef2c0",
     "type:goal": "7057ff", "type:uat": "fbca04", "type:anomaly": "e99695",

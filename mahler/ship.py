@@ -11,7 +11,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
+from . import waits, dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
 from . import gh as gh_module
 from .gh import GHError, checks_state, needs_human_of, non_required_failures, pr_body, pr_summary_of
@@ -733,6 +733,10 @@ def _ship_project(ctx, project):
     no_change.recover_legacy(ctx, project)
     migrate_capacity_waits(ctx, project)
     recover_capacity_waits(ctx, project)
+    try:
+        waits.recheck(ctx, project)
+    except Exception as e:                      # noqa: BLE001 — never break the pass
+        ctx.say(f"{project}: wait recheck failed — {e}")
     ctx.merge_requested = False
     for item in ctx.led.items(project, ["verifying"]):
         try:

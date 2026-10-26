@@ -39,7 +39,7 @@ ATTENTION_STATES = ("needs_you", "failed")
 # needs-you severity (full ink, and a push); everything else is FYI
 ATTENTION_KINDS = ("launch_failed", "backup_failed")
 
-STATE_ORDER = ("needs_you", "failed", "working", "verifying", "ready", "inbox",
+STATE_ORDER = ("needs_you", "failed", "working", "verifying", "waiting", "ready", "inbox",
                "parked", "parent")
 ROLE_WORDS = {"build": "building", "sort": "sorting", "fix": "fixing CI",
               "review": "reviewing", "design": "designing"}
@@ -1037,7 +1037,7 @@ def _uat_sessions(uat):
 
 def _state_tone(state):
     return ("bad" if state in ATTENTION_STATES else
-            "acc" if state in ("working", "verifying") else "mut")
+            "acc" if state in ("working", "verifying", "waiting") else "mut")
 
 
 def _edge(state):
@@ -1057,7 +1057,7 @@ def _backlog(cfg, led, projects):
         items = [i for i in led.items(name) if i["state"] != "done"]
         items.sort(key=lambda i: (rank.get(i["state"], len(rank)), i["priority"], i["number"]))
         ready = sum(1 for i in items if i["state"] in ("ready", "inbox"))
-        live = sum(1 for i in items if i["state"] in ("working", "verifying"))
+        live = sum(1 for i in items if i["state"] in ("working", "verifying", "waiting"))
         you = sum(1 for i in items if i["state"] in ATTENTION_STATES)
         open_numbers = {i["number"] for i in items}
         # a queued capture shows as a placeholder inbox row until the tick
