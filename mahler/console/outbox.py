@@ -75,7 +75,8 @@ def answer(ctx, row, payload):
     if project not in {p['name'] for p in config.enabled_projects(ctx.cfg)}:
         return 'skipped', 'the project is disabled'
     item = ctx.led.item(project, number)
-    if item is None or item['state'] not in ('needs_you', 'failed'):
+    if item is None or (item['state'] not in ('needs_you', 'failed')
+                        and not (item['state'] == 'waiting' and payload['text'] == '/mahler go')):
         return 'skipped', 'the item moved on'
     ctx.gh(project).comment(number, payload['text'], agent=False)
     resumes = item['state'] == 'failed' and parse_command(payload['text']) is None
