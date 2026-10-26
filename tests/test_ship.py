@@ -260,6 +260,33 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 42)
         self.assertEqual(self.gh.issues, [])
 
+    def test_existing_ready_item_without_check_name_in_title_is_adopted(self):
+        self.two_red_prs()
+        self.led.upsert_item("x", 42, state="ready", title="Upgrade Next.js to 16.4.1")
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 42)
+        self.assertEqual(self.gh.issues, [])
+
+    def test_open_item_with_failing_linked_pr_is_not_adopted(self):
+        self.two_red_prs()
+        self.led.upsert_item("x", 42, state="ready", pr=95, title="Upgrade Next.js to 16.4.1")
+        self.ship()
+        # Item 42's linked PR fails checks, so it is not adopted; tracker issue 300 is created
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 300)
+        self.assertEqual(len(self.gh.issues), 1)
+
+    def test_open_item_with_passing_linked_pr_is_adopted(self):
+        self.two_red_prs()
+        self.led.upsert_item("x", 42, state="ready", pr=95, title="Upgrade Next.js to 16.4.1")
+        real_view = self.gh.pr_view
+        self.gh.pr_view = lambda n: (
+            {**real_view(n), "statusCheckRollup": [{"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+            if n == 95 else real_view(n)
+        )
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 42)
+        self.assertEqual(self.gh.issues, [])
+
     def test_ci_blocker_detected_from_base_branch_failure(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}
