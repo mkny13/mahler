@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import ci_blockers, config, desktop, failures, no_change, platforms, prompt, review, router, runner
+from . import ci_blockers, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -645,10 +645,11 @@ def _review_failed(e, prepared=None, defer=None):
 REVIEW_INCONCLUSIVE_CAP = 3
 
 
-def _inconclusive_needs_you(e, question):
-    e.set_state("needs_you", question, question=question, options=json.dumps([]))
-    e.ping(f"Mahler needs you — {e.project} #{e.number}", question,
-           priority="high", tags="question", console=True)
+def _inconclusive_wait(e, reason, sha):
+    """Reviews keep ending without a verdict: wait (D52), never an owner ping. The
+    wake resets the count and prefers a reviewer outside the inconclusive set."""
+    waits.hold(e.led, e.project, e.number, "review_inconclusive", reason,
+               resume="verifying", wake={"sha": sha})
 
 
 def _review_inconclusive(e, count=True):
@@ -669,7 +670,7 @@ def _review_inconclusive(e, count=True):
     except ValueError:
         capped = {}
     if capped.get("run_id") == e.run["id"]:
-        _inconclusive_needs_you(e, capped["question"])
+        _inconclusive_wait(e, capped["question"], capped.get("sha"))
         return True
     sha = info.get("sha")
     seen = []
@@ -696,10 +697,11 @@ def _review_inconclusive(e, count=True):
         return True
     if len(seen) > REVIEW_INCONCLUSIVE_CAP or (len(seen) >= REVIEW_INCONCLUSIVE_CAP and not sha):
         names = ", ".join(sorted({r["platform"] for r in seen if r.get("platform")}))
-        question = (f"{len(seen)} reviews of this PR head ended without a verdict "
-                    f"(platforms: {names}). Review it yourself, or re-run it?")
-        e.led.set_kv(capped_key, json.dumps({"run_id": e.run["id"], "question": question}))
-        _inconclusive_needs_you(e, question)
+        reason = (f"{len(seen)} reviews of this PR head ended without a verdict "
+                  f"(platforms: {names}); retrying later with another reviewer")
+        e.led.set_kv(capped_key, json.dumps({"run_id": e.run["id"], "question": reason,
+                                             "sha": sha}))
+        _inconclusive_wait(e, reason, sha)
         return True
     e.set_state("verifying", f"review run ended without a verdict ({e.outcome}) — retrying")
     return True
@@ -1549,7 +1551,8 @@ def _setup_failure(e):
         stuck = fails >= SETUP_FAIL_CAP
         if stuck:
             reason = f"setup failed {fails} times in a row — the environment, not the task"
-            e.set_state("needs_you", reason, question=reason, options="[]")
+            waits.hold(led, project, n, "setup", reason,
+                       resume="ready" if item["sorted_at"] else "inbox")
         else:
             e.set_state("ready" if item["sorted_at"] else "inbox",
                         f"setup failed (failure {fails} of {SETUP_FAIL_CAP}) — retrying")
@@ -1559,9 +1562,6 @@ def _setup_failure(e):
     _setup_failed_comment(ctx, run, fails, tail, stuck)
     if stuck:
         failures.report(ctx, project, n, "setup_failed", run=run, output=tail)
-        ctx.ping(f"Mahler needs you — {project} #{n}",
-                 f"setup failed {fails} times in a row (setup.log tail is in the handoff comment).",
-                 project, n, priority="high", tags="warning")
     else:
         ctx.ping(f"Setup failed — {project} #{n}",
                  f"run {run['id']}: setup failed ({fails}/{SETUP_FAIL_CAP}); retrying.",
@@ -1572,8 +1572,8 @@ def _setup_failure(e):
 
 
 def _setup_failed_comment(ctx, run, fails, tail, stuck):
-    why = ("this looks like a broken environment, not the task — comment "
-           "`/mahler go` to retry once it's fixed" if stuck
+    why = ("this looks like a broken environment, not the task — Mahler waits and "
+           "retries on its own with backoff; comment `/mahler go` to retry now" if stuck
            else f"retrying (consecutive setup failures capped at {SETUP_FAIL_CAP})")
     lines = [f"<!-- mahler:handoff run={run['id']} epoch={run['epoch']} "
              f"from={run['platform']} reason=setup-failed -->",
