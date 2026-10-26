@@ -237,6 +237,41 @@ class ShipTests(unittest.TestCase):
         self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
         red.assert_not_called()
 
+    def test_unrelated_bot_pr_is_not_adopted_over_broken_dependency(self):
+        self.two_red_prs()
+        self.gh.prs = [
+            {"number": 291, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump unrelated package"},
+            {"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump next to fixed release"},
+        ]
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number in (291, 292):
+                return {**v, "state": "OPEN", "statusCheckRollup": [{"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertNotEqual(blocker.get("bot_pr"), 291)
+
+    def test_relevant_bot_pr_adopted_over_lower_numbered_unrelated_bot_pr(self):
+        self.two_red_prs()
+        self.gh.prs = [
+            {"number": 291, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump unrelated package"},
+            {"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Fix checks failure in dependency"},
+        ]
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number in (291, 292):
+                return {**v, "state": "OPEN", "statusCheckRollup": [{"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertNotEqual(blocker.get("bot_pr"), 291)
+        self.assertEqual(blocker.get("bot_pr"), 292)
+
     def test_pending_base_does_not_release_hold(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}
