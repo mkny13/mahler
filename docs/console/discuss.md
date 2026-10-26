@@ -1,12 +1,11 @@
 # Talk it through — discussion contract v1
 
-Design artifact for #922, part of #921; implementation is pending in #923–#926.
-D43 records the authority and funding boundary. This revision is **not approved**.
-Artifact delivery may merge independently. Before #925 writes production panel code,
-record Mike's explicit approval of a commit SHA containing both mockups in #922.
-Silence, issue closure and approval of the general idea are not artifact approval.
-The conductor should publish revision-pinned links from the build handoff; the build
-recipe forbids this worker from commenting on the issue.
+Design artifact for #922, part of #921. Mike explicitly approved revision
+`0f2ebd8b293302cc910eb2fdbe612d9c61c8ecd8` (both mockups) in
+[the owner approval on #925](https://github.com/mkny13/mahler/issues/925#issuecomment-6407036362),
+admitted to the build before production console changes. Approval includes two
+adjustments: chat supplements the Needs-you quick-response buttons; “More detail”
+is replaced by issue/PR context and the last relevant comment.
 
 ## Mockups and entry points
 
@@ -144,7 +143,7 @@ must surface a retryable error instead of hanging.
 HTTP protections, 390px/1440px fake-worker journeys and quota-routing tests belong to
 those children. This artifact suite checks the JSON examples, finite limits, recipe
 boundary and SVG state coverage. It does not prove those future runtime properties.
-Mike's visual approval of the linked revision remains outstanding for #925.
+The revision approval is linked above; real-phone readability and intent checks remain post-merge coverage.
 
 ## Personal worker (#924)
 

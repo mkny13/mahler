@@ -3694,6 +3694,9 @@ class DiscussionBrowserTests(unittest.TestCase):
             chrome = candidate if Path(candidate).exists() else None
         if not chrome:
             self.skipTest('Headless Chrome unavailable; fake-worker browser coverage outstanding')
+        if not shutil.which('node') or subprocess.run(
+                ['node', '-p', 'typeof WebSocket'], capture_output=True, text=True).stdout.strip() != 'function':
+            self.skipTest('Node with built-in WebSocket unavailable; browser coverage outstanding')
         cfg, led = make_cfg(), make_led()
         self.addCleanup(led.close)
         s = state.build(cfg, led)
@@ -3707,10 +3710,6 @@ class DiscussionBrowserTests(unittest.TestCase):
                    + Path('tests/console_discuss_test.js').read_text() + '</script>')
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, 'journey.html').write_text(fixture)
-            for width in (390, 1440):
-                Path(tmp, f'{width}.html').write_text(
-                    f'<body><iframe style="border:0;width:{width}px;height:900px" '
-                    f'src="journey.html?width={width}"></iframe></body>')
             class Quiet(http.server.SimpleHTTPRequestHandler):
                 def log_message(self, *args):
                     pass
@@ -3720,13 +3719,30 @@ class DiscussionBrowserTests(unittest.TestCase):
             try:
                 for width in (390, 1440):
                     with self.subTest(width=width):
-                        result = subprocess.run([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
-                            '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-                            '--force-device-scale-factor=1', f'--window-size={width},900',
-                            f'--user-data-dir={tmp}/profile-{width}', '--dump-dom', '--virtual-time-budget=10000',
-                            f'http://127.0.0.1:{server.server_port}/{width}.html'], capture_output=True, text=True, timeout=45)
-                        import re
-                        outcome = re.search(r'data-test-result="([^"]*)"', result.stdout)
-                        self.assertEqual(outcome.group(1) if outcome else result.stderr[-2000:], 'PASS')
+                        import time
+                        profile = Path(tmp, f'profile-{width}')
+                        with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
+                                '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+                                '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
+                            try:
+                                port_file = profile / 'DevToolsActivePort'
+                                deadline = time.monotonic() + 15
+                                while not port_file.exists() and time.monotonic() < deadline:
+                                    time.sleep(.05)
+                                port, websocket = port_file.read_text().splitlines()[:2]
+                                result = subprocess.run(['node', 'tests/console_discuss_test.js',
+                                    f'ws://127.0.0.1:{port}{websocket}',
+                                    f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
+                                    capture_output=True, text=True, timeout=30)
+                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                self.assertEqual(result.stdout.strip(), 'PASS')
+                            finally:
+                                browser.terminate()
+                                try:
+                                    browser.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    browser.kill(); browser.wait()
+
             finally:
                 server.shutdown(); server.server_close(); thread.join()

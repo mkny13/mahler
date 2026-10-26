@@ -1147,7 +1147,7 @@ function initDiscussion() {
     project.disabled = !!(current && (current.session || current.number || current.job)) || busy;
     el('send').disabled = busy || pending || !navigator.onLine || !project.value || !draft.value.trim() || !!(current && current.job);
     el('retry').hidden = !(failure && failure.retryable) && !(current && current.job);
-    el('retry').disabled = busy || pending || !navigator.onLine;
+    el('retry').disabled = busy || (pending && !readFailed) || !navigator.onLine;
     el('new').disabled = busy;
   }
   async function request(method, body) {
@@ -1255,9 +1255,10 @@ function initDiscussion() {
     select(number ? selected + '#' + number : 'capture:' + selected, number, selected, text && text.value, button.dataset.context || button.dataset.title);
   });
   dialog.addEventListener('close', () => {
+    if (dialog.open) return;
     clearTimeout(timer); generation++; persist();
     // A fragment refresh may have replaced the native dialog's original invoker.
-    if (document.activeElement === document.body) {
+    if (document.activeElement === document.body || dialog.contains(document.activeElement)) {
       const invoker = Array.from(document.querySelectorAll('[data-discuss]')).find(button =>
         current.number ? button.dataset.project === current.project && Number(button.dataset.number) === current.number : !button.dataset.number);
       if (invoker) invoker.focus();

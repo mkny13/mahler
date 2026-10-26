@@ -1013,3 +1013,40 @@ class ChatHTTPTests(_Served):
         status, _, raw = self.chat(op='retry', session_id=sid, request_id='retry', retry_of=tid)
         self.assertEqual(status, 200, raw)
         self.assertNotEqual(json.loads(raw)['turn_id'], tid)
+
+    def test_tailnet_json_limits_and_changed_account(self):
+        original = serve._Handler.do_POST
+        def from_tailnet(handler):
+            handler.client_address = ('100.64.0.12', 1234)
+            return original(handler)
+        with mock.patch.object(self.httpd.RequestHandlerClass, 'do_POST', from_tailnet):
+            sid = self.start()
+        self.assertEqual(self.chat(op='send', session_id=sid, request_id='big', text='x' * 70000)[0], 413)
+        self.assertEqual(self.request('/api/chat', 'POST', b'{bad',
+            {'Content-Type': 'application/json', 'X-Mahler-Console': '1'})[0], 400)
+        self.cfg['projects']['mahler']['account'] = 'other'
+        self.assertEqual(self.chat(op='send', session_id=sid, request_id='other', text='hello')[0], 400)
+        self.assertEqual(self.led.chat_turns(sid), [])
+
+    def test_read_is_bounded_and_filters_arbitrary_links(self):
+        sid = self.start()
+        binding = dict(project='mahler', repo='mkny13/mahler', account='personal', engine='claude')
+        for i in range(12):
+            turn = self.led.submit_chat_turn(sid, str(i), 'hello', **binding)
+            token = self.led.claim_chat_turn(turn['id'])
+            self.led.complete_chat_turn(turn['id'], token, assistant_text='<script>' + str(i))
+        row = self.led.chat_turn(turn['id'])
+        result = json.loads(row['result'])
+        result['confirmed_issue_urls'] = ['javascript:alert(1)', 'https://github.com/other/repo/issues/2']
+        self.led.con.execute('UPDATE chat_turns SET result=? WHERE id=?', (json.dumps(result), turn['id']))
+        headers = {'X-Mahler-Console': '1'}
+        path = f'/api/chat?project=mahler&session_id={sid}'
+        first = json.loads(self.request(path, headers=headers)[2])
+        self.assertEqual(first['after'], 10)
+        self.assertTrue(first['more'])
+        second = json.loads(self.request(path + '&after=10', headers=headers)[2])
+        self.assertEqual(second['after'], 12)
+        self.assertFalse(second['more'])
+        self.assertNotIn('<script>', first['html'])
+        self.assertNotIn('href=', second['html'])
+        self.assertEqual(self.request(path + '&after=-1', headers=headers)[0], 400)

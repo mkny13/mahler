@@ -1,8 +1,46 @@
+// Node's built-in WebSocket drives headless Chrome; no browser automation package.
+if (typeof document === 'undefined') {
+  (async () => {
+    const [socketURL, url, width] = process.argv.slice(2);
+    const socket = new WebSocket(socketURL);
+    await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
+    let id = 0;
+    const pending = new Map();
+    socket.onmessage = event => {
+      const data = JSON.parse(event.data);
+      if (pending.has(data.id)) {
+        const [resolve, reject] = pending.get(data.id); pending.delete(data.id);
+        data.error ? reject(Error(JSON.stringify(data.error))) : resolve(data.result);
+      }
+    };
+    const call = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+      pending.set(++id, [resolve, reject]); socket.send(JSON.stringify({id, method, params, sessionId}));
+    });
+    try {
+      const {targetId} = await call('Target.createTarget', {url: 'about:blank'});
+      const {sessionId} = await call('Target.attachToTarget', {targetId, flatten: true});
+      await call('Emulation.setDeviceMetricsOverride', {width: Number(width), height: 900, deviceScaleFactor: 1, mobile: false}, sessionId);
+      await call('Page.navigate', {url}, sessionId);
+      for (let i = 0; i < 200; i++) {
+        const {result} = await call('Runtime.evaluate', {expression: 'document.body && document.body.dataset.testResult'}, sessionId);
+        if (result.value) {
+          if (result.value !== 'PASS') throw Error(result.value);
+          console.log('PASS'); return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw Error('Browser journey did not finish');
+    } finally { socket.close(); }
+  })().catch(error => { console.error(error); process.exitCode = 1; });
+} else {
 // Executed against the production controller and native dialog in headless Chrome.
 (async () => {
   const check = (condition, message) => { if (!condition) throw Error(message); };
   const el = name => document.getElementById('discussion-' + name);
   const dialog = document.getElementById('discussion');
+  const close = () => new Promise(resolve => {
+    dialog.addEventListener('close', resolve, {once: true}); dialog.requestClose();
+  });
   const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
   const sessions = new Map(), requests = [], timers = [];
   let next = 0, offlineRead = false, lostResponse = false;
@@ -45,6 +83,9 @@
       button.focus(); button.click();
       check(dialog.matches(':modal'), 'native modal opens');
       check(document.activeElement === el('draft'), 'composer focused');
+      const newline = new KeyboardEvent('keydown', {key: 'Enter', cancelable: true});
+      el('draft').dispatchEvent(newline);
+      check(!newline.defaultPrevented, 'plain Enter retains native newline behavior');
       check(dialog.getBoundingClientRect().width <= innerWidth, 'panel fits viewport');
       check(dialog.getBoundingClientRect().height <= innerHeight + 1, 'panel fits height');
       document.getElementById('background').focus();
@@ -65,6 +106,9 @@
         check(el('project').disabled, 'project fixed after start');
         check(el('send').disabled, 'pending send disabled');
         check(timers.includes(2000), 'pending polls at two seconds');
+        offlineRead = true; await controller.poll();
+        check(!el('retry').disabled, 'pending read failure allows explicit retry');
+        offlineRead = false; el('retry').click(); await flush();
         // The same replacement used by the normal 30-second refresh.
         el('draft').value = 'next draft'; el('draft').dispatchEvent(new Event('input')); el('draft').focus();
         document.getElementById('app').innerHTML = document.getElementById('app').innerHTML;
@@ -78,12 +122,13 @@
       check(el('transcript').textContent.indexOf('Reply 1') < el('transcript').textContent.indexOf('Reply 2'), 'ordered replies');
       check(el('transcript').querySelectorAll('a').length === 1, 'one confirmed issue link');
       const count = requests.length;
-      dialog.close(); await controller.poll();
+      await close(); await controller.poll();
+      check(document.activeElement === document.getElementById(kind), 'close restores refreshed invoker focus: ' + kind);
       check(requests.length === count, 'closed dialog stops polling');
       const reopen = document.getElementById(kind); reopen.focus(); reopen.click(); await flush();
       check(el('transcript').querySelectorAll('article').length === 2, 'reopen resumes without POST');
       check(requests.slice(count).every(r => r.method === 'GET'), 'reopen never resubmits');
-      dialog.close();
+      await close();
     }
     document.getElementById('capture').click(); await flush();
     el('draft').value = 'Lost response'; el('draft').dispatchEvent(new Event('input'));
@@ -109,10 +154,21 @@
     const before = requests.filter(r => r.method === 'POST').length;
     offlineRead = false; el('retry').click(); await flush();
     check(requests.filter(r => r.method === 'POST').length === before, 'read retry never submits a turn');
-    dialog.close();
+    await close();
     check(JSON.parse(sessionStorage.getItem('mahler.discussions'))['capture:mahler'].session, 'session persisted for reload');
+    document.getElementById('capture').click(); await flush();
+    el('new').click();
+    check(!el('project').value && !el('project').disabled, 'new discussion allows project choice');
+    check(document.activeElement === el('project'), 'missing project receives focus');
+    el('project').value = 'mahler'; el('project').dispatchEvent(new Event('change'));
+    el('draft').value = 'New conversation'; el('draft').dispatchEvent(new Event('input'));
+    await controller.send(false);
+    check(sessions.size === 3, 'new discussion creates a fresh session');
+    await close();
     parent.document.body.dataset.testResult = 'PASS';
   } catch (error) {
     parent.document.body.dataset.testResult = 'FAIL: ' + error.stack;
   }
 })();
+
+}
