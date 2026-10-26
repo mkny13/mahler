@@ -167,6 +167,7 @@ DEFAULTS = {
         "capacity_wait_max_hours": 24,  # unknown recovery backstop for review/fix capacity
         "wait_escalate_hours": 72,     # conductor-side wait -> needs-you backstop (D52)
         "verify_timeout_minutes": 60,  # CI pending longer than this -> needs-you (mahler#18)
+        "verify_timeout": 300,         # seconds; verify-command timeout in worktree (mahler#1282)
         "run_timeout_minutes": 60,
         "progress_timeout_minutes": 20,
         "startup_timeout_minutes": 10,  # agent started but printed nothing (mahler#12)
