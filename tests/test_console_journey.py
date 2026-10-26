@@ -66,7 +66,7 @@ class JourneyDriverTests(unittest.TestCase):
         path = JOURNEY / "journey.mjs"
         subprocess.run(["node", "--check", str(path)], check=True, timeout=30)
         imports = re.findall(r"from '([^']+)'", path.read_text())
-        self.assertTrue(imports and all(i.startswith("node:") for i in imports), imports)
+        self.assertTrue(imports and all(i.startswith("node:") for i in imports), "non-builtin import")
         self.assertFalse((JOURNEY / "package.json").exists())
         self.assertFalse((JOURNEY / "node_modules").exists())
 
