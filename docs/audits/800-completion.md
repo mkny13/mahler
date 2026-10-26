@@ -1,176 +1,198 @@
-# Audit: #800 completion criteria
+# Completion evidence for mahler#800
 
-- Audited: 2026-10-22, Mahler checkout `9681e3ea3b581686212eecea8b90cd7d78339caa` (branch `mahler/1184-verify-remaining-completion-criteria-for`), Python 3.14.3.
-- Method: Public GitHub metadata read using Mahler's configured per-project GitHub identities with a temporary GitHub App token cache directory (`~/.mahler/secrets/github-app.pem` consumed by `mahler.github_app.Installation`); isolated temporary checkouts of current remote heads (`git clone --shared --no-checkout` with detached checkouts at the scanned default-branch SHAs) ensuring zero mutation to shared configured checkouts; read-only execution of `mahler.practices_audit.scan_project`.
-- Constraints: No project build, test, or release commands executed; zero credential candidates or private values published (all candidate contexts strictly redacted); no daemon state or live ledger mutated; no project repository or workflow edited; no synthetic blanket exemptions introduced.
+Verified on **2026-10-26**, scanner and test source commit [`a33f4350ce353281ac824fe3678104b1d628f7a8`](https://github.com/mkny13/mahler/commit/a33f4350ce353281ac824fe3678104b1d628f7a8), Python 3.14.3. Live collection: 2026-10-26T12:53:10.699044+00:00 through 2026-10-26T12:53:54.885779+00:00.
 
----
+**Result: seven of nine target checks pass; two remain gap. Keep the final #800 criterion unchecked.** All nine original proposals and five named dependents are currently closed. Closure does not establish a passing scan. This report completes #949’s evidence collection, not #800’s remaining remediation.
 
-## Child issue merge identities and regression tests
+This refresh supersedes the report’s 2026-10-22 inventory and 2026-10-23 replay. Those historical runs reported eight passing target checks; the current scanner reports seven. Historical results remain in Git history. No inference about a repository regression is made solely from that difference.
 
-All four implementation child issues (#803, #804, #805, #806) were merged to `main` with passing CI (`test` check SUCCESS) and are CLOSED on GitHub.
+## Parent criteria
 
-| Child | PR | Base | Merge SHA | Merged (UTC) | PR Head | CI |
-|---|---|---|---|---|---|---|
-| #803 | [#833](https://github.com/mkny13/mahler/pull/833) | `main` | `70f5cf40832eaf3434bdff29059fee81836b828f` | 2026-10-07T23:33:17Z | `115ab3a4b0d52a93ab0b896a591192f0e0d7c22f` | `test` SUCCESS |
-| #804 | [#834](https://github.com/mkny13/mahler/pull/834) | `main` | `c366cef979ac10122119192a0c81e13d9cb91c7a` | 2026-10-07T23:54:25Z | `e522909f2d52b74e5a6869ffe20b2792aabc95f9` | `test` SUCCESS |
-| #805 | [#835](https://github.com/mkny13/mahler/pull/835) | `main` | `86f88628b103fa8e1ac5457e48a6d604d8b68732` | 2026-10-08T00:31:54Z | `aa953562bcc9fa5cf74f9f6d8da314cccbb97933` | `test` SUCCESS |
-| #806 | [#836](https://github.com/mkny13/mahler/pull/836) | `main` | `34aa2a86f0ebfe08f88cf5135b9b36fe599dd00e` | 2026-10-08T01:03:45Z | `29bb89c9da0ac27728b0945bccd0417904b074f3` | `test` SUCCESS |
+| #800 criterion | Evidence / disposition |
+|---|---|
+| #803 workflow false positives | Supported by merged #833 and named regression tests below. |
+| #804 script runners and required checks | Supported by merged #834 and named regression tests below. |
+| #805 assets, source constructs and real credentials | Supported by merged #835 and named regression tests below. |
+| #806 verified false-positive resolution | Supported by merged #836 and named regression tests below. |
+| Repository verification | **Supported:** all four isolated commands below exit 0; each suite runs 3297 tests, with one skip. Initial failed/interrupted attempts remain recorded. |
+| Inventory rerun clears all nine and unblocks dependents | **Unchecked:** mental-jukebox/tracked-secrets and movebreak/branch-protection are gap. Dependents are closed; scanner evidence is still incomplete for the parent. |
 
-### Regression test mapping in `tests/test_practices_audit.py`
+## Merged fixes and regression coverage
 
-- **#803 (Eliminate false `unknown` from concurrency expressions, paths filters, and auxiliary cleanup workflows):**
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_pr_paths_filters_pass`: Verifies `paths` and `paths-ignore` PR triggers evaluate to `pass` without triggering structural unknown flags.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_workflow_concurrency_expression_passes`: Verifies top-level `${{ github.workflow }}-${{ github.ref }}` concurrency groups evaluate to `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_auxiliary_pr_cleanup_workflow_does_not_override_primary_ci`: Verifies auxiliary workflows (such as `pull_request: types: [closed]`) do not override primary CI or cause false unknowns, while isolated non-test workflows evaluate to `gap`.
+Fresh read-only `GET /repos/mkny13/mahler/pulls/{number}` confirmed `merged=true` for all four PRs. `git merge-base --is-ancestor <merge-sha> a33f4350ce353281ac824fe3678104b1d628f7a8` exited 0 for each merge. All named tests are methods of `TestPracticesAudit` in [tests/test_practices_audit.py](../../tests/test_practices_audit.py). The full-suite runs below exercise these tests. No behavior change or new test was needed for this evidence-only task.
 
-- **#804 (Recognize script test runners and matching required status checks):**
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_npm_test_node_script_runner_is_recognized`: Verifies `package.json` test scripts executing `node scripts/...` invoked via `npm test` are recognized as tests.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_self_test_binary_step_is_recognized`: Verifies executable binary steps running with `--self-test` are recognized by `_is_test` and pass `ci-tests`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_protection_passes_with_script_test_job_context`: Verifies required branch protection checks matching script-based test jobs evaluate to `pass`.
+| Issue | Merged PR | Merge SHA | Merged at (UTC) |
+|---|---|---|---|
+| #803 | [#833](https://github.com/mkny13/mahler/pull/833) | `70f5cf40832eaf3434bdff29059fee81836b828f` | 2026-10-07T23:33:17Z |
+| #804 | [#834](https://github.com/mkny13/mahler/pull/834) | `c366cef979ac10122119192a0c81e13d9cb91c7a` | 2026-10-07T23:54:25Z |
+| #805 | [#835](https://github.com/mkny13/mahler/pull/835) | `86f88628b103fa8e1ac5457e48a6d604d8b68732` | 2026-10-08T00:31:54Z |
+| #806 | [#836](https://github.com/mkny13/mahler/pull/836) | `34aa2a86f0ebfe08f88cf5135b9b36fe599dd00e` | 2026-10-08T01:03:45Z |
 
-- **#805 (Eliminate false positives for binary assets, schema definitions, and type annotations while reporting `gap` for real secrets):**
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_tracked_binary_assets_and_clean_text_return_pass`: Proves tracked binary assets (`.png`, `.ico`, `.jpg`, `.pdf`) alongside clean code return `pass` without generating uninspected-binary errors. The text-like `.jpg` fixture contains a synthetic credential-shaped assignment, proving its binary extension is skipped rather than accidentally passing through null-byte detection.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_binary_file_alongside_reviewed_text_passes`: Proves binary assets alongside reviewed non-secret candidates in `.mahler/secret-reviews.json` evaluate to `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_drizzle_schema_definitions_return_pass`: Proves Drizzle ORM column definitions (`password: text("password")`, `token: varchar("token")`) pass cleanly.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_language_type_annotations_return_pass`: Proves type annotations across TypeScript, Kotlin, and Python return `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_environment_and_config_lookups_return_pass`: Proves environment variable lookups (`os.environ["TOKEN"]`, `process.env.TOKEN`, config parser calls) return `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_dict_keys_and_mock_fixtures_return_pass`: Proves mock fixtures and dictionary keys return `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence`: Proves hardcoded GitHub tokens, passwords, and private keys report `gap` with redacted context.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_unavailable_tracked_inventory_and_corrupt_content_are_explicit_unknowns`: Proves unreadable/corrupt files cleanly report explicit `unknown`.
+**#803:**
 
-- **#806 (Clean resolution of verified proposal false positives without escalating to `needs_you`):**
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_proposal_body_includes_false_positive_resolution_contract`: Verifies proposal bodies document the resolution paths via `docs/DECISIONS.md`, `DECISIONS.md`, `AGENTS.md`, or `.mahler/project.toml`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_documented_decisions_in_decisions_md_resolve_cleanly`: Proves documented decisions in `DECISIONS.md` resolve gaps cleanly to `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_project_toml_exemption_resolves_finding_cleanly`: Proves exemptions configured in `[practices.exemptions]` of `.mahler/project.toml` resolve findings to `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_agents_md_exemption_resolves_finding_cleanly`: Proves documented exemptions under `## Practices exemptions` in `AGENTS.md` resolve findings to `pass`.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_audit_rerun_cleanly_reconciles_resolved_proposals`: Proves re-running `file_audit` marks resolved proposals as closed with resolution comments without duplication.
-  - `tests/test_practices_audit.py::TestPracticesAudit.test_proposal_acceptance_names_conductor_check`: Verifies proposal acceptance references conductor-managed base verification (upgraded via PR #1005).
-  - `tests/test_practices_audit.py::DetachedProposalTests.test_scans_requested_commit_with_project_client_and_cleans_up`: Proves conductor acceptance verification scans the exact reviewed base SHA in an isolated directory and cleans up.
+- `test_workflow_concurrency_expression_passes`
+- `test_pr_paths_filters_pass`
+- `test_auxiliary_pr_cleanup_workflow_does_not_override_primary_ci`
+- `test_step_condition_and_expression_test_execution_are_unknown`
 
----
+**#804:**
 
-## Fresh verification results on audited SHA
+- `test_npm_test_node_script_runner_is_recognized`
+- `test_self_test_binary_step_is_recognized`
+- `test_protection_passes_with_script_test_job_context`
 
-Executed on `9681e3ea3b581686212eecea8b90cd7d78339caa` (Python 3.14.3):
+**#805:**
 
-| Command | Result | Exit Code |
+- `test_tracked_binary_assets_and_clean_text_return_pass`
+- `test_drizzle_schema_definitions_return_pass`
+- `test_language_type_annotations_return_pass`
+- `test_environment_and_config_lookups_return_pass`
+- `test_dict_keys_and_mock_fixtures_return_pass`
+- `test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence`
+
+**#806:**
+
+- `test_proposal_body_includes_false_positive_resolution_contract`
+- `test_documented_decisions_in_decisions_md_resolve_cleanly`
+- `test_project_toml_exemption_resolves_finding_cleanly`
+- `test_agents_md_exemption_resolves_finding_cleanly`
+- `test_audit_rerun_cleanly_reconciles_resolved_proposals`
+- `test_proposal_acceptance_names_conductor_check`
+
+The #803 fixture also uses a primary workflow with a push/main filter. Negative coverage retains unknown for conditional execution and gap for cleanup-only CI. #804 rejects a build-only Node script. #805 asserts real tokens/private keys remain gap without leaking their values. #806 verifies closing the resolved proposal, marker reuse and no duplicate closing comment; current acceptance defers the final scanner check to the conductor.
+
+## Repository verification
+
+The completed rerun executes at documentation-only commit `7d15dd701360fc97cec671d534ea691b68cb7cd2`, whose Python/test source is identical to the named `a33f4350ce353281ac824fe3678104b1d628f7a8` source. Each command runs in this worktree with a fresh temporary `MAHLER_HOME`; tests use their isolated fixtures. In the test subprocess environment only, inherited `MAHLER_*` run identity variables are removed and the inherited `core.hooksPath` override is set to `/dev/null`, preventing the live lease hook from running against fixture repositories. No live ledger is opened. Only Mahler’s own verification commands run; no scanned project test, build or release command runs.
+
+| Command | Exit | Result |
 |---|---|---|
-| `python3 -m mahler.repo_guard` | Clean (no output) | 0 |
-| `python3 -m unittest discover -s tests` | Ran 3049 tests in 202.606s, OK (skipped=1) | 0 |
-| `python3 tests/run_random.py` | random order seed: 1310860237, Ran 3049 tests in 202.308s, OK (skipped=1) | 0 |
-| `python3 -X dev tests/run_strict.py` | Ran 3049 tests in 214.883s, OK (skipped=1) | 0 |
+| `python3 -m mahler.repo_guard` | 0 | PASS |
+| `python3 -m unittest discover -s tests` | 0 | Ran 3297 tests in 169.936s; OK (skipped=1) |
+| `python3 tests/run_random.py` | 0 | random order seed: 1561352242; Ran 3297 tests in 169.291s; OK (skipped=1) |
+| `python3 -X dev tests/run_strict.py` | 0 | Ran 3297 tests in 186.481s; OK (skipped=1) |
 
----
+Initial isolation attempt: repo_guard exited 0; unittest ran 3297 tests in 172.921s and exited 1 (6 failures, 17 errors, 1 skip). Its inherited lease hook refused fixture Git pushes against the empty temporary Mahler state. The randomized attempt (seed `1923564150`) was interrupted after identifying the same environment issue; it is not a completed pass. The table above records the subsequent isolated run. No production or test code was changed to obtain that result.
 
-## Enabled project inventory snapshot (2026-10-22)
+## Inventory and identity boundary
 
-Snapshot of the finite inventory returned by `config.enabled_projects(config.load())` with configured identities and current scanned default-branch SHAs:
+The finite inventory is exactly `config.enabled_projects(config.load())` at collection time: **12 enabled projects**. Global configuration is read only; effective policies are copied and only `path` is replaced for scanning. Every scan uses an isolated snapshot of the remote default-branch SHA below, even where the configured checkout already matches. Shared checkouts are read only for `git rev-parse HEAD`; none is updated.
 
-| Project | Repository | Configured Identity | Default Branch | Scanned SHA |
-|---|---|---|---|---|
-| `mahler` | `mkny13/mahler` | Personal (App ID 5127048, inst 166283054) | `main` | `9681e3ea3b581686212eecea8b90cd7d78339caa` |
-| `groundwork` | `mkny13/groundwork` | Personal (App ID 5127048, inst 166283054) | `main` | `28c2a551e42f6729ebbc85e0ae95e156ce30e7b6` |
-| `phish-in` | `mkny13/couch-tour` | Personal (App ID 5127048, inst 166283054) | `main` | `702c0f4354f14d2ed0d7906ccc0abd8da0672713` |
-| `sit-stand-walk` | `makastel_ncstate/sit-stand-walk` | Work (`gh_account = "work"`, `GH_CONFIG_DIR`) | `main` | `6830b2d9630b2affdd7cfeaf56ec7287e7db2087` |
-| `google-chat-nav` | `makastel_ncstate/google-chat-nav` | Work (`gh_account = "work"`, `GH_CONFIG_DIR`) | `main` | `e03146a5d789503c34dd28957f5f172489b060ed` |
-| `movebreak` | `mkny13/movebreak` | Personal (App ID 5127048, inst 166283054) | `main` | `1079dba415c49412440047fdedaa580d0d7b568a` |
-| `puppy-growth-chart` | `mkny13/puppy-growth-chart` | Personal (App ID 5127048, inst 166283054) | `main` | `1ed489aa01963b2a0430b40ccb773fdd4e1e2c46` |
-| `hockey` | `mkny13/hockey-draft-copilot` | Personal (App ID 5127048, inst 166283054) | `main` | `d37ae87604443eb57c4baf64768459bd26f8b2d6` |
-| `mental-jukebox` | `mkny13/mental-jukebox` | Personal (App ID 5127048, inst 166283054) | `main` | `8a4c114dc9ebc0668c1b779c96cbc368567ce9d5` |
-| `crate-cataloger` | `mkny13/crate-cataloger` | Personal (App ID 5127048, inst 166283054) | `main` | `b6824c077f2c0e38a0f006b03c31bc5658e70997` |
-| `spotify-overlay` | `mkny13/spotify-overlay` | Personal (App ID 5127048, inst 166283054) | `main` | `d4eedbb75ab4917741c57e426bd3d87ee337859c` |
-| `google-workspace-connector` | `makastel_ncstate/google-workspace-connector` | Work (`gh_account = "work"`, `GH_CONFIG_DIR`) | `main` | `38313b9185983ab868bf7a8fa341189a923fb86e` |
+Each client is created by `gh.project_client(cfg, pol)`. Personal projects use the configured App through `github_app.Installation`, consuming the authorized external key path `~/.mahler/secrets/github-app.pem`; only a temporary token cache is used by redirecting process-local `config.STATE`. Work projects retain account `work` and `GH_CONFIG_DIR=/Users/mike/.config/gh-work`, without a personal App or alternate login. No token or key value is recorded.
 
----
+Personal snapshots use an isolated shallow fetch of the exact SHA. Work-account Git fetch initially failed (exit 128); the successful fallback downloads the exact-SHA archive with `gh api repos/{repo}/tarball/{sha}` through that same client environment, safely extracts it and builds a temporary Git index (`git add --all --force`) so `git ls-files` enumerates the archive. A separate read-only comparison with `GET repos/{repo}/git/trees/{sha}?recursive=1` confirmed non-truncated trees and exact archive path coverage: sit-stand-walk 30/30 blobs, google-chat-nav 23/23, google-workspace-connector 121/121; zero missing paths, extra paths or submodules in all three. Thus no export-ignore or archive omission reduced these scans. Temporary snapshots/cache are removed after collection.
 
-## Target proposal/check result matrix (nine pairs)
-
-Scanner evaluated against isolated checkouts at current remote default-branch SHAs:
-
-| Proposal | Check | Scanned SHA | Scanner State | Reason / Evidence (Redacted) | Issue State & Disposition |
+| Project / repository | Identity | Default branch | Configured checkout SHA | Scanned remote SHA | Checkout comparison |
 |---|---|---|---|---|---|
-| `groundwork#190` | `ci-tests` | `28c2a551e4` | **pass** | PR CI invokes test commands; test quality is not assessed. | CLOSED (independent no-change review, run 11331) |
-| `groundwork#193` | `verify-command` | `28c2a551e4` | **pass** | Documented effective verify command is invoked by PR CI. | CLOSED (independent no-change review, run 11321) |
-| `groundwork#194` | `tracked-secrets` | `28c2a551e4` | **pass** | Documented architectural decision accepts tracked-secrets (Issue #194). | CLOSED (shipped PR #202 squash-merged) |
-| `phish-in#555` | `ci-tests` | `702c0f4354` | **pass** | PR CI invokes test commands; test quality is not assessed. | CLOSED (independent no-change review, run 11314) |
-| `phish-in#558` | `tracked-secrets` | `702c0f4354` | **pass** | Documented decision D339 / `.mahler/secret-reviews.json` accepts false positives. | CLOSED (shipped PR #572 squash-merged) |
-| `hockey#79` | `ci-tests` | `d37ae87604` | **pass** | PR CI invokes test commands; test quality is not assessed. | CLOSED (independent no-change review, run 11305) |
-| `hockey#82` | `tracked-secrets` | `d37ae87604` | **pass** | No candidates in inspected tracked text; clean text. | CLOSED (shipped PR #86 squash-merged) |
-| `mental-jukebox#13` | `tracked-secrets` | `8a4c114dc9` | **gap** | Suspected credentials require review. Evidence: `tests/test_contracts.py:61: detector=credential-assignment; context=<redacted>`, `tests/test_contracts.py:62: detector=credential-assignment; context=<redacted>`, `.mahler/secret-reviews.json: 6 reviewed non-secret candidates` | CLOSED (shipped PR #19 squash-merged) — **Concrete technical follow-up required (see below)** |
-| `movebreak#87` | `branch-protection` | `1079dba415` | **pass** | Squash merging enabled and a PR test check is required. | CLOSED (shipped PR #95 squash-merged) |
+| mahler / mkny13/mahler | personal; configured App | main | `c1d8b548d7f7325bc02be608fb62945d322cff5a` | `a33f4350ce353281ac824fe3678104b1d628f7a8` | stale/different; scanned remote snapshot |
+| groundwork / mkny13/groundwork | personal; configured App | main | `599b55df200275a51ea73a9b87caba29951fc792` | `4e3463e69df0d469fc48c60a8319a47297353b75` | stale/different; scanned remote snapshot |
+| phish-in / mkny13/couch-tour | personal; configured App | main | `5b5a1e9f811d7234bc76391e01237fe9c9ef982b` | `48a81a27dc1a130226d0c60f2e7d998ea90cbd7b` | stale/different; scanned remote snapshot |
+| sit-stand-walk / makastel_ncstate/sit-stand-walk | work; configured account | main | `5affa4cedf6ee42a51868c57c874b2523e2fa8a4` | `c0a34bd1808527ddd4fd7c35371821e8cbd45c42` | stale/different; scanned remote snapshot |
+| google-chat-nav / makastel_ncstate/google-chat-nav | work; configured account | main | `2dff9cea7efe681d184f01952c64ab335fdbd056` | `e03146a5d789503c34dd28957f5f172489b060ed` | stale/different; scanned remote snapshot |
+| movebreak / mkny13/movebreak | personal; configured App | main | `cef91550f37791c82ef2caa46a87955c535ff457` | `50779f5ee19e31b6b2c9322a2fe6f9864a678aea` | stale/different; scanned remote snapshot |
+| puppy-growth-chart / mkny13/puppy-growth-chart | personal; configured App | main | `1ed489aa01963b2a0430b40ccb773fdd4e1e2c46` | `a7128bb9e9c408bd636bc18a3a55cd3e22491127` | stale/different; scanned remote snapshot |
+| hockey / mkny13/hockey-draft-copilot | personal; configured App | main | `0418fdfec5aa3cfbd777acf1e40f324ec4d94bd4` | `d37ae87604443eb57c4baf64768459bd26f8b2d6` | stale/different; scanned remote snapshot |
+| mental-jukebox / mkny13/mental-jukebox | personal; configured App | main | `157af5bccd008d80b46347d94732e84dd140accc` | `8a4c114dc9ebc0668c1b779c96cbc368567ce9d5` | stale/different; scanned remote snapshot |
+| crate-cataloger / mkny13/crate-cataloger | personal; configured App | main | `b0411ef88c3adba7adab42be3399a405c65c3881` | `b6824c077f2c0e38a0f006b03c31bc5658e70997` | stale/different; scanned remote snapshot |
+| spotify-overlay / mkny13/spotify-overlay | personal; configured App | main | `7db49d2e9368d0e83450b438504269927662b2b4` | `7db49d2e9368d0e83450b438504269927662b2b4` | same |
+| google-workspace-connector / makastel_ncstate/google-workspace-connector | work; configured account | main | `abc8f41ca8d8201ff3c613a1beaa43ee1c6274db` | `924c7ba86bd25550cfde5e0d52ed6e3515f4b04e` | stale/different; scanned remote snapshot |
 
----
+## Nine target pairs
 
-## State of downstream dependents (five issues)
+Historical closure evidence: [sorting report](https://github.com/mkny13/mahler/issues/949#issuecomment-6105366649). Current states below came from fresh issue API reads, independently of `practices_audit.scan(snapshot_cfg, client)` results. `phish-in` maps to `mkny13/couch-tour`; `hockey` maps to `mkny13/hockey-draft-copilot`.
 
-All five dependent items were previously unblocked, executed, and CLOSED via merged PRs:
-
-| Dependent Issue | Target Check | Issue State | Shipped PR | Current Scanner State on Default Branch |
+| Proposal | Check | Current issue state (closed at UTC) | Scanner | Redacted evidence |
 |---|---|---|---|---|
-| `groundwork#195` | `branch-protection` | CLOSED | PR #205 (squash-merged) | `pass` (`Squash merging enabled and a PR test check is required.`) |
-| `hockey#83` | `branch-protection` | CLOSED | PR #87 (squash-merged) | `pass` (`Squash merging enabled and a PR test check is required.`) |
-| `phish-in#557` | `verify-command` | CLOSED | PR #574 (squash-merged) | `pass` (`Documented effective verify command is invoked by PR CI.`) |
-| `phish-in#559` | `branch-protection` | CLOSED | PR #573 (squash-merged) | `unknown` (`Cannot establish squash/test-gate compatibility.`; work completed) |
-| `movebreak#85` | `verify-command` | CLOSED | PR #98 (squash-merged) | `unknown` (`Verify command uses dynamic expansion or evaluation.`; work completed) |
+| [groundwork#190](https://github.com/mkny13/groundwork/issues/190) | ci-tests | closed (2026-10-08T13:27:11Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/.github/workflows/ci.yml#L129) |
+| [groundwork#193](https://github.com/mkny13/groundwork/issues/193) | verify-command | closed (2026-10-08T12:47:08Z) | **pass** | Documented effective verify command is invoked by PR CI. [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/AGENTS.md#L109) |
+| [groundwork#194](https://github.com/mkny13/groundwork/issues/194) | tracked-secrets | closed (2026-10-08T12:31:40Z) | **pass** | Documented architectural decision or exemption accepts tracked-secrets: 2026-10-08 — Practices audit tracked-secrets verification and false positive review (Issue #194) — **Context:** [source](https://github.com/mkny13/groundwork/blob/4e3463e69df0d469fc48c60a8319a47297353b75/docs/DECISIONS.md#L19) |
+| [phish-in#555](https://github.com/mkny13/couch-tour/issues/555) | ci-tests | closed (2026-10-08T12:25:59Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/couch-tour/blob/48a81a27dc1a130226d0c60f2e7d998ea90cbd7b/.github/workflows/checks.yml#L18) |
+| [phish-in#558](https://github.com/mkny13/couch-tour/issues/558) | tracked-secrets | closed (2026-10-08T14:21:30Z) | **pass** | Documented architectural decision or exemption accepts tracked-secrets: D339: Practices audit tracked-secrets reviewed false positives (.mahler/secret-reviews.json) (#558) — The Mahler practices audit (mahler#780) flagged heuristic candidates for `tracked-secrets`. A manual audit confirmed that zero real secrets, credentials, or private personal data exist in git-tracked files. All flagged lines fall into clean non-secret categories: [source](https://github.com/mkny13/couch-tour/blob/48a81a27dc1a130226d0c60f2e7d998ea90cbd7b/DECISIONS.md#L592) |
+| [hockey#79](https://github.com/mkny13/hockey-draft-copilot/issues/79) | ci-tests | closed (2026-10-08T11:57:31Z) | **pass** | PR CI invokes test commands; test quality is not assessed. [source](https://github.com/mkny13/hockey-draft-copilot/blob/d37ae87604443eb57c4baf64768459bd26f8b2d6/.github/workflows/ci.yml#L20) |
+| [hockey#82](https://github.com/mkny13/hockey-draft-copilot/issues/82) | tracked-secrets | closed (2026-10-08T00:46:19Z) | **pass** | No candidates in inspected tracked text; heuristics do not prove absence of credentials or private data. Git history is not inspected. [source](https://github.com/mkny13/hockey-draft-copilot/tree/d37ae87604443eb57c4baf64768459bd26f8b2d6) |
+| [mental-jukebox#13](https://github.com/mkny13/mental-jukebox/issues/13) | tracked-secrets | closed (2026-10-08T12:15:06Z) | **gap** | Suspected credentials require review. tests/test_contracts.py:61 and :62: detector=credential-assignment; context=&lt;redacted&gt;; six reviewed candidates already recorded in .mahler/secret-reviews.json. [source](https://github.com/mkny13/mental-jukebox/blob/8a4c114dc9ebc0668c1b779c96cbc368567ce9d5/tests/test_contracts.py#L61) |
+| [movebreak#87](https://github.com/mkny13/movebreak/issues/87) | branch-protection | closed (2026-10-07T16:28:03Z) | **gap** | Default-branch protection can be bypassed: strict required checks, administrator enforcement, force pushes disabled, deletion disabled. Required context: verify; squash merge enabled; both API reads HTTP 200. [source](https://api.github.com/repos/mkny13/movebreak/branches/main/protection) |
 
----
+Groundwork and phish-in tracked-secrets pass through **pre-existing documented decisions**, as the scanner explicitly reports; neither result means its raw candidate detector found zero candidates. This run added no exemption or review entry. Hockey’s tracked-secrets result reports no candidates in inspected tracked text. These are heuristic scans, not proof of secret absence or history scans.
 
-## Complete enabled inventory practices audit results
+### Fresh movebreak endpoint results
 
-Evaluated on 2026-10-22 using `practices_audit.scan_project` on isolated temporary checkouts at remote default-branch SHAs:
+- `GET repos/mkny13/movebreak/branches/main/protection` → `HTTP/2.0 200 OK`.
+- `GET repos/mkny13/movebreak/rules/branches/main` → `HTTP/2.0 200 OK`.
 
-| Project | `ci-tests` | `agent-instructions` | `mahler-guidance` | `verify-command` | `tracked-secrets` | `branch-protection` |
+The owner’s [access confirmation](https://github.com/mkny13/mahler/issues/949#issuecomment-6406873270) is independently reproduced. The current gap is protection semantics, not missing API access.
+
+### Concrete follow-up required
+
+- **mental-jukebox#13 / tracked-secrets:** review the two current `credential-assignment` candidates at the pinned `tests/test_contracts.py:61–62` locally. Determine whether they are fixture/source constructs and add narrowly scoped regression coverage or exact candidate review metadata in linked follow-up work; if real, remove/rotate through the repository’s authorized process. Do not assume a false positive from the filename or closed issue. Re-run this exact check after the follow-up; current six-entry review metadata does not clear these two candidates. No candidate values were printed or committed.
+- **movebreak#87 / branch-protection:** inspect the classic protection and effective rules at the endpoints above. The scanner reports missing effective safeguards for strict required checks, administrator enforcement, force-push prevention and deletion prevention, despite the required `verify` context. Linked technical follow-up must establish each effective safeguard (or reproduce a parser mismatch with a focused regression fixture), then rerun the check. No repository settings were changed here.
+- The conductor should track these as linked p1 follow-up work under D10; no owner verdict is required for this report. Until both checks pass, leave #800’s final criterion unchecked.
+
+## Five named dependents
+
+| Dependent | Current state | Closed at (UTC) |
+|---|---|---|
+| [groundwork#195](https://github.com/mkny13/groundwork/issues/195) | closed | 2026-10-08T14:54:04Z |
+| [hockey#83](https://github.com/mkny13/hockey-draft-copilot/issues/83) | closed | 2026-10-08T12:31:59Z |
+| [phish-in#557](https://github.com/mkny13/couch-tour/issues/557) | closed | 2026-10-08T14:02:57Z |
+| [phish-in#559](https://github.com/mkny13/couch-tour/issues/559) | closed | 2026-10-08T13:07:49Z |
+| [movebreak#85](https://github.com/mkny13/movebreak/issues/85) | closed | 2026-10-07T21:04:26Z |
+
+These current closures show that the five named dependents are no longer open blockers; they do not override the two current audit gaps. No closure, label, requeue or issue-body mutation was performed.
+
+## Complete inventory scan states
+
+P = pass; G = gap; U = unknown. Non-target findings are recorded only, not remediated.
+
+| Project | ci-tests | agent-instructions | mahler-guidance | verify-command | tracked-secrets | branch-protection |
 |---|---|---|---|---|---|---|
-| `mahler` | `unknown` | `pass` | `pass` | `unknown` | `gap` | `pass` |
-| `groundwork` | `pass` | `pass` | `pass` | `pass` | `pass` | `pass` |
-| `phish-in` | `pass` | `pass` | `pass` | `pass` | `pass` | `unknown` |
-| `sit-stand-walk` | `gap` | `pass` | `pass` | `gap` | `pass` | `unknown` |
-| `google-chat-nav` | `pass` (exempt) | `pass` | `pass` | `pass` (exempt) | `pass` | `pass` (exempt) |
-| `movebreak` | `unknown` | `pass` | `pass` | `unknown` | `pass` | `pass` |
-| `puppy-growth-chart` | `pass` | `pass` | `pass` | `pass` | `pass` | `pass` |
-| `hockey` | `pass` | `pass` | `pass` | `pass` | `pass` | `pass` |
-| `mental-jukebox` | `gap` | `pass` | `pass` | `pass` | `gap` | `unknown` |
-| `crate-cataloger` | `pass` | `gap` | `pass` | `pass` | `pass` | `pass` |
-| `spotify-overlay` | `gap` | `pass` | `pass` | `pass` | `gap` | `unknown` |
-| `google-workspace-connector` | `gap` | `pass` | `gap` | `gap` | `gap` | `unknown` |
+| mahler | U | P | P | U | G | P |
+| groundwork | P | P | P | P | P | G |
+| phish-in | P | P | P | P | P | U |
+| sit-stand-walk | G | P | P | G | P | U |
+| google-chat-nav | P | P | P | P | P | P |
+| movebreak | U | P | P | U | P | G |
+| puppy-growth-chart | P | P | P | P | P | G |
+| hockey | P | P | P | P | P | P |
+| mental-jukebox | G | P | P | P | G | U |
+| crate-cataloger | P | G | P | P | P | G |
+| spotify-overlay | G | P | P | P | G | U |
+| google-workspace-connector | G | P | G | G | G | U |
 
----
+Non-target gap/unknown reasons (redacted scanner summaries):
 
-## Parent #800 completion criteria disposition
+- **mahler/ci-tests (unknown):** No proven unconditional PR test execution; workflow semantics need review.
+- **mahler/verify-command (unknown):** Unresolved execution precedes verify command.
+- **mahler/tracked-secrets (gap):** Suspected credentials require review.
+- **groundwork/branch-protection (gap):** Default-branch protection can be bypassed: strict required checks, administrator enforcement, force pushes disabled, deletion disabled.
+- **phish-in/branch-protection (unknown):** Cannot establish squash/test-gate compatibility.
+- **sit-stand-walk/ci-tests (gap):** No test invocation found in PR CI (a build alone is insufficient).
+- **sit-stand-walk/verify-command (gap):** Verify command is absent from literal PR CI commands.
+- **sit-stand-walk/branch-protection (unknown):** Default-branch protection metadata is unavailable or unsupported.
+- **movebreak/ci-tests (unknown):** No proven unconditional PR test execution; workflow semantics need review.
+- **movebreak/verify-command (unknown):** Verify command uses dynamic expansion or evaluation.
+- **puppy-growth-chart/branch-protection (gap):** Default-branch protection can be bypassed: strict required checks, administrator enforcement, force pushes disabled, deletion disabled.
+- **mental-jukebox/ci-tests (gap):** No test invocation found in PR CI (a build alone is insufficient).
+- **mental-jukebox/branch-protection (unknown):** Cannot establish squash/test-gate compatibility.
+- **crate-cataloger/agent-instructions (gap):** AGENTS.md and CLAUDE.md diverge.
+- **crate-cataloger/branch-protection (gap):** Default-branch protection can be bypassed: strict required checks, administrator enforcement, force pushes disabled, deletion disabled.
+- **spotify-overlay/ci-tests (gap):** No test invocation found in PR CI (a build alone is insufficient).
+- **spotify-overlay/tracked-secrets (gap):** Suspected credentials require review.
+- **spotify-overlay/branch-protection (unknown):** Default-branch protection metadata is unavailable or unsupported.
+- **google-workspace-connector/ci-tests (gap):** No test invocation found in PR CI (a build alone is insufficient).
+- **google-workspace-connector/mahler-guidance (gap):** Missing/stale markers: mahler claim google-workspace-connector#, mahler heartbeat google-workspace-connector#, mahler ship google-workspace-connector#, mahler release google-workspace-connector#, mahler/<N>-short-slug, Fixes #N, STATUS, verify, commit, push, conductor opens/reviews/merges
+- **google-workspace-connector/verify-command (gap):** Verify command is absent from documentation and PR CI.
+- **google-workspace-connector/tracked-secrets (gap):** Suspected credentials require review.
+- **google-workspace-connector/branch-protection (unknown):** Default-branch protection metadata is unavailable or unsupported.
 
-| Criterion on #800 | Verdict | Evidence Summary |
-|---|---|---|
-| 1. #803 is merged and unit tests prove top-level concurrency expressions, PR path filters, and auxiliary cleanup workflows do not cause false `unknown` results. | **SUPPORTED** | Merged via PR #833 (`70f5cf40832eaf3434bdff29059fee81836b828f`). Tested by `test_pr_paths_filters_pass`, `test_workflow_concurrency_expression_passes`, and `test_auxiliary_pr_cleanup_workflow_does_not_override_primary_ci`. |
-| 2. #804 is merged and unit tests prove script test runners (`node scripts/...`, `--self-test`) and matching required status checks pass. | **SUPPORTED** | Merged via PR #834 (`c366cef979ac10122119192a0c81e13d9cb91c7a`). Tested by `test_npm_test_node_script_runner_is_recognized`, `test_self_test_binary_step_is_recognized`, and `test_protection_passes_with_script_test_job_context`. |
-| 3. #805 is merged and unit tests prove tracked binary assets (PNG/ICO/JPG) and non-secret language constructs (Drizzle schema definitions, type annotations, env lookups) pass cleanly while real credential tokens report `gap`. | **SUPPORTED** | Merged via PR #835 (`86f88628b103fa8e1ac5457e48a6d604d8b68732`). Tested by `test_tracked_binary_assets_and_clean_text_return_pass`, `test_binary_file_alongside_reviewed_text_passes`, `test_drizzle_schema_definitions_return_pass`, `test_language_type_annotations_return_pass`, `test_environment_and_config_lookups_return_pass`, `test_dict_keys_and_mock_fixtures_return_pass`, `test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence`, and `test_unavailable_tracked_inventory_and_corrupt_content_are_explicit_unknowns`. |
-| 4. #806 is merged and unit tests prove proposal bodies and acceptance checks allow clean resolution of verified scanner false positives without escalating to `needs_you`. | **SUPPORTED** | Merged via PR #836 (`34aa2a86f0ebfe08f88cf5135b9b36fe599dd00e`) and verified with conductor detached proposal runner (PR #1005). Tested by `test_proposal_body_includes_false_positive_resolution_contract`, `test_documented_decisions_in_decisions_md_resolve_cleanly`, `test_project_toml_exemption_resolves_finding_cleanly`, `test_agents_md_exemption_resolves_finding_cleanly`, `test_audit_rerun_cleanly_reconciles_resolved_proposals`, and `test_proposal_acceptance_names_conductor_check`. |
-| 5. `python3 -m mahler.repo_guard`, `python3 -m unittest discover -s tests`, and `python3 -X dev tests/run_strict.py` pass cleanly. | **SUPPORTED** | Clean run at SHA `9681e3ea3b581686212eecea8b90cd7d78339caa`: repo_guard exit 0; unittest 3049 OK (skipped=1); run_random seed 1310860237 3049 OK (skipped=1); run_strict 3049 OK (skipped=1). |
-| 6. After merging the sub-issues, re-running the practices audit across the enabled project inventory clears the 9 false-positive items across the 6 projects and unblocks their dependents. | **UNRESOLVED (Partially Supported)** | 8 of 9 items evaluate to `pass`. All 5 dependents are unblocked and CLOSED. However, `mental-jukebox#13/tracked-secrets` currently evaluates to `gap` because test fixture assignments in `tests/test_contracts.py:61-62` trigger `credential-assignment` and are not yet covered in `.mahler/secret-reviews.json`. Remains unchecked until follow-up completes. |
+## Reproduction contract
 
----
+1. Use the named Mahler source SHA and load the current configured inventory once; record the UTC time and effective project identities. Inventory/policies can change, so a future scan is a new observation.
+2. Set process-local `config.STATE` to a temporary directory before constructing `gh.project_client` instances. Do not modify live configuration or read/write the ledger.
+3. Resolve each repository’s default branch and commit through its own client. Record the configured checkout HEAD, then materialize the exact remote commit in an isolated snapshot using that client’s credentials. Preserve all effective project policy fields except the snapshot path.
+4. Call `practices_audit.scan(snapshot_cfg, lambda name: clients[name])`. Save only check states, safe reasons and redacted citations. Never execute scanned repository commands.
+5. Read issue state/closed timestamps and merged PR metadata separately; read both movebreak protection endpoints and record HTTP status separately. Re-run the four Mahler verification commands with fresh temporary `MAHLER_HOME` directories and the test-only run-identity/hook isolation described above; use the recorded random seed to reproduce order.
 
-## Concrete technical follow-up
+## Needs a human to check
 
-- **Target:** `mental-jukebox` (`mkny13/mental-jukebox`)
-- **Finding:** `tracked-secrets: gap` on `tests/test_contracts.py:61` and `tests/test_contracts.py:62` (`detector=credential-assignment; context=<redacted>`).
-- **Follow-up action:** Review the two synthetic test fixture token values in `tests/test_contracts.py` and record their SHA-256 digests in `.mahler/secret-reviews.json` (or record an exemption in `.mahler/project.toml` per the #806 resolution protocol). Once merged, `practices_audit.scan_project` for `mental-jukebox` will return `pass` for `tracked-secrets`, fully clearing all 9 items and satisfying the final criterion.
-
-
-## Replayed-branch verification (2026-10-23)
-
-The existing evidence report was reverified at Mahler SHA
-`e81f9d7fbcfb68c1593dcc3171fbe3442b320740` with Python 3.14.3.
-This verifies the replayed branch; it does not refresh the dated remote inventory
-or resolve the outstanding ninth target finding above.
-
-| Command | Result | Exit code |
-|---|---|---|
-| `python3 -m mahler.repo_guard` | Clean, no output | 0 |
-| `python3 -m unittest discover -s tests` | 3084 tests in 175.315s; OK (skipped=1) | 0 |
-| `python3 tests/run_random.py` | Seed `1906047960`; 3084 tests in 174.509s; OK (skipped=1) | 0 |
-| `python3 -X dev tests/run_strict.py` | 3084 tests in 184.712s; OK (skipped=1) | 0 |
-
-No manual owner check is required. The conductor retains the GitHub evidence
-comment/checklist handoff under this run's local-commit-only instructions.
-Parent criterion 6 remains unresolved pending the technical follow-up above.
+Nothing. Remaining work is the two concrete technical follow-ups above, owned and tracked by the conductor.
