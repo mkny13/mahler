@@ -79,8 +79,9 @@ def stuck_rate(led, now):
             # Historical question lives in the transition detail. Current item
             # questions and latest runs can belong to a later attempt.
             run = led.q1("SELECT role FROM runs WHERE project=? AND number=? "
-                          "AND ended_at<=? ORDER BY ended_at DESC, id DESC LIMIT 1",
-                          (ev["project"], ev["number"], ev["at"]))
+                          "AND started_at<=? AND ended_at>=? AND outcome='NEEDS-YOU' "
+                          "ORDER BY started_at DESC, id DESC LIMIT 1",
+                          (ev["project"], ev["number"], ev["at"], ev["at"]))
             owner = bool(_OWNER_CATEGORY.search(question or "")) or (run and run["role"] == "sort")
             causes["owner" if owner else "other"] += 1
     stuck = sum(causes.values())

@@ -164,7 +164,8 @@ class WaitMetricsTests(unittest.TestCase):
                                   "working -> done", "working -> done"), 1):
             led.event("state", "p", n, detail)
         led.create_run(project="p", number=4, role="sort", platform="slot", epoch=1,
-                       status="ended", ended_at=iso(self.clock.t), outcome="NEEDS-YOU")
+                       status="ended", ended_at=iso(self.clock.t + timedelta(seconds=1)),
+                       outcome="NEEDS-YOU")
         led.event("wait", "p", 9, {"cause": "capacity"})
         for days, detail in ((8, "working -> failed (old)"), (-1, "working -> done")):
             led.q("INSERT INTO events(at,project,number,kind,detail) VALUES(?,?,?,?,?)",
