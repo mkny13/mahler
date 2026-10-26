@@ -732,6 +732,10 @@ def _ship_project(ctx, project):
         detect_ci_blocker(ctx, project)
     unstick(ctx, project)
     no_change.recover_legacy(ctx, project)
+    try:
+        waits.migrate_legacy(ctx, project)
+    except Exception as e:                      # noqa: BLE001 — never break the pass
+        ctx.say(f"{project}: wait migration failed — {e}")
     migrate_capacity_waits(ctx, project)
     recover_capacity_waits(ctx, project)
     try:
@@ -1024,7 +1028,7 @@ def _ship_item(ctx, project, item):
 def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", lookup=False, held=False):
     """CI still running. It is watched across ticks (the 30s loop never blocks
     a tick), but a hung CI must not park the item silently: past
-    verify_timeout_minutes it goes to needs-you with a ping. A new head SHA
+    verify_timeout_minutes it goes to ``waiting`` (cause ci_stalled, D52). A new head SHA
     (e.g. a fix run's push) restarts the wait, because CI starts over.
     Lookup outages have their own timer, cleared by a successful lookup, so
     a single network failure cannot inherit hours spent watching CI."""
@@ -1053,11 +1057,7 @@ def _ci_pending(ctx, project, item, pr, view, *, reason="CI still running", look
             and last["ended_at"] and parse(last["ended_at"]) >= parse(item["state_changed_at"])):
         reason = last["outcome"]
     reason = f"PR #{pr}: {reason} after {elapsed} min"
-    led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
-    ctx.ping(f"Mahler needs you — {project} #{n}",
-             f"{reason}; "
-             "the PR stays open, unmerged",
-             project, n, priority="high", tags="question", console=True)
+    waits.hold(led, project, n, "ci_stalled", reason, resume="verifying", wake={"pr": pr})
     led.release(project, n, holder=CONDUCTOR)
 
 
@@ -1071,8 +1071,8 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
     common case (no queue, or the queue was empty and free) in the same tick,
     the same way a direct merge always has. A PR that stays open and green
     past `verify_timeout_minutes` — the queue's re-test failed and it was
-    kicked back out, or the queue is stuck — goes to needs-you exactly like
-    pending CI does, rather than waiting silently forever."""
+    kicked back out, or the queue is stuck — goes to ``waiting`` (cause
+    merge_queue, D52) and retries with backoff, rather than waiting silently forever."""
     led, n = ctx.led, item["number"]
     gh = ctx.gh(project)
     pol = ctx.policy(project)
@@ -1126,11 +1126,7 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
     elapsed = int((led.now() - parse(info["since"])).total_seconds() // 60)
     reason = (f"PR #{pr} passed checks but hasn't merged in {elapsed} min — "
               "check the merge queue")
-    led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
-    ctx.ping(f"Mahler needs you — {project} #{n}",
-             f"PR #{pr} passed checks but hasn't merged in {elapsed} min "
-             "(the merge queue?); the PR stays open, unmerged",
-             project, n, priority="high", tags="question", console=True)
+    waits.hold(led, project, n, "merge_queue", reason, resume="verifying", wake={"pr": pr})
     led.release(project, n, holder=CONDUCTOR)
 
 
@@ -1574,73 +1570,28 @@ def migrate_capacity_waits(ctx, project):
 
 
 def recover_capacity_waits(ctx, project):
-    """Requeue marked pauses only after normal routing finds a suitable platform."""
+    """Drain legacy ``capacity-stranded:`` markers into ``capacity`` waits (D52);
+    the route-availability check itself lives in ``waits.WAKES["capacity"]``."""
     if ctx.dry_run:
         return
-    led, cfg = ctx.led, ctx.cfg
-    pol = ctx.policy(project)
+    led = ctx.led
     for item in led.items(project, ["needs_you"]):
         n = item["number"]
         key = f"capacity-stranded:{project}#{n}"
         marker = _kv_json(led, key)
-        if marker.get("role") not in ("fix", "review", "design"):
+        if not marker:
             continue
-        if marker.get("at") != item["state_changed_at"] or marker.get("pr") != item["pr"]:
+        if (marker.get("role") not in ("fix", "review", "design")
+                or marker.get("at") != item["state_changed_at"] or marker.get("pr") != item["pr"]):
             led.set_kv(key, "")
             continue
         try:
-            active = led.active_runs()
-            if (len(active) >= cfg["concurrency"]["total"]
-                    or any(r["project"] == project and r["number"] == n for r in active)):
-                continue
-            lease = led.lease(project, n)
-            if lease and not (lease["holder"] == CONDUCTOR
-                              or lease["holder"].endswith("/conductor")):
-                continue
-            busy = busy_platforms(cfg, active)
-            role = marker["role"]
-            if role == "review":
-                view = ctx.gh(project).pr_view(item["pr"])
-                route, _, waiting, _ = _review_preference(
-                    ctx, project, item, view.get("headRefOid") or "", busy)
-                if waiting and route["pin"] and not router.preferred_for_project(
-                        cfg, led, pol, "review", route["pin"], busy=busy,
-                        size=route["size"], exclude=route["exclude"],
-                        burst_lines=ctx.burst_lines):
-                    continue
-            elif role == "design":
-                size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
-                             if l.startswith("size:")), None)
-                route = dict(size=size)
-            else:
-                size = next((l.split(":", 1)[1] for l in json.loads(item["labels"])
-                             if l.startswith("size:")), None)
-                tier = max(router.cap_escalation(cfg, pol, item["esc_tier"], size,
-                                                 pin=item["pin"]),
-                           router.risk_min_tier(item["title"]))
-                if size == "l" or (tier >= 2 and size == "s"):
-                    size = "m"
-                route = dict(pin=item["pin"], size=size, min_tier=tier)
-            platform, _ = router.pick_for_project(
-                cfg, led, pol, role, busy=busy, burst_lines=ctx.burst_lines,
-                scorecard_rows=getattr(ctx, "scorecard_rows", None), **route)
-            if not platform:
-                continue
-            led.set_state(project, n, "verifying", f"{role} capacity returned",
-                          question=None, options="[]")
+            waits.hold(led, project, n, "capacity", item["question"] or f"{marker['role']} capacity",
+                       resume="verifying", wake={"role": marker["role"]})
             led.set_kv(key, "")
-            for prefix in ("review-wait", "review-pinged", "reviewfix-status", "design-wait"):
-                led.set_kv(f"{prefix}:{project}#{n}", "")
-            for prefix in ("ci", "mergeability"):
-                led.set_kv(f"{prefix}:{project}#{n}:{item['pr']}", "")
-            queue_key = f"queue:{project}#{n}:{item['pr']}"
-            queued = _kv_json(led, queue_key)
-            if queued:
-                queued["since"] = iso(led.now())
-                led.set_kv(queue_key, json.dumps(queued))
-            ctx.say(f"{project}#{n}: {role} capacity returned — verifying again")
-        except Exception as exc:  # one unavailable route must not stop other items
-            ctx.say(f"{project}#{n}: capacity recovery skipped — {exc}")
+            ctx.say(f"{project}#{n}: legacy {marker['role']} capacity pause — now waiting")
+        except Exception as exc:  # one bad record must not stop other items
+            ctx.say(f"{project}#{n}: capacity migration skipped — {exc}")
 
 
 def _pr_authors(led, project, number):
@@ -1695,7 +1646,11 @@ def _review_route(ctx, project, item, sha):
         exclude.add(dup["reviewer"])     # a repeat finding needs a different reviewer
     exclude |= {r.get("platform") for r in _kv_json_list(led, f"reviewinconclusive:{project}#{n}:{sha}")
                 if r.get("platform")}
-    authors = _pr_authors(led, project, n) | exclude
+    # Platforms whose reviews came back without a verdict before a review_inconclusive
+    # wait are a soft preference only: avoided when others can review (mahler#1261).
+    avoid = {r.get("platform") for r in
+             _kv_json_list(led, f"reviewinconclusive-avoid:{project}#{n}:{sha}")} - {None}
+    authors = _pr_authors(led, project, n) | exclude | avoid
     # Prefer independence from every author. If the configured route cannot
     # supply that, the latest author and any mandatory second opinion stay fenced.
     if router.capacity_recovery(cfg, led, ctx.policy(project), "review",
@@ -1881,15 +1836,12 @@ def _capacity_wait(ctx, project, item, status_key, cycle, reason, role,
     ctx.say(f"{project}#{n}: PR #{item['pr']} — {role} waiting: {reason}")
     if state == "capacity_wait":
         return
-    question = (f"No configured eligible platform for {role}"
-                f" at required tier {required_tier or 0} on PR #{item['pr']}: {reason}"
-                if state == "missing_tier" else
-                f"{role.capitalize()} capacity wait exceeded {hours} hours with no known recovery "
-                f"for PR #{item['pr']}: {reason}")
-    led.set_state(project, n, "needs_you", question, question=question, options="[]")
-    _mark_capacity_wait(led, project, led.item(project, n), role)
-    ctx.ping(f"{role.capitalize()} {state.replace('_', ' ')} — {project} #{n}", question,
-             project, n, priority="high", tags="warning")
+    why = (f"No configured eligible platform for {role}"
+           f" at required tier {required_tier or 0} on PR #{item['pr']}: {reason}"
+           if state == "missing_tier" else
+           f"{role.capitalize()} capacity wait exceeded {hours} hours with no known recovery "
+           f"for PR #{item['pr']}: {reason}")
+    waits.hold(led, project, n, "capacity", why, resume="verifying", wake={"role": role})
 
 
 def _observe_wait(ctx, project, item, role, required_tier):
@@ -2442,6 +2394,12 @@ def _red_ci(ctx, project, item, pr, view):
             led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
                       "platform": last_platform, "reason": "red CI"})
 
+        if not explore_failure and attempts >= pol["max_attempts"] and repo_wide_red(
+                ctx, project, view):
+            hold_repo_wide(ctx, project, n, pr, key,
+                           f"CI red on PR #{pr} after {attempts} attempts, but the failure "
+                           "is repo-wide")
+            return
         if not explore_failure and attempts >= pol["max_attempts"]:
             led.set_state(project, n, "failed",
                           f"CI still red on PR #{pr} after {attempts} attempts",
@@ -2521,6 +2479,42 @@ def _red_ci(ctx, project, item, pr, view):
                 "before": _kv_json(led, f"{key}:before"),
                 "after": {k: led.item(project, n)[k] for k in ("attempts", "esc_tier", "esc_fails")}}))
         _record_fix_charge(led, project, n, key, _kv_json(led, f"{key}:before"))
+
+
+def repo_wide_red(ctx, project, view):
+    """True when a red PR's failure is not its own (mahler#1261): a project CI hold is
+    active, or a check failing on the PR also fails on the base branch's latest run."""
+    led = ctx.led
+    if ci_blockers.active(led, project):
+        return True
+    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
+    try:
+        gh = ctx.gh(project)
+        if not hasattr(gh, "base_checks"):
+            return False
+        required = _required_checks(ctx, project, base)
+        base_red = gh_module.failing_checks(gh.base_checks(base), required)
+        failing = gh_module.failing_checks(view.get("statusCheckRollup"), required)
+    except (GHError, ValueError, TypeError, AttributeError) as exc:
+        ctx.say(f"{project}: repo-wide CI check failed — {exc}")
+        return False
+    return bool(set(failing) & set(ci_blockers.repo_wide_checks({}, base_red)))
+
+
+def hold_repo_wide(ctx, project, n, pr, key, reason):
+    """Wait out repo-wide red CI with no charge: restore the item's attempt and
+    escalation counters from the cycle's ``:before`` snapshot, and forget the cycle
+    so it is re-evaluated (and charged only if still red) once the hold clears."""
+    led = ctx.led
+    before = _kv_json(led, f"{key}:before")
+    if before:
+        led.upsert_item(project, n, **{k: before[k] for k in ("attempts", "esc_tier", "esc_fails")
+                                       if k in before})
+    for suffix in ("", ":before", ":charged"):
+        led.set_kv(f"{key}{suffix}", None)
+    waits.hold(led, project, n, "ci_repo_wide", reason, resume="verifying", wake={"pr": pr})
+    led.release(project, n, holder=CONDUCTOR)
+    ctx.say(f"{project}#{n}: PR #{pr} — repo-wide red CI; waiting without charging an attempt")
 
 
 def _record_fix_charge(led, project, n, cycle, before):
