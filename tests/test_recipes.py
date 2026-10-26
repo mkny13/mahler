@@ -508,6 +508,7 @@ class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
             self.assertIn("Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access", text)
             self.assertNotIn("Post it as an issue comment", text)
             self.assertNotIn("post one actionable question", text)
+            self.assertNotIn("update it in the issue", text)
 
     def test_sort_forbids_parent_verify_issue_writes(self):
         text = " ".join(prompt.render("sort").split())
