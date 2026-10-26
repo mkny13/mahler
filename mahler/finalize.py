@@ -1394,7 +1394,7 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
         return False
     ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — running verify")
     ok = runner.verify_in_worktree(run["worktree"], verify_cmd,
-                                   timeout=pol.get("verify_timeout", 120),
+                                   timeout=pol.get("verify_timeout", 300),
                                    output_path=os.path.join(os.path.dirname(run["log_path"]), "verify.log"))
     if not ok:
         led.set_kv(f"verify_failed:{run['id']}", "1")

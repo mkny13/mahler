@@ -3679,7 +3679,77 @@ class DiscussionPanelTests(unittest.TestCase):
         self.assertIn('data-discuss', page.app(s, view='capture'))
 
 
+def _stop_browser_process_group(browser):
+    import signal
+    import subprocess
+
+    if os.name == 'posix':
+        try:
+            os.killpg(browser.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    elif browser.poll() is None:
+        browser.terminate()
+    try:
+        browser.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name == 'posix':
+            try:
+                os.killpg(browser.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        else:
+            browser.kill()
+        browser.wait()
+
+
 class DiscussionBrowserTests(unittest.TestCase):
+    def test_browser_shutdown_stops_profile_writers(self):
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        if os.name != 'posix':
+            self.skipTest('process-group shutdown requires POSIX')
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_file = Path(tmp, 'profile-data')
+            child_pid_file = Path(tmp, 'child.pid')
+            child_code = (
+                'import pathlib,sys,time; p=pathlib.Path(sys.argv[1])\n'
+                'while True:\n'
+                ' with p.open("a") as f: f.write("x"); f.flush()\n'
+                ' time.sleep(.01)\n'
+            )
+            parent_code = (
+                'import subprocess,sys,time; '
+                'child=subprocess.Popen([sys.executable,"-c",sys.argv[2],sys.argv[1]]); '
+                'open(sys.argv[3],"w").write(str(child.pid)); time.sleep(60)'
+            )
+            browser = subprocess.Popen(
+                [sys.executable, '-c', parent_code, str(profile_file), child_code,
+                 str(child_pid_file)],
+                start_new_session=os.name == 'posix',
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and (
+                        not child_pid_file.exists() or not profile_file.exists()):
+                    time.sleep(.01)
+                self.assertTrue(child_pid_file.exists(), 'profile writer did not start')
+                self.assertTrue(profile_file.exists(), 'profile writer did not write')
+
+                _stop_browser_process_group(browser)
+                stopped_size = profile_file.stat().st_size
+                time.sleep(.1)
+                self.assertEqual(profile_file.stat().st_size, stopped_size)
+            finally:
+                try:
+                    os.killpg(browser.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                browser.wait()
+
     def test_fake_worker_journeys_at_phone_and_desktop_widths(self):
         import functools
         import http.server
@@ -3727,6 +3797,7 @@ class DiscussionBrowserTests(unittest.TestCase):
                             with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
                                     '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
                                     '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                                    start_new_session=os.name == 'posix',
                                     stdout=subprocess.DEVNULL, stderr=browser_stderr) as browser:
                                 try:
                                     port_file = profile / 'DevToolsActivePort'
@@ -3756,11 +3827,7 @@ class DiscussionBrowserTests(unittest.TestCase):
                                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                                     self.assertEqual(result.stdout.strip(), 'PASS')
                                 finally:
-                                    browser.terminate()
-                                    try:
-                                        browser.wait(timeout=5)
-                                    except subprocess.TimeoutExpired:
-                                        browser.kill(); browser.wait()
+                                    _stop_browser_process_group(browser)
 
             finally:
                 server.shutdown(); server.server_close(); thread.join()
