@@ -20,7 +20,7 @@ it does not imply a real-browser visual walkthrough. Criterion 7 tracks that sep
 | 3. #1123 merged; one durable 1h/1d/1w boost, replacement/stop/expiry events, ordering ahead of issue/static priority, CLI/console, unchanged concurrency/running work | SUPPORTED | Ledger, scheduler, CLI, console action and rendering contracts below |
 | 4. #1124 merged; targeted atomic 1–64 max_parallel; project pause/resume preserves runs and visibility | SUPPORTED | Config boundaries/byte preservation, fresh config reload, atomic replacement, scheduler and both layout contracts |
 | 5. Committed approved mockup, integrated console design, allocated Prioritize decision | SUPPORTED | Mockup introduced by #1161; console design sections and DESIGN D51 |
-| 6. Four required checks pass on merged base | PENDING | Results being collected below |
+| 6. Four required checks pass on merged base | SUPPORTED | All four commands exited 0; 3,259 tests per suite, one opt-in browser smoke skipped |
 | 7. Gated integrated desktop/phone walkthrough | OUTSTANDING | Gate allowed driver preflight, but Playwright unavailable; no browser journey ran. Exact command and outstanding coverage below |
 
 No owner-only decision is needed to finish this audit. Existing visual/taste notes
@@ -216,7 +216,18 @@ PYTHONPATH=tests python3 -m unittest -v test_console_boundary \
   test_console_selection.BrowserSelectionTests test_serve.TestPages
 ```
 
-Required suite results will be recorded here when all processes finish.
+| Command | Exit | Summary | Test duration |
+| --- | --- | --- | --- |
+| `python3 -m mahler.repo_guard` | 0 | No output; guard passed | 0.042s wall |
+| `python3 -m unittest discover -s tests` | 0 | Ran 3259 tests; OK (skipped=1) | 176.152s |
+| `python3 tests/run_random.py` | 0 | Ran 3259 tests; OK (skipped=1); seed **2083573844** | 178.895s |
+| `python3 -X dev tests/run_strict.py` | 0 | Ran 3259 tests; OK (skipped=1); no unraisable failures | 193.148s |
+
+The skip is `ScreenshotBrowserSmokeTests.test_real_browser_capture_and_protection_rejection`,
+which requires opt-in `MAHLER_SCREENSHOT_SMOKE_CWD`. Node-backed contract tests ran.
+The skipped screenshot smoke is not coverage for criterion 7. Full command wall
+elapsed times were 177.057s, 179.425s and 193.454s respectively. Test fixture
+warning/error output did not result in suite failures.
 
 ## Criterion 7: gated walkthrough remains outstanding
 
@@ -247,7 +258,7 @@ driver is the explicit reason for outstanding walkthrough coverage here.
 
 ## Parent checklist handoff
 
-Tick only supported criteria; leave 2 and 7 unchecked. The run's final instruction
+Parent #1119 checklist updated to tick **1, 3, 4, 5 and 6** only; **2 and 7** remain unchecked. The run's final instruction
 reserves issue comments, branch push and PR shipping for the conductor. No agent
 comment or PR is posted by this build run; the conductor can link this committed
 audit when reporting the checklist evidence. No owner pass is required.
