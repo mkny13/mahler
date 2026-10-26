@@ -601,7 +601,8 @@ def _bot_pr_relevant(check, pr, view):
     title = (pr.get("title") or "") or (view.get("title") or "")
     branch = (pr.get("headRefName") or "") or (view.get("headRefName") or "")
     body = view.get("body") or ""
-    return c in title.casefold() or c in branch.casefold() or c in body.casefold()
+    words = set(re.findall(r"[a-z0-9]+", f"{title} {branch} {body}".casefold()))
+    return c in words
 
 
 def _bot_pr(gh, led, project, check):
