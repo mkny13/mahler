@@ -250,6 +250,19 @@ def build(ctx, project, item, role, platform, prep, context=None):
         handoff = (context if context is not None else
                    handoff_text(base, prep["replayed"], prep["kept"]))
 
+    if role in ("build", "fix"):
+        handoff += (
+            "\nRuns hold no GitHub push or write token: a refused `git push` or `gh` write "
+            "(HTTP 403) is expected. The conductor pushes the saved branch/snapshot. "
+            "Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access.\n")
+        if re.search(r"<!-- mahler:parent-verify(?:-followup)?:\d+:",
+                     row_get(item, "issue_body", "") or ""):
+            handoff += (
+                "\nFor this parent-verify item, end with a structured evidence block "
+                "(per criterion: met/unmet, evidence) in your DONE summary or an evidence file; "
+                "the conductor posts parent evidence and ticks checkboxes. "
+                "Do not attempt GitHub writes, comment on issues, or edit issues.\n")
+
     sizing = ""
     if role == "sort" and config.size_target_of(pol) == "s":
         sizing = ("\nSizing for this project (from Mahler's config): its daytime builder takes only "

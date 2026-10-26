@@ -44,10 +44,10 @@ result is obtained, the better. Never trade verification for speed.
    why no feasible mechanical check exists. Valid checks include tests, CI steps,
    lints, contract checks, and smoke journeys. Adding or extending that check is
    required bug-fix scope. Record the check command/path and its result in your
-   final summary. If either section is missing or inaccurate, update it in the issue
-   (preserving owner wording and relationship lines); any comment must use the
-   agent marker below. A missing section is not an exemption, and the exception
-   does not waive rule 2's verification of the fix.
+   final summary. If either section is missing or inaccurate, include the update in
+   your final summary (preserving owner wording and relationship lines).
+   A missing section is not an exemption, and the exception does not waive rule 2's
+   verification of the fix.
 2b. **Explain dependency additions.** Do not add dependencies outside the issue's
    requirements without first explaining why they are needed to complete this issue.
    For each dependency addition, report the package name, exact version, and
@@ -73,8 +73,12 @@ result is obtained, the better. Never trade verification for speed.
 4. **Your job ends with a local commit.** When every "Done when" check passes, commit locally, and
    end with `STATUS: DONE <one-line summary of what changed>`. Do not open a PR, watch CI,
    merge, or comment on the issue — Mahler's conductor does that, in code, after you end.
+   Runs hold no GitHub push or write token. A refusal is expected: a refused
+   `git push` or `gh` write (HTTP 403) is expected because the conductor pushes
+   your saved branch/snapshot. Never end `NEEDS-YOU` or `BLOCKED` over push or
+   issue-write access.
 5. Stop only for a decision genuinely only the owner can make (product intent, credentials,
-   payment, accounts, destructive data). Post it as an issue comment and end with
+   payment, accounts, destructive data). Include it in your summary for the conductor to post and end with
    `STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
@@ -91,8 +95,8 @@ result is obtained, the better. Never trade verification for speed.
    process or who posts evidence or comments (the conductor posts, D18); GitHub write, push or
    PR access (the conductor holds it: end DONE and note what it must post); asking the owner to
    run, verify or UAT something (write it under "Needs a human to check" and end DONE).
-6. If you genuinely cannot proceed because owner-provided access is missing, commit what you
-   have locally, post one actionable question naming the required operation and
+6. If you genuinely cannot proceed because owner-provided access is missing (never GitHub push or issue-write access), commit what you
+   have locally, report one actionable question naming the required operation and
    safe provisioning channel, and end with `STATUS: NEEDS-YOU [credentials] <the question, on one line>`.
    Never invent accounts or credentials or silently waive acceptance. Honor existing
    owner answers and restrictions. Identify the authorized access provider, the named external
