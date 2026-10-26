@@ -3721,28 +3721,46 @@ class DiscussionBrowserTests(unittest.TestCase):
                     with self.subTest(width=width):
                         import time
                         profile = Path(tmp, f'profile-{width}')
-                        with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
-                                '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-                                '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as browser:
-                            try:
-                                port_file = profile / 'DevToolsActivePort'
-                                deadline = time.monotonic() + 15
-                                while not port_file.exists() and time.monotonic() < deadline:
-                                    time.sleep(.05)
-                                port, websocket = port_file.read_text().splitlines()[:2]
-                                result = subprocess.run(['node', 'tests/console_discuss_test.js',
-                                    f'ws://127.0.0.1:{port}{websocket}',
-                                    f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
-                                    capture_output=True, text=True, timeout=30)
-                                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                                self.assertEqual(result.stdout.strip(), 'PASS')
-                            finally:
-                                browser.terminate()
+                        profile.mkdir()
+                        stderr_path = Path(tmp, f'chrome-{width}.stderr')
+                        with stderr_path.open('w+', encoding='utf-8') as browser_stderr:
+                            with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
+                                    '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+                                    '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                                    stdout=subprocess.DEVNULL, stderr=browser_stderr) as browser:
                                 try:
-                                    browser.wait(timeout=5)
-                                except subprocess.TimeoutExpired:
-                                    browser.kill(); browser.wait()
+                                    port_file = profile / 'DevToolsActivePort'
+                                    deadline = time.monotonic() + 45
+                                    lines = []
+                                    while time.monotonic() < deadline:
+                                        if port_file.is_file():
+                                            lines = port_file.read_text().splitlines()
+                                            if len(lines) >= 2:
+                                                break
+                                        if browser.poll() is not None:
+                                            browser_stderr.flush()
+                                            browser_stderr.seek(0)
+                                            self.fail(f'Chrome exited before opening DevTools '
+                                                f'(status {browser.returncode}): {browser_stderr.read()[-2000:]}')
+                                        time.sleep(.05)
+                                    if len(lines) < 2:
+                                        browser_stderr.flush()
+                                        browser_stderr.seek(0)
+                                        self.fail('Chrome did not publish DevToolsActivePort within 45 seconds: '
+                                            + browser_stderr.read()[-2000:])
+                                    port, websocket = lines[:2]
+                                    result = subprocess.run(['node', 'tests/console_discuss_test.js',
+                                        f'ws://127.0.0.1:{port}{websocket}',
+                                        f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
+                                        capture_output=True, text=True, timeout=30)
+                                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                    self.assertEqual(result.stdout.strip(), 'PASS')
+                                finally:
+                                    browser.terminate()
+                                    try:
+                                        browser.wait(timeout=5)
+                                    except subprocess.TimeoutExpired:
+                                        browser.kill(); browser.wait()
 
             finally:
                 server.shutdown(); server.server_close(); thread.join()
