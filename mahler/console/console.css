@@ -371,8 +371,8 @@ a { color: var(--acc); text-decoration: none; }
 .phead-btns .theme { min-width: 44px; font-size: 12px; color: var(--mut); }
 .phead-btns .pause { font-size: 13px; padding: 0 12px; }
 .phead-btns .settings-link { font-size: 12px; padding: 0 8px; }
-.project-phead .scope-wrap { flex: 1; }
-.project-phead .scope-switcher { width: 100%; }
+.project-phead .scope-wrap, .phead .scope-wrap { flex: 1; }
+.project-phead .scope-switcher, .phead .scope-switcher { width: 100%; }
 .project-phead .scope-global-note { padding: 0 14px 8px; }
 :root[data-tab="settings"] .settings-link { color: var(--acc); border-color: var(--acc); background: var(--accq); }
 .tabs { display: flex; gap: 4px; }
