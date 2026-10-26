@@ -8,7 +8,7 @@ the deadline is a failure, never a pass. No pass/UAT control exists; the optiona
 button stays. Summaries, evidence paths and command output never reach the browser.
 Tests: `tests/test_console_uat.py` (`PostMergeStatusTests`).
 
-## Live proofs — NOT YET RECORDED
+## Live proofs — NOT YET RECORDED (tracked in #1038)
 
 Both proofs need a change merged *after* this console change is running on the daemon, in
 a project whose operator config enables `[projects.<name>.post_merge]`. As of 2026-10-12
@@ -34,9 +34,9 @@ D11 stays "declared, not enforced" and the ROADMAP item stays open until both ro
 
 | Project | Strategy | Disposition |
 |---------|----------|-------------|
-| `mahler` | `live_strategy = "mahler"` (exact `launch_ok` + version health) | Feasible; needs operator config enabling it (follow-up) |
-| `groundwork` | `deploy_strategy = "watch"` + GitHub exact-SHA preview + `smoke` | Feasible (Vercel); needs operator config and smoke command (follow-up) |
-| `phish-in` (couch-tour) | GitHub exact-SHA preview + `smoke` report (couch-tour#357) | Feasible; needs operator config (follow-up) |
+| `mahler` | `live_strategy = "mahler"` (exact `launch_ok` + version health) | Feasible; needs operator config enabling it and a self-update-aware timeout (follow-ups #1038, #1272) |
+| `groundwork` | `deploy_strategy = "watch"` + GitHub exact-SHA preview + `smoke` | Feasible (Vercel); needs Production-only exact-SHA check, smoke command and operator config (follow-ups #1272, #1038) |
+| `phish-in` (couch-tour) | GitHub exact-SHA preview + `smoke` report (couch-tour#357) | Feasible; not the live-proof project (groundwork chosen, #1038); needs its own contract and operator config (follow-up #1273) |
 | `sit-stand-walk` | none | No automatic check: local script/app with no deployed artifact |
 | `google-chat-nav` | none | No automatic check: browser extension shipped by hand, no deploy to observe |
 | `movebreak` | none | No automatic check: macOS app, GUI-only smoke is screen-locked (D11, D40) |
