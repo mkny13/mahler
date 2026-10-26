@@ -57,8 +57,10 @@ $issue_context
    `<!-- mahler:verify-blockers:start -->`…`<!-- mahler:verify-blockers:end -->` section
    unquoted and unchanged: Mahler maintains that section itself.
    For parent-verify items, never plan or write Done-when criteria that need the run to comment
-   on or edit GitHub issues or tick checklists. Require a structured evidence block per
-   criterion (met/unmet, evidence) in the DONE summary or an evidence file; the conductor posts it.
+   on or edit GitHub issues or tick checklists. Require the run's final message to end with a
+   structured evidence block, `PARENT-EVIDENCE:` … `END-PARENT-EVIDENCE` (one
+   `- met|unmet | criterion | evidence` line per criterion); the conductor posts it, ticks met
+   boxes and files follow-ups.
    The `Files:` list right under `## Plan` is parsed
    mechanically on every sync (`gh.files_of`, mahler#210): the scheduler blocks two
    `ready`/`working` issues from building at once whenever their `Files:` lists share a path —

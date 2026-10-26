@@ -98,9 +98,9 @@ class CloseFinishedParentsTests(unittest.TestCase):
                 self.gh.comment.assert_called_once()
 
     def assert_evidence_contract(self, body):
-        self.assertIn("structured evidence block", body)
-        self.assertIn("met/unmet", body)
-        self.assertIn("DONE summary or an evidence file", body)
+        self.assertIn(sync.EVIDENCE_CONTRACT, body)
+        self.assertIn("- met | <criterion> |", body)
+        self.assertIn("- unmet | <criterion> |", body)
         self.assertIn("the conductor posts", body)
         for forbidden in ("record evidence for each criterion on the parent",
                           "Record evidence on the parent", "tick supported criteria",
@@ -770,6 +770,94 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.run_pass()
         self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
         self.assertEqual(self.led.item("mahler", 20)["state"], "parent")
+
+
+class ParentEvidenceTests(unittest.TestCase):
+    """mahler#1267: the conductor applies a parent-verify run's evidence block."""
+
+    fake_create = CloseFinishedParentsTests.fake_create
+    fake_edit = CloseFinishedParentsTests.fake_edit
+    run_pass = CloseFinishedParentsTests.run_pass
+
+    def setUp(self):
+        CloseFinishedParentsTests.setUp(self)
+        self.bodies[10] = "## Done when\n- [ ] Docs updated\n- [ ] Smoke passes\n- [x] Old one"
+        self.entries = sync.parse_parent_evidence(
+            "Summary\nPARENT-EVIDENCE:\n- met | Docs updated | README.md:12 and PR #5\n"
+            "- unmet | Smoke passes | smoke run fails at step 3\nEND-PARENT-EVIDENCE\n"
+            "STATUS: DONE evidence collected")
+        self.record(41)
+
+    def record(self, run_id, entries=None):
+        self.led.set_kv(sync.evidence_key("mahler", 20, run_id), json.dumps(
+            {"parent": 10, "verify": 20, "run": run_id, "entries": entries or self.entries,
+             "done": False}))
+
+    def post(self):
+        sync.post_parent_evidence(self.ctx, [proj()])
+
+    def evidence_comments(self):
+        return [c for c in self.comments.get(10, []) if "mahler:parent-evidence:" in c["body"]]
+
+    def test_posts_ticks_met_and_files_follow_up_for_unmet(self):
+        self.post()
+        self.assertEqual(self.bodies[10],
+                         "## Done when\n- [x] Docs updated\n- [ ] Smoke passes\n- [x] Old one")
+        [comment] = self.evidence_comments()
+        self.assertTrue(comment["body"].startswith("<!-- mahler:agent -->\n"))
+        self.assertIn("<!-- mahler:parent-evidence:10:41 -->", comment["body"])
+        self.assertIn("README.md:12", comment["body"])
+        [follow] = [r for r in self.remote if "parent-evidence-followup:10:41:1" in r["body"]]
+        self.assertIn("Smoke passes", follow["title"])
+        self.assertIn("Part of #10", follow["body"])
+        self.assertIn(follow["html_url"], comment["body"])
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+        self.assertTrue(json.loads(self.led.get_kv(sync.evidence_key("mahler", 20, 41)))["done"])
+
+    def test_reprocessing_same_run_posts_ticks_and_files_nothing_twice(self):
+        self.post()
+        edits = self.gh.edit_issue_body.call_count
+        # A crash after the writes but before `done` was recorded replays the run.
+        self.record(41)
+        self.led.set_kv("parent_evidence_followup:mahler:10:41:1", None)
+        self.post()
+        self.post()
+        self.assertEqual(len(self.evidence_comments()), 1)
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+        self.assertEqual(self.gh.edit_issue_body.call_count, edits)
+
+    def test_failure_is_contained_and_retried_next_tick(self):
+        self.gh.issue_comments.side_effect = GHError("boom")
+        self.post()     # must not raise
+        self.assertFalse(json.loads(self.led.get_kv(sync.evidence_key("mahler", 20, 41)))["done"])
+        self.gh.issue_comments.side_effect = lambda n: self.comments.get(n, [])
+        self.post()
+        self.assertEqual(len(self.evidence_comments()), 1)
+        self.assertEqual(self.gh.create_issue.call_count, 1)
+
+    def test_all_met_lets_the_same_pass_close_the_parent(self):
+        self.led.set_kv(sync.evidence_key("mahler", 20, 41), None)
+        self.record(42, [{"met": True, "criterion": "Docs updated", "evidence": "a"},
+                         {"met": True, "criterion": "Unchecked criterion: Smoke passes",
+                          "evidence": "b"}])
+        self.run_pass()
+        self.assertIn("- [x] Smoke passes", self.bodies[10])
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.gh.create_issue.assert_not_called()
+
+    def test_parse_rejects_missing_and_malformed_blocks(self):
+        for text in ("STATUS: DONE no block",
+                     "PARENT-EVIDENCE:\n- met | Docs updated | ok\nSTATUS: DONE",
+                     "PARENT-EVIDENCE:\nEND-PARENT-EVIDENCE",
+                     "PARENT-EVIDENCE:\n- maybe | Docs | ok\nEND-PARENT-EVIDENCE",
+                     "PARENT-EVIDENCE:\n- met | Docs updated |\nEND-PARENT-EVIDENCE"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                sync.parse_parent_evidence(text)
+
+    def test_contract_text_documents_the_parsed_format(self):
+        example = "\n".join(line for line in sync.EVIDENCE_CONTRACT.splitlines()
+                            if line.startswith(("PARENT", "- ", "END")))
+        self.assertEqual([e["met"] for e in sync.parse_parent_evidence(example)], [True, False])
 
 
 class SyncStoresParentTests(unittest.TestCase):
