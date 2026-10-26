@@ -581,6 +581,19 @@ def unstick(ctx, project):
     return changed
 
 
+def _pr_fails_check(gh, pr, check, required=None):
+    """True if PR `pr` is not open or its CI check rollup fails `check`."""
+    if not pr:
+        return False
+    try:
+        view = gh.pr_view(pr)
+        if view.get("state") != "OPEN":
+            return True
+        return check in gh_module.failing_checks(view.get("statusCheckRollup"), required)
+    except (GHError, ValueError):
+        return True
+
+
 def _bot_pr(gh, led, project, check):
     """An open, untracked bot PR whose own CI doesn't fail `check`: the likely fix."""
     tracked = {i["pr"] for i in led.items(project) if i["pr"]}
@@ -657,11 +670,19 @@ def detect_ci_blocker(ctx, project):
         for it in led.items(project):
             if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
                     and check.casefold() in (it["title"] or "").casefold()
-                    and it["pr"] not in red_by_pr):
+                    and it["pr"] not in red_by_pr
+                    and not _pr_fails_check(gh, it["pr"], check, required)):
                 number = it["number"]
                 break
         if number is None:
             bot_pr = _bot_pr(gh, led, project, check)
+        if number is None and not bot_pr:
+            for it in led.items(project):
+                if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
+                        and it["pr"] not in red_by_pr
+                        and not _pr_fails_check(gh, it["pr"], check, required)):
+                    number = it["number"]
+                    break
         if number is None and not bot_pr:
             prs = ", ".join(f"#{p}" for p, names in red_by_pr.items() if check in names)
             title = f"Repo-wide CI failure: {check} is red"
