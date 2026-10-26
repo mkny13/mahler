@@ -502,8 +502,8 @@ class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
         for marker in ("parent-verify", "parent-verify-followup"):
             text = " ".join(self.rendered("Verify remaining completion criteria for #1",
                     f"<!-- mahler:{marker}:1:abc -->").split())
-            self.assertIn("structured evidence block", text)
-            self.assertIn("the conductor posts parent evidence and ticks checkboxes", text)
+            self.assertIn("PARENT-EVIDENCE:", text)
+            self.assertIn("the conductor posts the block on the parent, ticks the checkboxes of met criteria", text)
             self.assertIn("a refused `git push` or `gh` write (HTTP 403) is expected", text)
             self.assertIn("Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access", text)
             self.assertNotIn("Post it as an issue comment", text)
