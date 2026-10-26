@@ -817,14 +817,25 @@ class ParentEvidenceTests(unittest.TestCase):
     def test_waits_for_no_change_review_before_applying(self):
         from mahler import no_change
         for phase in ("waiting", "reviewing", "verdict", "rejected"):
-            no_change.save(self.led, "mahler", 20, {"phase": phase})
+            no_change.save(self.led, "mahler", 20, {"phase": phase, "claim_run": 41})
             self.post()
             self.assertEqual(self.evidence_comments(), [], phase)
             self.assertEqual(self.gh.edit_issue_body.call_count, 0, phase)
             self.assertEqual(self.gh.create_issue.call_count, 0, phase)
-        no_change.save(self.led, "mahler", 20, {"phase": "done"})
+        no_change.save(self.led, "mahler", 20, {"phase": "done", "claim_run": 41})
         self.post()
         self.assertEqual(len(self.evidence_comments()), 1)
+
+    def test_rejected_run_evidence_stays_unapplied_after_retry_passes(self):
+        from mahler import no_change
+        self.record(42, [{"met": True, "criterion": "Smoke passes", "evidence": "fixed"}])
+        no_change.save(self.led, "mahler", 20, {"phase": "done", "claim_run": 42})
+        self.post()
+        [comment] = self.evidence_comments()
+        self.assertIn("parent-evidence:10:42", comment["body"])
+        self.assertEqual(self.gh.create_issue.call_count, 0)
+        self.assertFalse(json.loads(self.led.get_kv(sync.evidence_key("mahler", 20, 41)))["done"])
+        self.assertIn("- [ ] Docs updated", self.bodies[10])
 
     def test_reprocessing_same_run_posts_ticks_and_files_nothing_twice(self):
         self.post()

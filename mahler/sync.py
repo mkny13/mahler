@@ -965,7 +965,10 @@ def post_parent_evidence(ctx, projects):
                     # A clean-worktree claim is unverified until its independent
                     # no-change review passes; evidence must not close the parent first.
                     review = no_change.read(ctx.led, project, record["verify"])
-                    if review and review.get("phase") != "done":
+                    # Only the run whose claim the review accepted may apply: evidence
+                    # from an earlier, rejected run stays unapplied.
+                    if review and (review.get("phase") != "done"
+                                   or review.get("claim_run") != record["run"]):
                         continue
                     _apply_parent_evidence(ctx, project, record)
                     record["done"] = True
