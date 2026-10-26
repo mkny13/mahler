@@ -30,6 +30,10 @@ from .config import MAINTENANCE_PASSES, ensure_private_dir
 from .redact import redact
 
 
+# Covers the 60 s launcher cadence plus waiting for green CI before self-update.
+MAHLER_POST_MERGE_TIMEOUT_FLOOR = 3600
+
+
 # Keep duration evidence aligned with outcome_not_started(): launch failures and
 # attempts that lost their claim never ran an agent, so their near-zero elapsed
 # time says nothing about future run duration.  This exact predicate is shared by
@@ -727,6 +731,8 @@ class Ledger:
         timeout = pm["timeout_seconds"]
         if type(timeout) is not int or not 1 <= timeout <= 86400:
             raise ValueError("post_merge timeout_seconds must be an integer from 1 to 86400")
+        if pm.get("live_strategy") == "mahler":
+            timeout = max(timeout, MAHLER_POST_MERGE_TIMEOUT_FLOOR)
         now = self.now()
         self.con.execute(
             "INSERT INTO post_merge_checks(project,number,merge_sha,phase,status,"

@@ -934,6 +934,17 @@ are best-effort and never gate finalization or prompt construction.
     acceptance performs completion. The runner never changes an item to done.
     Failure remediation, console display and live contract activation remain
     separate work (#747–#748).
+- **Post-merge timing and smoke (mahler#1272).** The `mahler` live strategy has
+  a 3600-second deadline floor, covering the launcher's 60-second cadence and
+  waiting for green CI before self-update; larger configured timeouts are kept.
+  Other strategies retain their configured timeout. `scripts/post_merge_smoke.py`
+  fetches `MAHLER_ARTIFACT_REF` over HTTPS without credentials or insecure redirects,
+  with a short timeout, emitting the #617 tag/PASS report only for HTTP 2xx.
+  Configure `smoke = "python3 /Users/mike/Mahler/scripts/post_merge_smoke.py"`
+  for Groundwork: workers run in the target project's directory, so the script
+  path must point to Mahler's primary checkout. This URL smoke does not accept
+  the Mahler detector's `mahler:<sha>` artifact; its runtime smoke needs a separate
+  command. Activation and live proof remain tracked in #1038.
 - **Exact built-in live detectors (mahler#746).** `live_strategy = "mahler"`
   or `"github"` requires an empty `live_command`; command mode remains available.
   The Mahler detector requires the full merge SHA in both `launch_ok` and the
@@ -941,8 +952,9 @@ are best-effort and never gate finalization or prompt construction.
   `python -m mahler version`, rechecking the marker afterwards. `known_good`
   alone proves nothing. It returns `mahler:<full-sha>` as the artifact reference.
   - GitHub uses the project's existing repository/account client and an exact
-    configured environment. `prod`/`production` names and production-marked
-    deployments are refused; this strategy has no production override. It reads
+    configured environment. `prod`/`production` names (case-insensitive) require
+    `production_environment = true`; other environments require false. Production
+    proves only the exact merge SHA, never a PR-head Preview deployment. It reads
     up to 100 environment deployments without filtering away newer SHAs, requires
     exactly one record for the merge SHA and requires that record to be newest.
     It then reads up to 100 statuses, requiring one unambiguous newest status with

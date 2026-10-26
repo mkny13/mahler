@@ -848,8 +848,6 @@ def validate_post_merge(cfg):
             raise ValueError(f"{prefix}.timeout_seconds must be an integer from 1 to 86400")
         if pm["live_strategy"] != "command" and pm["live_command"].strip():
             raise ValueError(f"{prefix}.live_command must be empty for built-in strategies")
-        if pm["live_strategy"] == "github" and pm["environment"].strip().casefold() in ("prod", "production"):
-            raise ValueError(f"{prefix}.environment must be non-production for github")
         if pm["enabled"]:
             for key in (("environment", "live_command") if pm["live_strategy"] == "command"
                         else ("environment",)):

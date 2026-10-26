@@ -740,9 +740,9 @@ class GH:
         """
         from urllib.parse import urlencode, urlsplit
 
-        if (not re.fullmatch(r"[0-9a-f]{40}", sha) or not environment
-                or environment.strip().casefold() in ("prod", "production")):
+        if not re.fullmatch(r"[0-9a-f]{40}", sha) or not environment:
             return None
+        production = environment.strip().casefold() in ("prod", "production")
         query = urlencode({"environment": environment, "per_page": 100})
         deployments = json.loads(self._gh(
             "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
@@ -756,7 +756,7 @@ class GH:
             return None
         deployment = matches[0]
         if (deployment["id"] != max(d["id"] for d in deployments)
-                or deployment.get("production_environment") is not False):
+                or deployment.get("production_environment") is not production):
             return None
         repository_url = f"https://api.github.com/repos/{self.repo}"
         if deployment.get("repository_url", repository_url) != repository_url:
