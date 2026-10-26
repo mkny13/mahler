@@ -950,7 +950,7 @@ class WaitingStateTests(unittest.TestCase):
         body = {"project": "mahler", "number": 7, "text": "/mahler go"}
         actions.answer(cfg, led, body)
         ctx = SimpleNamespace(cfg=cfg, led=led, gh=Mock())
-        row = led.q1("SELECT * FROM outbox WHERE kind='answer'")
+        row = led.pending_actions("answer")[0]
         self.assertEqual(outbox.answer(ctx, row, body)[0], "done")
         ctx.gh.return_value.comment.assert_called_once_with(7, "/mahler go", agent=False)
         for text in ("arbitrary answer", "/mahler park"):

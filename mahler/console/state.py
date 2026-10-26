@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import api_credits, config, model_availability, presence, review, router, screenshots, warmup
+from .. import api_credits, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -129,6 +129,10 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
         "priority_boost": priority_boost,
         "runs": runs,
         "needs": needs,
+        "conductor_waits": [dict(row, ref=f"{row['project']}#{row['number']}",
+                                  url=_issue_url(cfg, row["project"], row["number"]))
+                            for row in daily_digest.conductor_waits(led)
+                            if row["project"] in project_names],
         "needs_count": sum(n["pending"] is None for n in needs),
         "uat": uat,
         "sessions": _uat_sessions(uat),
@@ -174,6 +178,8 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
         s["needs"] = [row for row in needs if row["project"] == project_scope]
         s["needs_count"] = sum(row["pending"] is None for row in s["needs"])
         s["projects"] = [project_scope]
+        s["conductor_waits"] = [row for row in s["conductor_waits"]
+                                if row["project"] == project_scope]
         s["uat"] = [row for row in uat if row["project"] == project_scope]
         s["sessions"] = _uat_sessions(s["uat"])
         s["backlog"] = [group for group in backlog if group["project"] == project_scope]
