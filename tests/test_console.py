@@ -3619,4 +3619,30 @@ class ProjectOverviewPageTests(unittest.TestCase):
         self.assertIn("Parallel jobs", html)
         self.assertIn("What's new", html)
         self.assertIn("Release", html)
+        self.assertIn('<details class="explain"><summary>How a change ships</summary>', html)
+        for step in scoped["overview"]["how_a_change_ships"]["steps"]:
+            self.assertIn(page.e(step["title"]), html)
+            self.assertIn(page.e(step["text"]), html)
+        self.assertEqual(len(scoped["overview"]["how_a_change_ships"]["steps"]), 6)
+        self.assertIn("Dependencies", html)
+        self.assertIn(page._graph_svg(scoped["dep_graph"]["groundwork"]), html)
+        self.assertIn("Completed · last 7 days", html)
+        for row in scoped["overview"]["completed_7d_rows"]:
+            self.assertIn(page.e(row["title"]), html)
+            self.assertIn(page.e(row["meta"]), html)
+        self.assertIn('data-tab-go="history"', html)
+        self.assertNotIn('data-go="history"', html)
+        self.assertIn("Activity", html)
+        for row in scoped["overview"]["activity_rows"]:
+            self.assertIn(page.e(row["text"]), html)
+        self.assertIn("Open issues · 30 days", html)
+        self.assertIn(page._project_side_trend(scoped), html)
         self.assertNotIn("Mahler item should not leak", html)
+        self.assertNotIn("mahler#999", html)
+
+        other = state.build(self.cfg, self.led, project_scope="mahler")
+        other_html = page.app(other, "phone", tab="overview")
+        self.assertIn("Mahler item should not leak", other_html)
+        for text in ("Retry batch", "Gmail search", "Drive export",
+                     "pytest · ruff", "−3 in 7d"):
+            self.assertNotIn(text, other_html)
