@@ -295,6 +295,16 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(blocker.get("number"), 300)
         self.assertEqual(len(self.gh.issues), 1)
 
+    def test_bot_pr_relevance_matches_check_as_a_whole_word(self):
+        renovate = {"title": "Update dependency unrelated-lib to latest"}
+        self.assertFalse(ship._bot_pr_relevant("test", renovate, {}))
+        self.assertTrue(ship._bot_pr_relevant("test", {"title": "Fix test failure"}, {}))
+        self.assertTrue(ship._bot_pr_relevant("test", {"title": "Unrelated change"},
+                                               {"headRefName": "fix-test-job"}))
+        self.assertTrue(ship._bot_pr_relevant("test", {"title": "Unrelated change"},
+                                               {"body": "Fixes the test job"}))
+        self.assertTrue(ship._bot_pr_relevant("checks", {"title": "Fix checks failure"}, {}))
+
     def test_pending_base_does_not_release_hold(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}
