@@ -1171,6 +1171,7 @@ class NeedsYouCategoryTests(unittest.TestCase):
             for category in ("product", "money", "credentials", "data-policy", "irreversible"):
                 self.assertIn(f"`{category}`", text, name)
             self.assertIn("sent back to you to decide", text, name)
+            self.assertIn('"Needs a human to check"', text, name)
         build = " ".join(prompt.render("build", **{k: "x" for k in (
             "number", "repo", "title", "worktree", "rules", "sizing", "scope_rules", "branch",
             "base", "push_branch", "platform", "pr", "verify", "mahler", "handoff", "history",

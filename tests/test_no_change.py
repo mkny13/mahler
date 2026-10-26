@@ -263,7 +263,7 @@ class ClaimTests(unittest.TestCase):
         self.save()
         self.advance()
         self.assertNotEqual(self.led.item("x", 5)["state"], "needs_you")
-        self.assertIn("Should I file a follow-up?", self.comments[0])
+        self.assertIn("Needs a human to check:\n- Should I file a follow-up?", self.comments[0])
         self.assertTrue(self.closed)
 
     def test_mechanical_gap_rejects_once(self):

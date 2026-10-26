@@ -177,7 +177,7 @@ def advance(ctx, project, item):
                        + f"\n**Independent no-change review: {record['verdict']}**\n\n"
                        + f"Configured base: `{sha}`.\n\n"
                        + "\n".join(f"- {e}" for e in record["review_evidence"] + record.get("practices_evidence", []))
-                       + "\n\nOptional observations:\n"
+                       + "\n\nNeeds a human to check:\n"
                        + ("\n".join(f"- {c}" for c in record["human_checks"]) or "None."))
         # Recheck after slow GitHub calls; never accept an observed base drift.
         if fetched_base(ctx, project) != sha or not _owned(ctx, project, n, epoch):
