@@ -155,6 +155,45 @@ def _park_needs_you(e):
     return True
 
 
+# Deliberately full-match a small request grammar. A GitHub mention alone must
+# never swallow an unrelated credential request or a mixed owner decision.
+_GITHUB_WRITE_OPERATION = (
+    r"(?:push (?:the |my )?branch|"
+    r"(?:record|post) (?:parent |issue )evidence|"
+    r"(?:comment on|edit|update) (?:the )?(?:parent|issue|parent issue)|"
+    r"create (?:the )?(?:linked )?(?:P1 )?follow-up)")
+_GITHUB_WRITE_REQUEST = re.compile(
+    r"(?:please\s+)?(?:grant|restore|provide|enable|permit|allow|authorize)\s+"
+    r"(?:the run['’]s\s+)?(?:authorized\s+)?"
+    r"(?:github(?:\s+identity|\s+cli)?\s+(?:write|push|comment|issue[- ](?:write|edit))\s+access|"
+    r"github\s+cli\s+access|(?:a\s+)?push\s+path)"
+    r"(?:\s+for this run)?"
+    r"(?:\s+so (?:I can " + _GITHUB_WRITE_OPERATION +
+    r"(?: and " + _GITHUB_WRITE_OPERATION + r")*|git push stops returning 403))?"
+    r"[.?!]?", re.IGNORECASE)
+
+
+def _asks_github_write_access(e):
+    if e.verb != "NEEDS-YOU" or e.run["role"] not in ("build", "fix"):
+        return False
+    category, rest = parse_needs_you_category(e.rest)
+    if category not in (None, "credentials"):
+        return False
+    # Include OPTIONS in the match: unknown alternatives may be owner decisions.
+    return bool(_GITHUB_WRITE_REQUEST.fullmatch((rest or "").strip()))
+
+
+def _ended_write_access_ask(e):
+    """Saved work already went through the conductor's push path in _save_work."""
+    e.led.set_kv(_decide_key(e.project, e.number), None)
+    if e.saved or e.item["branch"]:
+        e.set_state("verifying", "GitHub writes belong to the conductor — shipping saved work",
+                    summary=e.item["summary"] or e.item["title"])
+    else:
+        e.set_state("ready", "GitHub writes belong to the conductor — retry with local commits")
+    return True
+
+
 # Match unavailable access phrases, never bare words such as token or protection.
 _ACCESS_BLOCKER = re.compile(
     r"\bdeployment[ -]protection\b|"
@@ -811,6 +850,7 @@ def _ended_unconfirmed(e):
 # a confirmed yield outranks watchdog stop reasons. The verify-green fallback
 # is the last word before an attempt is counted.
 ENDINGS = (
+    (_asks_github_write_access, _ended_write_access_ask),
     (lambda e: e.verb == "NEEDS-YOU", _needs_you),
     (lambda e: e.verb == "DONE" and e.reason in (None, "quota"), _ended_done),
     (lambda e: e.verb == "YIELDED", _ended_preempted),

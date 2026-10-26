@@ -509,6 +509,51 @@ class RunTests(unittest.TestCase):
             finalize.finalize(self.ctx, self.run)
         return snap, rm
 
+    def test_github_write_only_question_ships_saved_work_without_ping(self):
+        for question in (
+            "Please grant the run's GitHub identity write access",
+            "[credentials] Please provide GitHub push access",
+            "[credentials] Restore authorized GitHub CLI access for this run so I can record parent evidence and create the linked P1 follow-up",
+            "[credentials] Provide a push path",
+            "[credentials] Grant GitHub issue-edit access so I can edit the parent issue",
+            "[credentials] Please enable GitHub comment access so I can post parent evidence",
+            "[credentials] Grant GitHub write access so I can push the branch",
+        ):
+            with self.subTest(question=question):
+                self.setUp()
+                Path(self.log).write_text("STATUS: NEEDS-YOU " + question + "\n")
+                with mock.patch.object(self.ctx, "ping") as ping:
+                    self.finalize()
+                self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+                ping.assert_not_called()
+                self.assertIsNone(self.led.get_kv("decide-yourself:x#5"))
+
+    def test_github_write_question_without_saved_work_retries(self):
+        Path(self.log).write_text("STATUS: NEEDS-YOU [credentials] Grant GitHub write access\n")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(runner, "snapshot", return_value=None), \
+                mock.patch.object(runner, "remove_worktree"), \
+                mock.patch.object(self.ctx, "ping") as ping:
+            finalize.finalize(self.ctx, self.run)
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        ping.assert_not_called()
+
+    def test_mixed_github_access_owner_decision_is_not_absorbed(self):
+        for question in (
+            "Grant GitHub write access and approve deleting production data",
+            "Grant GitHub write access; should we buy the enterprise plan?",
+            "Provide GitHub read access to another user's private repository",
+            "Grant GitHub write access OPTIONS: grant access | delete customer data",
+            "Which production API credentials should I use?",
+        ):
+            with self.subTest(question=question):
+                self.setUp()
+                Path(self.log).write_text("STATUS: NEEDS-YOU [credentials] " + question + "\n")
+                with mock.patch.object(self.ctx, "ping") as ping:
+                    self.finalize()
+                self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
+                self.assertTrue(any(c.kwargs.get("priority") == "high" for c in ping.call_args_list))
+
     def test_history_captures_files_before_worktree_cleanup(self):
         from mahler import history
         Path(self.log).write_text("STATUS: DONE implemented\n")
