@@ -3630,6 +3630,8 @@ class ProjectOverviewPageTests(unittest.TestCase):
         for row in scoped["overview"]["completed_7d_rows"]:
             self.assertIn(page.e(row["title"]), html)
             self.assertIn(page.e(row["meta"]), html)
+        self.assertIn('data-tab-go="history"', html)
+        self.assertNotIn('data-go="history"', html)
         self.assertIn("Activity", html)
         for row in scoped["overview"]["activity_rows"]:
             self.assertIn(page.e(row["text"]), html)

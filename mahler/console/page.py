@@ -772,10 +772,58 @@ def _phone_overview(s):
         f'<div>{e(cur_ver)} · {draft_cnt} unreleased{sugg}</div></section>'
     )
 
+    how = ov.get("how_a_change_ships") or {}
+    how_title = how.get("title") or "How a change ships"
+    how_steps = how.get("steps") or []
+    steps_li = "".join(f'<li><b>{e(step.get("title", ""))}.</b> {e(step.get("text", ""))}</li>' for step in how_steps)
+    how_details = f'<details class="explain"><summary>{e(how_title)}</summary><ol>{steps_li}</ol></details>'
+
+    graph = (s.get("dep_graph") or {}).get(project)
+    dep_sec = ""
+    if graph and graph.get("nodes"):
+        dep_sec = (
+            f'<section class="graph"><h3><span class="lbl">Dependencies</span>'
+            f'<span class="meta">only issues that block or wait on another</span></h3>'
+            f'{_graph_svg(graph)}'
+            f'<div class="legend meta"><span><i style="border-color:var(--bad)"></i>needs you</span>'
+            f'<span><i style="border-color:var(--warn)"></i>waiting</span>'
+            f'<span><i style="border-color:var(--acc)"></i>running</span>'
+            f'<span><i style="border-color:var(--good)"></i>done</span></div></section>'
+        )
+
+    crows = []
+    for c in ov.get("completed_7d_rows", []):
+        status_cls = f'class="t-{c["tone"]}"' if c.get("tone") else ""
+        status_span = f'<span {status_cls}>{e(c["status"])}</span>'
+        crows.append(
+            f'<div class="row"><span class="mono">{_a(c.get("url"), c["ref"])}</span>'
+            f'<span>{e(c["title"])}</span>'
+            f'<span class="r meta">{e(c["meta"])} · {status_span}</span></div>'
+        )
+    comp_count = len(ov.get("completed_7d_rows", []))
+    comp_sec = (
+        f'<section><h3><span class="lbl">Completed · last 7 days · {comp_count}</span>'
+        f'<button class="link meta" data-tab-go="history">All →</button></h3>'
+        f'<div class="rows">{"".join(crows)}</div></section>'
+    )
+
+    act_rows = []
+    for ev in ov.get("activity_rows", []):
+        act_rows.append(
+            f'<div class="row"><span>{e(ev["when"])}</span>'
+            f'<span style="color:var(--ink)">{_a(ev.get("url"), ev["text"])}</span><span></span></div>'
+        )
+    act_sec = (
+        f'<section><h3><span class="lbl">Activity</span>'
+        f'<button class="link meta" data-tab-go="history">Event stream →</button></h3>'
+        f'<div class="rows meta">{"".join(act_rows)}</div></section>'
+    )
+
     body = "".join([_priority_boost_panel(s, ov.get("project", "")),
                     open_block, needs_html, active_html, qb_sec, shipping_sec,
-                    threads_div, whats_new, rel_sec])
-    return f'<section class="tabv tabv-overview"><div class="ph-body">{body}</div></section>'
+                    threads_div, whats_new, rel_sec, how_details,
+                    dep_sec, comp_sec, act_sec, _project_side_trend(s)])
+    return f'<section class="tabv tabv-overview"><div class="ph-body"><div class="overview-body">{body}</div></div></section>'
 
 
 def _project_overview(s, phone=False):
