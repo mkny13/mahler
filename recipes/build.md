@@ -44,10 +44,10 @@ result is obtained, the better. Never trade verification for speed.
    why no feasible mechanical check exists. Valid checks include tests, CI steps,
    lints, contract checks, and smoke journeys. Adding or extending that check is
    required bug-fix scope. Record the check command/path and its result in your
-   final summary. If either section is missing or inaccurate, update it in the issue
-   (preserving owner wording and relationship lines); any comment must use the
-   agent marker below. A missing section is not an exemption, and the exception
-   does not waive rule 2's verification of the fix.
+   final summary. If either section is missing or inaccurate, include the update in
+   your final summary (preserving owner wording and relationship lines).
+   A missing section is not an exemption, and the exception does not waive rule 2's
+   verification of the fix.
 2b. **Explain dependency additions.** Do not add dependencies outside the issue's
    requirements without first explaining why they are needed to complete this issue.
    For each dependency addition, report the package name, exact version, and
