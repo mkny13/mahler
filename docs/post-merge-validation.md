@@ -20,6 +20,14 @@ build agents), so neither journey could run. Fixture results do not count.
 | _pending_ | mahler (`launch_ok` + version health) | | | | |
 | _pending_ | exactly one of groundwork / phish-in (couch-tour) (exact-SHA preview + smoke) | | | | |
 
+Owner decision (mahler#1038, 2026-10-21): the preview proof uses **groundwork**. Blockers
+before the operator enables config: (1) groundwork merges get only a Vercel *Production*
+deployment, which the `github` strategy refuses, so an exact-SHA read-only check or a match
+to the PR head's Preview deployment is needed in code; (2) mahler and groundwork have no
+`smoke` command, so the smoke phase fails with `smoke_disabled`; (3) the `mahler` strategy
+checks the installed app, which self-updates later, so the timeout must cover that delay.
+Until those land and a real merge passes, no row below may be filled in.
+
 D11 stays "declared, not enforced" and the ROADMAP item stays open until both rows pass.
 
 ## Seven managed projects
