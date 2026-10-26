@@ -383,7 +383,7 @@ class BuildRecipeTests(unittest.TestCase):
         status_lines = [line.strip() for line in self.rendered.splitlines() if line.startswith("STATUS:")]
         self.assertEqual(status_lines, [
             "STATUS: DONE <one-line summary of what changed>",
-            "STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]",
+            "STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]",
             "STATUS: BLOCKED <reason>",
             "STATUS: YIELDED <handoff summary>",
         ])
@@ -473,7 +473,7 @@ class BuildPromptWhatsNewInjectionTests(unittest.TestCase):
 
     STATUS_LINES = [
         "STATUS: DONE <one-line summary of what changed>",
-        "STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]",
+        "STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]",
         "STATUS: BLOCKED <reason>",
         "STATUS: YIELDED <handoff summary>",
     ]
@@ -550,7 +550,7 @@ class FixRecipeTests(unittest.TestCase):
                       "(product intent, credentials, payment, accounts, destructive data)",
                       owner_rule)
         self.assertIn("Post it as an issue comment", owner_rule)
-        self.assertIn("STATUS: NEEDS-YOU <the question, on one line>", owner_rule)
+        self.assertIn("STATUS: NEEDS-YOU [<category>] <the question, on one line>", owner_rule)
 
     def test_real_fixes_still_require_verification_and_push(self):
         self.assertIn("Verify before completing:** `python3 -m unittest`", self.text)
@@ -897,7 +897,7 @@ class CodingScopeRecipeTests(unittest.TestCase):
                 summary = "changed" if role == "build" else "you fixed"
                 self.assertEqual(rendered.splitlines()[-4:], [
                     f"STATUS: DONE <one-line summary of what {summary}>",
-                    "STATUS: NEEDS-YOU <the question, on one line> "
+                    "STATUS: NEEDS-YOU [<category>] <the question, on one line> "
                     "[OPTIONS: <choice> | <choice>]",
                     "STATUS: BLOCKED <reason>",
                     "STATUS: YIELDED <handoff summary>",
@@ -1158,3 +1158,49 @@ class DependencyRecipeTests(unittest.TestCase):
         ):
             with self.subTest(requirement=requirement):
                 self.assertIn(requirement, text)
+
+
+class NeedsYouCategoryTests(unittest.TestCase):
+    def test_recipes_document_categories_and_never_ask_list(self):
+        for name in ("build", "fix", "sort"):
+            text = " ".join(prompt.render(name, **{k: "x" for k in (
+                "number", "repo", "title", "worktree", "rules", "sizing", "scope_rules", "branch",
+                "base", "push_branch", "platform", "pr", "verify", "mahler", "handoff", "history",
+                "whats_new", "issue_context", "claim_sha", "claim_evidence")},
+                claim_mode=False).split())
+            for category in ("product", "money", "credentials", "data-policy", "irreversible"):
+                self.assertIn(f"`{category}`", text, name)
+            self.assertIn("sent back to you to decide", text, name)
+            self.assertIn('"Needs a human to check"', text, name)
+        build = " ".join(prompt.render("build", **{k: "x" for k in (
+            "number", "repo", "title", "worktree", "rules", "sizing", "scope_rules", "branch",
+            "base", "push_branch", "platform", "pr", "verify", "mahler", "handoff", "history",
+            "whats_new", "issue_context", "claim_sha", "claim_evidence")}, claim_mode=False).split())
+        for fragment in ("Never ask about: scope or whether to file a follow-up",
+                         "record `Decided: …`", "the conductor posts, D18",
+                         "GitHub write, push or PR access", '"Needs a human to check"'):
+            self.assertIn(fragment, build)
+
+    def test_build_prompt_carries_the_previous_question_when_set(self):
+        import json
+        from unittest.mock import patch
+        from mahler.ledger import Ledger
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+
+        class Ctx:
+            def policy(self, proj):
+                return {"repo": "o/r", "rules": ""}
+        ctx = Ctx()
+        ctx.led = led
+        item = {"number": 2, "title": "t", "issue_body": "", "pr": 5}
+        prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
+        with patch.object(prompt, "ci_handoff", return_value=""), \
+             patch.object(prompt, "pr_ci_toolchain_handoff", return_value=""):
+            for role in ("build", "fix"):
+                self.assertNotIn("The previous run asked", prompt.build(ctx, "a", item, role, "claude", prep))
+            led.set_kv("decide-yourself:a#2", json.dumps({"question": "May I file a follow-up?", "cycle": ""}))
+            for role in ("build", "fix"):
+                out = prompt.build(ctx, "a", item, role, "claude", prep)
+                self.assertIn("The previous run asked: May I file a follow-up?", out)
+                self.assertIn("Decide it yourself", out)

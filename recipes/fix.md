@@ -88,12 +88,18 @@ result is obtained, the better. Never trade verification for speed.
    SHA and merges when it's green.
 6. Stop only for a decision genuinely only the owner can make (product intent, credentials,
    payment, accounts, destructive data). Post it as an issue comment and end with
-   `STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
+   `STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]`. When the
    answer is one of two or three short choices, end the line with `OPTIONS:` and the
    choices, a few words each, separated by `|` — they become the console's answer buttons.
+   Declare why only the owner can answer with a leading tag, category one of `product`, `money`, `credentials`, `data-policy`, `irreversible`. Untagged
+   questions are sent back to you to decide. Never ask about: scope or whether to file a
+   follow-up (pick the smallest option meeting Done-when, record `Decided: …` in your summary);
+   process or who posts evidence or comments (the conductor posts, D18); GitHub write, push or
+   PR access (the conductor holds it: end DONE and note what it must post); asking the owner to
+   run, verify or UAT something (write it under "Needs a human to check" and end DONE).
 7. If you genuinely cannot proceed because owner-provided access is missing, commit what you
    have locally, post one actionable question naming the required operation and
-   safe provisioning channel, and end with `STATUS: NEEDS-YOU <the question, on one line>`.
+   safe provisioning channel, and end with `STATUS: NEEDS-YOU [credentials] <the question, on one line>`.
    Never invent accounts or credentials or silently waive acceptance. Honor existing
    owner answers and restrictions. Identify the authorized access provider, the named external
    secret file or environment variable (names only), and the runtime that consumes it.
@@ -149,6 +155,6 @@ If a yield is delivered: commit your work locally, and end with STATUS: YIELDED 
 
 End your final message with exactly one of these lines:
 STATUS: DONE <one-line summary of what you fixed>
-STATUS: NEEDS-YOU <the question, on one line> [OPTIONS: <choice> | <choice>]
+STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]
 STATUS: BLOCKED <reason>
 STATUS: YIELDED <handoff summary>

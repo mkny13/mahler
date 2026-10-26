@@ -7,6 +7,11 @@ record the decision; ask only about product intent, taste, personal data, accoun
 credentials or money. When the answer is one of two or three short choices, end the
 NEEDS-YOU line with `OPTIONS:` and the choices, a few words each, separated by `|` — they
 become the console's answer buttons.
+Tag the question with why only the owner can answer, `NEEDS-YOU [<category>] <question>`,
+category one of `product`, `money`, `credentials`, `data-policy`, `irreversible`; untagged
+questions are sent back to you to decide. Never ask about scope, follow-ups, process, who
+posts comments, or GitHub access: decide, or the conductor holds it (D18). Never ask the owner
+to run, verify or UAT something: list it under "Needs a human to check".
 
 1. Use the server-rendered issue context below: it contains the admitted issue body and only
    D46-trusted comments. Owner comments that answer an earlier question are authoritative.
@@ -117,4 +122,4 @@ Every issue comment you post must begin with the line `<!-- mahler:agent -->`.
 End your final message with exactly one of these lines:
 STATUS: READY
 STATUS: SPLIT
-STATUS: NEEDS-YOU <the single question, on one line — also post it as an issue comment> [OPTIONS: <choice> | <choice>]
+STATUS: NEEDS-YOU [<category>] <the single question, on one line — also post it as an issue comment> [OPTIONS: <choice> | <choice>]
