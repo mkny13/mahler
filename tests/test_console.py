@@ -3400,6 +3400,21 @@ class AttachmentResourceTests(unittest.TestCase):
 
 
 class ProjectScopePageTests(unittest.TestCase):
+    def test_switcher_renders_on_all_projects_in_both_layouts(self):
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        unscoped = state.build(cfg, led)
+
+        for layout, navigation in (("desktop", {"view": "now"}),
+                                   ("phone", {"tab": "now"})):
+            with self.subTest(layout=layout):
+                html = page.app(unscoped, layout, **navigation)
+                self.assertIn('data-project-scope-switcher', html)
+                self.assertIn('<option value="" selected>Mahler · all projects</option>', html)
+                self.assertIn('<option value="mahler">mahler · quiet · no release</option>', html)
+                self.assertIn('<option value="groundwork">groundwork · quiet · no release</option>', html)
+                self.assertNotIn('<option value="old">', html)
+
     def test_switcher_and_project_navigation_render_on_both_layouts(self):
         cfg, led = make_cfg(), make_led()
         self.addCleanup(led.close)

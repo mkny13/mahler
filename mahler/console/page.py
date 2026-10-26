@@ -969,7 +969,7 @@ def _desktop(s, view):
         "history": (f'{s["digest"]["count"]} new' if s["digest"]["count"] else "", "acc"),
         "settings": ("", "mut"),
     }
-    rail = ['<nav class="rail"><div class="brand">Mahler</div>']
+    rail = [f'<nav class="rail"><div class="scope-brand">{_scope_switcher(s, "scope-switcher")}</div>']
     for key, label in VIEWS:
         count, tone = rail_counts[key]
         rail.append(f'<button class="rail-i" data-go="{key}"><span>{e(label)}</span>'
@@ -1651,8 +1651,8 @@ def _project_phone(s, tab):
 def _phone(s, tab):
     runs, needs = len(s["runs"]), s["needs_count"]
     sugg = s.get("releases_suggested")
-    head = (f'<header class="phead"><div class="phead-row"><div><span class="brand">Mahler</span>'
-            f'{_state_label(s)}</div><div class="phead-btns">'
+    head = (f'<header class="phead"><div class="phead-row">'
+            f'{_scope_switcher(s, "scope-switcher")}<div class="phead-btns">'
             f'<button class="btn theme" data-theme-cycle>{_theme_labels()}</button>'
             f'<button class="btn" style="font-weight:bold" data-open-capture>+</button>'
             f'{_pause_button(s)}<button class="btn settings-link" data-tab-go="settings">Settings</button>'
