@@ -166,6 +166,112 @@ class ShipTests(unittest.TestCase):
             red.assert_called_once()
             self.assertIsNone(self.led.get_kv("ci_blocker:x"))
 
+    def two_red_prs(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.led.upsert_item("x", 6, state="verifying", pr=89, branch="mahler/6-y")
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.issues = []
+        self.gh.create_issue = lambda title, body="", labels=(): (
+            self.gh.issues.append((title, labels)) or "https://github.com/x/y/issues/300")
+
+    def test_ci_blocker_detected_from_duplicate_pr_failures(self):
+        self.two_red_prs()
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        red.assert_not_called()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertEqual((blocker["check"], blocker["number"]), ("checks", 300))
+        self.assertEqual(len(self.gh.issues), 1)
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual(self.item()["state"], "verifying")
+
+    def test_pr_only_shared_failure_holds_while_base_passes(self):
+        self.two_red_prs()
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            self.ship()
+        red.assert_not_called()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["source"], "prs")
+
+    def test_bot_pr_merge_resumes_without_new_blocker(self):
+        self.two_red_prs()
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        calls = []
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number == 292:
+                v = {**v, "statusCheckRollup": [], "state": calls and "MERGED" or "OPEN"}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["bot_pr"], 292)
+        calls.append(1)
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+        self.assertEqual(self.gh.issues, [])
+        self.assertEqual(red.call_count, 2)
+
+    def test_pending_base_does_not_release_hold(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.create_issue = lambda title, body="", labels=(): "https://github.com/x/y/issues/300"
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.ship()
+        self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "IN_PROGRESS", "conclusion": ""}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        red.assert_not_called()
+        self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
+
+    def test_existing_local_fix_item_is_adopted(self):
+        self.two_red_prs()
+        self.led.upsert_item("x", 42, state="ready", title="Fix checks audit failure")
+        self.ship()
+        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["number"], 42)
+        self.assertEqual(self.gh.issues, [])
+
+    def test_ci_blocker_detected_from_base_branch_failure(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertEqual((blocker["check"], blocker["bot_pr"], blocker["number"]),
+                         ("checks", 292, None))
+
+    def test_ci_blocker_hold_prevents_attempt_burn_and_parks(self):
+        self.two_red_prs()
+        for _ in range(4):
+            self.ship()
+            self.led.clock = lambda t=self.led.now(): t + timedelta(days=1)
+        for n in (5, 6):
+            self.assertEqual(self.item(n)["attempts"], 0)
+            self.assertEqual(self.item(n)["state"], "verifying")
+
+    def test_ci_blocker_auto_resumes_on_green_base(self):
+        self.two_red_prs()
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.ship()
+        self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+        red.assert_called()
+
     def test_ci_blocker_does_not_hold_for_non_required_failure(self):
         self.led.upsert_item("x", 5, pr=88)
         self.led.upsert_item("x", 289, state="ready")

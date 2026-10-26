@@ -13,6 +13,7 @@ from datetime import timedelta
 
 from . import dependency_vetting, capacity, ci_blockers, config, failures, no_change, platforms, review, router, runner, screenshot_delivery, screenshots
 from .finalize import CAPACITY_STOPS, retry_or_fail
+from . import gh as gh_module
 from .gh import GHError, checks_state, needs_human_of, non_required_failures, pr_body, pr_summary_of
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .tick import busy_platforms, start
@@ -564,7 +565,7 @@ def unstick(ctx, project):
             dependency = ci_blockers.recorded(led, project, n)
             if not legacy and not (dependency and item["state"] == "parked"
                     and not ci_blockers.pending(led, project, n)
-                    and (not blocker or blocker["number"] == n)):
+                    and (not blocker or blocker.get("number") == n)):
                 continue
             if legacy:
                 prefix = f"ci-rerun:{project}#{n}:{item['pr']}:"
@@ -580,7 +581,115 @@ def unstick(ctx, project):
     return changed
 
 
+def _bot_pr(gh, led, project, check):
+    """An open, untracked bot PR whose own CI doesn't fail `check`: the likely fix."""
+    tracked = {i["pr"] for i in led.items(project) if i["pr"]}
+    for pr in sorted(gh.open_prs(), key=lambda p: p["number"]):
+        login = ((pr.get("author") or {}).get("login") or "").lower()
+        if pr["number"] in tracked or pr.get("isDraft") or not (
+                "dependabot" in login or "renovate" in login):
+            continue
+        try:
+            view = gh.pr_view(pr["number"])
+        except (GHError, ValueError):
+            continue
+        if check not in gh_module.failing_checks(view.get("statusCheckRollup")):
+            return pr["number"]
+    return None
+
+
+def refresh_ci_blocker(ctx, project):
+    """Clear a fact-based hold once its bot PR is gone or the base is green again."""
+    led = ctx.led
+    blocker = ci_blockers.active(led, project)
+    if not blocker or not blocker.get("check"):
+        return blocker
+    gh = ctx.gh(project)
+    try:
+        if blocker.get("bot_pr") and gh.pr_view(blocker["bot_pr"])["state"] != "OPEN":
+            ci_blockers.clear_hold(led, project, blocker)
+            return None
+        base = blocker.get("base") or ctx.policy(project).get("base", "main")
+        if blocker.get("source") != "base":
+            return blocker      # PR-only breakage: only its tracker or bot PR ends it
+        rollup = gh.base_checks(base)
+        required = _required_checks(ctx, project, base)
+        if (blocker["check"] not in gh_module.failing_checks(rollup, required)
+                and checks_state(rollup, required=required or None) in ("green", "none")):
+            ci_blockers.clear_hold(led, project, blocker)
+            return None
+    except (GHError, ValueError, TypeError, AttributeError) as exc:
+        ctx.say(f"{project}: CI blocker refresh failed — {exc}")
+    return blocker
+
+
+def detect_ci_blocker(ctx, project):
+    """Record a project CI hold from observable failures: one required check red
+    on >=2 open PRs, or red on the base branch (mahler#1240)."""
+    led = ctx.led
+    if ci_blockers.active(led, project):
+        return
+    gh = ctx.gh(project)
+    base = ctx.policy(project).get("base", "main")
+    try:
+        base_rollup = gh.base_checks(base) if hasattr(gh, "base_checks") else []
+        prs = [i["pr"] for i in led.items(project, ["verifying"]) if i["pr"]]
+        if len(prs) < 2 and not gh_module.failing_checks(base_rollup):
+            return
+        required = _required_checks(ctx, project, base)
+        base_red = gh_module.failing_checks(base_rollup, required)
+        stale = json.loads(led.get_kv(f"ci_blocker_stale:{project}") or "{}")
+        red_by_pr, heads = {}, {}
+        for pr in prs:
+            view = gh.pr_view(pr)
+            if view.get("state") == "OPEN":
+                sha = view.get("headRefOid") or ""
+                # a PR head already seen red when a base-sourced hold cleared is stale
+                red_by_pr[pr] = ([] if sha and stale.get(str(pr)) == sha else
+                                 gh_module.failing_checks(view.get("statusCheckRollup"), required))
+                heads[str(pr)] = sha
+        found = ci_blockers.repo_wide_checks(red_by_pr, base_red)
+        if not found:
+            return
+        check = found[0]
+        number = None
+        bot_pr = None
+        for it in led.items(project):
+            if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
+                    and check.casefold() in (it["title"] or "").casefold()
+                    and it["pr"] not in red_by_pr):
+                number = it["number"]
+                break
+        if number is None:
+            bot_pr = _bot_pr(gh, led, project, check)
+        if number is None and not bot_pr:
+            prs = ", ".join(f"#{p}" for p, names in red_by_pr.items() if check in names)
+            title = f"Repo-wide CI failure: {check} is red"
+            body = (f"The required check `{check}` fails repo-wide "
+                    f"(open PRs: {prs or 'none'}; `{base}` red: {check in base_red}), "
+                    "so every PR is red for the same reason. Mahler holds new builds and "
+                    "fix runs in this project until it is fixed.\n\n"
+                    f"Done when `{check}` passes on `{base}`.")
+            try:
+                url = gh.create_issue(title, body, labels=("type:chore", "size:m", "p2"))
+            except GHError:
+                url = gh.create_issue(title, body)
+            m = re.search(r"/(\d+)\s*$", url or "")
+            number = int(m.group(1)) if m else None
+    except (GHError, ValueError, TypeError) as exc:
+        ctx.say(f"{project}: CI blocker detection failed — {exc}")
+        return
+    led.set_kv(f"ci_blocker:{project}", json.dumps({
+        "number": number, "bot_pr": bot_pr, "check": check, "base": base,
+        "source": "base" if check in base_red else "prs", "heads": heads,
+        "reason": f"required check {check} fails repo-wide", "since": iso(led.now())}))
+    ctx.say(f"{project}: repo-wide CI failure ({check}) — holding builds and fix runs")
+
+
 def _ship_project(ctx, project):
+    if not ctx.dry_run:
+        refresh_ci_blocker(ctx, project)
+        detect_ci_blocker(ctx, project)
     unstick(ctx, project)
     no_change.recover_legacy(ctx, project)
     migrate_capacity_waits(ctx, project)
@@ -791,10 +900,10 @@ def _watch_pr(ctx, project, item, pr):
     if req is None:
         return
     led.set_kv(f"pr-lookup:{project}#{n}:{pr}", None)
-    if (blocker and blocker["number"] != n and
+    if (ci_blockers.holds(blocker, n) and
             checks_state(view.get("statusCheckRollup"), required=req) == "red"):
         _ci_pending(ctx, project, item, pr, view,
-                    reason=f"held waiting for CI blocker {[blocker['number']]}", held=True)
+                    reason=f"held waiting for CI blocker {ci_blockers.label(blocker)}", held=True)
         return
     if view.get("mergeable") == "CONFLICTING":
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
