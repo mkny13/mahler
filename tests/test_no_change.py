@@ -254,6 +254,8 @@ class ClaimTests(unittest.TestCase):
         self.advance()
         self.advance()
         self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
+        self.assertEqual(self.led.item("x", 5)["question"],
+                         "Which account should own this integration?")
         self.ctx.ping.assert_called_once()
         self.gh.close_issue.assert_not_called()
 
