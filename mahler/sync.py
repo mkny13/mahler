@@ -657,6 +657,11 @@ def _adopt_label_edits(ctx, project, item, labels):
 
 def _process_comments(ctx, project, item, comments):
     led = ctx.led
+    # Display-only context: escaped by the console, never admitted as instructions.
+    relevant = [c for c in comments if (c.get("body") or "").strip()]
+    if relevant:
+        latest = max(relevant, key=lambda c: c["createdAt"])
+        led.set_kv(f"console-comment:{project}#{item['number']}", latest['body'][:8000])
     seen = parse(item["last_comment_at"])
     newest = seen
     for c in sorted(comments, key=lambda c: c["createdAt"]):

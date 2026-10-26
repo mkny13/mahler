@@ -1445,7 +1445,7 @@ class PageTests(unittest.TestCase):
         doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertEqual(doc.count('data-need-details="mahler#9"'), 2)
         self.assertGreaterEqual(doc.count("A &lt;script&gt;alert(1)&lt;/script&gt; title"), 2)
-        self.assertEqual(doc.count("Body &lt;img src=x onerror=alert(2)&gt;"), 2)
+        self.assertGreaterEqual(doc.count("Body &lt;img src=x onerror=alert(2)&gt;"), 2)
         self.assertNotIn("<img src=x", doc)
         self.assertGreaterEqual(doc.count('data-text="First choice"'), 2)
         self.assertIn('store("session", "mahler.needDetails"', doc)
@@ -2722,8 +2722,8 @@ class CapturePageTests(unittest.TestCase):
         doc = console_snapshot.document(state.build(self.cfg, self.led))
         self.assertIn('placeholder="Type or dictate."', doc)
         self.assertIn('<option value="" disabled>Project</option>', doc)
-        self.assertIn('<option value="mahler">mahler</option>', doc)
-        self.assertIn('<option value="groundwork">groundwork</option>', doc)
+        self.assertIn('<option value="mahler" data-account="personal">mahler</option>', doc)
+        self.assertIn('<option value="groundwork" data-account="personal">groundwork</option>', doc)
         self.assertIn('data-act="capture" data-capture-save disabled', doc)
         self.assertIn('class="view view-capture"', doc)
 
@@ -3661,3 +3661,106 @@ class ProjectOverviewPageTests(unittest.TestCase):
         for text in ("Retry batch", "Gmail search", "Drive export",
                      "pytest · ruff", "−3 in 7d"):
             self.assertNotIn(text, other_html)
+
+
+class DiscussionPanelTests(unittest.TestCase):
+    def test_entry_points_and_persistent_native_dialog(self):
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        led.upsert_item('mahler', 9, state='needs_you', question='Choose', options='["Keep"]')
+        s = state.build(cfg, led)
+        doc = page.document(s, view='needs')
+        self.assertIn('data-discuss', doc)
+        self.assertIn('data-text="Keep"', doc)
+        self.assertIn('<dialog id="discussion"', doc)
+        self.assertNotIn('<dialog id="discussion"', page.app(s, view='needs'))
+        self.assertNotIn('More detail', doc)
+        self.assertIn('Last relevant comment', doc)
+        self.assertIn('data-discuss', page.app(s, view='capture'))
+
+
+class DiscussionBrowserTests(unittest.TestCase):
+    def test_fake_worker_journeys_at_phone_and_desktop_widths(self):
+        import functools
+        import http.server
+        import shutil
+        import subprocess
+        import tempfile
+        import threading
+        from pathlib import Path
+        chrome = shutil.which('chromium') or shutil.which('google-chrome')
+        if not chrome:
+            candidate = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+            chrome = candidate if Path(candidate).exists() else None
+        if not chrome:
+            self.skipTest('Headless Chrome unavailable; fake-worker browser coverage outstanding')
+        if not shutil.which('node') or subprocess.run(
+                ['node', '-p', 'typeof WebSocket'], capture_output=True, text=True).stdout.strip() != 'function':
+            self.skipTest('Node with built-in WebSocket unavailable; browser coverage outstanding')
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        s = state.build(cfg, led)
+        controller = page.JS[page.JS.index('function initDiscussion()'):].removesuffix('initDiscussion();\n')
+        fixture = ('<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">'
+                   '<style>' + page.CSS + '</style><div id="app"><button id="background">Background</button>'
+                   '<button id="triage" data-discuss data-project="mahler" data-number="9">Talk it through</button>'
+                   '<div class="cap"><select data-capture-select><option>mahler</option></select>'
+                   '<textarea class="cap-ta">Capture draft</textarea><button id="capture" data-discuss>Talk it through</button></div></div>'
+                   + page._discussion(s) + '<script>' + controller + '</script><script>'
+                   + Path('tests/console_discuss_test.js').read_text() + '</script>')
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, 'journey.html').write_text(fixture)
+            class Quiet(http.server.SimpleHTTPRequestHandler):
+                def log_message(self, *args):
+                    pass
+            server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(Quiet, directory=tmp))
+            thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02})
+            thread.start()
+            try:
+                for width in (390, 1440):
+                    with self.subTest(width=width):
+                        import time
+                        profile = Path(tmp, f'profile-{width}')
+                        profile.mkdir()
+                        stderr_path = Path(tmp, f'chrome-{width}.stderr')
+                        with stderr_path.open('w+', encoding='utf-8') as browser_stderr:
+                            with subprocess.Popen([chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
+                                    '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
+                                    '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank'],
+                                    stdout=subprocess.DEVNULL, stderr=browser_stderr) as browser:
+                                try:
+                                    port_file = profile / 'DevToolsActivePort'
+                                    deadline = time.monotonic() + 45
+                                    lines = []
+                                    while time.monotonic() < deadline:
+                                        if port_file.is_file():
+                                            lines = port_file.read_text().splitlines()
+                                            if len(lines) >= 2:
+                                                break
+                                        if browser.poll() is not None:
+                                            browser_stderr.flush()
+                                            browser_stderr.seek(0)
+                                            self.fail(f'Chrome exited before opening DevTools '
+                                                f'(status {browser.returncode}): {browser_stderr.read()[-2000:]}')
+                                        time.sleep(.05)
+                                    if len(lines) < 2:
+                                        browser_stderr.flush()
+                                        browser_stderr.seek(0)
+                                        self.fail('Chrome did not publish DevToolsActivePort within 45 seconds: '
+                                            + browser_stderr.read()[-2000:])
+                                    port, websocket = lines[:2]
+                                    result = subprocess.run(['node', 'tests/console_discuss_test.js',
+                                        f'ws://127.0.0.1:{port}{websocket}',
+                                        f'http://127.0.0.1:{server.server_port}/journey.html?width={width}', str(width)],
+                                        capture_output=True, text=True, timeout=30)
+                                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                                    self.assertEqual(result.stdout.strip(), 'PASS')
+                                finally:
+                                    browser.terminate()
+                                    try:
+                                        browser.wait(timeout=5)
+                                    except subprocess.TimeoutExpired:
+                                        browser.kill(); browser.wait()
+
+            finally:
+                server.shutdown(); server.server_close(); thread.join()

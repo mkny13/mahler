@@ -578,7 +578,70 @@ def cut_release(cfg, led, body):
         return {"id": action_id}
 
 
-ACTIONS = {f.__name__: f for f in (pause, resume, end_session, peak_override, peak_restore,
+def chat_binding(cfg, body):
+    project = body.get("project")
+    projects = {p["name"]: p for p in config.enabled_projects(cfg)}
+    if not isinstance(project, str) or project not in projects:
+        raise ActionError("project must be enabled")
+    policy = config.project_policy(cfg, project)
+    accounts = config.accounts_of(policy)
+    if len(accounts) != 1:
+        raise ActionError("Discussion requires one funding account")
+    return dict(project=project, repo=policy["repo"], account=accounts[0],
+                engine="claude" if accounts[0] == config.DEFAULT_ACCOUNT else "agent-sdk")
+
+
+def chat(cfg, led, body):
+    """Enqueue operator turns only. The supervised worker owns execution."""
+    from .state import chat_status
+    binding = chat_binding(cfg, body)
+    op = body.get("op")
+    sid = body.get("session_id")
+    number = body.get("number")
+    request = body.get("request_id")
+    if not isinstance(request, str) or not request.strip() or len(request) > 200:
+        raise ActionError("invalid client request ID")
+    if number is not None and (type(number) is not int or not led.item(binding['project'], number)):
+        raise ActionError("unknown discussion item")
+    try:
+        with led._tx():
+            if op == "start":
+                # Persist the start identity so a lost HTTP response cannot create another session.
+                import hashlib
+                key = "chat-start:" + hashlib.sha256((binding['project'] + "\n" + request).encode()).hexdigest()
+                sid = led.get_kv(key)
+                if not sid:
+                    sid = led.create_chat_session(**binding)['id']
+                    led.set_kv(key, sid)
+                    led.set_kv("chat-item:" + sid, json.dumps(number))
+                led.chat_session(sid, **binding)
+            elif op not in ("send", "retry"):
+                raise ActionError("unknown chat operation")
+            if not isinstance(sid, str) or len(sid) != 32:
+                raise ActionError("unknown discussion session")
+            led.chat_session(sid, **binding)
+            if led.get_kv("chat-item:" + sid) != json.dumps(number):
+                raise ActionError("discussion item binding mismatch")
+            if op == "start":
+                return {"session_id": sid, "account": binding['account']}
+            text = body.get("text")
+            retry = None
+            if op == "retry":
+                retry = body.get("retry_of")
+                old = led.chat_turn(retry) if type(retry) is int else None
+                if not old or old['session_id'] != sid or old['status'] != 'error':
+                    raise ActionError("retry must refer to a failed turn in this session")
+                result = json.loads(old['result'])
+                if not result['error']['retryable']:
+                    raise ActionError("Start a new discussion")
+                text = old['user_text']
+            turn = led.submit_chat_turn(sid, request, text, retry_of=retry, **binding)
+            return {"session_id": sid, "turn_id": turn['id'], **chat_status(cfg, led, body)}
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+
+
+ACTIONS = {f.__name__: f for f in (chat, pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log, set_max_parallel,

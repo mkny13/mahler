@@ -67,6 +67,7 @@ def document(s, layout="desktop", view=None, tab=None):
 </head>
 <body>
 <div id="app">{app(s, layout, view, tab)}</div>
+{_discussion(s)}
 <script>{JS}</script>
 </body>
 </html>"""
@@ -303,7 +304,7 @@ def _peak_act(peak):
 
 def _capture_opts(cap):
     opts = ['<option value="" disabled>Project</option>']
-    opts += [f'<option value="{e(p)}">{e(p)}</option>' for p in cap["projects"]]
+    opts += [f'<option value="{e(p)}" data-account="{e(cap.get("accounts", {}).get(p, "personal"))}">{e(p)}</option>' for p in cap["projects"]]
     return "".join(opts)
 
 
@@ -330,7 +331,7 @@ def _composer(s, rows, save_label):
             f'<div class="cap-row">'
             f'<select class="cap-select" data-capture-select>{_capture_opts(cap)}</select>'
             f'<button class="btn btn-pri cap-save" data-act="capture" data-capture-save disabled>'
-            f'{e(save_label)}</button></div>{_capture_notes(s)}')
+            f'{e(save_label)}</button><button class="btn" data-discuss>Talk it through</button></div>{_capture_notes(s)}')
 
 
 GRAPH_COL_W, GRAPH_ROW_H = 200, 44
@@ -1054,7 +1055,8 @@ def _answer_buttons(n):
         f'<button class="btn{ " btn-pri" if i == 0 else ""}" data-act="answer" '
         f'data-project="{e(n["project"])}" data-number="{n["number"]}" '
         f'data-text="{e(o["text"])}">{e(o["label"])}</button>'
-        for i, o in enumerate(n["options"])) + '</div>'
+        for i, o in enumerate(n["options"])) + (f'<button class="btn" data-discuss data-project="{e(n["project"])}" '
+        f'data-number="{n["number"]}" data-title="{e(n["title"])}" data-context="{e(n["title"] + chr(10) + (n.get("body") or "")[:8000] + chr(10) + n.get("question", "") + chr(10) + n.get("last_comment", ""))}">Talk it through</button></div>')
 
 
 def _answer_input(n, phone=False):
@@ -1067,9 +1069,10 @@ def _answer_input(n, phone=False):
 
 def _need_details(n):
     return (f'<details class="need-details" data-need-details="{e(n["id"])}">'
-            f'<summary>More detail</summary><div class="need-detail-content">'
+            f'<summary>Issue context</summary><div class="need-detail-content">'
             f'<span class="need-detail-title">{e(n["title"])}</span>'
-            f'<div class="need-detail-body">{e(n["body"])}</div></div></details>')
+            f'<div class="need-detail-body">{e(n["body"])}</div>'
+            f'<h4>Last relevant comment</h4><div class="need-detail-body">{e(n.get("last_comment", "No comment cached yet."))}</div></div></details>')
 
 
 def _answered(n):
@@ -2095,3 +2098,20 @@ def _d_models(s):
 
 def _p_models(s):
     return f'<section class="tabv tabv-models"><div class="pad">{_model_rows(s)}</div></section>'
+
+
+def _discussion(s):
+    return ('<dialog id="discussion" aria-labelledby="discussion-title">'
+            '<header><h2 id="discussion-title">Talk it through</h2>'
+            '<form method="dialog"><button class="btn">Close</button></form></header>'
+            '<label>Project <select id="discussion-project">' + _capture_opts(s['capture']).replace('value="" disabled', 'value="" disabled selected') + '</select></label>'
+            '<p id="discussion-account"></p><p id="discussion-context"></p>'
+            '<div id="discussion-transcript" tabindex="0" aria-label="Conversation"></div>'
+            '<button class="btn" id="discussion-new-reply" hidden>New reply ↓</button>'
+            '<p id="discussion-status" role="status" aria-live="polite"></p>'
+            '<p id="discussion-error" role="alert"></p>'
+            '<label for="discussion-draft">Message</label>'
+            '<textarea id="discussion-draft" rows="3" autofocus placeholder="Type or dictate. Enter adds a line; Ctrl or Cmd + Enter sends."></textarea>'
+            '<footer><button class="btn" id="discussion-new">New discussion</button>'
+            '<button class="btn" id="discussion-retry" hidden>Try again</button>'
+            '<button class="btn btn-pri" id="discussion-send">Send</button></footer></dialog>')

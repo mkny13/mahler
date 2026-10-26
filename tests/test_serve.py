@@ -949,3 +949,104 @@ class RestartWaitsForRequestsTests(unittest.TestCase):
             server_thread.join(10)
         self.assertFalse(server_thread.is_alive())
         self.assertEqual([results.get(timeout=1), results.get(timeout=1)], [200, "closed"])
+
+
+class ChatHTTPTests(_Served):
+    def chat(self, **body):
+        return self.post('chat', dict(project='mahler', **body))
+
+    def start(self, number=None):
+        status, _, raw = self.chat(op='start', request_id=f'start-{number}', number=number)
+        self.assertEqual(status, 200, raw)
+        return json.loads(raw)['session_id']
+
+    def test_two_turn_journeys_and_duplicate_send(self):
+        for number in (9, None):
+            with self.subTest(number=number):
+                sid = self.start(number)
+                for i in range(2):
+                    payload = dict(op='send', session_id=sid, number=number,
+                                   request_id=f'turn-{i}', text=f'Refine <script> {i}')
+                    status, _, raw = self.chat(**payload)
+                    self.assertEqual(status, 200, raw)
+                    turn = json.loads(raw)['turn_id']
+                    self.assertEqual(json.loads(self.chat(**payload)[2])['turn_id'], turn)
+                    token = self.led.claim_chat_turn(turn)
+                    if i == 1:
+                        self.led.begin_chat_mutation(turn, token, 'issue', 'add_item', {})
+                        self.led.confirm_chat_mutation(sid, 'issue', 'https://github.com/mkny13/mahler/issues/77')
+                    self.led.complete_chat_turn(turn, token, assistant_text=f'Reply {i} <img src=x>')
+                status, _, raw = self.request(f'/api/chat?project=mahler&session_id={sid}', headers={'X-Mahler-Console': '1'})
+                self.assertEqual(status, 200, raw)
+                result = json.loads(raw)
+                self.assertLess(result['html'].index('Reply 0'), result['html'].index('Reply 1'))
+                self.assertNotIn('<img', result['html'])
+                self.assertIn('&lt;img', result['html'])
+                self.assertIn('https://github.com/mkny13/mahler/issues/77', result['html'])
+                self.assertFalse(result['pending'])
+
+    def test_guards_and_binding(self):
+        for headers, expected in (({'Origin': 'https://evil.test'}, 403),
+                                  ({'X-Mahler-Console': ''}, 403),
+                                  ({'Content-Type': 'text/plain'}, 415)):
+            self.assertEqual(self.post('chat', {'op': 'start'}, headers)[0], expected)
+        with mock.patch('mahler.serve.write_allowed_from', return_value=False):
+            self.assertEqual(self.chat(op='start')[0], 403)
+        self.assertEqual(self.post('chat', {'project': 'unknown', 'op': 'start'})[0], 400)
+        self.assertEqual(self.chat(op='start', request_id='bad', number=999)[0], 400)
+        sid = self.start(9)
+        for changes in ({'text': 'x' * 8001}, {'session_id': 'missing'}, {'number': 5}):
+            body = dict(op='send', session_id=sid, number=9, request_id='one', text='hello')
+            body.update(changes)
+            self.assertEqual(self.chat(**body)[0], 400)
+        self.assertEqual(self.request(f'/api/chat?project=mahler&session_id={sid}')[0], 403)
+        self.cfg['projects']['other'] = dict(self.cfg['projects']['mahler'], repo='someone/other')
+        self.assertEqual(self.request(f'/api/chat?project=other&session_id={sid}', headers={'X-Mahler-Console': '1'})[0], 400)
+
+    def test_failed_turn_retry(self):
+        sid = self.start()
+        payload = dict(op='send', session_id=sid, request_id='one', text='Hello')
+        tid = json.loads(self.chat(**payload)[2])['turn_id']
+        token = self.led.claim_chat_turn(tid)
+        self.led.complete_chat_turn(tid, token, assistant_text='Gateway restarted',
+            error={'code': 'worker_lost', 'message': 'Gateway restarted', 'retryable': True})
+        status, _, raw = self.chat(op='retry', session_id=sid, request_id='retry', retry_of=tid)
+        self.assertEqual(status, 200, raw)
+        self.assertNotEqual(json.loads(raw)['turn_id'], tid)
+
+    def test_tailnet_json_limits_and_changed_account(self):
+        original = serve._Handler.do_POST
+        def from_tailnet(handler):
+            handler.client_address = ('100.64.0.12', 1234)
+            return original(handler)
+        with mock.patch.object(self.httpd.RequestHandlerClass, 'do_POST', from_tailnet):
+            sid = self.start()
+        self.assertEqual(self.chat(op='send', session_id=sid, request_id='big', text='x' * 70000)[0], 413)
+        self.assertEqual(self.request('/api/chat', 'POST', b'{bad',
+            {'Content-Type': 'application/json', 'X-Mahler-Console': '1'})[0], 400)
+        self.cfg['projects']['mahler']['account'] = 'other'
+        self.assertEqual(self.chat(op='send', session_id=sid, request_id='other', text='hello')[0], 400)
+        self.assertEqual(self.led.chat_turns(sid), [])
+
+    def test_read_is_bounded_and_filters_arbitrary_links(self):
+        sid = self.start()
+        binding = dict(project='mahler', repo='mkny13/mahler', account='personal', engine='claude')
+        for i in range(12):
+            turn = self.led.submit_chat_turn(sid, str(i), 'hello', **binding)
+            token = self.led.claim_chat_turn(turn['id'])
+            self.led.complete_chat_turn(turn['id'], token, assistant_text='<script>' + str(i))
+        row = self.led.chat_turn(turn['id'])
+        result = json.loads(row['result'])
+        result['confirmed_issue_urls'] = ['javascript:alert(1)', 'https://github.com/other/repo/issues/2']
+        self.led.con.execute('UPDATE chat_turns SET result=? WHERE id=?', (json.dumps(result), turn['id']))
+        headers = {'X-Mahler-Console': '1'}
+        path = f'/api/chat?project=mahler&session_id={sid}'
+        first = json.loads(self.request(path, headers=headers)[2])
+        self.assertEqual(first['after'], 10)
+        self.assertTrue(first['more'])
+        second = json.loads(self.request(path + '&after=10', headers=headers)[2])
+        self.assertEqual(second['after'], 12)
+        self.assertFalse(second['more'])
+        self.assertNotIn('<script>', first['html'])
+        self.assertNotIn('href=', second['html'])
+        self.assertEqual(self.request(path + '&after=-1', headers=headers)[0], 400)

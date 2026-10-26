@@ -511,3 +511,17 @@ class BacklogSnapshotSyncTests(unittest.TestCase):
         self.led.record_backlog("x", 1, at=self.led.now() - timedelta(hours=2))
         with mock.patch.object(self.led, "record_backlog", side_effect=RuntimeError("disk")):
             sync.sync(self.ctx, "x")                # the 304 path too
+
+
+class DiscussionContextTests(unittest.TestCase):
+    def test_caches_last_relevant_comment_even_when_already_seen(self):
+        led = Ledger(':memory:')
+        self.addCleanup(led.close)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['projects']['x'] = {'repo': 'x/y', 'path': '.'}
+        ctx = scheduler.Ctx(cfg, led, dry_run=False)
+        led.upsert_item('x', 1, state='ready', last_comment_at='2026-10-20T00:00:00+00:00')
+        sync._process_comments(ctx, 'x', led.item('x', 1), [
+            {'createdAt': '2026-10-19T00:00:00Z', 'body': 'Relevant <text>', 'author': {'login': 'x'}},
+            {'createdAt': '2026-10-20T00:00:00Z', 'body': '<!-- mahler:agent -->\nLatest blocker'}])
+        self.assertEqual(led.get_kv('console-comment:x#1'), '<!-- mahler:agent -->\nLatest blocker')
