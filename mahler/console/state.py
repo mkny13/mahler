@@ -890,6 +890,7 @@ def _needs(cfg, led, projects, now):
             "ref": _ref(project, n), "url": _issue_url(cfg, project, n),
             "title": it["title"] or "",
             "body": row_get(it, "issue_body", ""),
+            "last_comment": led.get_kv(f"console-comment:{project}#{n}") or "No comment cached yet.",
             "question": question,
             "pending": pending.get((project, n)),
             "options": ([{"label": "Retry", "text": "/mahler go"},
@@ -2623,3 +2624,52 @@ def _project_overview_state(cfg, led, project, s, now):
         "builders_30d": builders_30d,
         "settings": settings_summary,
     }
+
+
+def chat_status(cfg, led, body):
+    """Bounded session page; all model output is rendered as plain escaped text."""
+    from .actions import chat_binding, ActionError
+    from .page import e
+    binding = chat_binding(cfg, body)
+    sid = body.get('session_id')
+    if not isinstance(sid, str) or len(sid) != 32:
+        raise ActionError('unknown discussion session')
+    try:
+        led.chat_session(sid, **binding)
+    except ValueError as exc:
+        raise ActionError(str(exc)) from exc
+    try:
+        after = int(body.get('after', 0))
+        if after < 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ActionError('invalid discussion cursor')
+    # Ten turns per response bounds escaped output even at the worker's 64K reply limit.
+    turns = led.q('SELECT * FROM chat_turns WHERE session_id=? AND ordinal>? ORDER BY ordinal LIMIT 10', (sid, after))
+    latest = led.q1('SELECT * FROM chat_turns WHERE session_id=? ORDER BY ordinal DESC LIMIT 1', (sid,))
+    chunks = []
+    cursor = after
+    for turn in turns:
+        if turn['status'] in ('queued', 'running'):
+            break
+        result = json.loads(turn['result'])
+        links = []
+        import re
+        for url in result['confirmed_issue_urls']:
+            if re.fullmatch(r'https://github\.com/' + re.escape(binding['repo']) + r'/issues/[1-9][0-9]*', url):
+                links.append(f'<a href="{e(url)}" target="_blank" rel="noopener">{e(url)}</a>')
+        chunks.append(f'<article><h3>You</h3><p>{e(turn["user_text"])}</p>'
+                      f'<h3>Mahler</h3><p>{e(result["assistant_text"])}</p>'
+                      + ('<h4>Confirmed issues</h4>' + '<br>'.join(links) if links else '') + '</article>')
+        cursor = turn['ordinal']
+    error = json.loads(latest['result'])['error'] if latest and latest['result'] else None
+    number = json.loads(led.get_kv('chat-item:' + sid) or 'null')
+    item = led.item(binding['project'], number) if number else None
+    context = (f'{binding["project"]}#{number}: {item["title"]}\n{item["issue_body"] or ""}\n{item["question"] or ""}'
+               if item else binding['project'])
+    return dict(session_id=sid, html=''.join(chunks), after=cursor,
+                more=bool(latest and latest['ordinal'] > cursor and len(turns) == 10),
+                pending=bool(latest and latest['status'] in ('queued', 'running')),
+                turn_id=latest['id'] if latest else None, error=error,
+                accepted_at=latest['accepted_at'] if latest else None,
+                context=context[:16000], account=binding['account'])

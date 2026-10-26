@@ -3661,3 +3661,19 @@ class ProjectOverviewPageTests(unittest.TestCase):
         for text in ("Retry batch", "Gmail search", "Drive export",
                      "pytest · ruff", "−3 in 7d"):
             self.assertNotIn(text, other_html)
+
+
+class DiscussionPanelTests(unittest.TestCase):
+    def test_entry_points_and_persistent_native_dialog(self):
+        cfg, led = make_cfg(), make_led()
+        self.addCleanup(led.close)
+        led.upsert_item('mahler', 9, state='needs_you', question='Choose', options='["Keep"]')
+        s = state.build(cfg, led)
+        doc = page.document(s, view='needs')
+        self.assertIn('data-discuss', doc)
+        self.assertIn('data-text="Keep"', doc)
+        self.assertIn('<dialog id="discussion"', doc)
+        self.assertNotIn('<dialog id="discussion"', page.app(s, view='needs'))
+        self.assertNotIn('More detail', doc)
+        self.assertIn('Last relevant comment', doc)
+        self.assertIn('data-discuss', page.app(s, view='capture'))

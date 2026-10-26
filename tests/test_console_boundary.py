@@ -20,7 +20,7 @@ from test_serve import make_cfg
 # The apply-at-once actions (D27): they touch only local state the tick
 # doesn't own — ledger KV, holds, attachments, config.toml.
 LEDGER_ONLY = {
-    "pause", "resume", "end_session", "peak_override", "peak_restore",
+    "chat", "pause", "resume", "end_session", "peak_override", "peak_restore",
     "clear_backoff", "unhold", "digest_seen", "brief_seen", "save_settings",
     "client_log", "attach", "answer_undo", "set_max_parallel",
     "pause_project", "resume_project",

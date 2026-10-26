@@ -132,6 +132,20 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         request = urlsplit(self.path)
         path = request.path
+        if path == "/api/chat":
+            refused = self._refusal()
+            if refused:
+                self._json(refused[0], {"ok": False, "error": refused[1]})
+                return
+            try:
+                with self.lock:
+                    query = {k: v[0] for k, v in parse_qs(request.query).items()}
+                    result = state.chat_status(self.load_cfg(), self.led, query)
+                self._json(200, result)
+            except actions.ActionError as exc:
+                self._json(400, {"ok": False, "error": str(exc)})
+            return
+
         if path.startswith("/api/run/") and path.endswith("/log"):
             run_id_str = path[len("/api/run/"):-len("/log")]
             try:
@@ -294,7 +308,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 403, "writes are only accepted from this machine or the tailnet"
         if self.headers.get("X-Mahler-Console") != "1":
             return 403, "missing X-Mahler-Console header"
-        if not (self.headers.get("Content-Type") or "").startswith("application/json"):
+        if self.command != "GET" and (self.headers.get("Content-Type") or "").split(";", 1)[0].strip() != "application/json":
             return 415, "the body must be JSON"
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != (self.headers.get("Host") or ""):
