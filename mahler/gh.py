@@ -686,7 +686,7 @@ class GH:
     def pr_view(self, number):
         return json.loads(self._gh("pr", "view", str(number), "-R", self.repo, "--json",
                                    "state,body,statusCheckRollup,mergeable,headRefName,"
-                                   "headRefOid,baseRefName,mergeCommit,title,mergedAt"))
+                                   "headRefOid,baseRefName,mergeCommit,title,mergedAt,mergeStateStatus"))
 
     def actions_run(self, run_id):
         return self._api_json("GET", f"actions/runs/{int(run_id)}")

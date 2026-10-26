@@ -75,7 +75,7 @@ class FakeGH:
         return {"state": self.view_state, "body": self.view_body,
                 "statusCheckRollup": self.rollup, "mergeable": self.mergeable,
                 "headRefName": "mahler/5-x", "headRefOid": self.head_sha,
-                "baseRefName": "main",
+                "baseRefName": "main", "mergeStateStatus": self.merge_state,
                 "mergeCommit": {"oid": "4c1f0abfeed5"}}
 
     def pr_refresh_mergeability(self, number):
@@ -99,6 +99,7 @@ class FakeGH:
         if not self.queue:                # a real merge (no queue) is synchronous
             self.view_state = "MERGED"
 
+    merge_state = "CLEAN"
     sources = None    # {(sha, file, line): text}; None = every line reads the same
 
     def source_line(self, path, sha, file, line):
@@ -186,15 +187,42 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["attempts"], 0)
         self.assertEqual(self.item()["state"], "verifying")
 
-    def test_pr_only_shared_failure_holds_while_base_passes(self):
+    def test_pr_only_shared_failure_hold_clears_when_base_green(self):
         self.two_red_prs()
         self.gh.base_checks = lambda branch: [
             {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
         with mock.patch.object(ship, "_red_ci") as red:
             self.ship()
+            self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
             self.ship()
+        self.assertIsNone(self.led.get_kv("ci_blocker:x"))
+        red.assert_called()
+
+    def test_stale_red_pr_behind_green_base_gets_branch_update(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.merge_state = "BEHIND"
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        with mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                               return_value=("updated", False)) as update, \
+                mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        update.assert_called_once()
         red.assert_not_called()
-        self.assertEqual(json.loads(self.led.get_kv("ci_blocker:x"))["source"], "prs")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_red_pr_behind_red_base_is_not_updated(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.merge_state = "BEHIND"
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        with mock.patch.object(self.gh, "update_reviewed_branch", create=True) as update:
+            self.ship()
+        update.assert_not_called()
 
     def test_bot_pr_merge_resumes_without_new_blocker(self):
         self.two_red_prs()

@@ -642,8 +642,6 @@ def refresh_ci_blocker(ctx, project):
             ci_blockers.clear_hold(led, project, blocker)
             return None
         base = blocker.get("base") or ctx.policy(project).get("base", "main")
-        if blocker.get("source") != "base":
-            return blocker      # PR-only breakage: only its tracker or bot PR ends it
         rollup = gh.base_checks(base)
         required = _required_checks(ctx, project, base)
         if (blocker["check"] not in gh_module.failing_checks(rollup, required)
@@ -953,6 +951,8 @@ def _watch_pr(ctx, project, item, pr):
         base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
         if not _update_reviewed_pr(ctx, project, item, pr, view):
             _rebuild_on_base(ctx, project, item, pr, base)
+        return
+    if _stale_red_behind_base(ctx, project, item, pr, view, req):
         return
     if _ci_rerun(ctx, project, item, pr, view, req):
         return
@@ -2292,6 +2292,23 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
                         "reviewed_sha": reviewed_sha,
                         "pr": pr,
                     })
+
+
+def _stale_red_behind_base(ctx, project, item, pr, view, required):
+    """A red PR whose base moved on and is green now was checked against stale code:
+    update its branch (fresh CI follows) rather than rerun or fix against old results."""
+    if (ctx.dry_run or view.get("mergeStateStatus") != "BEHIND"
+            or checks_state(view.get("statusCheckRollup"), required=required) != "red"):
+        return False
+    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
+    try:
+        rollup = ctx.gh(project).base_checks(base)
+        if checks_state(rollup, required=required or None) != "green":
+            return False
+    except (GHError, ValueError, TypeError, AttributeError):
+        return False
+    ctx.led.set_kv(f"reviewed-pr:{project}#{item['number']}", str(pr))
+    return _update_reviewed_pr(ctx, project, item, pr, view)
 
 
 def _ci_rerun(ctx, project, item, pr, view, required=None):
