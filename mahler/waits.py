@@ -110,7 +110,7 @@ def _recheck_item(ctx, project, item):
         ctx.say(f"{project}#{n}: wait over ({cause}) — {record['resume']}")
         return
     record["checks"] = int(record.get("checks") or 0) + 1
-    record["next_at"] = iso(now + backoff(record["checks"]))
+    record["next_at"] = iso(now + backoff(record["checks"] + 1))
     led.set_kv(key(project, n), json.dumps(record))
 
 
