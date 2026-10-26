@@ -131,6 +131,58 @@ class FormatTests(unittest.TestCase):
         self.assertNotIn(9, [s["number"] for s in data["completed"]])
 
 
+class WaitMetricsTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.led = Ledger(":memory:", clock=self.clock)
+        self.addCleanup(self.led.close)
+
+    def data(self):
+        return digest.gather(self.led, {}, self.clock.t - timedelta(days=1))
+
+    def test_conductor_waits_separate_and_bounded(self):
+        from mahler import waits
+        for n in range(1, 7):
+            self.led.upsert_item("p", n, title=f"Held {n}")
+            waits.hold(self.led, "p", n, "capacity", "busy", resume="ready")
+        data = self.data()
+        self.assertEqual(data["waiting"], [])
+        self.assertEqual(len(data["conductor_waits"]), 6)
+        self.assertEqual(data["conductor_waits"][0]["since"], iso(self.clock.t))
+        text = digest.format_digest(data)
+        self.assertIn("Conductor waits (6): capacity 6", text)
+        self.assertNotIn("Held 1", text)
+        self.led.set_state("p", 6, "ready")
+        self.assertIn("Held 1", digest.format_digest(self.data()))
+
+    def test_weekly_arithmetic_and_structural_causes(self):
+        led = self.led
+        for n, detail in enumerate(("working -> failed (CI red)",
+                                  "working -> needs_you ([CATEGORY: product] Choose?)",
+                                  "working -> needs_you (capacity mentioned)",
+                                  "sorting -> needs_you (Which scope?)",
+                                  "working -> done", "working -> done"), 1):
+            led.event("state", "p", n, detail)
+        led.create_run(project="p", number=4, role="sort", platform="slot", epoch=1,
+                       status="ended", ended_at=iso(self.clock.t + timedelta(seconds=1)),
+                       outcome="NEEDS-YOU")
+        led.event("wait", "p", 9, {"cause": "capacity"})
+        for days, detail in ((8, "working -> failed (old)"), (-1, "working -> done")):
+            led.q("INSERT INTO events(at,project,number,kind,detail) VALUES(?,?,?,?,?)",
+                  (iso(self.clock.t-timedelta(days=days)), "p", 10, "state", detail))
+        led.event("state", "p", 11, "ready -> ready (text -> failed)")
+        rate = self.data()["stuck_rate"]
+        self.assertEqual((rate["stuck"], rate["done"], rate["percent"]), (4, 2, 200))
+        self.assertEqual(rate["causes"], {"ci_failed": 1, "owner": 2, "other": 1})
+        self.assertEqual(rate["waits"], {"capacity": 1})
+        text = digest.format_digest(self.data())
+        self.assertIn("Stuck rate (7d): 4 stuck / 2 done = 200% (target < 5%)", text)
+        self.assertIn("owner 2", text)
+
+    def test_zero_completions(self):
+        self.assertIn("0 stuck / 0 done = n/a", digest.format_digest(self.data()))
+
+
 class GatingTests(unittest.TestCase):
     def setUp(self):
         self.led = Ledger(":memory:")

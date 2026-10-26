@@ -657,7 +657,7 @@ def _desktop_overview(s):
     )
 
     body = "".join([_priority_boost_panel(s, ov.get("project", "")),
-                    kpis_html, needs_html, active_html, two_sec, shipping_sec,
+                    kpis_html, needs_html, _conductor_waits(s), active_html, two_sec, shipping_sec,
                     dep_sec, comp_sec, act_sec])
     return f'<section class="view view-overview"><div class="overview-body">{body}</div></section>'
 
@@ -820,7 +820,7 @@ def _phone_overview(s):
     )
 
     body = "".join([_priority_boost_panel(s, ov.get("project", "")),
-                    open_block, needs_html, active_html, qb_sec, shipping_sec,
+                    open_block, needs_html, _conductor_waits(s), active_html, qb_sec, shipping_sec,
                     threads_div, whats_new, rel_sec, how_details,
                     dep_sec, comp_sec, act_sec, _project_side_trend(s)])
     return f'<section class="tabv tabv-overview"><div class="ph-body"><div class="overview-body">{body}</div></div></section>'
@@ -996,8 +996,25 @@ def _desktop(s, view):
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
 
+def _conductor_waits(s):
+    rows = s.get("conductor_waits", [])
+    if not rows:
+        return ""
+    out = [f'<section class="sect"><h3 class="lbl">Waiting on the world · {len(rows)}</h3><div class="rows">']
+    for row in rows:
+        out.append(
+            f'<div class="row"><div class="body">{_a(row["url"], row["ref"])} '
+            f'{e(row["title"] or "(untitled)")}'
+            f'<div class="meta">{e(row["cause"])} · since {e(row["since"])} · '
+            f'next check {e(row["next_at"] or "next tick")}</div></div>'
+            f'<button class="btn" data-act="answer" data-project="{e(row["project"])}" '
+            f'data-number="{row["number"]}" data-text="/mahler go" '
+            f'aria-label="Retry now {e(row["ref"])}">Retry now</button></div>')
+    return "".join(out) + '</div></section>'
+
+
 def _d_now(s):
-    out = ['<section class="view view-now">']
+    out = ['<section class="view view-now">', _conductor_waits(s)]
     peak = s["peak"]
     if peak and peak["header"]:
         out.append(f'<div class="peakline">{e(peak["line"])}</div>')
@@ -1781,7 +1798,7 @@ def _p_stats(s):
 
 
 def _p_now(s):
-    out = ['<section class="tabv tabv-now"><div class="pad">']
+    out = ['<section class="tabv tabv-now"><div class="pad">', _conductor_waits(s)]
     peak = s["peak"]
     if peak and peak["header"]:
         tone = "acc" if peak["overridden"] else "warn"

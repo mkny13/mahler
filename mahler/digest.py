@@ -9,9 +9,11 @@ on the next tick instead of being lost for the day.
 """
 
 import json
+import re
+from collections import Counter
 from datetime import timedelta
 
-from . import config, notify
+from . import config, failures, notify, waits
 from .ledger import iso
 from .sync import missing_scope_counts
 
@@ -27,6 +29,65 @@ def _local_now():
 
 
 # ---------- gathering ----------
+
+def conductor_waits(led):
+    """Current waits, read-only; stale metadata must not describe a new wait."""
+    rows = []
+    for item in led.items(states=("waiting",)):
+        record = waits.load(led, item["project"], item["number"]) or {}
+        if record.get("bound_at") != item["state_changed_at"]:
+            record = {}
+        rows.append({"project": item["project"], "number": item["number"],
+                     "title": item["title"],
+                     "cause": record.get("cause") if record.get("cause") in waits.CAUSES else "other",
+                     "since": record.get("since") or item["state_changed_at"],
+                     "next_at": record.get("next_at")})
+    return rows
+
+
+_STATE_TRANSITION = re.compile(r"^\w+ -> (needs_you|failed|done)(?: \((.*)\))?$", re.S)
+# Explicit D13 categories only; incidental words in a question are not evidence.
+_OWNER_CATEGORY = re.compile(
+    r"\[CATEGORY:\s*(product|credentials|payment|account|destructive-data)\s*\]", re.I)
+
+
+def stuck_rate(led, now):
+    """Seven-day transition counts, not unique items; waits are a separate series."""
+    causes, wait_causes = Counter(), Counter()
+    done = 0
+    for ev in led.q("SELECT * FROM events WHERE kind IN ('state','wait') "
+                    "AND at>=? AND at<=? ORDER BY id",
+                    (iso(now - timedelta(days=7)), iso(now))):
+        detail = ev["detail"] or ""
+        if ev["kind"] == "wait":
+            try:
+                record = json.loads(detail)
+            except (ValueError, TypeError):
+                record = {}
+            cause = record.get("cause") if isinstance(record, dict) else None
+            wait_causes[cause if cause in waits.CAUSES else "other"] += 1
+            continue
+        match = _STATE_TRANSITION.fullmatch(detail)
+        if not match:
+            continue
+        state, question = match.groups()
+        if state == "done":
+            done += 1
+        elif state == "failed":
+            causes[failures.failure_class(detail)] += 1
+        else:
+            # Historical question lives in the transition detail. Current item
+            # questions and latest runs can belong to a later attempt.
+            run = led.q1("SELECT role FROM runs WHERE project=? AND number=? "
+                          "AND started_at<=? AND ended_at>=? AND outcome='NEEDS-YOU' "
+                          "ORDER BY started_at DESC, id DESC LIMIT 1",
+                          (ev["project"], ev["number"], ev["at"], ev["at"]))
+            owner = bool(_OWNER_CATEGORY.search(question or "")) or (run and run["role"] == "sort")
+            causes["owner" if owner else "other"] += 1
+    stuck = sum(causes.values())
+    return {"stuck": stuck, "done": done, "percent": 100 * stuck / done if done else None,
+            "causes": dict(causes), "waits": dict(wait_causes)}
+
 
 def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
     """Collect the last-24h picture from the ledger. `since` is an aware UTC
@@ -61,7 +122,8 @@ def gather(led, cfg, since, now=None, local_now=None, scorecard_rows=None):
         })
 
     weekly = weekly_models(led, cfg, scorecard_rows) if (local_now or now.astimezone()).weekday() == 0 else None
-    return {"models": weekly, "completed": completed, "waiting": waiting, "handoffs": handoffs,
+    return {"conductor_waits": conductor_waits(led), "stuck_rate": stuck_rate(led, now),
+            "models": weekly, "completed": completed, "waiting": waiting, "handoffs": handoffs,
             "usage": usage, "since": since, "now": now,
             "missing_scope_counts": missing_scope_counts(led, cfg),
             "backlog_net": backlog_rows(led, cfg, now)}
@@ -79,6 +141,11 @@ def _title_of(entry):
 
 def _pct(v):
     return f"{v:.0f}%" if v is not None else "no data"
+
+
+def _cause_counts(counts, limit=None):
+    return ", ".join(f"{cause} {count}" for cause, count in
+                     sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:limit])
 
 
 def format_digest(data):
@@ -100,6 +167,22 @@ def format_digest(data):
                          f"{_title_of(w)}")
     else:
         lines.append("- nothing")
+
+    held = data.get("conductor_waits", [])
+    counts = Counter(w["cause"] for w in held)
+    lines.append(f"Conductor waits ({len(held)}): {_cause_counts(counts) or 'none'}")
+    if len(held) <= 5:
+        for w in held:
+            lines.append(f"- {_label(w['project'], w['number'])} [{w['cause']}] "
+                         f"{_title_of(w)} — since {w['since']}")
+    rate = data.get("stuck_rate")
+    if rate is not None:
+        percent = f"{rate['percent']:.0f}%" if rate["percent"] is not None else "n/a"
+        top = _cause_counts(rate["causes"], limit=3)
+        lines.append(f"Stuck rate (7d): {rate['stuck']} stuck / {rate['done']} done = "
+                     f"{percent} (target < 5%)" + (f"; {top}" if top else ""))
+        lines.append(f"Conductor waits entered (7d): {sum(rate['waits'].values())}; "
+                     f"{_cause_counts(rate['waits']) or 'none'}")
 
     handoffs = data["handoffs"]
     lines.append(f"Handoffs ({len(handoffs)}):")

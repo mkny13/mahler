@@ -341,7 +341,8 @@ def answer(cfg, led, body):
         raise ActionError("an answer cannot start with the agent marker")
     with led._tx():
         item = led.item(project, number)
-        if item is None or item["state"] not in ("needs_you", "failed"):
+        if item is None or (item["state"] not in ("needs_you", "failed")
+                            and not (item["state"] == "waiting" and text == "/mahler go")):
             raise ActionError("the item moved on")
         resuming = item["state"] == "failed" and parse_command(text) is None
         for row in led.pending_actions("answer"):
