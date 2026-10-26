@@ -606,7 +606,7 @@ def refresh_ci_blocker(ctx, project):
         return blocker
     gh = ctx.gh(project)
     try:
-        if blocker.get("bot_pr") and gh.pr_view(blocker["bot_pr"])["state"] != "OPEN":
+        if blocker.get("bot_pr") and gh.pr_view(blocker["bot_pr"])["state"] == "MERGED":
             ci_blockers.clear_hold(led, project, blocker)
             return None
         base = blocker.get("base") or ctx.policy(project).get("base", "main")
