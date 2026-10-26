@@ -594,9 +594,20 @@ def _pr_fails_check(gh, pr, check, required=None):
         return True
 
 
+def _bot_pr_relevant(check, pr, view):
+    if not check:
+        return False
+    c = check.casefold()
+    title = (pr.get("title") or "") or (view.get("title") or "")
+    branch = (pr.get("headRefName") or "") or (view.get("headRefName") or "")
+    body = view.get("body") or ""
+    return c in title.casefold() or c in branch.casefold() or c in body.casefold()
+
+
 def _bot_pr(gh, led, project, check):
-    """An open, untracked bot PR whose own CI doesn't fail `check`: the likely fix."""
+    """A relevant, open, untracked bot PR whose own CI doesn't fail `check`."""
     tracked = {i["pr"] for i in led.items(project) if i["pr"]}
+    candidates = []
     for pr in sorted(gh.open_prs(), key=lambda p: p["number"]):
         login = ((pr.get("author") or {}).get("login") or "").lower()
         if pr["number"] in tracked or pr.get("isDraft") or not (
@@ -606,8 +617,15 @@ def _bot_pr(gh, led, project, check):
             view = gh.pr_view(pr["number"])
         except (GHError, ValueError):
             continue
+        if view.get("state") not in (None, "OPEN"):
+            continue
         if check not in gh_module.failing_checks(view.get("statusCheckRollup")):
-            return pr["number"]
+            candidates.append((pr, view))
+    if not candidates:
+        return None
+    relevant = [pr for pr, view in candidates if _bot_pr_relevant(check, pr, view)]
+    if relevant:
+        return relevant[0]["number"]
     return None
 
 

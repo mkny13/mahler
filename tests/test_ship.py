@@ -198,7 +198,8 @@ class ShipTests(unittest.TestCase):
 
     def test_bot_pr_merge_resumes_without_new_blocker(self):
         self.two_red_prs()
-        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"},
+                        "title": "Fix checks failure"}]
         calls = []
         real = self.gh.pr_view
         def view(number):
@@ -218,7 +219,8 @@ class ShipTests(unittest.TestCase):
 
     def test_bot_pr_closed_without_merge_keeps_hold(self):
         self.two_red_prs()
-        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"},
+                        "title": "Fix checks failure"}]
         calls = []
         real = self.gh.pr_view
         def view(number):
@@ -236,6 +238,62 @@ class ShipTests(unittest.TestCase):
             self.ship()
         self.assertIsNotNone(self.led.get_kv("ci_blocker:x"))
         red.assert_not_called()
+
+    def test_unrelated_bot_pr_is_not_adopted_over_broken_dependency(self):
+        self.two_red_prs()
+        self.gh.prs = [
+            {"number": 291, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump unrelated package"},
+            {"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump next to fixed release"},
+        ]
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number in (291, 292):
+                return {**v, "state": "OPEN", "statusCheckRollup": [{"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertNotEqual(blocker.get("bot_pr"), 291)
+
+    def test_relevant_bot_pr_adopted_over_lower_numbered_unrelated_bot_pr(self):
+        self.two_red_prs()
+        self.gh.prs = [
+            {"number": 291, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Bump unrelated package"},
+            {"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}, "title": "Fix checks failure in dependency"},
+        ]
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number in (291, 292):
+                return {**v, "state": "OPEN", "statusCheckRollup": [{"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertNotEqual(blocker.get("bot_pr"), 291)
+        self.assertEqual(blocker.get("bot_pr"), 292)
+
+    def test_single_unrelated_bot_pr_is_not_adopted(self):
+        self.two_red_prs()
+        self.gh.prs = [
+            {"number": 291, "isDraft": False, "author": {"login": "dependabot[bot]"},
+             "title": "Bump unrelated package"},
+        ]
+        real = self.gh.pr_view
+        def view(number):
+            v = real(number)
+            if number == 291:
+                return {**v, "state": "OPEN",
+                        "statusCheckRollup": [{"name": "checks", "status": "COMPLETED",
+                                               "conclusion": "SUCCESS"}]}
+            return v
+        self.gh.pr_view = view
+        self.ship()
+        blocker = json.loads(self.led.get_kv("ci_blocker:x"))
+        self.assertNotEqual(blocker.get("bot_pr"), 291)
+        self.assertEqual(blocker.get("number"), 300)
+        self.assertEqual(len(self.gh.issues), 1)
 
     def test_pending_base_does_not_release_hold(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -292,7 +350,8 @@ class ShipTests(unittest.TestCase):
         self.gh.required_checks = {"checks"}
         self.gh.base_checks = lambda branch: [
             {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
-        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"}}]
+        self.gh.prs = [{"number": 292, "isDraft": False, "author": {"login": "dependabot[bot]"},
+                        "title": "Fix checks failure"}]
         self.ship()
         blocker = json.loads(self.led.get_kv("ci_blocker:x"))
         self.assertEqual((blocker["check"], blocker["bot_pr"], blocker["number"]),
