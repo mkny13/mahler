@@ -605,7 +605,7 @@ def _bot_pr_relevant(check, pr, view):
 
 
 def _bot_pr(gh, led, project, check):
-    """An open, untracked bot PR whose own CI doesn't fail `check`: the likely fix."""
+    """A relevant, open, untracked bot PR whose own CI doesn't fail `check`."""
     tracked = {i["pr"] for i in led.items(project) if i["pr"]}
     candidates = []
     for pr in sorted(gh.open_prs(), key=lambda p: p["number"]):
@@ -623,8 +623,6 @@ def _bot_pr(gh, led, project, check):
             candidates.append((pr, view))
     if not candidates:
         return None
-    if len(candidates) == 1:
-        return candidates[0][0]["number"]
     relevant = [pr for pr, view in candidates if _bot_pr_relevant(check, pr, view)]
     if relevant:
         return relevant[0]["number"]
