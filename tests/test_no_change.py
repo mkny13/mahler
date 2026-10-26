@@ -426,3 +426,47 @@ class ClaimTests(unittest.TestCase):
         self.advance()
         self.assertEqual(self.led.item('x', 5)['state'], 'done')
         self.assertIn(url, self.comments[0])
+
+    def parent_verify_done(self, final, run_id=7):
+        from mahler import sync
+        self.led.upsert_item('x', 5, state='working',
+                             issue_body='<!-- mahler:parent-verify:653:abc -->\nplan')
+        e = finalize.Ending(self.ctx, {"id": run_id, "epoch": 1, "project": "x", "number": 5,
+                                       "platform": "claude", "role": "build"},
+                            self.led.item('x', 5), self.ctx.policy('x'),
+                            {"final": final, "last_text": final}, "claude", "DONE",
+                            "evidence collected", None, "DONE")
+        e.no_work_base = 'base'
+        self.assertTrue(finalize._ended_done(e))
+        return sync.evidence_key('x', 5, run_id)
+
+    def test_parent_verify_done_records_evidence_for_the_conductor(self):
+        final = ("PARENT-EVIDENCE:\n- met | Docs updated | README.md:12\n"
+                 "- unmet | Smoke passes | fails at step 3\nEND-PARENT-EVIDENCE\n"
+                 "STATUS: DONE evidence collected")
+        key = self.parent_verify_done(final)
+        record = json.loads(self.led.get_kv(key))
+        self.assertEqual((record['parent'], record['verify'], record['run'], record['done']),
+                         (653, 5, 7, False))
+        self.assertEqual([e['met'] for e in record['entries']], [True, False])
+        self.gh.comment.assert_not_called()           # the run-side path writes nothing
+        self.gh.create_issue.assert_not_called()
+        self.assertEqual(self.led.item('x', 5)['state'], 'verifying')
+        # Re-finalizing the same run keeps the first record (and its done flag).
+        record['done'] = True
+        self.led.set_kv(key, json.dumps(record))
+        self.parent_verify_done(final)
+        self.assertTrue(json.loads(self.led.get_kv(key))['done'])
+
+    def test_parent_verify_missing_or_malformed_evidence_retries_not_closes(self):
+        for run_id, final in ((8, 'STATUS: DONE all good'),
+                              (9, 'PARENT-EVIDENCE:\n- met Docs\nEND-PARENT-EVIDENCE\nSTATUS: DONE')):
+            with self.subTest(final=final):
+                before = self.led.item('x', 5)['attempts']
+                key = self.parent_verify_done(final, run_id)
+                self.assertIsNone(self.led.get_kv(key))
+                item = self.led.item('x', 5)
+                self.assertEqual(item['attempts'], before + 1)
+                self.assertIn(item['state'], ('ready', 'failed'))
+                self.assertFalse(no_change.read(self.led, 'x', 5).get('claim_run') == run_id)
+        self.gh.close_issue.assert_not_called()

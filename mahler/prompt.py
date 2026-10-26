@@ -257,11 +257,10 @@ def build(ctx, project, item, role, platform, prep, context=None):
             "Never end `NEEDS-YOU` or `BLOCKED` over push or issue-write access.\n")
         if re.search(r"<!-- mahler:parent-verify(?:-followup)?:\d+:",
                      row_get(item, "issue_body", "") or ""):
+            from .sync import EVIDENCE_CONTRACT   # local: sync imports the runner chain
             handoff += (
-                "\nFor this parent-verify item, end with a structured evidence block "
-                "(per criterion: met/unmet, evidence) in your DONE summary or an evidence file; "
-                "the conductor posts parent evidence and ticks checkboxes. "
-                "Do not attempt GitHub writes, comment on issues, or edit issues.\n")
+                "\nFor this parent-verify item: " + EVIDENCE_CONTRACT +
+                "\nDo not attempt GitHub writes, comment on issues, or edit issues.\n")
 
     sizing = ""
     if role == "sort" and config.size_target_of(pol) == "s":
