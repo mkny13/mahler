@@ -1476,6 +1476,18 @@ class RunTests(unittest.TestCase):
         self.assertEqual(ping.call_args.kwargs["tags"], "question")
         self.assertTrue(ping.call_args.kwargs["console"])
 
+        # negative control: untagged NEEDS-YOU does not park; category enforcement is proven
+        self.led.upsert_item("x", 5, state="working", attempts=0)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU which licence key?\n")
+        ping.reset_mock()
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        ping.assert_not_called()
+        self.assertIn("deciding it (D52)", self.last_event())
+
     def run_untagged(self, text="STATUS: NEEDS-YOU May I file a follow-up?\n"):
         with open(self.log, "w") as fh:
             fh.write(text)
@@ -1498,7 +1510,13 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "ready")
 
     def test_second_untagged_needs_you_in_the_cycle_reaches_the_owner(self):
-        self.run_untagged()
+        ping = self.run_untagged()
+        # first untagged returns to ready with no ping, proving second-strike behavior
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        ping.assert_not_called()
+
+        # second untagged in same cycle reaches owner
         ping = self.run_untagged()
         item = self.led.item("x", 5)
         self.assertEqual(item["state"], "needs_you")
@@ -1575,7 +1593,18 @@ class RunTests(unittest.TestCase):
             fh.write("STATUS: NEEDS-YOU [product] pick one OPTIONS: A ||  B  | | C | D\n")
         self.finalize()
         item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "needs_you")
         self.assertEqual(json.loads(item["options"]), ["A", "B", "C"])
+
+        # negative control: untagged NEEDS-YOU does not park, so options handling is not relevant
+        self.led.upsert_item("x", 5, state="working", attempts=0)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: NEEDS-YOU pick one OPTIONS: A ||  B  | | C | D\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        ping.assert_not_called()
 
     def test_needs_you_option_text_cut_to_forty_characters(self):
         long_choice = "x" * 60
@@ -1583,9 +1612,20 @@ class RunTests(unittest.TestCase):
             fh.write(f"STATUS: NEEDS-YOU [product] pick one OPTIONS: {long_choice} | short\n")
         self.finalize()
         item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "needs_you")
         options = json.loads(item["options"])
         self.assertEqual(options[0], "x" * 40)
         self.assertEqual(options[1], "short")
+
+        # negative control: untagged NEEDS-YOU does not park, so option truncation is not applied
+        self.led.upsert_item("x", 5, state="working", attempts=0)
+        with open(self.log, "w") as fh:
+            fh.write(f"STATUS: NEEDS-YOU pick one OPTIONS: {long_choice} | short\n")
+        with mock.patch.object(self.ctx, "ping") as ping:
+            self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "ready")
+        ping.assert_not_called()
 
     def test_a_real_stop_keeps_its_own_handoff(self):
         with open(self.log, "w") as fh:
