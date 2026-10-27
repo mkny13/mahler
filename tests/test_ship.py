@@ -51,6 +51,9 @@ class FakeGH:
     def pr_close(self, number, comment):
         self.comments.append(comment)
 
+    def delete_branch(self, branch):
+        self.deleted_branches = getattr(self, "deleted_branches", []) + [branch]
+
     def close_issue(self, number):
         self.closed = number
 
@@ -1917,9 +1920,28 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(item["esc_tier"], router.cap_escalation(
             self.cfg, self.ctx.policy("x"), 99, None, pin=item["pin"]))
         self.gh.pr_close.assert_called_once()
+        self.assertEqual(self.gh.deleted_branches, [self.gh.pr_view(88)["headRefName"]])
+        self.assertIsNone(item["branch"])     # the next build starts from base, not the old branch
         self.assertIn("broken authorization", self.led.get_kv("rebuild-context:x#5"))
         self.assertTrue(self.led.get_kv("fresh-rebuild:x#5"))
         ping.assert_not_called()
+
+    def test_failed_pr_close_defers_rebuild_without_spending_it(self):
+        self.gh.pr_view = lambda n: {**FakeGH.pr_view(self.gh, n), "state": "OPEN"}
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x")
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock(side_effect=gh_module.GHError("boom"))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                       self.gh.pr_view(88), "f")
+        item = self.item()
+        self.assertEqual((item["pr"], item["branch"]), (88, "mahler/5-x"))
+        self.assertNotEqual(item["state"], "waiting")
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertFalse(self.led.get_kv("reviewfix:x#5:88:" + (self.gh.pr_view(88).get("headRefOid") or "")))
 
     def test_second_exhaustion_asks_owner_once_and_never_fails(self):
         ping, merge, start = self.exhausted([self.blocker(category="security")], fresh=True)

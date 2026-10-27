@@ -28,6 +28,9 @@ class FakeGH:
     def pr_close(self, n, body):
         self.comments.append(body)
 
+    def delete_branch(self, branch):
+        pass
+
 
 class StubCtx:
     def __init__(self, cfg, led, gh=None):

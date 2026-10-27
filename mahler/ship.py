@@ -2082,20 +2082,33 @@ def _review_exhausted(ctx, project, item, pr, view, findings, size):
         led.set_kv(f"design:{project}#{n}:{pr}:{sha}", json.dumps(record))
         if _handle_design_followups(ctx, project, item, pr, view, sha, record,
                                     _kv_json(led, f"review:{project}#{n}")):
-            return
+            return True
 
     if not led.get_kv(f"fresh-rebuild:{project}#{n}"):
+        # Close the PR and drop its branch first: a surviving remote branch would make the
+        # next build start from the rejected work. Any failure retries on the next tick and
+        # spends nothing (the single rebuild allowance, the item's PR link, its state).
+        gh = ctx.gh(project)
+        try:
+            try:
+                gh.pr_close(
+                    pr, "Closing: independent review did not converge on this branch; the "
+                        "conductor is rebuilding from base with all accumulated findings.")
+            except GHError:
+                if gh.pr_view(pr).get("state") == "OPEN":
+                    raise
+            branch = view.get("headRefName") or item["branch"]
+            if branch:
+                gh.delete_branch(branch)
+        except GHError as e:
+            ctx.say(f"{project}#{n}: fresh rebuild of PR #{pr} deferred — {e}")
+            return False
         led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{sha}")
         led.set_kv(f"rebuild-context:{project}#{n}", _accumulated_findings(led, project, n, pr, findings))
-        try:
-            ctx.gh(project).pr_close(
-                pr, "Closing: independent review did not converge on this branch; the conductor "
-                    "is rebuilding from base with all accumulated findings.")
-        except GHError as e:
-            ctx.say(f"{project}#{n}: closing PR #{pr} for the fresh rebuild failed — {e}")
         led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
         led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0,
-                        esc_tier=router.cap_escalation(cfg, pol, 99, size, pin=item["pin"]))
+                        esc_tier=router.cap_escalation(cfg, pol, 99, size, pin=item["pin"]),
+                        branch=None)
         waits.hold(led, project, n, "review_nonconvergent",
                    f"PR #{pr} kept failing review; rebuilding from base at the top tier",
                    resume="ready")
@@ -2103,7 +2116,7 @@ def _review_exhausted(ctx, project, item, pr, view, findings, size):
         rec["next_at"] = iso(led.now() + timedelta(minutes=30))
         led.set_kv(waits.key(project, n), json.dumps(rec))
         led.release(project, n, holder=CONDUCTOR)
-        return
+        return True
 
     summary = "; ".join(f"{f.get('location', '?')}: {f.get('scenario', '')}"
                         for f in protected[:3]) or str(findings or "see the review comments")[:200]
@@ -2113,6 +2126,7 @@ def _review_exhausted(ctx, project, item, pr, view, findings, size):
     led.set_state(project, n, "needs_you", question, question=question, options=json.dumps(options))
     ctx.ping(f"Needs you — {project} #{n}", question, project, n, priority="high", tags="warning")
     led.release(project, n, holder=CONDUCTOR)
+    return True
 
 
 def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False, design_plan=None):
@@ -2189,7 +2203,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
             if not design_plan and _maybe_start_design(ctx, project, item, pr, view, sha, {"findings": findings}):
                 return
             if not design_plan:
-                _review_exhausted(ctx, project, item, pr, view, findings, size)
+                if not _review_exhausted(ctx, project, item, pr, view, findings, size):
+                    led.set_kv(key, None)       # nothing was spent; retry next tick
                 return
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)

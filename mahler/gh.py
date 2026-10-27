@@ -1078,6 +1078,14 @@ class GH:
         body = comment if comment.startswith(AGENT_MARK) else AGENT_NOTE + "\n" + comment
         self._gh("pr", "close", str(number), "-R", self.repo, "--comment", body)
 
+    def delete_branch(self, branch):
+        """Delete a remote branch; an already-missing one counts as deleted."""
+        try:
+            self._gh("api", "-X", "DELETE", f"repos/{self.repo}/git/refs/heads/{branch}")
+        except GHError as e:
+            if "reference does not exist" not in str(e).lower() and "not found" not in str(e).lower():
+                raise
+
     def reopen_issue(self, number):
         self._gh("issue", "reopen", str(number), "-R", self.repo)
 
