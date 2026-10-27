@@ -1,5 +1,6 @@
 """Setup failures (exit 97) must surface in handoffs and cap out (issue #8)."""
 
+import json
 import os
 import tempfile
 import unittest
@@ -101,21 +102,20 @@ class SetupFailureTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 0)
         self.assertEqual(item["state"], "ready")
 
-    def test_second_consecutive_setup_failure_needs_you_with_the_log_tail(self):
+    def test_second_consecutive_setup_failure_waits_with_the_log_tail(self):
         self.end()
         self.end()
         item = self.led.item("p", 8)
-        self.assertEqual(item["state"], "needs_you")
+        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(json.loads(self.led.get_kv("wait:p#8"))["cause"], "setup")
         self.assertEqual(item["setup_fails"], 2)
         self.assertEqual(item["attempts"], 0)
         self.assertIn("/mahler go", self.gh.comments[-1])
         self.assertIn("class=setup_failed", self.gh.comments[-1])
         self.assertIn("attempt 0 of 3", self.gh.comments[-1])
         self.assertIn("npm ERR! missing package.json", self.gh.comments[-1])
-        self.assertEqual([p[2] for p in self.ctx.pings], ["low", "high"])
-        # mahler#248: a structured question with no answer options
-        self.assertEqual(item["question"],
-                         "setup failed 2 times in a row — the environment, not the task")
+        self.assertEqual([p[2] for p in self.ctx.pings], ["low"])   # no owner ping (D52)
+        self.assertIsNone(item["question"])
         self.assertEqual(item["options"], "[]")
 
     def test_missing_setup_log_is_said_so(self):
