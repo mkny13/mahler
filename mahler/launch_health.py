@@ -5,7 +5,6 @@ import os
 import re
 import tempfile
 import subprocess
-import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -43,7 +42,7 @@ def exact_live(sha, *, timeout=5, env=None):
                                       timeout=timeout)
             if contains.returncode:
                 return None
-        health = subprocess.run([sys.executable, "-m", "mahler", "version"], cwd=app,
+        health = subprocess.run([str(app / "bin" / "mahler"), "version"], cwd=app,
                                 env=child_env, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, timeout=timeout)
         if health.returncode == 0 and marker.read_text().strip() == proven:
