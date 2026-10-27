@@ -757,6 +757,32 @@ def _surface_no_work(e, key, record, reason):
     e.led.set_kv(key, json.dumps(record))
 
 
+def _parent_evidence_recorded(e):
+    """A parent-verify build's DONE must carry the evidence block (mahler#1267).
+
+    The conductor, not the run, writes to GitHub: record the parsed block for
+    `sync.post_parent_evidence`, once per run. -> False (with the outcome set)
+    when the block is missing or malformed, so the item retries instead of
+    closing silently. Other items pass through untouched.
+    """
+    from . import sync
+    if row_get(e.run, "role") != "build" or e.item is None:
+        return True
+    parent = sync.parent_verify_parent(e.item)
+    if parent is None:
+        return True
+    try:
+        entries = sync.parse_parent_evidence(e.log.get("final") or e.log.get("last_text") or "")
+    except ValueError as exc:
+        e.outcome = f"parent-verify evidence for #{parent} unusable: {exc}"
+        return False
+    key = sync.evidence_key(e.project, e.number, e.run["id"])
+    if not e.led.get_kv(key):
+        e.led.set_kv(key, json.dumps({"parent": parent, "verify": e.number, "run": e.run["id"],
+                                      "entries": entries, "done": False}))
+    return True
+
+
 def _ended_done(e):
     """D18: the run's own job is finished. The conductor (code, not another
     agent) ships it from here: push, PR, CI, merge. A DONE build is a success,
@@ -770,6 +796,8 @@ def _ended_done(e):
         e.ping(f"Fix pushed — {e.project} #{e.number}",
                f"{e.run['platform']} ended DONE; CI re-runs on the PR", priority="low")
         return True
+    if not _parent_evidence_recorded(e):
+        return _retry(e)                        # parent-verify DONE without usable evidence
     if _repeated_no_work(e):
         return True
     stale_closed_pr = False

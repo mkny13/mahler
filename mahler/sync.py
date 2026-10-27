@@ -10,8 +10,8 @@ import hashlib
 import re
 from datetime import timedelta
 
-from . import ci_blockers, config, releases, waits
-from .gh import (GHError, AGENT_MARK, LABEL_STATES, STATE_LABELS, depends_of,
+from . import ci_blockers, config, no_change, releases, waits
+from .gh import (GHError, AGENT_MARK, AGENT_NOTE, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
                  completion_evidence)
@@ -878,6 +878,169 @@ def _verify_refresh(gh, row, number, blockers, fingerprint):
         gh.edit_issue_body(row["number"], new)
 
 
+EVIDENCE_START = "PARENT-EVIDENCE:"
+EVIDENCE_END = "END-PARENT-EVIDENCE"
+# The parent-verify run's evidence block (mahler#1267). The run makes no
+# GitHub writes (D18/D47); the conductor parses this block from the run's
+# final message, posts it on the parent, ticks the checkboxes of met
+# criteria and files one follow-up issue per unmet criterion.
+EVIDENCE_CONTRACT = (
+    "End your final message, before the STATUS line, with this evidence block, one line "
+    "per remaining criterion (copy the criterion text exactly as the parent checklist "
+    "words it):\n"
+    f"{EVIDENCE_START}\n"
+    "- met | <criterion> | <evidence: links, commands, results>\n"
+    "- unmet | <criterion> | <what is missing>\n"
+    f"{EVIDENCE_END}\n"
+    "A DONE without a well-formed block is retried. Do not comment on or edit any issue — "
+    "the conductor posts the block on the parent, ticks the checkboxes of met criteria and "
+    "files one follow-up issue per unmet criterion. Identify any owner-only decision.")
+_EVIDENCE_LINE = re.compile(r"[-*+]\s*(met|unmet)\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*", re.I)
+
+
+def parse_parent_evidence(text):
+    """Entries of the last evidence block in `text`: [{met, criterion, evidence}].
+
+    Raises ValueError when the block is missing or malformed, so the caller
+    takes the retry path rather than closing on nothing.
+    """
+    lines = (text or "").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip().strip("`*") == EVIDENCE_START]
+    if not starts:
+        raise ValueError("evidence block missing")
+    entries = []
+    for line in lines[starts[-1] + 1:]:
+        line = line.strip()
+        if line.strip("`*") == EVIDENCE_END:
+            break
+        if not line or line.startswith("```"):
+            continue
+        m = _EVIDENCE_LINE.fullmatch(line)
+        if not m or not m[2] or not m[3]:
+            raise ValueError(f"malformed evidence line: {line[:120]}")
+        entries.append({"met": m[1].lower() == "met", "criterion": m[2], "evidence": m[3]})
+    else:
+        raise ValueError(f"evidence block has no {EVIDENCE_END} line")
+    if not entries:
+        raise ValueError("evidence block is empty")
+    return entries
+
+
+def parent_verify_parent(item):
+    """The parent a verification item verifies, or None (see _verify_matches)."""
+    item = dict(item)
+    m = re.search(r"<!-- mahler:parent-verify(?:-followup)?:(\d+):", item.get("issue_body") or "")
+    if m:
+        return int(m[1])
+    labels = json.loads(item.get("labels") or "[]")
+    m = re.fullmatch(r"Verify remaining completion criteria for #(\d+)", item.get("title") or "")
+    return int(m[1]) if m and "pass:verify" in labels else None
+
+
+def evidence_key(project, verify_number, run_id):
+    return f"parent_evidence:{project}#{verify_number}:{run_id}"
+
+
+def _criterion_norm(text):
+    text = re.sub(r"^(?:unchecked criterion:\s*)", "", text.strip(), flags=re.I)
+    return " ".join(text.strip("`*_ ").split()).casefold()
+
+
+def post_parent_evidence(ctx, projects):
+    """Apply recorded parent-verify evidence; each record is retried until done."""
+    if ctx.dry_run:
+        return
+    for p in projects:
+        project = p["name"]
+        try:
+            rows = ctx.led.q("SELECT key, value FROM kv WHERE key LIKE ?",
+                             (f"parent_evidence:{project}#%",))
+        except Exception as e:  # never break the tick
+            ctx.say(f"{project}: parent evidence lookup failed — {e}")
+            continue
+        for row in rows:
+            try:
+                record = json.loads(row["value"] or "{}")
+                if record and not record.get("done"):
+                    # A clean-worktree claim is unverified until its independent
+                    # no-change review passes; evidence must not close the parent first.
+                    review = no_change.read(ctx.led, project, record["verify"])
+                    # Only the run whose claim the review accepted may apply: evidence
+                    # from an earlier, rejected run stays unapplied.
+                    if review and (review.get("phase") != "done"
+                                   or review.get("claim_run") != record["run"]):
+                        continue
+                    _apply_parent_evidence(ctx, project, record)
+                    record["done"] = True
+                    ctx.led.set_kv(row["key"], json.dumps(record))
+            except Exception as e:  # one record cannot stop the tick; retried next tick
+                ctx.say(f"{project}: parent evidence {row['key']} unresolved — {e}")
+
+
+def _apply_parent_evidence(ctx, project, record):
+    """Tick met criteria, file follow-ups for unmet ones, post one comment.
+
+    Every step is idempotent per run: ticking is a no-op once checked, each
+    follow-up and the comment carry per-run markers checked before writing.
+    """
+    led, gh = ctx.led, ctx.gh(project)
+    parent, run_id, verify = record["parent"], record["run"], record["verify"]
+    entries = record["entries"]
+    body = gh.issue_body(parent)
+    lines = body.splitlines(keepends=True)
+    by_text = {_criterion_norm(check[2]): (index, check) for index, check, _ in _parent_checks(body)}
+    ticked, unmatched = [], []
+    for entry in entries:
+        if not entry["met"]:
+            continue
+        found = by_text.get(_criterion_norm(entry["criterion"]))
+        if not found:
+            unmatched.append(entry["criterion"])
+        elif found[1][1] == " ":
+            lines[found[0]] = lines[found[0]].replace("[ ]", "[x]", 1)
+            ticked.append(entry["criterion"])
+    if ticked:
+        gh.edit_issue_body(parent, "".join(lines))
+    policy = ctx.policy(project)
+    labels = ["type:chore", "p2"]
+    if policy.get("scope") == "label":
+        labels.append(policy["scope_label"])
+    inventory = None
+    followups = []
+    for i, entry in enumerate(entries):
+        if entry["met"]:
+            continue
+        marker = f"<!-- mahler:parent-evidence-followup:{parent}:{run_id}:{i} -->"
+        key = f"parent_evidence_followup:{project}:{parent}:{run_id}:{i}"
+        url = led.get_kv(key)
+        if not url:
+            if inventory is None:
+                inventory = gh.parent_issue_inventory()
+            row = next((r for r in inventory if marker in (r.get("body") or "")), None)
+            url = row and (row.get("html_url") or f"#{row['number']}")
+        if not url:
+            url = gh.create_issue(
+                f"Unmet criterion for #{parent}: {entry['criterion'][:80]}",
+                f"{marker}\nPart of #{parent}\n\n## Problem / goal\nVerification #{verify} "
+                f"(run {run_id}) found this parent criterion unmet:\n\n> {entry['criterion']}\n\n"
+                f"What is missing: {entry['evidence']}\n\n## Done when\n"
+                f"- [ ] {entry['criterion']}\n", labels)
+        led.set_kv(key, url)
+        followups.append((entry["criterion"], url))
+    marker = f"<!-- mahler:parent-evidence:{parent}:{run_id} -->"
+    if not any(marker in c.get("body", "") for c in gh.issue_comments(parent)):
+        text = [f"**Parent verification evidence** from #{verify} (run {run_id}):", ""]
+        text += [f"- {'met' if e['met'] else 'unmet'}: {e['criterion']} — {e['evidence']}"
+                 for e in entries]
+        if ticked:
+            text += ["", "Ticked: " + "; ".join(ticked)]
+        if unmatched:
+            text += ["", "Met but not on the checklist (nothing ticked): " + "; ".join(unmatched)]
+        if followups:
+            text += ["", "Follow-ups:"] + [f"- {c}: {u}" for c, u in followups]
+        gh.comment(parent, f"{AGENT_NOTE}\n{marker}\n" + "\n".join(text))
+
+
 def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comments=()):
     """Give unresolved criteria and child evidence one verifier per parent.
 
@@ -914,11 +1077,8 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
         url = gh.create_issue(_verify_title(number), body, labels)
         led.set_kv(item_key, url)
         return url
-    evidence_contract = (
-        "End with a structured evidence block (per criterion: met/unmet, evidence) in your "
-        "DONE summary or an evidence file; do not comment on or edit any issue — "
-        "the conductor posts it and ticks supported checkboxes. Identify any owner-only decision.")
-    tail = ("\n\n## Done when\n- [ ] Each remaining parent criterion has evidence in the run summary or evidence file "
+    evidence_contract = EVIDENCE_CONTRACT
+    tail = ("\n\n## Done when\n- [ ] Each remaining parent criterion has a line in the run's PARENT-EVIDENCE block "
             "or an explicit actionable owner question.\n\n## Needs a human to check\nNothing")
     if not matches:
         create(f"{_verify_managed(number, blockers, fingerprint)}\n\n## Problem / goal\n"
@@ -1023,6 +1183,7 @@ def _parent_verify(ctx, project, number, blockers, fingerprint, inventory, comme
 
 def close_finished_parents(ctx, projects):
     """Reconcile tracking parents, independently of child verification clocks."""
+    post_parent_evidence(ctx, projects)   # ticks first, so this pass sees them
     for p in projects:
         try:
             _close_finished_parents_project(ctx, p["name"])
