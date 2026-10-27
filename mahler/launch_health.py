@@ -17,27 +17,37 @@ CANARY_INTERVAL = timedelta(minutes=30)
 
 
 def exact_live(sha, *, timeout=5, env=None):
-    """Observe the installed clone, never the task checkout or known_good alone."""
+    """Observe the installed clone, never the task checkout or known_good alone.
+
+    The daemon pins to a known-good commit and advances in jumps, so a merge is live
+    once the launch-proven installed HEAD equals it or descends from it."""
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         return None
     home = Path(config.STATE)
     app = home / "app"
     marker = home / "launch_ok"
     try:
-        if marker.read_text().strip() != sha:
+        proven = marker.read_text().strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", proven):
             return None
         child_env = dict(os.environ if env is None else env)
         child_env.pop("PYTHONPATH", None)
         child_env["MAHLER_HOME"] = str(home)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=app,
                               env=child_env, capture_output=True, text=True, timeout=timeout)
-        if head.returncode or head.stdout.strip() != sha:
+        if head.returncode or head.stdout.strip() != proven:
             return None
+        if proven != sha:
+            contains = subprocess.run(["git", "merge-base", "--is-ancestor", sha, proven],
+                                      cwd=app, env=child_env, capture_output=True,
+                                      timeout=timeout)
+            if contains.returncode:
+                return None
         health = subprocess.run([sys.executable, "-m", "mahler", "version"], cwd=app,
                                 env=child_env, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, timeout=timeout)
-        if health.returncode == 0 and marker.read_text().strip() == sha:
-            return f"mahler:{sha}"
+        if health.returncode == 0 and marker.read_text().strip() == proven:
+            return f"mahler:{proven}"
     except (OSError, subprocess.SubprocessError):
         pass
     return None
