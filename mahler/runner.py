@@ -416,7 +416,7 @@ def run_env(ctx, project, number, platform, run_id, epoch):
 
     env.update(MAHLER_RUN_ID=str(run_id), MAHLER_PROJECT=project,
                MAHLER_ISSUE=str(number), MAHLER_EPOCH=str(epoch),
-               MAHLER_HOME=config.STATE,
+               MAHLER_HOME=config.STATE, MAHLER_RUNS_DIR=config.RUNS_DIR,
                **git_config)
     if pconf["kind"] == "vibe":
         env.update(platforms.vibe_env(pconf, run_dir, env))
@@ -485,7 +485,10 @@ def resume_session(ctx, project, item, role, platform, resume_from, env):
             # resolves explicit IDs without the cwd filter used by --continue;
             # resume_blueprint builds with the NEW options.cwd. Reuse only
             # session storage, not the old config, credentials or environment.
-            root = Path(config.RUNS_DIR) / str(source["id"]) / "vibe_home/logs/session"
+            # The source's own folder: [storage] runs_dir may have moved since.
+            src_dir = (Path(source["log_path"]).parent if row_get(source, "log_path")
+                       else Path(config.RUNS_DIR) / str(source["id"]))
+            root = src_dir / "vibe_home/logs/session"
             paths = [root]
         if not paths or not all(os.access(p, os.R_OK) for p in paths):
             raise ResumeUnsupported("source session storage is inaccessible")

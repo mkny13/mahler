@@ -43,6 +43,24 @@ class HistoryTests(unittest.TestCase):
         hits = history.search(self.led, "a", "zebra parser")
         self.assertEqual([h["run_id"] for h in hits], [rid])
 
+    def test_prune_no_work_blanks_old_launch_failures_only(self):
+        old_fail = self.seed("a", 1, "Zebra", "boom\n")
+        new_fail = self.seed("a", 2, "Zebra", "boom\n")
+        old_done = self.seed("a", 3, "Zebra", "STATUS: DONE\n")
+        for rid, outcome, ended in ((old_fail, "launch failed: git fetch", "2026-01-01T00:00:00+00:00"),
+                                    (new_fail, "not claimed", "2999-01-01T00:00:00+00:00"),
+                                    (old_done, "DONE", "2026-01-01T00:00:00+00:00")):
+            self.led.con.execute("UPDATE runs SET outcome=?, ended_at=? WHERE id=?",
+                                 (outcome, ended, rid))
+        self.assertEqual(history.refresh(self.led, "a"), 3)
+        self.assertEqual(history.prune_no_work(self.led), 1)
+        bodies = dict(self.led.con.execute("SELECT run_id, body FROM run_history"))
+        self.assertEqual(bodies[old_fail], "")
+        self.assertNotEqual(bodies[new_fail], "")
+        self.assertNotEqual(bodies[old_done], "")
+        self.assertEqual(history.refresh(self.led, "a"), 0)     # never re-indexed
+        self.assertEqual(history.prune_no_work(self.led), 0)
+
     def test_actual_files_survive_worktree_removal(self):
         wt = Path(self.tmp.name) / "repo"
         wt.mkdir()

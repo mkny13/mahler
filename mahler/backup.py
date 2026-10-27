@@ -19,9 +19,13 @@ and Backblaze both cover.
 Mahler's own ledger (mahler#533) gets the same daily treatment, from the tick
 itself rather than a project spec: `sqlite3.Connection.backup()` (safe to run
 against the live WAL database) into ~/.mahler/backups/mahler/, verified with
-`PRAGMA integrity_check` on the copy, pruned to the same 14/8/12 policy, and
-optionally mirrored to an off-disk `[backup] copy_to` folder. `mahler
-restore-ledger` (cli.py) reverses it.
+`PRAGMA integrity_check` on the copy, pruned to `[backup] keep_daily` /
+`keep_weekly` / `keep_monthly` (5 / 4 / 0: each copy is the whole ledger), and
+optionally mirrored to an off-disk `[backup] copy_to` folder. `[backup] dir`
+moves the copies off ~/.mahler (e.g. to the external SSD); copies the policy
+keeps are moved there from the old folder, the rest pruned (mahler#1386).
+Only after a verified copy exists does the tick compact and vacuum the live
+ledger (`maintain_ledger`). `mahler restore-ledger` (cli.py) reverses it.
 """
 
 import os
@@ -40,6 +44,9 @@ FILE_RE = re.compile(r"^(?P<name>.+)-(?P<stamp>\d{8}-\d{6})\.dump$")
 
 LEDGER_ROOT = os.path.join(config.STATE, "backups", "mahler")
 LEDGER_FILE_RE = re.compile(r"^mahler-(?P<stamp>\d{8}-\d{6})\.db$")
+LEDGER_STRAY_RE = re.compile(r"^mahler-\d{8}-\d{6}\.db\.partial(-wal|-shm)?$")
+LEDGER_POLICY = {"daily": 5, "weekly": 4, "monthly": 0}
+VACUUM_MIN_FREE_BYTES = 32 * 1024 * 1024
 
 
 class BackupError(RuntimeError):
@@ -251,6 +258,9 @@ def backup_ledger(led_path, root=None, now=None):
             dst = sqlite3.connect(tmp)
             try:
                 src.backup(dst)
+                # A standalone file: no -wal/-shm left beside it by the check
+                # below, and nothing extra to carry along on restore.
+                dst.execute("PRAGMA journal_mode=DELETE")
             finally:
                 dst.close()
         finally:
@@ -266,16 +276,56 @@ def backup_ledger(led_path, root=None, now=None):
     return {"path": final, "bytes": os.path.getsize(final)}
 
 
-def prune_ledger(root=None, **policy):
+def prune_ledger(root=None, legacy=None, **policy):
+    """Apply the keep policy to the copies in `root` and, when given, the old
+    `legacy` folder together; kept legacy copies move into `root`. Leftover
+    `.partial` files from interrupted runs go too. -> removed paths."""
     root = root or LEDGER_ROOT
-    if not os.path.isdir(root):
-        return []
-    files = {}
-    for f in os.listdir(root):
-        m = LEDGER_FILE_RE.match(f)
-        if m:
-            files[datetime.strptime(m.group("stamp"), STAMP)] = os.path.join(root, f)
-    return _prune_files(files, **policy)
+    policy = {**LEDGER_POLICY, **policy}
+    dirs = [d for d in (root, legacy) if d and os.path.isdir(d)]
+    if legacy and os.path.realpath(legacy) == os.path.realpath(root):
+        dirs = dirs[:1]
+    files, removed = {}, []
+    for d in dirs:
+        for f in os.listdir(d):
+            m = LEDGER_FILE_RE.match(f)
+            if m:
+                files[datetime.strptime(m.group("stamp"), STAMP)] = os.path.join(d, f)
+            elif LEDGER_STRAY_RE.match(f):
+                _rm(os.path.join(d, f))
+                removed.append(os.path.join(d, f))
+    removed += _prune_files(files, **policy)
+    for path in files.values():
+        if os.path.exists(path) and os.path.dirname(path) != root:
+            try:
+                shutil.move(path, os.path.join(root, os.path.basename(path)))
+            except OSError:
+                pass                  # stays where it was; the next night retries
+    return removed
+
+
+def maintain_ledger(led, gap_seconds=None):
+    """Nightly upkeep once a verified copy exists (mahler#1386): merge
+    capacity intervals a tight gap threshold split, blank old no-work run
+    history, then VACUUM if that left enough free pages to matter.
+    -> {'merged', 'blanked', 'vacuumed'}."""
+    from . import capacity, history
+    merged = led.capacity_compact(gap_seconds or capacity.GAP_SECONDS)
+    led.capacity_intern_platforms()
+    blanked = history.prune_no_work(led)
+    free = (led.con.execute("PRAGMA freelist_count").fetchone()[0]
+            * led.con.execute("PRAGMA page_size").fetchone()[0])
+    vacuumed = free >= VACUUM_MIN_FREE_BYTES
+    if vacuumed:
+        led.con.execute("VACUUM")
+        led.con.execute("PRAGMA wal_checkpoint(TRUNCATE)")   # VACUUM went through the WAL
+    return {"merged": merged, "blanked": blanked, "vacuumed": vacuumed}
+
+
+def ledger_root(cfg):
+    """Where ledger copies live: `[backup] dir`, else ~/.mahler/backups/mahler."""
+    configured = ((cfg or {}).get("backup") or {}).get("dir")
+    return os.path.expanduser(configured) if configured else LEDGER_ROOT
 
 
 def optimize_and_checkpoint(led):
@@ -302,6 +352,11 @@ def run_ledger(ctx, led_path=None, root=None, force=False):
     led = ctx.led
     led_path = led_path or led.path
     pol = ctx.cfg.get("backup") or {}
+    # Only a configured folder migrates the default one; an explicit root
+    # (tests, one-off calls) never touches ~/.mahler.
+    legacy = None if root or led_path != config.DB_PATH else LEDGER_ROOT
+    root = root or ledger_root(ctx.cfg)
+    policy = {k: int(pol[f"keep_{k}"]) for k in LEDGER_POLICY if pol.get(f"keep_{k}") is not None}
     spec = {"name": "ledger", "hour": pol.get("hour", 3)}
     key = "backup:mahler:ledger"
     copy_err = None
@@ -309,7 +364,7 @@ def run_ledger(ctx, led_path=None, root=None, force=False):
         if not force and not due(led, "mahler", spec):
             return None
         res = backup_ledger(led_path, root=root)
-        removed = prune_ledger(root=root)
+        removed = prune_ledger(root=root, legacy=legacy, **policy)
         optimize_and_checkpoint(led)
         copy_to = pol.get("copy_to")
         if copy_to:
@@ -328,6 +383,17 @@ def run_ledger(ctx, led_path=None, root=None, force=False):
     led.set_kv(f"{key}:bytes", str(res["bytes"]))
     led.event("backup", "mahler", None, f"ledger: {res['bytes']} bytes, pruned {len(removed)}")
     ctx.say(f"mahler: backed up ledger ({res['bytes'] // 1024} KB, pruned {len(removed)})")
+    try:
+        before = os.path.getsize(led_path)
+        done = maintain_ledger(led)
+        after = os.path.getsize(led_path)
+        led.event("ledger_maintenance", "mahler", None,
+                  f"merged {done['merged']} capacity rows, blanked {done['blanked']} history rows,"
+                  f" {before} -> {after} bytes")
+        ctx.say(f"mahler: ledger upkeep — merged {done['merged']} capacity rows,"
+                f" blanked {done['blanked']} history rows, {before // 1048576} -> {after // 1048576} MB")
+    except (OSError, sqlite3.Error) as e:      # upkeep never fails the backup it follows
+        ctx.say(f"mahler: ledger upkeep failed (continuing) — {e}")
     if copy_err is not None:
         ctx.say(f"mahler: ledger off-disk copy failed — {copy_err}")
         ctx.ping("Ledger off-disk copy failed", str(copy_err)[:300],

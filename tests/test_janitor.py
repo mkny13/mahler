@@ -240,6 +240,59 @@ class WorktreeTests(Base):
         self.assertFalse(os.path.exists(wt))
         self.assertEqual(sh(self.repo, "git", "branch", "--list", canonical), canonical)
 
+class RunFolderTests(Base):
+    """Per-run folders under a temp runs dir (mahler#1386)."""
+
+    def folder(self, run_id, age_days=None):
+        path = os.path.join(self.tmp.name, "runs", str(run_id))
+        os.makedirs(path, exist_ok=True)
+        write(os.path.join(path, "agent.log"), "x" * 100)
+        if age_days is not None:
+            t = (datetime.now() - timedelta(days=age_days)).timestamp()
+            for p in (os.path.join(path, "agent.log"), path):
+                os.utime(p, (t, t))
+        return path
+
+    def prune(self):
+        return janitor.prune_run_dirs(self.ctx, dirs=[os.path.join(self.tmp.name, "runs")])
+
+    def test_old_ended_run_of_a_done_item_goes(self):
+        self.led.upsert_item("t", 1, state="done")
+        run_id = self.make_run(1, ended_hours_ago=24 * 20, with_wt=False)
+        path = self.folder(run_id)
+        self.assertEqual(self.prune(), (1, 100))
+        self.assertFalse(os.path.exists(path))
+
+    def test_recent_active_or_open_item_runs_are_kept(self):
+        self.led.upsert_item("t", 1, state="done")
+        self.led.upsert_item("t", 2, state="ready")
+        keep = [self.make_run(1, ended_hours_ago=24 * 3, with_wt=False),
+                self.make_run(1, status="running", with_wt=False),
+                self.make_run(2, ended_hours_ago=24 * 20, with_wt=False)]
+        for run_id in keep:
+            self.folder(run_id)
+        self.assertEqual(self.prune(), (0, 0))
+
+    def test_orphans_go_only_once_untouched_past_retention(self):
+        old, fresh = self.folder(9001, age_days=20), self.folder(9002)
+        other = os.path.join(self.tmp.name, "runs", "notes")
+        os.makedirs(other)
+        self.assertEqual(self.prune()[0], 1)
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(fresh) and os.path.exists(other))
+
+    def test_dry_run_deletes_nothing(self):
+        path = self.folder(9001, age_days=20)
+        self.ctx.dry_run = True
+        self.assertEqual(self.prune()[0], 1)
+        self.assertTrue(os.path.exists(path))
+
+    def test_default_dirs_are_left_alone_for_a_scratch_ledger(self):
+        with mock.patch.object(janitor, "shutil") as sh_mod:
+            self.assertEqual(janitor.prune_run_dirs(self.ctx), (0, 0))
+        sh_mod.rmtree.assert_not_called()
+
+
 class BranchTests(Base):
     def test_old_snapshot_branch_of_closed_item_deleted(self):
         self.push_branch("mahler/snapshot/12-run5")

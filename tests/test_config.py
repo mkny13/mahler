@@ -27,6 +27,18 @@ claude-sonnet-5-5-high	Claude Sonnet 5.5 (High)
 
 
 class AgyClaudeDefaultTests(unittest.TestCase):
+    def test_apply_storage_moves_runs_dir_unless_env_overrides(self):
+        with patch.object(config, "RUNS_DIR", config.DEFAULT_RUNS_DIR), \
+                patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("MAHLER_RUNS_DIR", None)
+            config.apply_storage({"storage": {"runs_dir": ""}})
+            self.assertEqual(config.RUNS_DIR, config.DEFAULT_RUNS_DIR)
+            config.apply_storage({"storage": {"runs_dir": "~/elsewhere/runs"}})
+            self.assertEqual(config.RUNS_DIR, str(Path.home() / "elsewhere/runs"))
+            env["MAHLER_RUNS_DIR"] = "/tmp/explicit"
+            config.apply_storage({"storage": {"runs_dir": "/x"}})
+            self.assertEqual(config.RUNS_DIR, str(Path.home() / "elsewhere/runs"))
+
     def test_default_in_captured_catalog_and_price_basis(self):
         model = config.DEFAULTS["platforms"]["agy-claude"]["model"]
         self.assertEqual(model, "claude-opus-5-5-medium")

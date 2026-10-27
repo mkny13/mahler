@@ -16,7 +16,11 @@ things behind. Once a day the tick sweeps, per project:
 
 The same daily pass also copy-and-truncates the host-wide console stderr log
 when it exceeds its configured cap.  The live file is never renamed because
-launchd and the running server retain its open file descriptor.
+launchd and the running server retain its open file descriptor.  It also
+deletes per-run folders (agent.log, prompt, hooks) older than `retention_days`
+whose run has ended and whose item is done or shipped; folders with no run in
+the ledger go once untouched that long (mahler#1386). Their evidence already
+lives in the run_history index.
 
 Only these Mahler worktrees and branch patterns are touched. Fix branches
 with unique work survive and are reported. Like the digest (mahler#6) the sweep
@@ -71,6 +75,13 @@ def _maybe_run(ctx):
                 _say(ctx, f"rotated serve log to {rotated}")
         except Exception as e:                   # noqa: BLE001 — rotation is best-effort
             _say(ctx, f"serve log rotation failed (continuing) — {e}")
+    try:
+        count, size = prune_run_dirs(ctx)
+        if count:
+            _say(ctx, f"{'would remove' if ctx.dry_run else 'removed'} {count} run folders"
+                      f" ({size / 1e9:.1f} GB)")
+    except Exception as e:                       # noqa: BLE001 — pruning is best-effort
+        _say(ctx, f"run folder pruning failed (continuing) — {e}")
     for pol in config.enabled_projects(ctx.cfg):
         if not os.path.isdir(pol["path"]):       # same reachability rule as the tick
             continue
@@ -80,6 +91,72 @@ def _maybe_run(ctx):
             ctx.say(f"janitor: {pol['name']} sweep failed (continuing) — {e}")
     if not ctx.dry_run:
         led.set_kv(KV_KEY, today)
+
+
+# ---------- per-run folders (mahler#1386) ----------
+
+DONE_STATES = ("done", "shipped")
+
+
+def _tree_size(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(root, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _newest_mtime(path):
+    newest = os.lstat(path).st_mtime
+    for entry in os.scandir(path):
+        try:
+            newest = max(newest, entry.stat(follow_symlinks=False).st_mtime)
+        except OSError:
+            pass
+    return newest
+
+
+def prune_run_dirs(ctx, dirs=None):
+    """Delete run folders past `janitor.retention_days`. A folder whose run is
+    in the ledger goes only once that run ended before the cutoff and its item
+    is done or shipped (or gone); one with no run row goes once nothing in it
+    changed for that long. Honours ctx.dry_run. -> (folders, bytes)."""
+    led = ctx.led
+    # The real folders only ever answer to the real ledger: a test or scratch
+    # ledger's run ids would otherwise match live folders.
+    if dirs is None and getattr(led, "path", None) != config.DB_PATH:
+        return 0, 0
+    days = _cfg(ctx.cfg, "retention_days", RETENTION_DAYS)
+    cutoff = led.now() - timedelta(days=days)
+    runs = {r["id"]: r for r in led.q(
+        "SELECT r.id, r.status, r.ended_at, i.state FROM runs r"
+        " LEFT JOIN items i ON i.project = r.project AND i.number = r.number")}
+    if dirs is None:
+        dirs = list(dict.fromkeys((config.RUNS_DIR, config.DEFAULT_RUNS_DIR)))
+    count = size = 0
+    for root in dirs:
+        if not os.path.isdir(root):
+            continue
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if not name.isdigit() or not os.path.isdir(path) or os.path.islink(path):
+                continue
+            run = runs.get(int(name))
+            if run is not None:
+                if (run["status"] != "ended" or not run["ended_at"]
+                        or parse(run["ended_at"]) >= cutoff
+                        or (run["state"] is not None and run["state"] not in DONE_STATES)):
+                    continue
+            elif _newest_mtime(path) >= cutoff.timestamp():
+                continue
+            size += _tree_size(path)
+            count += 1
+            if not ctx.dry_run:
+                shutil.rmtree(path, ignore_errors=True)
+    return count, size
 
 
 # ---------- host-wide console log rotation ----------

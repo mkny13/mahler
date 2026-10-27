@@ -57,6 +57,65 @@ class IntervalTests(unittest.TestCase):
         self.assertEqual(rows[0]["last_seen"], (T0 + timedelta(seconds=240)).isoformat())
         self.assertEqual(rows[0]["open"], 1)
 
+    def test_slow_ticks_still_coalesce(self):
+        """Ticks run every 2-5 minutes; each must not open a new row (mahler#1386)."""
+        for _ in range(5):
+            self.tick(("a", 1, "build", ["no_platform"]))
+            self.clock.advance(seconds=300)
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_compact_merges_gap_split_runs_only(self):
+        sig = lambda blockers: capacity._signature({"role": "build", "blockers": blockers})
+        def put(number, start, end, sig_, reason, open_=0, run_id=None):
+            self.led.con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen,"
+                " open, end_reason, signature, launch_run_id) VALUES ('a',?,?,?,?,?,?,?,?)",
+                (number, "build", iso(T0 + timedelta(seconds=start)),
+                 iso(T0 + timedelta(seconds=end)), open_, reason, sig_, run_id))
+        same, other = sig(["x"]), sig(["y"])
+        put(1, 0, 0, same, "gap")
+        put(1, 200, 200, same, "gap")
+        put(1, 400, 500, same, "launched", run_id=9)    # three rows -> one
+        put(2, 0, 0, same, "gap")
+        put(2, 5000, 5000, same, "gap")                 # a real outage: kept apart
+        put(2, 5100, 5100, other, None, open_=1)        # a real change: kept apart
+        put(3, 0, 0, same, "gap")
+        put(3, 100, 100, same, None, open_=1)           # merged row stays open
+        self.assertEqual(self.led.capacity_compact(900), 3)
+        rows = {(r["number"], r["first_seen"]): r for r in self.rows()}
+        self.assertEqual(len(rows), 5)
+        one = rows[(1, iso(T0))]
+        self.assertEqual((one["last_seen"], one["end_reason"], one["open"], one["launch_run_id"]),
+                         (iso(T0 + timedelta(seconds=500)), "launched", 0, 9))
+        three = rows[(3, iso(T0))]
+        self.assertEqual((three["open"], three["end_reason"]), (1, None))
+        self.assertEqual(self.led.capacity_compact(900), 0)
+
+    def test_platform_snapshots_are_stored_once(self):
+        name = next(iter(self.cfg["platforms"]))
+        for n in range(1, 6):
+            self.tick((("a", n, "build", ["no_platform"], {name: ["quota"]})))
+        sets = self.led.q("SELECT zjson FROM capacity_platform_sets")
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(self.led.q1("SELECT COUNT(*) n FROM capacity_intervals"
+                                     " WHERE platforms != '{}'")["n"], 0)
+        self.assertEqual(json.loads(self.rows()[0]["platforms"])[name]["reasons"], ["quota"])
+
+    def test_intern_moves_inline_snapshots_and_drops_unused_sets(self):
+        inline = json.dumps({"kilo": {"reasons": ["quota"]}}, sort_keys=True)
+        for n in (1, 2):
+            self.led.con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen,"
+                " signature, platforms) VALUES ('a',?,'build',?,?,'s',?)",
+                (n, iso(T0), iso(T0), inline))
+        self.led.con.execute("INSERT INTO capacity_platform_sets (hash, zjson)"
+                             " VALUES ('stale', x'00')")
+        self.assertEqual(self.led.capacity_intern_platforms(), 2)
+        self.assertEqual([r["platforms"] for r in self.rows()], [inline, inline])
+        self.assertEqual([r["p"] for r in self.led.q(
+            "SELECT mahler_inflate(zjson) AS p FROM capacity_platform_sets")], [inline])
+        self.assertEqual(self.led.capacity_intern_platforms(), 0)
+
     def test_changed_blockers_split_the_interval(self):
         self.tick(("a", 1, "build", ["no_platform"]))
         self.clock.advance(seconds=60)
@@ -88,7 +147,7 @@ class IntervalTests(unittest.TestCase):
         self.assertEqual((row["open"], row["end_reason"]), (0, "gone"))
         self.assertEqual(row["last_seen"], (T0 + timedelta(seconds=60)).isoformat())
 
-    def test_gap_over_120_seconds_is_unknown_not_waiting(self):
+    def test_gap_over_the_threshold_is_unknown_not_waiting(self):
         self.tick(("a", 1, "build", ["no_platform"]))
         self.clock.advance(hours=3)                        # daemon was down
         self.tick(("a", 1, "build", ["no_platform"]))
