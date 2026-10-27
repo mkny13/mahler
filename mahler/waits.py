@@ -10,7 +10,7 @@ import json
 import re
 from datetime import timedelta
 
-from . import ci_blockers
+from . import ci_blockers, no_change
 from .ledger import iso, parse
 
 CAUSES = ("ci_repo_wide", "ci_stalled", "merge_queue", "capacity", "github", "setup",
@@ -287,6 +287,24 @@ def _last_state_reason(led, project, n):
     return m.group(1) if m else None
 
 
+def _inconclusive_sha(ctx, project, item):
+    """The PR head whose reviews ended without a verdict: the capped marker's sha, else
+    the PR's current head, so the wake can reset the counter and set the avoid list."""
+    n = item["number"]
+    try:
+        capped = json.loads(ctx.led.get_kv(f"reviewinconclusive_capped:{project}#{n}") or "{}")
+    except ValueError:
+        capped = {}
+    if isinstance(capped, dict) and capped.get("sha"):
+        return capped["sha"]
+    if item["pr"]:
+        try:
+            return ctx.gh(project).pr_view(item["pr"]).get("headRefOid") or None
+        except Exception:  # noqa: BLE001 — the wake then just retries
+            return None
+    return None
+
+
 def migrate_legacy(ctx, project):
     """Once per project: move items stranded in needs_you/failed by a conductor-side
     escalation into ``waiting``. Owner questions never match and stay put."""
@@ -321,6 +339,13 @@ def migrate_legacy(ctx, project):
             wake = None
             if cause == "capacity":
                 wake = {"role": "fix"}
+            elif cause == "review_inconclusive":
+                claim = no_change.read(led, project, n)
+                if claim:               # a no-change item resumes its review workflow
+                    resume = "verifying"
+                    wake = {"sha": claim.get("base_sha")}
+                else:
+                    wake = {"sha": _inconclusive_sha(ctx, project, item)}
             hold(led, project, n, cause, f"migrated: {text}", resume=resume, wake=wake)
             moved += 1
             ctx.say(f"{project}#{n}: stranded {item['state']} → waiting ({cause})")

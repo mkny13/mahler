@@ -385,6 +385,34 @@ class MigrationTests(SiteTests):
         self.assert_waiting("ci_repo_wide")
         self.assertEqual(self.item()["attempts"], 2)
 
+    def test_legacy_inconclusive_pr_item_wakes_with_reset_and_avoid_list(self):
+        seen = [{"run_id": i, "platform": f"p{i}"} for i in (1, 2, 3, 4)]
+        self.led.set_kv("reviewinconclusive:p#1:abc", json.dumps(seen))
+        text = "4 reviews of this PR head ended without a verdict (platforms: a, b). Re-run?"
+        self.led.set_state("p", 1, "needs_you", text, question=text)
+        waits.migrate_legacy(self.ctx, "p")
+        self.assert_waiting("review_inconclusive")
+        self.assertEqual(self.record()["wake"], {"sha": "abc"})
+        self.recheck_after(hours=6)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.led.get_kv("reviewinconclusive:p#1:abc"))
+        avoid = json.loads(self.led.get_kv("reviewinconclusive-avoid:p#1:abc"))
+        self.assertEqual({r["platform"] for r in avoid}, {"p1", "p2", "p3", "p4"})
+
+    def test_legacy_no_change_item_resumes_review_not_build(self):
+        no_change.save(self.led, "p", 1, {"phase": "exhausted", "base_sha": "base",
+                                          "inconclusive": 4})
+        self.led.upsert_item("p", 1, pr=None)
+        text = ("Independent no-change reviews exhausted inconclusive attempts. "
+                "Review manually or retry?")
+        self.led.set_state("p", 1, "needs_you", text, question=text)
+        waits.migrate_legacy(self.ctx, "p")
+        self.assert_waiting("review_inconclusive")
+        self.recheck_after(hours=6)
+        self.assertEqual(self.item()["state"], "verifying")
+        record = no_change.read(self.led, "p", 1)
+        self.assertEqual((record["phase"], record["inconclusive"]), ("waiting", 0))
+
     def test_owner_question_is_left_alone(self):
         owner = ("[product] Should the weekly digest go out on Monday or Friday? "
                  "PR #88: the copy differs after 60 min of review")
