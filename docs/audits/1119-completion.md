@@ -329,3 +329,20 @@ numbers run into titles; taste notes are not a gate (D10).
 ## Parent checklist handoff (#1257)
 
 Criterion 2 ticked on #1119 from the evidence above. Criterion 7 left unchecked.
+
+## Replay verification (run 13552)
+
+Re-verified saved implementation `c7d144055a3453d178eb61eb48c64bceb359e949`
+on base `eb8497ad330a2aed186e33e1e5d80abaa9dd27a2`. All commands exited 0:
+
+- `python3 -m mahler.repo_guard`
+- `python3 -m unittest discover -s tests`: 3337 tests, 206.197s, OK (skipped=2).
+- `python3 tests/run_random.py`: 3337 tests, 206.860s, OK (skipped=2), seed 1002924970.
+- `python3 -X dev tests/run_strict.py`: 3337 tests, 221.985s, OK (skipped=2).
+- `PYTHONPATH=tests python3 -m unittest -v test_console_journey`: 4 tests,
+  0.468s, OK (skipped=1); isolated HTTP fixture and refusal checks executed.
+
+The opt-in browser checks were skipped. This replay verification did not rerun
+Chrome and does not supersede the saved gated journey failure above. Criterion 7
+remains outstanding pending a passing gated run after the scope-switcher repair
+tracked by #1274. No owner-only decision is needed; no GitHub writes were attempted.
