@@ -25,6 +25,9 @@ class FakeGH:
     def comment(self, n, body):
         self.comments.append(body)
 
+    def pr_close(self, n, body):
+        self.comments.append(body)
+
 
 class StubCtx:
     def __init__(self, cfg, led, gh=None):
@@ -115,7 +118,9 @@ class TierEscalationTests(unittest.TestCase):
                     for sha in ("next-head", "third-head", "fourth-head"):
                         attempt(sha)
                     item = self.led.item("p", number)
-                    self.assertEqual((item["state"], item["attempts"]), ("failed", 5))
+                    # An exhausted review rebuilds fresh instead of failing (mahler#1262).
+                    self.assertEqual((item["state"], item["attempts"]),
+                                     ("failed", 5) if trigger == "ci" else ("waiting", 0))
 
     def test_completed_genuine_fix_clears_cycle_dedup(self):
         for reason in (None, "timeout"):
@@ -200,8 +205,9 @@ class TierEscalationTests(unittest.TestCase):
                     complete_fix()
                     attempt()
                     item = self.led.item("p", number)
+                    expected = ("failed", 5, 0, 3) if trigger == "ci" else ("waiting", 0, 0, 3)
                     self.assertEqual((item["state"], item["attempts"], item["esc_fails"],
-                                      item["esc_tier"]), ("failed", 5, 0, 3))
+                                      item["esc_tier"]), expected)
 
     def test_review_and_ci_escalate_from_builder_not_reviewer(self):
         for failure in ("review", "ci"):

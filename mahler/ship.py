@@ -2032,6 +2032,89 @@ def _resume_source(ctx, project, item, head, key, busy, size, min_tier):
     return None
 
 
+def _accumulated_findings(led, project, n, pr, latest):
+    """Every distinct blocking finding the reviewers raised on this PR."""
+    seen, parts = set(), []
+    history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
+               if r.get("pr", pr) == pr]
+    for text in [r.get("findings") or "" for r in history] + [latest or ""]:
+        if text and text not in seen:
+            seen.add(text)
+            parts.append(text)
+    return "\n\n".join(f"- {t}" for t in parts)
+
+
+def _kv_json_list(led, key):
+    try:
+        val = json.loads(led.get_kv(key) or "[]")
+    except ValueError:
+        return []
+    return [r for r in val if isinstance(r, dict)] if isinstance(val, list) else []
+
+
+def _review_exhausted(ctx, project, item, pr, view, findings, size):
+    """A review that will not converge never ends in `failed` (mahler#1262): merge
+    with follow-ups when nothing protected blocks, else one fresh rebuild from
+    base at the top tier with the accumulated findings, else one owner question."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    sha = view.get("headRefOid") or ""
+    history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
+               if r.get("pr", pr) == pr]
+    classified = next((r["classified"] for r in reversed(history)
+                       if isinstance(r.get("classified"), list)), None)
+    blocking = [f for f in (classified or []) if isinstance(f, dict)
+                and f.get("severity") == "blocking"]
+    protected = [f for f in blocking if _is_protected_blocker(f)]
+    if classified is None and _PROTECTED_PROSE.search(str(findings or "")):
+        protected = [{"location": "review", "scenario": str(findings)[:120]}]
+    try:
+        base = view.get("baseRefName") or pol.get("base", "main")
+        green = checks_state(view.get("statusCheckRollup"),
+                             required=_required_checks(ctx, project, base)) == "green"
+    except (GHError, ValueError, TypeError):
+        green = False
+    if classified is not None and blocking and not protected and green:
+        record = {"disposition": "followups", "findings": blocking,
+                  "run_id": f"exhausted-{sha[:8]}",
+                  "justification": "Review did not converge after the maximum fix attempts; "
+                                   "no remaining blocker is protected and CI is green."}
+        led.set_kv(f"design:{project}#{n}:{pr}:{sha}", json.dumps(record))
+        if _handle_design_followups(ctx, project, item, pr, view, sha, record,
+                                    _kv_json(led, f"review:{project}#{n}")):
+            return
+
+    if not led.get_kv(f"fresh-rebuild:{project}#{n}"):
+        led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{sha}")
+        led.set_kv(f"rebuild-context:{project}#{n}", _accumulated_findings(led, project, n, pr, findings))
+        try:
+            ctx.gh(project).pr_close(
+                pr, "Closing: independent review did not converge on this branch; the conductor "
+                    "is rebuilding from base with all accumulated findings.")
+        except GHError as e:
+            ctx.say(f"{project}#{n}: closing PR #{pr} for the fresh rebuild failed — {e}")
+        led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
+        led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0,
+                        esc_tier=router.cap_escalation(cfg, pol, 99, size, pin=item["pin"]))
+        waits.hold(led, project, n, "review_nonconvergent",
+                   f"PR #{pr} kept failing review; rebuilding from base at the top tier",
+                   resume="ready")
+        rec = waits.load(led, project, n) or {}
+        rec["next_at"] = iso(led.now() + timedelta(minutes=30))
+        led.set_kv(waits.key(project, n), json.dumps(rec))
+        led.release(project, n, holder=CONDUCTOR)
+        return
+
+    summary = "; ".join(f"{f.get('location', '?')}: {f.get('scenario', '')}"
+                        for f in protected[:3]) or str(findings or "see the review comments")[:200]
+    question = (f"Review keeps blocking PR #{pr} on: {summary}. Merge and track these as "
+                "follow-ups, or rethink the issue?")
+    options = ["merge with follow-ups", "rethink issue"]
+    led.set_state(project, n, "needs_you", question, question=question, options=json.dumps(options))
+    ctx.ping(f"Needs you — {project} #{n}", question, project, n, priority="high", tags="warning")
+    led.release(project, n, holder=CONDUCTOR)
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False, design_plan=None):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -2106,16 +2189,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
             if not design_plan and _maybe_start_design(ctx, project, item, pr, view, sha, {"findings": findings}):
                 return
             if not design_plan:
-                led.set_state(project, n, "failed",
-                              f"review still failing on PR #{pr} after {attempts} attempts",
-                              attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
-                failures.report(ctx, project, n, "review_rejected",
-                                run=led.last_run(project, n, roles=("review",)),
-                                output=findings, branch=head)
-                ctx.ping(f"Stuck — {project} #{n}",
-                         f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
-                         project, n, priority="high", tags="warning")
-                led.release(project, n, holder=CONDUCTOR)
+                _review_exhausted(ctx, project, item, pr, view, findings, size)
                 return
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
@@ -2675,6 +2749,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
         ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
     ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
     led.set_state(project, n, "shipped", f"shipped via PR #{pr}")
+    led.set_kv(f"rebuild-context:{project}#{n}", "")
     ci_blockers.active(led, project)
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
