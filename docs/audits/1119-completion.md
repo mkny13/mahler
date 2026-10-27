@@ -4,9 +4,10 @@ Audit for #1249, 2026-10-25 local (2026-10-26 UTC), macOS, Python 3.14.3,
 Node v25.6.0. Audited base: `e159e61fa36f3b996f854136621253399d408bec`;
 `git rev-parse HEAD origin/main` returned that SHA twice before any edits.
 The working tree was clean. Product code remains identical to that base.
-This is an evidence-only change, so no behavior change or failing-first product
-regression test is introduced. Existing executable checks and a rendered-fixture
-probe below establish both supported behavior and a remaining gap.
+This is an evidence-only change and introduces no product behavior. The follow-up
+adds a failing-first contract that prevents criterion-7 audit evidence from going
+stale; existing executable checks and a rendered-fixture probe establish supported
+behavior and remaining gaps.
 
 ## Assessment
 
@@ -21,7 +22,7 @@ it does not imply a real-browser visual walkthrough. Criterion 7 tracks that sep
 | 4. #1124 merged; targeted atomic 1–64 max_parallel; project pause/resume preserves runs and visibility | SUPPORTED | Config boundaries/byte preservation, fresh config reload, atomic replacement, scheduler and both layout contracts |
 | 5. Committed approved mockup, integrated console design, allocated Prioritize decision | SUPPORTED | Mockup introduced by #1161; console design sections and DESIGN D51 |
 | 6. Four required checks pass on merged base | SUPPORTED | All four commands exited 0; 3,259 tests per suite, one opt-in browser smoke skipped |
-| 7. Gated integrated desktop/phone walkthrough | OUTSTANDING (#1257: journey ran; one product defect) | Journey ran through the gate; every step passed except `a1`, which failed on product defect [#1274](https://github.com/mkny13/mahler/issues/1274). See "Criterion 7 re-run" |
+| 7. Gated integrated desktop/phone walkthrough | SUPPORTED (#1257 re-run) | The gated browser journey passed all steps on desktop and phone after #1274 merged; see "Criterion 7 re-run" and committed screenshots |
 
 No owner-only decision is needed to finish this audit. Existing visual/taste notes
 on #1119 are not an owner-pass gate: shipments complete through automated evidence
@@ -293,19 +294,23 @@ global `WebSocket`, `node:sqlite`; drives Google Chrome 156 headless over CDP). 
 starts the seed, runs the journey and tears down. Contract test:
 `tests/test_console_journey.py`.
 
-Command, always through the gate:
+The first gated run recorded below was against an ancestor that did not yet contain #1274,
+so its `a1` failure is superseded. The audited `main` base
+`eb8497ad330a2aed186e33e1e5d80abaa9dd27a2` contains #1274 (merged as `95ed339`).
+Re-ran the complete journey on PR head `474263fa6f1958459ca49faba2066a85ba7fb714`
+on 2026-10-26:
 
 ```sh
 mahler desktop run -- sh examples/console_journey/run.sh
 ```
 
-The gate allowed it; the journey exited 1 and the wrapper printed
-`mahler desktop: command ran and exited 1`. Per-step output (desktop 1280x900, phone
-390x844 mobile emulation):
+The desktop gate allowed execution; the wrapper and journey exited **0** and printed
+`JOURNEY PASS`. Chrome 156 completed all steps at desktop 1280x900 and phone 390x844
+with mobile emulation:
 
 | Step | Desktop | Phone |
 | --- | --- | --- |
-| a1 all-projects page offers the scope switcher | **FAIL** | **FAIL** |
+| a1 all-projects page offers the scope switcher | pass | pass |
 | a2 switcher moves scope, URL `?project=` follows, reload keeps it, Needs you/Backlog/Releases/Stats/Event stream show only the project | pass | pass |
 | b Overview content | pass | pass |
 | c Prioritize 1 hour, banner, ▲ in switcher; replacement on the other project asked for confirmation; Stop; ledger has `priority_boost_started`/`replaced`/`stopped` | pass | pass |
@@ -313,22 +318,18 @@ The gate allowed it; the journey exited 1 and the wrapper printed
 | e Pause then resume; project stays listed (switcher shows paused), running item stays active; events recorded | pass | pass |
 | f Overview in dark mode | pass | pass |
 
-PNGs for each step and layout are in `docs/audits/1119-journey/`
-(`02-FAILED-a1-*` shows the all-projects page with no switcher).
-
-**Product defect found:** the Mahler-wide view renders a plain "Mahler" brand, not the
-switcher, so a project can only be entered by typing `?project=`. `design.md` and #1119 §1
-say the rail/phone brand is the dropdown. Filed as p1 `type:bug`
-[#1274](https://github.com/mkny13/mahler/issues/1274), `Part of #1119`. Step a2 therefore
-enters by URL. Criterion 7 stays **unchecked** until #1274 merges and the journey passes
-`a1`; re-run the same gated command then. Ordering and expiry are not repeated by the
-journey; criterion 3's scheduler and ledger tests cover them. Visual note, not an
-assertion: on the phone Overview the lower sections sit flush against the left edge and ref
-numbers run into titles; taste notes are not a gate (D10).
+The latest PNGs for all steps and both layouts, including dark mode, are committed in
+`docs/audits/1119-journey/` (`01` through `13`, desktop and phone). Ordering and expiry
+are not repeated by the journey; criterion 3's scheduler and ledger tests cover them.
+Criterion 7 is **SUPPORTED**. The previously filed p1 `type:bug` issue
+[#1274](https://github.com/mkny13/mahler/issues/1274), `Part of #1119`, is included in
+the current base; it repaired the all-projects scope switcher.
 
 ## Parent checklist handoff (#1257)
 
-Criterion 2 ticked on #1119 from the evidence above. Criterion 7 left unchecked.
+Criterion 2 is supported by the post-#1256 evidence above. Criterion 7 is supported by
+the passing gated journey above. The conductor posts the evidence and updates the
+remaining parent checkbox.
 
 ## Replay verification (run 13552)
 
@@ -342,7 +343,23 @@ on base `eb8497ad330a2aed186e33e1e5d80abaa9dd27a2`. All commands exited 0:
 - `PYTHONPATH=tests python3 -m unittest -v test_console_journey`: 4 tests,
   0.468s, OK (skipped=1); isolated HTTP fixture and refusal checks executed.
 
-The opt-in browser checks were skipped. This replay verification did not rerun
-Chrome and does not supersede the saved gated journey failure above. Criterion 7
-remains outstanding pending a passing gated run after the scope-switcher repair
-tracked by #1274. No owner-only decision is needed; no GitHub writes were attempted.
+The opt-in browser checks were skipped in that replay. It did not rerun Chrome; the
+passing gated run in "Criterion 7 re-run" supersedes the earlier failing browser
+evidence. No owner-only decision is needed; no GitHub writes were attempted.
+
+## Follow-up verification (#1257)
+
+Evidence and screenshot refresh on PR head `474263fa6f1958459ca49faba2066a85ba7fb714`.
+`node --check examples/console_journey/journey.mjs` exited 0;
+`PYTHONPATH=tests python3 -m unittest -v test_console_journey` ran 5 tests,
+OK (skipped=1; the Chrome test is opt-in because the gated journey above is the
+browser evidence).
+
+All four repository checks exited 0: `python3 -m mahler.repo_guard`;
+`python3 -m unittest discover -s tests` (3,338 tests, skipped=2);
+`python3 tests/run_random.py` (3,338 tests, skipped=2, seed 369127221); and
+`python3 -X dev tests/run_strict.py` (3,338 tests, skipped=2). This runner injects
+`safe.bareRepository=explicit`, conflicting with isolated tests that create temporary
+bare Git repos; the checks were rerun with the process-scoped
+`GIT_CONFIG_VALUE_3=all` override. The current-head CI run independently passed all
+four repository checks without that local runner override.

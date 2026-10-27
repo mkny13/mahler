@@ -81,6 +81,19 @@ class JourneyDriverTests(unittest.TestCase):
         self.assertFalse((JOURNEY / "node_modules").exists())
 
 
+class JourneyAuditTests(unittest.TestCase):
+    def test_criterion_seven_records_a_passing_gated_run(self):
+        audit = (JOURNEY.parents[1] / "docs" / "audits" / "1119-completion.md").read_text()
+        criterion = audit.split("## Criterion 7 re-run (#1257)", 1)[1]
+        self.assertIn("mahler desktop run -- sh examples/console_journey/run.sh", criterion)
+        self.assertIn("journey exited **0**", criterion)
+        self.assertIn(
+            "| a1 all-projects page offers the scope switcher | pass | pass |",
+            criterion,
+        )
+        self.assertIn("Criterion 7 is **SUPPORTED**.", criterion)
+
+
 @unittest.skipUnless(os.environ.get("MAHLER_CONSOLE_JOURNEY_CHROME"),
                      "opt-in real browser: set MAHLER_CONSOLE_JOURNEY_CHROME=1 and run via the desktop gate")
 class JourneyBrowserTests(unittest.TestCase):
