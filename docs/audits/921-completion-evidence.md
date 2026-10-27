@@ -36,7 +36,7 @@ status: met
 status: met
 - Command: `mahler desktop run -- python3 -m unittest discover -s tests -p test_console.py -k test_fake_worker_journeys_at_phone_and_desktop_widths -v` → `ok`, Ran 1 test, not skipped (gate allowed; headless Chrome + Node WebSocket available; temp profiles per width).
 - Named results (`tests/test_console.py` `DiscussionBrowserTests`, subTests width=390 and 1440, driving `tests/console_discuss_test.js` which loops `['triage','capture']`): Triage@390 PASS, Capture@390 PASS, Triage@1440 PASS, Capture@1440 PASS. Caveat: the subTests are per-width; the two journeys run together inside each width's single script, so per-journey results are not separately reported by the harness.
-- Approval: `docs/console/discuss.md` records approval of revision `0f2ebd8b293302cc910eb2fdbe612d9c61c8ecd8` (commit 2026-10-11 01:53 -0400, ancestor of main, merged in #959; mockup SVGs unchanged since) via https://github.com/mkny13/mahler/issues/925#issuecomment-6407036362 (not re-fetched per instructions). Production panel code first appears in #1289 (commits 2026-10-26 17:03Z onward, merged 2026-10-26). Approval reference is committed and revision predates production code; the comment's own timestamp was not fetched, the cited revision predating #1289 is the chronology evidence.
+- Approval: `docs/console/discuss.md` records approval of revision `0f2ebd8b293302cc910eb2fdbe612d9c61c8ecd8` (commit 2026-10-11 01:53 -0400, ancestor of main, merged in #959; mockup SVGs unchanged since) via https://github.com/mkny13/mahler/issues/925#issuecomment-6407036362 (not re-fetched per instructions). Production panel code first appears in #1289 (commits 2026-10-26 17:03Z onward, merged 2026-10-26). The chronology evidence is the explicit committed statement in `docs/console/discuss.md` lines 3–6 that approval was admitted to the build before production console changes. The revision date alone would not prove approval chronology. The comment's own timestamp was not fetched, per the prohibition on fetching raw comments.
 - Gap: `ROADMAP.md` line 33 still says "Mike's approval ... remains pending" (stale; see criterion 8).
 
 ## Criterion 7 — Routing tests prove personal chats use only subscription and work chats use only the gateway; work enablement has linked #918 capped trial evidence.
@@ -62,3 +62,19 @@ status: unmet (documentation drift; commands pass — see results)
 - `python3 tests/run_random.py` → seed 814535737, Ran 3333, OK (skipped=1), exit 0.
 - `python3 -X dev tests/run_strict.py` → Ran 3333, OK (skipped=1), exit 0.
 - The one skip is not the discussion browser journey (that test ran and passed when run alone through the desktop gate).
+
+## Replay verification (2026-10-27, run 13616)
+
+The inherited report above retains its original inspected SHA and historical results.
+Following the replay instruction to run the fast verification first and finish on
+success, `python3 -m unittest discover -s tests` was rerun at
+`e158da5fe1f49aaea514ac4e312e282d87544801`: exit 0, 3393 tests in 189.345s,
+OK (skipped=2). These two skips are not claimed as fresh browser journey coverage;
+the four journey results above remain the prior gated run's evidence. The other
+three verification commands were not rerun during this replay. A structural check
+confirmed exactly eight numbered criterion records, seven met and one unmet.
+The approval chronology citation was clarified to use the explicit committed
+statement, rather than infer approval timing from the mockup revision date.
+
+No owner-only decision is outstanding. Real-phone Triage/Capture usability and a
+work conversation after deployment/qualification remain post-merge checks.
