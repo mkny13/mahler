@@ -684,6 +684,17 @@ def _process_comments(ctx, project, item, comments):
             if current["state"] == "failed":
                 resume_item(led, project, item["number"])
                 ctx.say(f"{project}#{item['number']}: answer received, resuming")
+            elif (current["state"] == "needs_you" and current["pr"]
+                  and body.strip().lower() == "merge with follow-ups"
+                  and led.get_kv(f"fresh-rebuild:{project}#{item['number']}")
+                  and (c.get("authorAssociation") == "OWNER" or
+                       (c.get("author") or {}).get("login", "").casefold()
+                       == ctx.policy(project)["repo"].split("/", 1)[0].casefold())):
+                # The owner's pick on the non-convergent-review question (mahler#1262).
+                led.set_kv(f"owner-followups:{project}#{item['number']}", str(current["pr"]))
+                led.set_state(project, item["number"], "verifying",
+                              "you chose merge with follow-ups")
+                ctx.say(f"{project}#{item['number']}: merging PR #{current['pr']} with follow-ups")
             elif current["state"] == "needs_you":
                 led.set_state(project, item["number"], "inbox", "you answered — re-sorting",
                               sorted_at=None)

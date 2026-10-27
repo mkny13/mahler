@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync, waits
-from mahler.ledger import CONDUCTOR, Ledger, iso
+from mahler.ledger import CONDUCTOR, Ledger, iso, parse
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -47,6 +47,12 @@ class FakeGH:
 
     def issue_labels(self, number):
         return getattr(self, "labels", ["mahler:verifying", "type:feature"])
+
+    def pr_close(self, number, comment):
+        self.comments.append(comment)
+
+    def delete_branch(self, branch):
+        self.deleted_branches = getattr(self, "deleted_branches", []) + [branch]
 
     def close_issue(self, number):
         self.closed = number
@@ -1870,18 +1876,203 @@ class ShipTests(unittest.TestCase):
         item = self.item()
         self.assertEqual((item["esc_fails"], item["esc_tier"]), (0, 2))
 
-    def test_review_limit_comments_findings_once(self):
-        self.led.upsert_item("x", 5, pr=88, attempts=2)
-        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+    def exhausted(self, classified, *, fresh=False, rollup=None):
+        """Drive _review_triggered_fix to max_attempts with a classified history."""
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x")
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "app.py: broken authorization", "pr": 88,
+             "run_id": 1, "classified": classified}]))
+        if fresh:
+            self.led.set_kv("fresh-rebuild:x#5", "70@old")
+        if rollup is not None:
+            self.gh.rollup = rollup
+        self.gh.pr_close = mock.Mock()
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship.review, "file_followups", return_value=True), \
+                mock.patch.object(ship, "start") as start:
             ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
-                                      self.gh.pr_view(88), "app.py: broken authorization")
-            from mahler.failures import backfill
-            backfill(self.ctx, [{"name": "x"}])
-        self.assertEqual(self.item()["state"], "failed")
-        self.assertEqual(len(self.gh.comments), 1)
-        self.assertIn("class=review_rejected", self.gh.comments[0])
-        self.assertIn("app.py: broken authorization", self.gh.comments[0])
-        self.assertIn("mahler/5-x", self.gh.comments[0])
+                                       self.gh.pr_view(88), "app.py: broken authorization")
+        return ping, merge, start
+
+    def blocker(self, **fields):
+        return {**dict(severity="blocking", category="behavior", location="app.py:12",
+                       scenario="Retry is lost", consequence="Data skew"), **fields}
+
+    def test_exhausted_review_with_only_nonprotected_findings_merges_with_followups(self):
+        ping, merge, start = self.exhausted([self.blocker()])
+        merge.assert_called_once()
+        start.assert_not_called()
+        self.assertNotEqual(self.item()["state"], "failed")
+        self.assertTrue(self.led.get_kv("design:x#5:88:" + (self.gh.pr_view(88).get("headRefOid") or "")))
+
+    def test_exhausted_review_with_protected_finding_rebuilds_fresh_once(self):
+        ping, merge, start = self.exhausted([self.blocker(category="security")])
+        merge.assert_not_called()
+        start.assert_not_called()
+        item = self.item()
+        self.assertEqual((item["state"], item["attempts"], item["esc_fails"], item["pr"]),
+                         ("waiting", 0, 0, None))
+        self.assertEqual(waits.load(self.led, "x", 5)["cause"], "review_nonconvergent")
+        self.assertEqual(waits.load(self.led, "x", 5)["resume"], "ready")
+        self.assertEqual(item["esc_tier"], router.cap_escalation(
+            self.cfg, self.ctx.policy("x"), 99, None, pin=item["pin"]))
+        self.gh.pr_close.assert_called_once()
+        self.assertEqual(self.gh.deleted_branches, [self.gh.pr_view(88)["headRefName"]])
+        self.assertIsNone(item["branch"])     # the next build starts from base, not the old branch
+        self.assertIn("broken authorization", self.led.get_kv("rebuild-context:x#5"))
+        self.assertTrue(self.led.get_kv("fresh-rebuild:x#5"))
+        ping.assert_not_called()
+
+    def test_failed_pr_close_defers_rebuild_without_spending_it(self):
+        self.gh.pr_view = lambda n: {**FakeGH.pr_view(self.gh, n), "state": "OPEN"}
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x")
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock(side_effect=gh_module.GHError("boom"))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                       self.gh.pr_view(88), "f")
+        item = self.item()
+        self.assertEqual((item["pr"], item["branch"]), (88, "mahler/5-x"))
+        self.assertNotEqual(item["state"], "waiting")
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertFalse(self.led.get_kv("reviewfix:x#5:88:" + (self.gh.pr_view(88).get("headRefOid") or "")))
+
+    def test_branch_cleanup_failure_after_close_still_reaches_fresh_rebuild(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x")
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock()
+        self.gh.delete_branch = mock.Mock(side_effect=gh_module.GHError("boom"))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), "f")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        # The PR is now closed; the next ship tick must finish the rebuild, not fail it.
+        self.gh.view_state = "CLOSED"
+        self.gh.delete_branch = mock.Mock()
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.ship()
+        item = self.item()
+        self.assertEqual((item["state"], item["attempts"], item["pr"]), ("waiting", 0, None))
+        self.gh.delete_branch.assert_called_once_with("mahler/5-x")
+        self.assertTrue(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertIn("f", self.led.get_kv("rebuild-context:x#5"))
+
+    def owner_answer(self, login, assoc):
+        from mahler.sync import _process_comments
+        self.led.upsert_item("x", 5, state="needs_you", pr=88)
+        self.led.set_kv("fresh-rebuild:x#5", "70@old")
+        _process_comments(self.ctx, "x", self.item(), [{
+            "createdAt": iso(self.led.now()), "body": "merge with follow-ups",
+            "authorAssociation": assoc, "author": {"login": login}}])
+
+    def test_owner_merge_with_followups_answer_routes_to_followup_merge(self):
+        owner = self.ctx.policy("x")["repo"].split("/", 1)[0]
+        self.owner_answer(owner, "OWNER")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.led.get_kv("owner-followups:x#5"), "88")
+        # The review gate then files follow-ups and merges despite the protected finding.
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "abc123", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": "abc123", "verdict": "fail", "pr": 88, "findings": "f",
+            "classified": [self.blocker(category="security")]}))
+        self.led.set_kv("reviewed-pr:x#5", "88")      # the gate really runs, no low-risk shortcut
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship.review, "file_followups", return_value=False) as filing:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            merge.assert_not_called()           # filing incomplete: merge deferred
+            filing.return_value = True
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        merge.assert_called_once()
+        filed = [f for rec in json.loads(self.led.get_kv("reviewresults:x#5")).values()
+                 for f in rec["findings"]]
+        self.assertEqual([(f["category"], f["severity"]) for f in filed], [("security", "follow-up")])
+
+    def test_non_owner_merge_with_followups_answer_is_only_a_resort(self):
+        self.owner_answer("stranger", "NONE")
+        self.assertEqual(self.item()["state"], "inbox")
+        self.assertIsNone(self.led.get_kv("owner-followups:x#5"))
+
+    def interrupted_rebuild(self, fault):
+        """Close the PR, then break the local handoff at `fault`; return the next-tick result."""
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x", esc_fails=1)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock()
+        real_upsert, real_hold, real_set = self.led.upsert_item, waits.hold, self.led.set_kv
+
+        def upsert(*a, **kw):
+            if fault == "upsert":
+                raise sqlite3.OperationalError("injected")
+            return real_upsert(*a, **kw)
+
+        def hold(*a, **kw):
+            real_hold(*a, **kw)
+            if fault == "hold":
+                raise sqlite3.OperationalError("injected")
+
+        def set_kv(key, value):
+            real_set(key, value)
+            if fault == "marker" and key == "fresh-rebuild-closing:x#5" and value is None:
+                raise sqlite3.OperationalError("injected")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"), \
+                mock.patch.object(self.led, "upsert_item", upsert), \
+                mock.patch.object(waits, "hold", hold), \
+                mock.patch.object(self.led, "set_kv", set_kv):
+            with self.assertRaises(sqlite3.OperationalError):
+                ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                           self.gh.pr_view(88), "f")
+        item = self.item()
+        self.assertEqual((item["state"], item["pr"], item["attempts"]), ("verifying", 88, 2))
+        self.assertTrue(self.led.get_kv("fresh-rebuild-closing:x#5"))
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertIsNone(waits.load(self.led, "x", 5))
+        # Next normal tick: PR is closed, branch already absent.
+        self.gh.view_state = "CLOSED"
+        self.led.release("x", 5, holder=CONDUCTOR)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        ping = self.ship()
+        item = self.item()
+        self.assertEqual((item["state"], item["pr"], item["branch"], item["attempts"],
+                          item["esc_fails"]), ("waiting", None, None, 0, 0))
+        rec = waits.load(self.led, "x", 5)
+        self.assertEqual((rec["cause"], rec["resume"]), ("review_nonconvergent", "ready"))
+        self.assertEqual(parse(rec["next_at"]) - self.led.now(), timedelta(minutes=30))
+        self.assertIn("f", self.led.get_kv("rebuild-context:x#5"))
+        self.assertFalse(self.led.get_kv("fresh-rebuild-closing:x#5"))
+        ping.assert_not_called()
+
+    def test_interrupted_fresh_rebuild_handoff_is_atomic_and_retried(self):
+        for fault in ("upsert", "hold", "marker"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.interrupted_rebuild(fault)
+                self.assertNotEqual(self.item()["state"], "failed")
+
+    def test_second_exhaustion_asks_owner_once_and_never_fails(self):
+        ping, merge, start = self.exhausted([self.blocker(category="security")], fresh=True)
+        item = self.item()
+        self.assertEqual(item["state"], "needs_you")
+        self.assertIn("Review keeps blocking PR #88 on: app.py:12", item["question"])
+        self.assertEqual(json.loads(item["options"]), ["merge with follow-ups", "rethink issue"])
+        ping.assert_called_once()
+        self.gh.pr_close.assert_not_called()
 
     def test_red_ci_gives_up_after_max_attempts(self):
         self.led.upsert_item("x", 5, pr=88, attempts=2)
@@ -2267,16 +2458,18 @@ class ShipTests(unittest.TestCase):
                                            self.gh.pr_view(88), "blocking finding")
                 self.assertEqual(self.item()["attempts"], 1)
             self.assertEqual(start.call_count, 2)
-            # A new failing head consumes the next attempt; the third exhausts it.
-            for attempt in (2, 3):
-                self.gh.head_sha = f"head-{attempt}"
-                ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
-                                           self.gh.pr_view(88), "blocking finding")
-                self.assertEqual(self.item()["attempts"], attempt)
+            # A new failing head consumes the next attempt; the third exhausts it
+            # into one fresh rebuild, never `failed` (mahler#1262).
+            self.gh.head_sha = "head-2"
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                       self.gh.pr_view(88), "blocking finding")
+            self.assertEqual(self.item()["attempts"], 2)
+            self.gh.head_sha = "head-3"
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                       self.gh.pr_view(88), "blocking finding")
             self.assertEqual(start.call_count, 3)
-        self.assertEqual(self.item()["state"], "failed")
-        self.assertIn("attempt 3 of 3", self.gh.comments[-1])
-        self.assertIn("cycle=" + self.led.get_kv("attempt_cycle:x#5"), self.gh.comments[-1])
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.item()["attempts"], 0)
 
     def test_review_fail_verdict_starts_a_fix_round_with_findings(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
@@ -2465,8 +2658,8 @@ class ShipTests(unittest.TestCase):
         rid = self.led.last_run("x", 5, roles=("fix",))["id"]
         self.led.update_run(rid, status="ended", outcome="DONE")
         self.same_head_gate()
-        self.assertEqual(self.item()["state"], "failed")
-        self.assertEqual(self.item()["attempts"], 3)
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.item()["attempts"], 0)
         self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix"])
 
     def test_same_head_done_at_last_attempt_still_gets_review(self):
@@ -2479,8 +2672,8 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.same_head_counters(), before)
         self.same_head_verdict("fail")
         self.same_head_gate()
-        self.assertEqual(self.item()["state"], "failed")
-        self.assertEqual(self.item()["attempts"], 3)
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.item()["attempts"], 0)
 
     def test_same_head_pending_survives_restart_capacity_and_failed_launch(self):
         rid = self.same_head_setup()

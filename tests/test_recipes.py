@@ -112,6 +112,26 @@ class AccessRecipeTests(unittest.TestCase):
                     self.assertNotIn("(missing access, an environment only the owner can fix)", text)
 
 
+class RebuildContextTests(unittest.TestCase):
+    def test_rebuild_context_rendered_only_when_present(self):
+        from mahler.ledger import Ledger
+
+        class Ctx:
+            led = Ledger(":memory:")
+
+            def policy(self, proj):
+                return {"repo": "a/b", "rules": ""}
+        ctx = Ctx()
+        item = {"number": 1, "title": "T", "pr": None}
+        prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
+        plain = prompt.build(ctx, "p", item, "build", "claude", prep)
+        self.assertNotIn("rejected by independent review", plain)
+        ctx.led.set_kv("rebuild-context:p#1", "- app.py:3 leaks a token")
+        rebuilt = prompt.build(ctx, "p", item, "build", "claude", prep)
+        self.assertIn("rejected by independent review", rebuilt)
+        self.assertIn("app.py:3 leaks a token", rebuilt)
+
+
 class SizeTargetTests(unittest.TestCase):
     def test_size_target_of(self):
         # returns "s" for account = "work"

@@ -315,6 +315,13 @@ def build(ctx, project, item, role, platform, prep, context=None):
                         "decision (DESIGN D13/D52). Decide it yourself, state the decision in your DONE "
                         "summary, and finish.\n")
 
+    if role == "build":
+        led = getattr(ctx, "led", None)
+        prior = (led.get_kv(f"rebuild-context:{project}#{item['number']}") or "").strip() if led else ""
+        if prior:
+            handoff += ("\n\nA previous implementation was rejected by independent review; these "
+                        "findings must be satisfied by design, not patched:\n" + prior + "\n")
+
     claim = {}
     if role == "review" and row_get(item, "claim_base_sha"):
         from . import no_change

@@ -1454,6 +1454,22 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   most, for any open PR at least `unowned_pr_hours` old (default 2) that no item tracks.
   Drafts and bot branches are skipped.
 
+**Exhausted review never ends in `failed` (mahler#1262).** At `max_attempts` (after the one
+design pass), `ship._review_exhausted` takes three steps. (1) If every remaining blocking
+finding is non-protected (Rule 6) and CI is green, it files the follow-ups and merges. (2)
+Otherwise, once per item (kv `fresh-rebuild`), it closes the PR, saves the accumulated findings
+in kv `rebuild-context` (rendered into the build prompt, cleared on ship), resets attempts and
+escalation to the top eligible tier, and holds in `waiting`/`review_nonconvergent`. (3) If that
+fresh cycle also exhausts, the item goes to `needs_you` with one question and the options
+`merge with follow-ups | rethink issue`. The owner's exact answer `merge with follow-ups` (from the owner, with a PR still open) sets kv
+`owner-followups`, returns the item to `verifying`, and the review gate then files the findings as
+follow-ups and merges despite protected blockers; any other answer is a plain re-sort. If the PR
+is closed but its branch cleanup fails, kv `fresh-rebuild-closing` lets `_closed_pr` finish the
+rebuild on a later tick instead of counting the closure as a failed attempt. The local handoff
+(allowance, findings, item reset, wait, marker removal) is one ledger transaction, so an
+interruption rolls back to the pending marker and tracked PR and the next tick retries it whole.
+
+
 ### D19 — A change is in flight until it merges
 
 Decided 2026-09-12 (mahler#27). With `max_parallel = 1`, mahler#16, #20 and #8 still built

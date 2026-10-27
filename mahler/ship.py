@@ -837,6 +837,11 @@ def _update_reviewed_pr(ctx, project, item, pr, view):
 def _closed_pr(ctx, project, item, pr, view):
     """Recover an unmerged closure without recording any shipped evidence."""
     led, n = ctx.led, item["number"]
+    pending = _kv_json(led, f"fresh-rebuild-closing:{project}#{n}")
+    if pending.get("pr") == pr and not ctx.dry_run:
+        if _ship_lease(ctx, project, item):
+            _finish_fresh_rebuild(ctx, project, item, pending)
+        return
     head = view.get("headRefName") or item["branch"]
     replacement = None
     if head:
@@ -1215,7 +1220,8 @@ def _is_protected_blocker(finding):
     return False
 
 
-def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, info, required=None):
+def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, info, required=None,
+                             owner_approved=False):
     """Handle followups disposition from a completed design run (issue #715).
 
     Returns True if handled (either queued for merge or waiting on filing),
@@ -1226,19 +1232,19 @@ def _handle_design_followups(ctx, project, item, pr, view, sha, design_record, i
     justification = design_record.get("justification", "")
 
     # Rule 6: Never accept followups for security, unsatisfied Done-when, or data loss
-    if any(_is_protected_blocker(f) for f in findings if isinstance(f, dict)):
+    if not owner_approved and any(_is_protected_blocker(f) for f in findings if isinstance(f, dict)):
         ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
                 "(security, Done-when, or data loss); remaining on fix path")
         return False
 
     review_classified = info.get("classified") or []
-    if isinstance(review_classified, list):
+    if isinstance(review_classified, list) and not owner_approved:
         if any(isinstance(rf, dict) and rf.get("severity") == "blocking" and _is_protected_blocker(rf)
                for rf in review_classified):
             ctx.say(f"{project}#{n}: PR #{pr} — design followups refused due to protected blocker "
                     "(security, Done-when, or data loss); remaining on fix path")
             return False
-    if not review_classified and _PROTECTED_PROSE.search(str(info.get("findings") or "")):
+    if not owner_approved and not review_classified and _PROTECTED_PROSE.search(str(info.get("findings") or "")):
         ctx.say(f"{project}#{n}: PR #{pr} — design followups refused: review prose has a blocking "
                 "protected tag; remaining on fix path")
         return False
@@ -1424,6 +1430,20 @@ def _review_gate(ctx, project, item, pr, view, required=None):
                for r in led.active_runs()):
             ctx.say(f"{project}#{n}: PR #{pr} — design pass in progress")
             return
+
+        if led.get_kv(f"owner-followups:{project}#{n}") == str(pr):
+            history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
+                       if r.get("pr", pr) == pr]
+            classified = next((r["classified"] for r in reversed(history)
+                               if isinstance(r.get("classified"), list)), [])
+            record = {"disposition": "followups", "run_id": f"owner-{sha[:8]}",
+                      "findings": [f for f in classified if isinstance(f, dict)
+                                   and f.get("severity") == "blocking"],
+                      "justification": "The owner chose to merge with these findings tracked "
+                                       "as follow-ups."}
+            if record["findings"] and _handle_design_followups(
+                    ctx, project, item, pr, view, sha, record, info, required, owner_approved=True):
+                return
 
         design_key = f"design:{project}#{n}:{pr}:{sha}"
         design_record = _kv_json(led, design_key)
@@ -2032,6 +2052,122 @@ def _resume_source(ctx, project, item, head, key, busy, size, min_tier):
     return None
 
 
+def _accumulated_findings(led, project, n, pr, latest):
+    """Every distinct blocking finding the reviewers raised on this PR."""
+    seen, parts = set(), []
+    history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
+               if r.get("pr", pr) == pr]
+    for text in [r.get("findings") or "" for r in history] + [latest or ""]:
+        if text and text not in seen:
+            seen.add(text)
+            parts.append(text)
+    return "\n\n".join(f"- {t}" for t in parts)
+
+
+def _kv_json_list(led, key):
+    try:
+        val = json.loads(led.get_kv(key) or "[]")
+    except ValueError:
+        return []
+    return [r for r in val if isinstance(r, dict)] if isinstance(val, list) else []
+
+
+def _finish_fresh_rebuild(ctx, project, item, marker):
+    """Second half of the fresh rebuild, after the PR is closed: drop its branch, then
+    spend the single allowance and queue the build. False means retry on a later tick."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol, pr = ctx.policy(project), marker["pr"]
+    try:
+        if marker.get("branch"):
+            ctx.gh(project).delete_branch(marker["branch"])
+    except GHError as e:
+        ctx.say(f"{project}#{n}: fresh rebuild of PR #{pr}: branch cleanup deferred — {e}")
+        return False
+    # One local transaction: any failure rolls back to the pending marker and the tracked
+    # PR, so `_closed_pr` retries the whole handoff instead of failing a closed PR.
+    with led._tx():
+        led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{marker.get('sha', '')}")
+        led.set_kv(f"rebuild-context:{project}#{n}", marker.get("findings", ""))
+        led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
+        led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0, branch=None,
+                        esc_tier=router.cap_escalation(cfg, pol, 99, marker.get("size"),
+                                                       pin=item["pin"]))
+        waits.hold(led, project, n, "review_nonconvergent",
+                   f"PR #{pr} kept failing review; rebuilding from base at the top tier",
+                   resume="ready")
+        rec = waits.load(led, project, n) or {}
+        rec["next_at"] = iso(led.now() + timedelta(minutes=30))
+        led.set_kv(waits.key(project, n), json.dumps(rec))
+        led.set_kv(f"fresh-rebuild-closing:{project}#{n}", None)
+    led.release(project, n, holder=CONDUCTOR)
+    return True
+
+
+def _review_exhausted(ctx, project, item, pr, view, findings, size):
+    """A review that will not converge never ends in `failed` (mahler#1262): merge
+    with follow-ups when nothing protected blocks, else one fresh rebuild from
+    base at the top tier with the accumulated findings, else one owner question."""
+    led, cfg, n = ctx.led, ctx.cfg, item["number"]
+    pol = ctx.policy(project)
+    sha = view.get("headRefOid") or ""
+    history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
+               if r.get("pr", pr) == pr]
+    classified = next((r["classified"] for r in reversed(history)
+                       if isinstance(r.get("classified"), list)), None)
+    blocking = [f for f in (classified or []) if isinstance(f, dict)
+                and f.get("severity") == "blocking"]
+    protected = [f for f in blocking if _is_protected_blocker(f)]
+    if classified is None and _PROTECTED_PROSE.search(str(findings or "")):
+        protected = [{"location": "review", "scenario": str(findings)[:120]}]
+    try:
+        base = view.get("baseRefName") or pol.get("base", "main")
+        green = checks_state(view.get("statusCheckRollup"),
+                             required=_required_checks(ctx, project, base)) == "green"
+    except (GHError, ValueError, TypeError):
+        green = False
+    if classified is not None and blocking and not protected and green:
+        record = {"disposition": "followups", "findings": blocking,
+                  "run_id": f"exhausted-{sha[:8]}",
+                  "justification": "Review did not converge after the maximum fix attempts; "
+                                   "no remaining blocker is protected and CI is green."}
+        led.set_kv(f"design:{project}#{n}:{pr}:{sha}", json.dumps(record))
+        if _handle_design_followups(ctx, project, item, pr, view, sha, record,
+                                    _kv_json(led, f"review:{project}#{n}")):
+            return True
+
+    if not led.get_kv(f"fresh-rebuild:{project}#{n}"):
+        # Close the PR and drop its branch before the item moves on: a surviving remote
+        # branch would make the next build start from the rejected work. The marker lets a
+        # later tick finish the job (`_closed_pr`) if a step fails after the PR is closed.
+        gh = ctx.gh(project)
+        marker = {"pr": pr, "sha": sha, "branch": view.get("headRefName") or item["branch"],
+                  "findings": _accumulated_findings(led, project, n, pr, findings), "size": size}
+        led.set_kv(f"fresh-rebuild-closing:{project}#{n}", json.dumps(marker))
+        try:
+            try:
+                gh.pr_close(
+                    pr, "Closing: independent review did not converge on this branch; the "
+                        "conductor is rebuilding from base with all accumulated findings.")
+            except GHError:
+                if gh.pr_view(pr).get("state") == "OPEN":
+                    raise
+        except GHError as e:
+            led.set_kv(f"fresh-rebuild-closing:{project}#{n}", None)
+            ctx.say(f"{project}#{n}: fresh rebuild of PR #{pr} deferred — {e}")
+            return False
+        return _finish_fresh_rebuild(ctx, project, item, marker)
+
+    summary = "; ".join(f"{f.get('location', '?')}: {f.get('scenario', '')}"
+                        for f in protected[:3]) or str(findings or "see the review comments")[:200]
+    question = (f"Review keeps blocking PR #{pr} on: {summary}. Merge and track these as "
+                "follow-ups, or rethink the issue?")
+    options = ["merge with follow-ups", "rethink issue"]
+    led.set_state(project, n, "needs_you", question, question=question, options=json.dumps(options))
+    ctx.ping(f"Needs you — {project} #{n}", question, project, n, priority="high", tags="warning")
+    led.release(project, n, holder=CONDUCTOR)
+    return True
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False, design_plan=None):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -2106,16 +2242,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
             if not design_plan and _maybe_start_design(ctx, project, item, pr, view, sha, {"findings": findings}):
                 return
             if not design_plan:
-                led.set_state(project, n, "failed",
-                              f"review still failing on PR #{pr} after {attempts} attempts",
-                              attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
-                failures.report(ctx, project, n, "review_rejected",
-                                run=led.last_run(project, n, roles=("review",)),
-                                output=findings, branch=head)
-                ctx.ping(f"Stuck — {project} #{n}",
-                         f"the review kept failing ({attempts} attempts). Comment `/mahler go` to retry.",
-                         project, n, priority="high", tags="warning")
-                led.release(project, n, holder=CONDUCTOR)
+                if not _review_exhausted(ctx, project, item, pr, view, findings, size):
+                    led.set_kv(key, None)       # nothing was spent; retry next tick
                 return
 
         led.upsert_item(project, n, esc_tier=new_tier, esc_fails=new_fails)
@@ -2675,6 +2803,7 @@ def _shipped(ctx, project, n, pr, item, view, merged=True):
         ctx.say(f"{project}#{n}: couldn't post the shipped comment — {e}")
     ctx.ping(f"Shipped — {project} #{n}", item["title"], project, n, tags="rocket")
     led.set_state(project, n, "shipped", f"shipped via PR #{pr}")
+    led.set_kv(f"rebuild-context:{project}#{n}", "")
     ci_blockers.active(led, project)
     maintenance = config.maintenance_policy(ctx.cfg, project)
     passes = maintenance["passes"] if maintenance["enabled"] else ()
