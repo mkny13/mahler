@@ -85,11 +85,29 @@ class PostMergeTests(unittest.TestCase):
                 self.assertEqual(self.row()["phase"], "smoke")
                 self.assertEqual(self.row()["live_sha"], SHA)
                 self.assertEqual(self.row()["artifact_ref"], artifact)
+                if strategy == "mahler":
+                    continue  # smoke is satisfied by the live proof; see the test below
                 with mock.patch.object(post_merge.subprocess, "Popen") as launch:
                     # Use a fresh directory for each strategy's smoke intent.
                     with mock.patch.object(post_merge, "_directory", return_value=self.root / strategy):
                         self.tick()
                     self.assertEqual(launch.call_args.kwargs["env"]["MAHLER_ARTIFACT_REF"], artifact)
+
+    def test_mahler_live_proof_is_its_smoke(self):
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.tick()
+        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + SHA):
+            self.tick()
+        self.assertEqual(self.row()["phase"], "smoke")
+        with mock.patch.object(post_merge.subprocess, "Popen") as launch:
+            self.tick()
+        launch.assert_not_called()
+        row = self.row()
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(Path(row["evidence_ref"]).read_text(),
+                         f"Tag: {row['tag']}\nSmoke: PASS\n")
+        self.gh.create_issue.assert_not_called()
 
     def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
         self.cfg["projects"]["p"]["post_merge"].update(
