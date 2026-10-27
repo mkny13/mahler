@@ -949,7 +949,7 @@ are best-effort and never gate finalization or prompt construction.
   or `"github"` requires an empty `live_command`; command mode remains available.
   The Mahler detector requires the full merge SHA in both `launch_ok` and the
   installed `$MAHLER_HOME/app` HEAD, then exit zero from that installation's
-  `python -m mahler version`, rechecking the marker afterwards. `known_good`
+  `bin/mahler version`, rechecking the marker afterwards. `known_good`
   alone proves nothing. It returns `mahler:<full-sha>` as the artifact reference.
   - GitHub uses the project's existing repository/account client and an exact
     configured environment. `prod`/`production` names (case-insensitive) require

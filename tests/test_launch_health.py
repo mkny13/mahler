@@ -47,15 +47,15 @@ class LaunchHealthTests(unittest.TestCase):
             self.assertIsNone(launch_health.exact_live(sha))
             run.assert_not_called()
             (home / "launch_ok").write_text("b" * 40)
+            run.side_effect = [Mock(returncode=0, stdout="c" * 40)]
             self.assertIsNone(launch_health.exact_live(sha))
-            run.assert_not_called()
             (home / "launch_ok").write_text(sha)
             for head, health, expected in (("b" * 40, 0, None), (sha, 1, None),
                                            (sha, 0, "mahler:" + sha)):
                 run.side_effect = [Mock(returncode=0, stdout=head), Mock(returncode=health)]
                 self.assertEqual(launch_health.exact_live(sha, timeout=2,
                     env={"PYTHONPATH": "/task", "LOGIN": "work"}), expected)
-            self.assertEqual(run.call_args.args[0], [sys.executable, "-m", "mahler", "version"])
+            self.assertEqual(run.call_args.args[0], [str(home / "app" / "bin" / "mahler"), "version"])
             self.assertEqual(run.call_args.kwargs["cwd"], home / "app")
             self.assertEqual(run.call_args.kwargs["timeout"], 2)
             self.assertNotIn("PYTHONPATH", run.call_args.kwargs["env"])
@@ -69,6 +69,34 @@ class LaunchHealthTests(unittest.TestCase):
                 return Mock(returncode=0)
             run.side_effect = changed
             self.assertIsNone(launch_health.exact_live(sha))
+
+    def test_exact_live_runs_the_installed_cli_entrypoint(self):
+        home = Path(self.tmp.name)
+        app = home / "app"
+        app.symlink_to(config.REPO_ROOT, target_is_directory=True)
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=app, capture_output=True, text=True,
+            check=True,
+        ).stdout.strip()
+        (home / "launch_ok").write_text(sha)
+
+        self.assertEqual(launch_health.exact_live(sha), "mahler:" + sha)
+
+    def test_exact_live_accepts_installed_head_that_contains_the_merge(self):
+        merge, live = "a" * 40, "c" * 40
+        home = Path(self.tmp.name)
+        (home / "launch_ok").write_text(live)
+        for contains, expected in ((0, "mahler:" + live), (1, None), (128, None)):
+            with patch.object(launch_health.subprocess, "run") as run:
+                run.side_effect = [Mock(returncode=0, stdout=live), Mock(returncode=contains),
+                                   Mock(returncode=0)]
+                self.assertEqual(launch_health.exact_live(merge), expected)
+                self.assertEqual(run.call_args_list[1].args[0],
+                                 ["git", "merge-base", "--is-ancestor", merge, live])
+        (home / "launch_ok").write_text(live)
+        with patch.object(launch_health.subprocess, "run") as run:
+            run.side_effect = [Mock(returncode=0, stdout="d" * 40)]
+            self.assertIsNone(launch_health.exact_live(merge))
 
     def start(self, project='a', number=1):
         return tick.start(self.ctx, project, self.led.item(project, number), 'build', 'claude')
