@@ -143,6 +143,12 @@ class ShipTests(unittest.TestCase):
     def item(self, n=5):
         return self.led.item("x", n)
 
+    def fresh_usage(self):
+        later = iso(self.led.now() + timedelta(hours=2))
+        for name in ("agy-claude", "agy-gemini", "claude"):
+            self.led.record_usage(name, "5h", 10, later)
+            self.led.record_usage(name, "weekly", 10, later)
+
     def ship(self):
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(self.ctx, "ping") as ping:
@@ -1412,19 +1418,26 @@ class ShipTests(unittest.TestCase):
             with self.subTest(role=role):
                 self.led.set_kv("capacity-stranded-migrated:x", "")
                 self.led.set_state("x", 5, "needs_you", pr=88, question=question)
+                self.led.set_kv("wait:x#5", "")
+                self.led.now = lambda: NOW
                 with mock.patch.object(platforms, "available", return_value=False):
                     self.ship()
-                self.assertEqual(self.item()["state"], "needs_you")
-                marker = json.loads(self.led.get_kv("capacity-stranded:x#5"))
-                self.assertEqual(marker["role"], role)
-                # Recovery does not parse the user-facing text again.
-                self.led.upsert_item("x", 5, question="Translated capacity explanation")
+                self.assertEqual(self.item()["state"], "waiting")
+                record = json.loads(self.led.get_kv("wait:x#5"))
+                self.assertEqual((record["cause"], record["wake"]), ("capacity", {"role": role}))
+                self.assertFalse(self.led.get_kv("capacity-stranded:x#5"))
+                self.led.now = lambda: NOW + timedelta(minutes=16)
+                with mock.patch.object(platforms, "available", return_value=False):
+                    self.ship()
+                self.assertEqual(self.item()["state"], "waiting")
+                # The wake check, not the user-facing text, decides when the route is back.
+                self.led.now = lambda: NOW + timedelta(minutes=47)
+                self.fresh_usage()      # routing ignores samples older than 5 minutes
                 with mock.patch.object(ship, "_ship_item") as ordinary:
                     self.ship()
                 self.assertEqual(self.item()["state"], "verifying")
                 self.assertIsNone(self.item()["question"])
                 self.assertEqual(self.item()["options"], "[]")
-                self.assertFalse(self.led.get_kv("capacity-stranded:x#5"))
                 ordinary.assert_called_once()
 
     def test_new_capacity_escalation_persists_recoverable_marker(self):
