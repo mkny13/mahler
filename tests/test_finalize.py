@@ -2586,23 +2586,30 @@ class ReviewInconclusiveTests(unittest.TestCase):
         import json
         from mahler import ship
         led = Ledger(":memory:")
+        led.upsert_item("x", 5, title="t", state="verifying")
         key = finalize._review_kv_key("x", 5)
         kv = f"reviewinconclusive:x#5:sha1"
-        for rid, expect in ((1, "verifying"), (1, "verifying"), (2, "verifying"), (3, "verifying"), (4, "needs_you")):
+        for rid, expect in ((1, "verifying"), (1, "verifying"), (2, "verifying"), (3, "verifying"), (4, "waiting")):
             led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
             e, states, pings = self.ending(led, rid)
             finalize._review_inconclusive(e)
-            self.assertEqual(states[0][0][0], expect)
-            self.assertEqual(bool(pings), expect == "needs_you")
+            if expect == "waiting":
+                self.assertEqual(states, [])
+                self.assertEqual(led.item("x", 5)["state"], "waiting")
+                self.assertEqual(json.loads(led.get_kv("wait:x#5"))["cause"], "review_inconclusive")
+            else:
+                self.assertEqual(states[0][0][0], expect)
+            self.assertEqual(pings, [])
         self.assertEqual([r["run_id"] for r in json.loads(led.get_kv(kv))], [1, 2, 3, 4])
         self.assertEqual(led.get_kv('reviewescalate:x#5:sha1'), '1')
         ctx = mock.Mock(led=led)
         self.assertEqual(ship._kv_json_list(led, kv)[0]["platform"], "kilo")
         self.assertEqual(ship._kv_json_list(led, "reviewinconclusive:x#5:sha2"), [])
 
-    def test_replay_after_cap_keeps_needs_you(self):
+    def test_replay_after_cap_keeps_waiting(self):
         import json
         led = Ledger(":memory:")
+        led.upsert_item("x", 5, title="t", state="verifying")
         key = finalize._review_kv_key("x", 5)
         for rid in (1, 2, 3, 4):
             led.set_kv(key, json.dumps({"run_id": rid, "sha": "sha1"}))
@@ -2612,8 +2619,8 @@ class ReviewInconclusiveTests(unittest.TestCase):
         self.assertIsNone(led.get_kv(key))
         e, states, pings = self.ending(led, 4)
         finalize._review_inconclusive(e)
-        self.assertEqual(states[0][0][0], "needs_you")
-        self.assertTrue(pings)
+        self.assertEqual(led.item("x", 5)["state"], "waiting")
+        self.assertEqual(pings, [])
         self.assertEqual(len(json.loads(led.get_kv("reviewinconclusive:x#5:sha1"))), 4)
 
     def test_credit_failures_and_parse_rejects_do_not_count(self):

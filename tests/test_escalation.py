@@ -335,12 +335,14 @@ class TierEscalationTests(unittest.TestCase):
                     with mock.patch.object(self.led, "now", return_value=now + timedelta(hours=2, seconds=1)):
                         step()
                 item = self.led.item("p", 92)
-                self.assertEqual(item["state"], "needs_you")
+                self.assertEqual(item["state"], "waiting")
                 self.assertEqual(item["esc_fails"], 1)
                 self.assertEqual(item["attempts"], 0)
-                self.assertIn("no quota", item["question"])
+                record = json.loads(self.led.get_kv("wait:p#92"))
+                self.assertEqual(record["cause"], "capacity")
+                self.assertIn("no quota", record["reason"])
                 self.assertIsNone(self.led.lease("p", 92))
-                self.assertTrue(self.ctx.pings[-1][0].startswith("Fix capacity wait expired"))
+                self.assertEqual(len(self.ctx.pings), count)   # no owner ping (D52)
 
     def test_waiting_review_fix_resumes_when_capacity_returns(self):
         self.led.upsert_item("p", 93, state="verifying", title="fix me",

@@ -9,9 +9,9 @@ import json
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import capacity, ci_blockers, config, model_availability, launch_health, platforms, presence, prompt, router, runner
+from . import capacity, ci_blockers, config, model_availability, launch_health, platforms, presence, prompt, router, runner, waits
 from .gh import GHError, dependency_target
-from .ledger import iso, parse, row_get
+from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import compute_burst
 
 
@@ -811,8 +811,14 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         conflict = isinstance(e, runner.WorktreeConflict)
         if conflict:
             led.release(project, n, holder=f"run:{run_id}")
-            reason = str(e)
-            led.set_state(project, n, "needs_you", reason, question=reason, options="[]")
+            prior = led.item(project, n)["state"]
+            if prior not in waits.RESUMES:
+                prior = "verifying" if row_get(item, "pr") else "ready"
+            other = led.lease(project, n)
+            holder = (other["holder"] if other and other["holder"] != CONDUCTOR
+                      and not other["holder"].endswith("/conductor") else None)
+            waits.hold(led, project, n, "worktree_conflict", str(e), resume=prior,
+                       wake={"branch": e.branch, "path": e.path, "holder": holder})
         elif handoff_from:
             restored, _ = led.claim(
                 project, n, handoff_from[0], "auto", pol["auto_lease_minutes"],
@@ -828,8 +834,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
         led.event("launch_failed", project, n, str(e)[:500])
         ctx.say(f"{project}#{n}: launch failed — {e}")
         if conflict:
-            ctx.ping(f"Mahler needs you — {project} #{n}", str(e), project, n,
-                     priority="high", tags="question", console=True)
+            pass                     # already waiting on worktree_conflict, no ping (D52)
         elif resume_from is not None and isinstance(e, runner.ResumeUnsupported):
             led.update_run(run_id, stop_reason="resume_rejected")
         else:

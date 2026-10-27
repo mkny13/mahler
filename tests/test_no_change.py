@@ -109,9 +109,10 @@ class ClaimTests(unittest.TestCase):
         self.advance()
         self.advance()
         self.assertEqual(self.read()["phase"], "exhausted")
-        self.assertEqual(self.led.item("x", 5)["state"], "needs_you")
+        self.assertEqual(self.led.item("x", 5)["state"], "waiting")
+        self.assertEqual(json.loads(self.led.get_kv("wait:x#5"))["cause"], "review_inconclusive")
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
-        self.ctx.ping.assert_called_once()
+        self.ctx.ping.assert_not_called()
 
     def test_run_and_epoch_fence_and_replayed_verdict(self):
         payload = json.dumps({"mode": "claim", "evidence": ["a.py:4"], "human_checks": []})
@@ -395,7 +396,7 @@ class ClaimTests(unittest.TestCase):
                 start.assert_called_once()
             else:
                 start.assert_not_called()
-                self.assertEqual(self.led.item('x', 5)['state'], 'needs_you')
+                self.assertEqual(self.led.item('x', 5)['state'], 'waiting')
             if index == 2:
                 self.assertEqual(self.led.get_kv('reviewescalate:x#5:base'), '1')
 

@@ -48,7 +48,7 @@ class LaunchCapacityTests(unittest.TestCase):
                          (new["id"], lease["epoch"], current_prompt, prep))
         self.assertEqual(launch.call_args.kwargs, {"resume_from": source})
 
-    def test_fix_launch_external_worktree_conflict_parks_needs_you(self):
+    def test_fix_launch_external_worktree_conflict_waits(self):
         led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(led.close)
         cfg = mk_cfg({"a": proj(max_parallel=1)}, total=1)
@@ -63,9 +63,11 @@ class LaunchCapacityTests(unittest.TestCase):
                 mock.patch("mahler.launch_health.failed") as failed:
             self.assertFalse(tick.start(ctx, "a", led.item("a", 1), "fix", "claude",
                                       handoff_from=("conductor", old["epoch"])))
-            self.assertEqual(led.item("a", 1)["state"], "needs_you")
-            self.assertIn("/interactive/tree", led.item("a", 1)["question"])
-            self.assertIn("pr-head", led.item("a", 1)["question"])
+            self.assertEqual(led.item("a", 1)["state"], "waiting")
+            record = json.loads(led.get_kv("wait:a#1"))
+            self.assertEqual((record["cause"], record["resume"]), ("worktree_conflict", "verifying"))
+            self.assertIn("/interactive/tree", record["reason"])
+            self.assertIn("pr-head", record["reason"])
             self.assertIsNone(led.lease("a", 1))
             for minute in (30, 60, 360):
                 led.now = lambda m=minute: NOW + timedelta(minutes=m)
@@ -74,8 +76,7 @@ class LaunchCapacityTests(unittest.TestCase):
             self.assertEqual(prepare.call_count, 1)
             launch.assert_not_called()
             failed.assert_not_called()
-        ctx.ping.assert_called_once()
-        self.assertEqual(ctx.ping.call_args.kwargs["priority"], "high")
+        ctx.ping.assert_not_called()
 
     def test_three_launch_failures_preserve_budget_and_retry_after_backoff(self):
         led = Ledger(":memory:", clock=lambda: NOW)
