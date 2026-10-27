@@ -265,8 +265,8 @@ audit when reporting the checklist evidence. No owner pass is required.
 
 ## Criterion 2 re-verification (#1257)
 
-On `main` at `c7ccb4787a4ffd7a20ea74faf2215ea78cd8611b` (`HEAD` and `origin/main` agreed),
-2026-10-26. The probe above, re-run unchanged, exited 0 and printed
+On `main` at `eb8497ad330a2aed186e33e1e5d80abaa9dd27a2` (`HEAD` and `origin/main` agreed),
+2026-10-27. The probe above, re-run unchanged, exited 0 and printed
 `desktop= True phone= True` for all five labels (`How a change ships`,
 `Dependencies`, `Completed · last 7 days`, `Activity`, `Open issues · 30 days`).
 `PYTHONPATH=tests python3 -m unittest -v test_console.ProjectOverviewPageTests

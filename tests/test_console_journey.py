@@ -9,7 +9,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -26,8 +28,16 @@ class JourneySeedTests(unittest.TestCase):
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             url = re.match(r"CONSOLE_URL=(\S+)", proc.stdout.readline()).group(1)
-            with urllib.request.urlopen(url + "?project=groundwork", timeout=10) as resp:
-                page = resp.read().decode()
+            # Server may need a moment to bind; retry a few times
+            page = None
+            for _ in range(20):
+                try:
+                    with urllib.request.urlopen(url + "?project=groundwork", timeout=5) as resp:
+                        page = resp.read().decode()
+                    break
+                except (ConnectionRefusedError, urllib.error.URLError, TimeoutError):
+                    time.sleep(0.25)
+            self.assertIsNotNone(page, "console did not respond")
             for marker in ("How a change ships", "Drive scope: drive.readonly or drive.file?",
                            "Retry batch", "data-project-scope-switcher", "Dependencies"):
                 self.assertIn(marker, page)
