@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
-from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync
+from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync, waits
 from mahler.ledger import CONDUCTOR, Ledger, iso
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
@@ -115,6 +115,16 @@ class FakeGH:
 
     def open_prs(self):
         return list(self.prs)
+
+
+def expire_waits(led, project="x"):
+    """Make every wait's next backoff check due now (mahler#1261)."""
+    for item in led.items(project, ["waiting"]):
+        key = f"wait:{project}#{item['number']}"
+        rec = json.loads(led.get_kv(key) or "{}")
+        if rec:
+            rec["next_at"] = iso(led.now() - timedelta(seconds=1))
+            led.set_kv(key, json.dumps(rec))
 
 
 class ShipTests(unittest.TestCase):
@@ -1473,10 +1483,11 @@ class ShipTests(unittest.TestCase):
         self.cfg["routing"]["review"] = ["agy-gemini"]
         with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}):
             self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
         self.cfg["routing"]["review"].append("agy-claude")
         with mock.patch.object(ship, "_code_source", return_value={"platform": "agy-gemini"}), \
                 mock.patch.object(ship, "_ship_item"):
+            expire_waits(self.led)
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")
 
@@ -1487,9 +1498,10 @@ class ShipTests(unittest.TestCase):
         ship._mark_capacity_wait(self.led, "x", self.item(), "fix")
         self.led.record_usage("agy-gemini", "weekly", 100, iso(NOW + timedelta(hours=2)))
         self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
         self.led.record_usage("agy-gemini", "weekly", 10, iso(NOW + timedelta(hours=2)))
         with mock.patch.object(ship, "_ship_item"):
+            expire_waits(self.led)
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")
 
@@ -1498,11 +1510,14 @@ class ShipTests(unittest.TestCase):
         ship._mark_capacity_wait(self.led, "x", self.item(), "fix")
         self.ctx.dry_run = True
         self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "needs_you")      # dry run leaves the marker alone
         self.ctx.dry_run = False
         self.led.claim("x", 5, "human", "session", 30)
         self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
+        expire_waits(self.led)
+        self.ship()
+        self.assertEqual(self.item()["state"], "waiting")      # held by the session
 
     def test_review_capacity_wait_uses_its_own_backstop_and_resets_per_head(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:l"]')
@@ -3009,6 +3024,9 @@ class ShipTests(unittest.TestCase):
                     self.led.set_kv("fix:x#5:88", "evidence")
                     self.gh.mergeable = "UNKNOWN" if condition == "UNKNOWN" else "MERGEABLE"
                     self.gh.rollup = [{"state": "PENDING" if condition == "pending" else "SUCCESS"}]
+                    self.ship()
+                    self.assertEqual(self.item()["state"], "waiting")
+                    expire_waits(self.led)
                     self.ship()
                     self.assertEqual(self.item()["state"], "verifying")
                     self.assertEqual(self.gh.merged, [])
@@ -6039,15 +6057,19 @@ class ReviewPinFallbackTests(unittest.TestCase):
         self.led.set_state('x', 5, 'needs_you', 'old capacity pause')
         ship._mark_capacity_wait(self.led, 'x', self.item(), 'review')
         with mock.patch.object(self.ctx, 'gh', return_value=self.gh):
-            ship.recover_capacity_waits(self.ctx, 'x')
-            self.assertEqual(self.item()['state'], 'needs_you')
+            def recheck():
+                ship.recover_capacity_waits(self.ctx, 'x')
+                expire_waits(self.led)
+                waits.recheck(self.ctx, 'x')
+            recheck()
+            self.assertEqual(self.item()['state'], 'waiting')
             self.now += timedelta(hours=6)
             self.refresh()
             self.cfg['platforms']['agy-gemini']['tier'] = 1
-            ship.recover_capacity_waits(self.ctx, 'x')
-            self.assertEqual(self.item()['state'], 'needs_you')
+            recheck()
+            self.assertEqual(self.item()['state'], 'waiting')
             self.cfg['platforms']['agy-gemini']['tier'] = 2
-            ship.recover_capacity_waits(self.ctx, 'x')
+            recheck()
             self.assertEqual(self.item()['state'], 'verifying')
         self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
 
