@@ -2063,6 +2063,7 @@ class ShipTests(unittest.TestCase):
             with self.subTest(fault=fault):
                 self.setUp()
                 self.interrupted_rebuild(fault)
+                self.assertNotEqual(self.item()["state"], "failed")
 
     def test_second_exhaustion_asks_owner_once_and_never_fails(self):
         ping, merge, start = self.exhausted([self.blocker(category="security")], fresh=True)
