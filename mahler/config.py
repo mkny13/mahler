@@ -1012,12 +1012,16 @@ def validate_github_app(cfg):
                 ):
                     raise ValueError(f"github_apps.{name}: repositories must be a list of repository names")
 
+    from . import github_pat
+    pat_projects = github_pat.validate(cfg)
     projects = list(cfg.get("projects", {}).items())
     app = cfg.get("github_app", {})
     if not projects or not isinstance(app, dict) or app.get("installation_id") is not None:
         github_app_settings(cfg, {})
     for proj_name, project in projects:
         proj_policy = {**project, "name": proj_name}
+        if proj_name in pat_projects:
+            continue
         settings = github_app_settings(cfg, proj_policy)
         require_scoped = (
             project.get("require_scoped_identity")
