@@ -153,6 +153,9 @@ class ShipTests(unittest.TestCase):
     def item(self, n=5):
         return self.led.item("x", n)
 
+    def wait_record(self, n=5):
+        return json.loads(self.led.get_kv(f"wait:x#{n}"))
+
     def fresh_usage(self):
         later = iso(self.led.now() + timedelta(hours=2))
         for name in ("agy-claude", "agy-gemini", "claude"):
@@ -820,10 +823,11 @@ class ShipTests(unittest.TestCase):
         self.led.now = lambda: NOW + timedelta(minutes=90)
         self.ship()
 
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "ci_stalled")
         self.assertEqual(self.item()["attempts"], 0)
         self.assertIsNone(self.led.lease("x", 5))
-        self.assertIn("required check discovery failed", self.item()["question"])
+        self.assertIn("required check discovery failed", self.wait_record()["reason"])
 
     def test_pr_opening_is_idempotent(self):
         """A tick that died after `gh pr create` must not open a second PR."""
@@ -1355,7 +1359,8 @@ class ShipTests(unittest.TestCase):
         self.gh.actions_run.return_value.update(run_attempt=3, status="in_progress")
         self.led.clock = lambda: NOW + timedelta(days=1)
         self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "ci_stalled")
         self.assertEqual(self.item()["attempts"], 0)
 
     def test_ci_rerun_lost_response_then_completed_attempt_is_not_reposted(self):
@@ -1450,15 +1455,17 @@ class ShipTests(unittest.TestCase):
                 self.assertEqual(self.item()["options"], "[]")
                 ordinary.assert_called_once()
 
-    def test_new_capacity_escalation_persists_recoverable_marker(self):
+    def test_new_capacity_escalation_waits_and_recovers(self):
         self.led.upsert_item("x", 5, pr=88)
         ship.migrate_capacity_waits(self.ctx, "x")
-        with mock.patch.object(self.ctx, "ping"):
+        with mock.patch.object(self.ctx, "ping") as ping:
             ship._capacity_wait(self.ctx, "x", self.item(), "reviewfix-status:x#5",
                                 "cycle", "no route", "fix", ([], None, None), 2)
-        self.assertEqual(self.item()["state"], "needs_you")
-        self.assertEqual(json.loads(self.led.get_kv("capacity-stranded:x#5"))["role"], "fix")
+        ping.assert_not_called()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["wake"], {"role": "fix"})
         with mock.patch.object(ship, "_ship_item"):
+            expire_waits(self.led)
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")
         self.assertFalse(self.led.get_kv("reviewfix-status:x#5"))
@@ -1535,9 +1542,9 @@ class ShipTests(unittest.TestCase):
             self.ship().assert_not_called()
             now[0] += timedelta(hours=1)
             ping = self.ship()
-            ping.assert_called_once()
-            self.assertIn("no known recovery", ping.call_args.args[1])
-            self.assertEqual(self.item()["state"], "needs_you")
+            ping.assert_not_called()
+            self.assertIn("no known recovery", self.wait_record()["reason"])
+            self.assertEqual(self.item()["state"], "waiting")
 
     def test_fix_capacity_waits_retry_and_only_unknown_backstop_escalates(self):
         for review in (False, True):
@@ -1556,8 +1563,9 @@ class ShipTests(unittest.TestCase):
                     self.assertEqual(self.item()["state"], "verifying")
                     now[0] += timedelta(hours=21)
                     ping = self.ship()
-                    self.assertIn("no known recovery", ping.call_args.args[1])
-                    self.assertEqual(self.item()["state"], "needs_you")
+                    ping.assert_not_called()
+                    self.assertIn("no known recovery", self.wait_record()["reason"])
+                    self.assertEqual(self.item()["state"], "waiting")
 
     def test_fix_start_clears_wait_only_on_success(self):
         for review in (False, True):
@@ -1713,9 +1721,11 @@ class ShipTests(unittest.TestCase):
         self.led.upsert_item("x", 5, pr=88, title="credentials fix", labels='["size:s"]')
         self.gh.rollup = [{"state": "FAILURE"}]
         ping = self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
-        self.assertIn("No configured eligible platform", ping.call_args.args[1])
-        self.assertIn("required tier 2", ping.call_args.args[1])
+        self.assertFalse([c for c in ping.call_args_list if "needs you" in c[0][0]])
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "capacity")
+        self.assertIn("No configured eligible platform", self.wait_record()["reason"])
+        self.assertIn("required tier 2", self.wait_record()["reason"])
 
     def test_failed_review_launch_keeps_the_wait_clock(self):
         self.led.upsert_item("x", 5, pr=88, labels='["size:m"]')
@@ -2788,7 +2798,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")
         self.assertEqual(self.led.lease("x", 5)["holder"], "conductor")
 
-    def test_pending_ci_times_out_to_needs_you(self):
+    def test_pending_ci_times_out_to_waiting(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.rollup = [{"state": "PENDING"}]
         self.gh.head_sha = "abc"
@@ -2799,17 +2809,13 @@ class ShipTests(unittest.TestCase):
             ping = self.ship()
         finally:
             self.led.now = lambda: NOW
-        ping.assert_called_once()
-        self.assertIn("needs you", ping.call_args[0][0])
-        self.assertEqual(ping.call_args.kwargs["priority"], "high")
-        self.assertEqual(ping.call_args.kwargs["tags"], "question")
-        self.assertTrue(ping.call_args.kwargs["console"])
-        self.assertEqual(self.item()["state"], "needs_you")
+        ping.assert_not_called()                 # a wait, not an owner question (D52)
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "ci_stalled")
         self.assertIsNone(self.led.lease("x", 5))               # the slot is released
         self.assertIn("90 min", self.last_event())
-        # mahler#248: a structured question with no answer options
-        self.assertIn("90 min", self.item()["question"])
-        self.assertEqual(self.item()["options"], "[]")
+        self.assertIn("90 min", self.wait_record()["reason"])
+        self.assertIsNone(self.item()["question"])
 
     def test_pending_ci_timeout_restarts_on_a_new_sha(self):
         """A push to the PR (e.g. the fix run) restarts the wait: CI starts over."""
@@ -3005,8 +3011,8 @@ class ShipTests(unittest.TestCase):
         self.ship()
         with mock.patch.object(self.led, "now", return_value=NOW + timedelta(days=1)):
             self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
-        self.assertIn("CI still running", self.item()["question"])
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertIn("CI still running", self.wait_record()["reason"])
 
     def test_capacity_recovery_resets_waits_before_real_shipping(self):
         for role in ("fix", "review"):
@@ -3191,7 +3197,7 @@ class ShipTests(unittest.TestCase):
             self.assertEqual(self.item()["state"], "verifying")
             self.led.now = lambda: NOW + timedelta(minutes=90)
             self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
         self.assertEqual(self.item()["attempts"], 0)
         self.assertEqual(self.gh.merged, [])
         self.assertIsNone(self.led.lease("x", 5))
@@ -3207,7 +3213,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "verifying")
         self.led.now = lambda: NOW + timedelta(minutes=180)
         self.ship()
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
         self.assertEqual(self.gh.merged, [])
 
     def test_ci_pending_timeout_reports_launch_failure_not_transient_error(self):
@@ -3225,8 +3231,9 @@ class ShipTests(unittest.TestCase):
             self.assertEqual(self.item()["state"], "verifying")
             self.led.now = lambda: NOW + timedelta(minutes=180)
             self.ship()
-        self.assertIn("branch held at /interactive/worktree", self.item()["question"])
-        self.assertNotIn("TLS", self.item()["question"])
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertIn("branch held at /interactive/worktree", self.wait_record()["reason"])
+        self.assertNotIn("TLS", self.wait_record()["reason"])
 
     def test_successful_lookup_clears_lookup_failure_timer(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -3362,7 +3369,7 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.item()["state"], "shipped")
 
-    def test_merge_queue_stuck_times_out_to_needs_you(self):
+    def test_merge_queue_stuck_times_out_to_waiting(self):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.queue = True
         self.ship()                              # requests the merge, stamps "since"
@@ -3372,16 +3379,14 @@ class ShipTests(unittest.TestCase):
             ping = self.ship()
         finally:
             self.led.now = lambda: NOW
-        ping.assert_called_once()
-        self.assertIn("needs you", ping.call_args[0][0])
-        self.assertTrue(ping.call_args.kwargs["console"])
+        ping.assert_not_called()
         self.assertEqual(self.gh.comments, [])
-        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "merge_queue")
         self.assertIsNone(self.led.lease("x", 5))
         self.assertIn("90 min", self.last_event())
-        # mahler#248: a structured question with no answer options
-        self.assertIn("90 min", self.item()["question"])
-        self.assertEqual(self.item()["options"], "[]")
+        self.assertIn("90 min", self.wait_record()["reason"])
+        self.assertIsNone(self.item()["question"])
 
     def test_pr_merged_outside_mahler_is_shipped(self):
         self.led.upsert_item("x", 5, pr=88)
