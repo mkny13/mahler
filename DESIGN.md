@@ -1256,6 +1256,14 @@ are best-effort and never gate finalization or prompt construction.
   - it's a Mahler job, not an agent, so agents never need production credentials to
     make backups happen
 - `mahler.db` is copied nightly with `.backup` into the backups folder.
+- **Mahler's own disk is bounded** (mahler#1386). Each ledger copy is the whole database,
+  so its copies keep 5 daily and 4 weekly (`[backup] keep_*`), in `[backup] dir`. Point that
+  at the SSD and copies the policy keeps move there from `~/.mahler/backups/mahler` on the
+  next night. Only after that night's verified copy does the tick compact and `VACUUM`
+  the live ledger. Per-run folders (`[storage] runs_dir`, default `~/.mahler/runs`) go
+  after `janitor.retention_days` once the run has ended and its item is done or shipped. Their
+  evidence is already in the run-history index. Capacity history stores each distinct
+  platform snapshot once, compressed.
 
 ### D13 — Autonomy
 

@@ -15,6 +15,7 @@ Lease rules (D6), all enforced inside one IMMEDIATE transaction:
     epoch fails lease_check and must not push or merge.
 """
 
+import hashlib
 import itertools
 import json
 import os
@@ -23,6 +24,7 @@ import socket
 import secrets
 import sqlite3
 import subprocess
+import zlib
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
@@ -342,10 +344,19 @@ CREATE TABLE IF NOT EXISTS capacity_intervals (
     blockers          TEXT NOT NULL DEFAULT '[]',
     platforms         TEXT NOT NULL DEFAULT '{}',
     launch_run_id     INTEGER,
-    launched_platform TEXT
+    launched_platform TEXT,
+    platforms_id      INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_capacity_open ON capacity_intervals(open, project, number, role);
 CREATE INDEX IF NOT EXISTS idx_capacity_last_seen ON capacity_intervals(last_seen);
+-- Each distinct platforms snapshot once, zlib-compressed JSON (mahler#1386):
+-- a few thousand ~16 KB values shared by ~100k intervals. Rows point here;
+-- their own `platforms` stays '{}'. Read back through mahler_inflate().
+CREATE TABLE IF NOT EXISTS capacity_platform_sets (
+    id        INTEGER PRIMARY KEY,
+    hash      TEXT NOT NULL UNIQUE,
+    zjson     BLOB NOT NULL
+);
 -- Net backlog (mahler#1104): sync's in-scope open-issue count, at most hourly
 -- per project, kept ~35 days. The change in open count is opened − closed.
 CREATE TABLE IF NOT EXISTS backlog_snapshots (
@@ -405,6 +416,10 @@ def parse(s):
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _inflate(blob):
+    return None if blob is None else zlib.decompress(blob).decode()
+
+
 class Ledger:
     def __init__(self, path, clock=utcnow, thread_safe=False):
         if path != ":memory:":
@@ -417,6 +432,7 @@ class Ledger:
                                    check_same_thread=not thread_safe)
         try:
             self.con.row_factory = sqlite3.Row
+            self.con.create_function("mahler_inflate", 1, _inflate, deterministic=True)
             self.con.execute("PRAGMA journal_mode=WAL")
             self.con.execute("PRAGMA busy_timeout=10000")
             self.con.executescript(SCHEMA)
@@ -456,6 +472,9 @@ class Ledger:
                 self.con.execute("ALTER TABLE runs ADD COLUMN actual_mins REAL")
             if "size" not in run_cols:
                 self.con.execute("ALTER TABLE runs ADD COLUMN size TEXT")
+            cap_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(capacity_intervals)")}
+            if "platforms_id" not in cap_cols:
+                self.con.execute("ALTER TABLE capacity_intervals ADD COLUMN platforms_id INTEGER")
             lease_cols = {r["name"] for r in self.con.execute("PRAGMA table_info(leases)")}
             if "capacity" not in lease_cols:
                 self.con.execute("ALTER TABLE leases ADD COLUMN capacity INTEGER NOT NULL DEFAULT 1")
@@ -963,7 +982,7 @@ class Ledger:
 
     # ---------- capacity intervals (mahler#734; schema in capacity.py) ----------
 
-    def capacity_record(self, observations, gap_seconds=120):
+    def capacity_record(self, observations, gap_seconds=900):
         """Fold one tick's observations {(project, number, role): dict} into
         state intervals. An unchanged state only advances last_seen; a changed
         state, a gap over `gap_seconds`, or a launch closes the open interval
@@ -972,7 +991,8 @@ class Ledger:
         now = self.now()
         stamp = iso(now)
         with self._tx():
-            for row in self.q("SELECT * FROM capacity_intervals WHERE open=1"):
+            for row in self.q("SELECT id, project, number, role, last_seen, signature"
+                              " FROM capacity_intervals WHERE open=1"):
                 key = (row["project"], row["number"], row["role"])
                 obs = observations.get(key)
                 if obs is None:
@@ -1003,14 +1023,39 @@ class Ledger:
                 self.con.execute(
                     "INSERT INTO capacity_intervals (project, number, role, routing_role, size,"
                     " effective_size, required_tier, first_seen, last_seen, open, end_reason,"
-                    " signature, blockers, platforms, launch_run_id, launched_platform)"
+                    " signature, blockers, platforms_id, launch_run_id, launched_platform)"
                     " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (project, number, role, obs.get("routing_role"), obs.get("size"),
                      obs.get("effective_size"), obs.get("required_tier") or 0, stamp, stamp,
                      0 if launched else 1, "launched" if launched else None,
                      obs["signature"], json.dumps(obs.get("blockers") or []),
-                     json.dumps(obs.get("platforms") or {}, sort_keys=True),
+                     self._capacity_platform_set(
+                         json.dumps(obs.get("platforms") or {}, sort_keys=True)),
                      obs.get("launch_run_id"), obs.get("launched_platform")))
+
+    def _capacity_platform_set(self, text):
+        """The id of this platforms snapshot, stored once."""
+        digest = hashlib.sha1(text.encode()).hexdigest()
+        self.con.execute("INSERT OR IGNORE INTO capacity_platform_sets (hash, zjson)"
+                         " VALUES (?,?)", (digest, zlib.compress(text.encode())))
+        return self.q1("SELECT id FROM capacity_platform_sets WHERE hash=?", (digest,))["id"]
+
+    def capacity_intern_platforms(self):
+        """Move inline platforms JSON (rows written before mahler#1386) into
+        capacity_platform_sets, and drop sets no interval uses. -> rows moved."""
+        moved = 0
+        with self._tx():
+            rows = self.q("SELECT id, platforms FROM capacity_intervals"
+                          " WHERE platforms_id IS NULL")
+            for row in rows:
+                set_id = self._capacity_platform_set(row["platforms"] or "{}")
+                self.con.execute("UPDATE capacity_intervals SET platforms_id=?, platforms='{}'"
+                                 " WHERE id=?", (set_id, row["id"]))
+                moved += 1
+            self.con.execute("DELETE FROM capacity_platform_sets WHERE id NOT IN"
+                             " (SELECT platforms_id FROM capacity_intervals"
+                             "  WHERE platforms_id IS NOT NULL)")
+        return moved
 
     def _capacity_close(self, row_id, reason, last_seen=None, run_id=None, platform=None):
         self.con.execute(
@@ -1028,16 +1073,66 @@ class Ledger:
             self.con.execute("UPDATE capacity_intervals SET first_seen=? WHERE first_seen < ?",
                              (cutoff, cutoff))
 
+    def capacity_compact(self, gap_seconds):
+        """Merge runs of intervals that a too-tight gap threshold split apart
+        (mahler#1386): consecutive rows of one item and role, same signature,
+        the earlier closed as `gap` no more than `gap_seconds` before the next
+        began. The earliest row absorbs the span and the last row's ending.
+        -> rows removed."""
+        removed, merges = [], []
+        prev = head = None
+        rows = self.con.execute(
+            "SELECT id, project, number, role, signature, first_seen, last_seen, open,"
+            " end_reason, launch_run_id, launched_platform FROM capacity_intervals"
+            " ORDER BY project, number, role, first_seen, id")
+        for row in rows:
+            joins = (prev is not None
+                     and (prev["project"], prev["number"], prev["role"])
+                     == (row["project"], row["number"], row["role"])
+                     and prev["end_reason"] == "gap" and not prev["open"]
+                     and prev["signature"] == row["signature"]
+                     and (parse(row["first_seen"]) - parse(prev["last_seen"])).total_seconds()
+                     <= gap_seconds)
+            if joins:
+                removed.append(row["id"])
+                merges[-1] = (head, row)
+            else:
+                head = row["id"]
+                merges.append((head, None))
+            prev = row
+        with self._tx():
+            for head_id, last in merges:
+                if last is None:
+                    continue
+                self.con.execute(
+                    "UPDATE capacity_intervals SET last_seen=?, open=?, end_reason=?,"
+                    " launch_run_id=?, launched_platform=? WHERE id=?",
+                    (last["last_seen"], last["open"], last["end_reason"],
+                     last["launch_run_id"], last["launched_platform"], head_id))
+            for i in range(0, len(removed), 500):
+                chunk = removed[i:i + 500]
+                self.con.execute("DELETE FROM capacity_intervals WHERE id IN (%s)"
+                                 % ",".join("?" * len(chunk)), chunk)
+        return len(removed)
+
+    CAPACITY_SELECT = (
+        "SELECT c.id, c.project, c.number, c.role, c.routing_role, c.size, c.effective_size,"
+        " c.required_tier, c.first_seen, c.last_seen, c.open, c.end_reason, c.signature,"
+        " c.blockers, COALESCE(mahler_inflate(s.zjson), c.platforms) AS platforms,"
+        " c.launch_run_id,"
+        " c.launched_platform FROM capacity_intervals c"
+        " LEFT JOIN capacity_platform_sets s ON s.id = c.platforms_id")
+
     def capacity_intervals(self, since=None, project=None, limit=5000):
         """Intervals whose observed span reaches `since` (ISO), oldest first, bounded."""
-        sql, args = "SELECT * FROM capacity_intervals WHERE 1=1", []
+        sql, args = self.CAPACITY_SELECT + " WHERE 1=1", []
         if since:
-            sql += " AND last_seen >= ?"
+            sql += " AND c.last_seen >= ?"
             args.append(since)
         if project:
-            sql += " AND project=?"
+            sql += " AND c.project=?"
             args.append(project)
-        return self.q(sql + " ORDER BY first_seen, id LIMIT ?", (*args, limit))
+        return self.q(sql + " ORDER BY c.first_seen, c.id LIMIT ?", (*args, limit))
 
     # ---------- net backlog (mahler#1104) ----------
 

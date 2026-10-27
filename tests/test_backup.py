@@ -1,6 +1,7 @@
 """Backups (DESIGN D12): dump, verify, prune — with fake pg tools, no database."""
 
 import os
+import sqlite3
 import stat
 import tempfile
 import unittest
@@ -238,6 +239,51 @@ class LedgerBackupTests(unittest.TestCase):
         newest = f"mahler-{stamps[0].strftime(backup.STAMP)}.db"
         self.assertIn(newest, remaining)
 
+    def test_copy_is_standalone_without_wal_files(self):
+        res = backup.backup_ledger(self.led_path, root=self.root)
+        self.assertEqual(os.listdir(self.root), [os.path.basename(res["path"])])
+
+    def _touch(self, root, stamp, suffix=""):
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, f"mahler-{stamp.strftime(backup.STAMP)}.db{suffix}")
+        open(path, "w").close()
+        return path
+
+    def test_default_policy_keeps_five_days_and_four_weeks(self):
+        now = datetime(2026, 9, 12, 3, 0)
+        for i in range(40):
+            self._touch(self.root, now - timedelta(days=i))
+        backup.prune_ledger(root=self.root)
+        self.assertLessEqual(len(os.listdir(self.root)), 5 + 4)
+        self.assertGreaterEqual(len(os.listdir(self.root)), 5)
+
+    def test_prune_moves_kept_legacy_copies_and_clears_strays(self):
+        legacy = os.path.join(self.tmp.name, "legacy")
+        now = datetime(2026, 9, 12, 3, 0)
+        newest = self._touch(self.root, now)
+        for i in range(1, 20):
+            self._touch(legacy, now - timedelta(days=i))
+        self._touch(legacy, now - timedelta(days=3), ".partial-wal")
+        self._touch(legacy, now - timedelta(days=3), ".partial-shm")
+        backup.prune_ledger(root=self.root, legacy=legacy, daily=3, weekly=1, monthly=0)
+        self.assertEqual(os.listdir(legacy), [])
+        kept = sorted(os.listdir(self.root))
+        self.assertEqual(len(kept), 3)
+        self.assertIn(os.path.basename(newest), kept)
+
+    def test_maintain_ledger_compacts_and_vacuums(self):
+        self.led.con.execute("CREATE TABLE filler (b BLOB)")
+        self.led.con.execute("INSERT INTO filler SELECT zeroblob(4096) FROM"
+                             " (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c"
+                             " WHERE x < 12000) SELECT x FROM c)")
+        self.led.con.execute("DROP TABLE filler")
+        self.led.con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = os.path.getsize(self.led_path)
+        done = backup.maintain_ledger(self.led)
+        self.assertTrue(done["vacuumed"])
+        self.assertLess(os.path.getsize(self.led_path), before // 4)
+        self.assertEqual(backup.maintain_ledger(self.led)["vacuumed"], False)
+
     def test_optimize_and_checkpoint_does_not_raise(self):
         backup.optimize_and_checkpoint(self.led)
 
@@ -274,6 +320,33 @@ class RunLedgerTests(unittest.TestCase):
         self.assertEqual(self.led.get_kv("backup:mahler:ledger"), self.now.isoformat())
         self.ctx.ping.assert_not_called()
         self.assertIsNone(backup.run_ledger(self.ctx, root=self.root))  # already done today
+
+    def test_configured_dir_and_policy_are_used(self):
+        self.cfg["backup"].update(dir=os.path.join(self.tmp.name, "ext"), keep_daily=2)
+        res = backup.run_ledger(self.ctx)
+        self.assertEqual(os.path.dirname(res["path"]), self.cfg["backup"]["dir"])
+
+    def test_legacy_folder_is_migrated_only_for_the_live_ledger(self):
+        legacy = os.path.join(self.tmp.name, "legacy")
+        old = os.path.join(legacy, "mahler-20260911-030000.db")
+        os.makedirs(legacy)
+        open(old, "w").close()
+        self.cfg["backup"]["dir"] = os.path.join(self.tmp.name, "ext")
+        with patch.object(backup, "LEDGER_ROOT", legacy):
+            backup.run_ledger(self.ctx)                      # a scratch ledger: untouched
+            self.assertTrue(os.path.exists(old))
+            self.led.set_kv("backup:mahler:ledger", "")
+            with patch.object(backup.config, "DB_PATH", self.led_path):
+                backup.run_ledger(self.ctx)
+        self.assertFalse(os.path.exists(old))
+        self.assertIn(os.path.basename(old), os.listdir(self.cfg["backup"]["dir"]))
+
+    def test_upkeep_failure_never_fails_the_backup(self):
+        with patch.object(backup, "maintain_ledger", side_effect=sqlite3.OperationalError("locked")):
+            res = backup.run_ledger(self.ctx, root=self.root)
+        self.assertIsNotNone(res)
+        self.ctx.ping.assert_not_called()
+        self.assertEqual(self.led.get_kv("backup:mahler:ledger"), self.now.isoformat())
 
     def test_checkpoints_the_live_connection(self):
         with patch.object(backup, "optimize_and_checkpoint") as opt:

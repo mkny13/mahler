@@ -22,7 +22,9 @@ Schema (`capacity_intervals`, one row per interval)
     platforms                    JSON {platform: {reasons, account, quota_group,
                                  tier, kind, cost, max_size, min_size}} — config
                                  snapshotted at observation time, so later config
-                                 changes cannot rewrite history
+                                 changes cannot rewrite history. Stored once per distinct
+                                 value in capacity_platform_sets via platforms_id
+                                 (mahler#1386); read through Ledger.CAPACITY_SELECT
     launch_run_id, launched_platform
                                  set only after `start` succeeded
 
@@ -54,7 +56,7 @@ from .config import account_of
 from .ledger import iso, parse, row_get
 
 RETENTION_DAYS = 90
-GAP_SECONDS = 120
+GAP_SECONDS = 900          # ticks run every 2-5 min; 120 s split every wait per tick (mahler#1386)
 
 ROLES = ("sort", "build", "fix", "review")
 
@@ -255,7 +257,7 @@ def capacity_report(led, *, days=30, now=None):
             }
 
     # Query all intervals
-    intervals = [dict(r) for r in led.q("SELECT * FROM capacity_intervals ORDER BY first_seen, id")]
+    intervals = [dict(r) for r in led.q(led.CAPACITY_SELECT + " ORDER BY c.first_seen, c.id")]
 
     # Group intervals by (project, number, role) into episodes
     by_item = defaultdict(list)

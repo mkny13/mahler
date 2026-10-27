@@ -21,7 +21,10 @@ HOME = os.path.expanduser("~")
 STATE = os.environ.get("MAHLER_HOME", os.path.join(HOME, ".mahler"))
 CONFIG_PATH = os.path.join(STATE, "config.toml")
 DB_PATH = os.path.join(STATE, "mahler.db")
-RUNS_DIR = os.path.join(STATE, "runs")
+# `[storage] runs_dir` overrides this via apply_storage(); MAHLER_RUNS_DIR
+# reaches agents and their hooks (runner.launch).
+DEFAULT_RUNS_DIR = os.path.join(STATE, "runs")
+RUNS_DIR = os.environ.get("MAHLER_RUNS_DIR") or DEFAULT_RUNS_DIR
 WORKTREES = os.path.join(STATE, "worktrees")
 ATTACHMENTS_DIR = os.path.join(STATE, "attachments")
 LOCK_PATH = os.path.join(STATE, "tick.lock")
@@ -227,7 +230,14 @@ DEFAULTS = {
     # tick after `hour` local time, backup.run_ledger's own once-a-day kv
     # gate. `copy_to` is an optional off-mini mirror folder (e.g. an iCloud
     # or Google Drive path); left empty, no off-disk copy is attempted.
-    "backup": {"hour": 3, "copy_to": ""},
+    # `dir` holds the copies (empty: ~/.mahler/backups/mahler); each is the
+    # whole ledger, so keep few (mahler#1386).
+    "backup": {"hour": 3, "copy_to": "", "dir": "",
+               "keep_daily": 5, "keep_weekly": 4, "keep_monthly": 0},
+    # Where per-run folders (agent.log, prompt, hooks) live; empty means
+    # ~/.mahler/runs. The janitor prunes them after `janitor.retention_days`
+    # once the run ended and its item is done (mahler#1386).
+    "storage": {"runs_dir": ""},
     # Periodic calibration of run and issue duration estimates (mahler#59)
     "estimates": {
         "calibration_interval": 10,
@@ -802,6 +812,17 @@ def validate_gui_gate(cfg):
                 parse_gui_window(section["gui_window"])
             except ValueError as e:
                 raise ValueError(f"{label}: {e}") from None
+
+
+def apply_storage(cfg):
+    """Point RUNS_DIR at `[storage] runs_dir` for this process. Called by the
+    CLI entry point, never by load(), so loading a config stays side-effect
+    free (mahler#93). An explicit MAHLER_RUNS_DIR still wins."""
+    global RUNS_DIR
+    configured = ((cfg or {}).get("storage") or {}).get("runs_dir")
+    if configured and not os.environ.get("MAHLER_RUNS_DIR"):
+        RUNS_DIR = os.path.expanduser(configured)
+    return RUNS_DIR
 
 
 def load(path=None):

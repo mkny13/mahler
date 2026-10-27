@@ -9,8 +9,10 @@ import os
 import re
 import sqlite3
 import subprocess
+from datetime import timedelta
 
 from . import redact as redact_mod
+from .ledger import iso
 
 log = logging.getLogger(__name__)
 
@@ -119,6 +121,31 @@ def index_run(led, run, base=None):
         return 1
     except Exception as e:
         log.warning("history: could not index run %s: %s", run["id"], e)
+        return 0
+
+
+NO_WORK_OUTCOMES = ("launch failed%", "not claimed")
+NO_WORK_RETENTION_DAYS = 30
+
+
+def prune_no_work(led, days=NO_WORK_RETENTION_DAYS):
+    """Blank the bodies of runs that never did agent work (launch failures,
+    unclaimed starts) once they are `days` old (mahler#1386). Their text is the
+    issue body plus a launcher error, repeated per attempt. The row stays, so
+    refresh() never re-indexes the run. -> rows blanked. Never raises."""
+    try:
+        if not _ensure(led):
+            return 0
+        cutoff = iso(led.now() - timedelta(days=days))
+        outcome = " OR ".join("h.outcome LIKE ?" for _ in NO_WORK_OUTCOMES)
+        cur = led.con.execute(
+            f"UPDATE {_TABLE} SET body='' WHERE rowid IN (SELECT h.rowid FROM {_TABLE} h"
+            f" JOIN runs r ON r.id = h.run_id AND r.project = h.project"
+            f" WHERE ({outcome}) AND h.body != '' AND r.ended_at < ?)",
+            (*NO_WORK_OUTCOMES, cutoff))
+        return cur.rowcount
+    except Exception as e:
+        log.warning("history: prune failed: %s", e)
         return 0
 
 

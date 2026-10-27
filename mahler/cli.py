@@ -1486,6 +1486,7 @@ def main(argv=None):
     ap = build_parser()
     a = ap.parse_args(argv)
     cfg = config.load()
+    config.apply_storage(cfg)
     led = RoutedLedger(Ledger(config.DB_PATH), cfg)
     try:
         return a.fn(a, cfg, led) or 0
