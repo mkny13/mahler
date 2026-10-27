@@ -399,6 +399,30 @@ def _transcript_activity(path, mtime, directory):
     return latest if seen else fallback
 
 
+_ACTIVITY_CACHE = {}
+_ACTIVITY_CACHE_MAX = 4096
+
+
+def _cached_transcript_activity(path, mtime, directory):
+    """_transcript_activity memoised on (path, mtime, size, directory): a
+    transcript that has not grown since the last read yields the same answer,
+    and the console re-reads hundreds of them on every page build."""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return _transcript_activity(path, mtime, directory)
+    key = (path, mtime, size, directory)
+    try:
+        return _ACTIVITY_CACHE[key]
+    except KeyError:
+        pass
+    activity = _transcript_activity(path, mtime, directory)
+    if len(_ACTIVITY_CACHE) >= _ACTIVITY_CACHE_MAX:
+        _ACTIVITY_CACHE.clear()
+    _ACTIVITY_CACHE[key] = activity
+    return activity
+
+
 def last_claude_edit(project_path, root=None, exclude=()):
     """Latest edit signal and session directory, excluding ended sessions."""
     prefix = encode(project_path)
@@ -408,7 +432,7 @@ def last_claude_edit(project_path, root=None, exclude=()):
             continue
         name = os.path.basename(os.path.dirname(path))
         directory = str(project_path) if name == prefix else name[len(prefix) + 1:]
-        activity = _transcript_activity(path, _utc(mtime), directory)
+        activity = _cached_transcript_activity(path, _utc(mtime), directory)
         if activity and (latest is None or activity.at > latest.at):
             latest = activity
     return latest
