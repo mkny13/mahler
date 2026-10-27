@@ -48,10 +48,21 @@ _TOKEN_SHAPES = (
 )
 
 
+_REGISTERED = set()
+
+
+def register(secret):
+    """Always mask this exact value (e.g. a PAT read from a file, D47)."""
+    if secret and len(secret) >= 8:
+        _REGISTERED.add(secret)
+
+
 def redact(text):
     """Mask credential-shaped substrings of `text` -> str (None passes through)."""
     if not text:
         return text
+    for secret in _REGISTERED:
+        text = text.replace(secret, MARK)
     text = _URL_CREDS.sub(r"\1:" + MARK + "@", text)
     text = _ENV_ASSIGN.sub(r"\1=" + MARK, text)
     for shape in _TOKEN_SHAPES:

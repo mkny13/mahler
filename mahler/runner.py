@@ -14,7 +14,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import config, lessons as lessons_mod, platforms, redact, router
+from . import config, github_pat, lessons as lessons_mod, platforms, redact, router
 from .ledger import row_get
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
@@ -357,8 +357,9 @@ def run_env(ctx, project, number, platform, run_id, epoch):
     base_env = config.run_env(ctx.cfg, account) or os.environ
     env = dict(base_env)
 
-    app = config.project_github_app(ctx.cfg, pol)
-    if app is not None:
+    pat_token = github_pat.agent_token(ctx.cfg, pol)
+    app = None if pat_token is not None else config.project_github_app(ctx.cfg, pol)
+    if app is not None or pat_token is not None:
         for var in config.GH_IDENTITY_VARS:
             env.pop(var, None)
         for var in ("GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"):
@@ -367,7 +368,7 @@ def run_env(ctx, project, number, platform, run_id, epoch):
             if k.startswith("GITHUB_APP_") or k.startswith("MAHLER_GITHUB_APP_"):
                 env.pop(k, None)
         repo_name = pol.get("repo", "").rsplit("/", 1)[-1]
-        token = app.agent_token(repo_name)
+        token = pat_token if pat_token is not None else app.agent_token(repo_name)
         gh_config_dir = os.path.join(run_dir, "gh")
         config.ensure_private_dir(gh_config_dir)
         env["GH_TOKEN"] = token

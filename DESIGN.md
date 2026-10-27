@@ -2953,12 +2953,19 @@ project.
   directory. Cache keys incorporate the app ID, installation ID, repository name,
   and a SHA-256 hash of the exact scope. A scoped request can never read or reuse
   a broader conductor token or a token minted for a different repository or scope.
-- **Transitional handling of non-App projects.** Projects without an App installation
-  (e.g., non-App or work-account projects without an explicit installation override)
-  cannot mint App-backed scoped agent tokens. In this phase, App token resolution
-  returns `None`, and agent runs cannot silently inherit the conductor's global App
-  key or ambient human tokens. Migration of non-App and work accounts to scoped
-  identities is deferred to #1145.
+- **Fine-grained PATs for work projects** (mahler#1265, decided 2026-10-25). Work
+  projects (google-chat-nav, google-workspace-connector, sit-stand-walk) use
+  org-scoped fine-grained PATs, not an App. `[github_pats.NAME]` holds only
+  `token_file` (and optional `repository`); a project binds with `github_pat = NAME`,
+  never together with an App provider. The file must be a regular `0600` file owned
+  by the current user and non-empty. A provider serves exactly one project and its
+  `repository` must equal that project's repo. Mahler cannot narrow a PAT, so the
+  owner creates it with the finite permission set above on that one repository. Any
+  failure raises a secret-safe error (path and reason, never contents) and the launch
+  ends, with no fallback to ambient credentials, `gh` login state or any App. The
+  token reaches the run only as its `GH_TOKEN` (or Copilot's `hosts.yml`) and is
+  registered with `redact.py`. Projects with neither an App nor a PAT remain on the
+  transitional identity unless `require_scoped_identity` is set.
 - **Copilot keeps its own login** (amended mahler#1211). Copilot CLI signs in with
   `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN` before its stored login, and it
   refuses an App installation token ("Access denied by policy settings"). So for a

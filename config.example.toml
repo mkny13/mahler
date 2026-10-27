@@ -443,10 +443,21 @@ screenshot_path = []              # inherited operator absolute executable direc
 # (makastel_ncstate/google-chat-nav), google-workspace-connector
 # (makastel_ncstate/google-workspace-connector) and sit-stand-walk
 # (makastel_ncstate/sit-stand-walk). The owner chose organization-scoped
-# fine-grained PATs, one per repository, for these. The PAT provider, its
-# provisioning instructions and live qualification are tracked in #1265; they
-# are not implemented here, so do not configure PATs yet. The personal GitHub App
-# is never a work credential.
+# fine-grained PATs, one per repository, for these (D47, #1265). The personal GitHub
+# App is never a work credential. Owner setup, per repo: create a fine-grained PAT in
+# makastel_ncstate limited to that ONE repository with exactly metadata:read,
+# contents:read, issues:write, pull_requests:read, checks:read, actions:read (Mahler
+# cannot narrow a PAT, so this is on you); have an org owner approve it if needed;
+# save it as a file with mode 0600 owned by you; then add:
+#
+# [github_pats.sit-stand-walk]
+# token_file = "/absolute/path/to/sit-stand-walk.pat"   # path only, never the token
+# repository = "makastel_ncstate/sit-stand-walk"        # must equal the project's repo
+#
+# [projects.sit-stand-walk]
+# github_pat = "sit-stand-walk"   # one repo per provider; not combinable with github_provider
+# require_scoped_identity = true  # any PAT failure ends the launch; no fallback
+#
 # Named App providers ([github_apps.NAME] with github_provider = "NAME") are
 # shipped reusable infrastructure, not the work credential. Credentials stay in
 # external owner-controlled files (mode 0600); config holds only paths.
