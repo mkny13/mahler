@@ -121,5 +121,7 @@ Responses remain buffered at the gateway. Gateway loss or replacement stops the 
 with a retryable error within the existing 120-second deadline; retry is explicit.
 Automated evidence is in `tests/test_discuss_credits.py`, `tests/test_discuss.py` and
 `tests/test_api_credits.py`, using fake SDK/provider calls and isolated ledgers.
-The remaining post-merge check is one work-project conversation in the approved panel,
-confirming its displayed reply and issue links. No new spending authorization is needed.
+The remaining post-merge check is one work-project conversation in the approved panel
+(#925 has shipped), confirming its displayed reply and issue links (#983). It is a live
+check by the owner and has not been run as of 2026-10-26; record its dated pass/fail here
+without secrets. No new spending authorization is needed.
