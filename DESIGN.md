@@ -1465,7 +1465,9 @@ fresh cycle also exhausts, the item goes to `needs_you` with one question and th
 `owner-followups`, returns the item to `verifying`, and the review gate then files the findings as
 follow-ups and merges despite protected blockers; any other answer is a plain re-sort. If the PR
 is closed but its branch cleanup fails, kv `fresh-rebuild-closing` lets `_closed_pr` finish the
-rebuild on a later tick instead of counting the closure as a failed attempt.
+rebuild on a later tick instead of counting the closure as a failed attempt. The local handoff
+(allowance, findings, item reset, wait, marker removal) is one ledger transaction, so an
+interruption rolls back to the pending marker and tracked PR and the next tick retries it whole.
 
 
 ### D19 — A change is in flight until it merges

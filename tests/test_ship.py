@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from mahler import cli, config, finalize, gh as gh_module, platforms, router, runner, scheduler, ship, sync, waits
-from mahler.ledger import CONDUCTOR, Ledger, iso
+from mahler.ledger import CONDUCTOR, Ledger, iso, parse
 
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
@@ -1984,18 +1984,85 @@ class ShipTests(unittest.TestCase):
         self.led.set_kv("reviewfindings:x#5", json.dumps([
             {"sha": "abc123", "findings": "f", "pr": 88, "run_id": 1,
              "classified": [self.blocker(category="security")]}]))
-        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88,
-                                                  "findings": "f"}))
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": "abc123", "verdict": "fail", "pr": 88, "findings": "f",
+            "classified": [self.blocker(category="security")]}))
+        self.led.set_kv("reviewed-pr:x#5", "88")      # the gate really runs, no low-risk shortcut
         with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
                 mock.patch.object(ship, "_merge_queued") as merge, \
-                mock.patch.object(ship.review, "file_followups", return_value=True):
+                mock.patch.object(ship.review, "file_followups", return_value=False) as filing:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+            merge.assert_not_called()           # filing incomplete: merge deferred
+            filing.return_value = True
             ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
         merge.assert_called_once()
+        filed = [f for rec in json.loads(self.led.get_kv("reviewresults:x#5")).values()
+                 for f in rec["findings"]]
+        self.assertEqual([(f["category"], f["severity"]) for f in filed], [("security", "follow-up")])
 
     def test_non_owner_merge_with_followups_answer_is_only_a_resort(self):
         self.owner_answer("stranger", "NONE")
         self.assertEqual(self.item()["state"], "inbox")
         self.assertIsNone(self.led.get_kv("owner-followups:x#5"))
+
+    def interrupted_rebuild(self, fault):
+        """Close the PR, then break the local handoff at `fault`; return the next-tick result."""
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x", esc_fails=1)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock()
+        real_upsert, real_hold, real_set = self.led.upsert_item, waits.hold, self.led.set_kv
+
+        def upsert(*a, **kw):
+            if fault == "upsert":
+                raise sqlite3.OperationalError("injected")
+            return real_upsert(*a, **kw)
+
+        def hold(*a, **kw):
+            real_hold(*a, **kw)
+            if fault == "hold":
+                raise sqlite3.OperationalError("injected")
+
+        def set_kv(key, value):
+            real_set(key, value)
+            if fault == "marker" and key == "fresh-rebuild-closing:x#5" and value is None:
+                raise sqlite3.OperationalError("injected")
+
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"), \
+                mock.patch.object(self.led, "upsert_item", upsert), \
+                mock.patch.object(waits, "hold", hold), \
+                mock.patch.object(self.led, "set_kv", set_kv):
+            with self.assertRaises(sqlite3.OperationalError):
+                ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
+                                           self.gh.pr_view(88), "f")
+        item = self.item()
+        self.assertEqual((item["state"], item["pr"], item["attempts"]), ("verifying", 88, 2))
+        self.assertTrue(self.led.get_kv("fresh-rebuild-closing:x#5"))
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertIsNone(waits.load(self.led, "x", 5))
+        # Next normal tick: PR is closed, branch already absent.
+        self.gh.view_state = "CLOSED"
+        self.led.release("x", 5, holder=CONDUCTOR)
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        ping = self.ship()
+        item = self.item()
+        self.assertEqual((item["state"], item["pr"], item["branch"], item["attempts"],
+                          item["esc_fails"]), ("waiting", None, None, 0, 0))
+        rec = waits.load(self.led, "x", 5)
+        self.assertEqual((rec["cause"], rec["resume"]), ("review_nonconvergent", "ready"))
+        self.assertEqual(parse(rec["next_at"]) - self.led.now(), timedelta(minutes=30))
+        self.assertIn("f", self.led.get_kv("rebuild-context:x#5"))
+        self.assertFalse(self.led.get_kv("fresh-rebuild-closing:x#5"))
+        ping.assert_not_called()
+
+    def test_interrupted_fresh_rebuild_handoff_is_atomic_and_retried(self):
+        for fault in ("upsert", "hold", "marker"):
+            with self.subTest(fault=fault):
+                self.setUp()
+                self.interrupted_rebuild(fault)
 
     def test_second_exhaustion_asks_owner_once_and_never_fails(self):
         ping, merge, start = self.exhausted([self.blocker(category="security")], fresh=True)

@@ -2083,18 +2083,22 @@ def _finish_fresh_rebuild(ctx, project, item, marker):
     except GHError as e:
         ctx.say(f"{project}#{n}: fresh rebuild of PR #{pr}: branch cleanup deferred — {e}")
         return False
-    led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{marker.get('sha', '')}")
-    led.set_kv(f"rebuild-context:{project}#{n}", marker.get("findings", ""))
-    led.set_kv(f"fresh-rebuild-closing:{project}#{n}", None)
-    led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
-    led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0, branch=None,
-                    esc_tier=router.cap_escalation(cfg, pol, 99, marker.get("size"), pin=item["pin"]))
-    waits.hold(led, project, n, "review_nonconvergent",
-               f"PR #{pr} kept failing review; rebuilding from base at the top tier",
-               resume="ready")
-    rec = waits.load(led, project, n) or {}
-    rec["next_at"] = iso(led.now() + timedelta(minutes=30))
-    led.set_kv(waits.key(project, n), json.dumps(rec))
+    # One local transaction: any failure rolls back to the pending marker and the tracked
+    # PR, so `_closed_pr` retries the whole handoff instead of failing a closed PR.
+    with led._tx():
+        led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{marker.get('sha', '')}")
+        led.set_kv(f"rebuild-context:{project}#{n}", marker.get("findings", ""))
+        led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
+        led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0, branch=None,
+                        esc_tier=router.cap_escalation(cfg, pol, 99, marker.get("size"),
+                                                       pin=item["pin"]))
+        waits.hold(led, project, n, "review_nonconvergent",
+                   f"PR #{pr} kept failing review; rebuilding from base at the top tier",
+                   resume="ready")
+        rec = waits.load(led, project, n) or {}
+        rec["next_at"] = iso(led.now() + timedelta(minutes=30))
+        led.set_kv(waits.key(project, n), json.dumps(rec))
+        led.set_kv(f"fresh-rebuild-closing:{project}#{n}", None)
     led.release(project, n, holder=CONDUCTOR)
     return True
 
