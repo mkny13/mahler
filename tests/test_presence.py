@@ -22,6 +22,7 @@ class PresenceTests(unittest.TestCase):
         self.now = datetime.now(timezone.utc)
         self.led = Ledger(":memory:")
         self.addCleanup(self.led.close)
+        presence._ACTIVITY_CACHE.clear()
         self.patch = mock.patch.object(presence, 'CLAUDE_PROJECTS', str(self.root))
         self.patch.start()
         self.addCleanup(self.patch.stop)
@@ -79,6 +80,7 @@ class PresenceTests(unittest.TestCase):
             metadata = {'type': kind, 'timestamp': self.now.isoformat()}
             for tool, minutes in [('Read', 0), ('Edit', 3), ('Edit', 30)]:
                 with self.subTest(kind=kind, tool=tool, minutes=minutes):
+                    presence._ACTIVITY_CACHE.clear()  # same size and mtime each pass
                     self.write([metadata, self.message(tool, minutes=minutes),
                                 self.message('Bash', command='mahler status'),
                                 metadata])
@@ -212,6 +214,17 @@ class PresenceTests(unittest.TestCase):
         self.write([self.message('Bash', command="cat <<'EOF'\nmissing delimiter")])
         self.assertTrue(self.active())
         self.assertTrue(presence.last_claude_edit(self.project).fallback)
+
+    def test_transcript_read_is_memoised_until_it_grows(self):
+        self.write([self.message('Edit')])
+        with mock.patch.object(presence, '_transcript_activity',
+                               wraps=presence._transcript_activity) as read:
+            first = presence.last_claude_edit(self.project)
+            self.assertEqual(presence.last_claude_edit(self.project), first)
+            self.assertEqual(read.call_count, 1)
+            self.write([self.message('Edit'), self.message('Edit', minutes=1)])
+            presence.last_claude_edit(self.project)
+            self.assertEqual(read.call_count, 2)
 
     def test_hash_in_arguments_does_not_truncate_command(self):
         self.write([self.message('Bash', command='mahler ship mahler#625')])
