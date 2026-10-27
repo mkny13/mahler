@@ -2005,6 +2005,21 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["state"], "inbox")
         self.assertIsNone(self.led.get_kv("owner-followups:x#5"))
 
+    def test_non_owner_merge_with_followups_answer_does_not_take_owner_route(self):
+        from mahler.sync import _process_comments
+
+        self.led.upsert_item("x", 5, state="needs_you", pr=88)
+        self.led.set_kv("fresh-rebuild:x#5", "70@old")
+        _process_comments(self.ctx, "x", self.item(), [{
+            "createdAt": iso(self.led.now()),
+            "body": "merge with follow-ups",
+            "authorAssociation": "NONE",
+            "author": {"login": "another-user"},
+        }])
+
+        self.assertEqual(self.item()["state"], "inbox")
+        self.assertIsNone(self.led.get_kv("owner-followups:x#5"))
+
     def interrupted_rebuild(self, fault):
         """Close the PR, then break the local handoff at `fault`; return the next-tick result."""
         self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x", esc_fails=1)
