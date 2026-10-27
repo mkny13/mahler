@@ -1943,6 +1943,60 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
         self.assertFalse(self.led.get_kv("reviewfix:x#5:88:" + (self.gh.pr_view(88).get("headRefOid") or "")))
 
+    def test_branch_cleanup_failure_after_close_still_reaches_fresh_rebuild(self):
+        self.led.upsert_item("x", 5, pr=88, attempts=2, branch="mahler/5-x")
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "head1", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.gh.pr_close = mock.Mock()
+        self.gh.delete_branch = mock.Mock(side_effect=gh_module.GHError("boom"))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"), mock.patch.object(ship, "start"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), "f")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIsNone(self.led.get_kv("fresh-rebuild:x#5"))
+        # The PR is now closed; the next ship tick must finish the rebuild, not fail it.
+        self.gh.view_state = "CLOSED"
+        self.gh.delete_branch = mock.Mock()
+        self.led.claim("x", 5, CONDUCTOR, "auto", 30, capacity=False)
+        self.ship()
+        item = self.item()
+        self.assertEqual((item["state"], item["attempts"], item["pr"]), ("waiting", 0, None))
+        self.gh.delete_branch.assert_called_once_with("mahler/5-x")
+        self.assertTrue(self.led.get_kv("fresh-rebuild:x#5"))
+        self.assertIn("f", self.led.get_kv("rebuild-context:x#5"))
+
+    def owner_answer(self, login, assoc):
+        from mahler.sync import _process_comments
+        self.led.upsert_item("x", 5, state="needs_you", pr=88)
+        self.led.set_kv("fresh-rebuild:x#5", "70@old")
+        _process_comments(self.ctx, "x", self.item(), [{
+            "createdAt": iso(self.led.now()), "body": "merge with follow-ups",
+            "authorAssociation": assoc, "author": {"login": login}}])
+
+    def test_owner_merge_with_followups_answer_routes_to_followup_merge(self):
+        owner = self.ctx.policy("x")["repo"].split("/", 1)[0]
+        self.owner_answer(owner, "OWNER")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.led.get_kv("owner-followups:x#5"), "88")
+        # The review gate then files follow-ups and merges despite the protected finding.
+        self.led.set_kv("reviewfindings:x#5", json.dumps([
+            {"sha": "abc123", "findings": "f", "pr": 88, "run_id": 1,
+             "classified": [self.blocker(category="security")]}]))
+        self.led.set_kv("review:x#5", json.dumps({"sha": "abc123", "verdict": "fail", "pr": 88,
+                                                  "findings": "f"}))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship.review, "file_followups", return_value=True):
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        merge.assert_called_once()
+
+    def test_non_owner_merge_with_followups_answer_is_only_a_resort(self):
+        self.owner_answer("stranger", "NONE")
+        self.assertEqual(self.item()["state"], "inbox")
+        self.assertIsNone(self.led.get_kv("owner-followups:x#5"))
+
     def test_second_exhaustion_asks_owner_once_and_never_fails(self):
         ping, merge, start = self.exhausted([self.blocker(category="security")], fresh=True)
         item = self.item()

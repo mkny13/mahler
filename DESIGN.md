@@ -1461,7 +1461,11 @@ Otherwise, once per item (kv `fresh-rebuild`), it closes the PR, saves the accum
 in kv `rebuild-context` (rendered into the build prompt, cleared on ship), resets attempts and
 escalation to the top eligible tier, and holds in `waiting`/`review_nonconvergent`. (3) If that
 fresh cycle also exhausts, the item goes to `needs_you` with one question and the options
-`merge with follow-ups | rethink issue`. The answer is a plain re-sort; no new instruction verb.
+`merge with follow-ups | rethink issue`. The owner's exact answer `merge with follow-ups` (from the owner, with a PR still open) sets kv
+`owner-followups`, returns the item to `verifying`, and the review gate then files the findings as
+follow-ups and merges despite protected blockers; any other answer is a plain re-sort. If the PR
+is closed but its branch cleanup fails, kv `fresh-rebuild-closing` lets `_closed_pr` finish the
+rebuild on a later tick instead of counting the closure as a failed attempt.
 
 
 ### D19 — A change is in flight until it merges
