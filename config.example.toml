@@ -438,43 +438,28 @@ screenshot_path = []              # inherited operator absolute executable direc
 # path = "/absolute/path/to/work/app"
 # size_target = "s"                 # "" or "s" (decompose to small PRs). Default: "s" for work projects, "" for others.
 #
-# Migration rollout for work projects to scoped identities (#1145):
-# To migrate the finite three-project work inventory (makastel_ncstate organization),
-# create or approve a GitHub App within the work organization, place its private key
-# exclusively in an external owner-controlled file with mode 0600 (e.g. ~/.mahler/work-app.pem),
-# configure [github_apps.work] above, and bind the projects here:
+# Work projects and scoped identities (#1145):
+# The finite work inventory (makastel_ncstate organization) is google-chat-nav
+# (makastel_ncstate/google-chat-nav), google-workspace-connector
+# (makastel_ncstate/google-workspace-connector) and sit-stand-walk
+# (makastel_ncstate/sit-stand-walk). The owner chose organization-scoped
+# fine-grained PATs, one per repository, for these. The PAT provider, its
+# provisioning instructions and live qualification are tracked in #1265; they
+# are not implemented here, so do not configure PATs yet. The personal GitHub App
+# is never a work credential.
+# Named App providers ([github_apps.NAME] with github_provider = "NAME") are
+# shipped reusable infrastructure, not the work credential. Credentials stay in
+# external owner-controlled files (mode 0600); config holds only paths.
+# Set require_scoped_identity = true on a work project to opt it into the
+# guard. Until a supported provider exists for it, launch is refused rather than
+# falling back to ambient personal/work credentials or the personal App:
 #
 # [projects.google-chat-nav]
-# enabled = true
-# account = "work"
-# repo = "makastel_ncstate/google-chat-nav"
-# path = "/absolute/path/to/work/google-chat-nav"
-# github_provider = "work"
 # require_scoped_identity = true
-#
 # [projects.google-workspace-connector]
-# enabled = true
-# account = "work"
-# repo = "makastel_ncstate/google-workspace-connector"
-# path = "/absolute/path/to/work/google-workspace-connector"
-# github_provider = "work"
 # require_scoped_identity = true
-#
 # [projects.sit-stand-walk]
-# enabled = true
-# account = "work"
-# repo = "makastel_ncstate/sit-stand-walk"
-# path = "/absolute/path/to/work/sit-stand-walk"
-# github_provider = "work"
 # require_scoped_identity = true
-#
-# If [github_apps.work] is absent or incomplete, setting require_scoped_identity = true
-# ensures validation and autonomous launches fail closed without falling back to ambient
-# personal/work human credentials or the personal App.
-# Read-only qualification command (run without mutating configuration or launching):
-#   mahler status
-# or
-#   python3 -c "import mahler.config as c; cfg=c.load(); [print(p, c.project_github_app(cfg, p)) for p in ('google-chat-nav','google-workspace-connector','sit-stand-walk')]"
 
 # [claude_peak]
 # # Claude's peak window (D22): on weekdays 5-11am Pacific, Mahler starts no new

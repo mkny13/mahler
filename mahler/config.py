@@ -926,6 +926,9 @@ def github_app_settings(cfg, pol):
         proj_repo = pol.get("repo", "")
         repo_base = proj_repo.rsplit("/", 1)[-1]
         if proj_repo not in repos and repo_base not in repos:
+            if pol.get("github_provider") or isinstance(pol.get("github_app"), str):
+                proj_name = pol.get("name", "project")
+                raise ValueError(f"project {proj_name!r}: repository is not authorized by selected github_provider {provider_name!r}")
             return None
 
     label = f"github_apps.{provider_name}" if provider_name and provider_name != "default" else "github_app"

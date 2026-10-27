@@ -936,6 +936,35 @@ class RunEnvTests(unittest.TestCase):
         self.assertNotIn("administration", perms)
         self.assertNotIn("secrets", perms)
 
+    def test_explicit_provider_repo_mismatch_refuses_run_env(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_dir = os.path.join(d, "repo")
+            os.makedirs(repo_dir, exist_ok=True)
+            policy = {
+                "path": repo_dir, "repo": "makastel_ncstate/sit-stand-walk", "base": "main",
+                "account": "work", "github_provider": "work", "link": [], "rules": "",
+                "run_timeout_minutes": 60,
+            }
+            ctx = SimpleNamespace(
+                cfg={
+                    "platforms": {"claude-work": {"kind": "claude", "account": "work"}},
+                    "accounts": {"work": {"env": {"GH_CONFIG_DIR": "~/.config/gh-work"}}},
+                    "github_apps": {"work": {
+                        "app_id": 789, "installation_id": 1011,
+                        "private_key_path": "/secret/work.pem",
+                        "repositories": ["google-chat-nav"],
+                    }},
+                },
+                policy=lambda project: policy,
+                say=lambda msg: None,
+            )
+            with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
+                    mock.patch.object(runner, "fence_hooks", return_value="/runs/42/hooks"):
+                with self.assertRaises(ValueError) as caught:
+                    runner.run_env(ctx, "acme", 1144, "claude-work", 42, 7)
+            for secret in ("/secret", "789", "1011"):
+                self.assertNotIn(secret, str(caught.exception))
+
     def test_non_app_project_emits_warning_and_uses_transitional_path(self):
         with tempfile.TemporaryDirectory() as d:
             repo_dir = os.path.join(d, "repo")

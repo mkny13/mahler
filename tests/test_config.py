@@ -896,7 +896,13 @@ class ProjectGitHubAppConfigTests(unittest.TestCase):
             },
         }
         self.assertIsNotNone(config.project_github_app(cfg, "covered"))
-        self.assertIsNone(config.project_github_app(cfg, "uncovered"))
+        with self.assertRaises(ValueError) as caught:
+            config.project_github_app(cfg, "uncovered")
+        self.assertNotIn("/secret", str(caught.exception))
+        self.assertNotIn("789", str(caught.exception))
+        # Selecting the provider explicitly never silently falls back to ambient credentials
+        with self.assertRaises(ValueError):
+            config.github_app_settings(cfg, "uncovered")
 
     def test_require_scoped_identity_validation_fails_closed(self):
         # 1. Selected provider absent
