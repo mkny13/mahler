@@ -45,12 +45,27 @@ def _exclusion(run):
 DEFECT_WINDOW = timedelta(days=14)
 
 
+class _LinkPattern:
+    """Compiled whole-token matcher with a plain substring prefilter: most
+    bodies mention none of the numbers, and the lookbehind regex is far
+    slower than `in` on bodies that large."""
+
+    def __init__(self, nums):
+        self._needles = tuple('#' + n for n in nums)
+        self._regex = re.compile(r'(?<![\w/#])#(?:' + '|'.join(nums) + r')(?!\w)')
+
+    def search(self, text):
+        if not any(n in text for n in self._needles):
+            return None
+        return self._regex.search(text)
+
+
 def link_pattern(refs):
     """Whole-token #N references to any of an item's issue or PR numbers."""
     nums = [str(n) for n in refs if n is not None]
     if not nums:
         return None
-    return re.compile(r'(?<![\w/#])#(?:' + '|'.join(nums) + r')(?!\w)')
+    return _LinkPattern(nums)
 
 
 def linked_bug(bugs, filed_bug, filed_number, refs, merged):

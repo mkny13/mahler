@@ -766,3 +766,14 @@ class CompletionTests(unittest.TestCase):
         self.led.create_run(project='p', number=1, role='build', platform='slot',
                             epoch=1, status='ended', outcome='DONE', ended_at=iso(self.now))
         self.assertEqual(self.result()['completed'], 0)
+
+
+class LinkPatternTests(unittest.TestCase):
+    def test_prefilter_keeps_whole_token_semantics(self):
+        from mahler.scorecard import link_pattern
+        pattern = link_pattern({12, None, 345})
+        self.assertTrue(pattern.search("fixes #12 today"))
+        self.assertTrue(pattern.search("see #345"))
+        self.assertIsNone(pattern.search("issue #123 and a/#12 and ##12"))
+        self.assertIsNone(pattern.search("no references"))
+        self.assertIsNone(link_pattern({None}))
