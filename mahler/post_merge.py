@@ -181,6 +181,18 @@ def _observe_live(ctx, row, policy):
         _change(ctx, row, phase="smoke", live_sha=row["merge_sha"], artifact_ref=artifact)
 
 
+def _pass_on_live_proof(ctx, row):
+    """Mahler has no web artifact: the exact-live proof (`mahler:<sha>`) is its smoke."""
+    from . import config
+    directory = _directory(row)
+    config.ensure_private_dir(directory.parent)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    report = directory / "report.md"
+    report.write_text(f"Tag: {row['tag']}\nSmoke: PASS\n")
+    _change(ctx, row, status="PASS", summary="Exact live identity PASS (mahler self-host)",
+            evidence_ref=str(report))
+
+
 def _advance(ctx, row, policy):
     from .ledger import parse
     if ctx.led.now() >= parse(row["deadline_at"]):
@@ -191,6 +203,9 @@ def _advance(ctx, row, policy):
         return
     if row["phase"] == "live" and policy["post_merge"]["live_strategy"] != "command":
         _observe_live(ctx, row, policy)
+        return
+    if row["phase"] == "smoke" and policy["post_merge"]["live_strategy"] == "mahler":
+        _pass_on_live_proof(ctx, row)
         return
     command = (policy.get("smoke") if row["phase"] == "smoke"
                else policy["post_merge"][row["phase"] + "_command"])
