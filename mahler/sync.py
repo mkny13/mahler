@@ -79,9 +79,15 @@ def sync(ctx, project):
     intake_trust_repair = (not intake_trust_current and any(
         led.get_kv(f"intake_hold:{project}#{item['number']}")
         for item in led.items(project)))
+    # An active CI hold whose tracker issue Mahler never imported (filed without
+    # the scope label) needs a full poll to admit and label it (mahler#1314).
+    hold = ci_blockers.active(led, project, clear=False)
+    hold_unimported = bool(
+        pol.get("scope") == "label" and hold and hold.get("number")
+        and led.item(project, hold["number"]) is None)
     if (not poll_changed and led.get_kv(depends_key) == "4"
             and led.get_kv(repair_key) == "1"
-            and not intake_trust_repair):
+            and not intake_trust_repair and not hold_unimported):
         if not ctx.dry_run and not intake_trust_current:
             led.set_kv(intake_trust_key, "1")
         _record_backlog(ctx, project, None)
@@ -173,7 +179,6 @@ def sync(ctx, project):
                     if parent_n and (parent_n in in_scope_nums or led.item(project, parent_n) is not None):
                         in_scope_nums.add(n)
                         changed = True
-        hold = ci_blockers.active(led, project, clear=False)
         if hold and hold.get("number"):
             in_scope_nums.add(hold["number"])
     else:
