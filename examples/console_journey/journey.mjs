@@ -158,7 +158,7 @@ async function runJourney(p) {
     const sel = await p.ev(`[...document.querySelectorAll('[data-project-scope-switcher]')].find(e => e.getClientRects().length).value`);
     assert(sel === PROJECT, `switcher shows "${sel}"`);
     const leaks = ['Mahler item should not leak', 'Mahler question should not leak', 'Other project question?'];
-    const wanted = { needs: ['Drive scope'], backlog: ['9 open'], releases: [], stats: [], history: [] };
+    const wanted = { needs: ['Drive scope'], backlog: ['9 open'], releases: ['2.4.1'], stats: ['groundwork'], history: ['20'] };
     for (const [key, texts] of Object.entries(wanted)) {
       await p.section(key);
       const t = await p.text();
