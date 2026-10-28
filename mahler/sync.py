@@ -173,6 +173,9 @@ def sync(ctx, project):
                     if parent_n and (parent_n in in_scope_nums or led.item(project, parent_n) is not None):
                         in_scope_nums.add(n)
                         changed = True
+        hold = ci_blockers.active(led, project, clear=False)
+        if hold and hold.get("number"):
+            in_scope_nums.add(hold["number"])
     else:
         in_scope_nums = {iss["number"] for iss in admitted_issues}
     _record_backlog(ctx, project,
