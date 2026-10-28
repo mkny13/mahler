@@ -299,6 +299,7 @@ def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr):
     counted = f"post-merge-counted:{project}:{number}:{sha}"
     key = f"post-merge-consecutive:{project}"
     pause = f"post_merge_paused:{project}"
+    alert_key = f"post_merge_pause_alert:{project}"
     alert = False
     with ctx.led._tx():
         if ctx.led.get_kv(counted):
@@ -314,10 +315,34 @@ def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr):
                        "failure_code": code, "pr": pr})
         if count >= 3 and ctx.led.get_kv(pause) != "1":
             ctx.led.set_kv(pause, "1")
-            # Reserve the alert with the pause, so retries cannot produce a ping storm.
+            ctx.led.set_kv(alert_key, json.dumps({
+                "status": "pending", "count": count, "phase": phase,
+                "failure_code": code, "bug": bug,
+            }))
             alert = True
     if alert:
-        from . import notify
-        notify.send(ctx.cfg, f"Post-merge checks paused: {project}",
-                    f"{count} consecutive {phase} failures ({code}). Bug: #{bug}.",
-                    click=ctx.url(project, bug), priority="high")
+        deliver_post_merge_pause_alert(ctx, project)
+
+
+def deliver_post_merge_pause_alert(ctx, project):
+    """Retry a failed pause notification on later ticks until ntfy accepts it."""
+    alert_key = f"post_merge_pause_alert:{project}"
+    raw = ctx.led.get_kv(alert_key)
+    if not raw:
+        return False
+    alert = json.loads(raw)
+    if alert.get("status") != "pending":
+        return False
+
+    from . import notify
+    bug = alert["bug"]
+    click = ctx.url(project, bug) if hasattr(ctx, "url") else None
+    sent = notify.send(
+        ctx.cfg, f"Post-merge checks paused: {project}",
+        f"{alert['count']} consecutive {alert['phase']} failures "
+        f"({alert['failure_code']}). Bug: #{bug}.",
+        click=click, priority="high")
+    if sent:
+        alert["status"] = "sent"
+        ctx.led.set_kv(alert_key, json.dumps(alert))
+    return sent

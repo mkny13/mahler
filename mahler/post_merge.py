@@ -262,6 +262,8 @@ def advance(ctx, projects):
         name = project["name"]
         try:
             if ctx.led.get_kv(f"post_merge_paused:{name}") == "1":
+                from .failures import deliver_post_merge_pause_alert
+                deliver_post_merge_pause_alert(ctx, name)
                 continue
             policy = ctx.policy(name)
             if not policy.get("enabled") or not policy["post_merge"]["enabled"]:

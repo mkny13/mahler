@@ -419,6 +419,34 @@ class PostMergeTests(unittest.TestCase):
             advance.assert_not_called()
 
     @mock.patch("mahler.notify.send")
+    def test_failed_circuit_breaker_ping_retries_while_project_is_paused(self, ping):
+        self.gh.issue_state.return_value = "OPEN"
+        pause_attempts = 0
+
+        def send(_cfg, title, *_args, **_kwargs):
+            nonlocal pause_attempts
+            if "Post-merge checks paused" in title:
+                pause_attempts += 1
+                return pause_attempts > 1
+            return True
+        ping.side_effect = send
+
+        for number in (2, 3, 4):
+            self.report_failure(number)
+        paused_alerts = lambda: [
+            call for call in ping.call_args_list
+            if "Post-merge checks paused" in call.args[1]
+        ]
+        self.assertEqual(len(paused_alerts()), 1)
+        self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
+
+        self.tick()
+        self.assertEqual(len(paused_alerts()), 2)
+        self.tick()
+        self.assertEqual(len(paused_alerts()), 2)
+        self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
+
+    @mock.patch("mahler.notify.send")
     def test_different_failure_resets_streak_and_has_distinct_bug(self, ping):
         self.gh.issue_state.return_value = "OPEN"
         self.report_failure(2)
