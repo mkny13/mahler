@@ -2383,8 +2383,13 @@ def _stale_red_behind_base(ctx, project, item, pr, view, required):
         return False
     base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
     try:
-        rollup = ctx.gh(project).base_checks(base)
+        gh = ctx.gh(project)
+        rollup = gh.base_checks(base)
         if checks_state(rollup, required=required or None) != "green":
+            return False
+        if (view.get("mergeStateStatus") != "BEHIND"
+                and gh.base_in_head(ctx.policy(project)["path"], base,
+                                    view.get("headRefOid")) is not False):
             return False
     except (GHError, ValueError, TypeError, AttributeError):
         return False

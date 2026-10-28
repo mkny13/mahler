@@ -230,7 +230,8 @@ class ShipTests(unittest.TestCase):
         self.gh.merge_state = merge_state
         self.gh.base_checks = lambda branch: [
             {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
-        with mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+        with mock.patch.object(self.gh, "base_in_head", return_value=False), \
+                mock.patch.object(self.gh, "update_reviewed_branch", create=True,
                                return_value=("updated", False)) as update, \
                 mock.patch.object(ship, "_red_ci") as red:
             self.ship()
@@ -246,6 +247,25 @@ class ShipTests(unittest.TestCase):
 
     def test_stale_red_pr_unstable_by_red_check_gets_branch_update(self):
         self.assert_stale_red_pr_with_green_base_gets_branch_update("UNSTABLE")
+
+    def test_up_to_date_blocked_red_pr_reruns_ci_instead_of_noop_update(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
+        self.gh.merge_state = "BLOCKED"
+        self.gh.base_checks = lambda branch: [
+            {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        self.gh.ci_retry_runs = mock.Mock(return_value=[{"id": 10, "attempt": 1}])
+        self.gh.rerun_failed_jobs = mock.Mock()
+        with mock.patch.object(self.gh, "base_in_head", return_value=True) as ancestry, \
+                mock.patch.object(self.gh, "update_reviewed_branch", create=True,
+                                  return_value=(self.gh.head_sha, True)) as update:
+            self.ship()
+        ancestry.assert_called_once_with(self.tmp, "main", self.gh.head_sha)
+        update.assert_not_called()
+        self.gh.ci_retry_runs.assert_called_once_with(self.gh.head_sha, "main")
+        self.gh.rerun_failed_jobs.assert_called_once_with(10)
 
     def test_red_pr_behind_red_base_is_not_updated(self):
         self.led.upsert_item("x", 5, pr=88)
