@@ -6,6 +6,7 @@ the outside world live in watchdog.py, sync.py, finalize.py and ship.py.
 """
 
 import json
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -324,6 +325,18 @@ def _observe(ctx, p, role, it, *blockers, **kw):
                              routing_role=routing_role, size=_size_label(it), **kw)
 
 
+def _raw_post_merge_blocked(ctx, project, item, enabled, done):
+    body = row_get(item, "issue_body", "") or ""
+    if "<!-- mahler:post-merge-failure" not in body or re.search(r"^##\s+Plan\b", body, re.M | re.I):
+        return False
+    deps = [d for d in json.loads(item["depends"] or "[]")
+            if dependency_target(d, project, enabled) not in done]
+    if not deps:
+        return False
+    ctx.hold("upstream_cause", project=project, number=item["number"], on=deps)
+    return True
+
+
 def _candidates(ctx, projects):
     """One global candidate list of (pol, role, item) across all enabled
     projects — sorts and settled builds compete for the same slots (mahler#9)."""
@@ -341,11 +354,17 @@ def _candidates(ctx, projects):
             ctx.hold("project_paused", project=name)
             continue  # Active runs continue; this project supplies no new work.
         for it in led.items(name, ["inbox"]):
+            if _raw_post_merge_blocked(ctx, name, it, enabled, done):
+                _observe(ctx, p, "sort", it, "upstream_cause")
+                continue
             if (name, it["parent"]) in planning:
                 continue  # The parent planner is still writing this child.
             work.append((p, "sort", it))
         blocker = ci_blockers.active(led, name, clear=not ctx.dry_run)
         for it in led.items(name, ["ready"]):
+            if _raw_post_merge_blocked(ctx, name, it, enabled, done):
+                _observe(ctx, p, "build", it, "upstream_cause")
+                continue
             if ci_blockers.holds(blocker, it["number"]):
                 ctx.hold("ci_blocker", project=name, number=it["number"], on=ci_blockers.label(blocker))
                 continue
