@@ -3701,6 +3701,22 @@ def _stop_browser_process_group(browser):
         else:
             browser.kill()
         browser.wait()
+    if os.name == 'posix':
+        # The parent is reaped, but Chrome's children may still hold the profile open.
+        import time
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                os.killpg(browser.pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            if time.monotonic() >= deadline:
+                try:
+                    os.killpg(browser.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                deadline = float('inf')
+            time.sleep(.05)
 
 
 class DiscussionBrowserTests(unittest.TestCase):
@@ -3778,7 +3794,7 @@ class DiscussionBrowserTests(unittest.TestCase):
                    '<textarea class="cap-ta">Capture draft</textarea><button id="capture" data-discuss>Talk it through</button></div></div>'
                    + page._discussion(s) + '<script>' + controller + '</script><script>'
                    + Path('tests/console_discuss_test.js').read_text() + '</script>')
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             Path(tmp, 'journey.html').write_text(fixture)
             class Quiet(http.server.SimpleHTTPRequestHandler):
                 def log_message(self, *args):
