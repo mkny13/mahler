@@ -708,10 +708,14 @@ def detect_ci_blocker(ctx, project):
                     "so every PR is red for the same reason. Mahler holds new builds and "
                     "fix runs in this project until it is fixed.\n\n"
                     f"Done when `{check}` passes on `{base}`.")
+            pol = ctx.policy(project)
+            scope = (pol["scope_label"],) if pol.get("scope") == "label" else ()
             try:
-                url = gh.create_issue(title, body, labels=("type:chore", "size:m", "p2"))
+                url = gh.create_issue(title, body,
+                                      labels=("type:chore", "size:m", "p2") + scope)
             except GHError:
-                url = gh.create_issue(title, body)
+                url = gh.create_issue(title, body, labels=scope) if scope else \
+                    gh.create_issue(title, body)
             m = re.search(r"/(\d+)\s*$", url or "")
             number = int(m.group(1)) if m else None
     except (GHError, ValueError, TypeError) as exc:

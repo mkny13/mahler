@@ -115,6 +115,16 @@ class PinTests(unittest.TestCase):
     def lines(self):
         return "\n".join(self.ctx.lines)
 
+    def test_active_ci_hold_tracker_admitted_and_labelled_even_on_304(self):
+        self.cfg["projects"]["x"].update(scope="label", scope_label="mahler")
+        self.gh.issues[300] = {"title": "Repo-wide CI failure: checks is red",
+                               "labels": [], "comments": []}
+        self.led.set_kv("ci_blocker:x", json.dumps({"number": 300}))
+        with mock.patch.object(self.gh, "issues_changed", return_value=(False, None)):
+            self.sync()
+        self.assertIn("mahler", self.gh.issues[300]["labels"])
+        self.assertIsNotNone(self.led.item("x", 300))
+
     def test_gated_route_requires_explicit_pin_even_for_preferences(self):
         self.cfg["platforms"]["cline-free"].update(approval=True, enabled=True, metered=False)
         self.cfg["routing"]["build"] = ["cline-free"]

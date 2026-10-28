@@ -212,6 +212,29 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.item()["attempts"], 0)
         self.assertEqual(self.item()["state"], "verifying")
 
+    def test_ci_blocker_issue_includes_scope_label(self):
+        self.cfg["projects"]["x"].update(scope="label", scope_label="mahler")
+        self.two_red_prs()
+        with mock.patch.object(ship, "_red_ci"):
+            self.ship()
+        self.assertEqual(len(self.gh.issues), 1)
+        self.assertIn("mahler", self.gh.issues[0][1])
+
+    def test_ci_blocker_issue_keeps_scope_label_when_label_create_fails(self):
+        self.cfg["projects"]["x"].update(scope="label", scope_label="mahler")
+        self.two_red_prs()
+        calls = []
+
+        def create(title, body="", labels=()):
+            calls.append(tuple(labels))
+            if len(calls) == 1:
+                raise ship.GHError("unknown label")
+            return "https://github.com/x/y/issues/300"
+        self.gh.create_issue = create
+        with mock.patch.object(ship, "_red_ci"):
+            self.ship()
+        self.assertEqual(calls[-1], ("mahler",))
+
     def test_pr_only_shared_failure_hold_clears_when_base_green(self):
         self.two_red_prs()
         self.gh.base_checks = lambda branch: [
