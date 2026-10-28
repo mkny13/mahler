@@ -32,7 +32,7 @@ a { color: var(--acc); text-decoration: none; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
 .lbl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px;
        letter-spacing: .1em; line-height: 1; color: var(--mut); text-transform: uppercase; }
-.t-acc { color: var(--acc); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
+.t-ok { color: var(--good); } .t-acc { color: var(--acc); } .t-warn { color: var(--warn); } .t-bad { color: var(--bad); }
 .t-good { color: var(--good); } .t-mut { color: var(--mut); } .t-ink { color: var(--ink); }
 .f-acc { background: var(--acc); } .f-warn { background: var(--warn); }
 .f-bad { background: var(--bad); } .f-mut { background: var(--mut); }
@@ -937,3 +937,6 @@ details.explain li { margin-bottom: 5px; }
 .pboard .pcard .l1 { align-items: flex-start; }
 .pboard .pcard .pcdesc { font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .pboard .pcard .l2 { font-size: 11px; }
+
+.pm { display: flex; flex-direction: column; gap: 2px; align-self: center; font-size: 13px; }
+.pm-label { font-weight: 600; }

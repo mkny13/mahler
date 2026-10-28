@@ -182,3 +182,91 @@ class ShipmentScreenshotTests(unittest.TestCase):
         old = artifact_id("mahler", 101, "a" * 40, 0)
         self.assertIsNone(state.screenshot_image(self.cfg, self.led, old))
         self.assertNotEqual(row["screenshots"][0]["id"], old)
+
+
+class PostMergeStatusTests(unittest.TestCase):
+    SHA = "a" * 40
+
+    def setUp(self):
+        self.led = make_led()
+        self.addCleanup(self.led.close)
+        self.cfg = make_cfg()
+        self.led.upsert_item("mahler", 7, state="shipped")
+        self.led.add_uat("mahler", 7, 107, self.SHA, "Change 7", "")
+        self.policy = {"enabled": True, "post_merge": {"enabled": True, "environment": "staging",
+                                                       "timeout_seconds": 600}}
+
+    def create(self, **kw):
+        self.led.create_post_merge_check("mahler", 7, self.SHA, self.policy, **kw)
+
+    def views(self):
+        snap = state.build(self.cfg, self.led)
+        change = snap["sessions"][0]["changes"][0]
+        return change["post_merge"], (page._d_test(snap), page._p_triage(snap))
+
+    def test_no_check_shows_no_status(self):
+        pm, htmls = self.views()
+        self.assertIsNone(pm)
+        for html in htmls:
+            self.assertNotIn('class="pm ', html)
+
+    def test_deploying(self):
+        self.create()
+        pm, htmls = self.views()
+        self.assertEqual((pm["status"], pm["phase"]), ("deploying", "deploy"))
+        for html in htmls:
+            self.assertIn("Deploying", html)
+            self.assertIn("0s of 10m", html)
+            self.assertIn('data-open-bug=', html)  # optional Fail path kept
+            for forbidden in ("Pass all", ">Pass<", "uat_pass"):
+                self.assertNotIn(forbidden, html)
+
+    def test_live_links_exact_artifact_and_hides_private_fields(self):
+        self.create(artifact_ref="https://preview.example/abc")
+        for phase in ("live", "smoke"):
+            self.led.update_post_merge_check("mahler", 7, self.SHA, expected_phase=
+                                             "deploy" if phase == "live" else "live",
+                                             phase=phase, live_sha=self.SHA if phase == "smoke" else None)
+        self.led.update_post_merge_check(
+            "mahler", 7, self.SHA, expected_phase="smoke", phase="smoke", status="PASS",
+            summary="PRIVATE LOG TEXT", evidence_ref="/Users/mike/.mahler/state/report.md")
+        pm, htmls = self.views()
+        self.assertEqual(pm["status"], "live")
+        for html in htmls:
+            self.assertIn("Live", html)
+            self.assertIn('href="https://preview.example/abc"', html)
+            self.assertNotIn("PRIVATE LOG TEXT", html)
+            self.assertNotIn("/Users/mike", html)
+
+    def test_non_url_artifact_is_not_linked(self):
+        self.create(artifact_ref="/private/path/artifact")
+        pm, htmls = self.views()
+        self.assertIsNone(pm["artifact"])
+        for html in htmls:
+            self.assertNotIn("/private/path", html)
+
+    def test_timeout_failed_links_single_bug(self):
+        self.create()
+        self.led.update_post_merge_check("mahler", 7, self.SHA, expected_phase="deploy",
+                                         phase="deploy", status="FAIL", failure_code="timeout",
+                                         summary="PRIVATE LOG TEXT")
+        self.led.set_kv(f"post-merge-bug:mahler:7:{self.SHA}", "55")
+        pm, htmls = self.views()
+        self.assertEqual(pm["status"], "failed")
+        self.assertEqual(pm["bug"], 55)
+        for html in htmls:
+            self.assertIn("Deploy failed", html)
+            self.assertIn("timed out", html)
+            self.assertIn("Bug #55", html)
+            self.assertEqual(html.count("Bug #55"), 1)
+            self.assertNotIn("PRIVATE LOG TEXT", html)
+
+    def test_failed_without_bug_or_unknown_code(self):
+        self.create()
+        self.led.update_post_merge_check("mahler", 7, self.SHA, expected_phase="deploy",
+                                         phase="deploy", status="FAIL", failure_code="weird token=x")
+        pm, htmls = self.views()
+        self.assertIsNone(pm["bug_url"])
+        for html in htmls:
+            self.assertIn("check failed", html)
+            self.assertNotIn("weird", html)
