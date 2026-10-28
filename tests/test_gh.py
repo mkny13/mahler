@@ -209,12 +209,12 @@ class TestGH(unittest.TestCase):
         self.assertTrue(all(c.kwargs["timeout"] == 2 for c in calls))
         self.gh._gh.reset_mock()
         for environment in ("Production", "production", "PROD"):
-            prod = {**deployment, "environment": environment, "production_environment": True}
+            prod = {**deployment, "environment": environment, "production_environment": False}
             status = {**success, "environment": environment}
             for deployments, expected in (
                 ([prod], success["environment_url"]),
-                ([{**prod, "production_environment": False}], None),
-                ([{**prod, "production_environment": 1}], None),
+                ([{**prod, "production_environment": True}], success["environment_url"]),
+                ([{**prod, "production_environment": 1}], success["environment_url"]),
                 ([prod, {**prod, "id": 101}], None),
                 ([prod, {**prod, "id": 101, "sha": "b" * 40}], None),
             ):
@@ -223,6 +223,30 @@ class TestGH(unittest.TestCase):
                     self.gh._gh.side_effect = [json.dumps(deployments), json.dumps([status])]
                     self.assertEqual(self.gh.exact_preview(sha, environment), expected)
                     self.assertNotIn("sha=", self.gh._gh.call_args_list[0].args[-1])
+
+    def test_exact_preview_rejection_reasons(self):
+        deployment = {"id": 100, "sha": "a" * 40, "environment": "Preview",
+                      "production_environment": False}
+        success = {"id": 200, "state": "success", "environment_url": "https://example.test"}
+        cases = [
+            ([], [], "no deployments found for environment"),
+            ([{**deployment, "sha": "b" * 40}], [], "merge SHA not found"),
+            ([deployment, deployment], [], "multiple deployments for merge SHA"),
+            ([deployment, {**deployment, "id": 101, "sha": "b" * 40}], [], "deployment is not newest"),
+            *[([{**deployment, "production_environment": value}], [],
+               "non-production deployment requires production_environment=false")
+              for value in (True, None, 0, "false")],
+            ([deployment], [], "no deployment statuses found"),
+            ([deployment], [{**success, "state": "pending"}], "latest deployment status is pending"),
+            ([deployment], [{**success, "environment_url": "http://example.test"}], "invalid deployment URL"),
+            ([deployment], [success], ""),
+        ]
+        for deployments, statuses, reason in cases:
+            with self.subTest(reason=reason, deployments=deployments):
+                self.gh._gh.side_effect = [json.dumps(deployments), json.dumps(statuses)]
+                url, actual = self.gh.exact_preview("a" * 40, "Preview", return_reason=True)
+                self.assertEqual(actual, reason)
+                self.assertEqual(url, None if reason else success["environment_url"])
 
     def test_screenshot_preview_filters_and_newest_status(self):
         sha = 'a' * 40

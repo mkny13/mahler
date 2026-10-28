@@ -131,6 +131,28 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(self.row()["failure_code"], "timeout")
         self.assertNotIn("private-provider-payload", " ".join(self.ctx.lines))
 
+    @mock.patch("mahler.notify.send")
+    def test_live_timeout_reports_last_observation_after_restart(self, ping):
+        from mahler.gh import GH
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.tick()
+        provider = GH("x/y")
+        self.gh.exact_preview.side_effect = provider.exact_preview
+        with mock.patch.object(provider, "_gh", return_value="[]"):
+            self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+        self.now += timedelta(seconds=1800)
+        self.tick()
+        self.assertEqual(self.row()["failure_code"], "timeout")
+        reason = "no deployments found for environment"
+        self.assertIn(reason, self.row()["summary"])
+        self.assertIn(reason, self.gh.create_issue.call_args.args[1])
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_failed'")
+        self.assertIn(reason, json.loads(event["detail"])["diagnostic"])
+
     def test_pass_across_ticks_and_single_d10_evidence(self):
         self.led.upsert_item("p", 1, state="shipped")
         self.led.add_uat("p", 1, 4, SHA, "test", "verify", shipped_at=iso(NOW - timedelta(seconds=1)))
