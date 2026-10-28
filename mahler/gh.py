@@ -788,56 +788,65 @@ class GH:
             selected.append({"id": run["id"], "attempt": run["run_attempt"]})
         return selected
 
-    def exact_preview(self, sha, environment, *, timeout=5):
+    def exact_preview(self, sha, environment, *, timeout=5, return_reason=False):
         """Two bounded lookups; incomplete/ambiguous observations never prove live.
 
         Do not filter the first lookup by SHA: that hides a newer deployment.
         """
         from urllib.parse import urlencode, urlsplit
 
+        def result(url=None, reason=""):
+            return (url, reason) if return_reason else url
+
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or not environment:
-            return None
+            return result(reason="invalid merge SHA or environment")
         production = environment.strip().casefold() in ("prod", "production")
         query = urlencode({"environment": environment, "per_page": 100})
         deployments = json.loads(self._gh(
             "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
         if not isinstance(deployments, list) or not deployments:
-            return None
+            return result(reason="no deployments found for environment")
         if any(not isinstance(d, dict) or type(d.get("id")) is not int
                or d.get("environment") != environment for d in deployments):
-            return None
+            return result(reason="malformed deployments or environment mismatch")
         matches = [d for d in deployments if d.get("sha") == sha]
         if len(matches) != 1:
-            return None
+            return result(reason="merge SHA not found" if not matches else "multiple deployments for merge SHA")
         deployment = matches[0]
-        if (deployment["id"] != max(d["id"] for d in deployments)
-                or deployment.get("production_environment") is not production):
-            return None
+        if deployment["id"] != max(d["id"] for d in deployments):
+            return result(reason="deployment is not newest")
+        if not production and deployment.get("production_environment") is not False:
+            return result(reason="non-production deployment requires production_environment=false")
         repository_url = f"https://api.github.com/repos/{self.repo}"
         if deployment.get("repository_url", repository_url) != repository_url:
-            return None
+            return result(reason="deployment repository mismatch")
         statuses = json.loads(self._gh(
             "api", "--method", "GET",
             f"repos/{self.repo}/deployments/{deployment['id']}/statuses?per_page=100",
             timeout=timeout))
         if not isinstance(statuses, list) or not statuses:
-            return None
+            return result(reason="no deployment statuses found")
         if any(not isinstance(s, dict) or type(s.get("id")) is not int for s in statuses):
-            return None
+            return result(reason="malformed deployment statuses")
         latest_id = max(s["id"] for s in statuses)
         latest = [s for s in statuses if s["id"] == latest_id]
         if len(latest) != 1:
-            return None
+            return result(reason="ambiguous newest deployment status")
         status = latest[0]
-        if status.get("state") != "success" or status.get("environment", environment) != environment:
-            return None
+        if status.get("state") != "success":
+            state = status.get("state")
+            # Only known states are safe diagnostics; never persist provider payloads.
+            state = state if state in ("pending", "queued", "in_progress", "failure", "error", "inactive") else "unknown"
+            return result(reason=f"latest deployment status is {state}")
+        if status.get("environment", environment) != environment:
+            return result(reason="deployment status environment mismatch")
         url = status.get("environment_url") or ""
         parsed = urlsplit(url)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username
                 or parsed.password or parsed.query or parsed.fragment
                 or any(ord(c) <= 32 for c in url) or "\\" in url or "@" in parsed.netloc):
-            return None
-        return url
+            return result(reason="invalid deployment URL")
+        return result(url)
 
     def screenshot_preview(self, sha, environment):
         """Bounded exact-head preview discovery; never infer a production target."""

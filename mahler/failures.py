@@ -212,6 +212,8 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
             if bug is not None:
                 ctx.led.set_kv(bug_key, str(bug))
 
+    check = ctx.led.post_merge_check(project, number, merge_sha)
+    diagnostic = row_get(check, "summary", "") if check else ""
     title = f"Post-merge {phase} fail: {project}#{number}"
     labels = ["type:bug", "p1"]
     if policy.get("scope") == "label":
@@ -254,6 +256,8 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
             f"- **Failed phase:** `{phase}`",
             f"- **Failure code:** `{failure_code}`",
         ]
+        if diagnostic:
+            lines.append(f"- **Diagnostic:** {diagnostic}")
         if tail:
             lines += [
                 "",
@@ -280,7 +284,7 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     ctx.led.set_kv(f"is-post-merge-bug:{project}:{bug}", "1")
     if ctx.led.item(project, bug) is None:
         ctx.led.upsert_item(project, bug, title=title, priority=1, labels=json.dumps(labels))
-    _post_merge_streak(ctx, project, number, merge_sha, phase, failure_code, bug, pr)
+    _post_merge_streak(ctx, project, number, merge_sha, phase, failure_code, bug, pr, diagnostic)
 
     ping_key = f"post-merge-ping:{project}:{number}:{merge_sha}"
     if not repeated and not ctx.led.get_kv(ping_key):
@@ -294,7 +298,7 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     return bug
 
 
-def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr):
+def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr, diagnostic=""):
     """Count each failed check once, including remediation retries after restart."""
     counted = f"post-merge-counted:{project}:{number}:{sha}"
     key = f"post-merge-consecutive:{project}"
@@ -312,7 +316,7 @@ def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr):
         ctx.led.set_kv(counted, "1")
         ctx.led.event("post_merge_failed", project, number,
                       {"merge_sha": sha, "bug": bug, "phase": phase,
-                       "failure_code": code, "pr": pr})
+                       "failure_code": code, "pr": pr, "diagnostic": redact(diagnostic)})
         if count >= 3 and ctx.led.get_kv(pause) != "1":
             ctx.led.set_kv(pause, "1")
             ctx.led.set_kv(alert_key, json.dumps({

@@ -88,7 +88,8 @@ def _remediate(ctx, row, policy):
 
 def _fail(ctx, row, code, policy=None):
     _change(ctx, row, status="FAIL", failure_code=code,
-            summary=f"Post-merge {row['phase']}: {code}")
+            summary=f"Post-merge {row['phase']}: {code}"
+                    + (f" ({row['summary']})" if row["phase"] == "live" and row["summary"] else ""))
     policy = policy or (ctx.policy(row["project"]) if hasattr(ctx, "policy") else None)
     if policy:
         try:
@@ -173,21 +174,25 @@ def _observe_live(ctx, row, policy):
     from .ledger import parse
     remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
     timeout = min(5, max(.01, remaining / 2))
+    reason = "exact live identity not yet verified"
+    artifact = None
     try:
         if policy["post_merge"]["live_strategy"] == "mahler":
             artifact = launch_health.exact_live(
                 row["merge_sha"], timeout=timeout,
                 env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
         else:
-            artifact = ctx.gh(row["project"]).exact_preview(
-                row["merge_sha"], row["target"], timeout=timeout)
+            artifact, reason = ctx.gh(row["project"]).exact_preview(
+                row["merge_sha"], row["target"], timeout=timeout, return_reason=True)
     except Exception:
         # Provider/auth/JSON failures are retryable, without retaining payloads.
-        return
+        reason = "deployment lookup failed (provider/auth/response error)"
     if ctx.led.now() >= parse(row["deadline_at"]):
-        _fail(ctx, row, "timeout")
+        _fail(ctx, {**dict(row), "summary": reason}, "timeout")
     elif artifact:
         _change(ctx, row, phase="smoke", live_sha=row["merge_sha"], artifact_ref=artifact)
+    else:
+        _change(ctx, row, summary=reason)
 
 
 def _pass_on_live_proof(ctx, row):

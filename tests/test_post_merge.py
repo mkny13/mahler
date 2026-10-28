@@ -79,7 +79,7 @@ class PostMergeTests(unittest.TestCase):
                     deploy_strategy="watch", live_strategy=strategy, live_command="")
                 self.tick()
                 artifact = "https://preview.example/build-10" if strategy == "github" else "mahler:" + SHA
-                self.gh.exact_preview.return_value = artifact
+                self.gh.exact_preview.return_value = (artifact, "")
                 with mock.patch("mahler.launch_health.exact_live", return_value=artifact):
                     self.tick()
                 self.assertEqual(self.row()["phase"], "smoke")
@@ -121,7 +121,7 @@ class PostMergeTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.row()["status"], "pending")
         self.assertEqual(self.led.post_merge_check("q", 2, SHA)["phase"], "live")
-        self.gh.exact_preview.side_effect = [None, "https://preview.example/build"]
+        self.gh.exact_preview.side_effect = [(None, "no deployments found for environment"), ("https://preview.example/build", "")]
         self.tick()
         self.assertEqual(self.row()["phase"], "live")
         self.assertEqual(self.led.post_merge_check("q", 2, SHA)["phase"], "smoke")
@@ -137,6 +137,7 @@ class PostMergeTests(unittest.TestCase):
         self.cfg["projects"]["p"]["post_merge"].update(
             deploy_strategy="watch", live_strategy="github", live_command="")
         self.tick()
+        self.gh.pr_for_commit.return_value = 42
         provider = GH("x/y")
         self.gh.exact_preview.side_effect = provider.exact_preview
         with mock.patch.object(provider, "_gh", return_value="[]"):
