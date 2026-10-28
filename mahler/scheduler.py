@@ -117,6 +117,8 @@ def run_pass(ctx, name, action, *, budget=300, reap=True, propagate=False):
     never argv, frame locals or credentials.
     """
     started = time.monotonic()
+    if reap and started - getattr(ctx, '_last_watchdog', started) >= 60:
+        run_pass(ctx, 'watchdog', lambda: watchdog(ctx), reap=False)
     previous = signal.getsignal(signal.SIGALRM)
     def stalled(signum, frame):
         operation = f"{frame.f_code.co_name}:{frame.f_lineno}" if frame else 'unknown'
@@ -124,8 +126,9 @@ def run_pass(ctx, name, action, *, budget=300, reap=True, propagate=False):
         while caller:
             if caller.f_globals.get('__name__', '').startswith('mahler.'):
                 operation += f" via {caller.f_globals['__name__']}.{caller.f_code.co_name}:{caller.f_lineno}"
-                break
             caller = caller.f_back
+            if caller and caller.f_code.co_name == 'run_pass':
+                break
         msg = f"tick stalled: pass={name} elapsed={time.monotonic() - started:.1f}s operation={operation}"
         ctx.say(msg)
         print(msg, flush=True)
@@ -137,6 +140,8 @@ def run_pass(ctx, name, action, *, budget=300, reap=True, propagate=False):
         return action()
     except PassBudgetExceeded:
         failed = True
+        if propagate:
+            raise GHError(f"{name}: pass budget exhausted") from None
     except Exception as exc:
         failed = True
         if propagate:
@@ -149,6 +154,8 @@ def run_pass(ctx, name, action, *, budget=300, reap=True, propagate=False):
             signal.setitimer(signal.ITIMER_REAL,
                             max(.001, old_timer[0] - (time.monotonic() - started)),
                             old_timer[1])
+        if name == 'watchdog':
+            ctx._last_watchdog = time.monotonic()
         if failed and reap:
             run_pass(ctx, 'watchdog', lambda: watchdog(ctx), reap=False)
 
@@ -158,13 +165,14 @@ def tick(ctx):
     ctx._scorecard_rows = None
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
     run_pass(ctx, "reconcile_priority_boost", lambda: reconcile_priority_boost(ctx))
-    run_pass(ctx, "compute_burst", lambda: compute_burst(ctx, projects))    # D23: before watchdog so running runs
-    run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)                   #   see burst lines too
     run_pass(ctx, "outbox.drain", lambda: outbox.drain(ctx))
+    # D23: compute burst lines before the watchdog examines running runs.
+    run_pass(ctx, "compute_burst", lambda: compute_burst(ctx, projects))
+    run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)
     for p in projects:
         try:
             run_pass(ctx, f"sync:{p['name']}", lambda: sync(ctx, p["name"]), propagate=True)
-        except GHError as e:
+        except Exception as e:
             ctx.say(f"{p['name']}: GitHub sync failed — {e}")
             _sync_access_result(ctx, p, e)
         else:

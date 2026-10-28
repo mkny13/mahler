@@ -263,5 +263,7 @@ class CapacityObservationTests(unittest.TestCase):
         ctx = self.ctx()
         item(self.led, "a", 3)
         with mock.patch.object(scheduler, "ship", side_effect=RuntimeError("x")), \
-             self.assertRaises(RuntimeError):
+             mock.patch.object(ctx.capacity, "flush", wraps=ctx.capacity.flush) as flush:
             scheduler.tick(ctx)
+        flush.assert_called_once()
+        self.assertIn("ship: pass failed — x", ctx.lines)

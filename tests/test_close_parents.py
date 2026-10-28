@@ -40,6 +40,8 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.comment.side_effect = lambda n, body: self.comments.setdefault(n, []).append({"body": body})
         self.gh.close_issue.side_effect = lambda n: self.states.update({n: "CLOSED"})
         self.gh.parent_issue_inventory.return_value = self.remote
+        self.gh.issue_by_marker.side_effect = lambda marker: next(
+            (r['html_url'] for r in self.remote if marker in r.get('body', '')), None)
         self.gh.sub_issues.return_value = []
         self.gh._parent_pages.return_value = []
         self.gh.closing_prs.return_value = [{"number": 99, "state": "MERGED"}]

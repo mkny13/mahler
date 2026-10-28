@@ -687,6 +687,52 @@ class TestReviewMarkerLookup(unittest.TestCase):
             _git('/unused', 'fetch', 'origin')
             self.assertLessEqual(call.call_args.kwargs['timeout'], 90)
 
+    def test_bootstrap_resumes_after_transport_failure(self):
+        from mahler.ledger import Ledger
+        with closing(Ledger(':memory:')) as led:
+            gh = GH('owner/repo')
+            gh.rate_ledger = led
+            batch = [{'number': n} for n in range(100)]
+            with patch.object(gh, '_gh', side_effect=[json.dumps(batch), GHError('offline')]):
+                with self.assertRaises(GHError):
+                    gh.parent_issue_inventory()
+            fresh = GH('owner/repo')
+            fresh.rate_ledger = led
+            with patch.object(fresh, '_gh', return_value='[{"number": 101}]') as call:
+                self.assertEqual(len(fresh.parent_issue_inventory()), 101)
+                self.assertIn('page=2', str(call.call_args))
+
+    def test_relationship_cap_never_returns_partial_evidence(self):
+        gh = GH('owner/repo')
+        with patch.object(gh, '_gh', return_value=json.dumps([{}] * 100)) as call:
+            with self.assertRaisesRegex(GHError, 'incomplete'):
+                gh._parent_pages('repos/owner/repo/issues/1/timeline?')
+            self.assertEqual(call.call_count, 20)
+
+    def test_creation_updates_negative_marker_cache(self):
+        gh = GH('owner/repo')
+        marker = '<!-- mahler:proposal:one -->'
+        with patch.object(gh, '_gh', side_effect=['{"items": []}', '[]', 'created']) as call:
+            self.assertIsNone(gh.issue_by_marker(marker))
+            gh.create_issue('proposal', marker)
+            self.assertEqual(gh.issue_by_marker(marker), 'created')
+            self.assertEqual(call.call_count, 3)
+
+    def test_gh_and_usage_probes_have_bounded_timeouts(self):
+        from mahler.gh import _gh
+        from mahler import platforms
+        with patch('subprocess.run') as call:
+            call.return_value.returncode = 0
+            call.return_value.stdout = '[]'
+            _gh('api', 'user')
+            platforms._gh_login()
+            with patch.object(platforms, '_gh_login', return_value='test'):
+                platforms.probe_copilot(100)
+            self.assertEqual(call.call_count, 3)
+            for invocation in call.call_args_list:
+                self.assertGreater(invocation.kwargs['timeout'], 0)
+                self.assertLessEqual(invocation.kwargs['timeout'], 90)
+
 
 class ReviewedBranchUpdateTests(unittest.TestCase):
     """Real git updates against a temporary remote; no GitHub or live state."""

@@ -386,11 +386,11 @@ class GH:
                                                            'since': started}))
                 return self._parent_inventory
             page += 1
+            if not since and self.rate_ledger is not None:
+                self.rate_ledger.set_kv(key, json.dumps({'rows': list(rows.values()),
+                                                       'page': page, 'started': started}))
         # Only bootstrap can safely resume a page offset across ticks. Delta
         # reads restart at their previous watermark if they exceed the cap.
-        if not since and self.rate_ledger is not None:
-            self.rate_ledger.set_kv(key, json.dumps({'rows': list(rows.values()),
-                                                   'page': page, 'started': started}))
         raise GHError('parent inventory pagination incomplete; retry next tick')
 
     def sub_issues(self, number):
