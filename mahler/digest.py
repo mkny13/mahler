@@ -51,13 +51,14 @@ _OWNER_CATEGORY = re.compile(
     r"\[CATEGORY:\s*(product|credentials|payment|account|destructive-data)\s*\]", re.I)
 
 
-def stuck_rate(led, now):
+def stuck_rate(led, now, project=None):
     """Seven-day transition counts, not unique items; waits are a separate series."""
     causes, wait_causes = Counter(), Counter()
     done = 0
+    scope, args = ("", ()) if project is None else (" AND project=?", (project,))
     for ev in led.q("SELECT * FROM events WHERE kind IN ('state','wait') "
-                    "AND at>=? AND at<=? ORDER BY id",
-                    (iso(now - timedelta(days=7)), iso(now))):
+                    "AND at>=? AND at<=?" + scope + " ORDER BY id",
+                    (iso(now - timedelta(days=7)), iso(now)) + args):
         detail = ev["detail"] or ""
         if ev["kind"] == "wait":
             try:
