@@ -399,6 +399,27 @@ class MigrationTests(SiteTests):
         avoid = json.loads(self.led.get_kv("reviewinconclusive-avoid:p#1:abc"))
         self.assertEqual({r["platform"] for r in avoid}, {"p1", "p2", "p3", "p4"})
 
+    def test_legacy_inconclusive_migration_retries_after_head_lookup_outage(self):
+        seen = [{"run_id": i, "platform": f"p{i}"} for i in (1, 2, 3, 4)]
+        self.led.set_kv("reviewinconclusive:p#1:abc", json.dumps(seen))
+        text = "4 reviews of this PR head ended without a verdict (platforms: a, b). Re-run?"
+        self.led.set_state("p", 1, "needs_you", text, question=text)
+
+        with mock.patch.object(self.gh, "pr_view", side_effect=RuntimeError("temporary outage")):
+            self.assertEqual(waits.migrate_legacy(self.ctx, "p"), 0)
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertFalse(self.led.get_kv("wait:p#1"))
+        self.assertFalse(self.led.get_kv("waits-migrated:p"))
+
+        self.assertEqual(waits.migrate_legacy(self.ctx, "p"), 1)
+        self.assert_waiting("review_inconclusive")
+        self.assertEqual(self.record()["wake"], {"sha": "abc"})
+        self.recheck_after(hours=6)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.led.get_kv("reviewinconclusive:p#1:abc"))
+        avoid = json.loads(self.led.get_kv("reviewinconclusive-avoid:p#1:abc"))
+        self.assertEqual({r["platform"] for r in avoid}, {"p1", "p2", "p3", "p4"})
+
     def test_legacy_no_change_item_resumes_review_not_build(self):
         no_change.save(self.led, "p", 1, {"phase": "exhausted", "base_sha": "base",
                                           "inconclusive": 4})
