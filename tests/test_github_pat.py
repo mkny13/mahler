@@ -115,6 +115,33 @@ class PatTests(unittest.TestCase):
             config.validate_github_app(cfg)
         self.assertNotIn(TOKEN, str(cm.exception))
 
+    def test_shared_token_file_across_providers_refused(self):
+        path = self.token_file()
+        for bound in (False, True):
+            with self.subTest(bound=bound):
+                cfg = self.cfg(path)
+                cfg["github_pats"]["other"] = {
+                    "token_file": path, "repository": "o/other"}
+                if bound:
+                    cfg["projects"]["other"] = {
+                        "repo": "o/other", "github_pat": "other"}
+                for validate in (github_pat.validate, config.validate_github_app):
+                    with self.subTest(validate=validate.__name__):
+                        with self.assertRaises(PatError) as cm:
+                            validate(cfg)
+                        self.assertIn("token_file", str(cm.exception))
+                        self.assertIn("work", str(cm.exception))
+                        self.assertIn("other", str(cm.exception))
+                        self.assertNotIn(TOKEN, str(cm.exception))
+
+    def test_distinct_token_files_across_repositories_allowed(self):
+        cfg = self.cfg(self.token_file())
+        cfg["github_pats"]["other"] = {
+            "token_file": self.token_file(name="other"), "repository": "o/other"}
+        cfg["projects"]["other"] = {"repo": "o/other", "github_pat": "other"}
+        self.assertEqual(github_pat.validate(cfg), {"sws", "other"})
+        config.validate_github_app(cfg)
+
 
 if __name__ == "__main__":
     unittest.main()
