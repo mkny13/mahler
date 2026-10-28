@@ -49,9 +49,12 @@ def _directory(row):
 
 
 def _change(ctx, row, **values):
-    return ctx.led.update_post_merge_check(
+    changed = ctx.led.update_post_merge_check(
         row["project"], row["number"], row["merge_sha"],
         expected_phase=row["phase"], phase=values.pop("phase", row["phase"]), **values)
+    if changed and values.get("status") == "PASS":
+        ctx.led.set_kv(f"post-merge-consecutive:{row['project']}", json.dumps({"count": 0}))
+    return changed
 
 
 def _remediate(ctx, row, policy):
@@ -101,6 +104,12 @@ def register(ctx, project, number, view):
     if ctx.dry_run or not pr_merged(view):
         return
     try:
+        from .ledger import row_get
+        item = ctx.led.item(project, number)
+        if (ctx.led.get_kv(f"is-post-merge-bug:{project}:{number}") == "1"
+                or (item and ("<!-- mahler:post-merge-failure" in (row_get(item, "issue_body", "") or "")
+                              or (row_get(item, "title", "") or "").startswith("Post-merge ")))):
+            return
         sha = (view.get("mergeCommit") or {}).get("oid") or ""
         ctx.led.create_post_merge_check(project, number, sha, ctx.policy(project), tag=sha)
     except Exception:
@@ -252,6 +261,10 @@ def advance(ctx, projects):
     for project in projects:
         name = project["name"]
         try:
+            if ctx.led.get_kv(f"post_merge_paused:{name}") == "1":
+                from .failures import deliver_post_merge_pause_alert
+                deliver_post_merge_pause_alert(ctx, name)
+                continue
             policy = ctx.policy(name)
             if not policy.get("enabled") or not policy["post_merge"]["enabled"]:
                 continue
@@ -261,6 +274,8 @@ def advance(ctx, projects):
                 register(ctx, name, uat["number"], {"state": "MERGED", "mergeCommit": {"oid": uat["sha"]}})
             for row in ctx.led.q("SELECT * FROM post_merge_checks WHERE project=? "
                                  "AND status IN ('pending','PASS','FAIL')", (name,)):
+                if ctx.led.get_kv(f"post_merge_paused:{name}") == "1":
+                    break
                 try:
                     if row["status"] == "PASS":
                         _deliver(ctx, row)

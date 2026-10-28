@@ -203,10 +203,7 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
         except (ValueError, TypeError):
             pass
     if bug is None:
-        try:
-            existing = ctx.gh(project).issue_by_marker(marker)
-        except Exception:
-            existing = None
+        existing = ctx.gh(project).issue_by_marker(marker)
         if existing:
             try:
                 bug = int(str(existing).rstrip("/").rsplit("/", 1)[-1])
@@ -220,7 +217,26 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     if policy.get("scope") == "label":
         labels.append(policy["scope_label"])
 
+    open_key = f"open-post-merge-bug:{project}:{phase}:{failure_code}"
+    repeated = False
     if bug is None:
+        candidate = ctx.led.get_kv(open_key)
+        if not candidate:
+            # Adopt reports created before cross-merge deduplication existed.
+            for item in ctx.led.items(project):
+                body = row_get(item, "issue_body", "") or ""
+                if ("<!-- mahler:post-merge-failure" in body
+                        and f"- **Failed phase:** `{phase}`" in body
+                        and f"- **Failure code:** `{failure_code}`" in body
+                        and ctx.gh(project).issue_state(item["number"]) == "OPEN"):
+                    candidate = str(item["number"])
+                    break
+        # Lookup failures propagate: uncertainty must never create a duplicate.
+        if candidate and ctx.gh(project).issue_state(int(candidate)) == "OPEN":
+            bug = int(candidate)
+            repeated = True
+
+    if bug is None or repeated:
         if output is not None:
             tail = "\n".join(output.splitlines()[-30:])[-16384:]
         else:
@@ -246,25 +262,87 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
                 "\n".join("> " + line for line in tail.splitlines())
             ]
         body = redact("\n".join(lines))
-        url = ctx.gh(project).create_issue(title, body, labels)
-        try:
+        if repeated:
+            # Recover a comment accepted by GitHub before the local checkpoint.
+            if not any(marker in c.get("body", "")
+                       for c in ctx.gh(project).issue_comments(bug)):
+                ctx.gh(project).comment_create(bug, body)
+        else:
+            url = ctx.gh(project).create_issue(title, body, labels)
             bug = int(str(url).rstrip("/").rsplit("/", 1)[-1])
-        except (ValueError, TypeError):
-            bug = 99
+            ctx.led.upsert_item(project, bug, title=title, issue_body=body,
+                                priority=1, labels=json.dumps(labels))
         ctx.led.set_kv(bug_key, str(bug))
 
-    ctx.led.event("post_merge_failed", project, number,
-                  {"merge_sha": merge_sha, "bug": bug, "phase": phase,
-                   "failure_code": failure_code, "pr": pr})
-    ctx.led.upsert_item(project, bug, title=title, priority=1, labels=json.dumps(labels))
+    # Replaying an old exact-check report must not replace a newer open bug.
+    if not saved or not ctx.led.get_kv(open_key):
+        ctx.led.set_kv(open_key, str(bug))
+    ctx.led.set_kv(f"is-post-merge-bug:{project}:{bug}", "1")
+    if ctx.led.item(project, bug) is None:
+        ctx.led.upsert_item(project, bug, title=title, priority=1, labels=json.dumps(labels))
+    _post_merge_streak(ctx, project, number, merge_sha, phase, failure_code, bug, pr)
 
     ping_key = f"post-merge-ping:{project}:{number}:{merge_sha}"
-    if not ctx.led.get_kv(ping_key):
+    if not repeated and not ctx.led.get_kv(ping_key):
         from . import notify
         click = ctx.url(project, bug) if hasattr(ctx, "url") else None
         ping_title = f"Post-merge {phase} failed: {project}#{number}"
         ping_msg = f"Check failed ({failure_code}) on {merge_sha[:10]}. Bug: #{bug}."
         notify.send(ctx.cfg, ping_title, ping_msg, click=click, priority="high")
-        ctx.led.set_kv(ping_key, "sent")
+    ctx.led.set_kv(ping_key, "sent")
 
     return bug
+
+
+def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr):
+    """Count each failed check once, including remediation retries after restart."""
+    counted = f"post-merge-counted:{project}:{number}:{sha}"
+    key = f"post-merge-consecutive:{project}"
+    pause = f"post_merge_paused:{project}"
+    alert_key = f"post_merge_pause_alert:{project}"
+    alert = False
+    with ctx.led._tx():
+        if ctx.led.get_kv(counted):
+            return
+        previous = json.loads(ctx.led.get_kv(key, "{}"))
+        count = (previous.get("count", 0) + 1
+                 if (previous.get("phase"), previous.get("failure_code")) == (phase, code)
+                 else 1)
+        ctx.led.set_kv(key, json.dumps({"count": count, "phase": phase, "failure_code": code}))
+        ctx.led.set_kv(counted, "1")
+        ctx.led.event("post_merge_failed", project, number,
+                      {"merge_sha": sha, "bug": bug, "phase": phase,
+                       "failure_code": code, "pr": pr})
+        if count >= 3 and ctx.led.get_kv(pause) != "1":
+            ctx.led.set_kv(pause, "1")
+            ctx.led.set_kv(alert_key, json.dumps({
+                "status": "pending", "count": count, "phase": phase,
+                "failure_code": code, "bug": bug,
+            }))
+            alert = True
+    if alert:
+        deliver_post_merge_pause_alert(ctx, project)
+
+
+def deliver_post_merge_pause_alert(ctx, project):
+    """Retry a failed pause notification on later ticks until ntfy accepts it."""
+    alert_key = f"post_merge_pause_alert:{project}"
+    raw = ctx.led.get_kv(alert_key)
+    if not raw:
+        return False
+    alert = json.loads(raw)
+    if alert.get("status") != "pending":
+        return False
+
+    from . import notify
+    bug = alert["bug"]
+    click = ctx.url(project, bug) if hasattr(ctx, "url") else None
+    sent = notify.send(
+        ctx.cfg, f"Post-merge checks paused: {project}",
+        f"{alert['count']} consecutive {alert['phase']} failures "
+        f"({alert['failure_code']}). Bug: #{bug}.",
+        click=click, priority="high")
+    if sent:
+        alert["status"] = "sent"
+        ctx.led.set_kv(alert_key, json.dumps(alert))
+    return sent
