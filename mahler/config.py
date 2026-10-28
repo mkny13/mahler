@@ -238,6 +238,7 @@ DEFAULTS = {
     # ~/.mahler/runs. The janitor prunes them after `janitor.retention_days`
     # once the run ended and its item is done (mahler#1386).
     "storage": {"runs_dir": ""},
+    "capacity": {"gap_seconds": 900},
     # Periodic calibration of run and issue duration estimates (mahler#59)
     "estimates": {
         "calibration_interval": 10,

@@ -1867,6 +1867,126 @@ class CapacityMigrationTests(unittest.TestCase):
             led.capacity_record({("a", 2, "build"): {"signature": "s", "blockers": []}})
             self.assertEqual(len(led.capacity_intervals()), 1)
 
+    def test_compact_capacity_intervals_coalescing_and_field_preservation(self):
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        t0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+        sig1 = "sig1"
+        sig2 = "sig2"
+
+        # Row 1: gap closed at 0s
+        led.con.execute(
+            "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+            " VALUES ('p', 1, 'build', ?, ?, 0, 'gap', ?)",
+            (iso(t0), iso(t0), sig1)
+        )
+        # Row 2: gap closed 200s later (gap = 200s <= 900s)
+        led.con.execute(
+            "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+            " VALUES ('p', 1, 'build', ?, ?, 0, 'gap', ?)",
+            (iso(t0 + timedelta(seconds=200)), iso(t0 + timedelta(seconds=200)), sig1)
+        )
+        # Row 3: launched 200s later (gap = 200s <= 900s)
+        led.con.execute(
+            "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature, launch_run_id, launched_platform)"
+            " VALUES ('p', 1, 'build', ?, ?, 0, 'launched', ?, 42, 'agy-gemini')",
+            (iso(t0 + timedelta(seconds=400)), iso(t0 + timedelta(seconds=500)), sig1)
+        )
+        # Row 4: different signature (kept separate)
+        led.con.execute(
+            "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+            " VALUES ('p', 1, 'build', ?, ?, 0, 'gap', ?)",
+            (iso(t0 + timedelta(seconds=600)), iso(t0 + timedelta(seconds=600)), sig2)
+        )
+        # Row 5: same signature but huge gap > 900s (kept separate)
+        led.con.execute(
+            "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+            " VALUES ('p', 1, 'build', ?, ?, 1, NULL, ?)",
+            (iso(t0 + timedelta(seconds=2000)), iso(t0 + timedelta(seconds=2100)), sig2)
+        )
+
+        removed = led.compact_capacity_intervals(max_gap_seconds=900)
+        self.assertEqual(removed, 2)  # intermediate rows 2 and 3 merged into 1
+
+        rows = [dict(r) for r in led.q("SELECT * FROM capacity_intervals ORDER BY id")]
+        self.assertEqual(len(rows), 3)
+
+        # Head row absorbed the span and terminal status of row 3
+        head = rows[0]
+        self.assertEqual(head["project"], "p")
+        self.assertEqual(head["number"], 1)
+        self.assertEqual(head["role"], "build")
+        self.assertEqual(head["first_seen"], iso(t0))
+        self.assertEqual(head["last_seen"], iso(t0 + timedelta(seconds=500)))
+        self.assertEqual(head["open"], 0)
+        self.assertEqual(head["end_reason"], "launched")
+        self.assertEqual(head["launch_run_id"], 42)
+        self.assertEqual(head["launched_platform"], "agy-gemini")
+        self.assertEqual(head["signature"], sig1)
+
+        # Row with different signature preserved
+        self.assertEqual(rows[1]["signature"], sig2)
+        self.assertEqual(rows[1]["first_seen"], iso(t0 + timedelta(seconds=600)))
+
+        # Row with large gap preserved
+        self.assertEqual(rows[2]["first_seen"], iso(t0 + timedelta(seconds=2000)))
+        self.assertEqual(rows[2]["open"], 1)
+
+    def test_compaction_migration_in_init_is_idempotent_and_kv_guarded(self):
+        import sqlite3
+        import tempfile
+        t0 = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+        sig = "sig_migration"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "migrate.db")
+            # Create a DB as if from older version with uncompacted rows and no kv guard
+            con = sqlite3.connect(path)
+            from mahler.ledger import SCHEMA
+            con.executescript(SCHEMA)
+            con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+                " VALUES ('p', 1, 'build', ?, ?, 0, 'gap', ?)",
+                (iso(t0), iso(t0), sig)
+            )
+            con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+                " VALUES ('p', 1, 'build', ?, ?, 0, 'gap', ?)",
+                (iso(t0 + timedelta(seconds=200)), iso(t0 + timedelta(seconds=200)), sig)
+            )
+            con.commit()
+            con.close()
+
+            # First open: migration should execute compaction and set kv key
+            led = Ledger(path)
+            self.assertEqual(led.get_kv("capacity_intervals:compacted"), "1")
+            rows = [dict(r) for r in led.q("SELECT * FROM capacity_intervals WHERE signature=?", (sig,))]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["first_seen"], iso(t0))
+            self.assertEqual(rows[0]["last_seen"], iso(t0 + timedelta(seconds=200)))
+            led.close()
+
+            # Insert another pair of gap rows directly (simulating future rows)
+            con = sqlite3.connect(path)
+            con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+                " VALUES ('p', 2, 'build', ?, ?, 0, 'gap', ?)",
+                (iso(t0), iso(t0), sig)
+            )
+            con.execute(
+                "INSERT INTO capacity_intervals (project, number, role, first_seen, last_seen, open, end_reason, signature)"
+                " VALUES ('p', 2, 'build', ?, ?, 0, 'gap', ?)",
+                (iso(t0 + timedelta(seconds=200)), iso(t0 + timedelta(seconds=200)), sig)
+            )
+            con.commit()
+            con.close()
+
+            # Second open: migration is one-time, guarded by kv, so it should NOT run again automatically on startup
+            led2 = Ledger(path)
+            p2_rows = [dict(r) for r in led2.q("SELECT * FROM capacity_intervals WHERE number=2")]
+            self.assertEqual(len(p2_rows), 2)
+            led2.close()
+
 
 class CreditReservationTests(unittest.TestCase):
     """Transactional reservations for the Team-plan API credits gateway
