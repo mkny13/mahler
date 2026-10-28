@@ -952,8 +952,9 @@ are best-effort and never gate finalization or prompt construction.
   `bin/mahler version`, rechecking the marker afterwards. `known_good`
   alone proves nothing. It returns `mahler:<full-sha>` as the artifact reference.
   - GitHub uses the project's existing repository/account client and an exact
-    configured environment. `prod`/`production` names (case-insensitive) require
-    `production_environment = true`; other environments require false. Production
+    configured environment. `prod`/`production` names (case-insensitive) do not
+    constrain `production_environment`: Vercel reports false even for Production.
+    Other environments require `production_environment = false`. Production
     proves only the exact merge SHA, never a PR-head Preview deployment. It reads
     up to 100 environment deployments without filtering away newer SHAs, requires
     exactly one record for the merge SHA and requires that record to be newest.
@@ -962,6 +963,10 @@ are best-effort and never gate finalization or prompt construction.
     inactive, pending, malformed, stale and ambiguous observations cannot pass.
     The public HTTPS `environment_url` must exist and contain no credentials,
     query string or fragment; only that URL is passed to smoke, never payloads.
+    Rejections retain a safe diagnostic in the check summary across ticks/restarts;
+    timeouts include it in the failure event and bug/comment while keeping the
+    stable `timeout` failure code for deduplication. Provider errors use a generic
+    diagnostic without retaining exception messages or response payloads.
     The API contract is GitHub's [deployments API](https://docs.github.com/en/rest/deployments/deployments)
     and [deployment statuses API](https://docs.github.com/en/rest/deployments/statuses).
   - Each observation uses at most two calls, each capped at five seconds and
