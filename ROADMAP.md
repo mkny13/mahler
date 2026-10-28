@@ -28,16 +28,16 @@ Playwright and preview deploys already in place, and it has real personal data.
 
 - #922: D43, the [discussion contract](docs/console/discuss.md), recipe and static
   [phone](docs/console/screens/discuss-phone.svg) /
-  [desktop](docs/console/screens/discuss-desktop.svg) mockups are committed design artifacts.
-  Mike's approval of an exact revision remains pending; this does not ship a chat panel.
+  [desktop](docs/console/screens/discuss-desktop.svg) mockups are approved, committed
+  design artifacts for the shipped operator-started discussion feature.
 - #923 durable sessions/restricted tools and #924 personal subscription worker are built.
 - #926 adds the work Agent SDK adapter, turn-scoped gateway authorization and shared D41
   request accounting. Personal and work paths are isolated; ambiguous policies fail closed.
   [Setup and qualification evidence](docs/team-api-credits.md#work-discussions-926) include
   the required runner reinstall and gateway restart. Fake SDK/gateway tests cover routing,
   resumes, retries, caps, secrets and restarts. Responses remain buffered.
-- #925 owns the approved console panel. One live work conversation and its confirmed issue
-  links remain post-merge evidence; this change does not run an additional paid trial.
+- #925 delivered the approved console panel. One live work conversation and its confirmed
+  issue links remain post-merge evidence; the operator-started discussion feature is shipped.
 
 ## Current state (2026-09-23)
 
