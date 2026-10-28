@@ -635,18 +635,57 @@ if __name__ == '__main__':
 
 
 class TestReviewMarkerLookup(unittest.TestCase):
-    def test_exact_marker_across_pages_and_closed_issues(self):
+    def test_exact_marker_search_and_cache(self):
         gh = GH("owner/repo")
         marker = "<!-- mahler:review-follow-up:abc -->"
-        with patch.object(gh, "_gh", return_value=json.dumps([
-                [{"body": marker, "pull_request": {}, "html_url": "pr"},
-                 {"body": marker[:-4], "html_url": "partial"}],
-                [{"body": marker, "state": "closed", "html_url": "found"}]])) as call:
+        rows = [{"body": marker, "pull_request": {}, "html_url": "pr"},
+                {"body": marker[:-4], "html_url": "partial"},
+                {"body": marker, "state": "closed", "html_url": "found"}]
+        with patch.object(gh, "_gh", return_value=json.dumps({"items": rows})) as call:
             self.assertEqual(gh.issue_by_marker(marker), "found")
-            call.assert_called_once_with("api", "--paginate", "--slurp",
-                "repos/owner/repo/issues?state=all&per_page=100")
-        with patch.object(gh, "_gh", return_value='[[{"body": null}]]'):
-            self.assertIsNone(gh.issue_by_marker(marker))
+            self.assertEqual(gh.issue_by_marker(marker), "found")
+            self.assertEqual(call.call_count, 1)
+            self.assertIn("search/issues", str(call.call_args))
+            self.assertNotIn("--paginate", str(call.call_args))
+
+    def test_recent_fallback_cached_for_missing_markers(self):
+        gh = GH("owner/repo")
+        with patch.object(gh, "_gh", side_effect=[
+                '{"items": []}', '[{"body": "new", "html_url": "found"}]',
+                '{"items": []}']) as call:
+            self.assertEqual(gh.issue_by_marker('new'), 'found')
+            self.assertIsNone(gh.issue_by_marker('absent'))
+            self.assertIsNone(gh.issue_by_marker('absent'))
+            self.assertEqual(call.call_count, 3)
+            self.assertIn('sort=updated', str(call.call_args_list[1]))
+
+    def test_inventory_cached_incrementally_and_bounded(self):
+        from mahler.ledger import Ledger
+        with closing(Ledger(':memory:')) as led:
+            gh = GH('owner/repo')
+            gh.rate_ledger = led
+            with patch.object(gh, '_gh', return_value='[{"number": 1}]') as call:
+                self.assertEqual(gh.parent_issue_inventory(), [{"number": 1}])
+                gh.parent_issue_inventory()
+                self.assertEqual(call.call_count, 1)
+            fresh = GH('owner/repo')
+            fresh.rate_ledger = led
+            with patch.object(fresh, '_gh', return_value='[{"number": 2}]') as call:
+                self.assertEqual(len(fresh.parent_issue_inventory()), 2)
+                self.assertIn('since=', str(call.call_args))
+        gh = GH('owner/repo')
+        with patch.object(gh, '_gh', return_value=json.dumps([{"number": n} for n in range(100)])) as call:
+            with self.assertRaises(GHError):
+                gh.parent_issue_inventory()
+            self.assertLessEqual(call.call_count, 20)
+
+    def test_git_timeout_at_most_ninety_seconds(self):
+        from mahler.gh import _git
+        with patch('mahler.gh.subprocess.run') as call:
+            call.return_value.returncode = 0
+            call.return_value.stdout = ''
+            _git('/unused', 'fetch', 'origin')
+            self.assertLessEqual(call.call_args.kwargs['timeout'], 90)
 
 
 class ReviewedBranchUpdateTests(unittest.TestCase):

@@ -120,7 +120,7 @@ def _git(path, *args, env=None):
     Goes through the same credential setup as the run's own pushes."""
     try:
         r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True,
-                           timeout=300, env=env)
+                           timeout=90, env=env)
     except (subprocess.SubprocessError, OSError) as e:
         raise GHError(f"git {' '.join(args[:3])}: {_safe_error(str(e), env)}") from None
     if r.returncode != 0:
@@ -150,6 +150,9 @@ class GH:
         self.rate_ledger = None
         self._rate_reset = 0
         self._login = None
+        self._markers = {}
+        self._recent_issues = None
+        self._parent_inventory = None
 
     def _env(self, git=False):
         if self.app is None:
@@ -343,7 +346,7 @@ class GH:
     def _parent_pages(self, endpoint):
         """Bounded, exhaustive REST reads; truncation is never an empty relation."""
         rows = []
-        for page in range(1, 1001):
+        for page in range(1, 21):
             batch = json.loads(self._gh("api", f"{endpoint}&per_page=100&page={page}"))
             if not isinstance(batch, list):
                 raise GHError("invalid parent relationship page")
@@ -353,8 +356,42 @@ class GH:
         raise GHError("parent relationship pagination incomplete")
 
     def parent_issue_inventory(self):
-        return [row for row in self._parent_pages(
-            f"repos/{self.repo}/issues?state=all") if "pull_request" not in row]
+        """Cache complete inventory; later ticks only read changed issues.
+
+        Bootstrap advances at most 20 pages per tick, failing closed until
+        complete. Created order keeps earlier bootstrap pages stable.
+        """
+        from datetime import datetime, timezone
+        if self._parent_inventory is not None:
+            return self._parent_inventory
+        key = f"parent_inventory:v1:{self.repo}"
+        saved = self.rate_ledger.get_kv(key) if self.rate_ledger is not None else None
+        cache = json.loads(saved) if saved else {}
+        rows = {r['number']: r for r in cache.get('rows', [])}
+        since = cache.get('since')
+        started = cache.get('started') or datetime.now(timezone.utc).isoformat(timespec='seconds')
+        page = cache.get('page', 1)
+        endpoint = f"repos/{self.repo}/issues?state=all&sort=created&direction=asc"
+        if since:
+            endpoint += f"&since={quote(since, safe='')}"
+        for _ in range(20):
+            batch = json.loads(self._gh('api', f"{endpoint}&per_page=100&page={page}"))
+            if not isinstance(batch, list):
+                raise GHError('invalid parent inventory page')
+            rows.update((r['number'], r) for r in batch if 'pull_request' not in r)
+            if len(batch) < 100:
+                self._parent_inventory = list(rows.values())
+                if self.rate_ledger is not None:
+                    self.rate_ledger.set_kv(key, json.dumps({'rows': self._parent_inventory,
+                                                           'since': started}))
+                return self._parent_inventory
+            page += 1
+        # Only bootstrap can safely resume a page offset across ticks. Delta
+        # reads restart at their previous watermark if they exceed the cap.
+        if not since and self.rate_ledger is not None:
+            self.rate_ledger.set_kv(key, json.dumps({'rows': list(rows.values()),
+                                                   'page': page, 'started': started}))
+        raise GHError('parent inventory pagination incomplete; retry next tick')
 
     def sub_issues(self, number):
         rows = self._parent_pages(f"repos/{self.repo}/issues/{number}/sub_issues?")
@@ -490,20 +527,36 @@ class GH:
         self._gh("label", "create", label, "-R", self.repo, "--color", AREA_COLOR, "--force")
 
     def issue_by_marker(self, marker):
-        """Scan all issue bodies, including closed issues, without search-index lag."""
-        pages = json.loads(self._gh("api", "--paginate", "--slurp",
-            f"repos/{self.repo}/issues?state=all&per_page=100"))
-        for page in pages:
-            for issue in page:
-                if "pull_request" not in issue and marker in (issue.get("body") or ""):
-                    return issue["html_url"]
-        return None
+        """Exact body match in bounded search, with a recent index-lag fallback."""
+        if marker in self._markers:
+            return self._markers[marker]
+        query = quote(f'repo:{self.repo} is:issue in:body "{marker}"', safe='')
+        data = json.loads(self._gh('api', f'search/issues?q={query}&per_page=100'))
+        rows = data['items']
+        for row in rows:
+            if 'pull_request' not in row and marker in (row.get('body') or ''):
+                self._markers[marker] = row['html_url']
+                return row['html_url']
+        if data.get('incomplete_results') or data.get('total_count', len(rows)) > 100:
+            raise GHError('marker search incomplete')
+        if self._recent_issues is None:
+            self._recent_issues = json.loads(self._gh('api',
+                f'repos/{self.repo}/issues?state=all&sort=updated&direction=desc&per_page=100'))
+        url = next((r['html_url'] for r in self._recent_issues
+                    if 'pull_request' not in r and marker in (r.get('body') or '')), None)
+        self._markers[marker] = url
+        return url
 
     def create_issue(self, title, body="", labels=()):
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]
         for l in labels:
             args += ["--label", l]
-        return self._gh(*args, input=body).strip()
+        url = self._gh(*args, input=body).strip()
+        for marker in re.findall(r"<!-- mahler:[^>]+-->", body):
+            self._markers[marker] = url
+        self._parent_inventory = None
+        self._recent_issues = None
+        return url
 
     def discussion_issue(self, number):
         """Current issue and exhaustive comments, with a content revision token."""
@@ -1046,7 +1099,7 @@ class GH:
         if not runs:
             return None, ""
         run_id = runs[0]["databaseId"]
-        log = self._gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=300)
+        log = self._gh("run", "view", str(run_id), "-R", self.repo, "--log-failed", timeout=90)
         return run_id, "\n".join(log.splitlines()[-tail:])
 
     def pr_ci_toolchain_files(self, number):

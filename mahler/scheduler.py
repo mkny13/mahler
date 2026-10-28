@@ -13,6 +13,8 @@ import fcntl
 import os
 import re
 import sys
+import signal
+import time
 
 from . import backup, capacity, config, digest, failures, janitor, notify, platform_audit, practices_audit
 from .console import outbox
@@ -103,63 +105,113 @@ def take_lock():
     return fh
 
 
+class PassBudgetExceeded(BaseException):
+    """Escape per-item Exception handlers so an exhausted pass really yields."""
+
+
+def run_pass(ctx, name, action, *, budget=300, reap=True, propagate=False):
+    """Bound a main-thread conductor pass without a competing ledger thread.
+
+    SIGALRM unwinds the pass (including subprocess.run's child cleanup), then
+    restores the caller's timer. The handler reports stack locations only,
+    never argv, frame locals or credentials.
+    """
+    started = time.monotonic()
+    previous = signal.getsignal(signal.SIGALRM)
+    def stalled(signum, frame):
+        operation = f"{frame.f_code.co_name}:{frame.f_lineno}" if frame else 'unknown'
+        caller = frame
+        while caller:
+            if caller.f_globals.get('__name__', '').startswith('mahler.'):
+                operation += f" via {caller.f_globals['__name__']}.{caller.f_code.co_name}:{caller.f_lineno}"
+                break
+            caller = caller.f_back
+        msg = f"tick stalled: pass={name} elapsed={time.monotonic() - started:.1f}s operation={operation}"
+        ctx.say(msg)
+        print(msg, flush=True)
+        raise PassBudgetExceeded()
+    signal.signal(signal.SIGALRM, stalled)
+    old_timer = signal.setitimer(signal.ITIMER_REAL, budget)
+    failed = False
+    try:
+        return action()
+    except PassBudgetExceeded:
+        failed = True
+    except Exception as exc:
+        failed = True
+        if propagate:
+            raise
+        ctx.say(f"{name}: pass failed — {exc}")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+        if old_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL,
+                            max(.001, old_timer[0] - (time.monotonic() - started)),
+                            old_timer[1])
+        if failed and reap:
+            run_pass(ctx, 'watchdog', lambda: watchdog(ctx), reap=False)
+
+
 def tick(ctx):
     ctx.holds = []
     ctx._scorecard_rows = None
     projects = [p for p in config.enabled_projects(ctx.cfg) if _project_ok(ctx, p)]
-    reconcile_priority_boost(ctx)
-    outbox.drain(ctx)
-    compute_burst(ctx, projects)    # D23: before watchdog so running runs
-    watchdog(ctx)                   #   see burst lines too
+    run_pass(ctx, "reconcile_priority_boost", lambda: reconcile_priority_boost(ctx))
+    run_pass(ctx, "compute_burst", lambda: compute_burst(ctx, projects))    # D23: before watchdog so running runs
+    run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)                   #   see burst lines too
+    run_pass(ctx, "outbox.drain", lambda: outbox.drain(ctx))
     for p in projects:
         try:
-            sync(ctx, p["name"])
+            run_pass(ctx, f"sync:{p['name']}", lambda: sync(ctx, p["name"]), propagate=True)
         except GHError as e:
             ctx.say(f"{p['name']}: GitHub sync failed — {e}")
             _sync_access_result(ctx, p, e)
         else:
             _sync_access_result(ctx, p)
-    failures.backfill(ctx, projects)
-    expire(ctx)
-    recheck_blocked(ctx, projects)
-    close_finished_parents(ctx, projects)
+    run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)
+    run_pass(ctx, "failures.backfill", lambda: failures.backfill(ctx, projects))
+    run_pass(ctx, "expire", lambda: expire(ctx))
+    run_pass(ctx, "recheck_blocked", lambda: recheck_blocked(ctx, projects))
+    run_pass(ctx, "close_finished_parents", lambda: close_finished_parents(ctx, projects))
     if ctx.led.paused():
         ctx.say("paused — not starting anything (mahler resume)")
         ctx.hold("paused")
         capacity.of(ctx).observe_paused(projects)
     else:
-        refresh_usage(ctx, projects)
-        resets.spend_banked(ctx, projects)
+        run_pass(ctx, "refresh_usage", lambda: refresh_usage(ctx, projects))
+        run_pass(ctx, "resets.spend_banked", lambda: resets.spend_banked(ctx, projects))
         try:
             if relearn_due(ctx.led):
-                relearn(ctx)          # mahler#536: daily learned-warm-up data pass
+                run_pass(ctx, "relearn", lambda: relearn(ctx))          # mahler#536: daily learned-warm-up data pass
         except Exception as e:
             ctx.say(f"warmup relearn failed — {e}")
-        warmup_pass(ctx)
-        queue_maintenance(ctx, projects)
-        platform_audit.queue(ctx, projects)
-        practices_audit.queue(ctx, projects)
-        schedule(ctx, projects)
+        run_pass(ctx, "warmup_pass", lambda: warmup_pass(ctx))
+        run_pass(ctx, "queue_maintenance", lambda: queue_maintenance(ctx, projects))
+        run_pass(ctx, "platform_audit.queue", lambda: platform_audit.queue(ctx, projects))
+        run_pass(ctx, "practices_audit.queue", lambda: practices_audit.queue(ctx, projects))
+        run_pass(ctx, "schedule", lambda: schedule(ctx, projects))
     record_holds(ctx)
     if not ctx.led.paused():
-        ship(ctx, projects)
-        post_merge.advance(ctx, projects)
+        run_pass(ctx, "ship", lambda: ship(ctx, projects))
+        run_pass(ctx, "post_merge.advance", lambda: post_merge.advance(ctx, projects))
     capacity.of(ctx).flush()
     for p in projects:
-        mirror_labels(ctx, p["name"])
+        run_pass(ctx, f"mirror_labels:{p['name']}", lambda: mirror_labels(ctx, p["name"]))
     if not ctx.dry_run:
         for p in config.enabled_projects(ctx.cfg):     # backups run even while paused
             for spec in p.get("backups") or []:
                 try:
-                    backup.run(ctx, p["name"], spec)
+                    run_pass(ctx, "backup.run", lambda: backup.run(ctx, p["name"], spec))
                 except Exception as e:
                     ctx.say(f"{p['name']}: backup failed — {e}")
         try:
-            backup.run_ledger(ctx)                     # mahler#533: also while paused
+            run_pass(ctx, "backup.run_ledger", lambda: backup.run_ledger(ctx))                     # mahler#533: also while paused
         except Exception as e:
             ctx.say(f"mahler: ledger backup failed — {e}")
-    digest.maybe_send(ctx)                  # informational: also runs while paused
-    janitor.maybe_run(ctx)                  # daily sweep (mahler#7): also while paused
+    run_pass(ctx, "digest.maybe_send", lambda: digest.maybe_send(ctx))                  # informational: also runs while paused
+    run_pass(ctx, "janitor.maybe_run", lambda: janitor.maybe_run(ctx))                  # daily sweep (mahler#7): also while paused
+    run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)
     return ctx.lines
 
 
