@@ -80,6 +80,7 @@ def validate(cfg):
     pats = cfg.get("github_pats", {})
     if not isinstance(pats, dict):
         raise PatError("github_pats must be a table")
+    token_files = {}
     for name, prov in pats.items():
         if not isinstance(prov, dict):
             raise PatError(f"github_pats.{name} must be a table")
@@ -89,6 +90,11 @@ def validate(cfg):
         tf = prov.get("token_file")
         if not isinstance(tf, str) or not tf.strip() or "\x00" in tf:
             raise PatError(f"github_pats.{name} requires token_file")
+        if tf in token_files:
+            raise PatError(
+                f"github_pats.{name}: token_file is shared with github_pats.{token_files[tf]}; "
+                "use one token file per repository")
+        token_files[tf] = name
         repo = prov.get("repository")
         if repo is not None and (not isinstance(repo, str) or repo.count("/") != 1 or not all(repo.split("/"))):
             raise PatError(f"github_pats.{name}: repository must be owner/repo")
