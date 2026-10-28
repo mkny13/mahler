@@ -1941,16 +1941,17 @@ class TestPracticesGHReads(unittest.TestCase):
         self.gh.ruleset(7)
         self.gh._gh.assert_called_with("api", "repos/owner/repo/rulesets/7")
 
-    def test_all_pages_open_closed_reuse_and_lookup_error(self):
-        self.gh._gh.return_value = json.dumps([
-            [{"number": 1, "body": "marker", "pull_request": {}, "html_url": "pr"}],
-            [{"number": 2, "body": "marker", "state": "closed", "html_url": "issue"}]])
+    def test_bounded_search_closed_reuse_and_lookup_error(self):
+        self.gh._gh.return_value = json.dumps({'items': [
+            {"number": 1, "body": "marker", "pull_request": {}, "html_url": "pr"},
+            {"number": 2, "body": "marker", "state": "closed", "html_url": "issue"}]})
         self.assertEqual(self.gh.issue_by_marker("marker"), "issue")
-        self.gh._gh.assert_called_with("api", "--paginate", "--slurp",
-                                      "repos/owner/repo/issues?state=all&per_page=100")
-        self.gh._gh.side_effect = GHError("failed page")
+        self.assertEqual(self.gh.issue_by_marker("marker"), "issue")
+        self.gh._gh.assert_called_once()
+        self.assertIn('search/issues', str(self.gh._gh.call_args))
+        self.gh._gh.side_effect = GHError("lookup failed")
         with self.assertRaises(GHError):
-            self.gh.issue_by_marker("marker")
+            self.gh.issue_by_marker("different marker")
 
     def test_issue_body_update(self):
         self.gh.edit_issue_body(12, "report")
@@ -1980,8 +1981,13 @@ class FilingIdentityTests(unittest.TestCase):
 
         def run(argv, **kwargs):
             if argv[1] == "api":
-                repo = argv[-1].split("repos/", 1)[1].split("/issues", 1)[0]
-                output = json.dumps([issues[repo]])
+                from urllib.parse import unquote
+                if argv[-1].startswith('search/issues'):
+                    repo = unquote(argv[-1]).split('repo:', 1)[1].split(' ', 1)[0]
+                    output = json.dumps({'items': issues[repo]})
+                else:
+                    repo = argv[-1].split("repos/", 1)[1].split("/issues", 1)[0]
+                    output = json.dumps(issues[repo])
                 operation = "lookup"
             else:
                 repo = argv[argv.index("-R") + 1]

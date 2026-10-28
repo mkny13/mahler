@@ -2499,7 +2499,8 @@ class UatOutboxTests(unittest.TestCase):
         with mock.patch("mahler.gh.config.run_env", return_value=env) as run_env, \
                 mock.patch("mahler.gh._gh") as call:
             call.side_effect = lambda *a, **k: (
-                "[[]]" if a[0] == "api" else
+                '{"items": []}' if a[0] == "api" and a[1].startswith('search/issues') else
+                "[]" if a[0] == "api" else
                 "https://github.com/mkny13/mahler/issues/42" if a[:2] == ("issue", "create") else "")
             actions.run(cfg, self.led, "uat_fail",
                         {"project": "mahler", "number": 9, "note": "broken"})

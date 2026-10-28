@@ -1024,7 +1024,6 @@ def _apply_parent_evidence(ctx, project, record):
     labels = ["type:chore", "p2"]
     if policy.get("scope") == "label":
         labels.append(policy["scope_label"])
-    inventory = None
     followups = []
     for i, entry in enumerate(entries):
         if entry["met"]:
@@ -1033,10 +1032,7 @@ def _apply_parent_evidence(ctx, project, record):
         key = f"parent_evidence_followup:{project}:{parent}:{run_id}:{i}"
         url = led.get_kv(key)
         if not url:
-            if inventory is None:
-                inventory = gh.parent_issue_inventory()
-            row = next((r for r in inventory if marker in (r.get("body") or "")), None)
-            url = row and (row.get("html_url") or f"#{row['number']}")
+            url = gh.issue_by_marker(marker)
         if not url:
             url = gh.create_issue(
                 f"Unmet criterion for #{parent}: {entry['criterion'][:80]}",
