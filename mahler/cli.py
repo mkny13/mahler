@@ -1277,7 +1277,8 @@ def _capacity_days(value):
 
 def cmd_capacity(a, cfg, led):
     from . import capacity
-    report = capacity.capacity_report(led, days=a.days)
+    gap_seconds = cfg.get("capacity", {}).get("gap_seconds", capacity.DEFAULT_GAP_SECONDS)
+    report = capacity.capacity_report(led, days=a.days, gap_seconds=gap_seconds)
     print(capacity.format_capacity_report(report))
     return 0
 

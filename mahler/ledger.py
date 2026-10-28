@@ -407,6 +407,7 @@ def iso(dt):
 
 
 QUIET_DAYS = 14   # a clean shipment completes this long after its merge (D10/D33)
+DEFAULT_GAP_SECONDS = 900
 
 
 def parse(s):
@@ -505,6 +506,10 @@ class Ledger:
                     self.con.execute(f"ALTER TABLE uat ADD COLUMN {col} {ddl}")
             # Preserve shipped and historical done rows; only tracking is retired.
             self.con.execute("UPDATE items SET state = 'parent' WHERE state = 'tracking'")
+            if not self.get_kv("capacity_intervals:compacted"):
+                with self._tx():
+                    self.compact_capacity_intervals()
+                    self.set_kv("capacity_intervals:compacted", "1")
             if path != ":memory:":
                 # 0600 on the database and its WAL/SHM sidecars (issue #75): the
                 # file is created umask-masked, so chmod explicitly — same pattern
@@ -982,7 +987,7 @@ class Ledger:
 
     # ---------- capacity intervals (mahler#734; schema in capacity.py) ----------
 
-    def capacity_record(self, observations, gap_seconds=900):
+    def capacity_record(self, observations, gap_seconds=DEFAULT_GAP_SECONDS):
         """Fold one tick's observations {(project, number, role): dict} into
         state intervals. An unchanged state only advances last_seen; a changed
         state, a gap over `gap_seconds`, or a launch closes the open interval
@@ -1073,10 +1078,10 @@ class Ledger:
             self.con.execute("UPDATE capacity_intervals SET first_seen=? WHERE first_seen < ?",
                              (cutoff, cutoff))
 
-    def capacity_compact(self, gap_seconds):
+    def compact_capacity_intervals(self, max_gap_seconds=DEFAULT_GAP_SECONDS):
         """Merge runs of intervals that a too-tight gap threshold split apart
-        (mahler#1386): consecutive rows of one item and role, same signature,
-        the earlier closed as `gap` no more than `gap_seconds` before the next
+        (mahler#1318, mahler#1386): consecutive rows of one item and role, same signature,
+        the earlier closed as `gap` no more than `max_gap_seconds` before the next
         began. The earliest row absorbs the span and the last row's ending.
         -> rows removed."""
         removed, merges = [], []
@@ -1084,7 +1089,7 @@ class Ledger:
         rows = self.con.execute(
             "SELECT id, project, number, role, signature, first_seen, last_seen, open,"
             " end_reason, launch_run_id, launched_platform FROM capacity_intervals"
-            " ORDER BY project, number, role, first_seen, id")
+            " ORDER BY project, number, role, first_seen, id").fetchall()
         for row in rows:
             joins = (prev is not None
                      and (prev["project"], prev["number"], prev["role"])
@@ -1092,7 +1097,7 @@ class Ledger:
                      and prev["end_reason"] == "gap" and not prev["open"]
                      and prev["signature"] == row["signature"]
                      and (parse(row["first_seen"]) - parse(prev["last_seen"])).total_seconds()
-                     <= gap_seconds)
+                     <= max_gap_seconds)
             if joins:
                 removed.append(row["id"])
                 merges[-1] = (head, row)
@@ -1114,6 +1119,9 @@ class Ledger:
                 self.con.execute("DELETE FROM capacity_intervals WHERE id IN (%s)"
                                  % ",".join("?" * len(chunk)), chunk)
         return len(removed)
+
+    def capacity_compact(self, gap_seconds=DEFAULT_GAP_SECONDS):
+        return self.compact_capacity_intervals(max_gap_seconds=gap_seconds)
 
     CAPACITY_SELECT = (
         "SELECT c.id, c.project, c.number, c.role, c.routing_role, c.size, c.effective_size,"

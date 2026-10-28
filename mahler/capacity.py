@@ -56,7 +56,8 @@ from .config import account_of
 from .ledger import iso, parse, row_get
 
 RETENTION_DAYS = 90
-GAP_SECONDS = 900          # ticks run every 2-5 min; 120 s split every wait per tick (mahler#1386)
+DEFAULT_GAP_SECONDS = 900  # ticks run every 2-5 min; 120 s split every wait per tick (mahler#1386)
+GAP_SECONDS = DEFAULT_GAP_SECONDS
 
 ROLES = ("sort", "build", "fix", "review")
 
@@ -83,6 +84,9 @@ class Observer:
     def __init__(self, ctx):
         self.ctx = ctx
         self.obs = {}
+        cfg = getattr(ctx, "cfg", None) or {}
+        cap_cfg = cfg.get("capacity", {}) if isinstance(cfg, dict) else {}
+        self.gap_seconds = cap_cfg.get("gap_seconds", DEFAULT_GAP_SECONDS)
 
     def _enabled(self):
         return not getattr(self.ctx, "dry_run", False)
@@ -173,8 +177,11 @@ class Observer:
         try:
             for entry in self.obs.values():
                 entry["signature"] = _signature(entry)
+            cfg = getattr(self.ctx, "cfg", None) or {}
+            cap_cfg = cfg.get("capacity", {}) if isinstance(cfg, dict) else {}
+            gap_seconds = cap_cfg.get("gap_seconds", getattr(self, "gap_seconds", DEFAULT_GAP_SECONDS))
             led = self.ctx.led
-            led.capacity_record(self.obs, gap_seconds=GAP_SECONDS)
+            led.capacity_record(self.obs, gap_seconds=gap_seconds)
             led.capacity_prune(RETENTION_DAYS)
         except Exception as e:                              # noqa: BLE001 — never block a tick
             self.ctx.say(f"couldn't record capacity history — {e}")
@@ -209,7 +216,7 @@ def parse_days(value):
     return val
 
 
-def capacity_report(led, *, days=30, now=None):
+def capacity_report(led, *, days=30, now=None, gap_seconds=DEFAULT_GAP_SECONDS):
     """Historical free-capacity report (mahler#736). Read-only analysis.
 
     Returns structured data for the requested UTC window and recorded coverage.
@@ -273,7 +280,7 @@ def capacity_report(led, *, days=30, now=None):
             else:
                 prev = current_ep[-1]
                 gap = (parse(r["first_seen"]) - parse(prev["last_seen"])).total_seconds()
-                if prev["end_reason"] == "changed" and gap <= GAP_SECONDS:
+                if prev["end_reason"] == "changed" and gap <= gap_seconds:
                     current_ep.append(r)
                 else:
                     all_episodes.append(current_ep)

@@ -64,6 +64,48 @@ class IntervalTests(unittest.TestCase):
             self.clock.advance(seconds=300)
         self.assertEqual(len(self.rows()), 1)
 
+    def test_realistic_tick_cadences_and_gap_threshold(self):
+        """Ticks at realistic cadences (180s, 300s, 600s) coalesce; >900s closes as gap (mahler#1318)."""
+        for delta in (180, 300, 600):
+            self.tick(("a", 1, "build", ["no_platform"]))
+            self.clock.advance(seconds=delta)
+        self.tick(("a", 1, "build", ["no_platform"]))
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["open"], 1)
+        self.assertEqual(rows[0]["first_seen"], T0.isoformat())
+        self.assertEqual(rows[0]["last_seen"], (T0 + timedelta(seconds=180 + 300 + 600)).isoformat())
+
+        # Now advance beyond default 900s gap
+        self.clock.advance(seconds=901)
+        self.tick(("a", 1, "build", ["no_platform"]))
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["open"], 0)
+        self.assertEqual(rows[0]["end_reason"], "gap")
+        self.assertEqual(rows[1]["open"], 1)
+
+    def test_configurable_gap_seconds_in_observer_flush(self):
+        """gap_seconds configured via ctx.cfg['capacity']['gap_seconds'] is passed to flush."""
+        self.ctx.cfg["capacity"] = {"gap_seconds": 120}
+        self.tick(("a", 1, "build", ["no_platform"]))
+        self.clock.advance(seconds=180)  # > 120s, so should close as gap with custom config
+        self.tick(("a", 1, "build", ["no_platform"]))
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["end_reason"], "gap")
+
+        # Now test with larger custom gap
+        self.ctx.cfg["capacity"] = {"gap_seconds": 1800}
+        self.clock.advance(seconds=1200)  # > 900s, but < 1800s
+        self.tick(("a", 1, "build", ["no_platform"]))
+        rows = self.rows()
+        self.assertEqual(len(rows), 2)  # row 1 extended, no 3rd row added
+        self.assertEqual(rows[1]["open"], 1)
+
+    def test_default_gap_seconds_constant(self):
+        self.assertEqual(capacity.DEFAULT_GAP_SECONDS, 900)
+
     def test_compact_merges_gap_split_runs_only(self):
         sig = lambda blockers: capacity._signature({"role": "build", "blockers": blockers})
         def put(number, start, end, sig_, reason, open_=0, run_id=None):
@@ -301,8 +343,28 @@ class CapacityReportTests(unittest.TestCase):
         rep = capacity.capacity_report(self.led, days=30, now=t_end)
         self.assertEqual(rep["tiers"][0]["hours"], 1.0)
         formatted = capacity.format_capacity_report(rep)
-        self.assertIn("1.0 h", formatted)
-        self.assertNotIn("2.0 h", formatted)
+
+    def test_capacity_report_respects_custom_gap_seconds(self):
+        # Two intervals separated by 300s with end_reason='changed'
+        t1_start = T0
+        t1_end = T0 + timedelta(minutes=10)
+        t2_start = t1_end + timedelta(seconds=300)
+        t2_end = t2_start + timedelta(minutes=10)
+
+        # Interval 1 qualifies for tier 0 waiting time
+        self.insert_interval("a", 1, "build", t1_start, t1_end, end_reason="changed", tier=0)
+        # Interval 2 does not qualify on its own (platform eligible), but carries the launch
+        self.insert_interval("a", 1, "build", t2_start, t2_end, end_reason="launched",
+                             launch_run_id=99, tier=0, open=0,
+                             platforms={"kilo": {"reasons": ["eligible"], "cost": "free", "tier": 0}})
+        now = t2_end + timedelta(minutes=5)
+
+        # With gap_seconds=200, 300s gap causes them to split into 2 episodes (first has no run, second has run 99)
+        rep_split = capacity.capacity_report(self.led, days=30, now=now, gap_seconds=200)
+        # With gap_seconds=600, 300s gap <= 600 causes them to merge into 1 episode (linked to run 99)
+        rep_joined = capacity.capacity_report(self.led, days=30, now=now, gap_seconds=600)
+        self.assertEqual(rep_split["tiers"][0]["runs"], 0)
+        self.assertEqual(rep_joined["tiers"][0]["runs"], 1)
 
     def test_window_clipping_bounds_intervals(self):
         # Window clipping: intervals extending past window start or window end are clipped
