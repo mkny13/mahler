@@ -223,11 +223,11 @@ class ShipTests(unittest.TestCase):
         self.assertIsNone(self.led.get_kv("ci_blocker:x"))
         red.assert_called()
 
-    def test_stale_red_pr_behind_green_base_gets_branch_update(self):
+    def assert_stale_red_pr_with_green_base_gets_branch_update(self, merge_state):
         self.led.upsert_item("x", 5, pr=88)
         self.gh.required_checks = {"checks"}
         self.gh.rollup = [{"name": "checks", "status": "COMPLETED", "conclusion": "FAILURE"}]
-        self.gh.merge_state = "BEHIND"
+        self.gh.merge_state = merge_state
         self.gh.base_checks = lambda branch: [
             {"name": "checks", "status": "COMPLETED", "conclusion": "SUCCESS"}]
         with mock.patch.object(self.gh, "update_reviewed_branch", create=True,
@@ -237,6 +237,15 @@ class ShipTests(unittest.TestCase):
         update.assert_called_once()
         red.assert_not_called()
         self.assertEqual(self.item()["attempts"], 0)
+
+    def test_stale_red_pr_behind_green_base_gets_branch_update(self):
+        self.assert_stale_red_pr_with_green_base_gets_branch_update("BEHIND")
+
+    def test_stale_red_pr_blocked_by_red_check_gets_branch_update(self):
+        self.assert_stale_red_pr_with_green_base_gets_branch_update("BLOCKED")
+
+    def test_stale_red_pr_unstable_by_red_check_gets_branch_update(self):
+        self.assert_stale_red_pr_with_green_base_gets_branch_update("UNSTABLE")
 
     def test_red_pr_behind_red_base_is_not_updated(self):
         self.led.upsert_item("x", 5, pr=88)

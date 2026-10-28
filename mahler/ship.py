@@ -2375,9 +2375,10 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
 
 
 def _stale_red_behind_base(ctx, project, item, pr, view, required):
-    """A red PR whose base moved on and is green now was checked against stale code:
-    update its branch (fresh CI follows) rather than rerun or fix against old results."""
-    if (ctx.dry_run or view.get("mergeStateStatus") != "BEHIND"
+    """A red PR against a green base may be stale even when GitHub reports
+    BLOCKED or UNSTABLE instead of BEHIND; update its branch before handling red CI."""
+    if (ctx.dry_run
+            or view.get("mergeStateStatus") not in ("BEHIND", "BLOCKED", "UNSTABLE")
             or checks_state(view.get("statusCheckRollup"), required=required) != "red"):
         return False
     base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
