@@ -1,0 +1,4 @@
+.........................................................................................................................................history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp8nah34ll', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+..........................................................................history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmplzknv1n1', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+...............................................................................................history: could not index run 2: Command '['git', '-C', '/var/folders/1t/64hgdldx7td6j0m_3zn6drjh0000gn/T/tmp_5n4il_u', 'merge-base', 'origin/main', 'HEAD']' returned non-zero exit status 128.
+.............................................
