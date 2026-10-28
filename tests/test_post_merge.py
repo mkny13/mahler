@@ -370,6 +370,102 @@ class PostMergeTests(unittest.TestCase):
             self.gh.create_issue.assert_not_called()
             notify_mock.assert_not_called()
 
+    def report_failure(self, number, phase="live", code="timeout"):
+        from mahler import failures
+        return failures.report_post_merge(
+            self.ctx, "p", number, f"{number:040x}", phase, code, pr=42,
+            output="diagnostic tail ghp_0123456789abcdefghijklmn")
+
+    @mock.patch("mahler.notify.send")
+    def test_post_merge_failure_dedupes_against_open_bug_with_comment(self, ping):
+        self.gh.issue_state.return_value = "OPEN"
+        self.report_failure(2)
+        original = dict(self.led.item("p", 99))
+        self.report_failure(3)
+        self.report_failure(3)  # remediation retry is not another failure
+        self.gh.create_issue.assert_called_once()
+        self.gh.comment_create.assert_called_once()
+        number, body = self.gh.comment_create.call_args.args
+        self.assertEqual(number, 99)
+        for text in ("<!-- mahler:agent -->", f"{3:040x}", "#3", "PR #42",
+                     "timeout", "live", "diagnostic tail"):
+            self.assertIn(text, body)
+        self.assertNotIn("ghp_0123456789abcdefghijklmn", body)
+        self.assertEqual(self.led.get_kv(f"post-merge-bug:p:3:{3:040x}"), "99")
+        self.assertEqual(self.led.item("p", 99)["title"], original["title"])
+        self.assertEqual(json.loads(self.led.get_kv("post-merge-consecutive:p"))["count"], 2)
+
+    @mock.patch("mahler.notify.send")
+    def test_closed_post_merge_bug_allows_new_bug(self, ping):
+        self.report_failure(2)
+        self.gh.issue_state.return_value = "CLOSED"
+        self.gh.create_issue.return_value = "https://github.com/x/y/issues/100"
+        self.assertEqual(self.report_failure(3), 100)
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+        self.gh.comment_create.assert_not_called()
+
+    @mock.patch("mahler.notify.send")
+    def test_consecutive_identical_failures_trigger_circuit_breaker_and_single_ping(self, ping):
+        self.gh.issue_state.return_value = "OPEN"
+        for number in (2, 3, 4, 4):
+            self.report_failure(number)
+        self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        alerts = [call for call in ping.call_args_list if "paused" in call.args[1].lower()]
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].kwargs["priority"], "high")
+        with mock.patch.object(post_merge, "_advance") as advance:
+            self.tick()
+            self.tick()
+            advance.assert_not_called()
+
+    @mock.patch("mahler.notify.send")
+    def test_different_failure_resets_streak_and_has_distinct_bug(self, ping):
+        self.gh.issue_state.return_value = "OPEN"
+        self.report_failure(2)
+        self.report_failure(3)
+        self.gh.create_issue.return_value = "https://github.com/x/y/issues/100"
+        self.report_failure(4, code="command_failed")
+        self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        self.assertEqual(json.loads(self.led.get_kv("post-merge-consecutive:p"))["count"], 1)
+        self.assertEqual(self.gh.create_issue.call_count, 2)
+
+    @mock.patch("mahler.notify.send")
+    def test_post_merge_pass_resets_consecutive_failure_count(self, ping):
+        self.report_failure(2)
+        self.through_live()
+        self.phase()
+        self.assertEqual(self.row()["status"], "PASS")
+        self.assertEqual(json.loads(self.led.get_kv("post-merge-consecutive:p"))["count"], 0)
+        self.report_failure(3)
+        self.tick()  # old PASS delivery must not erase a newer failure
+        self.assertEqual(json.loads(self.led.get_kv("post-merge-consecutive:p"))["count"], 1)
+
+    def test_post_merge_register_skips_post_merge_failure_bugs(self):
+        self.led.con.execute("DELETE FROM post_merge_checks")
+        for fields in ({"issue_body": "<!-- mahler:post-merge-failure project=p -->"},
+                       {"title": "Post-merge live fail: p#2", "issue_body": "## Plan\nFix it"}):
+            self.led.upsert_item("p", 1, **fields)
+            self.register()
+            self.assertIsNone(self.row())
+
+    def test_raw_post_merge_bug_held_when_upstream_cause_open(self):
+        from mahler import tick
+        self.led.upsert_item("p", 2, state="ready")
+        body = "<!-- mahler:post-merge-failure project=p -->\nFailure notice"
+        policy = self.ctx.policy("p")
+        for state in ("inbox", "ready"):
+            with self.subTest(state=state):
+                self.led.upsert_item("p", 99, state=state, issue_body=body, depends="[2]")
+                candidates = tick._candidates(self.ctx, [policy])
+                self.assertNotIn(99, [it["number"] for _, _, it in candidates])
+                self.assertTrue(any(h["kind"] == "upstream_cause" and h["number"] == 99
+                                    for h in self.ctx.holds))
+        self.led.upsert_item("p", 2, state="done")
+        self.assertIn(99, [it["number"] for _, _, it in tick._candidates(self.ctx, [policy])])
+        self.led.upsert_item("p", 2, state="ready")
+        self.led.upsert_item("p", 99, state="inbox", issue_body=body + "\n## Plan\nFix cause")
+        self.assertIn(99, [it["number"] for _, _, it in tick._candidates(self.ctx, [policy])])
+
     def test_auto_revert_opt_in_prepares_revert_and_recovers_without_duplicates(self):
         self.led.upsert_item("p", 1, state="shipped")
         self.led.add_uat("p", 1, 42, SHA, "test-feature", "needs nothing")
