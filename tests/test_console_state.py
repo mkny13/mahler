@@ -938,6 +938,25 @@ class WaitingStateTests(unittest.TestCase):
                 self.assertIn("Held &lt;change&gt;", html)
                 self.assertIn("github", html)
 
+    def test_stuck_rate_state_and_render(self):
+        from test_serve import make_cfg
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        led.event("state", "mahler", 1, "working -> failed (CI red)")
+        led.event("state", "mahler", 2, "working -> done")
+        led.event("state", "other", 3, "working -> done")
+        snap = state.build(make_cfg(), led)
+        rate = snap["stuck_rate"]
+        self.assertEqual((rate["stuck"], rate["done"], rate["percent"]), (1, 2, 50))
+        self.assertEqual(rate["causes"], {"ci_failed": 1})
+        scoped = state.build(make_cfg(), led, project_scope="mahler")["stuck_rate"]
+        self.assertEqual(scoped["done"], 1)
+        for layout, sel in (("desktop", {"view": "now"}), ("phone", {"tab": "now"})):
+            html = page.app(snap, layout, **sel)
+            self.assertIn("1 stuck / 2 done = 50%", html)
+            self.assertIn("target &lt; 5%", html)
+            self.assertIn("ci_failed 1", html)
+
     def test_wait_retry_uses_existing_answer_path_and_rejects_other_text(self):
         from test_serve import make_cfg
         from mahler.console import outbox

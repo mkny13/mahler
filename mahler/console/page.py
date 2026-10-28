@@ -997,11 +997,25 @@ def _desktop(s, view):
     return f'<div class="dk">{"".join(rail)}{main}{_d_side(s)}</div>'
 
 
+def _stuck_rate(s):
+    rate = s.get("stuck_rate")
+    if not rate:
+        return ""
+    pct = "n/a" if rate["percent"] is None else f'{rate["percent"]:.0f}%'
+    causes = ", ".join(f"{c} {n}" for c, n in
+                       sorted(rate["causes"].items(), key=lambda p: (-p[1], p[0]))) or "none"
+    return (f'<section class="sect"><h3 class="lbl">Stuck rate · 7 days</h3><div class="rows">'
+            f'<div class="row"><div class="body">{rate["stuck"]} stuck / {rate["done"]} done = '
+            f'{e(pct)} (target &lt; 5%)<div class="meta">by cause: {e(causes)}</div></div></div>'
+            '</div></section>')
+
+
 def _conductor_waits(s):
     rows = s.get("conductor_waits", [])
     if not rows:
-        return ""
-    out = [f'<section class="sect"><h3 class="lbl">Waiting on the world · {len(rows)}</h3><div class="rows">']
+        return _stuck_rate(s)
+    out = [_stuck_rate(s),
+           f'<section class="sect"><h3 class="lbl">Waiting on the world · {len(rows)}</h3><div class="rows">']
     for row in rows:
         out.append(
             f'<div class="row"><div class="body">{_a(row["url"], row["ref"])} '

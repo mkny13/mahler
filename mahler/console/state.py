@@ -133,6 +133,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
                                   url=_issue_url(cfg, row["project"], row["number"]))
                             for row in daily_digest.conductor_waits(led)
                             if row["project"] in project_names],
+        "stuck_rate": daily_digest.stuck_rate(led, now, project=project_scope),
         "needs_count": sum(n["pending"] is None for n in needs),
         "uat": uat,
         "sessions": _uat_sessions(uat),

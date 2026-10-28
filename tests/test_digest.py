@@ -375,3 +375,16 @@ class NetBacklogTests(unittest.TestCase):
         self.assertEqual(digest.backlog_line("p", net),
                          "p: 0 (only 5h of history) / 0 (only 5h of history)"
                          " / 0 (only 5h of history) (24h/7d/30d)")
+
+
+class StuckRateScopeTests(unittest.TestCase):
+    def test_project_filter(self):
+        clock = Clock()
+        led = Ledger(":memory:", clock=clock)
+        led.event("state", "a", 1, "working -> done")
+        led.event("state", "b", 2, "working -> failed (CI red)")
+        led.event("state", "b", 3, "working -> done")
+        self.assertEqual(digest.stuck_rate(led, clock.t)["done"], 2)
+        scoped = digest.stuck_rate(led, clock.t, project="a")
+        self.assertEqual((scoped["stuck"], scoped["done"]), (0, 1))
+        led.close()
