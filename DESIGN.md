@@ -2732,7 +2732,8 @@ work.
 ### D43 — Operator-started discussions: issue-only workers (mahler#921, #922)
 
 Owner-approved scope 2026-10-10 in #921; decision ID allocated with
-`mahler next-id mahler D` for #922. This is a design contract, not shipped execution.
+`mahler next-id mahler D` for #922. The design and its issue-only discussion worker
+are shipped and approved; #925 delivered the production console panel.
 
 D15 and D27 permit a supervised discussion worker beside the console, independent
 of the 60-second tick. Only an operator starts a turn. The HTTP server and tick make
@@ -2757,9 +2758,9 @@ not model claims, establish issue writes; durable mutation IDs reconcile retry a
 Owner answers and issue relationships survive edits. Worker failure cannot crash tick.
 
 The [phone](docs/console/screens/discuss-phone.svg) and
-[desktop](docs/console/screens/discuss-desktop.svg) mockups are proposals. Artifact
-work may merge independently; #925 must have Mike's explicit approval of the artifact
-commit revision before production panel code. Silence or closing #922 is not approval.
+[desktop](docs/console/screens/discuss-desktop.svg) mockups were approved as part of
+#925, and the production panel code is shipped. They document the delivered console
+experience alongside the v1 contract.
 
 
 ### D44 — Repo lesson candidates: portable, scanned, advisory until gated (mahler#1054, #1055)
