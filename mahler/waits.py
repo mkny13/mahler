@@ -313,6 +313,7 @@ def migrate_legacy(ctx, project):
     if ctx.dry_run or led.get_kv(gate):
         return 0
     moved = 0
+    skipped = False
     for item in led.items(project, ["needs_you", "failed"]):
         n = item["number"]
         try:
@@ -345,11 +346,18 @@ def migrate_legacy(ctx, project):
                     resume = "verifying"
                     wake = {"sha": claim.get("base_sha")}
                 else:
-                    wake = {"sha": _inconclusive_sha(ctx, project, item)}
+                    sha = _inconclusive_sha(ctx, project, item)
+                    if sha is None:
+                        # Do not strand the item in a wait whose wake cannot reset
+                        # the old review state; retry migration on the next tick.
+                        skipped = True
+                        continue
+                    wake = {"sha": sha}
             hold(led, project, n, cause, f"migrated: {text}", resume=resume, wake=wake)
             moved += 1
             ctx.say(f"{project}#{n}: stranded {item['state']} → waiting ({cause})")
         except Exception as exc:  # noqa: BLE001 — one item must not stop the migration
             ctx.say(f"{project}#{n}: wait migration skipped — {exc}")
-    led.set_kv(gate, "1")
+    if not skipped:
+        led.set_kv(gate, "1")
     return moved
