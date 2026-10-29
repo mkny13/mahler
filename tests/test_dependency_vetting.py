@@ -692,6 +692,29 @@ class GradleCatalogTests(unittest.TestCase):
                                opener=self.google_opener(vulnerable=True))
         self.assertTrue(reason)
 
+    def test_google_date_evidence_and_pom_fallback(self):
+        clean = self.google_opener()
+        for stamp, blocked in (("Sun, 18 Oct 2026 00:00:00 GMT", True),
+                               ("Wed, 01 Jan 2020 00:00:00 GMT", False),
+                               (None, None)):
+            def opener(request, timeout):
+                response = clean(request, timeout)
+                if request.get_method() == "HEAD":
+                    response.headers = {"Last-Modified": stamp}
+                elif request.full_url.endswith(".pom"):
+                    raise HTTPError(request.full_url, 404, "not found", None, None)
+                return response
+            with self.subTest(stamp=stamp):
+                if stamp is None:
+                    with self.assertRaises(vetting.VettingError):
+                        vetting.vet({}, self.files(), now=NOW, opener=opener)
+                else:
+                    findings, reason = vetting.vet({}, self.files(), now=NOW, opener=opener)
+                    self.assertEqual(bool(reason), blocked)
+                    self.assertIn("Google Maven namespace", findings[0].publisher)
+                    self.assertIn("dl.google.com", findings[0].source)
+                    self.assertIn("upper bound", findings[0].report())
+
     def test_google_missing_or_mismatched_history_fails_closed(self):
         for bad in ("<metadata/>", "<broken", '<!DOCTYPE x><metadata/>'):
             with self.assertRaises(vetting.VettingError):
