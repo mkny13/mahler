@@ -641,6 +641,21 @@ class GradleCatalogTests(unittest.TestCase):
         formatted = {p: t + "\n# comment" for p, t in self.files().items()}
         self.assertEqual(vetting.changed_dependencies(self.files(), formatted), [])
 
+    def test_catalog_bump_ignores_unchanged_bom_managed_aliases(self):
+        def catalog(cast_version):
+            return {"gradle/libs.versions.toml": (
+                '[versions]\n'
+                f'cast = "{cast_version}"\n'
+                'compose-bom = "2026.10.00"\n'
+                '[libraries]\n'
+                'androidx-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }\n'
+                'androidx-ui = { group = "androidx.compose.ui", name = "ui" }\n'
+                'cast = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "cast" }\n')}
+
+        deps = vetting.changed_dependencies(catalog("22.3.1"), catalog("23.0.0"))
+        self.assertEqual([(dep.name, dep.version) for dep in deps],
+                         [("com.google.android.gms:play-services-cast-framework", "23.0.0")])
+
     def test_catalog_forms_and_ambiguous_versions(self):
         for entry in ('{ group="org.example", name="demo", version="1.2.3" }',
                       '"org.example:demo:1.2.3"'):
