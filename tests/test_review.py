@@ -395,7 +395,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         ctx.say = say_mock
         view = {"headRefOid": "head1", "statusCheckRollup": [{"state": "SUCCESS"}]}
         with mock.patch.object(ship, "_merge_queued") as merge, \
-                mock.patch.object(ship, "_start_review_run") as start:
+                mock.patch.object(ship, "_start_review_run") as start, \
+                mock.patch.object(ship, "_vet_pr_dependencies", return_value=True):
             ship._review_gate(ctx, "x", self.led.item("x", 5), 88, view)
         merge.assert_not_called()
         start.assert_not_called()
@@ -439,7 +440,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         view = {"headRefOid": "head1", "statusCheckRollup": [{"state": "SUCCESS"}]}
         with mock.patch.object(review, "file_followups", return_value=True), \
-                mock.patch.object(ship, "_merge_queued") as merge:
+                mock.patch.object(ship, "_merge_queued") as merge, \
+                mock.patch.object(ship, "_vet_pr_dependencies", return_value=True):
             ship._review_gate(ctx, "x", self.led.item("x", 5), 88, view)
         merge.assert_called_once()
 
@@ -459,7 +461,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
         view = {"headRefOid": "head1", "statusCheckRollup": [{"state": "SUCCESS"}]}
         with mock.patch.object(ship, "_review_triggered_fix") as fix, \
-                mock.patch.object(ship, "_unchanged_done_review", return_value=False):
+                mock.patch.object(ship, "_unchanged_done_review", return_value=False), \
+                mock.patch.object(ship, "_vet_pr_dependencies", return_value=True):
             ship._review_gate(ctx, "x", self.led.item("x", 5), 88, view)
         fix.assert_called_once()
         self.assertIn("defect found", fix.call_args.args[-1])

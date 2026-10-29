@@ -6,6 +6,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
@@ -448,7 +449,10 @@ def _resolved_dependencies(path, text):
             if not line or line.startswith("#") or line.startswith("empty="):
                 continue
             coordinate = line.split("=", 1)[0]
-            match = re.fullmatch(r"([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([0-9][A-Za-z0-9._-]*)", coordinate)
+            match = re.fullmatch(
+                r"([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([vV]?[0-9][A-Za-z0-9._-]*)",
+                coordinate,
+            )
             if not match or match.group(3).upper().endswith("-SNAPSHOT"):
                 raise VettingError(f"unresolved Gradle coordinate in {path}: {coordinate}")
             group, artifact, version = match.groups()
@@ -490,6 +494,54 @@ def _changed_resolved_dependencies(before, after):
     return list(changed.values())
 
 
+def _catalog_dependencies(text, path):
+    data = tomllib.loads(text)
+    pins = {}
+    for alias, entry in data.get("libraries", {}).items():
+        if isinstance(entry, str):
+            coordinate = entry
+        elif isinstance(entry, dict):
+            module = entry.get("module")
+            if module is None:
+                group, name = entry.get("group"), entry.get("name")
+                if not isinstance(group, str) or not isinstance(name, str):
+                    raise VettingError(f"unresolved Gradle catalog module in {path}: {alias}")
+                module = f"{group}:{name}"
+            if not isinstance(module, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", module):
+                raise VettingError(f"unresolved Gradle catalog module in {path}: {alias}")
+            # A catalog can omit a library version when a platform/BOM supplies it.
+            # Such aliases contain no independently vettable pin; the platform alias's
+            # own exact version is parsed and compared separately.
+            if "version" not in entry:
+                continue
+            version = entry["version"]
+            if isinstance(version, dict) and set(version) == {"ref"}:
+                version = data.get("versions", {}).get(version["ref"])
+            if not isinstance(version, str):
+                raise VettingError(f"unresolved Gradle catalog version in {path}: {alias}")
+            coordinate = f"{module}:{version}"
+        else:
+            raise VettingError(f"invalid Gradle catalog library in {path}: {alias}")
+        parsed = _resolved_dependencies("gradle.lockfile", coordinate)
+        for name, dep in parsed.items():
+            if name in pins and pins[name] != dep:
+                raise VettingError(f"ambiguous Gradle catalog dependency in {path}: {name}")
+            pins[name] = dep
+    # Plugin marker artifacts use the same Maven coordinate convention.
+    for alias, entry in data.get("plugins", {}).items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            raise VettingError(f"unresolved Gradle catalog plugin in {path}: {alias}")
+        version = entry.get("version")
+        if isinstance(version, dict) and set(version) == {"ref"}:
+            version = data.get("versions", {}).get(version["ref"])
+        plugin = entry["id"]
+        if not isinstance(version, str):
+            raise VettingError(f"unresolved Gradle catalog plugin version in {path}: {alias}")
+        pins.update(_resolved_dependencies("gradle.lockfile", f"{plugin}:{plugin}.gradle.plugin:{version}"))
+    return pins
+
+
 def _changed_project_dependencies(before, after):
     """Return only added or changed direct dependencies, without network access."""
     for path in set(before) | set(after):
@@ -517,7 +569,7 @@ def _changed_project_dependencies(before, after):
             raise VettingError(f"unresolved Swift dependency manifest change without lockfile: {swift_manifests[0]}")
 
     gradle_manifests = [p for p in set(before) | set(after)
-                        if p.rsplit("/", 1)[-1] in _GRADLE_MANIFESTS
+                        if p.rsplit("/", 1)[-1] in _GRADLE_MANIFESTS - {"libs.versions.toml"}
                         and before.get(p) != after.get(p)]
     if gradle_manifests:
         gradle_locks = [p for p in set(before) | set(after)
@@ -538,6 +590,21 @@ def _changed_project_dependencies(before, after):
     old_versions = {"npm": _npm_versions(before, old_direct), "pypi": _python_versions(before, old_direct)}
     new_versions = {"npm": _npm_versions(after, new_direct), "pypi": _python_versions(after, new_direct)}
     changed = _changed_resolved_dependencies(before, after)
+    for path in set(before) | set(after):
+        if path.rsplit("/", 1)[-1] != "libs.versions.toml" or before.get(path) == after.get(path):
+            continue
+        old = _catalog_dependencies(before[path], path) if path in before else {}
+        new = _catalog_dependencies(after[path], path) if path in after else {}
+        for name, dep in new.items():
+            if old.get(name) != dep:
+                for lock, text in after.items():
+                    if (lock.endswith("gradle.lockfile") or
+                            re.search(r"(?:^|/)gradle/dependency-locks/[^/]+\.lockfile$", lock)):
+                        locked = _resolved_dependencies(lock, text).get(name)
+                        if locked and locked.version != dep.version:
+                            raise VettingError(f"stale Gradle lockfile for {name}: {lock}")
+                if dep not in changed:
+                    changed.append(dep)
     for key, (name, declaration) in new_direct.items():
         old = old_direct.get(key)
         version = new_versions[key[0]].get(key[1])
@@ -689,14 +756,14 @@ def _request_text(url, opener):
         raise VettingError(f"registry/advisory lookup failed: {exc}") from None
 
 
-def _pom_metadata(pom_url, group, artifact, opener):
+def _pom_metadata(pom_url, group, artifact, opener, repository="Maven Central"):
     """Publisher and source declared in the artifact's POM, else Maven fallbacks.
 
     The POM is only trusted when it names the requested artifact. An absent,
     oversized, unparsable or mismatched POM falls back to the namespace and the
     POM URL, which the review recipe treats as unverified metadata.
     """
-    fallback = (f"Maven Central namespace {group}", pom_url)
+    fallback = (f"{repository} namespace {group}", pom_url)
     text = _request_text(pom_url, opener)
     if text is None or len(text) > _POM_LIMIT or "<!DOCTYPE" in text or "<!ENTITY" in text:
         return fallback
@@ -763,12 +830,16 @@ def _maven_first_publication(group, artifact, dep, opener):
         url = ("https://search.maven.org/solrsearch/select?q=" + quote(query, safe="")
                + f"&core=gav&rows=200&start={start}&wt=json")
         result = _request_json(url, opener=opener)
+        if result is None and start == 0:
+            return None
         response = result.get("response", {}) if isinstance(result, dict) else {}
         page = response.get("docs")
         total = response.get("numFound")
         if (not isinstance(page, list) or not isinstance(total, int) or isinstance(total, bool)
                 or (not page and total)):
             raise VettingError(f"missing Maven artifact history: {dep.name}@{dep.version}")
+        if start == 0 and total == 0 and not page:
+            return None
         docs.extend(page)
         start += len(page)
         if start >= total:
@@ -792,6 +863,47 @@ def _maven_first_publication(group, artifact, dep, opener):
     if sum(1 for doc in docs if doc.get("v") == dep.version) != 1:
         raise VettingError(f"missing Maven artifact metadata: {dep.name}@{dep.version}")
     return min(stamps)
+
+
+_GOOGLE_MAVEN = "https://dl.google.com/dl/android/maven2/"
+
+
+def _google_first_publication(group, artifact, dep, opener):
+    """Conservative first-publication upper bound from version POM mtimes.
+
+    Google supplies no release timestamps in maven-metadata.xml. Its lastUpdated
+    dates the entire index, not the package. The oldest version POM modification
+    is evidence the package existed by that date, even if it was republished.
+    """
+    base = _GOOGLE_MAVEN + group.replace(".", "/") + f"/{artifact}/"
+    text = _request_text(base + "maven-metadata.xml", opener)
+    if not text or len(text) > _POM_LIMIT or "<!DOCTYPE" in text or "<!ENTITY" in text:
+        raise VettingError(f"missing Google Maven artifact history: {dep.name}")
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        raise VettingError(f"invalid Google Maven artifact history: {dep.name}") from None
+    versions = [v.text for v in root.findall("versioning/versions/version")]
+    if (root.findtext("groupId") != group or root.findtext("artifactId") != artifact
+            or versions.count(dep.version) != 1 or len(versions) > 1000
+            or any(not isinstance(v, str) or not re.fullmatch(r"[0-9][A-Za-z0-9._-]*", v)
+                   for v in versions)):
+        raise VettingError(f"invalid Google Maven artifact history: {dep.name}@{dep.version}")
+    dates = []
+    for version in versions:
+        url = base + f"{version}/{artifact}-{version}.pom"
+        request = Request(url, method="HEAD", headers={"User-Agent": "Mahler dependency vetting"})
+        try:
+            with (opener or urlopen)(request, timeout=20) as response:
+                date = parsedate_to_datetime(response.headers.get("Last-Modified", ""))
+                if date.tzinfo is None:
+                    raise ValueError("timezone missing")
+                dates.append(date.astimezone(timezone.utc))
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
+            if isinstance(exc, HTTPError):
+                exc.close()
+            raise VettingError(f"missing Google Maven publication date: {dep.name}@{version}") from None
+    return min(dates)
 
 
 def _resolved_metadata(dep, opener):
@@ -819,9 +931,13 @@ def _resolved_metadata(dep, opener):
     else:
         group, artifact = dep.name.split(":")
         published = _maven_first_publication(group, artifact, dep, opener)
-        pom_url = ("https://repo1.maven.org/maven2/" + group.replace(".", "/")
+        repository, base = "Maven Central", "https://repo1.maven.org/maven2/"
+        if published is None:
+            published = _google_first_publication(group, artifact, dep, opener)
+            repository, base = "Google Maven", _GOOGLE_MAVEN
+        pom_url = (base + group.replace(".", "/")
                    + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
-        publisher, source = _pom_metadata(pom_url, group, artifact, opener)
+        publisher, source = _pom_metadata(pom_url, group, artifact, opener, repository)
     if published is None:
         raise VettingError(f"missing publication date: {dep.ecosystem} {dep.name}@{dep.version}")
     return published, publisher, source

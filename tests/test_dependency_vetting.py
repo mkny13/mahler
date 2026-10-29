@@ -368,6 +368,8 @@ class SwiftGradleTests(unittest.TestCase):
 
         def open_request(request, timeout):
             url = request.full_url
+            if url.startswith("https://dl.google.com/"):
+                raise HTTPError(url, 404, "not found", None, None)
             if broken and broken in url:
                 raise URLError("offline")
             if url.endswith(".pom"):
@@ -620,6 +622,109 @@ class SwiftGradleTests(unittest.TestCase):
             files = gradle_files() if target == "search.maven.org" else swift_files()
             with self.assertRaises(vetting.VettingError):
                 vetting.vet({}, files, opener=opener)
+
+
+class GradleCatalogTests(unittest.TestCase):
+    @staticmethod
+    def files(version="23.0.0"):
+        return {"gradle/libs.versions.toml": (
+            '[versions]\ncast = "' + version + '"\n[libraries]\n'
+            'cast = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "cast" }\n')}
+
+    def test_catalog_add_bump_unchanged_removal(self):
+        for before in ({}, self.files("22.3.1")):
+            deps = vetting.changed_dependencies(before, self.files())
+            self.assertEqual([(d.name, d.version) for d in deps],
+                             [("com.google.android.gms:play-services-cast-framework", "23.0.0")])
+        self.assertEqual(vetting.changed_dependencies(self.files(), self.files()), [])
+        self.assertEqual(vetting.changed_dependencies(self.files(), {}), [])
+        formatted = {p: t + "\n# comment" for p, t in self.files().items()}
+        self.assertEqual(vetting.changed_dependencies(self.files(), formatted), [])
+
+    def test_catalog_bump_ignores_unchanged_bom_managed_aliases(self):
+        def catalog(cast_version):
+            return {"gradle/libs.versions.toml": (
+                '[versions]\n'
+                f'cast = "{cast_version}"\n'
+                'compose-bom = "2026.10.00"\n'
+                '[libraries]\n'
+                'androidx-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }\n'
+                'androidx-ui = { group = "androidx.compose.ui", name = "ui" }\n'
+                'cast = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "cast" }\n')}
+
+        deps = vetting.changed_dependencies(catalog("22.3.1"), catalog("23.0.0"))
+        self.assertEqual([(dep.name, dep.version) for dep in deps],
+                         [("com.google.android.gms:play-services-cast-framework", "23.0.0")])
+
+    def test_catalog_bump_ignores_unchanged_exact_version_with_v_prefix(self):
+        def catalog(cast_version):
+            return {"gradle/libs.versions.toml": (
+                '[versions]\n'
+                f'cast = "{cast_version}"\n'
+                'newpipe = "v0.26.5"\n'
+                '[libraries]\n'
+                'cast = { module = "com.google.android.gms:play-services-cast-framework", version.ref = "cast" }\n'
+                'newpipe = { module = "com.github.TeamNewPipe:NewPipeExtractor", version.ref = "newpipe" }\n')}
+
+        deps = vetting.changed_dependencies(catalog("22.3.1"), catalog("23.0.0"))
+        self.assertEqual([(dep.name, dep.version) for dep in deps],
+                         [("com.google.android.gms:play-services-cast-framework", "23.0.0")])
+
+    def test_catalog_forms_and_ambiguous_versions(self):
+        for entry in ('{ group="org.example", name="demo", version="1.2.3" }',
+                      '"org.example:demo:1.2.3"'):
+            deps = vetting.changed_dependencies({}, {"gradle/libs.versions.toml":
+                                                     '[libraries]\ndemo = ' + entry})
+            self.assertEqual(deps[0].version, "1.2.3")
+        for version in ("1.+", "latest.release", "1.0-SNAPSHOT"):
+            with self.assertRaises(vetting.VettingError):
+                vetting.changed_dependencies({}, self.files(version))
+        with self.assertRaises(vetting.VettingError):
+            vetting.changed_dependencies({}, {"gradle/libs.versions.toml":
+                '[libraries]\nx = { module="org.example:demo", version.ref="missing" }'})
+
+    def google_opener(self, *, bad=None, vulnerable=False):
+        def opener(request, timeout):
+            url = request.full_url
+            if "search.maven.org" in url:
+                return Response({"response": {"numFound": 0, "docs": []}})
+            if url.endswith("maven-metadata.xml"):
+                return Response(bad or '<metadata><groupId>com.google.android.gms</groupId>'
+                    '<artifactId>play-services-cast-framework</artifactId><versioning><versions>'
+                    '<version>9.2.0</version><version>23.0.0</version></versions>'
+                    '<lastUpdated>20261019000000</lastUpdated></versioning></metadata>', raw=True)
+            if request.get_method() == "HEAD":
+                response = Response("")
+                response.headers = {"Last-Modified": "Wed, 01 Jan 2020 00:00:00 GMT"}
+                return response
+            if url.endswith(".pom"):
+                return Response('<project><groupId>com.google.android.gms</groupId>'
+                    '<artifactId>play-services-cast-framework</artifactId>'
+                    '<organization><name>Google</name></organization>'
+                    '<scm><url>https://example.test/cast</url></scm></project>', raw=True)
+            if "api.osv.dev" in url:
+                self.assertEqual(json.loads(request.data)["package"], {
+                    "ecosystem": "Maven", "name": "com.google.android.gms:play-services-cast-framework"})
+                return Response({"vulns": [{"id": "OSV-test", "database_specific": {
+                    "severity": "HIGH"}}]} if vulnerable else {})
+            raise AssertionError(url)
+        return opener
+
+    def test_google_maven_catalog_vetting(self):
+        findings, reason = vetting.vet(self.files("22.3.1"), self.files(),
+                                      now=NOW, opener=self.google_opener())
+        self.assertIsNone(reason)
+        self.assertIn("2020-01-01", findings[0].first_published)
+        self.assertEqual(findings[0].publisher, "Google")
+        self.assertEqual(findings[0].source, "https://example.test/cast")
+        _, reason = vetting.vet({}, self.files(), now=NOW,
+                               opener=self.google_opener(vulnerable=True))
+        self.assertTrue(reason)
+
+    def test_google_missing_or_mismatched_history_fails_closed(self):
+        for bad in ("<metadata/>", "<broken", '<!DOCTYPE x><metadata/>'):
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, self.files(), now=NOW, opener=self.google_opener(bad=bad))
 
 
 ECOSYSTEM_FILES = {"npm": npm_files, "pypi": python_files,
