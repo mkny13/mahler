@@ -337,6 +337,12 @@ def _raw_post_merge_blocked(ctx, project, item, enabled, done):
     return True
 
 
+def _parked_ping(ctx, key, title, message, project, number):
+    if not ctx.dry_run and not ctx.led.get_kv(key):
+        ctx.ping(title, message, project=project, number=number, tags="warning")
+        ctx.led.set_kv(key, iso(ctx.led.now()))
+
+
 def _candidates(ctx, projects):
     """One global candidate list of (pol, role, item) across all enabled
     projects — sorts and settled builds compete for the same slots (mahler#9)."""
@@ -367,6 +373,14 @@ def _candidates(ctx, projects):
                 continue
             if ci_blockers.holds(blocker, it["number"]):
                 ctx.hold("ci_blocker", project=name, number=it["number"], on=ci_blockers.label(blocker))
+                parked = blocker.get("parked_number") or blocker.get("number")
+                target = led.item(name, parked) if parked else None
+                if target is not None and target["state"] in ci_blockers.PARKED_STATES:
+                    held = [f"#{i['number']}" for i in led.items(name, ["ready"])
+                            if ci_blockers.holds(blocker, i['number'])]
+                    _parked_ping(ctx, f"ci_blocker_parked_ping:{name}:{parked}",
+                                 f"{name}: queue held behind parked CI blocker #{parked}",
+                                 "Held items: " + ", ".join(held), name, parked)
                 continue
             sorted_at = parse(it["sorted_at"])
             if sorted_at and led.now() - sorted_at < timedelta(minutes=p["settle_minutes"]):
@@ -378,6 +392,15 @@ def _candidates(ctx, projects):
                     if dependency_target(d, name, enabled) not in done]
             if deps:
                 ctx.hold("deps", project=name, number=it["number"], on=deps)
+                for dep in deps:
+                    target = dependency_target(dep, name, enabled)
+                    item = led.item(*target) if target else None
+                    if item is not None and item["state"] in ci_blockers.PARKED_STATES:
+                        dep_project, dep_number = target
+                        _parked_ping(ctx,
+                                     f"dep_parked_ping:{name}#{it['number']}:{dep_project}#{dep_number}",
+                                     f"{name} #{it['number']} held behind parked dependency #{dep_number}",
+                                     f"{dep_project}#{dep_number} is {item['state']}.", name, it['number'])
                 _observe(ctx, p, "build", it, "deps")
                 continue
             work.append((p, "build", it))

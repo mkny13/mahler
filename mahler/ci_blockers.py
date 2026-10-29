@@ -7,6 +7,8 @@ from .ledger import iso
 _REFERENCE = re.compile(
     r"\b(?:waiting for|blocked by|blocked on|depends on)\s+"
     r"(?:(?P<project>[\w./-]+)#|#)(?P<number>\d+)\b", re.IGNORECASE)
+PARKED_STATES = ("needs_you", "failed", "parked")
+
 REPO_WIDE = re.compile(r"\b(?:all prs|every pr|repo-wide|broken on main)\b", re.IGNORECASE)
 
 
@@ -40,10 +42,24 @@ def resolved(led, project, number):
 def active(led, project, *, clear=True):
     key = f"ci_blocker:{project}"
     record = json.loads(led.get_kv(key) or "null")
-    if record and record.get('number') and resolved(led, project, record['number']):
+    number = (record.get('number') or record.get('parked_number')) if record else None
+    if number and resolved(led, project, number):
         if clear:
             clear_hold(led, project, record)
         return None
+    if number:
+        item = led.item(project, number)
+        if item is not None:
+            previous = dict(record)
+            if item['state'] in PARKED_STATES:
+                # Keep the cause for diagnostics, but never exempt a parked item
+                # as though it were an active repair. Refresh may adopt a fix.
+                record['parked_number'] = number
+                record['number'] = None
+            elif record.get('parked_number'):
+                record['number'] = record.pop('parked_number')
+            if clear and record != previous:
+                led.set_kv(key, json.dumps(record))
     return record
 
 
@@ -69,6 +85,7 @@ def record(ending, numbers):
         if unresolved:
             e.led.set_kv(f"ci_blocker:{e.project}", json.dumps({
                 'number': unresolved[0], 'reason': e.rest, 'since': iso(e.led.now())}))
+            active(e.led, e.project)
     return deps
 
 
@@ -78,7 +95,7 @@ def holds(blocker, number):
 
 
 def label(blocker):
-    return [blocker.get('number') or blocker.get('bot_pr') or blocker.get('check')]
+    return [blocker.get('number') or blocker.get('parked_number') or blocker.get('bot_pr') or blocker.get('check')]
 
 
 def repo_wide_checks(red_by_pr, base_red):

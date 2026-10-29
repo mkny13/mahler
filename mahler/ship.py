@@ -634,7 +634,7 @@ def refresh_ci_blocker(ctx, project):
     """Clear a fact-based hold once its bot PR is gone or the base is green again."""
     led = ctx.led
     blocker = ci_blockers.active(led, project)
-    if not blocker or not blocker.get("check"):
+    if not blocker:
         return blocker
     gh = ctx.gh(project)
     try:
@@ -644,10 +644,32 @@ def refresh_ci_blocker(ctx, project):
         base = blocker.get("base") or ctx.policy(project).get("base", "main")
         rollup = gh.base_checks(base)
         required = _required_checks(ctx, project, base)
-        if (blocker["check"] not in gh_module.failing_checks(rollup, required)
-                and checks_state(rollup, required=required or None) in ("green", "none")):
+        if checks_state(rollup, required=required or None) in ("green", "none"):
             ci_blockers.clear_hold(led, project, blocker)
             return None
+        if blocker.get("parked_number"):
+            # Agent reports may have no structured check name. A path-named review
+            # follow-up can identify the repair even when the blocker reason is generic.
+            terms = set(gh_module.failing_checks(rollup, required))
+            if blocker.get("check"):
+                terms.add(blocker["check"])
+            terms.update(re.findall(r"[\w.-]+(?:/[\w.-]+)+\.[\w]+", blocker.get("reason", "")))
+            for item in led.items(project, ["ready"]):
+                title = item["title"] or ""
+                text = f"{title} {item['issue_body'] or ''}".casefold()
+                matches_failure = any(
+                    re.search(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)", text)
+                    for term in terms)
+                path_named_follow_up = (
+                    re.search(r"\breview follow[- ]up\b", title, re.IGNORECASE)
+                    and re.search(r"[\w.-]+(?:/[\w.-]+)+\.[\w]+", title))
+                if ((matches_failure or path_named_follow_up)
+                        and not any(_pr_fails_check(gh, item['pr'], check, required)
+                                    for check in terms)):
+                    blocker['number'] = item['number']
+                    blocker.pop('parked_number', None)
+                    led.set_kv(f"ci_blocker:{project}", json.dumps(blocker))
+                    break
     except (GHError, ValueError, TypeError, AttributeError) as exc:
         ctx.say(f"{project}: CI blocker refresh failed — {exc}")
     return blocker
@@ -685,7 +707,7 @@ def detect_ci_blocker(ctx, project):
         number = None
         bot_pr = None
         for it in led.items(project):
-            if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
+            if (it["state"] in ("inbox", "ready", "working", "verifying")
                     and check.casefold() in (it["title"] or "").casefold()
                     and it["pr"] not in red_by_pr
                     and not _pr_fails_check(gh, it["pr"], check, required)):
@@ -695,7 +717,7 @@ def detect_ci_blocker(ctx, project):
             bot_pr = _bot_pr(gh, led, project, check)
         if number is None and not bot_pr:
             for it in led.items(project):
-                if (it["state"] in ("inbox", "ready", "working", "verifying", "needs_you", "parked")
+                if (it["state"] in ("inbox", "ready", "working", "verifying")
                         and it["pr"] not in red_by_pr
                         and not _pr_fails_check(gh, it["pr"], check, required)):
                     number = it["number"]

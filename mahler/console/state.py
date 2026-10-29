@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import api_credits, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
+from .. import api_credits, ci_blockers, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -1728,6 +1728,20 @@ def _project_hold_reason(cfg, h, pending, hot, led):
     """Project-wide holds use current leases and session state."""
     kind, project = h.get("kind"), h.get("project")
     pol = config.project_policy(cfg, project)
+    if kind == "ci_blocker" and led:
+        blocker = ci_blockers.active(led, project, clear=False)
+        if not blocker:
+            return None
+        number = blocker.get("number") or blocker.get("parked_number")
+        item = led.item(project, number) if number else None
+        parked = (f" ({item['state']})" if item is not None
+                  and item['state'] in ci_blockers.PARKED_STATES else "")
+        ref = f" #{number}{parked}" if number else ""
+        return {"text": f"{project} waits for CI blocker{ref}: "
+                        f"{blocker.get('reason') or blocker.get('check') or 'repo-wide CI failure'}.",
+                "items": _reason_items(cfg, pending, [(project, i["number"])
+                          for i in pending[project] if i["state"] == "ready"
+                          and ci_blockers.holds(blocker, i["number"])])}
     if kind == "capacity":
         labels = []
         for holder in h.get("holders", []):
@@ -1785,9 +1799,18 @@ def _settling_hold_reasons(settling, now):
     return out
 
 
-def _dependency_hold_reasons(cfg, deps, pending):
+def _dependency_hold_reasons(cfg, deps, pending, led=None):
+    def label(dep, project):
+        ref = dependency_ref(dep, project)
+        target = dependency_target(dep, project, config.enabled_projects(cfg))
+        item = led.item(*target) if led and target else None
+        if item is not None and item['state'] in ci_blockers.PARKED_STATES:
+            ref += f" ({item['state']})"
+        return ref
+
     out = []
-    if len(deps) > 3:
+    parked = any(" (" in label(d, h['project']) for h in deps for d in h['on'])
+    if len(deps) > 3 and not parked:
         reason = {"text": f"{len(deps)} items wait for other issues to close.",
                   "items": _reason_items(cfg, pending,
                                          [(h["project"], h["number"])
@@ -1797,7 +1820,7 @@ def _dependency_hold_reasons(cfg, deps, pending):
         out.append(reason)
     else:
         for h in deps:
-            refs = _join(dependency_ref(d, h["project"]) for d in h["on"])
+            refs = _join(label(d, h["project"]) for d in h["on"])
             out.append({"text": f"{_ref(h['project'], h['number'])} waits for {refs} to close.",
                         "items": _reason_items(cfg, pending, [(h["project"], h["number"])])})
     return out
@@ -1830,7 +1853,7 @@ def _hold_reasons(cfg, holds, pending, hot, now, led=None):
     out.extend(_route_hold_reason(cfg, role, size, items, pending, now, led)
                for (role, size), items in routes.items())
     out.extend(_settling_hold_reasons(settling, now))
-    out.extend(_dependency_hold_reasons(cfg, deps, pending))
+    out.extend(_dependency_hold_reasons(cfg, deps, pending, led))
     return out
 
 
