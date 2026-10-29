@@ -376,7 +376,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
             "unknown",
         )
 
-    def test_console_and_ship_gate_agree_on_pending_review(self):
+    @mock.patch.object(ship, "_vet_pr_dependencies", return_value=True)
+    def test_console_and_ship_gate_agree_on_pending_review(self, _vet):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/5-feat", state="verifying",
                              labels=json.dumps(["size:m"]))
         rid = self.led.create_run(project="x", number=5, role="review", platform="claude",
@@ -423,7 +424,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
         merge.assert_called_once()
         start.assert_not_called()
 
-    def test_console_and_ship_gate_agree_on_passed_review(self):
+    @mock.patch.object(ship, "_vet_pr_dependencies", return_value=True)
+    def test_console_and_ship_gate_agree_on_passed_review(self, _vet):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/5-feat", state="verifying",
                              labels=json.dumps(["size:m"]))
         self.led.set_kv("ci:x#5:88", json.dumps({"state": "green", "sha": "head1"}))
@@ -443,7 +445,8 @@ class TestEffectiveReviewWithLedger(unittest.TestCase):
             ship._review_gate(ctx, "x", self.led.item("x", 5), 88, view)
         merge.assert_called_once()
 
-    def test_console_and_ship_gate_agree_on_failed_review(self):
+    @mock.patch.object(ship, "_vet_pr_dependencies", return_value=True)
+    def test_console_and_ship_gate_agree_on_failed_review(self, _vet):
         self.led.upsert_item("x", 5, pr=88, branch="mahler/5-feat", state="verifying",
                              labels=json.dumps(["size:m"]))
         self.led.set_kv("ci:x#5:88", json.dumps({"state": "green", "sha": "head1"}))
