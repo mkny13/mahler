@@ -498,8 +498,21 @@ def _catalog_dependencies(text, path):
         if isinstance(entry, str):
             coordinate = entry
         elif isinstance(entry, dict):
-            module = entry.get("module") or f"{entry.get('group', '')}:{entry.get('name', '')}"
-            version = entry.get("version")
+            module = entry.get("module")
+            if module is None:
+                group, name = entry.get("group"), entry.get("name")
+                if not isinstance(group, str) or not isinstance(name, str):
+                    raise VettingError(f"unresolved Gradle catalog module in {path}: {alias}")
+                module = f"{group}:{name}"
+            if not isinstance(module, str) or not re.fullmatch(
+                    r"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+", module):
+                raise VettingError(f"unresolved Gradle catalog module in {path}: {alias}")
+            # A catalog can omit a library version when a platform/BOM supplies it.
+            # Such aliases contain no independently vettable pin; the platform alias's
+            # own exact version is parsed and compared separately.
+            if "version" not in entry:
+                continue
+            version = entry["version"]
             if isinstance(version, dict) and set(version) == {"ref"}:
                 version = data.get("versions", {}).get(version["ref"])
             if not isinstance(version, str):
