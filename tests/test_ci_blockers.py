@@ -67,6 +67,16 @@ class ParkedBlockerTests(unittest.TestCase):
                     self.assertEqual([i['number'] for _, _, i in self.candidates()], [378])
                     self.assertEqual(self.led.item('x', 379)['state'], parked)
 
+    def test_generic_agent_blocker_adopts_path_named_review_follow_up(self):
+        self.blocker()
+        self.led.upsert_item(
+            'x', 378, state='ready',
+            title='Review follow-up: tests/github-contract.test.ts:135-163',
+            issue_body='Revisit the test failure.')
+        blocker = ship.refresh_ci_blocker(self.ctx, 'x')
+        self.assertEqual(blocker['number'], 378)
+        self.assertEqual([i['number'] for _, _, i in self.candidates()], [378])
+
     def test_parked_ci_blocker_notifies_owner(self):
         self.blocker()
         self.led.upsert_item('x', 263, state='ready')

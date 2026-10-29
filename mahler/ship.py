@@ -648,16 +648,22 @@ def refresh_ci_blocker(ctx, project):
             ci_blockers.clear_hold(led, project, blocker)
             return None
         if blocker.get("parked_number"):
-            # Agent reports may have no structured check name. Use current base
-            # failures and explicit file paths from the report as matching evidence.
+            # Agent reports may have no structured check name. A path-named review
+            # follow-up can identify the repair even when the blocker reason is generic.
             terms = set(gh_module.failing_checks(rollup, required))
             if blocker.get("check"):
                 terms.add(blocker["check"])
             terms.update(re.findall(r"[\w.-]+(?:/[\w.-]+)+\.[\w]+", blocker.get("reason", "")))
             for item in led.items(project, ["ready"]):
-                text = f"{item['title'] or ''} {item['issue_body'] or ''}".casefold()
-                if (any(re.search(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)", text)
-                        for term in terms)
+                title = item["title"] or ""
+                text = f"{title} {item['issue_body'] or ''}".casefold()
+                matches_failure = any(
+                    re.search(r"(?<!\w)" + re.escape(term.casefold()) + r"(?!\w)", text)
+                    for term in terms)
+                path_named_follow_up = (
+                    re.search(r"\breview follow[- ]up\b", title, re.IGNORECASE)
+                    and re.search(r"[\w.-]+(?:/[\w.-]+)+\.[\w]+", title))
+                if ((matches_failure or path_named_follow_up)
                         and not any(_pr_fails_check(gh, item['pr'], check, required)
                                     for check in terms)):
                     blocker['number'] = item['number']
