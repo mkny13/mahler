@@ -1150,13 +1150,28 @@ def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
         findings, blocked = dependency_vetting.vet(before, after)
     except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting failed; merge held: {exc}")
+        _park_dependency_vetting(ctx, project, item, pr, gh, view, str(exc))
         return False
     for finding in findings:
         ctx.say(f"{project}#{n}: PR #{pr} — {finding.report()}")
     if blocked:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting blocked merge: {blocked}")
+        _park_dependency_vetting(ctx, project, item, pr, gh, view, blocked)
         return False
     return True
+
+
+def _park_dependency_vetting(ctx, project, item, pr, gh, view, detail):
+    n, led = item["number"], ctx.led
+    reason = (f"PR #{pr} dependency vetting blocked: {detail}. "
+              "Provide resolvable exact dependency pins and publication/advisory evidence, "
+              "or replace the blocked dependency, then resume shipping.")
+    key = f"dependency-vetting:{project}#{n}:{pr}:{view.get('headRefOid', '')}"
+    if not led.get_kv(key):
+        gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
+        led.set_kv(key, "commented")
+    led.set_state(project, n, "parked", reason)
+    led.release(project, n, holder=CONDUCTOR)
 
 
 def _review_required(item):
@@ -1411,6 +1426,8 @@ def _review_gate(ctx, project, item, pr, view, required=None):
     if (not _review_required(item)
             and led.get_kv(f"reviewed-pr:{project}#{n}") != str(pr)):
         _merge_queued(ctx, project, item, pr, view, required)
+        return
+    if not _vet_pr_dependencies(ctx, project, item, pr, ctx.gh(project), view):
         return
     sha = view.get("headRefOid") or ""
     key = f"review:{project}#{n}"
