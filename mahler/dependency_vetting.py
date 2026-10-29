@@ -35,12 +35,13 @@ class Finding:
     advisories: tuple[str, ...]
     blocked: bool
     recent: bool
+    publication_basis: str = ""
 
     def report(self):
         advisories = "; ".join(self.advisories) if self.advisories else "none"
         return (f"{self.dependency.ecosystem} {self.dependency.name}@"
                 f"{self.dependency.version}: first published "
-                f"{self.first_published}; publisher {self.publisher}; "
+                f"{self.first_published}{self.publication_basis}; publisher {self.publisher}; "
                 f"source {self.source}; advisories {advisories}"
                 f"{' [BLOCKED]' if self.blocked else ''}")
 
@@ -721,7 +722,7 @@ def _metadata(dep, opener):
     first = min((d for d in dates if d), default=None)
     if first is None:
         raise VettingError(f"missing first-publication date: {dep.ecosystem} {dep.name}@{dep.version}")
-    return first, str(publisher), str(source)
+    return first, str(publisher), str(source), ""
 
 
 def _request_text(url, opener):
@@ -891,6 +892,7 @@ def _google_first_publication(group, artifact, dep, opener):
 
 
 def _resolved_metadata(dep, opener):
+    basis = ""
     if dep.ecosystem == "swift":
         repository = dep.name.removeprefix("https://github.com/")
         base = f"https://api.github.com/repos/{repository}"
@@ -919,12 +921,13 @@ def _resolved_metadata(dep, opener):
         if published is None:
             published = _google_first_publication(group, artifact, dep, opener)
             repository, base = "Google Maven", _GOOGLE_MAVEN
+            basis = " (upper bound from Google Maven POM Last-Modified)"
         pom_url = (base + group.replace(".", "/")
                    + f"/{artifact}/{dep.version}/{artifact}-{dep.version}.pom")
         publisher, source = _pom_metadata(pom_url, group, artifact, opener, repository)
     if published is None:
         raise VettingError(f"missing publication date: {dep.ecosystem} {dep.name}@{dep.version}")
-    return published, publisher, source
+    return published, publisher, source, basis
 
 
 def _cvss3(vector):
@@ -1032,7 +1035,7 @@ def vet(before, after, *, now=None, opener=None):
             raise VettingError(f"unresolved Swift version/revision: {dependency.name}")
     for dependency in dependencies:
         try:
-            published, publisher, source = _metadata(dependency, opener)
+            published, publisher, source, basis = _metadata(dependency, opener)
             advisories, advisory_block = _advisories(dependency, opener)
         except (TypeError, AttributeError, KeyError, ValueError) as exc:
             raise VettingError(f"{dependency.ecosystem} {dependency.name}@{dependency.version}: "
@@ -1040,7 +1043,7 @@ def vet(before, after, *, now=None, opener=None):
         recent = published > now - timedelta(days=14)
         blocked = recent or advisory_block
         findings.append(Finding(dependency, published.isoformat(),
-                                publisher, source, advisories, blocked, recent))
+                                publisher, source, advisories, blocked, recent, basis))
     reasons = []
     for finding in findings:
         if finding.dependency.version is None:

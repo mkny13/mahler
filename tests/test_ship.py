@@ -3356,6 +3356,20 @@ class ShipTests(unittest.TestCase):
             fix.assert_not_called()
             self.assertEqual(self.gh.merged, [])
 
+    def test_blocked_dependency_parks_before_review(self):
+        from tests.test_dependency_vetting import GradleCatalogTests
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        with mock.patch.object(self.gh, "dependency_files", return_value=(
+                {}, GradleCatalogTests.files())), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((), "high/critical advisory")), \
+                mock.patch.object(ship, "_start_review_run") as start:
+            self.ship()
+        self.assertEqual(self.item()["state"], "parked")
+        self.assertIn("high/critical advisory", self.item()["question"])
+        self.assertEqual(len(self.gh.comments), 1)
+        start.assert_not_called()
+        self.assertEqual(self.gh.merged, [])
+
     def test_dependency_vetting_block_prevents_merge_request(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(

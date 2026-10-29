@@ -1192,7 +1192,7 @@ def _park_dependency_vetting(ctx, project, item, pr, gh, view, detail):
     if not led.get_kv(key):
         gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
         led.set_kv(key, "commented")
-    led.set_state(project, n, "parked", reason)
+    led.set_state(project, n, "parked", reason, question=reason)
     led.release(project, n, holder=CONDUCTOR)
 
 
