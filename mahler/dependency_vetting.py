@@ -449,7 +449,10 @@ def _resolved_dependencies(path, text):
             if not line or line.startswith("#") or line.startswith("empty="):
                 continue
             coordinate = line.split("=", 1)[0]
-            match = re.fullmatch(r"([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([0-9][A-Za-z0-9._-]*)", coordinate)
+            match = re.fullmatch(
+                r"([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):([vV]?[0-9][A-Za-z0-9._-]*)",
+                coordinate,
+            )
             if not match or match.group(3).upper().endswith("-SNAPSHOT"):
                 raise VettingError(f"unresolved Gradle coordinate in {path}: {coordinate}")
             group, artifact, version = match.groups()
