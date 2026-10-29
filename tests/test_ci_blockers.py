@@ -99,6 +99,16 @@ class ParkedBlockerTests(unittest.TestCase):
         ship.detect_ci_blocker(self.ctx, 'x')
         self.assertEqual(ci_blockers.active(self.led, 'x')['number'], 300)
 
+    def test_parked_blocker_can_resume_or_finish(self):
+        for resumed in ('ready', 'shipped'):
+            with self.subTest(resumed=resumed):
+                self.blocker()
+                self.led.upsert_item('x', 263, state='ready')
+                self.candidates()
+                self.led.set_state('x', 379, resumed)
+                numbers = [i['number'] for _, _, i in self.candidates()]
+                self.assertEqual(numbers, [379] if resumed == 'ready' else [263])
+
     def test_console_names_parked_ci_and_dependency(self):
         self.blocker('failed')
         self.led.upsert_item('x', 263, state='ready', depends='[379]')
