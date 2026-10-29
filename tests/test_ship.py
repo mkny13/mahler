@@ -3338,6 +3338,24 @@ class ShipTests(unittest.TestCase):
         self.ship()
         self.assertEqual(self.gh.merged, [88])
 
+    def test_unvettable_catalog_parks_before_review_once_per_head(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        with mock.patch.object(self.gh, "dependency_files", return_value=(
+                {}, {"gradle/libs.versions.toml": '[libraries]\nx={module="a:b",version="1.+"}'})), \
+                mock.patch.object(ship, "_start_review_run") as review_start, \
+                mock.patch.object(ship, "_review_triggered_fix") as fix:
+            self.ship()
+            self.assertEqual(self.item()["state"], "parked")
+            self.assertEqual(len(self.gh.comments), 1)
+            self.assertIn("dependency vetting", self.gh.comments[0])
+            self.assertIn("1.+", self.gh.comments[0])
+            self.led.set_state("x", 5, "verifying", "retry same head")
+            self.ship()
+            self.assertEqual(len(self.gh.comments), 1)
+            review_start.assert_not_called()
+            fix.assert_not_called()
+            self.assertEqual(self.gh.merged, [])
+
     def test_dependency_vetting_block_prevents_merge_request(self):
         self.led.upsert_item("x", 5, pr=88)
         with mock.patch.object(
@@ -4658,7 +4676,8 @@ class TestGreenReviewRounds(unittest.TestCase):
         self.assertEqual(len(self.rounds()), 2)
         # Same SHA on a different PR cannot reuse the old verdict or round window.
         self.led.upsert_item("x", 5, pr=89)
-        with mock.patch.object(ship, "_start_review_run") as start:
+        with mock.patch.object(ship, "_start_review_run") as start, \
+                mock.patch.object(self.ctx, "gh", return_value=self.gh):
             ship._review_gate(self.ctx, "x", self.item(), 89, self.gh.pr_view(89))
         start.assert_called_once()
         self.assertEqual(self.rounds(), [])
