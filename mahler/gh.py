@@ -748,7 +748,7 @@ class GH:
         self._api_json("POST", f"actions/runs/{int(run_id)}/rerun-failed-jobs")
 
     def ci_retry_runs(self, head, base, *, reported=False):
-        """Fail closed on incomplete/ambiguous exact-head workflow/job evidence."""
+        """Select exact-head failures for the bounded retry, without a base baseline."""
         def runs(sha):
             data = self._api_json("GET", "actions/runs?head_sha=" + quote(sha, safe="") + "&per_page=100")
             rows = data.get("workflow_runs", [])
@@ -766,7 +766,6 @@ class GH:
         head_runs = runs(head)
         failed = [r for r in head_runs if r.get("status") == "completed"
                   and r.get("conclusion") in {"failure", "timed_out"}]
-        baseline = [] if reported else runs(self.branch_sha(base))
         selected = []
         for run in failed:
             if (not run.get("workflow_id") or not run.get("run_attempt")
@@ -776,15 +775,6 @@ class GH:
             names = [j.get("name") for j in failed_jobs]
             if not names or not all(names) or len(set(names)) != len(names):
                 continue
-            if not reported:
-                matches = [r for r in baseline if r.get("workflow_id") == run["workflow_id"]
-                           and r.get("event") == "push"]
-                if len(matches) != 1 or matches[0].get("conclusion") != "success":
-                    continue
-                good = jobs(matches[0])
-                if not all([j.get("conclusion") for j in good
-                            if j.get("name") == name] == ["success"] for name in names):
-                    continue
             selected.append({"id": run["id"], "attempt": run["run_attempt"]})
         return selected
 

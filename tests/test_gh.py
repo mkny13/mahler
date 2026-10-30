@@ -153,35 +153,40 @@ class TestGH(unittest.TestCase):
         with patch.object(self.gh, "_api_json", side_effect=reply), \
                 patch.object(self.gh, "branch_sha", return_value="tip") as tip:
             self.assertEqual(self.gh.ci_retry_runs("head", "release"), [{"id": 10, "attempt": 1}])
-            tip.assert_called_with("release")
+            tip.assert_not_called()
             base["workflow_id"] = 99
-            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [])
+            self.assertEqual(self.gh.ci_retry_runs("head", "release"), [{"id": 10, "attempt": 1}])
             self.assertEqual(self.gh.ci_retry_runs("head", "release", reported=True), [{"id": 10, "attempt": 1}])
         with patch.object(self.gh, "_api_json") as api:
             self.gh.rerun_failed_jobs(10)
             api.assert_called_once_with("POST", "actions/runs/10/rerun-failed-jobs")
 
-    def test_ci_retry_rejects_incomplete_ambiguous_or_different_jobs(self):
+    def test_ci_retry_rejects_incomplete_or_ambiguous_head_evidence(self):
         head = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
                 "status": "completed", "conclusion": "failure"}
-        base = {**head, "id": 20, "head_sha": "tip", "event": "push", "conclusion": "success"}
-        for case in ("missing", "ambiguous", "job", "pagination", "non-actions", "duplicate-job"):
+        for case in ("missing", "ambiguous", "pagination", "job-pagination",
+                     "duplicate-job", "unnamed-job", "no-failed-job", "pending"):
             with self.subTest(case=case):
-                rows = [] if case == "non-actions" else [head]
-                bases = [] if case == "missing" else [base, base] if case == "ambiguous" else [base]
-                replies = [
-                    {"total_count": len(rows), "workflow_runs": rows},
-                    {"total_count": len(bases), "workflow_runs": bases},
-                    {"total_count": 1, "jobs": [{"name": "verify", "conclusion": "failure"}]},
-                    {"total_count": 2 if case == "pagination" else 1,
-                     "jobs": [{"name": "other" if case == "job" else "verify", "conclusion": "success"}]},
-                ]
+                rows = [] if case == "missing" else [dict(head)]
+                if case == "ambiguous":
+                    rows.append({**head, "id": 11})
+                if case == "pending":
+                    rows[0]["status"] = "in_progress"
+                jobs = [{"name": "checks", "conclusion": "failure"}]
                 if case == "duplicate-job":
-                    replies[-1]["jobs"].append({"name": "verify", "conclusion": "failure"})
-                    replies[-1]["total_count"] = 2
-                with patch.object(self.gh, "_api_json", side_effect=replies), \
-                        patch.object(self.gh, "branch_sha", return_value="tip"):
-                    self.assertEqual(self.gh.ci_retry_runs("head", "main"), [])
+                    jobs.append(dict(jobs[0]))
+                if case == "unnamed-job":
+                    jobs[0]["name"] = ""
+                if case == "no-failed-job":
+                    jobs[0]["conclusion"] = "success"
+                replies = [
+                    {"total_count": len(rows) + (case == "pagination"), "workflow_runs": rows},
+                    {"total_count": len(jobs) + (case == "job-pagination"), "jobs": jobs},
+                ]
+                for reported in (False, True):
+                    with patch.object(self.gh, "_api_json", side_effect=replies):
+                        self.assertEqual(self.gh.ci_retry_runs("head", "main",
+                                                              reported=reported), [])
 
     def test_exact_preview_fixtures(self):
         sha = "a" * 40
