@@ -119,6 +119,24 @@ class TestGH(unittest.TestCase):
                     client.request_dependency_rebase(10, "dependabot")
                 app.token.assert_not_called()
 
+    def test_ci_retry_checks_without_green_base_baseline(self):
+        failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                  "status": "completed", "conclusion": "failure"}
+        for baseline in ([], [{**failed, "head_sha": "tip", "id": 20,
+                               "event": "push"}]):
+            with self.subTest(baseline=baseline):
+                def reply(method, path, payload=None):
+                    if path.startswith("actions/runs?head_sha=head"):
+                        return {"total_count": 1, "workflow_runs": [failed]}
+                    if path.startswith("actions/runs?head_sha=tip"):
+                        return {"total_count": len(baseline), "workflow_runs": baseline}
+                    return {"total_count": 1, "jobs": [
+                        {"name": "checks", "conclusion": "failure"}]}
+                with patch.object(self.gh, "_api_json", side_effect=reply), \
+                        patch.object(self.gh, "branch_sha", return_value="tip"):
+                    self.assertEqual(self.gh.ci_retry_runs("head", "main"),
+                                     [{"id": 10, "attempt": 1}])
+
     def test_ci_retry_exact_head_workflow_job_and_failed_only_endpoint(self):
         failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
                   "status": "completed", "conclusion": "failure"}

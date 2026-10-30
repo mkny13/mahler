@@ -1294,6 +1294,46 @@ class ShipTests(unittest.TestCase):
                                                       "status": "completed", "conclusion": "failure"})
         return "ci-rerun:x#5:88:abc123"
 
+    def test_ci_rerun_checks_without_baseline_precedes_fix_charge(self):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = [{"name": "checks", "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/o/r/actions/runs/10/job/100"}]
+        client = gh_module.GH("o/r")
+        failed = {"id": 10, "head_sha": "abc123", "workflow_id": 8,
+                  "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?head_sha=abc123"):
+                return {"total_count": 1, "workflow_runs": [failed]}
+            if path.startswith("actions/runs?head_sha=tip"):
+                return {"total_count": 0, "workflow_runs": []}
+            return {"total_count": 1, "jobs": [
+                {"name": "checks", "conclusion": "failure"}]}
+        self.gh.ci_retry_runs = client.ci_retry_runs
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value=dict(failed))
+        start = self.patch_start()
+        key = "ci-rerun:x#5:88:abc123"
+        with mock.patch.object(client, "_api_json", side_effect=reply), \
+                mock.patch.object(client, "branch_sha", return_value="tip"):
+            with mock.patch.object(ship, "_red_ci") as red:
+                self.ship()
+                self.gh.rerun_failed_jobs.assert_called_once_with(10)
+                self.assertTrue(json.loads(self.led.get_kv(key))["runs"][0]["requested"])
+                self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+                self.ship()  # stale attempt after a restart
+                self.gh.actions_run.return_value.update(run_attempt=2, status="in_progress")
+                self.ship()
+                red.assert_not_called()
+                start.assert_not_called()
+                self.assertEqual(self.item()["attempts"], 0)
+            self.gh.actions_run.return_value.update(status="completed")
+            self.ship()  # rerun is still red: only now charge a fix
+            start.assert_called_once()
+            self.assertEqual(self.item()["attempts"], 1)
+            self.assertTrue(json.loads(self.led.get_kv(key))["done"])
+            self.ship()
+            self.gh.rerun_failed_jobs.assert_called_once_with(10)
+
     def test_ci_rerun_stale_pending_green_keeps_review_gate(self):
         key = self.retry_setup()
         start = self.patch_start()
