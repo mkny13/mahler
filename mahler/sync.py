@@ -8,6 +8,7 @@ all done is the same kind of work, so it lives here too.
 import json
 import hashlib
 import re
+import uuid
 from datetime import timedelta
 
 from . import ci_blockers, config, no_change, releases, waits
@@ -18,7 +19,7 @@ from .gh import (GHError, AGENT_MARK, AGENT_NOTE, LABEL_STATES, STATE_LABELS, de
 from .ledger import QUIET_DAYS, iso, parse
 from .scorecard import DEFECT_WINDOW, linked_bug
 from .ship import (_shipped, mirror_shipped, pr_merged, record_uat_if_needed,
-                   migrate_capacity_waits)
+                   migrate_capacity_waits, reset_review_cycle)
 from .watchdog import request_stop
 
 
@@ -714,7 +715,11 @@ def _process_comments(ctx, project, item, comments):
 def resume_item(led, project, number, why="you said go"):
     """Apply the same reset as ``/mahler go`` to a waiting item."""
     waits.clear(led, project, number)
-    led.set_state(project, number, "ready", why, attempts=0, setup_fails=0,
+    reset_review_cycle(led, project, number)
+    led.set_kv(f"attempt_cycle:{project}#{number}", uuid.uuid4().hex)
+    item = led.item(project, number)
+    state = "verifying" if item and item["pr"] else "ready"
+    led.set_state(project, number, state, why, attempts=0, setup_fails=0,
                   esc_tier=0, esc_fails=0,
                   sorted_at=iso(led.now() - timedelta(days=1)))
 

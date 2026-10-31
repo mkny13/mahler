@@ -840,14 +840,14 @@ class ShipTests(unittest.TestCase):
         self.led.update_run(fix["id"], outcome="failed")
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
-        self.assertEqual(self.item()["attempts"], 2)
+        self.assertEqual(self.item()["attempts"], 1)
         context = self.same_head_calls[-1][2]["context"]
         self.assertIn("left no new commit", context)
         self.assertIn("commit locally", context)
         self.assertNotIn("git push", context)
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
-        self.assertEqual(self.item()["attempts"], 2)
+        self.assertEqual(self.item()["attempts"], 1)
 
     def test_shipping_ignores_failing_non_required_checks_and_merges(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -2600,6 +2600,11 @@ class ShipTests(unittest.TestCase):
                                        self.gh.pr_view(88), "blocking finding")
             self.assertEqual(self.item()["attempts"], 2)
             self.gh.head_sha = "head-3"
+            rid = self.led.create_run(project="x", number=5, role="review",
+                                      platform="claude", epoch=1)
+            self.led.update_run(rid, status="ended", outcome="REVIEW-FAIL")
+            self.led.set_kv("review:x#5", json.dumps({
+                "run_id": rid, "sha": "head-3", "pr": 88, "verdict": "fail"}))
             ship._review_triggered_fix(self.ctx, "x", self.item(), 88,
                                        self.gh.pr_view(88), "blocking finding")
             self.assertEqual(start.call_count, 3)
@@ -2779,7 +2784,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [88])
         self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
 
-    def test_same_head_second_done_is_charged_and_exhausts_budget(self):
+    def test_same_head_second_done_requires_fresh_review_before_exhaustion(self):
         rid = self.same_head_setup()
         self.led.update_run(rid, status="ended", outcome="DONE")
         self.same_head_gate()
@@ -2793,9 +2798,12 @@ class ShipTests(unittest.TestCase):
         rid = self.led.last_run("x", 5, roles=("fix",))["id"]
         self.led.update_run(rid, status="ended", outcome="DONE")
         self.same_head_gate()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.item()["attempts"], 2)
+        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix", "review"])
+        self.same_head_verdict("fail")
+        self.same_head_gate()
         self.assertEqual(self.item()["state"], "waiting")
-        self.assertEqual(self.item()["attempts"], 0)
-        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix"])
 
     def test_same_head_done_at_last_attempt_still_gets_review(self):
         rid = self.same_head_setup()
@@ -4511,6 +4519,11 @@ class TestGreenReviewRounds(unittest.TestCase):
         return review.window(self.led, "x", 5, self.item()["pr"])
 
     def complete_head(self, sha, findings, rid, pr=88):
+        if not self.led.run(rid):
+            self.led.create_run(id=rid, project="x", number=5, role="review",
+                                platform="agy-gemini", epoch=1, status="ended",
+                                outcome="REVIEW-FAIL" if any(f["severity"] == "blocking"
+                                                           for f in findings) else "REVIEW-PASS")
         ending = self.ending(findings, rid=rid)
         if pr != 88:
             self.led.upsert_item("x", 5, pr=pr)
@@ -4625,6 +4638,8 @@ class TestGreenReviewRounds(unittest.TestCase):
         args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
         with mock.patch.object(cli, "project_client", return_value=self.gh):
             self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.gate()[2].assert_called_once()  # Explicit re-ship requires fresh evidence.
+        self.complete_head("head-2", [], 3)
         self.gate()[0].assert_called_once()
         self.gate()[0].assert_called_once()
         self.assertEqual(self.gh.create_issue.call_count, 2)
@@ -4724,6 +4739,8 @@ class TestGreenReviewRounds(unittest.TestCase):
         from mahler import review
         self.assertIn("Green review round: 1;",
                       review.start_context(self.ctx, "x", self.item(), 89, "second-head"))
+        self.led.create_run(id=13, project="x", number=5, role="review",
+                            platform="agy-gemini", epoch=1, status="ended", outcome="REVIEW-PASS")
         self.led.set_kv("review:x#5", json.dumps({
             "sha": "second-head", "pr": 89, "verdict": "pass", "run_id": 13,
             "classified": []}))
@@ -6435,3 +6452,85 @@ class ReviewPinFallbackTests(unittest.TestCase):
         self.now += timedelta(hours=6)
         self.refresh(claude=10)
         self.assertEqual(self.tick().call_args.args[4], 'agy-gemini')
+
+
+class TestShip(unittest.TestCase):
+    setUp = ShipTests.setUp
+    item = ShipTests.item
+    ship = ShipTests.ship
+    same_head_setup = ShipTests.same_head_setup
+    same_head_gate = ShipTests.same_head_gate
+    same_head_counters = ShipTests.same_head_counters
+
+    def test_retry_re_evaluates_gate_and_triggers_fresh_review_on_unchanged_head(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status='ended', outcome='launch failed: login')
+        self.led.upsert_item('x', 5, state='needs_you', attempts=9)
+        old = self.led.get_kv('review:x#5')
+        with mock.patch.object(ship, '_vet_pr_dependencies', return_value=False) as gate:
+            self.same_head_gate()
+            gate.assert_called_once()
+        sync.resume_item(self.led, 'x', 5)
+        self.assertEqual(self.item()['state'], 'verifying')
+        self.assertIsNone(self.led.get_kv('review:x#5'))
+        self.assertFalse(self.led.get_kv('reviewfix:x#5:88:abc123:charged'))
+        # An old run finishing late must not restore the pre-retry verdict.
+        self.led.set_kv('review:x#5', old)
+        with mock.patch.object(ship, '_vet_pr_dependencies', return_value=True) as gate:
+            ping = self.ship()
+            gate.assert_called_once()
+        self.assertEqual(self.same_head_calls[-1][0], 'review')
+        self.assertEqual(self.item()['state'], 'verifying')
+        self.assertEqual(self.item()['attempts'], 0)
+        self.assertFalse(any('Review keeps blocking' in str(c) for c in ping.call_args_list))
+
+    def test_failed_same_head_fixes_do_not_spend_review_budget(self):
+        rid = self.same_head_setup()
+        before = self.same_head_counters()
+        for outcome in ('failed', 'launch failed: login', 'BLOCKED test failure'):
+            self.led.update_run(rid, status='ended', outcome=outcome)
+            self.same_head_gate()
+            self.assertEqual(self.same_head_counters(), before)
+            self.assertEqual(self.item()['state'], 'verifying')
+            rid = self.led.last_run('x', 5, roles=('fix',))['id']
+
+    def test_exhaustion_requires_completed_review_in_retry_cycle(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status='ended', outcome='failed')
+        old = self.led.get_kv('review:x#5')
+        sync.resume_item(self.led, 'x', 5)
+        self.led.set_kv('fresh-rebuild:x#5', '1')
+        self.led.set_kv('review:x#5', old)
+        with mock.patch.object(self.ctx, 'gh', return_value=self.gh), \
+                mock.patch.object(self.ctx, 'ping') as ping, \
+                mock.patch.object(ship, '_start_review_run') as start:
+            ship._review_exhausted(self.ctx, 'x', self.item(), 88,
+                                   self.gh.pr_view(88), 'security blocker', 'm')
+            self.assertEqual(self.item()['state'], 'verifying')
+            ping.assert_not_called()
+            start.assert_called_once()
+            fresh = self.led.create_run(project='x', number=5, role='review',
+                                        platform='claude', epoch=1)
+            self.led.update_run(fresh, status='ended', outcome='REVIEW-FAIL')
+            info = json.loads(old)
+            info['run_id'] = fresh
+            self.led.set_kv('review:x#5', json.dumps(info))
+            ship._review_exhausted(self.ctx, 'x', self.item(), 88,
+                                   self.gh.pr_view(88), 'security blocker', 'm')
+            self.assertEqual(self.item()['state'], 'needs_you')
+            ping.assert_called_once()
+
+
+    def test_manual_ship_invalidates_blocking_review(self):
+        rid = self.same_head_setup()
+        self.led.update_run(rid, status="ended", outcome="failed")
+        self.led.upsert_item("x", 5, state="needs_you", attempts=8)
+        args = SimpleNamespace(item=("x", 5), pr=88, branch=None, holder="test", summary=None)
+        with mock.patch.object(cli, "project_client", return_value=self.gh):
+            self.assertEqual(cli.cmd_ship(args, self.cfg, self.led), 0)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertIsNone(self.led.get_kv("review:x#5"))
+        self.assertIsNone(self.led.get_kv("reviewfix:x#5:88:abc123:run"))
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][0], "review")

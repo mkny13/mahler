@@ -761,7 +761,7 @@ def cmd_ship(a, cfg, led):
     fields = {"branch": branch, "pr": pr, "title": title or f"{project} #{n}"}
     if a.summary:
         fields["summary"] = a.summary
-    if item and item["state"] in ("failed", "needs_you"):
+    if item and item["state"] in ("failed", "needs_you", "parked"):
         # An explicit, validated retry gets the same counters as /mahler go.
         # Keep review rounds, follow-ups and diagnostic delivery history intact.
         fields.update(attempts=0, setup_fails=0, esc_tier=0, esc_fails=0)
@@ -774,6 +774,9 @@ def cmd_ship(a, cfg, led):
         led.event("attempt_cycle", project, n,
                   {"cycle": cycle, "reason": "manual ship", "previous_state": item["state"],
                    "previous_attempts": item["attempts"], "holder": a.holder})
+    if pr or (item and item["state"] in ("failed", "needs_you", "parked")):
+        from .ship import reset_review_cycle
+        reset_review_cycle(led, project, n)
     led.upsert_item(project, n, **fields)
     led.set_state(project, n, "verifying", f"handed to the conductor by {a.holder}")
     if cur:
