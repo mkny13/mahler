@@ -1553,17 +1553,20 @@ def _kv_json(led, key):
 
 
 def _unchanged_done_review(ctx, project, item, pr, sha, info):
-    """Consume one durable same-head allowance per verdict before fix accounting.
+    """Consume one durable same-head allowance, before reopening fix accounting.
 
     Record the exact launched fix and failed verdict, not merely a historical
     DONE. Writing the allowance before invalidation makes interrupted ticks
-    replayable; a new verdict needs its own completed fix.
+    replayable; a new verdict can never reuse that allowance.
     """
     led, n = ctx.led, item["number"]
     key = f"reviewfix:{project}#{n}:{pr}:{sha}"
     allowance = f"reviewdone:{project}#{n}:{pr}:{sha}"
     used = _kv_json(led, allowance)
-    if not used or used.get("verdict") != info:
+    if used:
+        if used.get("verdict") != info:
+            return False
+    else:
         launched = _kv_json(led, f"{key}:run")
         if not led.get_kv(key) or launched.get("verdict") != info:
             return False
@@ -2291,10 +2294,7 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     previous_fix = led.run(launched["run_id"]) if launched.get("run_id") else None
     if previous_fix and (previous_fix["status"] != "ended" or not previous_fix["outcome"]):
         return  # finalization has not accounted for this run yet
-    if base_conflict or launched.get("verdict") != _kv_json(led, f"review:{project}#{n}"):
-        # An unchanged verdict is still the same review failure, regardless
-        # of how many fixes fail or finish without pushing a new commit.
-        _clear_charged_if_fix_completed(led, project, n, key)
+    _clear_charged_if_fix_completed(led, project, n, key)
     if led.get_kv(f"{key}:charged"):
         attempts = item["attempts"]
     if not led.get_kv(key):

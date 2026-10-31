@@ -840,14 +840,14 @@ class ShipTests(unittest.TestCase):
         self.led.update_run(fix["id"], outcome="failed")
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
-        self.assertEqual(self.item()["attempts"], 1)
+        self.assertEqual(self.item()["attempts"], 2)
         context = self.same_head_calls[-1][2]["context"]
         self.assertIn("left no new commit", context)
         self.assertIn("commit locally", context)
         self.assertNotIn("git push", context)
         self.ship()
         self.assertEqual(len(self.same_head_calls), 2)
-        self.assertEqual(self.item()["attempts"], 1)
+        self.assertEqual(self.item()["attempts"], 2)
 
     def test_shipping_ignores_failing_non_required_checks_and_merges(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -2784,26 +2784,20 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(self.gh.merged, [88])
         self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
 
-    def test_same_head_second_done_requires_fresh_review_before_exhaustion(self):
+    def test_same_head_second_done_is_charged_and_exhausts_budget(self):
         rid = self.same_head_setup()
         self.led.update_run(rid, status="ended", outcome="DONE")
         self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][:2], ("review", "claude"))
         self.same_head_verdict("fail")
-        # Even a would-be repeat-finding second opinion cannot bypass the allowance.
-        with mock.patch.object(ship, "_repeat_finding", return_value={"platform": "claude"}) as repeat:
-            self.same_head_gate()
-            repeat.assert_not_called()
-        self.assertEqual(self.same_head_calls[-1][0], "fix")
-        self.assertEqual(self.item()["attempts"], 2)
+        self.same_head_gate()
+        self.assertEqual(self.same_head_calls[-1][:2], ("fix", "agy-gemini"))
         rid = self.led.last_run("x", 5, roles=("fix",))["id"]
         self.led.update_run(rid, status="ended", outcome="DONE")
         self.same_head_gate()
-        self.assertEqual(self.item()["state"], "verifying")
-        self.assertEqual(self.item()["attempts"], 2)
-        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix", "review"])
-        self.same_head_verdict("fail")
-        self.same_head_gate()
         self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.item()["attempts"], 0)
+        self.assertEqual([c[0] for c in self.same_head_calls], ["fix", "review", "fix"])
 
     def test_same_head_done_at_last_attempt_still_gets_review(self):
         rid = self.same_head_setup()
@@ -6487,14 +6481,21 @@ class TestShip(unittest.TestCase):
     def test_failed_same_head_fixes_do_not_spend_review_budget(self):
         from mahler import review
         rid = self.same_head_setup()
-        before = self.same_head_counters()
-        for outcome in ('failed', 'launch failed: login', 'BLOCKED test failure'):
-            self.led.update_run(rid, status='ended', outcome=outcome)
-            self.same_head_gate()
-            self.assertEqual(self.same_head_counters(), before)
-            self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
-            self.assertEqual(self.item()['state'], 'verifying')
-            rid = self.led.last_run('x', 5, roles=('fix',))['id']
+        self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
+        attempts = self.item()["attempts"]
+        # Launch failure does not spend attempt or review budget.
+        self.led.update_run(rid, status="ended", outcome="launch failed: login")
+        self.same_head_gate()
+        self.assertEqual(self.item()["attempts"], attempts)
+        self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
+        self.assertEqual(self.item()["state"], "verifying")
+        # Genuine fix failure spends fix attempt, but never adds review round.
+        rid = self.led.last_run("x", 5, roles=("fix",))["id"]
+        self.led.update_run(rid, status="ended", outcome="failed")
+        self.same_head_gate()
+        self.assertEqual(self.item()["attempts"], attempts + 1)
+        self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
+        self.assertEqual(self.item()["state"], "verifying")
 
     def test_exhaustion_requires_completed_review_in_retry_cycle(self):
         rid = self.same_head_setup()
