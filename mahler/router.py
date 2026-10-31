@@ -367,6 +367,7 @@ HOLD_REASON_TEXT = {
     "silent": "a run never started",
     "model_unavailable": "the CLI rejected its model",
     "no_credit": "the platform is out of credits",
+    "auth": "the CLI requires re-authentication",
 }
 
 
@@ -418,6 +419,9 @@ def _quota_usage_state(led, name, pconf, burst_lines=None):
         # sat silent at startup, or its model was rejected). Soft, so a run
         # already making progress keeps going.
         until = hold_until
+        if led.get_kv(f"hold_reason:{name}") == "auth":
+            return "blocked", ("login expired: run `cline auth`, then `mahler usage --probe` "
+                               "or `mahler unhold " + name + "`")
         if led.get_kv(f"hold_reason:{name}") == "no_credit":
             return "no_credit", (f"out of credits, next try {until.astimezone():%H:%M} "
                                   f"(in {fmt_countdown(until - now)})")
@@ -851,6 +855,8 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
         if state == "no_credit":
             why.append("no_credit")
         elif model_availability.blocked(led, name, pconf, role) or project_hold(led, pol.get("name"), name):
+            why.append("hold")
+        elif state == "blocked":
             why.append("hold")
         elif state in ("soft", "hard"):
             why.append("hold" if _hold_active(led, name) else "quota")
