@@ -28,6 +28,14 @@ probe returns **unknown**, reason: “Default-branch protection metadata is unav
 or unsupported.” The injected historical job name makes this an API-boundary probe,
 not a fresh whole-repository/workflow scan or passing acceptance evidence.
 
+A subsequent targeted snapshot replay downloaded movebreak’s public exact-SHA
+archive into a temporary directory inside this worktree and ran `_ci(_Tree(path))`
+and `_protection` with its actual discovered jobs. Discovery returned
+`jobs=["verify"]`, `uncertain=True`, CI state **unknown**; branch-protection again
+returned **unknown** with the same metadata-unavailable reason. No repository
+commands were executed. This replay did not scan tracked secrets, and archive
+coverage was not compared to the Git tree; it is not the final acceptance scan.
+
 ## What the scanner establishes
 
 `_load_secret_reviews` and `_secrets` require exact path, one-based line,
@@ -54,7 +62,8 @@ through repository issues, rather than invent a parser fix without source eviden
   concrete classic/ruleset comparison, conditional settings instructions and
   acceptance requiring actual workflow discovery plus a passing audit. No settings
   were changed. The repository has no `mahler` label; an attempted combined label
-  update was refused. Priority assignment is recorded below after verification.
+  update was refused. A separate p1 assignment was denied by integration permissions.
+  The conductor must assign p1 to #123; issue creation succeeded but labeling did not.
 - mental-jukebox issue creation was refused: “Could not resolve to a Repository
   with the name 'mkny13/mental-jukebox'.” The conductor must file the exact body
   below in that project with p1 priority and link its resulting issue to #1487/#800.
@@ -88,9 +97,32 @@ Nothing. Conductor tracks automated evidence; no owner verdict.
 
 ## Verification
 
-Pending full-suite results. No behavior was implemented, so no failing-first
-behavior test was added. Existing tests exercise the exact matching and security
-boundaries; passing fixtures do not certify the inaccessible repositories.
+Tests used a fresh temporary `MAHLER_HOME` for each command, with inherited
+`MAHLER_*` run identity removed and a subprocess-only `core.hooksPath=/dev/null`
+override, as documented in the previous report. No live ledger was used.
+
+| Command | Result |
+|---|---|
+| `python3 -m mahler.repo_guard` | PASS, exit 0 |
+| `python3 -m unittest discover -s tests -p test_practices_audit.py` | PASS, 95 tests, 8.957s |
+| `python3 -m unittest discover -s tests` | PASS, 3478 tests, 182.428s, 2 skips |
+| `python3 tests/run_random.py` | PASS, seed 1660414144, 3478 tests, 186.458s, 2 skips |
+| `python3 -X dev tests/run_strict.py` | PASS, 3478 tests, 197.796s, 2 skips |
+
+Named exercised checks in `tests/test_practices_audit.py` include
+`test_exact_review_match_suppresses_candidate`,
+`test_new_candidate_in_reviewed_file_remains_gap`,
+`test_candidate_changed_in_same_file_remains_gap`,
+`test_same_candidate_in_different_file_remains_gap`,
+`test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence`,
+`test_each_unsafe_protection_setting_is_a_gap`,
+`test_missing_protection_fields_are_unknown_not_pass`,
+`test_ruleset_alone_matches_classic_protection`, and
+`test_bypassable_ruleset_cannot_supply_force_push_or_deletion_safeguards`.
+
+No behavior was implemented, so no failing-first behavior test was added.
+Existing tests exercise the exact matching and security boundaries; passing
+fixtures do not certify the inaccessible repositories. No dependencies added.
 
 ## Needs a human to check
 
