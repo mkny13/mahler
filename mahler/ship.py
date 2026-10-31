@@ -1438,6 +1438,29 @@ def _maybe_start_design(ctx, project, item, pr, view, sha, info):
     return True
 
 
+def reset_review_cycle(led, project, number):
+    """Invalidate pre-retry evidence, including late completion of an old run."""
+    latest = led.q1("SELECT max(id) AS id FROM runs WHERE project=? AND number=?",
+                     (project, number))
+    led.set_kv(f"review-cycle:{project}#{number}", str(latest["id"] or 0))
+    led.set_kv(f"review:{project}#{number}", None)
+    prefix = f"reviewfix:{project}#{number}:"
+    for saved in led.q("SELECT key FROM kv WHERE substr(key, 1, ?)=?", (len(prefix), prefix)):
+        led.set_kv(saved["key"], None)
+
+
+def _review_in_cycle(led, project, number, info, *, completed=False):
+    boundary = led.get_kv(f"review-cycle:{project}#{number}")
+    if boundary is None:
+        return True  # Legacy evidence remains usable until an explicit retry.
+    run = led.run(info["run_id"]) if info.get("run_id") else None
+    return bool(run and run["id"] > int(boundary)
+                and run["project"] == project and run["number"] == number
+                and run["role"] == "review"
+                and (not completed or (run["status"] == "ended"
+                     and run["outcome"] in ("REVIEW-PASS", "REVIEW-FAIL"))))
+
+
 def _review_gate(ctx, project, item, pr, view, required=None):
     """Between CI-green and merge, DESIGN D11's independent review: CI-green
     proves the tests that exist pass, not that the diff is sound, so a
@@ -1455,6 +1478,10 @@ def _review_gate(ctx, project, item, pr, view, required=None):
     key = f"review:{project}#{n}"
     seen = led.get_kv(key)
     info = json.loads(seen) if seen else {}
+    if not _review_in_cycle(led, project, n, info,
+                            completed=info.get("verdict") in ("pass", "fail")):
+        led.set_kv(key, None)
+        info = {}
     if checks_state(view.get("statusCheckRollup"), required=required) not in {"green", "none"}:
         return
     status = review.effective_for_item(led, project, n, pr=pr, sha=sha)
@@ -2153,6 +2180,14 @@ def _review_exhausted(ctx, project, item, pr, view, findings, size):
     led, cfg, n = ctx.led, ctx.cfg, item["number"]
     pol = ctx.policy(project)
     sha = view.get("headRefOid") or ""
+    info = _kv_json(led, f"review:{project}#{n}")
+    if (not _review_in_cycle(led, project, n, info, completed=True)
+            or (led.get_kv(f"review-cycle:{project}#{n}") is not None
+                and (info.get("sha") != sha or info.get("pr") != pr))):
+        if not _review_in_cycle(led, project, n, info):
+            led.set_kv(f"review:{project}#{n}", None)
+        _review_gate(ctx, project, item, pr, view)
+        return True
     history = [r for r in _kv_json_list(led, f"reviewfindings:{project}#{n}")
                if r.get("pr", pr) == pr]
     classified = next((r["classified"] for r in reversed(history)
