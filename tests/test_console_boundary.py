@@ -23,7 +23,7 @@ LEDGER_ONLY = {
     "chat", "pause", "resume", "end_session", "peak_override", "peak_restore",
     "clear_backoff", "unhold", "digest_seen", "brief_seen", "save_settings",
     "client_log", "attach", "answer_undo", "set_max_parallel",
-    "pause_project", "resume_project",
+    "pause_project", "resume_project", "resume_post_merge",
     "priority_boost_start", "priority_boost_extend", "priority_boost_stop",
 }
 # The queued actions (D27): applied only by the tick's outbox drain.
