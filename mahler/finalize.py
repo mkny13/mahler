@@ -1389,7 +1389,7 @@ def _hold_auth_platform(ctx, run, log):
     led.event("auth_denied", run["project"], run["number"],
               {"platform": platform, "run": run["id"], "scope": "platform"})
     if fresh:
-        ctx.ping(f"Mahler: {platform} needs you to log in again",
+        ctx.ping(f"Mahler: {platform} login expired",
                  f"Run {run['id']} ended with the CLI's login expired. Run `cline auth` "
                  f"on the Mac mini; {platform} is blocked for every project until a "
                  "probe shows the login works (`mahler usage --probe`) or `mahler unhold "
