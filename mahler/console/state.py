@@ -1663,6 +1663,15 @@ def _banners(cfg, led, paused, quota, hot, now):
                     "text": "Nothing new will start. Runs in flight finish at their next "
                             "checkpoint. Quota probes and GitHub sync keep going.",
                     "action": "Resume all", "act": "resume"})
+    for name in cfg.get("projects", {}):
+        if led.get_kv(f"post_merge_paused:{name}") == "1":
+            since = led.get_kv(f"post_merge_paused_at:{name}") or "an unknown time"
+            out.append({"kind": f"POST-MERGE PAUSED · {name.upper()}", "tone": "warn",
+                        "text": f"Post-merge checks have been paused since {since} after "
+                                f"repeated identical failures. Resuming settles overdue checks "
+                                f"without filing new bugs.",
+                        "action": "Resume post-merge", "act": "resume_post_merge",
+                        "project": name})
     builders = [q for q in quota if q["builds"]]
     if builders and all(q["state"] != "ok" for q in builders):
         out.append({"kind": "ALL PLATFORMS OVER SOFT LINE", "tone": "warn",

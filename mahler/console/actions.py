@@ -641,11 +641,18 @@ def chat(cfg, led, body):
         raise ActionError(str(exc)) from exc
 
 
+def resume_post_merge(cfg, led, body):
+    from .. import post_merge, scheduler
+    project = _enabled_project(cfg, body)
+    settled = post_merge.resume(scheduler.Ctx(cfg, led, dry_run=False), project, source="console")
+    return {"project": project, "settled": settled}
+
+
 ACTIONS = {f.__name__: f for f in (chat, pause, resume, end_session, peak_override, peak_restore,
                                    clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
                                    capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log, set_max_parallel,
-                                   pause_project, resume_project,
+                                   pause_project, resume_project, resume_post_merge,
                                    priority_boost_start, priority_boost_extend,
                                    priority_boost_stop)}
 

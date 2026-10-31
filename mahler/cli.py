@@ -240,6 +240,8 @@ def cmd_status(a, cfg, led):
             "items": items,
             "leases": leases,
             "missing_scope_counts": missing_scope,
+            "post_merge_paused": {p: since for p, since in _post_merge_paused(cfg, led).items()
+                                  if not project_filter or p == project_filter},
             "parked_blockers": blockers,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
             # D41: Team-plan API credits, one snapshot per enabled credits platform
@@ -265,6 +267,10 @@ def cmd_status(a, cfg, led):
         return f" https://github.com/{repo}/issues/{number}"
 
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
+    for name, since in _post_merge_paused(cfg, led).items():
+        if getattr(a, "project", None) in (None, name):
+            print(f"WARNING: post-merge checks paused for {name} since {since or 'unknown'} "
+                  f"(mahler resume {name})")
     peak = router.peak_status_line(cfg, led)
     if peak:
         print(peak)
@@ -927,10 +933,33 @@ def cmd_pause(a, cfg, led):
     return 0
 
 
+def _post_merge_paused(cfg, led):
+    """{project: paused-since ISO or ''} for projects whose post-merge checks are paused."""
+    out = {}
+    for name in cfg.get("projects", {}):
+        if led.get_kv(f"post_merge_paused:{name}") == "1":
+            out[name] = led.get_kv(f"post_merge_paused_at:{name}") or ""
+    return out
+
+
+def _resume_post_merge(cfg, led, project, source):
+    from . import post_merge
+    settled = post_merge.resume(scheduler.Ctx(cfg, led, dry_run=False), project, source=source)
+    print(f"{project}: post-merge checks resumed; settled {settled} overdue checks")
+
+
 def cmd_resume(a, cfg, led):
+    project = getattr(a, "project", None)
+    if project:
+        if project not in cfg.get("projects", {}):
+            raise ValueError(f"unknown project {project!r}")
+        _resume_post_merge(cfg, led, project, "cli")
+        return 0
     led.set_kv("paused", "0")
     led.event("resume", detail="resumed by command")
     print("resumed")
+    for name in _post_merge_paused(cfg, led):
+        _resume_post_merge(cfg, led, name, "cli")
     return 0
 
 
@@ -940,6 +969,7 @@ def cmd_unstick(a, cfg, led):
         raise ValueError(f"unknown project {a.project!r}")
     count = unstick(scheduler.Ctx(cfg, led, dry_run=False), a.project)
     print(f"{a.project}: re-evaluated {count} stranded items")
+    _resume_post_merge(cfg, led, a.project, "unstick")
 
 
 def cmd_unhold(a, cfg, led):
@@ -1404,7 +1434,9 @@ def build_parser(cfg=None):
     s.set_defaults(fn=cmd_prioritize)
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
-    sub.add_parser("resume").set_defaults(fn=cmd_resume)
+    s = sub.add_parser("resume", help="resume the daemon, or one project's post-merge checks")
+    s.add_argument("project", nargs="?")
+    s.set_defaults(fn=cmd_resume)
 
     s = sub.add_parser("unstick", help="re-evaluate recognized parked conductor waits")
     s.add_argument("project")

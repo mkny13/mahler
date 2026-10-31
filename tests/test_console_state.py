@@ -102,6 +102,23 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
         subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)
 
 
+class PostMergePausedBannerTests(unittest.TestCase):
+    def test_banner_shows_start_time_and_resume_action(self):
+        now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+        led = Ledger(':memory:', clock=lambda: now)
+        self.addCleanup(led.close)
+        cfg = {'projects': {'gw': {'enabled': True}, 'ok': {'enabled': True}}}
+        self.assertEqual(state._banners(cfg, led, False, [], [], now), [])
+        led.set_kv('post_merge_paused:gw', '1')
+        led.set_kv('post_merge_paused_at:gw', '2026-10-29T18:40:00Z')
+        banners = state._banners(cfg, led, False, [], [], now)
+        self.assertEqual(len(banners), 1)
+        self.assertEqual(banners[0]['act'], 'resume_post_merge')
+        self.assertEqual(banners[0]['project'], 'gw')
+        self.assertEqual(banners[0]['action'], 'Resume post-merge')
+        self.assertIn('2026-10-29T18:40:00Z', banners[0]['text'])
+
+
 class PriorityBoostConsoleTests(unittest.TestCase):
     def test_overview_menu_active_controls_and_switcher_marker(self):
         from test_serve import make_cfg

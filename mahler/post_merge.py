@@ -259,6 +259,54 @@ def _deliver(ctx, row):
     ctx.led.set_kv(key, "posted")
 
 
+def resume(ctx, project, source="command"):
+    """Clear a project's post-merge pause and settle rows that expired while paused.
+
+    Settled rows fail without remediation or a streak count, so resuming
+    never files bugs or re-trips the breaker (mahler#1472). Returns the
+    number of rows settled."""
+    from .ledger import parse
+    settled = 0
+    with ctx.led._tx():
+        ctx.led.set_kv(f"post_merge_paused:{project}", "0")
+        ctx.led.set_kv(f"post-merge-consecutive:{project}", json.dumps({"count": 0}))
+        for row in ctx.led.q("SELECT * FROM post_merge_checks WHERE project=? AND status='pending'",
+                             (project,)):
+            if ctx.led.now() < parse(row["deadline_at"]):
+                continue
+            ctx.led.set_kv(f"post-merge-remediation:{project}:{row['number']}:{row['merge_sha']}", "done")
+            if _change(ctx, row, status="FAIL", failure_code="paused_expired",
+                       summary="Post-merge deadline expired while paused"):
+                settled += 1
+        ctx.led.event("post_merge_resumed", project,
+                      detail={"source": source, "settled": settled})
+    return settled
+
+
+def _reprobe(ctx, name):
+    """Is the exact-SHA lookup working again for the newest pending check?"""
+    from . import config, launch_health
+    row = ctx.led.q1("SELECT * FROM post_merge_checks WHERE project=? AND status='pending' "
+                     "ORDER BY created_at DESC, rowid DESC LIMIT 1", (name,))
+    if not row:
+        return False
+    policy = ctx.policy(name)
+    if not policy.get("enabled") or not policy["post_merge"]["enabled"]:
+        return False
+    try:
+        if policy["post_merge"]["live_strategy"] == "mahler":
+            artifact = launch_health.exact_live(
+                row["merge_sha"], timeout=5,
+                env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
+        elif policy["post_merge"]["live_strategy"] == "github":
+            artifact = ctx.gh(name).exact_preview(row["merge_sha"], row["target"], timeout=5)
+        else:
+            return False
+    except Exception:
+        return False
+    return bool(artifact)
+
+
 def advance(ctx, projects):
     """One launch/poll per check, isolated per project and per check."""
     if ctx.dry_run:
@@ -267,9 +315,12 @@ def advance(ctx, projects):
         name = project["name"]
         try:
             if ctx.led.get_kv(f"post_merge_paused:{name}") == "1":
-                from .failures import deliver_post_merge_pause_alert
-                deliver_post_merge_pause_alert(ctx, name)
-                continue
+                if _reprobe(ctx, name):
+                    resume(ctx, name, source="re_probe")
+                else:
+                    from .failures import deliver_post_merge_pause_alert
+                    deliver_post_merge_pause_alert(ctx, name)
+                    continue
             policy = ctx.policy(name)
             if not policy.get("enabled") or not policy["post_merge"]["enabled"]:
                 continue

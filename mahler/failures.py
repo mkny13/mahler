@@ -5,7 +5,7 @@ import os
 import re
 
 from .gh import GHError
-from .ledger import row_get
+from .ledger import iso, row_get
 from .redact import redact
 
 
@@ -319,6 +319,9 @@ def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr, diagnost
                        "failure_code": code, "pr": pr, "diagnostic": redact(diagnostic)})
         if count >= 3 and ctx.led.get_kv(pause) != "1":
             ctx.led.set_kv(pause, "1")
+            ctx.led.set_kv(f"post_merge_paused_at:{project}", iso(ctx.led.now()))
+            ctx.led.event("post_merge_paused", project, number,
+                          {"phase": phase, "failure_code": code, "count": count, "bug": bug})
             ctx.led.set_kv(alert_key, json.dumps({
                 "status": "pending", "count": count, "phase": phase,
                 "failure_code": code, "bug": bug,
