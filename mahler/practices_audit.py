@@ -59,7 +59,7 @@ _ASSIGNMENT = re.compile(
         \??["']?\s*(?P<sep>[:=])\s*["']?(?P<val>[^\s"'`,;}]+)""")
 _PRIVATE_KEY = re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----")
 _PLACEHOLDER = re.compile(
-    r"""(?ix)^(?:\$|<|redacted|changeme|example|dummy|placeholder|none|null|nil|"""
+    r"""(?ix)^(?:valid-(?:token|refresh)$|\$|<|redacted|changeme|example|dummy|placeholder|none|null|nil|"""
     r"""undefined|false|true|hunter2|mock|sample|fake|test(?:ing)?|temp|default|"""
     r"""empty|anon|anonymous)""")
 _SCHEMA_DEF = re.compile(

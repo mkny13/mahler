@@ -806,6 +806,31 @@ class TestPracticesAudit(unittest.TestCase):
         finding = self.results()["tracked-secrets"]
         self.assertEqual(finding.state, "pass")
 
+    def test_valid_token_fixture_labels_return_pass(self):
+        content = (
+            'data = {\n'
+            '    "access_token": "valid-token",\n'
+            '    "refresh_token": "valid-refresh",\n'
+            '}\n'
+        )
+        self.write("tests/test_contracts.py", content)
+
+        finding = self.results()["tracked-secrets"]
+
+        self.assertEqual(finding.state, "pass")
+
+    def test_valid_prefix_does_not_hide_credential_assignments(self):
+        content = 'access_token = "valid-token-with-secret-material"\n'
+        self.write("tests/test_contracts.py", content)
+
+        finding = self.results()["tracked-secrets"]
+
+        self.assertEqual(finding.state, "gap")
+        self.assertIn(
+            "tests/test_contracts.py:1: detector=credential-assignment; context=<redacted>",
+            finding.evidence,
+        )
+
     def test_actual_credential_token_and_private_key_report_gap_with_redacted_evidence(self):
         raw_token = "ghp_123456789012345678901234567890123456"
         raw_password = "super-secret-password-xyz"
@@ -937,6 +962,30 @@ class TestPracticesAudit(unittest.TestCase):
                     "allow_force_pushes": {"enabled": False},
                     "allow_deletions": {"enabled": False},
                 }
+
+    def test_movebreak_classic_payload_requires_strict_admin_enforcement(self):
+        self.gh.protection = {
+            "required_status_checks": {
+                "contexts": ["verify"],
+                "checks": [{"context": "verify", "app_id": 15368}],
+                "strict": False,
+            },
+            "enforce_admins": {"enabled": False},
+            "allow_force_pushes": {"enabled": False},
+            "allow_deletions": {"enabled": False},
+        }
+        self.gh.rules = []
+        self.gh.rulesets = {}
+        self.write(".github/workflows/ci.yml", WORKFLOW.replace(
+            "jobs:\n  test:", "jobs:\n  verify:"))
+
+        finding = self.results()["branch-protection"]
+
+        self.assertEqual(finding.state, "gap")
+        for safeguard in (
+                "strict required checks", "administrator enforcement",
+                "force pushes disabled", "deletion disabled"):
+            self.assertIn(safeguard, finding.reason)
 
     def test_missing_protection_fields_are_unknown_not_pass(self):
         for key in ("enforce_admins", "allow_force_pushes", "allow_deletions"):
