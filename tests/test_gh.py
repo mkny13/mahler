@@ -271,6 +271,62 @@ class TestGH(unittest.TestCase):
                 self.assertEqual(actual, reason)
                 self.assertEqual(url, None if reason else success["environment_url"])
 
+    def test_exact_preview_gh_errors_and_timeouts(self):
+        import subprocess
+        sha = "a" * 40
+        deployment = {"id": 100, "sha": sha, "environment": "Preview",
+                      "production_environment": False}
+
+        # 1. 403 during deployments lookup
+        self.gh._gh.side_effect = GHError(
+            "gh api --method GET: gh: Resource not accessible by integration (HTTP 403) token=secret_payload"
+        )
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertIn("HTTP 403", reason)
+        self.assertNotIn("secret_payload", reason)
+        self.assertEqual(reason, "deployment lookup failed (HTTP 403)")
+        self.assertIsNone(self.gh.exact_preview(sha, "Preview", return_reason=False))
+
+        # 2. Timeout during deployments lookup
+        self.gh._gh.side_effect = GHError(
+            "gh api --method GET: Command '['gh', 'api']' timed out after 5 seconds"
+        )
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertEqual(reason, "deployment lookup timed out")
+
+        # 3. TimeoutExpired exception during deployments lookup
+        self.gh._gh.side_effect = subprocess.TimeoutExpired(["gh"], 5)
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertEqual(reason, "deployment lookup timed out")
+
+        # 4. 403 during statuses lookup
+        self.gh._gh.side_effect = [
+            json.dumps([deployment]),
+            GHError("gh api --method GET: gh: Resource not accessible by integration (HTTP 403) token=secret_payload"),
+        ]
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertEqual(reason, "deployment lookup failed (HTTP 403)")
+        self.assertNotIn("secret_payload", reason)
+
+        # 5. Timeout during statuses lookup
+        self.gh._gh.side_effect = [
+            json.dumps([deployment]),
+            GHError("gh api --method GET: Command '['gh', 'api']' timed out after 5 seconds"),
+        ]
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertEqual(reason, "deployment lookup timed out")
+
+        # 6. 404 during deployments lookup
+        self.gh._gh.side_effect = GHError("gh api --method GET: gh: Not Found (HTTP 404)")
+        url, reason = self.gh.exact_preview(sha, "Preview", return_reason=True)
+        self.assertIsNone(url)
+        self.assertEqual(reason, "deployment lookup failed (HTTP 404)")
+
     def test_screenshot_preview_filters_and_newest_status(self):
         sha = 'a' * 40
         deployment = {"id": 1, "sha": sha, "environment": "Preview",
