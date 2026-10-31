@@ -441,6 +441,71 @@ class PostMergeTests(unittest.TestCase):
             self.tick()
             advance.assert_not_called()
 
+    def trip(self):
+        self.gh.issue_state.return_value = "OPEN"
+        for number in (2, 3, 4):
+            self.report_failure(number)
+        self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
+
+    def expire(self):
+        self.now = self.now + timedelta(days=3)
+
+    @mock.patch("mahler.notify.send")
+    def test_post_merge_pause_records_timestamp_and_event(self, ping):
+        self.trip()
+        self.assertEqual(self.led.get_kv("post_merge_paused_at:p"), iso(self.now))
+        events = self.led.q("SELECT * FROM events WHERE kind='post_merge_paused'")
+        self.assertEqual(len(events), 1)
+        detail = json.loads(events[0]["detail"])
+        self.assertEqual((detail["phase"], detail["failure_code"], detail["count"]),
+                         ("live", "timeout", 3))
+
+    @mock.patch("mahler.notify.send")
+    def test_resume_settles_overdue_checks_without_bug_or_streak_cascade(self, ping):
+        self.trip()
+        creates = self.gh.create_issue.call_count
+        self.expire()
+        self.assertEqual(post_merge.resume(self.ctx, "p", source="cli"), 1)
+        self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        row = self.row()
+        self.assertEqual((row["status"], row["failure_code"]), ("FAIL", "paused_expired"))
+        self.assertIn("expired while paused", row["summary"])
+        self.tick()
+        self.assertEqual(self.gh.create_issue.call_count, creates)
+        self.assertEqual(json.loads(self.led.get_kv("post-merge-consecutive:p"))["count"], 0)
+        self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_resumed'")
+        self.assertEqual(json.loads(event["detail"]), {"source": "cli", "settled": 1})
+
+    @mock.patch("mahler.notify.send")
+    def test_re_probe_clears_pause_when_live_lookup_succeeds(self, ping):
+        self.trip()
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.gh.exact_preview.return_value = None
+        self.tick()
+        self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        self.gh.exact_preview.return_value = "https://preview.example"
+        self.tick()
+        self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_resumed'")
+        self.assertEqual(json.loads(event["detail"])["source"], "re_probe")
+        self.assertEqual(self.row()["phase"], "live")
+
+    @mock.patch("mahler.notify.send")
+    def test_cmd_resume_project_unpauses_post_merge(self, ping):
+        from types import SimpleNamespace
+        from mahler import cli
+        for command, args in ((cli.cmd_resume, {"project": "p"}),
+                              (cli.cmd_resume, {"project": None}),
+                              (cli.cmd_unstick, {"project": "p"})):
+            with self.subTest(command=command.__name__, args=args):
+                self.led.set_kv("post_merge_paused:p", "1")
+                with mock.patch("mahler.ship.unstick", return_value=0), \
+                        mock.patch("sys.stdout"):
+                    command(SimpleNamespace(**args), self.cfg, self.led)
+                self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
+
     @mock.patch("mahler.notify.send")
     def test_failed_circuit_breaker_ping_retries_while_project_is_paused(self, ping):
         self.gh.issue_state.return_value = "OPEN"

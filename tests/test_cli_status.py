@@ -38,6 +38,21 @@ class StatusCliTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_status_reports_post_merge_pause_and_timestamp(self):
+        self.led.set_kv("post_merge_paused:proj", "1")
+        self.led.set_kv("post_merge_paused_at:proj", "2026-10-29T18:40:00Z")
+        for as_json in (False, True):
+            buf = io.StringIO()
+            with patch("sys.stdout", buf):
+                cli.cmd_status(SimpleNamespace(json=as_json, project=None), self.cfg, self.led)
+            if as_json:
+                self.assertEqual(json.loads(buf.getvalue())["post_merge_paused"],
+                                 {"proj": "2026-10-29T18:40:00Z"})
+            else:
+                self.assertIn("post-merge checks paused for proj since 2026-10-29T18:40:00Z",
+                              buf.getvalue())
+                self.assertIn("mahler resume proj", buf.getvalue())
+
     def test_missing_scope_counts_text_json_and_project_filter(self):
         self.cfg["projects"].update({
             "a": {"enabled": True, "scope": "label", "scope_label": "custom"},
