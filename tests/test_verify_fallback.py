@@ -109,6 +109,32 @@ class VerifyFallbackTests(unittest.TestCase):
         self.assertIn("verify-green fallback", self.last_event())
         self.assertEqual(self.led.get_kv("unconfirmed:x#5"), "1")
 
+    def _errored_run(self, launch_head, head, dirty=False):
+        """A cline run that exits 1 with an error; the branch already had commits."""
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "error", "message": "boom"}) + "\n")
+        with open(self.run["status_path"], "w") as fh:
+            fh.write("1")
+        self.led.set_kv(f"launch_head:{self.run_id}", launch_head)
+        with mock.patch.object(runner, "head_sha", return_value=head), \
+                mock.patch.object(runner, "worktree_dirty", return_value=dirty):
+            self.finalize(commits=3, verify_ok=True)
+
+    def test_errored_run_with_no_new_work_does_not_fall_back(self):
+        """mahler#1485: a dead run on a branch with old green commits is no build."""
+        self._errored_run("aaa", "aaa")
+        item = self.led.item("x", 5)
+        self.assertNotEqual(item["state"], "verifying")
+        self.assertIsNone(self.led.get_kv("unconfirmed:x#5"))
+
+    def test_errored_run_that_committed_still_falls_back(self):
+        self._errored_run("aaa", "bbb")
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+
+    def test_errored_run_with_uncommitted_work_still_falls_back(self):
+        self._errored_run("aaa", "aaa", dirty=True)
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+
     def test_no_commits_ahead_is_failed_attempt(self):
         """No status line, 0 commits ahead and no uncommitted snapshot → failed attempt, as today."""
         self._write_log_no_status()

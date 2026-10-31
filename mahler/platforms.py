@@ -65,6 +65,7 @@ import os
 import re
 import subprocess
 import selectors
+import tempfile
 import time
 from datetime import datetime, timezone
 
@@ -131,6 +132,9 @@ def is_network_error(text):
 # the platform's login failing for this run's environment, not the item.
 AUTH_DENIED_WORDS = (
     "access denied by policy settings",
+    # Cline's expired login (mahler#1485): {"type":"error","message":
+    # "cline requires re-authentication."}. Fixed machine-wide by `cline auth`.
+    "requires re-authentication",
 )
 
 
@@ -233,6 +237,28 @@ def claude_exe():
 
 def agy_exe():
     return which("agy", [os.path.join(HOME, ".local/bin")])
+
+
+def probe_cline(pconf=None, env=None):
+    """Bounded non-interactive login check (mahler#1485).
+    -> True (works), False (needs `cline auth`), None (couldn't tell)."""
+    exe = cline_exe()
+    if not exe:
+        return None
+    argv = [exe, "--json", "--auto-approve", "false", "-t", "30"]
+    if (pconf or {}).get("model"):
+        argv += ["-m", pconf["model"]]
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            r = subprocess.run(argv + ["--cwd", d, "Reply with the single word OK."],
+                               capture_output=True, text=True, timeout=60, env=env,
+                               stdin=subprocess.DEVNULL)
+        except (subprocess.SubprocessError, OSError):
+            return None
+    out = (r.stdout or "") + (r.stderr or "")
+    if is_auth_denied(out):
+        return False
+    return True if r.returncode == 0 else None
 
 
 def cline_exe():

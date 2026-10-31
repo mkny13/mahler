@@ -832,6 +832,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     prep = None
     try:
         prep = runner.prepare(ctx, project, item, role, platform, run_id)
+        led.set_kv(f"launch_head:{run_id}", prep["head_sha"])   # finalize: did the run add work?
         led.record_lesson_exposure(project, config.account_of(pconf), run_id,
                                    (prep.get("lessons") or {}).get("safe"))
         if role == "design":

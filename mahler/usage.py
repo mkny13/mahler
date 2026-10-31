@@ -310,6 +310,7 @@ def refresh_usage(ctx, projects):
                 if w == "5h" and prev_5h is not None and pct > prev_5h:
                     note_human_rise(cfg, led, name, pct)
                 led.record_usage(name, w, pct, resets)
+    refresh_cline_holds(cfg, led)
     for name in wanted:
         pconf = cfg["platforms"][name]
         account = config.account_of(pconf)
@@ -463,3 +464,20 @@ def record_discussion_usage(cfg, led, platform, turn_id):
     led.event('human-use', detail=group)
     led.event('discussion-usage', detail={'turn_id': turn_id, 'platform': platform,
                                          'usage_kind': 'operator'})
+
+
+def refresh_cline_holds(cfg, led, force=False):
+    """Probe each Cline platform held for an expired login (mahler#1485); lift
+    the hold only when the probe shows the login works. A failed or unclear
+    probe leaves it. Throttled per platform unless forced."""
+    from . import holds
+    for name, pconf in cfg["platforms"].items():
+        if pconf.get("kind") != "cline" or led.get_kv(f"hold_reason:{name}") != "auth":
+            continue
+        last = parse(led.get_kv(f"probe:{name}"))
+        if not force and last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 60)):
+            continue
+        led.set_kv(f"probe:{name}", iso(led.now()))
+        if platforms.probe_cline(pconf, env=config.run_env(cfg, config.account_of(pconf))) is True:
+            holds.clear(cfg, led, name, by="probe")
+

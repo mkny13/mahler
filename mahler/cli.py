@@ -622,6 +622,7 @@ def cmd_usage(a, cfg, led):
                 for peer in peers:
                     for w, pct, resets in samples:
                         led.record_usage(peer, w, pct, resets)
+    usage_mod.refresh_cline_holds(cfg, led, force=a.probe)
     burst_lines = router.all_bursts(cfg, led)
     burst_kind = router.burst_kind(burst_lines) if burst_lines else None
     if burst_kind:

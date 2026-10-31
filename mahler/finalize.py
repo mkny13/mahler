@@ -1273,7 +1273,7 @@ def finalize(ctx, run):
                     ending.blocked_check = _check_blocked_condition(ctx, project, n, rest)
             handler = next((handle for matches, handle in ENDINGS if matches(ending)), _retry)
             if handler is _ended_unconfirmed and not log.get("gateway_failed"):
-                ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item)
+                ending.verify_green = _try_verify_fallback(ctx, run, pol, ending.saved, item, log, code)
 
     # Claim uses BEGIN IMMEDIATE too: checking the epoch and applying the
     # outcome in one transaction prevents a claim between the check and any
@@ -1374,9 +1374,34 @@ def _auth_denied(log, code, verb):
                 and log.get("ok") is not True and not verb)
 
 
+AUTH_HOLD_DAYS = 365   # "lasting": lifted by a working probe or `mahler unhold`
+
+
+def _hold_auth_platform(ctx, run, log):
+    """A machine-wide CLI login has expired (Cline, mahler#1485): hold the
+    platform for every project until a probe shows it works again or the owner
+    runs `mahler unhold`. One ping, only when the hold is new."""
+    led, platform = ctx.led, run["platform"]
+    fresh = led.get_kv(f"hold_reason:{platform}") != "auth"
+    until = led.now() + timedelta(days=AUTH_HOLD_DAYS)
+    led.record_usage(platform, router.HOLD, 100.0, resets_at=iso(until))
+    led.set_kv(f"hold_reason:{platform}", "auth")
+    led.event("auth_denied", run["project"], run["number"],
+              {"platform": platform, "run": run["id"], "scope": "platform"})
+    if fresh:
+        ctx.ping(f"Mahler: {platform} needs you to log in again",
+                 f"Run {run['id']} ended with the CLI's login expired. Run `cline auth` "
+                 f"on the Mac mini; {platform} is blocked for every project until a "
+                 "probe shows the login works (`mahler usage --probe`) or `mahler unhold "
+                 f"{platform}`.",
+                 run["project"], run["number"], priority="high", tags="warning")
+
+
 def _hold_auth_denied(ctx, run, log):
     """Hold the platform for this project only: its login works elsewhere
     (work-copilot on work projects), so a global hold would idle it there."""
+    if ctx.cfg["platforms"].get(run["platform"], {}).get("kind") == "cline":
+        return _hold_auth_platform(ctx, run, log)
     led, platform, project = ctx.led, run["platform"], run["project"]
     fresh = router.project_hold(led, project, platform) is None
     until = led.now() + timedelta(minutes=AUTH_DENIED_HOLD_MINUTES)
@@ -1405,7 +1430,20 @@ def _hold_model_unavailable(ctx, run, log=None):
                  run["project"], run["number"], tags="warning")
 
 
-def _try_verify_fallback(ctx, run, pol, saved, item):
+def _did_no_work(ctx, run, log, code):
+    """An errored run whose worktree HEAD never moved from launch and holds no
+    uncommitted changes did no work (mahler#1485): old green commits on the
+    branch must not count as this run's build."""
+    if code == 0 and (log or {}).get("ok", True):
+        return False
+    head = ctx.led.get_kv(f"launch_head:{run['id']}")
+    if not isinstance(head, str) or not head:
+        return False
+    return (runner.head_sha(run["worktree"]) == head
+            and not runner.worktree_dirty(run["worktree"]))
+
+
+def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
     """D18 verify-green fallback: no STATUS line, but if the branch has commits
     ahead of base (or uncommitted changes in saved snapshot) *and* the project's
     verify command passes in the worktree, treat as DONE. Returns True if the
@@ -1415,6 +1453,9 @@ def _try_verify_fallback(ctx, run, pol, saved, item):
     base = pol.get("base", "main")
     verify_cmd = pol.get("verify")
     if not verify_cmd:
+        return False
+    if _did_no_work(ctx, run, log, code):
+        ctx.say(f"{project}#{n}: run errored and made no new work — no verify-green fallback")
         return False
     ahead = runner.commits_ahead(run["worktree"], base)
     if ahead == 0 and saved and saved.get("ahead", 0) > 0:

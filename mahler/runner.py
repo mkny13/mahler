@@ -668,6 +668,22 @@ def remove_worktree(repo, wt, branch=None, root=None):
         git(repo, "branch", "-D", branch, check=False)
 
 
+def head_sha(wt):
+    """The worktree's HEAD sha, or None on any error."""
+    try:
+        return git(wt, "rev-parse", "HEAD")
+    except (GitError, OSError):
+        return None
+
+
+def worktree_dirty(wt):
+    """Whether the worktree has uncommitted changes (True if unreadable)."""
+    try:
+        return bool(git(wt, "status", "--porcelain"))
+    except (GitError, OSError):
+        return True
+
+
 def commits_ahead(wt, base):
     """How many commits the worktree's HEAD is ahead of origin/<base>.
     Returns 0 on any error (missing worktree, detached HEAD, etc.)."""
