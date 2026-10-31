@@ -1553,11 +1553,11 @@ def _kv_json(led, key):
 
 
 def _unchanged_done_review(ctx, project, item, pr, sha, info):
-    """Consume one durable same-head allowance, before reopening fix accounting.
+    """Consume one durable same-head allowance per verdict before fix accounting.
 
     Record the exact launched fix and failed verdict, not merely a historical
     DONE. Writing the allowance before invalidation makes interrupted ticks
-    replayable; a new verdict can never reuse that allowance.
+    replayable; a new verdict needs its own completed fix.
     """
     led, n = ctx.led, item["number"]
     key = f"reviewfix:{project}#{n}:{pr}:{sha}"

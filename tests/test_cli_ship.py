@@ -107,9 +107,9 @@ class ShipCommandTests(unittest.TestCase):
             with self.subTest(state=state):
                 self.led.upsert_item("x", 7, state=state, attempts=6,
                                      setup_fails=2, esc_tier=3, esc_fails=1)
-                preserved = ("review:x#7", "reviewhistory:x#7:395", "followup:x#7",
+                preserved = ("reviewhistory:x#7:395", "followup:x#7",
                              "failed_comment:x#7:1:0:0", "red:x#70:395:head")
-                cleared = ("reviewfix:x#7:395:head", "reviewfix:x#7:395:head:charged",
+                cleared = ("review:x#7", "reviewfix:x#7:395:head", "reviewfix:x#7:395:head:charged",
                            "red:x#7:395:head", "red:x#7:395:head:charged")
                 for key in preserved + cleared:
                     self.led.set_kv(key, "historical evidence")

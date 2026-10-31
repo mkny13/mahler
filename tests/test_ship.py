@@ -6485,12 +6485,14 @@ class TestShip(unittest.TestCase):
         self.assertFalse(any('Review keeps blocking' in str(c) for c in ping.call_args_list))
 
     def test_failed_same_head_fixes_do_not_spend_review_budget(self):
+        from mahler import review
         rid = self.same_head_setup()
         before = self.same_head_counters()
         for outcome in ('failed', 'launch failed: login', 'BLOCKED test failure'):
             self.led.update_run(rid, status='ended', outcome=outcome)
             self.same_head_gate()
             self.assertEqual(self.same_head_counters(), before)
+            self.assertEqual(len(review.window(self.led, "x", 5, 88)), 1)
             self.assertEqual(self.item()['state'], 'verifying')
             rid = self.led.last_run('x', 5, roles=('fix',))['id']
 
