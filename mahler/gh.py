@@ -141,6 +141,29 @@ def project_client(cfg, pol):
     return GH(pol["repo"], env=config.run_env(cfg, config.gh_account_of(pol)), app=app)
 
 
+def classify_deployment_lookup_error(exc):
+    """Sanitize and classify deployment lookup errors into safe diagnostic reasons.
+
+    Never retains raw payloads, headers, tokens, or credential strings.
+    """
+    if isinstance(exc, (subprocess.TimeoutExpired, TimeoutError)):
+        return "deployment lookup timed out"
+    msg = str(exc or "")
+    m = re.search(
+        r"(?:\bHTTP(?:/\d+(?:\.\d+)?)?|\bstatus(?:\s+code)?)\s*[:=]?\s*([1-5]\d{2})\b|\(HTTP\s*([1-5]\d{2})\)",
+        msg, re.I)
+    if m:
+        status = m.group(1) or m.group(2)
+        return f"deployment lookup failed (HTTP {status})"
+    if re.search(r"\b(timed? ?out|timeout)\b", msg, re.I):
+        return "deployment lookup timed out"
+    if isinstance(exc, GHRateLimit) or re.search(r"\brate limit\b", msg, re.I):
+        return "deployment lookup failed (rate limit)"
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return "deployment lookup failed (malformed response)"
+    return "deployment lookup failed (provider/auth/response error)"
+
+
 class GH:
     def __init__(self, repo, env=None, app=None):
         self.app = app
@@ -792,8 +815,11 @@ class GH:
             return result(reason="invalid merge SHA or environment")
         production = environment.strip().casefold() in ("prod", "production")
         query = urlencode({"environment": environment, "per_page": 100})
-        deployments = json.loads(self._gh(
-            "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
+        try:
+            deployments = json.loads(self._gh(
+                "api", "--method", "GET", f"repos/{self.repo}/deployments?{query}", timeout=timeout))
+        except Exception as exc:
+            return result(reason=classify_deployment_lookup_error(exc))
         if not isinstance(deployments, list) or not deployments:
             return result(reason="no deployments found for environment")
         if any(not isinstance(d, dict) or type(d.get("id")) is not int
@@ -810,10 +836,13 @@ class GH:
         repository_url = f"https://api.github.com/repos/{self.repo}"
         if deployment.get("repository_url", repository_url) != repository_url:
             return result(reason="deployment repository mismatch")
-        statuses = json.loads(self._gh(
-            "api", "--method", "GET",
-            f"repos/{self.repo}/deployments/{deployment['id']}/statuses?per_page=100",
-            timeout=timeout))
+        try:
+            statuses = json.loads(self._gh(
+                "api", "--method", "GET",
+                f"repos/{self.repo}/deployments/{deployment['id']}/statuses?per_page=100",
+                timeout=timeout))
+        except Exception as exc:
+            return result(reason=classify_deployment_lookup_error(exc))
         if not isinstance(statuses, list) or not statuses:
             return result(reason="no deployment statuses found")
         if any(not isinstance(s, dict) or type(s.get("id")) is not int for s in statuses):

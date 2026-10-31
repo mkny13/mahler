@@ -154,6 +154,83 @@ class PostMergeTests(unittest.TestCase):
         event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_failed'")
         self.assertIn(reason, json.loads(event["detail"])["diagnostic"])
 
+    @mock.patch("mahler.notify.send")
+    def test_live_lookup_http_403_recorded_in_summary_and_failure_event_without_payload(self, ping):
+        from mahler.gh import GH, GHError
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.tick()
+        self.gh.pr_for_commit.return_value = 42
+        provider = GH("x/y")
+        self.gh.exact_preview.side_effect = provider.exact_preview
+        secret_payload = "gh: Resource not accessible by integration (HTTP 403) authorization_token=SECRET_123"
+        with mock.patch.object(provider, "_gh", side_effect=GHError(secret_payload)):
+            self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.assertIn("HTTP 403", self.row()["summary"])
+        self.assertNotIn("SECRET_123", self.row()["summary"])
+        self.assertNotIn("authorization_token", self.row()["summary"])
+
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+        self.now += timedelta(seconds=1800)
+        self.tick()
+        self.assertEqual(self.row()["status"], "FAIL")
+        self.assertEqual(self.row()["failure_code"], "timeout")
+        self.assertIn("HTTP 403", self.row()["summary"])
+        self.assertNotIn("SECRET_123", self.row()["summary"])
+        self.assertNotIn("authorization_token", self.row()["summary"])
+        self.assertIn("HTTP 403", self.gh.create_issue.call_args.args[1])
+        self.assertNotIn("SECRET_123", self.gh.create_issue.call_args.args[1])
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_failed'")
+        detail = json.loads(event["detail"])
+        self.assertIn("HTTP 403", detail["diagnostic"])
+        self.assertNotIn("SECRET_123", detail["diagnostic"])
+
+    @mock.patch("mahler.notify.send")
+    def test_live_lookup_timeout_recorded_in_summary_and_failure_event(self, ping):
+        from mahler.gh import GH, GHError
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.tick()
+        self.gh.pr_for_commit.return_value = 42
+        provider = GH("x/y")
+        self.gh.exact_preview.side_effect = provider.exact_preview
+        with mock.patch.object(provider, "_gh", side_effect=GHError("gh api: Command '['gh']' timed out after 5 seconds")):
+            self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.assertIn("timed out", self.row()["summary"])
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+        self.now += timedelta(seconds=1800)
+        self.tick()
+        self.assertEqual(self.row()["status"], "FAIL")
+        self.assertEqual(self.row()["failure_code"], "timeout")
+        self.assertIn("timed out", self.row()["summary"])
+        self.assertIn("timed out", self.gh.create_issue.call_args.args[1])
+        event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_failed'")
+        detail = json.loads(event["detail"])
+        self.assertIn("timed out", detail["diagnostic"])
+
+    def test_observe_live_direct_exception_preserves_failure_class(self):
+        from mahler.gh import GHError
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="github", live_command="")
+        self.tick()
+        # Direct exception from exact_preview with HTTP 403
+        self.gh.exact_preview.side_effect = GHError("HTTP 403 Forbidden secret=leak")
+        self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.assertIn("HTTP 403", self.row()["summary"])
+        self.assertNotIn("secret=leak", self.row()["summary"])
+
+        # Direct exception from exact_preview with timeout
+        import subprocess
+        self.gh.exact_preview.side_effect = subprocess.TimeoutExpired(["gh"], 5)
+        self.tick()
+        self.assertEqual(self.row()["status"], "pending")
+        self.assertIn("timed out", self.row()["summary"])
+
     def test_pass_across_ticks_and_single_d10_evidence(self):
         self.led.upsert_item("p", 1, state="shipped")
         self.led.add_uat("p", 1, 4, SHA, "test", "verify", shipped_at=iso(NOW - timedelta(seconds=1)))

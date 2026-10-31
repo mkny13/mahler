@@ -171,6 +171,7 @@ def _poll(ctx, row, directory):
 
 def _observe_live(ctx, row, policy):
     from . import config, launch_health
+    from .gh import classify_deployment_lookup_error
     from .ledger import parse
     remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
     timeout = min(5, max(.01, remaining / 2))
@@ -184,9 +185,9 @@ def _observe_live(ctx, row, policy):
         else:
             artifact, reason = ctx.gh(row["project"]).exact_preview(
                 row["merge_sha"], row["target"], timeout=timeout, return_reason=True)
-    except Exception:
+    except Exception as exc:
         # Provider/auth/JSON failures are retryable, without retaining payloads.
-        reason = "deployment lookup failed (provider/auth/response error)"
+        reason = classify_deployment_lookup_error(exc)
     if ctx.led.now() >= parse(row["deadline_at"]):
         _fail(ctx, {**dict(row), "summary": reason}, "timeout")
     elif artifact:
