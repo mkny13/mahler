@@ -87,6 +87,8 @@ class PostMergeTests(unittest.TestCase):
                          "settings/installations", "x/y", "access was denied"):
             self.assertIn(expected, request)
         self.assertEqual(detail["observed_at"], iso(self.now))
+        self.led.close()
+        self.led = Ledger(str(self.root / "ledger.db"), clock=lambda: self.now)
         self.ctx = scheduler.Ctx(self.cfg, self.led)
         self.ctx.gh = mock.Mock(return_value=self.gh)
         self.tick()
@@ -94,9 +96,11 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(ping.call_count, 2)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='post_merge_probe_diagnostic'")), 1)
         self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='post_merge_permission_delivered'")), 1)
-        self.gh.exact_preview.return_value = (None, "merge SHA not found")
-        self.tick()
-        self.assertEqual(post_merge.pause_diagnostic(self.led, "p")["permission_request"], request)
+        for observation in ("merge SHA not found", "deployment lookup timed out"):
+            self.gh.exact_preview.return_value = (None, observation)
+            self.tick()
+            self.assertEqual(post_merge.pause_diagnostic(self.led, "p")["permission_request"], request)
+        self.gh.exact_preview.assert_called_with(SHA, self.row()["target"], timeout=5, return_reason=True)
         self.now += timedelta(days=2)
         self.gh.exact_preview.return_value = ("https://preview.example", "")
         self.tick()
@@ -137,6 +141,20 @@ class PostMergeTests(unittest.TestCase):
         calls = self.gh.exact_preview.call_count
         self.tick()
         self.assertEqual(self.gh.exact_preview.call_count, calls)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_non_app_denial_does_not_invent_app_permission_request(self, ping):
+        self.cfg["projects"]["p"]["post_merge"].update(live_strategy="github")
+        self.led.set_kv("post_merge_paused:p", "1")
+        self.gh.app = None
+        self.gh.exact_preview.return_value = (None, "HTTP 403 SENTINEL_SECRET")
+        self.tick()
+        detail = post_merge.pause_diagnostic(self.led, "p")
+        self.assertIn("HTTP 403", detail["reason"])
+        self.assertNotIn("permission_request", detail)
+        self.gh.app_login.assert_not_called()
+        ping.assert_not_called()
+        self.assertNotIn("SENTINEL_SECRET", post_merge.pause_text(self.led, "p"))
 
     def test_builtin_live_strategies_feed_artifact_to_smoke(self):
         for strategy in ("github", "mahler"):
