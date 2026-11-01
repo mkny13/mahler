@@ -2186,6 +2186,25 @@ class RunTests(unittest.TestCase):
         self.assertEqual(until, NOW + timedelta(hours=1))
         self.assertEqual(ping.call_count, 0)
 
+    def test_successful_paid_cline_free_run_rejects_model_without_spending_attempt(self):
+        self.run["model"] = "a/free"
+        self.led.update_run(self.run_id, model="a/free")
+        self.led.set_kv("cline:free_models", json.dumps(["a/free", "b/free"]))
+        self.led.set_kv("cline:free_validated", json.dumps({"a/free": iso(NOW)}))
+        with open(self.log, "w") as fh:
+            fh.write(json.dumps({"type": "run_result", "finishReason": "completed",
+                                 "text": "STATUS: DONE built", "totalCost": 0.25}) + "\n")
+
+        self.finalize()
+
+        item = self.led.item("x", 5)
+        run = self.led.run(self.run_id)
+        rejected = json.loads(self.led.get_kv("cline:free_rejected"))
+        self.assertEqual((item["state"], item["attempts"]), ("ready", 0))
+        self.assertEqual((run["stop_reason"], run["cost_usd"]), ("no_credit", 0.25))
+        self.assertIn("a/free", rejected)
+        self.assertNotIn("b/free", rejected)
+
     def test_credit_alert_fires_once_after_a_day_and_recovery_pings_once(self):
         self.cfg["platforms"]["cline-free"].pop("free_models_url")   # pinned-model credit path
         self.led.set_kv("credit_state:cline-free", json.dumps({

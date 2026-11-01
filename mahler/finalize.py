@@ -1191,6 +1191,11 @@ def finalize(ctx, run):
     run_dict = dict(run)
     model = run_dict.get("model") or pconf.get("sort_model" if run_dict.get("role") == "sort" else "build_model") or pconf.get("model")
     log = platforms.read_log(run["log_path"], kind, model=model)
+    cline_model_billed = (cline_free.managed(pconf)
+                          and (log.get("credit_exhausted")
+                               or isinstance(log.get("cost_usd"), (int, float))
+                               and not isinstance(log.get("cost_usd"), bool)
+                               and log["cost_usd"] > 0))
     _record_run_usage(ctx, run, kind, log)
     if pconf.get("api_credits") and not ctx.dry_run:
         from . import api_credits
@@ -1205,7 +1210,7 @@ def finalize(ctx, run):
     code = runner.exit_code(run)
     setup_failed = code == 97 and run["role"] == "build"   # setup died before the agent ran
     reason = run["stop_reason"] or ("auth_denied" if _auth_denied(log, code, verb) else None) or \
-             ("no_credit" if log.get("credit_exhausted")
+             ("no_credit" if cline_model_billed or log.get("credit_exhausted")
                                      or log.get("auth_failed") else
                                      "quota" if log["quota_hit"] else None) or \
              ("model_unavailable" if _model_unavailable_fast(run, log, code, verb) else None) or \
@@ -1216,7 +1221,7 @@ def finalize(ctx, run):
                else verb or (f"exit {code}" if code else "no status line"))
     if verb == "BLOCKED" and rest and not setup_failed:
         outcome = f"{verb} {rest}"
-    if log.get("credit_exhausted") and cline_free.managed(ctx.cfg["platforms"][run["platform"]]):
+    if cline_model_billed:
         if not ctx.dry_run:
             _model_billed(ctx, run)
     elif log.get("credit_exhausted"):

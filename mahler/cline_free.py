@@ -114,14 +114,16 @@ def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=Fal
         return (order[r["status"]], cps if cps is not None else math.inf, 0)
     validated = _json(led, VALIDATED_KEY, {})
     for model in sorted(pool, key=lambda m: (key(m), pool.index(m))):
-        if model not in validated:
-            verdict = probe(pconf, model) if probe else None
-            if verdict is False:
-                reject(led, model)
-            if verdict is not True:
-                continue
-            validated[model] = led.now().isoformat()
-            led.set_kv(VALIDATED_KEY, json.dumps(validated))
+        # The published list can stay unchanged while a model starts billing.
+        # Validate immediately before every launch; this timestamp is evidence,
+        # not a trust cache (mahler#1507).
+        verdict = probe(pconf, model) if probe else None
+        if verdict is False:
+            reject(led, model)
+        if verdict is not True:
+            continue
+        validated[model] = led.now().isoformat()
+        led.set_kv(VALIDATED_KEY, json.dumps(validated))
         led.set_kv(GOOD_KEY, model)
         return model
     return None
@@ -132,6 +134,9 @@ def reject(led, model):
     rejected = _json(led, REJECTED_KEY, {})
     rejected[model] = led.now().isoformat()
     led.set_kv(REJECTED_KEY, json.dumps(rejected))
+    validated = _json(led, VALIDATED_KEY, {})
+    if validated.pop(model, None) is not None:
+        led.set_kv(VALIDATED_KEY, json.dumps(validated))
     if led.get_kv(GOOD_KEY) == model:
         led.set_kv(GOOD_KEY, None)
 

@@ -162,6 +162,8 @@ def collect(res, ev, kind):
     elif kind == "cline":
         model = ev.get("model")
         if t == "run_result":
+            if number(ev.get("totalCost")):
+                res["cost_usd"] = ev["totalCost"]
             usage = ev.get("aggregateUsage")
             fields = {"in": ("inputTokens", "cacheWriteTokens"),
                       "cached": ("cacheReadTokens",), "out": ("outputTokens",)}

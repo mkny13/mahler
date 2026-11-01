@@ -3,6 +3,8 @@
 import copy
 import io
 import json
+import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -86,9 +88,20 @@ class ValidationTests(Base):
         got = self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}]), probe=probe)
         self.assertEqual((got, seen), ("b/free", ["a/free", "b/free"]))
         self.assertIn("a/free", json.loads(self.led.get_kv(cline_free.REJECTED_KEY)))
-        seen.clear()                                   # validated: no second probe
-        self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}]), probe=probe)
-        self.assertEqual(seen, [])
+
+    def test_validated_candidate_is_reprobed_before_each_launch(self):
+        seen = []
+        verdicts = {"a/free": [True, False], "b/free": [True]}
+
+        def probe(pconf, model):
+            seen.append(model)
+            return verdicts[model].pop(0)
+
+        free = opener_for([{"id": "a/free"}, {"id": "b/free"}])
+        self.assertEqual(self.choose(free, probe=probe), "a/free")
+        self.assertEqual(self.choose(free, probe=probe), "b/free")
+        self.assertEqual(seen, ["a/free", "a/free", "b/free"])
+        self.assertIn("a/free", json.loads(self.led.get_kv(cline_free.REJECTED_KEY)))
 
     def test_unproven_model_is_not_launched_when_probe_cannot_tell(self):
         self.assertIsNone(self.choose(opener_for([{"id": "a/free"}]), probe=lambda p, m: None))
@@ -98,6 +111,17 @@ class ValidationTests(Base):
         from mahler import platforms
         self.assertTrue(platforms._billed([{"usage": {"totalCost": 0.002}}]))
         self.assertFalse(platforms._billed([{"usage": {"totalCost": 0, "tokens": 5}}]))
+
+    def test_successful_cline_log_reports_total_cost(self):
+        from mahler import platforms
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "cline.jsonl")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "run_result", "finishReason": "completed",
+                                     "text": "STATUS: DONE built", "totalCost": 0.25}) + "\n")
+            log = platforms.read_log(path, "cline", model="a/free")
+        self.assertTrue(log["ok"])
+        self.assertEqual(log["cost_usd"], 0.25)
 
 
 class RejectionPersistenceTests(Base):
