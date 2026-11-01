@@ -1165,10 +1165,18 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
 def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
     """Hold an agent PR merge when changed direct dependencies lack safe evidence."""
     n = item["number"]
+    sha = view.get("headRefOid") or ""
+    evidence_key = f"dependency-vetting-evidence:{project}#{n}:{pr}:{sha}"
     try:
         before, after = gh.dependency_files(
             ctx.policy(project)["path"], view["baseRefName"], view["headRefOid"])
         if not dependency_vetting.changed_dependencies(before, after):
+            if sha:
+                ctx.led.set_kv(evidence_key, json.dumps({
+                    "sha": sha,
+                    "clean": True,
+                    "findings": [],
+                }))
             return True
         findings, blocked = dependency_vetting.vet(before, after)
     except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
@@ -1181,6 +1189,48 @@ def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting blocked merge: {blocked}")
         _park_dependency_vetting(ctx, project, item, pr, gh, view, blocked)
         return False
+
+    serialized_findings = [
+        {
+            "ecosystem": f.dependency.ecosystem,
+            "name": f.dependency.name,
+            "version": f.dependency.version,
+            "declaration": f.dependency.declaration,
+            "revision": f.dependency.revision,
+            "first_published": f.first_published,
+            "publisher": f.publisher,
+            "source": f.source,
+            "advisories": list(f.advisories),
+            "blocked": f.blocked,
+            "recent": f.recent,
+            "report": f.report(),
+        }
+        for f in findings
+    ]
+    if sha:
+        ctx.led.set_kv(evidence_key, json.dumps({
+            "sha": sha,
+            "clean": False,
+            "findings": serialized_findings,
+        }))
+        comment_key = f"dependency-vetting-comment:{project}#{n}:{pr}:{sha}"
+        marker = f"<!-- mahler:dependency-vetting sha={sha} -->"
+        already_commented = bool(ctx.led.get_kv(comment_key))
+        if not already_commented and hasattr(gh, "find_comment"):
+            try:
+                already_commented = bool(gh.find_comment(pr, marker))
+            except Exception:
+                pass
+        if not already_commented:
+            reports = "\n".join(f"- {f.report()}" for f in findings)
+            comment_body = (
+                f"<!-- mahler:agent -->\n"
+                f"{marker}\n"
+                f"**Conductor Dependency-Vetting Gate Evidence (head `{sha}`)**:\n\n"
+                f"{reports}"
+            )
+            gh.comment(pr, comment_body)
+            ctx.led.set_kv(comment_key, "1")
     return True
 
 
@@ -2247,6 +2297,68 @@ def _review_exhausted(ctx, project, item, pr, view, findings, size):
     return True
 
 
+def _is_missing_gate_evidence_finding(text):
+    text = str(text)
+    has_evidence_ref = bool(re.search(
+        r"conductor.*(?:dependency[- ]vetting|gate)|"
+        r"dependency[- ]vetting(?:\s+gate)?|"
+        r"gate\s+evidence",
+        text, re.I))
+    has_missing_ref = bool(re.search(
+        r"missing|lack[s]?|not (?:posted|provided|found|given|run)|no (?:gate )?evidence|absent|unavailable|without",
+        text, re.I))
+    return has_evidence_ref and has_missing_ref
+
+
+def _all_missing_gate_evidence(findings, led=None, project=None, number=None):
+    blocker_texts = []
+    if led and project and number is not None:
+        try:
+            info = json.loads(led.get_kv(f"review:{project}#{number}") or "{}")
+            classified = info.get("classified")
+            if isinstance(classified, list) and classified:
+                for f in classified:
+                    if isinstance(f, dict) and f.get("severity") == "blocking":
+                        blocker_texts.append(
+                            f"{f.get('scenario', '')} {f.get('consequence', '')} "
+                            f"{f.get('location', '')} {f.get('done_when', '')}"
+                        )
+        except Exception:
+            pass
+
+    if not blocker_texts and findings:
+        if isinstance(findings, list):
+            for item in findings:
+                if isinstance(item, dict):
+                    if item.get("severity") == "blocking":
+                        blocker_texts.append(
+                            f"{item.get('scenario', '')} {item.get('consequence', '')} "
+                            f"{item.get('location', '')} {item.get('done_when', '')}"
+                        )
+                elif isinstance(item, str) and item.strip():
+                    blocker_texts.append(item.strip())
+        elif isinstance(findings, str) and findings.strip():
+            raw = findings.strip()
+            if " | " in raw:
+                parts = raw.split(" | ")
+            elif "\n" in raw:
+                parts = raw.splitlines()
+            else:
+                parts = [raw]
+            for p in parts:
+                cleaned = p.strip().lstrip("-* ").strip()
+                if not cleaned:
+                    continue
+                if re.search(r"\[\s*nonblocking\b", cleaned, re.I):
+                    continue
+                blocker_texts.append(cleaned)
+
+    if not blocker_texts:
+        return False
+
+    return all(_is_missing_gate_evidence_finding(t) for t in blocker_texts)
+
+
 def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_conflict=False, design_plan=None):
     """A failed review feeds back as a fix round (BACKLOG's resolved "output
     shape"): the same routing and attempts/escalation bookkeeping as a red-CI
@@ -2262,6 +2374,20 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
     if any(r["project"] == project and r["number"] == n and r["role"] == "fix"
            for r in led.active_runs()):
         ctx.say(f"{project}#{n}: PR #{pr} — review fix still in progress")
+        return
+    if not base_conflict and not design_plan and _all_missing_gate_evidence(findings, led=led, project=project, number=n):
+        reason = (f"PR #{pr}: review blocked because conductor dependency-vetting gate evidence "
+                  "was missing or disputed. Check gate evidence for this head, then resume shipping.")
+        ctx.say(f"{project}#{n}: {reason}")
+        key = f"review-missing-gate-evidence:{project}#{n}:{pr}:{sha}"
+        if not led.get_kv(key):
+            try:
+                ctx.gh(project).comment(pr, "<!-- mahler:agent -->\n" + reason)
+            except Exception:
+                pass
+            led.set_kv(key, "commented")
+        led.set_state(project, n, "parked", reason)
+        led.release(project, n, holder=CONDUCTOR)
         return
     dup_key = f"reviewdup:{project}#{n}"
     if (not base_conflict and _kv_json(led, dup_key).get("sha") != sha

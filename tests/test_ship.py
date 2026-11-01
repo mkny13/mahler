@@ -118,6 +118,12 @@ class FakeGH:
             body = gh_module.AGENT_NOTE + "\n" + body
         self.comments.append(body)
 
+    def find_comment(self, number, marker):
+        for c in reversed(self.comments):
+            if marker in c:
+                return 1
+        return None
+
     prs = ()
 
     def open_prs(self):
@@ -3489,6 +3495,187 @@ class ShipTests(unittest.TestCase):
             self.ship()
         vet.assert_not_called()
         self.assertEqual(self.gh.merged, [88])
+
+    def test_review_gate_vets_dependencies_stores_evidence_and_posts_comment(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        before = {
+            "gradle/libs.versions.toml": '[versions]\ncast = "22.3.1"\n',
+            "gradle.lockfile": "com.google.android.gms:play-services-cast-framework:22.3.1=runtimeClasspath\n",
+        }
+        after = {
+            "gradle/libs.versions.toml": '[versions]\ncast = "23.0.0"\n',
+            "gradle.lockfile": "com.google.android.gms:play-services-cast-framework:23.0.0=runtimeClasspath\n",
+        }
+        dep = ship.dependency_vetting.Dependency(
+            ecosystem="gradle",
+            name="play-services-cast-framework",
+            declaration="cast = 23.0.0",
+            version="23.0.0",
+        )
+        finding = ship.dependency_vetting.Finding(
+            dependency=dep,
+            first_published="2026-10-15T00:00:00+00:00",
+            publisher="Google LLC",
+            source="https://maven.google.com",
+            advisories=(),
+            blocked=False,
+            recent=False,
+        )
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((finding,), None)) as mock_vet, \
+                mock.patch.object(ship, "_start_review_run") as mock_start:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        mock_vet.assert_called_once()
+        mock_start.assert_called_once()
+
+        sha = self.gh.head_sha
+        evidence_raw = self.led.get_kv(f"dependency-vetting-evidence:x#5:88:{sha}")
+        self.assertIsNotNone(evidence_raw)
+        evidence = json.loads(evidence_raw)
+        self.assertFalse(evidence.get("clean"))
+        self.assertEqual(len(evidence.get("findings", [])), 1)
+        self.assertEqual(evidence["findings"][0]["name"], "play-services-cast-framework")
+        self.assertEqual(evidence["findings"][0]["version"], "23.0.0")
+
+        marker = f"<!-- mahler:dependency-vetting sha={sha} -->"
+        matching_comments = [c for c in self.gh.comments if marker in c]
+        self.assertEqual(len(matching_comments), 1)
+        self.assertIn("play-services-cast-framework@23.0.0", matching_comments[0])
+
+        context = ship.review.start_context(self.ctx, "x", self.item(), 88, sha)
+        self.assertIn(f"Dependency-vetting gate evidence (head {sha}):", context)
+        self.assertIn("play-services-cast-framework@23.0.0", context)
+
+    def test_dependency_vetting_failure_parks_once_without_review_or_fix(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        before = {"gradle.lockfile": "org.example:demo:1.2.2=runtimeClasspath\n"}
+        after = {"gradle.lockfile": "org.example:demo:1.2.3=runtimeClasspath\n"}
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((), "recent package publication")), \
+                mock.patch.object(ship, "_start_review_run") as mock_start, \
+                mock.patch.object(ship, "_review_triggered_fix") as mock_fix:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        mock_start.assert_not_called()
+        mock_fix.assert_not_called()
+        self.assertEqual(self.item()["state"], "parked")
+        self.assertIn("dependency vetting blocked", self.last_event())
+        self.assertIsNone(self.led.lease("x", 5))
+        comment_count = len(self.gh.comments)
+        self.assertGreaterEqual(comment_count, 1)
+
+        # Calling again on unchanged head should not post another duplicate comment
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((), "recent package publication")):
+            ship._vet_pr_dependencies(self.ctx, "x", self.item(), 88, self.gh, self.gh.pr_view(88))
+        self.assertEqual(len(self.gh.comments), comment_count)
+
+    def test_review_missing_gate_evidence_suppresses_fix_and_parks(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        finding_text = (
+            "lacks required evidence from the conductor's dependency-vetting gate. "
+            "The conductor has not posted gate evidence for PR #788"
+        )
+        self.led.set_kv(
+            "review:x#5",
+            json.dumps({"sha": self.gh.head_sha, "pr": 88, "verdict": "fail", "findings": finding_text}),
+        )
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "start") as mock_start:
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), finding_text)
+            mock_start.assert_not_called()
+        self.assertEqual(self.item()["state"], "parked")
+        self.assertIn("missing or disputed", self.last_event())
+        self.assertIsNone(self.led.lease("x", 5))
+
+    def test_review_with_code_defects_still_launches_fix(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        finding_text = (
+            "lacks required evidence from the conductor's dependency-vetting gate | "
+            "app.py: [blocking/bug] crash on null pointer"
+        )
+        self.led.set_kv(
+            "review:x#5",
+            json.dumps({"sha": self.gh.head_sha, "pr": 88, "verdict": "fail", "findings": finding_text}),
+        )
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "start", return_value=True) as mock_start:
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), finding_text)
+            mock_start.assert_called_once()
+        self.assertNotEqual(self.item()["state"], "parked")
+
+    def test_gradle_bump_vetting_review_pass_no_fix_loop(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        before = {"gradle.lockfile": "com.google.android.gms:play-services-cast-framework:22.3.1=runtimeClasspath\n"}
+        after = {"gradle.lockfile": "com.google.android.gms:play-services-cast-framework:23.0.0=runtimeClasspath\n"}
+        dep = ship.dependency_vetting.Dependency(
+            ecosystem="gradle",
+            name="play-services-cast-framework",
+            declaration="cast = 23.0.0",
+            version="23.0.0",
+        )
+        finding = ship.dependency_vetting.Finding(
+            dependency=dep,
+            first_published="2026-10-15T00:00:00+00:00",
+            publisher="Google LLC",
+            source="https://maven.google.com",
+            advisories=(),
+            blocked=False,
+            recent=False,
+        )
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((finding,), None)), \
+                mock.patch.object(ship, "_start_review_run") as mock_start:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        mock_start.assert_called_once()
+
+        # Review finishes with pass
+        self.led.create_run(id=10, project="x", number=5, role="review", platform="claude",
+                            epoch=1, status="ended", outcome="REVIEW-PASS")
+        self.led.set_kv("review:x#5", json.dumps({
+            "sha": self.gh.head_sha, "pr": 88, "verdict": "pass", "run_id": 10, "classified": []
+        }))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.gh, "dependency_files", return_value=(before, after)), \
+                mock.patch.object(ship.dependency_vetting, "vet", return_value=((finding,), None)), \
+                mock.patch.object(ship, "_merge_queued") as mock_merge, \
+                mock.patch.object(ship, "_review_triggered_fix") as mock_fix:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        mock_merge.assert_called_once()
+        mock_fix.assert_not_called()
+
+    def test_review_missing_gate_evidence_in_classified_suppresses_fix(self):
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        classified = [
+            {
+                "severity": "blocking",
+                "category": "acceptance-criteria",
+                "scenario": "lacks required evidence from the conductor's dependency-vetting gate",
+                "consequence": "unvetted dependency",
+                "location": "build.gradle:12",
+            },
+            {
+                "severity": "nonblocking",
+                "category": "style",
+                "scenario": "variable naming",
+                "consequence": "cosmetic",
+                "location": "app.py:1",
+            },
+        ]
+        self.led.set_kv(
+            "review:x#5",
+            json.dumps({"sha": self.gh.head_sha, "pr": 88, "verdict": "fail", "classified": classified}),
+        )
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "start") as mock_start:
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), "")
+            mock_start.assert_not_called()
+        self.assertEqual(self.item()["state"], "parked")
+        self.assertIn("missing or disputed", self.last_event())
+        self.assertIsNone(self.led.lease("x", 5))
 
     def test_stale_base_rebuild_preserves_attempts_and_work(self):
         self.led.upsert_item("x", 5, pr=88, attempts=2)

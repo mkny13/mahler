@@ -544,3 +544,65 @@ class TestConvergencePayload(unittest.TestCase):
             review.parse("pass", json.dumps({"findings": [{**legacy, "convergence": {}}]}), body)
         with self.assertRaisesRegex(ValueError, "exact Done-when"):
             parse({**legacy, "done_when": "unrelated criterion", "convergence": {}})
+
+
+class TestDependencyGateReviewContext(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(self._cleanup)
+        self.led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(self.led.close)
+        self.cfg = config.load(os.devnull)
+        self.cfg["projects"]["x"] = {
+            "name": "x",
+            "repo": "x/y",
+            "path": self.tmp,
+            "base": "main",
+            "auto_lease_minutes": 30,
+        }
+        self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)
+
+    def _cleanup(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_start_context_includes_persisted_dependency_evidence(self):
+        sha = "39cff30be"
+        item = {"number": 5}
+        finding_data = {
+            "ecosystem": "gradle",
+            "name": "play-services-cast-framework",
+            "version": "23.0.0",
+            "declaration": "com.google.android.gms:play-services-cast-framework:23.0.0",
+            "revision": None,
+            "first_published": "2026-10-15T00:00:00+00:00",
+            "publisher": "Google LLC",
+            "source": "https://maven.google.com",
+            "advisories": [],
+            "blocked": False,
+            "recent": False,
+            "report": "gradle play-services-cast-framework@23.0.0: first published 2026-10-15T00:00:00+00:00; publisher Google LLC; source https://maven.google.com; advisories none",
+        }
+        self.led.set_kv(
+            f"dependency-vetting-evidence:x#5:88:{sha}",
+            json.dumps({"sha": sha, "clean": False, "findings": [finding_data]}),
+        )
+        context = review.start_context(self.ctx, "x", item, 88, sha)
+        self.assertIn(f"Dependency-vetting gate evidence (head {sha}):", context)
+        self.assertIn("play-services-cast-framework@23.0.0", context)
+        self.assertIn("Google LLC", context)
+        self.assertIn("https://maven.google.com", context)
+        self.assertIn("2026-10-15T00:00:00+00:00", context)
+        self.assertIn("advisories none", context)
+
+    def test_start_context_includes_clean_notice_when_no_dependency_changes(self):
+        sha = "39cff30be"
+        item = {"number": 5}
+        self.led.set_kv(
+            f"dependency-vetting-evidence:x#5:88:{sha}",
+            json.dumps({"sha": sha, "clean": True, "findings": []}),
+        )
+        context = review.start_context(self.ctx, "x", item, 88, sha)
+        self.assertIn(f"Dependency-vetting gate evidence (head {sha}):", context)
+        self.assertIn("No direct dependency changes detected.", context)
+
