@@ -6438,13 +6438,34 @@ class DependencyPRTests(unittest.TestCase):
         self.gh.create_issue.assert_called_once()
         self.gh.pr_merge.assert_not_called()
 
-    def test_unparseable_pr_pings_once_and_never_merges(self):
+    def test_unparseable_pr_opens_one_issue_and_never_merges(self):
         self.views[10]['body'] = 'Some unknown format'
         with mock.patch.object(self.ctx, 'ping') as ping:
             for _ in range(3):
                 self.run_pass()
-        ping.assert_called_once()
+        ping.assert_not_called()
         self.gh.pr_merge.assert_not_called()
+        self.gh.create_issue.assert_called_once()
+        self.assertEqual(self.led.get_kv('dependency-issue:x:10'), 'https://github.com/x/y/issues/123')
+
+    def test_prerelease_to_stable_opens_one_issue_then_bot_pr_closed(self):
+        self.add(10, before='1.1.0-alpha06', after='1.1.0')
+        for _ in range(3):
+            self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.pr_merge.assert_not_called()
+        self.led.upsert_item('x', 123, pr=30, state='shipped')
+        self.gh.pr_merge_info.return_value = {'state': 'MERGED', 'mergedAt': '2026-01-01T00:00:00Z'}
+        ship._close_superseded_bot_prs(self.ctx, 'x')
+        self.gh.pr_close.assert_called_once()
+        self.assertEqual(self.gh.pr_close.call_args.args[0], 10)
+
+    def test_untrusted_author_ambiguous_pr_only_pings(self):
+        self.add(10, before='1.1.0-alpha06', after='1.1.0')
+        self.views[10]['author'] = {'login': 'mallory'}
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+        ping.assert_called_once()
         self.gh.create_issue.assert_not_called()
 
 

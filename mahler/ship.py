@@ -336,6 +336,40 @@ def _request_dependency_rebase(ctx, project, gh, view):
     led.event("dependency_rebase_requested", project, None, request)
 
 
+def _is_bot_pr(view):
+    branch, login = view.get("headRefName", ""), (view.get("author") or {}).get("login")
+    return view.get("isCrossRepository") is False and (
+        branch.startswith("dependabot/") and login in ("dependabot[bot]", "app/dependabot")
+        or branch.startswith("renovate/") and login in ("renovate[bot]", "app/renovate"))
+
+
+def _adopt_ambiguous_dependency(ctx, project, gh, pol, n, view):
+    """Hand a bot PR whose version evidence is ambiguous (e.g. pre-release to
+    stable) to an adoption issue, like a major bump (mahler#1499). Never merged."""
+    led = ctx.led
+    issue_key = f"dependency-issue:{project}:{n}"
+    if led.get_kv(issue_key):
+        return
+    marker = f"<!-- mahler:dependency-pr:{n} -->"
+    issue = gh.issue_by_marker(marker)
+    if not issue:
+        labels = ["type:chore", "size:m", "p2"]
+        if pol.get("scope") == "label":
+            labels.append(pol["scope_label"])
+        url = view.get("url", "")
+        issue = gh.create_issue(
+            f"Check dependency update with unclear version: {view.get('title', '')}",
+            f"{marker}\n\n## Problem / goal\n"
+            f"Mahler could not tell from {url} how large the version change is "
+            "(for example a pre-release to stable bump), so it will not merge it. "
+            "Validate and adopt it.\n\n"
+            "## Done when\n- Inspect the dependency migration requirements and resolve breakage.\n"
+            "- Apply the update, run the project's full verification, and ship through independent review.\n"
+            f"- Supersede or close the original bot PR {url} after shipping.\n\n"
+            "## Needs a human to check\nNothing\n", labels)
+    led.set_kv(issue_key, issue)
+
+
 def _note_ambiguous_dependency(ctx, project, n, view):
     """One ping per PR head for unparseable bot metadata; never merged."""
     key = f"dependency-ambiguous:{project}:{n}"
@@ -402,7 +436,11 @@ def _dependency_prs(ctx, project):
             view = gh.dependency_pr_view(n)
             update = _dependency_update(view)
             if not update:
-                _note_ambiguous_dependency(ctx, project, n, view)
+                if _is_bot_pr(view) and view.get("state") == "OPEN" \
+                        and view.get("isDraft") is False:
+                    _adopt_ambiguous_dependency(ctx, project, gh, pol, n, view)
+                else:
+                    _note_ambiguous_dependency(ctx, project, n, view)
                 continue
             if view.get("state") != "OPEN" or view.get("isDraft") is not False:
                 continue
