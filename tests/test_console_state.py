@@ -103,6 +103,21 @@ function fetch() { return Promise.resolve({ok: true, text: () => Promise.resolve
 
 
 class PostMergePausedBannerTests(unittest.TestCase):
+    def test_legacy_pause_shows_cause_and_persistent_request(self):
+        now = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        led = Ledger(':memory:', clock=lambda: now)
+        self.addCleanup(led.close)
+        led.set_kv('post_merge_paused:gw', '1')
+        led.set_kv('post_merge_diagnostic:gw', json.dumps({
+            'reason': 'HTTP 403', 'observed_at': '2026-11-01T00:00:00Z',
+            'permission_request': 'Deployments: Read-only https://github.com/settings/apps https://github.com/settings/installations'}))
+        banners = state._banners({'projects': {'gw': {}, 'other': {}}}, led, False, [], [], now)
+        self.assertEqual(len(banners), 1)
+        for text in ('HTTP 403', 'Deployments: Read-only', 'settings/installations',
+                     'pause began before timestamp tracking', 'last re-probe',
+                     'automatic', 'does not grant permissions'):
+            self.assertIn(text, banners[0]['text'])
+
     def test_banner_shows_start_time_and_resume_action(self):
         now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
         led = Ledger(':memory:', clock=lambda: now)
