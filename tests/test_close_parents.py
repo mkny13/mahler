@@ -602,6 +602,48 @@ class CloseFinishedParentsTests(unittest.TestCase):
         self.gh.close_issue.assert_not_called()
         self.assertEqual(self.led.item("mahler", 10)["state"], "ready")
 
+    def human_parent(self, extra=""):
+        self.states[10] = "OPEN"
+        self.bodies[10] = ("## Done when\n- [x] #11 closed\n"
+                           "- [ ] macOS behaviour confirmed (manual check)\n"
+                           "- [ ] Menu looks right (manual check)\n" + extra)
+
+    def test_human_only_parent_is_owner_decision_then_completes_after_quiet(self):
+        self.human_parent()
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertEqual(self.led.item("mahler", 10)["state"], "parent")
+        self.assertTrue(self.led.get_kv("parent_human:mahler:10"))
+        self.assertIn("owner", str(self.ctx.ping.call_args.args).lower())
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.led.clock = lambda: NOW + timedelta(days=sync.QUIET_DAYS, minutes=1)
+        self.run_pass()
+        self.gh.close_issue.assert_called_once_with(10)
+        self.assertEqual(self.led.item("mahler", 10)["state"], "done")
+        self.assertIn("quiet", self.comments[10][-1]["body"])
+
+    def test_human_only_parent_not_sent_to_verification(self):
+        self.human_parent()
+        self.run_pass()
+        self.gh.create_issue.assert_not_called()
+
+    def test_automated_unmet_criterion_never_quiet_completes(self):
+        self.human_parent("- [ ] Unit tests pass\n")
+        self.run_pass()
+        self.led.clock = lambda: NOW + timedelta(days=sync.QUIET_DAYS + 5)
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+        self.assertFalse(self.led.get_kv("parent_human:mahler:10"))
+
+    def test_human_only_parent_with_open_child_waits(self):
+        self.human_parent()
+        self.states[11] = "OPEN"
+        self.run_pass()
+        self.led.clock = lambda: NOW + timedelta(days=30)
+        self.run_pass()
+        self.gh.close_issue.assert_not_called()
+
     def test_checklist_and_empty_set_blockers(self):
         for body in ("", "## Done when\n- prose", "## Done when\n- [ ] Works"):
             with self.subTest(body=body):
