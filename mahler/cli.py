@@ -204,6 +204,7 @@ def _parked_blockers(cfg, led, project_filter=None):
 
 
 def cmd_status(a, cfg, led):
+    from . import post_merge
     from .console.state import capacity_wait_text
     from .sync import missing_scope_counts
 
@@ -242,6 +243,10 @@ def cmd_status(a, cfg, led):
             "missing_scope_counts": missing_scope,
             "post_merge_paused": {p: since for p, since in _post_merge_paused(cfg, led).items()
                                   if not project_filter or p == project_filter},
+            "post_merge_diagnostics": {
+                p: post_merge.pause_diagnostic(led, p)
+                for p in _post_merge_paused(cfg, led)
+                if not project_filter or p == project_filter},
             "parked_blockers": blockers,
             "usage": {n: led.usage(n) for n in cfg["platforms"]},
             # D41: Team-plan API credits, one snapshot per enabled credits platform
@@ -269,8 +274,8 @@ def cmd_status(a, cfg, led):
     print("PAUSED — nothing new will start (mahler resume)\n" if led.paused() else "", end="")
     for name, since in _post_merge_paused(cfg, led).items():
         if getattr(a, "project", None) in (None, name):
-            print(f"WARNING: post-merge checks paused for {name} since {since or 'unknown'} "
-                  f"(mahler resume {name})")
+            from .post_merge import pause_text
+            print("WARNING: " + pause_text(led, name))
     peak = router.peak_status_line(cfg, led)
     if peak:
         print(peak)
