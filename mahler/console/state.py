@@ -971,6 +971,53 @@ def screenshot_image(cfg, led, identifier):
     return None
 
 
+_PM_CODES = {"timeout": "timed out", "command_failed": "command failed",
+             "identity_mismatch": "wrong version live", "stale_result": "stale result",
+             "invalid_report": "invalid smoke report", "smoke_disabled": "smoke not configured",
+             "command_missing": "command not configured"}
+
+
+def _pm_dur(seconds):
+    seconds = max(0, int(seconds))
+    return (f"{seconds // 3600}h {seconds % 3600 // 60}m" if seconds >= 3600 else
+            f"{seconds // 60}m" if seconds >= 60 else f"{seconds}s")
+
+
+def _post_merge(cfg, led, row):
+    """Deploying / live / deploy failed for one shipment, from durable state only.
+
+    Only enumerated fields leave this function: no summary, evidence path or
+    command output, and the artifact link only when it is an http(s) URL."""
+    sha = row["sha"] or ""
+    try:
+        pm = led.post_merge_check(row["project"], row["number"], sha) if sha else None
+    except Exception:
+        pm = None
+    if not pm:
+        return None
+    timeout = max(0, (parse(pm["deadline_at"]) - parse(pm["created_at"])).total_seconds())
+    end = parse(pm["finished_at"]) if pm["finished_at"] else led.now()
+    elapsed = (end - parse(pm["created_at"])).total_seconds()
+    artifact = pm["artifact_ref"] if re.match(r"https?://\S+$", pm["artifact_ref"] or "") else None
+    out = {"phase": pm["phase"], "artifact": artifact, "bug": None, "bug_url": None,
+           "timing": f"{_pm_dur(elapsed)} of {_pm_dur(timeout)}"}
+    if pm["status"] == "PASS":
+        out.update(status="live", label="Live", tone="ok",
+                   detail="Exact version live; smoke passed")
+    elif pm["status"] == "FAIL":
+        code = pm["failure_code"]
+        out.update(status="failed", label="Deploy failed", tone="bad",
+                   detail=f"{pm['phase']} phase: {_PM_CODES.get(code, 'check failed')}")
+        saved = led.get_kv(f"post-merge-bug:{row['project']}:{row['number']}:{sha}")
+        if saved and saved.isdigit():
+            out["bug"] = int(saved)
+            out["bug_url"] = _issue_url(cfg, row["project"], int(saved))
+    else:
+        out.update(status="deploying", label="Deploying", tone="acc",
+                   detail=f"{pm['phase']} phase")
+    return out
+
+
 def _uat(cfg, led, projects):
     """Newest shipments, with optional hints and failure-report status."""
     pols = {p["name"]: p for p in projects}
@@ -1027,6 +1074,7 @@ def _uat(cfg, led, projects):
             "link": link, "link_label": link_label,
             "pending": pending, "reported": reported, "edge": "warn" if waiting else "",
             "sha": row["sha"], "shipped_at": row["shipped_at"], "completion_kind": kind,
+            "post_merge": _post_merge(cfg, led, row),
         })
     return out
 
