@@ -19,7 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from mahler import config, finalize, platforms, router, runner, scheduler
+from mahler import config, finalize, platforms, router, runner, scheduler, usage
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 10, 23, 13, 0, tzinfo=timezone.utc)
@@ -117,6 +117,29 @@ class RunEnvTests(unittest.TestCase):
             self.assertNotIn("GH_TOKEN", env)
             self.assertFalse(os.path.exists(os.path.join(env["GH_CONFIG_DIR"], "hosts.yml")))
             self.assertNotIn("gho_personal_overlay", env.values())
+
+
+class ProbeTests(unittest.TestCase):
+    def test_login_probe_classification_and_hold_lift(self):
+        def fake(out, code):
+            return mock.Mock(stdout=out, stderr="", returncode=code)
+        with mock.patch.object(platforms, "copilot_exe", return_value="/bin/copilot"):
+            with mock.patch("subprocess.run", return_value=fake(
+                    "Failed to fetch GitHub CLI user login (403)", 1)):
+                self.assertIs(platforms.probe_copilot_login(), False)
+            with mock.patch("subprocess.run", return_value=fake("OK", 0)):
+                self.assertIs(platforms.probe_copilot_login(), True)
+            # the real probe, not mocked: a forced refresh lifts the auth hold
+            led = Ledger(":memory:", clock=lambda: NOW)
+            self.addCleanup(led.close)
+            cfg = copy.deepcopy(config.DEFAULTS)
+            cfg["platforms"]["copilot"] = {"kind": "copilot"}
+            led.record_usage("copilot", router.HOLD, 100.0,
+                             resets_at=iso(NOW + timedelta(days=365)))
+            led.set_kv("hold_reason:copilot", "auth")
+            with mock.patch("subprocess.run", return_value=fake("OK", 0)):
+                usage.refresh_cline_holds(cfg, led, force=True)
+            self.assertIsNone(led.get_kv("hold_reason:copilot"))
 
 
 class LogTests(unittest.TestCase):

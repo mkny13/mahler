@@ -265,7 +265,7 @@ def probe_cline(pconf=None, env=None):
     return True if r.returncode == 0 else None
 
 
-def probe_copilot(env=None):
+def probe_copilot_login(env=None):
     """Bounded login check (mahler#1506).
     -> True (works), False (needs `copilot login`), None (couldn't tell)."""
     exe = copilot_exe()

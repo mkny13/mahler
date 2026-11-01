@@ -479,7 +479,7 @@ def refresh_cline_holds(cfg, led, force=False):
             continue
         led.set_kv(f"probe:{name}", iso(led.now()))
         env = config.run_env(cfg, config.account_of(pconf))
-        probe = (platforms.probe_copilot(env) if pconf.get("kind") == "copilot"
+        probe = (platforms.probe_copilot_login(env) if pconf.get("kind") == "copilot"
                  else platforms.probe_cline(pconf, env=env))
         if probe is True:
             holds.clear(cfg, led, name, by="probe")
