@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from unittest import mock
 
 from mahler import config, finalize, scheduler, sync, tick
-from mahler.gh import GH
+from mahler.gh import GH, LABEL_STATES, STATE_LABELS
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 15, 12, tzinfo=timezone.utc)
@@ -32,6 +32,18 @@ class FakeGH:
 
     def issue_state(self, number):
         return "OPEN"
+
+    def issue_labels(self, number):
+        return next(([label["name"] for label in issue["labels"]]
+                     for issue in self.issues if issue["number"] == number), [])
+
+    def set_state_label(self, number, state, current):
+        labels = [label for label in current if label not in LABEL_STATES]
+        if state in STATE_LABELS:
+            labels.append(STATE_LABELS[state])
+        for issue in self.issues:
+            if issue["number"] == number:
+                issue["labels"] = [{"name": label} for label in labels]
 
     def blocked_by_of(self, number):
         return []
