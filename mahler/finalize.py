@@ -1393,9 +1393,7 @@ def _hold_auth_platform(ctx, run, log):
     runs `mahler unhold`. One ping, only when the hold is new."""
     led, platform = ctx.led, run["platform"]
     fresh = led.get_kv(f"hold_reason:{platform}") != "auth"
-    command = ("copilot login"
-               if ctx.cfg["platforms"].get(platform, {}).get("kind") == "copilot"
-               else "cline auth")
+    command = "copilot login" if log.get("kind") == "copilot" else "cline auth"
     until = led.now() + timedelta(days=AUTH_HOLD_DAYS)
     led.record_usage(platform, router.HOLD, 100.0, resets_at=iso(until))
     led.set_kv(f"hold_reason:{platform}", "auth")
@@ -1414,6 +1412,7 @@ def _hold_auth_denied(ctx, run, log):
     """Hold the platform for this project only: its login works elsewhere
     (work-copilot on work projects), so a global hold would idle it there."""
     kind = ctx.cfg["platforms"].get(run["platform"], {}).get("kind")
+    log = dict(log, kind=kind)
     policy_denial = "policy settings" in (log.get("last_error") or "").lower()
     if kind == "cline" or (kind == "copilot" and not policy_denial):
         return _hold_auth_platform(ctx, run, log)
