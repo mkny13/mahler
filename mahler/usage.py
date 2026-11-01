@@ -467,17 +467,20 @@ def record_discussion_usage(cfg, led, platform, turn_id):
 
 
 def refresh_cline_holds(cfg, led, force=False):
-    """Probe each Cline platform held for an expired login (mahler#1485); lift
+    """Probe each Cline or Copilot platform held for a login failure (mahler#1485, #1506); lift
     the hold only when the probe shows the login works. A failed or unclear
     probe leaves it. Throttled per platform unless forced."""
     from . import holds
     for name, pconf in cfg["platforms"].items():
-        if pconf.get("kind") != "cline" or led.get_kv(f"hold_reason:{name}") != "auth":
+        if pconf.get("kind") not in ("cline", "copilot") or led.get_kv(f"hold_reason:{name}") != "auth":
             continue
         last = parse(led.get_kv(f"probe:{name}"))
         if not force and last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 60)):
             continue
         led.set_kv(f"probe:{name}", iso(led.now()))
-        if platforms.probe_cline(pconf, env=config.run_env(cfg, config.account_of(pconf))) is True:
+        env = config.run_env(cfg, config.account_of(pconf))
+        probe = (platforms.probe_copilot_login(env) if pconf.get("kind") == "copilot"
+                 else platforms.probe_cline(pconf, env=env))
+        if probe is True:
             holds.clear(cfg, led, name, by="probe")
 

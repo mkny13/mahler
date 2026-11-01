@@ -135,6 +135,10 @@ AUTH_DENIED_WORDS = (
     # Cline's expired login (mahler#1485): {"type":"error","message":
     # "cline requires re-authentication."}. Fixed machine-wide by `cline auth`.
     "requires re-authentication",
+    # Copilot with no usable login falls back to `gh` and validates that
+    # token against /user (mahler#1506). Fixed by `copilot login`.
+    "failed to fetch github cli user login",
+    "authentication token found but could not be validated",
 )
 
 
@@ -257,6 +261,23 @@ def probe_cline(pconf=None, env=None):
             return None
     out = (r.stdout or "") + (r.stderr or "")
     if is_auth_denied(out):
+        return False
+    return True if r.returncode == 0 else None
+
+
+def probe_copilot_login(env=None):
+    """Bounded login check (mahler#1506).
+    -> True (works), False (needs `copilot login`), None (couldn't tell)."""
+    exe = copilot_exe()
+    if not exe:
+        return None
+    try:
+        r = subprocess.run([exe, "-p", "Reply with the single word OK."],
+                           capture_output=True, text=True, timeout=90, env=env,
+                           stdin=subprocess.DEVNULL)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if is_auth_denied((r.stdout or "") + (r.stderr or "")):
         return False
     return True if r.returncode == 0 else None
 
@@ -1216,7 +1237,7 @@ def _read_plaintext(res, line, texts):
         if (is_network_error(line_str) or line_str.lower().startswith("error:")
                 or resume_rejected({"last_error": line_str})):
             res["last_error"] = line_str
-        if line_str.lower().startswith("error:"):
+        if line_str.lower().startswith("error:") or is_auth_denied(line_str):
             _note_log_error(res, line_str)
 
 
