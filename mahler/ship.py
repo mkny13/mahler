@@ -531,7 +531,8 @@ def _unowned_prs(ctx, project):
         return
     led.set_kv(key, iso(led.now()))
     hours = ctx.policy(project).get("unowned_pr_hours", 2)
-    tracked = {it["pr"] for it in led.items(project) if it["pr"]}
+    tracked = {it["pr"] for it in led.items(project)
+               if it["pr"] and it["state"] not in ("done", "shipped")}
     for pr in ctx.gh(project).open_prs():
         n = pr["number"]
         if (n in tracked or pr.get("isDraft")

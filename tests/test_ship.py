@@ -3795,16 +3795,44 @@ class ShipTests(unittest.TestCase):
         self.gh.prs = [self._open(88, 5), self._open(395, 3)]
         ping = self.ship()
         pings = self.unowned_pings(ping)
-        self.assertEqual(len(pings), 1)
-        self.assertIn("PR #395", pings[0][0][0])
-        self.assertIn("mahler ship x#<issue> --pr 395", pings[0][0][1])
+        self.assertEqual(len(pings), 2)
+        self.assertIn("PR #88", pings[0][0][0])
+        self.assertIn("PR #395", pings[1][0][0])
+        self.assertIn("mahler ship x#<issue> --pr 395", pings[1][0][1])
         self.led.set_kv("unowned-scan:x", iso(NOW - timedelta(hours=1)))  # scan again
         self.assertEqual(self.unowned_pings(self.ship()), [])            # ...no repeat
+
+    def test_only_live_items_own_prs_including_shared_references(self):
+        states = ("done", "shipped", "inbox", "ready", "working", "verifying",
+                  "needs_you", "waiting", "parked", "failed", "parent")
+        for state in states:
+            with self.subTest(state=state):
+                self.led.upsert_item("x", 5, state=state, pr=88)
+                self.led.upsert_item("x", 6, state="done", pr=88)
+                self.led.set_kv("unowned-scan:x", "")
+                self.led.set_kv("unowned:x#88", "")
+                self.gh.prs = [self._open(88, 5)]
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(self.ctx, "ping") as ping:
+                    ship._unowned_prs(self.ctx, "x")
+                self.assertEqual(len(self.unowned_pings(ping)), int(state in ("done", "shipped")))
+                self.assertEqual(bool(self.led.get_kv("unowned:x#88")), state in ("done", "shipped"))
 
     def test_young_draft_and_bot_prs_are_left_alone(self):
         self.gh.prs = [self._open(1, 1), self._open(2, 5, draft=True),
                        self._open(3, 5, branch="dependabot/pip/x")]
         self.assertEqual(self.unowned_pings(self.ship()), [])
+
+    def test_unowned_dry_run_does_not_scan_or_record(self):
+        self.ctx.dry_run = True
+        self.led.upsert_item("x", 5, state="done", pr=88)
+        with mock.patch.object(self.ctx, "gh") as gh, mock.patch.object(self.ctx, "ping") as ping:
+            ship._unowned_prs(self.ctx, "x")
+        gh.assert_not_called()
+        ping.assert_not_called()
+        self.assertIsNone(self.led.get_kv("unowned-scan:x"))
+        self.assertIsNone(self.led.get_kv("unowned:x#88"))
+        self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='unowned_pr'"), [])
 
     def test_scan_is_throttled(self):
         self.gh.prs = [self._open(395, 3)]
