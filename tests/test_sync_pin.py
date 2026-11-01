@@ -84,10 +84,14 @@ class FakeGH:
             labels.append(keep)
         self.issues[number]["labels"] = labels
 
+    def issue_labels(self, number):
+        return list(self.issues.get(number, {}).get("labels", []))
+
     def set_state_label(self, number, state, current_labels):
         if self.fail_state_label:
             raise GHError("github down")
-        self.issues[number]["labels"] = current_labels
+        if number in self.issues:
+            self.issues[number]["labels"] = current_labels
 
 
 class PinTests(unittest.TestCase):

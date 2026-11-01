@@ -18,7 +18,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
-from mahler import config, gh as gh_module, scheduler, sync
+from mahler import config, gh as gh_module, scheduler, ship, sync
 from mahler.ledger import Ledger, iso
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
@@ -158,6 +158,87 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
                 self.assertIsNone(self.led.uat("x", 5))
                 self.assertEqual(self.led.unreleased_items("x"), [])
                 self.assertEqual(self.led.q("SELECT * FROM events WHERE kind='shipped'"), [])
+
+    def test_closed_with_old_open_pr_cleans_current_labels_and_alerts_once(self):
+        self.gh.pr_state = "OPEN"
+        self.gh.labels = ["mahler:working", "mahler", "type:bug"]
+        self.led.upsert_item("x", 5, mirror="mahler:verifying",
+                             labels=json.dumps(["mahler:verifying"]))
+        self.ctx._labels[("x", 5)] = ["mahler:verifying"]
+        with mock.patch.object(self.gh, "set_state_label", wraps=self.gh.set_state_label) as put:
+            self.sync()
+        put.assert_called_once_with(5, "done", ["mahler:working", "mahler", "type:bug"])
+        self.assertEqual(self.gh.labels, ["mahler", "type:bug"])
+        self.assertEqual(json.loads(self.led.item("x", 5)["labels"]), self.gh.labels)
+        self.assertIsNone(self.led.item("x", 5)["mirror"])
+        self.assertNotIn(("x", 5), self.ctx._labels)
+        self.gh.open_prs = lambda: [dict(number=88, title="superseded", headRefName="mahler/5-old",
+                                       createdAt=iso(NOW - timedelta(hours=3)))]
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping") as ping:
+            ship._unowned_prs(self.ctx, "x")
+            self.led.clock = lambda: NOW + timedelta(minutes=15)
+            ship._unowned_prs(self.ctx, "x")
+        ping.assert_called_once()
+        self.assertTrue(self.led.get_kv("unowned:x#88"))
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='unowned_pr'")), 1)
+        self.assertEqual(self.led.item("x", 5)["pr"], 88)
+
+    def test_legacy_done_cleanup_on_304_retries_and_repeats_after_new_completion(self):
+        self.led.set_kv("depends_format:x", "4")
+        self.led.set_kv("unmerged_reconciled:x", "1")
+        self.gh.issues_changed = lambda etag: (False, None)
+        self.gh.open_issues = mock.Mock(side_effect=AssertionError("304"))
+        labels = {}
+        for n, mirror in enumerate(("mahler:working", "mahler:verifying", "mahler:shipped", None), 5):
+            self.led.upsert_item("x", n, state="done", mirror=mirror)
+            labels[n] = [mirror or "mahler:working", "mahler", "type:bug"]
+        self.gh.issue_labels = lambda n: labels[n][:]
+        def put(n, state, current):
+            if n == 5 and fail[0]:
+                raise gh_module.GHError("offline")
+            labels[n] = [x for x in current if x not in gh_module.LABEL_STATES]
+        fail = [True]
+        with mock.patch.object(self.gh, "set_state_label", side_effect=put) as write:
+            self.sync()
+            self.assertEqual(labels[6], ["mahler", "type:bug"])
+            self.assertIn("mahler:working", labels[5])
+            fail[0] = False
+            self.sync()
+            self.assertEqual(labels[5], ["mahler", "type:bug"])
+            write.reset_mock()
+            with mock.patch.object(self.gh, "issue_labels") as fetch:
+                self.sync()
+            fetch.assert_not_called()
+            write.assert_not_called()
+            self.led.clock = lambda: NOW + timedelta(hours=1)
+            self.led.set_state("x", 5, "ready")
+            self.led.set_state("x", 5, "done")
+            labels[5].append("mahler:working")
+            self.sync()
+            write.assert_called_once_with(5, "done", ["mahler", "type:bug", "mahler:working"])
+
+    def test_done_cleanup_dry_run_leaves_labels_and_markers_untouched(self):
+        self.led.set_state("x", 5, "done")
+        self.ctx.dry_run = True
+        with mock.patch.object(self.gh, "issue_labels") as fetch:
+            sync.reconcile_done_labels(self.ctx, "x")
+        fetch.assert_not_called()
+        self.assertIsNone(self.led.get_kv("done-labels:x:5"))
+        self.assertIsNone(self.led.get_kv("done-label-cursor:x"))
+
+    def test_legacy_done_cleanup_is_bounded_and_failed_item_does_not_starve_others(self):
+        self.led.set_state("x", 5, "done")
+        for n in range(100, 150):
+            self.led.upsert_item("x", n, state="done")
+        with mock.patch.object(self.gh, "issue_labels", side_effect=gh_module.GHError("offline")) as fetch:
+            self.sync()
+            first = {c.args[0] for c in fetch.call_args_list}
+            self.assertLessEqual(len(first), 20)
+            fetch.reset_mock()
+            self.sync()
+            second = {c.args[0] for c in fetch.call_args_list}
+            self.assertTrue(second - first)
 
     def test_closed_without_a_pr_never_looks_one_up(self):
         self.led.upsert_item("x", 5, pr=None)

@@ -508,11 +508,31 @@ def reconcile_shipped(ctx, project):
     for key in [r["key"] for r in led.q("SELECT key FROM kv WHERE key LIKE ? AND value='pending'",
                                         (f"reopen_mirror:{project}:%",))]:
         mirror_reopen(ctx, project, int(key.rsplit(":", 1)[1]))
-    # Retry the outward mirror after a transient failure, even though the
-    # atomic local transition has already completed.
-    for item in led.items(project, ["done"]):
-        if item["mirror"] == "mahler:shipped":
-            mirror_done(ctx, project, item["number"])
+    reconcile_done_labels(ctx, project)
+
+
+DONE_LABEL_BATCH = 20
+
+
+def reconcile_done_labels(ctx, project):
+    """Repair each completion once, including legacy null mirrors, on 304 polls.
+
+    A durable cursor rotates failures out of the next batch so a broken issue
+    cannot starve the backlog. The success marker belongs to this done epoch;
+    reopening and finishing later makes it eligible again.
+    """
+    if ctx.dry_run:
+        return
+    led = ctx.led
+    cursor_key = f"done-label-cursor:{project}"
+    cursor = int(led.get_kv(cursor_key) or 0)
+    pending = [item for item in led.items(project, ["done"])
+               if led.get_kv(f"done-labels:{project}:{item['number']}")
+               != (item["state_changed_at"] or "legacy")]
+    pending.sort(key=lambda item: (item["number"] <= cursor, item["number"]))
+    for item in pending[:DONE_LABEL_BATCH]:
+        led.set_kv(cursor_key, str(item["number"]))
+        mirror_done(ctx, project, item["number"])
 
 
 def mirror_reopen(ctx, project, number):
@@ -533,8 +553,11 @@ def mirror_reopen(ctx, project, number):
 def mirror_done(ctx, project, number):
     try:
         gh = ctx.gh(project)
-        gh.set_state_label(number, "done", gh.issue_labels(number))
-        ctx.led.upsert_item(project, number, mirror=None)
+        current = gh.issue_labels(number)
+        gh.set_state_label(number, "done", current)
+        labels = [label for label in current if label not in LABEL_STATES]
+        item = ctx.led.upsert_item(project, number, mirror=None, labels=json.dumps(labels))
+        ctx.led.set_kv(f"done-labels:{project}:{number}", item["state_changed_at"] or "legacy")
         ctx._labels.pop((project, number), None)
     except GHError as exc:
         ctx.say(f"{project}#{number}: completion label update failed — {exc}")

@@ -18,6 +18,7 @@ class CapacityMigrationTests(unittest.TestCase):
         cfg["projects"]["x"] = {"repo": "x/y", "path": "."}
         self.ctx = scheduler.Ctx(cfg, self.led, dry_run=False)
         self.gh = mock.Mock()
+        self.gh.issue_labels.return_value = []
         self.gh.issues_changed.return_value = (False, "etag")
         self.ctx._gh["x/y"] = self.gh
         self.led.set_kv("depends_format:x", "4")
