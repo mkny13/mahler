@@ -399,7 +399,8 @@ DEFAULTS["platforms"]["codex-high"] = {
 # may point at a missing or paid model. Its free models are weaker, so it only
 # takes small items.
 DEFAULTS["platforms"]["cline-free"] = {
-    "enabled": True, "kind": "cline", "model": "z-ai/glm-5.3-flash", "plan": "free tier",
+    "enabled": True, "kind": "cline", "model": "cline-free/solar-mini4", "plan": "free tier",
+    "free_models_url": "https://api.cline.bot/api/v1/ai/cline/recommended-models",
     "metered": False, "backoff_minutes": 60, "max_size": "s", "tier": 1,
     "soft": {"5h": 100, "weekly": 100}, "hard": {"5h": 100, "weekly": 100},
     "stale_minutes": 60,

@@ -19,7 +19,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 
-from . import config, model_availability, platforms, router
+from . import cline_free, config, model_availability, platforms, router
 from .gh import GHError
 
 TITLE = "Platform Tier/Capability Assumptions Audit"
@@ -635,6 +635,11 @@ def _availability_lines(cfg, led, pol, catalog):
     rejections = current_rejections(cfg, led)
     missing, skipped = missing_pins(cfg, catalog)
     skipped.extend(codex_missing_variants(cfg))
+    unfree = [(name, model) for name, pconf in sorted(cfg.get("platforms", {}).items())
+              if pconf.get("enabled") is not False and cline_free.managed(pconf)
+              for model in cline_free.flagged(led, pconf)]
+    for name, model in unfree:
+        missing.append((name, model, "Cline's published free list (recommended-models)"))
     if rejections:
         lines += ["| Platform | Configured ID | Evidence source |", "|---|---|---|"]
         for name, rec in rejections:

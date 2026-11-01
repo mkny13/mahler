@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from .config import DEFAULT_ACCOUNT, account_of, account_mode_of, accounts_of, expand_route
 from .ledger import parse
-from . import model_availability
+from . import cline_free, model_availability
 
 WINDOWS = ("5h", "weekly")   # default window set; a platform can override via pconf["windows"]
 HOLD = "hold"      # pseudo-window in the usage table: resets_at = when the hold lifts
@@ -396,6 +396,8 @@ def project_hold(led, project, name):
 def usage_state(led, name, pconf, burst_lines=None, role=None):
     block = model_availability.blocked(led, name, pconf, role)
     state, detail = _quota_usage_state(led, name, pconf, burst_lines)
+    if cline_free.managed(pconf) and not cline_free.candidates(led, pconf):
+        return "hard", "no free model: Cline's free list has no model that has not billed"
     if block:
         # Block new launches without stopping productive siblings. Genuine
         # hard quota limits still apply to already-running work (D8).

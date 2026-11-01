@@ -12,7 +12,7 @@ import re
 import subprocess
 from datetime import timedelta
 
-from . import ci_blockers, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
+from . import ci_blockers, cline_free, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
 from .gh import GHError
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import quota_peers, record_claude_usage
@@ -985,6 +985,8 @@ def _record_run_usage(ctx, run, kind, log):
         return
     for w, pct, resets in log["usage"]:
         led.record_usage(run["platform"], w, pct, resets)
+    if log.get("credit_exhausted") and cline_free.managed(ctx.cfg["platforms"][run["platform"]]):
+        return          # the model billed, not the platform: handled by _model_billed
     if log.get("credit_exhausted"):
         until = _backoff_until(ctx, run, log)
         led.record_usage(run["platform"], router.HOLD, 100.0, until)
@@ -1214,7 +1216,10 @@ def finalize(ctx, run):
                else verb or (f"exit {code}" if code else "no status line"))
     if verb == "BLOCKED" and rest and not setup_failed:
         outcome = f"{verb} {rest}"
-    if log.get("credit_exhausted"):
+    if log.get("credit_exhausted") and cline_free.managed(ctx.cfg["platforms"][run["platform"]]):
+        if not ctx.dry_run:
+            _model_billed(ctx, run)
+    elif log.get("credit_exhausted"):
         _record_credit_failure(ctx, run, log)
     elif reason is None and (log.get("ok") is True or verb in {
             "DONE", "READY", "SPLIT", "REVIEW-PASS", "DESIGNED"}):
@@ -1415,6 +1420,26 @@ def _hold_auth_denied(ctx, run, log):
                  f"({detail}). {platform} is off {project} until "
                  f"{until.astimezone():%H:%M}; other projects keep using it.",
                  project, run["number"], tags="warning")
+
+
+def _model_billed(ctx, run):
+    """A model on a free platform started billing: reject it and move on to
+    another free model, or hold the platform if none is left (mahler#1507)."""
+    led, platform = ctx.led, run["platform"]
+    model = run["model"] or ctx.cfg["platforms"][platform].get("model")
+    if model:
+        cline_free.reject(led, model)
+        led.event("free_model_billed", run["project"], run["number"],
+                  {"platform": platform, "model": model, "run": run["id"]})
+    if cline_free.candidates(led, ctx.cfg["platforms"][platform]):
+        return
+    until = led.now() + timedelta(minutes=ctx.cfg["platforms"][platform].get("backoff_minutes", 60))
+    led.record_usage(platform, router.HOLD, 100.0, until)
+    led.set_kv(f"hold_reason:{platform}", "no_free_models")
+    ctx.ping(f"Mahler: {platform} has no free model left",
+             f"{model or 'Its model'} billed Cline credits and Cline's free list offers no other "
+             f"usable model, so {platform} is held to avoid spending credits.",
+             run["project"], run["number"], tags="warning")
 
 
 def _hold_model_unavailable(ctx, run, log=None):
