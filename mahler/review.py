@@ -205,7 +205,36 @@ def start_context(ctx, project, item, pr, sha):
             + json.dumps(rounds) + "\n"
             + "Prior conductor dispositions (original evidence retained):\n"
             + json.dumps(dispositions) + "\n"
-            + screenshot_delivery.review_context(ctx, project, pr, sha))
+            + screenshot_delivery.review_context(ctx, project, pr, sha)
+            + dependency_vetting_context(ctx, project, item, pr, sha))
+
+
+def dependency_vetting_context(ctx, project, item, pr, sha):
+    """Reviewer prompt section citing exact-head dependency vetting gate findings."""
+    n = item["number"]
+    key = f"dependency-vetting-evidence:{project}#{n}:{pr}:{sha}"
+    raw = ctx.led.get_kv(key) if sha else None
+    findings = []
+    if raw:
+        try:
+            data = json.loads(raw)
+            findings = data.get("findings") or []
+        except Exception:
+            findings = []
+    header = f"Dependency-vetting gate evidence (head {sha}):\n"
+    if findings:
+        lines = [header]
+        for f in findings:
+            report = f.get("report")
+            if not report:
+                advisories = "; ".join(f.get("advisories", [])) if f.get("advisories") else "none"
+                report = (f"{f.get('ecosystem', '')} {f.get('name', '')}@{f.get('version', '')}: "
+                          f"first published {f.get('first_published', '')}; "
+                          f"publisher {f.get('publisher', '')}; "
+                          f"source {f.get('source', '')}; advisories {advisories}")
+            lines.append(f"- {report}\n")
+        return "".join(lines)
+    return header + "No direct dependency changes detected.\n"
 
 
 def same_findings(before, current):
