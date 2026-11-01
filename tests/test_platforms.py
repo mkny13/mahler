@@ -410,7 +410,7 @@ class ClineModelPinTests(unittest.TestCase):
     def test_default_argv_pins_the_free_model(self):
         argv = platforms.cline_argv(config.DEFAULTS["platforms"]["cline-free"],
                                     "prompt", "/wt", "build")
-        self.assertEqual(argv[argv.index("-m") + 1], "z-ai/glm-5.3-flash")
+        self.assertEqual(argv[argv.index("-m") + 1], "cline-free/solar-mini4")
 
     def test_config_override_wins(self):
         pconf = config._merge(config.DEFAULTS["platforms"]["cline-free"],

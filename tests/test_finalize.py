@@ -2162,6 +2162,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(run["stop_reason"], "quota")
 
     def test_no_credit_backs_off_without_spending_item_attempt(self):
+        self.cfg["platforms"]["cline-free"].pop("free_models_url")   # pinned-model credit path
         with open(self.log, "w") as fh:
             fh.write(json.dumps({"type": "error", "message":
                                  "Insufficient balance. Your Cline Credits balance is $-0.07"}) + "\n")
@@ -2176,6 +2177,7 @@ class RunTests(unittest.TestCase):
         self.assertEqual(ping.call_count, 0)
 
     def test_credit_alert_fires_once_after_a_day_and_recovery_pings_once(self):
+        self.cfg["platforms"]["cline-free"].pop("free_models_url")   # pinned-model credit path
         self.led.set_kv("credit_state:cline-free", json.dumps({
             "since": iso(NOW - timedelta(hours=24)), "failures": 4,
             "balance": "$-0.07", "alerted": False}))
