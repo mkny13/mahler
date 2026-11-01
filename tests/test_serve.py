@@ -46,6 +46,7 @@ class _Served(unittest.TestCase):
     def setUp(self):
         self.cfg = make_cfg()
         self.led = make_led()
+        self.addCleanup(self.led.close)
         load = self.load_cfg or (lambda: self.cfg)
         handler = type("Handler", (serve._Handler,),
                        {"led": self.led, "lock": threading.Lock(),
