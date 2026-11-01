@@ -70,6 +70,74 @@ class PostMergeTests(unittest.TestCase):
         self.phase()
         self.assertEqual(self.row()["phase"], "smoke")
 
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_paused_permission_incident_retry_restart_and_recovery(self, ping):
+        self.cfg["projects"]["p"]["post_merge"].update(live_strategy="github")
+        self.led.set_kv("post_merge_paused:p", "1")
+        self.led.set_kv("post_merge_pause_alert:p", '{"status":"sent"}')
+        self.gh.app = object()
+        self.gh.app_login.return_value = "app/mahler-conductor"
+        self.gh.exact_preview.return_value = (None, "HTTP 403")
+        ping.side_effect = [False, True, True]
+        self.tick()
+        detail = post_merge.pause_diagnostic(self.led, "p")
+        self.assertIn("HTTP 403", detail["reason"])
+        request = detail["permission_request"]
+        for expected in ("Deployments: Read-only", "settings/apps/mahler-conductor/permissions",
+                         "settings/installations", "x/y", "access was denied"):
+            self.assertIn(expected, request)
+        self.assertEqual(detail["observed_at"], iso(self.now))
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+        self.tick()
+        self.tick()
+        self.assertEqual(ping.call_count, 2)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='post_merge_probe_diagnostic'")), 1)
+        self.assertEqual(len(self.led.q("SELECT * FROM events WHERE kind='post_merge_permission_delivered'")), 1)
+        self.gh.exact_preview.return_value = (None, "merge SHA not found")
+        self.tick()
+        self.assertEqual(post_merge.pause_diagnostic(self.led, "p")["permission_request"], request)
+        self.now += timedelta(days=2)
+        self.gh.exact_preview.return_value = ("https://preview.example", "")
+        self.tick()
+        self.assertEqual(post_merge.pause_diagnostic(self.led, "p"), {})
+        self.assertEqual(self.row()["failure_code"], "paused_expired")
+        self.assertNotEqual(self.row()["status"], "PASS")
+        self.led.set_kv("post_merge_paused:p", "1")
+        self.register("b" * 40)
+        self.gh.exact_preview.return_value = (None, "HTTP 403")
+        self.tick()
+        self.assertEqual(ping.call_count, 3)
+        post_merge.resume(self.ctx, "p")
+        self.assertEqual(post_merge.pause_diagnostic(self.led, "p"), {})
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_paused_exception_is_safe_and_project_scoped(self, ping):
+        self.cfg["projects"]["p"]["post_merge"].update(live_strategy="github")
+        self.cfg["projects"]["q"] = copy.deepcopy(self.cfg["projects"]["p"])
+        post_merge.register(self.ctx, "q", 1, {"state": "MERGED", "mergeCommit": {"oid": SHA}})
+        for name in ("p", "q"):
+            self.led.set_kv(f"post_merge_paused:{name}", "1")
+        self.gh.app = object()
+        self.gh.app_login.side_effect = RuntimeError("SENTINEL_SECRET")
+        self.gh.exact_preview.side_effect = RuntimeError("HTTP 403 SENTINEL_SECRET")
+        other = mock.Mock()
+        other.exact_preview.return_value = ("https://preview.example", "")
+        self.ctx.gh = lambda name: self.gh if name == "p" else other
+        post_merge.advance(self.ctx, [{"name": "p"}, {"name": "q"}])
+        detail = post_merge.pause_diagnostic(self.led, "p")
+        self.assertIn("HTTP 403", detail["reason"])
+        self.assertIn("https://github.com/settings/apps", detail["permission_request"])
+        self.assertNotIn("mahler-conductor", detail["permission_request"])
+        self.assertEqual(post_merge.pause_diagnostic(self.led, "q"), {})
+        self.assertEqual(self.led.get_kv("post_merge_paused:q"), "0")
+        self.assertNotIn("SENTINEL_SECRET", str(detail) + str(ping.call_args_list) +
+                         str([dict(r) for r in self.led.q("SELECT * FROM events")]))
+        self.ctx.dry_run = True
+        calls = self.gh.exact_preview.call_count
+        self.tick()
+        self.assertEqual(self.gh.exact_preview.call_count, calls)
+
     def test_builtin_live_strategies_feed_artifact_to_smoke(self):
         for strategy in ("github", "mahler"):
             with self.subTest(strategy=strategy):
@@ -559,10 +627,10 @@ class PostMergeTests(unittest.TestCase):
         self.trip()
         self.cfg["projects"]["p"]["post_merge"].update(
             deploy_strategy="watch", live_strategy="github", live_command="")
-        self.gh.exact_preview.return_value = None
+        self.gh.exact_preview.return_value = (None, "merge SHA not found")
         self.tick()
         self.assertEqual(self.led.get_kv("post_merge_paused:p"), "1")
-        self.gh.exact_preview.return_value = "https://preview.example"
+        self.gh.exact_preview.return_value = ("https://preview.example", "")
         self.tick()
         self.assertNotEqual(self.led.get_kv("post_merge_paused:p"), "1")
         event = self.led.q1("SELECT detail FROM events WHERE kind='post_merge_resumed'")

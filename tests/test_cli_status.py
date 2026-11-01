@@ -53,6 +53,25 @@ class StatusCliTests(unittest.TestCase):
                               buf.getvalue())
                 self.assertIn("mahler resume proj", buf.getvalue())
 
+    def test_legacy_pause_displays_diagnostic_in_text_and_json(self):
+        self.led.set_kv("post_merge_paused:proj", "1")
+        detail = {"reason": "HTTP 403", "observed_at": "2026-11-01T00:00:00Z",
+                  "permission_request": "Deployments: Read-only https://github.com/settings/apps https://github.com/settings/installations"}
+        self.led.set_kv("post_merge_diagnostic:proj", json.dumps(detail))
+        for as_json in (False, True):
+            buf = io.StringIO()
+            with patch("sys.stdout", buf):
+                cli.cmd_status(SimpleNamespace(json=as_json, project=None), self.cfg, self.led)
+            output = buf.getvalue()
+            if as_json:
+                self.assertEqual(json.loads(output)["post_merge_paused"], {"proj": ""})
+                self.assertEqual(json.loads(output)["post_merge_diagnostics"], {"proj": detail})
+            else:
+                for text in ("HTTP 403", "Deployments: Read-only", "settings/installations",
+                             "pause began before timestamp tracking", "last re-probe",
+                             "automatic", "does not grant permissions"):
+                    self.assertIn(text, output)
+
     def test_missing_scope_counts_text_json_and_project_filter(self):
         self.cfg["projects"].update({
             "a": {"enabled": True, "scope": "label", "scope_label": "custom"},

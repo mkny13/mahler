@@ -260,6 +260,74 @@ def _deliver(ctx, row):
     ctx.led.set_kv(key, "posted")
 
 
+def pause_diagnostic(led, project):
+    """Active, project-scoped re-probe observations and unresolved owner request."""
+    return json.loads(led.get_kv(f"post_merge_diagnostic:{project}") or "{}")
+
+
+def pause_text(led, project):
+    since = led.get_kv(f"post_merge_paused_at:{project}")
+    start = f"since {since}" if since else "(pause began before timestamp tracking)"
+    text = f"post-merge checks paused for {project} {start}."
+    detail = pause_diagnostic(led, project)
+    if detail.get("reason"):
+        text += f" Last lookup: {detail['reason']}."
+    if detail.get("observed_at"):
+        text += f" last re-probe: {detail['observed_at']}."
+    if detail.get("permission_request"):
+        text += " " + detail["permission_request"]
+    text += (" Successful exact-SHA lookup allows automatic recovery. "
+             f"Manual resume (mahler resume {project}) does not grant permissions; "
+             "resuming settles overdue checks without filing new bugs.")
+    return text
+
+
+def _record_probe(ctx, name, reason, policy):
+    from .gh import classify_deployment_lookup_error
+    from .ledger import iso
+    # exact_preview returns fixed safe reasons. Reclassify errors defensively;
+    # never persist arbitrary provider output even if an adapter regresses.
+    safe_reasons = {
+        "invalid merge SHA or environment", "no deployments found for environment",
+        "malformed deployments or environment mismatch", "merge SHA not found",
+        "multiple deployments for merge SHA", "deployment is not newest",
+        "non-production deployment requires production_environment=false",
+        "deployment repository mismatch", "no deployment statuses found",
+        "malformed deployment statuses", "ambiguous newest deployment status",
+        "deployment status environment mismatch", "invalid deployment URL",
+        "exact live identity not yet verified",
+    } | {f"latest deployment status is {state}" for state in
+         ("pending", "queued", "in_progress", "failure", "error", "inactive", "unknown")}
+    reason = reason if reason in safe_reasons else classify_deployment_lookup_error(RuntimeError(reason))
+    previous = pause_diagnostic(ctx.led, name)
+    detail = {**previous, "reason": reason, "observed_at": iso(ctx.led.now())}
+    if ("HTTP 403" in reason and policy["post_merge"]["live_strategy"] == "github"
+            and not detail.get("permission_request")):
+        client = ctx.gh(name)
+        if client.app is not None:
+            settings = "https://github.com/settings/apps"
+            try:
+                login = client.app_login()
+                if isinstance(login, str) and re.fullmatch(r"app/[a-zA-Z0-9-]+", login):
+                    settings += "/" + login[4:] + "/permissions"
+            except Exception:
+                pass  # Identity failure must not hide the access failure.
+            detail["permission_request"] = (
+                f"GitHub deployment access was denied (HTTP 403) for {policy['repo']}. "
+                "This lookup requires repository Deployments: Read-only. "
+                "App/account owner: check and grant that permission in the App owner's "
+                f"account settings at {settings}, then approve the installation update "
+                f"for {policy['repo']} in its repository owner's account settings at "
+                "https://github.com/settings/installations. Fixing access allows "
+                "automatic re-probe recovery; manual resume does not grant permissions.")
+    with ctx.led._tx():
+        ctx.led.set_kv(f"post_merge_diagnostic:{name}", json.dumps(detail))
+        if any(previous.get(k) != detail.get(k) for k in ("reason", "permission_request")):
+            ctx.led.event("post_merge_probe_diagnostic", name, detail={
+                "reason": reason, "observed_at": detail["observed_at"],
+                "permission_request": bool(detail.get("permission_request"))})
+
+
 def resume(ctx, project, source="command"):
     """Clear a project's post-merge pause and settle rows that expired while paused.
 
@@ -270,6 +338,9 @@ def resume(ctx, project, source="command"):
     settled = 0
     with ctx.led._tx():
         ctx.led.set_kv(f"post_merge_paused:{project}", "0")
+        for prefix in ("post_merge_diagnostic", "post_merge_permission_delivered",
+                       "post_merge_paused_at", "post_merge_pause_alert"):
+            ctx.led.set_kv(f"{prefix}:{project}", "")
         ctx.led.set_kv(f"post-merge-consecutive:{project}", json.dumps({"count": 0}))
         for row in ctx.led.q("SELECT * FROM post_merge_checks WHERE project=? AND status='pending'",
                              (project,)):
@@ -294,17 +365,23 @@ def _reprobe(ctx, name):
     policy = ctx.policy(name)
     if not policy.get("enabled") or not policy["post_merge"]["enabled"]:
         return False
+    artifact = None
+    reason = "exact live identity not yet verified"
     try:
         if policy["post_merge"]["live_strategy"] == "mahler":
             artifact = launch_health.exact_live(
                 row["merge_sha"], timeout=5,
                 env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
         elif policy["post_merge"]["live_strategy"] == "github":
-            artifact = ctx.gh(name).exact_preview(row["merge_sha"], row["target"], timeout=5)
+            artifact, reason = ctx.gh(name).exact_preview(
+                row["merge_sha"], row["target"], timeout=5, return_reason=True)
         else:
             return False
-    except Exception:
-        return False
+    except Exception as exc:
+        from .gh import classify_deployment_lookup_error
+        reason = classify_deployment_lookup_error(exc)
+    if not artifact:
+        _record_probe(ctx, name, reason, policy)
     return bool(artifact)
 
 

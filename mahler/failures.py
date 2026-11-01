@@ -333,6 +333,21 @@ def _post_merge_streak(ctx, project, number, sha, phase, code, bug, pr, diagnost
 
 def deliver_post_merge_pause_alert(ctx, project):
     """Retry a failed pause notification on later ticks until ntfy accepts it."""
+    from .post_merge import pause_diagnostic
+    from . import notify
+    request = pause_diagnostic(ctx.led, project).get("permission_request")
+    delivered_key = f"post_merge_permission_delivered:{project}"
+    if request:
+        if ctx.led.get_kv(delivered_key):
+            return False
+        sent = notify.send(ctx.cfg, f"Post-merge deployment access denied: {project}",
+                           request, priority="high")
+        if sent:
+            with ctx.led._tx():
+                ctx.led.set_kv(delivered_key, "1")
+                ctx.led.event("post_merge_permission_delivered", project,
+                              detail={"permission": "Deployments: Read-only"})
+        return sent
     alert_key = f"post_merge_pause_alert:{project}"
     raw = ctx.led.get_kv(alert_key)
     if not raw:
