@@ -635,6 +635,9 @@ def _availability_lines(cfg, led, pol, catalog):
     rejections = current_rejections(cfg, led)
     missing, skipped = missing_pins(cfg, catalog)
     skipped.extend(codex_missing_variants(cfg))
+    for pconf in cfg.get("platforms", {}).values():
+        if pconf.get("enabled") is not False and cline_free.managed(pconf):
+            cline_free.refresh(cfg, led, pconf)        # probe the list; failure keeps the cache
     unfree = [(name, model) for name, pconf in sorted(cfg.get("platforms", {}).items())
               if pconf.get("enabled") is not False and cline_free.managed(pconf)
               for model in cline_free.flagged(led, pconf)]

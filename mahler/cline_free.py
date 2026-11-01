@@ -16,11 +16,11 @@ from datetime import datetime, timedelta
 from . import scorecard
 
 TTL_MINUTES = 30
-REJECT_DAYS = 3
 LIST_KEY = "cline:free_models"
 FETCHED_KEY = "cline:free_models_at"
 GOOD_KEY = "cline:free_last_good_model"
 REJECTED_KEY = "cline:free_rejected"
+VALIDATED_KEY = "cline:free_validated"
 
 
 def managed(pconf):
@@ -52,15 +52,7 @@ def _json(led, key, default):
 
 
 def _rejected(led):
-    now = led.now()
-    out = {}
-    for model, at in _json(led, REJECTED_KEY, {}).items():
-        try:
-            if now - datetime.fromisoformat(at) < timedelta(days=REJECT_DAYS):
-                out[model] = at
-        except (ValueError, TypeError):
-            pass
-    return out
+    return _json(led, REJECTED_KEY, {})
 
 
 def refresh(cfg, led, pconf, opener=None):
@@ -74,6 +66,11 @@ def refresh(cfg, led, pconf, opener=None):
         return
     models = fetch_free_models(pconf["free_models_url"], opener=opener)
     if models is not None:
+        # A model that left the list loses its verdicts: if it comes back it is
+        # tested afresh. While it stays listed, a rejection stands.
+        for key in (REJECTED_KEY, VALIDATED_KEY):
+            kept = {m: v for m, v in _json(led, key, {}).items() if m in models}
+            led.set_kv(key, json.dumps(kept))
         led.set_kv(LIST_KEY, json.dumps(models))
         led.set_kv(FETCHED_KEY, led.now().isoformat())
 
@@ -81,16 +78,22 @@ def refresh(cfg, led, pconf, opener=None):
 def candidates(led, pconf):
     """Free models not rejected, from the cached list. With no list ever read,
     the last known good model, then the configured default."""
-    listed = _json(led, LIST_KEY, [])
-    if not listed:
+    if led.get_kv(LIST_KEY) is not None:
+        listed = _json(led, LIST_KEY, [])            # an empty list is authoritative
+    else:
         fallback = led.get_kv(GOOD_KEY) or pconf.get("model")
         listed = [fallback] if fallback else []
     rejected = _rejected(led)
     return [m for m in listed if m not in rejected]
 
 
-def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=False, opener=None):
-    """-> the free model to launch with, or None when none is usable."""
+def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=False, opener=None,
+           probe=None):
+    """-> the free model to launch with, or None when none is usable.
+
+    A model is only launched once `probe(pconf, model)` has shown it runs
+    without billing: True validates it, False rejects it, None (couldn't tell)
+    skips it this time. A listed price of 0 proves nothing (mahler#1507)."""
     pconf = cfg["platforms"][name]
     if refresh_list:
         refresh(cfg, led, pconf, opener=opener)
@@ -109,9 +112,19 @@ def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=Fal
             return (1, 0, 0)               # unmeasured counts as unproven
         cps = r["cost_per_success"]
         return (order[r["status"]], cps if cps is not None else math.inf, 0)
-    best = min(pool, key=lambda m: (key(m), pool.index(m)))
-    led.set_kv(GOOD_KEY, best)
-    return best
+    validated = _json(led, VALIDATED_KEY, {})
+    for model in sorted(pool, key=lambda m: (key(m), pool.index(m))):
+        if model not in validated:
+            verdict = probe(pconf, model) if probe else None
+            if verdict is False:
+                reject(led, model)
+            if verdict is not True:
+                continue
+            validated[model] = led.now().isoformat()
+            led.set_kv(VALIDATED_KEY, json.dumps(validated))
+        led.set_kv(GOOD_KEY, model)
+        return model
+    return None
 
 
 def reject(led, model):
@@ -125,8 +138,8 @@ def reject(led, model):
 
 def flagged(led, pconf):
     """Models in use or configured that Cline's cached free list no longer has."""
-    listed = _json(led, LIST_KEY, [])
-    if not listed:
+    if led.get_kv(LIST_KEY) is None:
         return []
+    listed = _json(led, LIST_KEY, [])
     used = {m for m in (pconf.get("model"), led.get_kv(GOOD_KEY)) if m}
     return sorted(m for m in used if m not in listed)

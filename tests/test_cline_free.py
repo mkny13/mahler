@@ -38,6 +38,7 @@ class Base(unittest.TestCase):
         self.addCleanup(self.led.close)
 
     def choose(self, opener, **kw):
+        kw.setdefault("probe", lambda pconf, model: True)
         return cline_free.choose(self.cfg, self.led, refresh_list=True, opener=opener, **kw)
 
 
@@ -73,6 +74,50 @@ class FreeListTests(Base):
         with mock.patch.object(cline_free.scorecard, "table", return_value=rows):
             self.assertEqual(self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"},
                                                      {"id": "c/free"}])), "b/free")
+
+
+class ValidationTests(Base):
+    def test_new_candidate_is_probed_before_use_and_billing_one_is_rejected(self):
+        seen = []
+
+        def probe(pconf, model):
+            seen.append(model)
+            return model != "a/free"
+        got = self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}]), probe=probe)
+        self.assertEqual((got, seen), ("b/free", ["a/free", "b/free"]))
+        self.assertIn("a/free", json.loads(self.led.get_kv(cline_free.REJECTED_KEY)))
+        seen.clear()                                   # validated: no second probe
+        self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}]), probe=probe)
+        self.assertEqual(seen, [])
+
+    def test_unproven_model_is_not_launched_when_probe_cannot_tell(self):
+        self.assertIsNone(self.choose(opener_for([{"id": "a/free"}]), probe=lambda p, m: None))
+        self.assertIsNone(cline_free.choose(self.cfg, self.led))      # no probe, no trust
+
+    def test_probe_detects_billing_in_json_cost(self):
+        from mahler import platforms
+        self.assertTrue(platforms._billed([{"usage": {"totalCost": 0.002}}]))
+        self.assertFalse(platforms._billed([{"usage": {"totalCost": 0, "tokens": 5}}]))
+
+
+class RejectionPersistenceTests(Base):
+    def test_rejection_outlasts_any_delay_while_model_stays_listed(self):
+        free = opener_for([{"id": "a/free"}])
+        self.choose(free)
+        cline_free.reject(self.led, "a/free")
+        self.clock[0] += timedelta(days=30)
+        self.assertIsNone(self.choose(free))
+
+    def test_model_that_leaves_and_returns_is_tested_afresh(self):
+        self.choose(opener_for([{"id": "a/free"}]))
+        cline_free.reject(self.led, "a/free")
+        self.clock[0] += timedelta(hours=1)
+        self.choose(opener_for([{"id": "b/free"}]))
+        self.clock[0] += timedelta(hours=1)
+        self.assertEqual(self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}])), "a/free")
+
+    def test_empty_free_list_is_authoritative(self):
+        self.assertIsNone(self.choose(opener_for([])))
 
 
 class BilledTests(Base):
@@ -116,6 +161,16 @@ class InsufficientBalanceTests(Base):
         self.assertIn(router.HOLD, self.led.usage("cline-free"))
         self.assertEqual(self.led.get_kv("hold_reason:cline-free"), "no_free_models")
         ping.assert_called_once()
+
+    def test_audit_probes_the_list_itself_on_a_fresh_ledger(self):
+        from mahler import platform_audit
+        with mock.patch.object(cline_free, "fetch_free_models",
+                               return_value=["other/free"]) as fetch:
+            body = platform_audit.build_body(self.cfg, self.led,
+                                             config.platform_audit_policy(self.cfg))
+        fetch.assert_called()
+        section = body.split("### Configured models flagged by availability evidence", 1)[1]
+        self.assertIn("| `cline-free` | `cline-free/solar-mini4` |", section)
 
     def test_audit_flags_model_absent_from_free_list(self):
         from mahler import platform_audit

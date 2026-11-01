@@ -261,6 +261,45 @@ def probe_cline(pconf=None, env=None):
     return True if r.returncode == 0 else None
 
 
+def _billed(node):
+    """True if any `cost`-named field in a parsed JSON event is above zero."""
+    if isinstance(node, dict):
+        return any((isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+                    and "cost" in str(k).lower()) or _billed(v) for k, v in node.items())
+    if isinstance(node, list):
+        return any(_billed(v) for v in node)
+    return False
+
+
+def probe_cline_model(pconf, model, env=None):
+    """Run one tiny prompt on `model` to see it works without billing
+    (mahler#1507). -> True (ran, no charge seen), False (billed or insufficient
+    balance), None (couldn't tell)."""
+    exe = cline_exe()
+    if not exe:
+        return None
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            r = subprocess.run([exe, "--json", "--auto-approve", "false", "-t", "60",
+                                "-m", model, "--cwd", d, "Reply with the single word OK."],
+                               capture_output=True, text=True, timeout=90, env=env,
+                               stdin=subprocess.DEVNULL)
+        except (subprocess.SubprocessError, OSError):
+            return None
+    out = (r.stdout or "") + (r.stderr or "")
+    if is_credit_exhausted(out):
+        return False
+    events = []
+    for line in (r.stdout or "").splitlines():
+        try:
+            events.append(json.loads(line))
+        except ValueError:
+            pass
+    if _billed(events):
+        return False
+    return True if r.returncode == 0 else None
+
+
 def cline_exe():
     return which("cline", ["/opt/homebrew/bin"])
 
