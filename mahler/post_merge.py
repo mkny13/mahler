@@ -296,6 +296,10 @@ def _record_probe(ctx, name, reason, policy):
         "malformed deployment statuses", "ambiguous newest deployment status",
         "deployment status environment mismatch", "invalid deployment URL",
         "exact live identity not yet verified",
+        "deployment lookup failed (malformed response)",
+        "deployment lookup failed (provider/auth/response error)",
+        "deployment lookup failed (rate limit)",
+        "deployment lookup timed out",
     } | {f"latest deployment status is {state}" for state in
          ("pending", "queued", "in_progress", "failure", "error", "inactive", "unknown")}
     reason = reason if reason in safe_reasons else classify_deployment_lookup_error(RuntimeError(reason))
