@@ -22,6 +22,14 @@ def proj(**over):
     return pol
 
 
+def setUpModule():
+    # Hermetic: cline-free's free-list fetch must never reach the network (mahler#1507).
+    from mahler import cline_free
+    patcher = mock.patch.object(cline_free, "fetch_free_models", return_value=None)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class QueueTests(unittest.TestCase):
     def setUp(self):
         self.led = Ledger(":memory:", clock=lambda: NOW)

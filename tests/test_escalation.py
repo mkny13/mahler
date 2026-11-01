@@ -12,6 +12,16 @@ from mahler import config, finalize, platforms, router, scheduler, ship, sync, t
 from mahler.ledger import Ledger, iso
 
 
+def setUpModule():
+    # Hermetic: cline-free's free-list fetch must never reach the network (mahler#1507).
+    from mahler import cline_free
+    patcher = mock.patch.object(cline_free, "fetch_free_models", return_value=None)
+    probe = mock.patch("mahler.platforms.probe_cline_model", return_value=True)
+    for patcher_ in (patcher, probe):
+        patcher_.start()
+        unittest.addModuleCleanup(patcher_.stop)
+
+
 class FakeGH:
     def __init__(self):
         self.comments = []

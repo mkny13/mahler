@@ -10,7 +10,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-from . import capacity, ci_blockers, config, model_availability, launch_health, platforms, presence, prompt, router, runner, waits
+from . import capacity, ci_blockers, cline_free, config, model_availability, launch_health, platforms, presence, prompt, router, runner, waits
 from .gh import GHError, dependency_target
 from .ledger import CONDUCTOR, iso, parse, row_get
 from .usage import compute_burst
@@ -802,6 +802,12 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     platform_role = "sort" if role == "design" else role
     effort = platforms.effort_value(pconf, platform_role) or "default"
     model = pconf.get("sort_model" if platform_role == "sort" else "build_model") or pconf.get("model")
+    if cline_free.managed(pconf):
+        model = cline_free.choose(ctx.cfg, led, platform_role, size or "s", name=platform,
+                                  refresh_list=True, probe=platforms.probe_cline_model)
+        if model is None:
+            ctx.say(f"{project}#{n}: {platform} has no free model left — not launching")
+            return False
     routing_role = "plan" if role == "design" or role == "sort" and needs_plan(row_get(item, "labels")) else role
     run_id = led.create_run(project=project, number=n, role=role, platform=platform,
                             size=size or "m", model=model, configured_model=model or "", effort=effort,

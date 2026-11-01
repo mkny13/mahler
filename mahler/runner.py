@@ -14,7 +14,7 @@ import signal
 import subprocess
 from pathlib import Path
 
-from . import config, github_pat, lessons as lessons_mod, platforms, redact, router
+from . import cline_free, config, github_pat, lessons as lessons_mod, platforms, redact, router
 from .ledger import row_get
 
 HOOK_NAMES = ("applypatch-msg", "commit-msg", "post-checkout", "post-commit", "post-merge",
@@ -510,6 +510,10 @@ def launch(ctx, project, item, role, platform, run_id, epoch, prompt, prep,
     pconf = ctx.cfg["platforms"][platform]
     wt, run_dir = prep["worktree"], prep["run_dir"]
     platform_role = "sort" if role == "design" else role
+    if cline_free.managed(pconf) and hasattr(ctx, "led"):
+        row = ctx.led.q1("SELECT model FROM runs WHERE id=?", (run_id,))
+        if row and row["model"]:
+            pconf = dict(pconf, model=row["model"])      # the free model tick chose
     argv = platforms.argv_for(pconf, prompt, wt, platform_role, pol["run_timeout_minutes"],
                           **({"run_dir": run_dir} if pconf["kind"] == "agent-sdk" else {}))
     env = run_env(ctx, project, item["number"], platform, run_id, epoch)

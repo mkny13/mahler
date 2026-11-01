@@ -382,7 +382,7 @@ class QuotaTests(unittest.TestCase):
         rows = self.rows(cfg, make_led())
         self.assertEqual(rows["codex"]["model"], "free tier")
         self.assertEqual(rows["cline-free"]["model"],
-                         "z-ai/glm-5.3-flash · free tier · size s only")
+                         "cline-free/solar-mini4 · free tier · size s only")
         self.assertEqual(rows["kilo"]["model"], "kilo-auto/free · size s only")
         # a plan belongs to a login: another account doesn't inherit codex's
         self.assertEqual(rows["codex-work"]["model"], "work account")
