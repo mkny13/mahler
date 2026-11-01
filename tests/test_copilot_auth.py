@@ -67,17 +67,24 @@ class RunEnvTests(unittest.TestCase):
                 self.assertNotIn(var, env)
             self.assertEqual(env["COPILOT_HOME"], os.path.expanduser("~/.copilot-work"))
             self.assertNotIn("ghs_scoped_agent_token_1211", env.values())
-            # gh still acts as the project's App identity, from a private file.
+            # gh gets an empty private config dir: Copilot's fallback to `gh`
+            # must not find the App token either (#1506).
             gh_dir = os.path.join(d, "runs", "42", "gh")
             self.assertEqual(env["GH_CONFIG_DIR"], gh_dir)
-            hosts = os.path.join(gh_dir, "hosts.yml")
-            self.assertEqual(os.stat(hosts).st_mode & 0o777, 0o600)
             self.assertEqual(os.stat(gh_dir).st_mode & 0o777, 0o700)
-            self.assertIn('oauth_token: "ghs_scoped_agent_token_1211"', Path(hosts).read_text())
+            self.assertEqual(os.listdir(gh_dir), [])
             if shutil.which("gh"):
                 out = subprocess.run(["gh", "auth", "token"], env={**env, "HOME": d},
                                      capture_output=True, text=True, timeout=30)
-                self.assertEqual(out.stdout.strip(), "ghs_scoped_agent_token_1211")
+                self.assertNotIn("ghs_scoped_agent_token_1211", out.stdout)
+
+    def test_personal_copilot_without_stored_login_never_gets_the_app_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = self.run_env(d, "copilot", {"copilot": {"kind": "copilot"}})
+            self.assertNotIn("ghs_scoped_agent_token_1211", env.values())
+            for var in ("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"):
+                self.assertNotIn(var, env)
+            self.assertEqual(os.listdir(env["GH_CONFIG_DIR"]), [])
 
     def test_other_kinds_keep_the_app_token_in_the_environment(self):
         with tempfile.TemporaryDirectory() as d:
@@ -108,8 +115,8 @@ class RunEnvTests(unittest.TestCase):
                     mock.patch.dict(os.environ, env_in, clear=True):
                 env = runner.run_env(ctx, "mahler", 1123, "work-copilot", 42, 7)
             self.assertNotIn("GH_TOKEN", env)
-            hosts = Path(env["GH_CONFIG_DIR"], "hosts.yml").read_text()
-            self.assertIn('"gho_personal_overlay"', hosts)
+            self.assertFalse(os.path.exists(os.path.join(env["GH_CONFIG_DIR"], "hosts.yml")))
+            self.assertNotIn("gho_personal_overlay", env.values())
 
 
 class LogTests(unittest.TestCase):
@@ -124,6 +131,11 @@ class LogTests(unittest.TestCase):
         self.assertTrue(res["auth_denied"])
         self.assertFalse(res["quota_hit"])
         self.assertIn("Access denied by policy settings", res["last_error"])
+
+    def test_cli_user_login_403_is_auth_denied(self):
+        res = self.read("Failed to fetch GitHub CLI user login (403): GitHub returned: "
+                        "Resource not accessible by integration\n")
+        self.assertTrue(res["auth_denied"])
 
     def test_structured_denial_event_counts_too(self):
         res = self.read(json.dumps({"type": "session.error", "data": {
@@ -188,6 +200,21 @@ class FinalizeTests(unittest.TestCase):
         _, ping = self.run_once(DENIED_LOG)
         self.assertEqual(ping.call_count, 0)
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
+    def test_copilot_auth_failure_holds_platform_and_costs_no_attempt(self):
+        log = ("Failed to fetch GitHub CLI user login (403): GitHub returned: "
+               "Resource not accessible by integration\n")
+        run_id, ping = self.run_once(log)
+        self.assertEqual(self.led.run(run_id)["stop_reason"], "auth_denied")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+        self.assertIn(router.HOLD, self.led.usage("copilot"))
+        self.assertEqual(ping.call_count, 1)
+        self.assertIn("copilot login", ping.call_args.args[1])
+        state, detail = router.usage_state(self.led, "copilot", {"kind": "copilot"})
+        self.assertEqual(state, "blocked")
+        self.assertIn("copilot login", detail)
+        _, ping = self.run_once(log)
+        self.assertEqual(ping.call_count, 0)
 
     def test_a_run_that_reported_is_judged_on_its_report(self):
         self.assertFalse(finalize._auth_denied({"auth_denied": True}, 0, None))

@@ -322,24 +322,20 @@ def keep_copilot_login(env, base_env, run_dir):
     ahead of the login stored under COPILOT_HOME. So a token this run sets
     for `gh` — the project's App token (D47), or another account's token
     (D26) — would become Copilot's login too, and Copilot refuses it with
-    "Access denied by policy settings". `gh` reads the same token from
-    hosts.yml in its config dir, so the token moves there: `gh` still acts
-    as the project's identity, and Copilot falls back to its own login. No
-    other credential is handed to the run. A token the platform's own
+    "Access denied by policy settings". The token is dropped, not moved to
+    hosts.yml: Copilot's fallback is `gh`, which would hand it the App token
+    and fail on /user (#1506). Copilot runs authenticate only with the
+    stored `copilot login`; the conductor does the pushing. A token the platform's own
     account env sets is left alone."""
     token = env.get("GH_TOKEN") or env.get("GITHUB_TOKEN")
     if not token or all(env.get(var) == base_env.get(var)
                         for var in ("GH_TOKEN", "GITHUB_TOKEN")):
         return
+    # Copilot falls back to `gh` when it has no stored login and would read
+    # the token from hosts.yml too, so nothing is written there: the run gets
+    # an empty gh config dir and Copilot never sees an overlay token (#1506).
     gh_config_dir = os.path.join(run_dir, "gh")
     config.ensure_private_dir(gh_config_dir)
-    host = env.get("GH_HOST") or "github.com"
-    fd = os.open(os.path.join(gh_config_dir, "hosts.yml"),
-                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        # JSON strings are valid YAML double-quoted scalars.
-        fh.write(f"{json.dumps(host)}:\n    oauth_token: {json.dumps(token)}\n"
-                 f"    user: x-access-token\n")
     env["GH_CONFIG_DIR"] = gh_config_dir
     env.pop("GH_TOKEN", None)
     env.pop("GITHUB_TOKEN", None)
