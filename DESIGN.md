@@ -720,6 +720,13 @@ claim that a person tested it. Closed shipments are polled independently of the
 open-issue ETag; failed lookups cannot establish a clean window. Legacy shipments
 complete in bounded batches; historical done rows are not backfilled.
 
+**Parents blocked only on human criteria (mahler#1501).** A parent whose children are
+all closed and whose only unmet Done-when criteria are "manual check" items follows the
+same rule: it gets no verification run, one owner ping naming the completion date, and
+completes after exactly 14 days (`parent_human:<project>:<n>` records when the blocker set
+was first seen; any change to it restarts the clock). One unmet automated criterion, or an
+open child, keeps the ordinary blocked/verify behaviour and never quiet-completes.
+
 Automated comments use `Smoke: PASS <reference>` with an HTTP(S) report URL or
 `report=<path/id>`, `tag=<tag>` or `artifact=<path/id>` (`:` is also accepted).
 They require author, durable comment ID/URL and a creation time strictly after the

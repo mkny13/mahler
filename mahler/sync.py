@@ -1338,8 +1338,40 @@ def _close_finished_parents_project(ctx, project):
                 marker = f"<!-- mahler:parent-blocked:{fingerprint} -->"
                 notify_key = f"parent_blocked:{project}:{n}:{fingerprint}"
                 ctx.say(f"{project}#{n}: {explanation}")
+                human_key = f"parent_human:{project}:{n}"
+                human_only = verifiable and all(
+                    b.startswith("Unchecked criterion:") and "manual check" in b.lower()
+                    for b in blockers)
+                if not human_only:
+                    if not ctx.dry_run:
+                        led.set_kv(human_key, "")
+                elif not ctx.dry_run:
+                    # D10: criteria only a person can meet follow the retired-UAT
+                    # rule. The wait is an owner decision until 14 quiet days pass.
+                    since = led.get_kv(human_key)
+                    seen = since.split("|", 1) if since else []
+                    if len(seen) != 2 or seen[0] != fingerprint:
+                        seen = [fingerprint, iso(led.now())]
+                        led.set_kv(human_key, "|".join(seen))
+                    due = parse(seen[1]) + timedelta(days=QUIET_DAYS)
+                    if led.now() >= due:
+                        led.set_kv(pending, fingerprint)
+                        gh.comment(n, f"{AGENT_MARK}\n<!-- mahler:parent-quiet:{fingerprint} -->\n"
+                                   f"All children completed; the remaining criteria need a person "
+                                   f"and nothing changed for {QUIET_DAYS} quiet days, so the parent "
+                                   "completes (D10 quiet period, not a claim anyone tested it):\n" +
+                                   "\n".join(f"- {b}" for b in blockers))
+                        if state != "CLOSED":
+                            gh.close_issue(n)
+                        led.set_kv(key, fingerprint)
+                        led.set_state(project, n, "done", "parent quiet completion")
+                        led.set_kv(pending, "")
+                        continue
+                    explanation += (f"\nOwner decision: these need a person. Answer, or the parent "
+                                    f"completes on {iso(due)[:10]} if nothing changes.")
+                    ctx.say(f"{project}#{n}: owner decision pending until {iso(due)[:10]}")
                 if not ctx.dry_run:
-                    if verifiable:
+                    if verifiable and not human_only:
                         _parent_verify(ctx, project, n, blockers, fingerprint, inventory, comments)
                     if not any(marker in c.get("body", "") for c in comments):
                         gh.comment(n, f"{AGENT_MARK}\n{marker}\n{explanation}")
