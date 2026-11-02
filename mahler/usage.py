@@ -486,6 +486,11 @@ def refresh_cline_holds(cfg, led, force=False):
             base_env = {k: v for k, v in os.environ.items()
                         if k not in config.CREDENTIAL_VARS}
             env = config.run_env(cfg, account, base=base_env) or base_env
+            # App-backed runs also drop GitHub identity vars the account env
+            # sets (runner.run_env, keep_copilot_login), so a configured
+            # GH_TOKEN must not authenticate the probe either (#1514).
+            for var in config.GH_IDENTITY_VARS:
+                env.pop(var, None)
             with tempfile.TemporaryDirectory(prefix="mahler-copilot-probe-") as gh_dir:
                 env["GH_CONFIG_DIR"] = gh_dir
                 probe = platforms.probe_copilot_login(env)
