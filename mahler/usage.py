@@ -7,6 +7,7 @@ them.
 
 import os
 import json
+import tempfile
 from datetime import timedelta
 
 from . import config, notify, platforms, presence, router
@@ -478,9 +479,20 @@ def refresh_cline_holds(cfg, led, force=False):
         if not force and last and led.now() - last < timedelta(minutes=pconf.get("stale_minutes", 60)):
             continue
         led.set_kv(f"probe:{name}", iso(led.now()))
-        env = config.run_env(cfg, config.account_of(pconf))
-        probe = (platforms.probe_copilot_login(env) if pconf.get("kind") == "copilot"
-                 else platforms.probe_cline(pconf, env=env))
+        account = config.account_of(pconf)
+        if pconf.get("kind") == "copilot" and account == config.DEFAULT_ACCOUNT:
+            # Match App-backed runs: ambient gh credentials must not make a
+            # missing Copilot login look healthy and prematurely lift the hold.
+            base_env = {k: v for k, v in os.environ.items()
+                        if k not in config.CREDENTIAL_VARS}
+            env = config.run_env(cfg, account, base=base_env) or base_env
+            with tempfile.TemporaryDirectory(prefix="mahler-copilot-probe-") as gh_dir:
+                env["GH_CONFIG_DIR"] = gh_dir
+                probe = platforms.probe_copilot_login(env)
+        else:
+            env = config.run_env(cfg, account)
+            probe = (platforms.probe_copilot_login(env) if pconf.get("kind") == "copilot"
+                     else platforms.probe_cline(pconf, env=env))
         if probe is True:
             holds.clear(cfg, led, name, by="probe")
 

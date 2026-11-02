@@ -120,6 +120,105 @@ class RunEnvTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.TestCase):
+    def test_default_probe_cannot_use_ambient_credentials_to_release_hold(self):
+        for outcome in (False, None, True):
+            with self.subTest(outcome=outcome):
+                led = Ledger(":memory:", clock=lambda: NOW)
+                self.addCleanup(led.close)
+                cfg = {"platforms": {"copilot": {"kind": "copilot"}}}
+                led.record_usage("copilot", router.HOLD, 100.0,
+                                 resets_at=iso(NOW + timedelta(days=365)))
+                led.set_kv("hold_reason:copilot", "auth")
+                before = led.usage("copilot")
+                directories = []
+                ambient = {var: "other-user-credential" for var in config.CREDENTIAL_VARS}
+                ambient.update({"PATH": "/bin", "HOME": "/fake-home"})
+
+                def probe_subprocess(*args, env=None, **kwargs):
+                    # Ambient credentials would falsely authenticate another identity.
+                    effective = os.environ if env is None else env
+                    if effective.get("GH_TOKEN") == "other-user-credential":
+                        return mock.Mock(stdout="OK", stderr="", returncode=0)
+                    for var in config.CREDENTIAL_VARS:
+                        if var != "GH_CONFIG_DIR":
+                            self.assertNotIn(var, effective)
+                    directory = Path(effective["GH_CONFIG_DIR"])
+                    self.assertEqual(list(directory.iterdir()), [])
+                    self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(effective["HOME"], "/fake-home")
+                    self.assertEqual(effective["PATH"], "/bin")
+                    directories.append(directory)
+                    return mock.Mock(
+                        stdout="Failed to fetch GitHub CLI user login (403)" if outcome is False else "",
+                        stderr="", returncode=0 if outcome is True else 1)
+
+                with mock.patch.dict(os.environ, ambient, clear=True), \
+                        mock.patch.object(platforms, "copilot_exe", return_value="/bin/copilot"), \
+                        mock.patch("subprocess.run", side_effect=probe_subprocess):
+                    usage.refresh_cline_holds(cfg, led)
+                    self.assertEqual(dict(os.environ), ambient)
+                if outcome is True:
+                    self.assertIsNone(led.get_kv("hold_reason:copilot"))
+                    self.assertNotIn(router.HOLD, led.usage("copilot"))
+                else:
+                    self.assertEqual(led.get_kv("hold_reason:copilot"), "auth")
+                    self.assertEqual(led.usage("copilot"), before)
+                self.assertEqual(len(directories), 1)
+                self.assertFalse(directories[0].exists())
+
+    def test_explicit_personal_account_does_not_use_ambient_credentials(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"copilot": {"kind": "copilot"}},
+               "accounts": {"personal": {"routing": {"build": ["copilot"]},
+                                          "env": {"COPILOT_HOME": "/personal/copilot"}}}}
+        led.record_usage("copilot", router.HOLD, 100.0,
+                         resets_at=iso(NOW + timedelta(days=365)))
+        led.set_kv("hold_reason:copilot", "auth")
+        directories = []
+
+        def probe_subprocess(*args, env=None, **kwargs):
+            effective = os.environ if env is None else env
+            if effective.get("GH_TOKEN") == "other-user-credential":
+                return mock.Mock(stdout="OK", stderr="", returncode=0)
+            configured = cfg["accounts"]["personal"]["env"]
+            for var in config.CREDENTIAL_VARS:
+                if var == "GH_CONFIG_DIR" or var in configured:
+                    continue
+                self.assertNotIn(var, effective)
+            gh_dir = Path(effective["GH_CONFIG_DIR"])
+            self.assertEqual(list(gh_dir.iterdir()), [])
+            directories.append(gh_dir)
+            self.assertEqual(effective["COPILOT_HOME"], "/personal/copilot")
+            return mock.Mock(stdout="Failed to fetch GitHub CLI user login (403)",
+                             stderr="", returncode=1)
+
+        ambient = {var: "other-user-credential" for var in config.CREDENTIAL_VARS}
+        ambient["PATH"] = "/bin"
+        with mock.patch.dict(os.environ, ambient, clear=True), \
+                mock.patch.object(platforms, "copilot_exe", return_value="/bin/copilot"), \
+                mock.patch("subprocess.run", side_effect=probe_subprocess):
+            usage.refresh_cline_holds(cfg, led)
+
+        self.assertEqual(led.get_kv("hold_reason:copilot"), "auth")
+        self.assertIn(router.HOLD, led.usage("copilot"))
+        self.assertEqual(len(directories), 1)
+        self.assertFalse(directories[0].exists())
+
+    def test_non_default_probe_keeps_configured_account_environment(self):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"work-copilot": {"kind": "copilot", "account": "work"}},
+               "accounts": {"work": {"env": {"COPILOT_HOME": "/work/copilot",
+                                              "GH_CONFIG_DIR": "/work/gh"}}}}
+        led.set_kv("hold_reason:work-copilot", "auth")
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "other-user-token"}, clear=True), \
+                mock.patch.object(platforms, "probe_copilot_login", return_value=False) as probe:
+            usage.refresh_cline_holds(cfg, led)
+        self.assertEqual(probe.call_args.args[0],
+                         {"COPILOT_HOME": "/work/copilot", "GH_CONFIG_DIR": "/work/gh"})
+        self.assertEqual(led.get_kv("hold_reason:work-copilot"), "auth")
+
     def test_login_probe_classification_and_hold_lift(self):
         def fake(out, code):
             return mock.Mock(stdout=out, stderr="", returncode=code)
