@@ -205,6 +205,46 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(len(directories), 1)
         self.assertFalse(directories[0].exists())
 
+    def test_personal_account_gh_token_cannot_release_hold(self):
+        # App-backed runs replace then drop the account's GH_TOKEN (runner.run_env,
+        # keep_copilot_login), so the probe must not authenticate with it (#1514).
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = {"platforms": {"copilot": {"kind": "copilot"}},
+               "accounts": {"personal": {"env": {
+                   "COPILOT_HOME": "/personal/copilot", "GH_TOKEN": "gho_configured",
+                   "GITHUB_TOKEN": "gho_configured", "GH_HOST": "github.example",
+                   "GH_CONFIG_DIR": "/personal/gh"}}}}
+        led.record_usage("copilot", router.HOLD, 100.0,
+                         resets_at=iso(NOW + timedelta(days=365)))
+        led.set_kv("hold_reason:copilot", "auth")
+        before = led.usage("copilot")
+        directories = []
+
+        def probe_subprocess(*args, env=None, **kwargs):
+            effective = os.environ if env is None else env
+            if any(effective.get(var) for var in ("GH_TOKEN", "GITHUB_TOKEN")):
+                return mock.Mock(stdout="OK", stderr="", returncode=0)
+            for var in config.GH_IDENTITY_VARS:
+                if var != "GH_CONFIG_DIR":
+                    self.assertNotIn(var, effective)
+            gh_dir = Path(effective["GH_CONFIG_DIR"])
+            self.assertEqual(list(gh_dir.iterdir()), [])
+            directories.append(gh_dir)
+            self.assertEqual(effective["COPILOT_HOME"], "/personal/copilot")
+            return mock.Mock(stdout="Failed to fetch GitHub CLI user login (403)",
+                             stderr="", returncode=1)
+
+        with mock.patch.dict(os.environ, {"PATH": "/bin"}, clear=True), \
+                mock.patch.object(platforms, "copilot_exe", return_value="/bin/copilot"), \
+                mock.patch("subprocess.run", side_effect=probe_subprocess):
+            usage.refresh_cline_holds(cfg, led)
+
+        self.assertEqual(led.get_kv("hold_reason:copilot"), "auth")
+        self.assertEqual(led.usage("copilot"), before)
+        self.assertEqual(len(directories), 1)
+        self.assertFalse(directories[0].exists())
+
     def test_non_default_probe_keeps_configured_account_environment(self):
         led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(led.close)
