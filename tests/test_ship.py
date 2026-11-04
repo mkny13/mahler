@@ -3193,7 +3193,7 @@ class ShipTests(unittest.TestCase):
 
         self.assertEqual(self.unowned_pings(ping), [])
         self.assertEqual(self.item()["pr"], None)
-        self.assertIsNotNone(self.led.get_kv("unowned:x#88"))
+        self.assertIsNotNone(self.led.get_kv("unowned-rebuild:x#88"))
 
     def test_mergeability_not_known_yet_waits(self):
         self.led.upsert_item("x", 5, pr=88)
@@ -3988,6 +3988,50 @@ class ShipTests(unittest.TestCase):
         self.assertIn("mahler ship x#<issue> --pr 395", pings[1][0][1])
         self.led.set_kv("unowned-scan:x", iso(NOW - timedelta(hours=1)))  # scan again
         self.assertEqual(self.unowned_pings(self.ship()), [])            # ...no repeat
+
+    def test_done_orphan_pings_then_closes_once(self):
+        for state in ("done", "shipped"):
+            with self.subTest(state=state):
+                self.led.upsert_item("x", 5, state=state, pr=88)
+                self.gh.prs = [dict(self._open(88, 5), mergeable="CONFLICTING")]
+                for key in ("unowned:x#88", "unowned-closed:x#88"):
+                    self.led.set_kv(key, None)
+                before = len(self.led.q("SELECT * FROM events WHERE kind='unowned_pr_closed'"))
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(self.ctx, "ping") as ping, \
+                        mock.patch.object(self.gh, "pr_close") as close:
+                    for scan in range(4):
+                        self.led.set_kv("unowned-scan:x", None)
+                        ship._unowned_prs(self.ctx, "x")
+                        self.assertEqual(ping.call_count, 1)
+                        self.assertEqual(close.call_count, int(scan > 0))
+                    self.assertEqual(close.call_args.args[0], 88)
+                    self.assertIn("x#5", close.call_args.args[1])
+                    self.assertIn(state, close.call_args.args[1])
+                self.assertTrue(self.led.get_kv("unowned-closed:x#88"))
+                events = self.led.q("SELECT * FROM events WHERE kind='unowned_pr_closed'")
+                self.assertEqual(len(events), before + 1)
+
+    def test_pinged_orphans_excluded_from_closing(self):
+        cases = ("young", "draft", "bot", "rebuild", "untracked", "live", "dry_run")
+        for case in cases:
+            with self.subTest(case=case):
+                self.ctx.dry_run = case == "dry_run"
+                self.led.upsert_item("x", 5, state="done", pr=None if case == "untracked" else 88)
+                self.led.upsert_item("x", 6, state="ready", pr=88 if case == "live" else None)
+                self.led.set_kv("unowned-scan:x", None)
+                self.led.set_kv("unowned:x#88", iso(NOW))
+                self.led.set_kv("unowned-rebuild:x#88", iso(NOW) if case == "rebuild" else None)
+                self.gh.prs = [self._open(88, 1 if case == "young" else 5,
+                                        draft=case == "draft",
+                                        branch="dependabot/pip/x" if case == "bot" else "feature")]
+                with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                        mock.patch.object(self.ctx, "ping") as ping, \
+                        mock.patch.object(self.gh, "pr_close") as close:
+                    ship._unowned_prs(self.ctx, "x")
+                close.assert_not_called()
+                ping.assert_not_called()
+                self.assertIsNone(self.led.get_kv("unowned-closed:x#88"))
 
     def test_only_live_items_own_prs_including_shared_references(self):
         states = ("done", "shipped", "inbox", "ready", "working", "verifying",
