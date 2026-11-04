@@ -214,6 +214,14 @@ The owner’s [access confirmation](https://github.com/mkny13/mahler/issues/949#
 | [phish-in#559](https://github.com/mkny13/couch-tour/issues/559) | closed | 2026-10-08T13:07:49Z |
 | [movebreak#85](https://github.com/mkny13/movebreak/issues/85) | closed | 2026-10-07T21:04:26Z |
 
+Fresh configured-App confirmation for **groundwork#195**: retrieved at
+`2026-11-04T17:12:51Z`, state **CLOSED**, using
+`mahler.gh.project_client(cfg, config.project_policy(cfg, "groundwork"))` and its
+configured GitHub App client, with the App-token cache redirected to a temporary
+`config.STATE` directory. An earlier unauthenticated metadata request returned
+HTTP 404; that result is retained only as historical context. No issue comments
+were fetched.
+
 These current closures show that the five named dependents are no longer open blockers; they do not override the remaining audit gap on movebreak branch protection. No closure, label, requeue or issue-body mutation was performed.
 
 ## Complete inventory scan states
