@@ -577,12 +577,14 @@ def _unowned_prs(ctx, project):
     done = {it["pr"]: it for it in items
             if it["pr"] and it["state"] in ("done", "shipped")}
     gh = ctx.gh(project)
+    # A rebuild marker lingers once the rebuild re-adopts its PR; a done item
+    # still recording the PR is no rebuild window, so the marker doesn't shield it.
     for pr in gh.open_prs():
         n = pr["number"]
         if (n in tracked or pr.get("isDraft")
                 or (pr.get("headRefName") or "").startswith(_BOT_BRANCHES)
                 or led.now() - parse(pr["createdAt"]) < timedelta(hours=hours)
-                or led.get_kv(f"unowned-rebuild:{project}#{n}")
+                or (n not in done and led.get_kv(f"unowned-rebuild:{project}#{n}"))
                 or led.get_kv(f"unowned-closed:{project}#{n}")):
             continue
         if led.get_kv(f"unowned:{project}#{n}"):

@@ -4012,12 +4012,25 @@ class ShipTests(unittest.TestCase):
                 events = self.led.q("SELECT * FROM events WHERE kind='unowned_pr_closed'")
                 self.assertEqual(len(events), before + 1)
 
+    def test_readopted_rebuild_pr_of_done_item_is_pinged_then_closed(self):
+        self.led.upsert_item("x", 5, state="done", pr=88)
+        self.led.set_kv("unowned-rebuild:x#88", iso(NOW))
+        self.gh.prs = [dict(self._open(88, 5), mergeable="CONFLICTING")]
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping") as ping, \
+                mock.patch.object(self.gh, "pr_close") as close:
+            for _ in range(3):
+                self.led.set_kv("unowned-scan:x", None)
+                ship._unowned_prs(self.ctx, "x")
+        self.assertEqual(ping.call_count, 1)
+        self.assertEqual(close.call_count, 1)
+
     def test_pinged_orphans_excluded_from_closing(self):
         cases = ("young", "draft", "bot", "rebuild", "untracked", "live", "dry_run")
         for case in cases:
             with self.subTest(case=case):
                 self.ctx.dry_run = case == "dry_run"
-                self.led.upsert_item("x", 5, state="done", pr=None if case == "untracked" else 88)
+                self.led.upsert_item("x", 5, state="done", pr=None if case in ("untracked", "rebuild") else 88)
                 self.led.upsert_item("x", 6, state="ready", pr=88 if case == "live" else None)
                 self.led.set_kv("unowned-scan:x", None)
                 self.led.set_kv("unowned:x#88", iso(NOW))
