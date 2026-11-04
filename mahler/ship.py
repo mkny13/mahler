@@ -555,7 +555,9 @@ def _close_superseded_bot_prs(ctx, project):
 
 
 def _unowned_prs(ctx, project):
-    """Ping once for each open PR no item tracks (mahler#407). Sessions that
+    """Ping once for each open PR no live item tracks (mahler#407).
+    On a later scan, close orphans tracked by done/shipped items (mahler#1516).
+    Sessions that
     open a PR and neither merge it nor `mahler ship` it leave it open, and
     nothing here would otherwise notice: the ship pass only watches items a
     build (or `mahler ship`) put in `verifying`. Checked every 15 min, and
@@ -569,14 +571,36 @@ def _unowned_prs(ctx, project):
         return
     led.set_kv(key, iso(led.now()))
     hours = ctx.policy(project).get("unowned_pr_hours", 2)
-    tracked = {it["pr"] for it in led.items(project)
+    items = led.items(project)
+    tracked = {it["pr"] for it in items
                if it["pr"] and it["state"] not in ("done", "shipped")}
-    for pr in ctx.gh(project).open_prs():
+    done = {it["pr"]: it for it in items
+            if it["pr"] and it["state"] in ("done", "shipped")}
+    gh = ctx.gh(project)
+    # A rebuild marker lingers once the rebuild re-adopts its PR; a done item
+    # still recording the PR is no rebuild window, so the marker doesn't shield it.
+    for pr in gh.open_prs():
         n = pr["number"]
         if (n in tracked or pr.get("isDraft")
                 or (pr.get("headRefName") or "").startswith(_BOT_BRANCHES)
                 or led.now() - parse(pr["createdAt"]) < timedelta(hours=hours)
-                or led.get_kv(f"unowned:{project}#{n}")):
+                or (n not in done and led.get_kv(f"unowned-rebuild:{project}#{n}"))
+                or led.get_kv(f"unowned-closed:{project}#{n}")):
+            continue
+        if led.get_kv(f"unowned:{project}#{n}"):
+            item = done.get(n)
+            if item:
+                issue = item["number"]
+                try:
+                    gh.pr_close(n, f"Closing this orphan PR because {project}#{issue} is "
+                                f"{item['state']} and no live item is shipping it. "
+                                "The conductor previously reported it as unowned.")
+                    with led._tx():
+                        led.set_kv(f"unowned-closed:{project}#{n}", iso(led.now()))
+                        led.event("unowned_pr_closed", project, issue, {"pr": n})
+                    ctx.say(f"{project}: closed orphan PR #{n} ({project}#{issue} is {item['state']})")
+                except Exception as exc:  # retry API failures on the next scan
+                    ctx.say(f"{project}: closing orphan PR #{n} failed — {exc}")
             continue
         led.set_kv(f"unowned:{project}#{n}", iso(led.now()))
         led.event("unowned_pr", project, None, {"pr": n, "branch": pr.get("headRefName")})
@@ -844,7 +868,7 @@ def _rebuild_on_base(ctx, project, item, pr, base, *, stale=False):
     # The PR stays open while the item briefly has no PR link.  Remember that
     # this is a conductor-owned transition so the unowned-PR backstop does not
     # mistake the rebuild window for an abandoned interactive session.
-    led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
+    led.set_kv(f"unowned-rebuild:{project}#{pr}", iso(led.now()))
     led.upsert_item(project, n, pr=None)
     led.set_state(project, n, "ready", f"PR #{pr} {reason} — rebuilding on it")
     led.release(project, n, holder=CONDUCTOR)
@@ -2247,7 +2271,7 @@ def _finish_fresh_rebuild(ctx, project, item, marker):
     with led._tx():
         led.set_kv(f"fresh-rebuild:{project}#{n}", f"{pr}@{marker.get('sha', '')}")
         led.set_kv(f"rebuild-context:{project}#{n}", marker.get("findings", ""))
-        led.set_kv(f"unowned:{project}#{pr}", iso(led.now()))
+        led.set_kv(f"unowned-rebuild:{project}#{pr}", iso(led.now()))
         led.upsert_item(project, n, pr=None, attempts=0, esc_fails=0, branch=None,
                         esc_tier=router.cap_escalation(cfg, pol, 99, marker.get("size"),
                                                        pin=item["pin"]))
