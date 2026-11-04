@@ -53,7 +53,16 @@ Movebreak scanner evidence:
 - force pushes disabled: enabled
 - deletion disabled: enabled
 
-Verification results are recorded below after completion. No failing-first test is applicable: this task changes evidence only, with no implementation or authorization behavior change.
+All required verification passed with fresh temporary `MAHLER_HOME` directories, inherited run identity removed, and fixture Git hooks disabled (the same isolation described in the historical report):
+
+| Command | Result |
+|---|---|
+| `python3 -m mahler.repo_guard` | exit 0 |
+| `python3 -m unittest discover -s tests` | 3562 tests, 180.821s, OK (skipped=2) |
+| `python3 tests/run_random.py` | seed 1217112837; 3562 tests, 181.194s, OK (skipped=2) |
+| `python3 -X dev tests/run_strict.py` | 3562 tests, 199.405s, OK (skipped=2) |
+
+No failing-first test is applicable: this task changes evidence only, with no implementation or authorization behavior change.
 
 Conductor handoff: link this refresh to #800 and #1496; track movebreak#123’s documentation work independently. Needs a human to check: nothing.
 
