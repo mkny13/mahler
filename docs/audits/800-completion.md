@@ -1,3 +1,72 @@
+# 2026-11-04 refresh — mahler#1496
+
+**All nine target checks pass.** The final inventory criterion for [#800](https://github.com/mkny13/mahler/issues/800) now has passing scan evidence. This section supersedes the 2026-10-31 result below; the historical report is retained for provenance.
+
+Collection: `2026-11-04T15:38:28.189035+00:00` through `2026-11-04T15:39:18.345163+00:00`. Scanner commit: `3bbee0c3c79d0c466cb498050c44ab8d87d4c928`.
+
+The read-only rerun called `practices_audit.scan(snapshot_cfg, client)` across all 13 projects returned by `config.enabled_projects(config.load())`. Each snapshot was downloaded from its exact default-branch SHA using the configured project client, safely extracted inside this worktree, and indexed with Git. Effective policies were preserved except for snapshot paths. No shared checkout, live ledger, repository setting or project source was changed; no scanned repository commands ran. Process-local `config.STATE` redirected token caches into the temporary workspace. Personal repositories used the configured App; work repositories retained their configured work identity. Snapshots and caches were removed after collection.
+
+The inherited build identity returned HTTP 403 for classic protection; this was not treated as a gap. The configured audit client successfully read live protection: `required_status_checks.strict=true`, required context `verify`, `enforce_admins.enabled=true`, `allow_force_pushes.enabled=false`, `allow_deletions.enabled=false`. Actual workflow discovery supplied the test-job match; no job names or API fixtures were injected.
+
+Movebreak [#123](https://github.com/mkny13/movebreak/issues/123) remains open for aligning `ARCHITECTURE.md` with the already-safe settings. Its admitted current body confirms settings changes are out of scope. The protection gap is resolved; this report does not claim the separate documentation task is merged.
+
+| Project | Default-branch SHA | CI tests | Instructions | Guidance | Verify | Secrets | Protection |
+|---|---|---|---|---|---|---|---|
+| mahler | `3bbee0c3c79d0c466cb498050c44ab8d87d4c928` | unknown | pass | pass | unknown | gap | pass |
+| groundwork | `7cc15781377de0013ba56290a5a400dab833cf27` | pass | pass | pass | pass | pass | gap |
+| phish-in | `a5634b52ce9ea6a1449abf462dd918b040b38f6a` | pass | pass | pass | pass | pass | unknown |
+| sit-stand-walk | `c0a34bd1808527ddd4fd7c35371821e8cbd45c42` | gap | pass | pass | gap | pass | unknown |
+| google-chat-nav | `e03146a5d789503c34dd28957f5f172489b060ed` | pass | pass | pass | pass | pass | pass |
+| movebreak | `50779f5ee19e31b6b2c9322a2fe6f9864a678aea` | unknown | pass | pass | unknown | pass | pass |
+| puppy-growth-chart | `7c7a508462a86e948fe87b4850154b6f396613f5` | pass | pass | pass | pass | pass | gap |
+| hockey | `5d1e3ed855f998e504e1b2f41e882fb9c2e1359c` | pass | pass | pass | pass | pass | pass |
+| mental-jukebox | `8a4c114dc9ebc0668c1b779c96cbc368567ce9d5` | gap | pass | pass | pass | pass | unknown |
+| ask-gpt-mcp | `139f266725b57015395a07e0a8c9a618e37da3cb` | gap | pass | gap | gap | gap | unknown |
+| crate-cataloger | `e124aaf7e1d007efd3d513af1aa2b0ec3f059f1d` | pass | gap | pass | pass | pass | gap |
+| spotify-overlay | `45e7b2f999bccb46e54c76a43ae12727d5003a13` | gap | pass | pass | pass | gap | unknown |
+| google-workspace-connector | `bb3b413934ecfff9442c6a426a46b452032f3042` | gap | pass | gap | gap | gap | unknown |
+
+The inventory still contains unrelated gaps/unknowns, shown above; this is a pass for the nine #800 targets, not an assertion that every practice passes everywhere. The original request says six projects, but its nine explicit pairs map to five configured projects; the rerun covers the entire 13-project enabled inventory.
+
+| Target | Check | Fresh result |
+|---|---|---|
+| [groundwork#190](https://github.com/mkny13/groundwork/issues/190) | ci-tests | pass |
+| [groundwork#193](https://github.com/mkny13/groundwork/issues/193) | verify-command | pass |
+| [groundwork#194](https://github.com/mkny13/groundwork/issues/194) | tracked-secrets | pass |
+| [phish-in#555](https://github.com/mkny13/couch-tour/issues/555) | ci-tests | pass |
+| [phish-in#558](https://github.com/mkny13/couch-tour/issues/558) | tracked-secrets | pass |
+| [hockey#79](https://github.com/mkny13/hockey-draft-copilot/issues/79) | ci-tests | pass |
+| [hockey#82](https://github.com/mkny13/hockey-draft-copilot/issues/82) | tracked-secrets | pass |
+| [mental-jukebox#13](https://github.com/mkny13/mental-jukebox/issues/13) | tracked-secrets | pass |
+| [movebreak#87](https://github.com/mkny13/movebreak/issues/87) | branch-protection | pass |
+
+Fresh issue reads confirmed all nine original proposals and dependents groundwork#195, hockey#83, phish-in#557, phish-in#559 and movebreak#85 are closed. No issue comments were fetched or posted.
+
+Movebreak scanner evidence:
+
+- GitHub API: repository default_branch/allow_squash_merge
+- GitHub API: branches/<default>/protection; rules/branches/<default>
+- default_branch=main; allow_squash_merge=True
+- required checks: verify
+- strict required checks: enabled
+- administrator enforcement: enabled
+- force pushes disabled: enabled
+- deletion disabled: enabled
+
+All required verification passed with fresh temporary `MAHLER_HOME` directories, inherited run identity removed, and fixture Git hooks disabled (the same isolation described in the historical report):
+
+| Command | Result |
+|---|---|
+| `python3 -m mahler.repo_guard` | exit 0 |
+| `python3 -m unittest discover -s tests` | 3562 tests, 180.821s, OK (skipped=2) |
+| `python3 tests/run_random.py` | seed 1217112837; 3562 tests, 181.194s, OK (skipped=2) |
+| `python3 -X dev tests/run_strict.py` | 3562 tests, 199.405s, OK (skipped=2) |
+
+No failing-first test is applicable: this task changes evidence only, with no implementation or authorization behavior change.
+
+Conductor handoff: link this refresh to #800 and #1496; track movebreak#123’s documentation work independently. Needs a human to check: nothing.
+
+---
 # Completion evidence for mahler#800
 
 Verified on **2026-10-31**, scanner and test source commit [`4d6453f1a75a05b07fa640b033289fbf235768a7`](https://github.com/mkny13/mahler/commit/4d6453f1a75a05b07fa640b033289fbf235768a7) (containing PR #1492 at [`ee030b07ea8fa69483c614837096b9cc91f59845`](https://github.com/mkny13/mahler/commit/ee030b07ea8fa69483c614837096b9cc91f59845)), Python 3.14.3. Live collection: 2026-10-31T17:18:31.319533+00:00 through 2026-10-31T17:19:17.001308+00:00.
