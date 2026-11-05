@@ -157,7 +157,7 @@ class LaunchHealthTests(unittest.TestCase):
             self.assertTrue(self.start('b', attempt + 10))
         self.assertIsNone(self.state())
         self.assertIsNotNone(self.state('launch_broken:a'))
-        self.assertEqual(self.ctx.ping.call_args.kwargs['priority'], 'default')
+        self.assertEqual(self.ctx.ping.call_args_list[-2].kwargs['priority'], 'default')  # breaker ping; item park ping follows
         attempts = self.prep.call_count
         self.assertFalse(self.start())
         self.assertEqual(self.prep.call_count, attempts)
@@ -166,7 +166,7 @@ class LaunchHealthTests(unittest.TestCase):
         self.now += timedelta(minutes=30)
         self.assertTrue(self.start())
         self.assertIsNone(self.state('launch_broken:a'))
-        self.assertEqual(self.ctx.ping.call_count, 2)
+        self.assertEqual(self.ctx.ping.call_count, 3)   # breaker, item park, recovery
 
     def test_launch_failure_cleans_prepared_worktree_and_run_branch(self):
         run_id = self.led.q1('SELECT MAX(id) AS id FROM runs')['id'] or 0
