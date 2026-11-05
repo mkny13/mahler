@@ -220,6 +220,24 @@ class LaunchHealthTests(unittest.TestCase):
         sync.resume_item(self.led, 'a', 1)
         self.assertEqual(self.led.get_kv('launch_fails:a#1'), '')
 
+    def test_launch_backoff_grows_exponentially(self):
+        self.prep.side_effect = runner.GitError('denied')
+        self.start()
+        first = self.state('wait:a#1')
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        second = self.state('wait:a#1')
+        gap = lambda w: (launch_health.parse(w['next_at']) - self.now).total_seconds() / 60
+        self.assertEqual((gap(first), gap(second)), (15, 30))
+
+    def test_pr_stage_launch_failures_also_park_and_ping(self):
+        self.prep.side_effect = runner.GitError('Permission denied (publickey)')
+        self.led.set_state('a', 1, 'verifying', 'pr open')
+        for _ in range(3):
+            self.assertFalse(tick.start(self.ctx, 'a', self.led.item('a', 1), 'fix', 'claude'))
+        self.assertEqual(self.led.item('a', 1)['state'], 'parked')
+        self.assertIn('Launch failed', self.ctx.ping.call_args_list[-1].args[0])
+
     def test_different_failure_resets_item_count_and_success_clears_it(self):
         self.prep.side_effect = runner.GitError('boom one')
         self.start()

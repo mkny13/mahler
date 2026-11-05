@@ -809,8 +809,8 @@ def _item_launch_backoff(ctx, project, n, item, error):
     count = rec["count"] + 1 if isinstance(rec, dict) and rec.get("sig") == sig else 1
     led.set_kv(key, json.dumps({"sig": sig, "count": count}))
     cur = led.item(project, n)
-    if not cur or cur["state"] not in ("ready", "waiting"):
-        return              # PR-stage launches (fix/review) stay with the ship pass
+    if not cur or cur["state"] not in ("ready", "waiting", "verifying", "working"):
+        return
     if count >= LAUNCH_FAIL_LIMIT:
         waits.clear(led, project, n)
         reason = f"launch failed {count} times: {str(error)[:200]}"
@@ -819,8 +819,14 @@ def _item_launch_backoff(ctx, project, n, item, error):
         ctx.ping(f"Launch failed — {project} #{n}", reason, project=project, number=n,
                  tags="warning")
         return
+    if cur["state"] not in ("ready", "waiting"):
+        return              # PR-stage launches stay with the ship pass until they park
     waits.hold(led, project, n, "launch", f"launch failed ({count}/{LAUNCH_FAIL_LIMIT}): "
                f"{str(error)[:200]}", resume="ready")
+    wait = waits.load(led, project, n)       # exponential: 15 min, then 30 min, ...
+    wait["checks"] = count - 1
+    wait["next_at"] = iso(led.now() + waits.backoff(count))
+    led.set_kv(waits.key(project, n), json.dumps(wait))
 
 
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
