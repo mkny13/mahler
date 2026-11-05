@@ -791,6 +791,41 @@ def schedule(ctx, projects):
                      effective_size=effective_size, required_tier=required_tier)
 
 
+LAUNCH_FAIL_LIMIT = 3
+
+
+def _item_launch_backoff(ctx, project, n, item, error):
+    """Back an item off after a launch failure; park it on the third identical one.
+
+    Without this a broken remote retries every tick, then every canary, forever
+    (mahler#1523)."""
+    led = ctx.led
+    key = f"launch_fails:{project}#{n}"
+    sig = launch_health.signature(error)
+    try:
+        rec = json.loads(led.get_kv(key) or "null")
+    except ValueError:
+        rec = None
+    count = rec["count"] + 1 if isinstance(rec, dict) and rec.get("sig") == sig else 1
+    led.set_kv(key, json.dumps({"sig": sig, "count": count}))
+    cur = led.item(project, n)
+    if not cur or cur["state"] not in ("ready", "verifying", "inbox", "waiting"):
+        return
+    if count >= LAUNCH_FAIL_LIMIT:
+        waits.clear(led, project, n)
+        reason = f"launch failed {count} times: {str(error)[:200]}"
+        led.set_state(project, n, "parked", reason)
+        led.event("launch_parked", project, n, reason)
+        ctx.ping(f"Launch failed — {project} #{n}", reason, project=project, number=n,
+                 tags="warning")
+        return
+    prior = cur["state"]
+    if prior not in waits.RESUMES:
+        prior = "verifying" if row_get(item, "pr") else "ready"
+    waits.hold(led, project, n, "launch", f"launch failed ({count}/{LAUNCH_FAIL_LIMIT}): "
+               f"{str(error)[:200]}", resume=prior)
+
+
 def start(ctx, project, item, role, platform, handoff_from=None, size=None, context=None,
           fix_reason="ci", explore=False, resume_from=None, resume_cycle=None):
     led, pol, n = ctx.led, ctx.policy(project), item["number"]
@@ -889,10 +924,12 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
             led.update_run(run_id, stop_reason="resume_rejected")
         else:
             launch_health.failed(ctx, project, n, run_id, e)
+            _item_launch_backoff(ctx, project, n, item, e)
         return False
     led.update_run(run_id, epoch=lease["epoch"], **meta)
     led.event("run_start", project, n, {"run": run_id, "role": role, "platform": platform})
     launch_health.succeeded(ctx, project, run_id)
+    led.set_kv(f"launch_fails:{project}#{n}", "")
     capacity.of(ctx).launched(project, n, role, run_id, platform)
     ctx.say(f"{project}#{n}: started {role} on {platform} (run {run_id})")
     if role == "build":

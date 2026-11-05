@@ -65,6 +65,33 @@ def git(repo, *args, env=None, check=True):
     return r.stdout.strip()
 
 
+_SSH_DENIED = "permission denied (publickey)"
+_SSH_PREFIXES = ("git@github.com:", "ssh://git@github.com/")
+
+
+def fetch_origin(repo, *args, env=None):
+    """``git fetch`` from origin. If origin is a GitHub SSH URL and SSH auth is denied,
+    retry once over HTTPS with the gh credential, scoped to this command (mahler#1523)."""
+    try:
+        return git(repo, "fetch", "--quiet", *args, env=env)
+    except GitError as ssh_err:
+        if _SSH_DENIED not in str(ssh_err).lower():
+            raise
+        url = git(repo, "remote", "get-url", "origin", check=False)
+        if not url.startswith(_SSH_PREFIXES):
+            raise
+        opts = [o for p in _SSH_PREFIXES
+                for o in ("-c", f"url.https://github.com/.insteadOf={p}")]
+        opts += ["-c", "credential.https://github.com.helper=",
+                 "-c", "credential.https://github.com.helper=!gh auth git-credential"]
+        try:
+            return git(repo, *opts, "fetch", "--quiet", *args, env=env)
+        except GitError as https_err:
+            raise GitError(f"origin {url} refused SSH (Permission denied (publickey)) and the "
+                           f"HTTPS fallback failed: {https_err}; fix the SSH key or switch "
+                           "the remote to https") from https_err
+
+
 def find_worktree_for_branch(repo, branch):
     """Find a linked checkout, excluding the primary checkout."""
     if not branch:
@@ -225,7 +252,7 @@ def prepare(ctx, project, item, role, platform, run_id):
     wt = os.path.join(worktree_root(pol), project, f"{item['number']}-run{run_id}")
     config.ensure_private_dir(os.path.dirname(wt))
 
-    git(repo, "fetch", "--quiet", "--prune", "origin", env=env)
+    fetch_origin(repo, "--prune", "origin", env=env)
     push_branch = None
     branch, start = None, f"origin/{base}"
     claim_sha = row_get(item, "claim_base_sha") if role == "review" else None
@@ -238,7 +265,7 @@ def prepare(ctx, project, item, role, platform, run_id):
             raise GitError("claim review lost its base or lease")
         record.update(phase="reviewing", run_id=run_id, epoch=lease["epoch"])
         no_change.save(ctx.led, project, item["number"], record)
-        git(repo, "fetch", "--quiet", "origin", claim_sha, env=env)
+        fetch_origin(repo, "origin", claim_sha, env=env)
         start = claim_sha
         git(repo, "worktree", "add", "--quiet", "--detach", wt, start)
     elif role in ("sort", "review"):
@@ -637,8 +664,7 @@ def no_work_base(wt, base, env=None):
         raise GitError("no-work probe: missing worktree")
     try:
         ref = f"refs/remotes/origin/{base}"
-        git(wt, "fetch", "--quiet", "origin",
-            f"+refs/heads/{base}:{ref}", env=env)
+        fetch_origin(wt, "origin", f"+refs/heads/{base}:{ref}", env=env)
         sha = git(wt, "rev-parse", "--verify", f"{ref}^{{commit}}")
         if git(wt, "status", "--porcelain", "--untracked-files=all"):
             return None

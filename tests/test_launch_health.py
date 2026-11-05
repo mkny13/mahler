@@ -202,6 +202,39 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertEqual(self.led.q1('SELECT COUNT(*) AS n FROM runs')['n'], before)
         self.assertIsNone(self.led.lease('a', 3))
 
+    def test_item_backs_off_then_parks_with_ping_and_resume_resets(self):
+        from mahler import sync
+        err = runner.GitError('git fetch: Permission denied (publickey)')
+        self.prep.side_effect = err
+        self.start()
+        it = self.led.item('a', 1)
+        self.assertEqual((it['state'], self.state('wait:a#1')['cause']), ('waiting', 'launch'))
+        self.ctx.ping.assert_not_called()
+        for _ in range(2):
+            self.led.set_state('a', 1, 'ready', 'retry')
+            self.start()
+        self.assertEqual(self.led.item('a', 1)['state'], 'parked')
+        self.assertIn('Launch failed', self.ctx.ping.call_args_list[-1].args[0])
+        self.assertIn('publickey', self.ctx.ping.call_args_list[-1].args[1])
+        self.assertEqual(self.led.item('a', 2)['state'], 'ready')   # others unaffected
+        sync.resume_item(self.led, 'a', 1)
+        self.assertEqual(self.led.get_kv('launch_fails:a#1'), '')
+
+    def test_different_failure_resets_item_count_and_success_clears_it(self):
+        self.prep.side_effect = runner.GitError('boom one')
+        self.start()
+        self.assertEqual(self.state('launch_fails:a#1')['count'], 1)
+        self.prep.side_effect = runner.GitError('totally different')
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        self.assertEqual(self.state('launch_fails:a#1')['count'], 1)
+        self.prep.side_effect = None
+        self.prep.return_value = {'worktree': self.tmp.name, 'branch': 'test',
+                                  'replayed': False, 'kept': None}
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        self.assertEqual(self.led.get_kv('launch_fails:a#1'), '')
+
     def test_history_bounded_and_signatures_normalized(self):
         for n in range(60):
             launch_health.failed(self.ctx, 'a', 1, n + 1,

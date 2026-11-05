@@ -738,6 +738,7 @@ def _process_comments(ctx, project, item, comments):
 def resume_item(led, project, number, why="you said go"):
     """Apply the same reset as ``/mahler go`` to a waiting item."""
     waits.clear(led, project, number)
+    led.set_kv(f"launch_fails:{project}#{number}", "")
     reset_review_cycle(led, project, number)
     led.set_kv(f"attempt_cycle:{project}#{number}", uuid.uuid4().hex)
     item = led.item(project, number)
