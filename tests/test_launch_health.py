@@ -157,7 +157,7 @@ class LaunchHealthTests(unittest.TestCase):
             self.assertTrue(self.start('b', attempt + 10))
         self.assertIsNone(self.state())
         self.assertIsNotNone(self.state('launch_broken:a'))
-        self.assertEqual(self.ctx.ping.call_args.kwargs['priority'], 'default')
+        self.assertEqual(self.ctx.ping.call_args_list[-2].kwargs['priority'], 'default')  # breaker ping; item park ping follows
         attempts = self.prep.call_count
         self.assertFalse(self.start())
         self.assertEqual(self.prep.call_count, attempts)
@@ -166,7 +166,7 @@ class LaunchHealthTests(unittest.TestCase):
         self.now += timedelta(minutes=30)
         self.assertTrue(self.start())
         self.assertIsNone(self.state('launch_broken:a'))
-        self.assertEqual(self.ctx.ping.call_count, 2)
+        self.assertEqual(self.ctx.ping.call_count, 3)   # breaker, item park, recovery
 
     def test_launch_failure_cleans_prepared_worktree_and_run_branch(self):
         run_id = self.led.q1('SELECT MAX(id) AS id FROM runs')['id'] or 0
@@ -201,6 +201,57 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertFalse(tick.start(self.ctx, 'a', self.led.item('a', 3), 'fix', 'claude'))
         self.assertEqual(self.led.q1('SELECT COUNT(*) AS n FROM runs')['n'], before)
         self.assertIsNone(self.led.lease('a', 3))
+
+    def test_item_backs_off_then_parks_with_ping_and_resume_resets(self):
+        from mahler import sync
+        err = runner.GitError('git fetch: Permission denied (publickey)')
+        self.prep.side_effect = err
+        self.start()
+        it = self.led.item('a', 1)
+        self.assertEqual((it['state'], self.state('wait:a#1')['cause']), ('waiting', 'launch'))
+        self.ctx.ping.assert_not_called()
+        for _ in range(2):
+            self.led.set_state('a', 1, 'ready', 'retry')
+            self.start()
+        self.assertEqual(self.led.item('a', 1)['state'], 'parked')
+        self.assertIn('Launch failed', self.ctx.ping.call_args_list[-1].args[0])
+        self.assertIn('publickey', self.ctx.ping.call_args_list[-1].args[1])
+        self.assertEqual(self.led.item('a', 2)['state'], 'ready')   # others unaffected
+        sync.resume_item(self.led, 'a', 1)
+        self.assertEqual(self.led.get_kv('launch_fails:a#1'), '')
+
+    def test_launch_backoff_grows_exponentially(self):
+        self.prep.side_effect = runner.GitError('denied')
+        self.start()
+        first = self.state('wait:a#1')
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        second = self.state('wait:a#1')
+        gap = lambda w: (launch_health.parse(w['next_at']) - self.now).total_seconds() / 60
+        self.assertEqual((gap(first), gap(second)), (15, 30))
+
+    def test_pr_stage_launch_failures_also_park_and_ping(self):
+        self.prep.side_effect = runner.GitError('Permission denied (publickey)')
+        self.led.set_state('a', 1, 'verifying', 'pr open')
+        for _ in range(3):
+            self.assertFalse(tick.start(self.ctx, 'a', self.led.item('a', 1), 'fix', 'claude'))
+        self.assertEqual(self.led.item('a', 1)['state'], 'parked')
+        self.assertIn('Launch failed', self.ctx.ping.call_args_list[-1].args[0])
+
+    def test_different_failure_resets_item_count_and_success_clears_it(self):
+        self.prep.side_effect = runner.GitError('boom one')
+        self.start()
+        self.assertEqual(self.state('launch_fails:a#1')['count'], 1)
+        self.prep.side_effect = runner.GitError('totally different')
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        self.assertEqual(self.state('launch_fails:a#1')['count'], 1)
+        self.prep.side_effect = None
+        self.prep.return_value = {'worktree': self.tmp.name, 'branch': 'test',
+                                  'replayed': False, 'kept': None}
+        self.led.set_state('a', 1, 'ready', 'retry')
+        self.start()
+        self.assertEqual(self.led.get_kv('launch_fails:a#1'), '')
 
     def test_history_bounded_and_signatures_normalized(self):
         for n in range(60):

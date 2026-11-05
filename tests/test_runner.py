@@ -1242,3 +1242,48 @@ class ParentVerifyPromptTests(unittest.TestCase):
             led.set_kv('intake_hold:x#653', '1')
             rendered = prompt.issue_context(ctx, 'x', item, 'x/y')
             self.assertNotIn('All six criteria', rendered)
+
+
+class FetchOriginSshFallbackTests(unittest.TestCase):
+    URL = "git@github.com:o/r.git"
+    DENIED = runner.GitError("git fetch --quiet --prune: git@github.com: "
+                             "Permission denied (publickey).")
+
+    def run_fetch(self, results):
+        calls = []
+
+        def fake(repo, *args, env=None, check=True):
+            calls.append(args)
+            if args[:2] == ("remote", "get-url"):
+                return self.URL
+            out = results.pop(0)
+            if isinstance(out, Exception):
+                raise out
+            return out
+        with mock.patch.object(runner, "git", fake):
+            try:
+                return calls, runner.fetch_origin("/r", "--prune", "origin")
+            except runner.GitError as e:
+                return calls, e
+
+    def test_ssh_denied_retries_over_https_with_gh_credential(self):
+        calls, out = self.run_fetch([self.DENIED, ""])
+        self.assertEqual(out, "")
+        retry = calls[-1]
+        self.assertIn("url.https://github.com/.insteadOf=git@github.com:", retry)
+        self.assertTrue(any("gh auth git-credential" in a for a in retry))
+        self.assertEqual(retry[-4:], ("fetch", "--quiet", "--prune", "origin"))
+
+    def test_both_fail_reports_ssh_and_https(self):
+        _, err = self.run_fetch([self.DENIED, runner.GitError("git fetch: 401")])
+        self.assertIsInstance(err, runner.GitError)
+        self.assertIn("publickey", str(err))
+        self.assertIn("HTTPS fallback failed", str(err))
+
+    def test_other_errors_and_non_ssh_remotes_do_not_fall_back(self):
+        calls, err = self.run_fetch([runner.GitError("git fetch: timed out")])
+        self.assertEqual(str(err), "git fetch: timed out")
+        self.assertEqual(len(calls), 1)
+        self.URL = "https://github.com/o/r.git"
+        calls, err = self.run_fetch([self.DENIED])
+        self.assertIs(err, self.DENIED)

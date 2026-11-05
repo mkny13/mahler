@@ -14,7 +14,7 @@ from . import ci_blockers, no_change
 from .ledger import iso, parse
 
 CAUSES = ("ci_repo_wide", "ci_stalled", "merge_queue", "capacity", "github", "setup",
-          "worktree_conflict", "review_inconclusive", "review_nonconvergent", "other")
+          "worktree_conflict", "review_inconclusive", "review_nonconvergent", "launch", "other")
 RESUMES = ("verifying", "ready", "inbox")
 BACKOFF_MINUTES = (15, 30, 60, 120, 240, 360)   # capped at the last value
 # A cause whose first retry must not come sooner than this (mahler#1261).

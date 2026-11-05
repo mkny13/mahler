@@ -93,7 +93,7 @@ class LaunchCapacityTests(unittest.TestCase):
                 self.assertFalse(tick.start(ctx, "a", led.item("a", 1), "build", "claude"))
             current = led.item("a", 1)
             self.assertEqual((current["state"], current["attempts"], current["esc_tier"],
-                              current["esc_fails"]), ("ready", 2, 1, 1))
+                              current["esc_fails"]), ("parked", 2, 1, 1))   # #1523: third identical failure parks
             self.assertIsNone(led.lease("a", 1))
             self.assertFalse(tick.start(ctx, "a", current, "build", "claude"))
             self.assertEqual(prepare.call_count, 3)
