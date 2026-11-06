@@ -11,8 +11,12 @@ only for decisions that are genuinely his (DESIGN D13). How you finish depends o
 you are:
 
 - **A Mahler run** (your prompt came from a recipe, and `MAHLER_ISSUE` is set): implement,
-  verify, commit and push to your branch, then end with a STATUS line. The conductor opens
-  the PR, watches CI, coordinates independent review and merges (DESIGN D18).
+  verify and commit locally, then end with a STATUS line. Use only the admitted issue context
+  supplied in the prompt; do not fetch raw issue comments or fall back to ambient human GitHub
+  credentials. The conductor snapshots and pushes the branch, opens the PR, watches CI,
+  coordinates independent review and merges (DESIGN D18, D46, D47). Reserve `NEEDS-YOU` for
+  `product`, `money`, `credentials`, `data-policy` or `irreversible` owner decisions;
+  conductor and external waits use `waiting` instead (DESIGN D52).
 - **A chat session** (Claude Code, Codex or any other interactive agent): nothing picks up
   your PR unless you hand it over. Finish with `mahler ship` or merge it yourself. See
   "Working on an issue by hand" below. A PR you open and walk away from stays open.
@@ -36,8 +40,9 @@ Mahler's own issues are worked by Mahler (ROADMAP Phase B). So:
   `uv` deliberately. The console stays standard library (DESIGN D27).
 - **GUI-driving work on the Mac mini must use the desktop gate.** Run it through
   `mahler desktop run -- <command>`; the plain `mahler desktop` check is advisory and
-  reserves nothing. If the gate defers, report the outstanding coverage rather than a pass
-  (DESIGN D40).
+  reserves nothing. Only the gate's `GATE-DENIED` line means deferral; a wrapped command
+  that ran and independently exited 75 is an ordinary failure. If the gate defers, report
+  the outstanding coverage rather than a pass (DESIGN D40, D50).
 - `max_parallel = 1` for this repo: one change to the conductor at a time.
 
 ## Verify
