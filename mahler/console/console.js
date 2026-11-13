@@ -423,8 +423,15 @@
       f = "early";
     }
     var sort = projGet("sort", "phase");
+    var mode = projGet("mode", "list");
+    if (mode !== "list" && mode !== "incubator") { mode = "list"; }
     for (var i = 0; i < roots.length; i++) {
       var root_ = roots[i];
+      root_.setAttribute("data-mode", mode);
+      var modeBtns = root_.querySelectorAll("[data-proj-mode]");
+      for (var m = 0; m < modeBtns.length; m++) {
+        modeBtns[m].classList.toggle("on", modeBtns[m].getAttribute("data-proj-mode") === mode);
+      }
       var rows = Array.prototype.slice.call(root_.querySelectorAll("[data-phase][data-name]"));
       if (sort !== "phase" && rows.length) {
         var key = function (r) {
@@ -948,6 +955,7 @@
       return;
     }
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
+    if (el.hasAttribute("data-proj-mode")) { projSet("mode", el.getAttribute("data-proj-mode")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-filter")) { projSet("filter", el.getAttribute("data-proj-filter")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-phase")) { projSet("filter", "phase:" + el.getAttribute("data-proj-phase")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-sort")) {

@@ -1209,6 +1209,40 @@ def _proj_controls(a):
     return f'<div class="pstrip">{strip}</div><div class="proj-pills">{pills}</div>'
 
 
+def _proj_modes():
+    return ('<div class="proj-modes" role="group" aria-label="Projects mode">'
+            '<button class="proj-mode on" data-proj-mode="list">List</button>'
+            '<button class="proj-mode" data-proj-mode="incubator">Incubator</button></div>')
+
+
+INCUBATOR_LADDER = (("idea", "Idea"), ("prototype", "Prototype"), ("onboarded", "Onboarded"),
+                    ("ship", "First ship"))
+
+
+def _proj_cards(a):
+    if not a["incubator"]:
+        return '<div class="pinc"><div class="t-mut proj-empty">No early projects.</div></div>'
+    cards = []
+    for r in a["incubator"]:
+        ladder = "".join(
+            f'<li class="rung{" cur" if k == r["phase"] else ""}"'
+            f'{" aria-current=\"step\"" if k == r["phase"] else ""}>{label}</li>'
+            for k, label in INCUBATOR_LADDER)
+        step = r["next_step"]
+        cards.append(
+            f'<article class="pcard" data-card-key="{e(r["key"])}" data-card-phase="{e(r["phase"])}">'
+            f'<div class="l1">{_proj_dot(r)}<span class="nm">{e(r["name"])}</span>{_proj_chip(r)}</div>'
+            f'<ol class="ladder">{ladder}</ol>'
+            f'<p class="pdesc t-mut">{e(r["desc"])}</p>'
+            f'<div class="l2 mono t-mut">Last touched {e(r["last_touched_txt"])}</div>'
+            f'<div class="nstep" data-next-step="{e(step["kind"])}"><span class="lbl">Next step</span>'
+            f'<span>{e(step["text"])}</span></div>'
+            f'<div class="pactions"><button class="proj-act" disabled '
+            f'title="Actions arrive in a later release">Actions unavailable</button>'
+            f'<span class="t-mut">Actions are not available yet.</span></div></article>')
+    return f'<div class="pinc"><div class="pcards">{"".join(cards)}</div></div>'
+
+
 def _proj_empty(a):
     return f'<div class="t-mut proj-empty">{e(a["message"])}</div>'
 
@@ -1239,8 +1273,8 @@ def _d_projects(s):
             f'<td class="num mono">{_proj_num(r["runs7"])}</td>'
             f'<td class="mono t-mut">{e(r["last_touched_txt"])}</td>'
             f'<td class="pdesc t-mut">{e(r["desc"])}</td></tr>')
-    return (f'<section class="view view-projects"><div class="projects" data-projects>'
-            f'{_proj_controls(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
+    return (f'<section class="view view-projects"><div class="projects" data-projects data-mode="list">'
+            f'{_proj_modes()}{_proj_controls(a)}{_proj_cards(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
             f'<th>{sort_btn("name", "Project")}</th><th>Phase</th><th>{sort_btn("open", "Open")}</th>'
             f'<th>Done</th><th>Runs/wk</th><th>{sort_btn("touched", "Last touched")}</th>'
             f'<th>What it is</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
@@ -1261,8 +1295,8 @@ def _p_projects(s):
             f'{_proj_chip(r)}</span>'
             f'<span class="l2 mono t-mut">{meta}{e(r["last_touched_txt"])}</span>'
             f'<span class="l2 t-mut">{e(r["desc"])}</span></button>')
-    return (f'<div class="psect projects" data-projects style="gap:10px"><span class="lbl">'
-            f'Projects · {a["early"]} early</span>{_proj_controls(a)}'
+    return (f'<div class="psect projects" data-projects data-mode="list" style="gap:10px"><span class="lbl">'
+            f'Projects · {a["early"]} early</span>{_proj_modes()}{_proj_controls(a)}{_proj_cards(a)}'
             f'<div class="plist">{"".join(rows)}</div></div>')
 
 

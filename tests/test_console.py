@@ -3902,8 +3902,51 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertIn("last ~30 days", managed)
         self.assertIn('href="https://github.com/mkny13/mahler"', managed)
 
+    def test_incubator_state_order_and_next_steps(self):
+        inc = self.s["projects_atlas"]["incubator"]
+        self.assertEqual([r["key"] for r in inc], ["ideaa", "protob", "onbc"])
+        self.assertEqual([r["next_step"]["kind"] for r in inc],
+                         ["file_issue", "onboard", "file_first_issue"])
+
+    def test_incubator_oldest_first_within_phase(self):
+        d = lambda n: iso(SAT_NOON - timedelta(days=n))
+        recs = json.loads(self.led.get_kv("atlas:scan"))
+        base = recs["projects"][0]
+        recs["projects"] += [dict(base, key="ideanew", name="ideanew", last_touched=d(0)),
+                             dict(base, key="ideaold", name="ideaold", last_touched=d(30))]
+        self.led.set_kv("atlas:scan", json.dumps(recs))
+        inc = state.build(self.cfg, self.led)["projects_atlas"]["incubator"]
+        self.assertEqual([r["key"] for r in inc],
+                         ["ideaold", "ideaa", "ideanew", "protob", "onbc"])
+
+    def test_incubator_cards_both_layouts(self):
+        for html in (page.app(self.s, "desktop", view="projects"),
+                     page.app(self.s, "phone", tab="browse")):
+            self.assertEqual(html.count('class="pcard"'), 3)
+            self.assertNotIn('data-card-key="buildd"', html)
+            self.assertNotIn('data-card-key="steadye"', html)
+            self.assertLess(html.index('data-card-key="ideaa"'), html.index('data-card-key="protob"'))
+            self.assertLess(html.index('data-card-key="protob"'), html.index('data-card-key="onbc"'))
+            for kind in ("file_issue", "onboard", "file_first_issue"):
+                self.assertIn(f'data-next-step="{kind}"', html)
+            self.assertIn("First ship", html)
+            self.assertEqual(html.count('aria-current="step"'), 3)
+            self.assertIn("about ideaa", html)
+            self.assertIn("Last touched 1d ago", html)
+            self.assertIn("not available", html)
+            self.assertIn('data-mode="list"', html)
+            self.assertNotIn('data-mode="incubator"', html)
+            self.assertEqual(html.count("data-proj-mode="), 2)
+
+    def test_incubator_mode_js_guards_storage(self):
+        js = (Path(page.__file__).parent / "console.js").read_text()
+        self.assertIn('projGet("mode", "list")', js)
+        self.assertIn('mode !== "list" && mode !== "incubator"', js)
+
     def test_empty(self):
         led = make_led()
         self.addCleanup(led.close)
-        html = page.app(state.build(self.cfg, led), "desktop", view="projects")
+        s = state.build(self.cfg, led)
+        self.assertEqual(s["projects_atlas"]["incubator"], [])
+        html = page.app(s, "desktop", view="projects")
         self.assertIn("No scan yet. It runs hourly, or run `mahler atlas scan`.", html)
