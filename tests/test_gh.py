@@ -733,6 +733,50 @@ class TestGH(unittest.TestCase):
         self.assertEqual(client.branch_rules.call_count, 2)
 
 
+class CancelledChecksTests(unittest.TestCase):
+    """mahler#1530: red only because of cancelled checks."""
+    URL = "https://github.com/o/r/actions/runs/{}/job/1"
+
+    def check(self, name, conclusion, run=None):
+        c = {"name": name, "status": "COMPLETED", "conclusion": conclusion}
+        if run:
+            c["detailsUrl"] = self.URL.format(run)
+        return c
+
+    def test_cancelled_only(self):
+        from mahler.gh import cancelled_only
+        self.assertTrue(cancelled_only([self.check("verify", "CANCELLED", 1)]))
+        self.assertTrue(cancelled_only([self.check("verify", "CANCELLED", 1),
+                                        self.check("lint", "SUCCESS", 2)]))
+        self.assertFalse(cancelled_only([self.check("verify", "CANCELLED", 1),
+                                         self.check("lint", "FAILURE", 2)]))
+        self.assertFalse(cancelled_only([self.check("verify", "TIMED_OUT", 1)]))
+        self.assertFalse(cancelled_only([self.check("verify", "SUCCESS", 1)]))
+        self.assertFalse(cancelled_only([]))
+        # A failing check outside the required set does not spoil it, and a
+        # cancelled optional check alone is not red at all.
+        self.assertTrue(cancelled_only([self.check("verify", "CANCELLED", 1),
+                                        self.check("extra", "FAILURE", 2)], {"verify"}))
+        self.assertFalse(cancelled_only([self.check("verify", "SUCCESS", 1),
+                                         self.check("extra", "CANCELLED", 2)], {"verify"}))
+
+    def test_cancelled_run_ids(self):
+        from mahler.gh import cancelled_run_ids
+        rollup = [self.check("a", "CANCELLED", 7), self.check("b", "CANCELLED", 7),
+                  self.check("c", "CANCELLED", 9), self.check("d", "SUCCESS", 11)]
+        self.assertEqual(cancelled_run_ids(rollup), [7, 9])
+        self.assertEqual(cancelled_run_ids(rollup, {"c"}), [9])
+        self.assertIsNone(cancelled_run_ids(rollup + [self.check("e", "CANCELLED")]))
+
+    def test_rerun_run_posts_full_rerun(self):
+        from mahler.gh import GH
+        client = GH("o/r")
+        with patch.object(client, "_api_json") as api:
+            client.rerun_run(42)
+        api.assert_called_once_with("POST", "actions/runs/42/rerun")
+
+
+
 if __name__ == '__main__':
     unittest.main()
 
