@@ -191,6 +191,28 @@ class DiscoveryTests(Base):
             self.session("/elsewhere/keep")
             self.assertEqual([r["name"] for r in atlas.scan(self.cfg, self.led, NOW)], ["keep"])
 
+    def test_builtin_exclusions_apply_to_folder_and_session_discovery(self):
+        scratch = self.folder("scratch-workspaces")
+        self.folder("keep")
+        self.session(os.path.join(scratch, "project"))
+        self.assertEqual(list(self.scan()), ["keep"])
+
+    def test_builtin_exclusions_apply_to_symlink_targets(self):
+        scratch = self.folder("scratch-workspaces")
+        os.symlink(scratch, os.path.join(self.root, "alias"))
+        self.folder("keep")
+        self.assertEqual(list(self.scan()), ["keep"])
+
+    def test_builtin_exclusions_apply_to_session_only_inside_root(self):
+        self.session(os.path.join(self.root, "scratch-workspaces", "project"))
+        self.folder("keep")
+        self.assertEqual(list(self.scan()), ["keep"])
+
+    def test_builtin_exclusions_do_not_remove_managed_project(self):
+        self.managed("managed", path=self.folder("scratch-workspaces"))
+        self.session(os.path.join(self.root, "scratch-workspaces"))
+        self.assertEqual(self.scan()["managed"]["sessions"], 1)
+
     def test_ignore_by_name_and_path(self):
         self.folder("a"); self.folder("b"); self.folder("c")
         self.cfg["atlas"]["ignore"] = ["a", os.path.join(self.root, "b")]

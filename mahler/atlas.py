@@ -346,12 +346,18 @@ def _build(cfg, led, now, history, clock):
             if e.name.startswith("."):
                 continue
             lexical = os.path.join(root, e.name)
+            if _builtin_excluded(lexical):
+                continue
             readable = True
             try:
                 if e.is_symlink():
                     target = _lex(os.path.join(os.path.dirname(lexical), os.readlink(lexical)))
+                    if _builtin_excluded(target):
+                        continue
                     if _within(target, admitted):
                         real = os.path.realpath(lexical)
+                        if _builtin_excluded(real):
+                            continue
                         readable = _within(real, admitted)
                         if readable and not os.path.isdir(real):
                             continue
@@ -364,6 +370,8 @@ def _build(cfg, led, now, history, clock):
                 else:
                     continue
             except OSError:
+                continue
+            if _builtin_excluded(real):
                 continue
             if _within(lexical, barred) or _within(real, barred):
                 continue
@@ -383,7 +391,7 @@ def _build(cfg, led, now, history, clock):
     for cwd, mtime in _sessions(history, clock):
         key = alias.get(cwd)
         if key is None:
-            if _within(cwd, barred):
+            if _builtin_excluded(cwd) or _within(cwd, barred):
                 continue
             under = next((r for r in admitted if _under(cwd, r)), None)
             if under:
@@ -399,7 +407,7 @@ def _build(cfg, led, now, history, clock):
                     register(rec)
                     key = child
             else:
-                if _builtin_excluded(cwd) or _user_ignored(cwd, ignore):
+                if _user_ignored(cwd, ignore):
                     continue
                 rec = _new(cwd, os.path.basename(cwd), cwd)
                 register(rec)
