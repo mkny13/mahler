@@ -545,6 +545,33 @@ throttles failures too, and paused ticks still run it; dry-run ticks do not).
 `mahler atlas scan` forces a refresh; `mahler atlas show` reads the cache only.
 Claude Code deletes sessions after about 30 days, so `sessions` counts recent work only.
 
+### Projects (mahler#1533)
+
+A read-only view over the cached Atlas scan (`atlas:scan`, mahler#1532). `state._projects`
+reads the cache only and never scans, so the 30 s refresh stays fast. It sits right after
+Backlog on desktop; the rail count is the number of early projects.
+
+- **Phases and order:** idea, prototype, onboarded, building, steady, then most recently
+  touched first. "Early" means idea, prototype or onboarded.
+- **Summary strip:** five phase counts; the first three are tagged "early". Clicking one
+  filters to that phase.
+- **Filters:** Early (default), Not in Mahler, Building + steady, Work, All.
+- **Columns:** Project (freshness dot, name, `work` tag), Phase, Open, Done, Runs/wk, Last
+  touched, What it is. Unmanaged rows show `–` for Open, Done and Runs/wk. Header buttons sort
+  by Project (A to Z), Open (desc) and Last touched (most idle first); a second click returns
+  to phase order. Filter and sort live in localStorage (`mahler.projects.filter`,
+  `mahler.projects.sort`) and are re-applied after each refresh. The table has its own
+  `overflow-x: auto` wrapper.
+- **Freshness dot:** green when touched within 7 days, amber within 30, hollow beyond.
+- **Phone:** no new tab. The same rows, as a stacked list with the same pills, sit at the top
+  of the Browse tab.
+- **Detail overlay:** a row click opens a read-only panel (description, phase, path, first
+  seen, last touched, Claude Code sessions "last ~30 days", and for managed projects the
+  open/done/runs counts and open items). It is requested as `project_detail=<key>`, because
+  `project` already means the scope.
+- **Empty state:** "No scan yet. It runs hourly, or run `mahler atlas scan`." (no cache, or a
+  corrupt one).
+
 ### Shipment contract (owner, 2026-10-06)
 
 The historical manual queue accumulated 277 pending changes versus 5 verdicts,
