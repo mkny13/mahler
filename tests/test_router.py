@@ -75,7 +75,7 @@ class GhWritesTests(unittest.TestCase):
                 chosen, reasons = router.pick_for_project(cfg, led, pol, role)
                 self.assertEqual(chosen, 'agy-gemini', role)
                 self.assertTrue(any('no GitHub write' in r for r in reasons))
-            chosen, _ = router.pick_for_project(cfg, led, pol, 'build')
+            chosen, _ = router.pick_for_project(cfg, led, pol, 'build', size='s')
             self.assertEqual(chosen, 'copilot')
 
     def test_only_copilot_holds_with_reason(self):
