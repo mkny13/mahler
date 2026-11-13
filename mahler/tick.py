@@ -842,7 +842,7 @@ def start(ctx, project, item, role, platform, handoff_from=None, size=None, cont
     model = pconf.get("sort_model" if platform_role == "sort" else "build_model") or pconf.get("model")
     if cline_free.managed(pconf):
         model = cline_free.choose(ctx.cfg, led, platform_role, size or "s", name=platform,
-                                  refresh_list=True, probe=platforms.probe_cline_model)
+                                  refresh_list=True)
         if model is None:
             ctx.say(f"{project}#{n}: {platform} has no free model left — not launching")
             return False

@@ -40,7 +40,6 @@ class Base(unittest.TestCase):
         self.addCleanup(self.led.close)
 
     def choose(self, opener, **kw):
-        kw.setdefault("probe", lambda pconf, model: True)
         return cline_free.choose(self.cfg, self.led, refresh_list=True, opener=opener, **kw)
 
 
@@ -103,36 +102,9 @@ class ValidationTests(Base):
         self.assertEqual(seen, ["a/free", "a/free", "b/free"])
         self.assertIn("a/free", json.loads(self.led.get_kv(cline_free.REJECTED_KEY)))
 
-    def test_unproven_model_is_not_launched_when_probe_cannot_tell(self):
+    def test_probe_is_optional_and_a_probe_that_cannot_tell_skips_the_model(self):
         self.assertIsNone(self.choose(opener_for([{"id": "a/free"}]), probe=lambda p, m: None))
-        self.assertIsNone(cline_free.choose(self.cfg, self.led))      # no probe, no trust
-
-    def test_failed_probe_round_is_cached_so_a_backlog_is_not_probed_per_item(self):
-        calls = []
-
-        def probe(pconf, model):
-            calls.append(model)
-            return None
-        free = opener_for([{"id": "a/free"}, {"id": "b/free"}])
-        self.assertIsNone(self.choose(free, probe=probe))
-        self.assertEqual(len(calls), 2)
-        for _ in range(5):                       # the rest of the backlog: no probing
-            self.assertIsNone(self.choose(free, probe=probe))
-        self.assertEqual(len(calls), 2)
-        pconf = self.cfg["platforms"]["cline-free"]
-        self.assertEqual(router.usage_state(self.led, "cline-free", pconf)[0], "hard")
-        self.clock[0] += timedelta(minutes=cline_free.UNUSABLE_MINUTES + 1)
-        self.assertEqual(self.choose(free, probe=lambda p, m: True), "a/free")
-        self.assertNotEqual(router.usage_state(self.led, "cline-free", pconf)[0], "hard")
-
-    def test_probe_time_per_choose_is_capped(self):
-        ticks = iter([0, 0, cline_free.PROBE_BUDGET_SECONDS + 1])
-        calls = []
-        with mock.patch("mahler.cline_free.time.monotonic", lambda: next(ticks, 10**6)):
-            got = self.choose(opener_for([{"id": "a/free"}, {"id": "b/free"}, {"id": "c/free"}]),
-                              probe=lambda p, m: calls.append(m))
-        self.assertIsNone(got)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(cline_free.choose(self.cfg, self.led), "a/free")  # no probe: presumed to work
 
     def test_probe_detects_billing_in_json_cost(self):
         from mahler import platforms

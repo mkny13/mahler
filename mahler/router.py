@@ -398,8 +398,6 @@ def usage_state(led, name, pconf, burst_lines=None, role=None):
     state, detail = _quota_usage_state(led, name, pconf, burst_lines)
     if cline_free.managed(pconf) and not cline_free.candidates(led, pconf):
         return "hard", "no free model: Cline's free list has no model that has not billed"
-    if cline_free.managed(pconf) and cline_free.unusable_until(led):
-        return "hard", "no free model passed its probe; retrying in a few minutes"
     if block:
         # Block new launches without stopping productive siblings. Genuine
         # hard quota limits still apply to already-running work (D8).
