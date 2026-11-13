@@ -1013,3 +1013,18 @@ class SetProjectMaxParallelTests(unittest.TestCase):
     def test_boundaries_accepted(self):
         for value in (1, 64):
             self.assertEqual(config.set_project_max_parallel('app', value, self.path), value)
+
+
+class AtlasConfigTests(unittest.TestCase):
+    def test_defaults(self):
+        cfg = config.load(Path(tempfile.gettempdir()) / "mahler-no-such.toml")
+        self.assertEqual(config.atlas_policy(cfg), {
+            "scan_roots": ["~/scripts", "/Volumes/ExtSSD160/scripts"], "ignore": [], "phase": {}})
+
+    def test_validation(self):
+        for bad in ({"scan_roots": "x"}, {"ignore": [1]}, {"phase": {"a": "weird"}},
+                    {"phase": []}, {"scan_roots": [""]}):
+            with self.assertRaises(ValueError, msg=bad):
+                config.atlas_policy({"atlas": bad})
+        ok = config.atlas_policy({"atlas": {"phase": {"a": "idea", "/p": "steady"}}})
+        self.assertEqual(ok["phase"]["/p"], "steady")

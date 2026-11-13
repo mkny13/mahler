@@ -223,6 +223,10 @@ DEFAULTS = {
     # daily digest ping (mahler#6): one ntfy roll-up a day, sent on the first
     # tick at/after `hour` local time; once-only via the ledger kv table
     "digest": {"hour": 8},
+    # project inventory (mahler#1532): direct children of scan_roots, plus
+    # Claude Code session history and managed projects; cached by the tick
+    "atlas": {"scan_roots": ["~/scripts", "/Volumes/ExtSSD160/scripts"],
+              "ignore": [], "phase": {}},
     # daily janitor (mahler#7, DESIGN D12): prune worktrees of ended runs and
     # old mahler/snapshot|abandoned branches; once-only via the ledger kv table
     "janitor": {"retention_days": 14, "worktree_grace_hours": 24},
@@ -838,12 +842,37 @@ def load(path=None):
     validate_post_merge(cfg)
     validate_github_app(cfg)
     validate_gui_gate(cfg)
+    atlas_policy(cfg)
     api_credits.validate(cfg)
     api_credits.attach(cfg)
     configure_warmup(cfg, user)
     for name, project in cfg["projects"].items():
         project["maintenance"] = maintenance_policy(cfg, name)
     return cfg
+
+
+ATLAS_PHASES = ("idea", "prototype", "onboarded", "building", "steady")
+
+
+def atlas_policy(cfg):
+    """Validated [atlas] settings (defaults filled in); raises ValueError."""
+    raw = cfg.get("atlas", {})
+    if not isinstance(raw, dict):
+        raise ValueError("atlas must be a table")
+    out = _merge(DEFAULTS["atlas"], raw)
+    for key in ("scan_roots", "ignore"):
+        v = out[key]
+        if (not isinstance(v, list)
+                or any(not isinstance(x, str) or not x.strip() for x in v)):
+            raise ValueError(f"atlas.{key} must be a list of non-empty strings")
+    if not isinstance(out["phase"], dict):
+        raise ValueError("atlas.phase must be a table")
+    for k, v in out["phase"].items():
+        if not isinstance(k, str) or not k.strip():
+            raise ValueError("atlas.phase keys must be non-empty strings")
+        if v not in ATLAS_PHASES:
+            raise ValueError(f"atlas.phase {k!r} must be one of {', '.join(ATLAS_PHASES)}")
+    return out
 
 
 def validate_post_merge(cfg):
