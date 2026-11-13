@@ -39,7 +39,7 @@ treating a design statement as shipped behavior.
 ## Requirements
 
 - macOS with `launchd`
-- Python 3.12 or newer
+- Python 3.14 or newer
 - `git` and an authenticated [GitHub CLI](https://cli.github.com/)
 - a GitHub repository for every managed project
 - at least one supported agent CLI, installed and authenticated
@@ -332,7 +332,7 @@ python3 -m unittest discover -s tests
 python3 tests/run_random.py
 ```
 
-Python 3.12+ and the standard library are the supported runtime. Tests must not
+Python 3.14+ and the standard library are the supported runtime. Tests must not
 touch live `~/.mahler` state. Contributor and agent rules live in
 [AGENTS.md](AGENTS.md); the system map in [ARCHITECTURE.md](ARCHITECTURE.md); design
 decisions in [DESIGN.md](DESIGN.md); current and planned work in
