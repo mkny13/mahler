@@ -3886,6 +3886,23 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertIn('data-open-project="ideaa"', html)
         self.assertRegex(html, r'<tr class="prow"[^>]*data-open-project="ideaa"')
 
+    def test_board_layout(self):
+        html = page.app(self.s, "desktop", view="projects")
+        self.assertIn('data-proj-layout="list"', html)
+        self.assertIn('data-proj-layout="board"', html)
+        board = html[html.index('class="pboard"'):]
+        cols = re.findall(r'<div class="pcol( early)?" data-col="(\w+)"', board)
+        self.assertEqual([c[1] for c in cols],
+                         ["idea", "prototype", "onboarded", "building", "steady"])
+        self.assertEqual([bool(c[0]) for c in cols], [True, True, True, False, False])
+        self.assertRegex(board, r'<button class="pcard"[^>]*data-open-project="buildd"')
+        self.assertIn("1 open · 4 done · 2 runs", board)
+        self.assertIn("not in Mahler", board)
+        self.assertNotIn("data-phase=", board)  # cards stay out of the list's filter
+
+    def test_board_not_on_phone(self):
+        self.assertNotIn("pboard", page.app(self.s, "phone", tab="browse"))
+
     def test_phone_browse(self):
         html = page.app(self.s, "phone", tab="browse")
         self.assertIn("ideaa", html)

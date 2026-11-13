@@ -1221,6 +1221,28 @@ def _proj_chip(r):
     return f'<span class="phchip ph-{e(r["phase"])}">{e(r["phase"])}</span>'
 
 
+def _proj_board(a):
+    cols = []
+    for k, label in PHASE_LABELS:
+        early = k in ("idea", "prototype", "onboarded")
+        cards = []
+        for r in a["rows"]:
+            if r["phase"] != k:
+                continue
+            meta = (f'{_proj_num(r["open"])} open · {_proj_num(r["done"])} done · '
+                    f'{_proj_num(r["runs7"])} runs' if r["managed"]
+                    else f'not in Mahler · {e(r["sessions"])} sessions')
+            cards.append(
+                f'<button class="pcard" data-open-project="{e(r["key"])}">'
+                f'<span class="l1">{_proj_dot(r)}<span class="nm">{e(r["name"])}</span></span>'
+                f'<span class="pcdesc t-mut">{e(r["desc"])}</span>'
+                f'<span class="l2 mono t-mut">{meta}</span></button>')
+        cols.append(f'<div class="pcol{" early" if early else ""}" data-col="{k}">'
+                    f'<div class="pcol-h"><span>{label}</span>'
+                    f'<span class="mono t-mut">{len(cards)}</span></div>{"".join(cards)}</div>')
+    return f'<div class="pboard">{"".join(cols)}</div>'
+
+
 def _d_projects(s):
     a = s["projects_atlas"]
     if a["empty"]:
@@ -1239,12 +1261,14 @@ def _d_projects(s):
             f'<td class="num mono">{_proj_num(r["runs7"])}</td>'
             f'<td class="mono t-mut">{e(r["last_touched_txt"])}</td>'
             f'<td class="pdesc t-mut">{e(r["desc"])}</td></tr>')
-    return (f'<section class="view view-projects"><div class="projects" data-projects>'
-            f'{_proj_controls(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
+    toggle = ('<div class="proj-layout"><button data-proj-layout="list">List</button>'
+              '<button data-proj-layout="board">Board</button></div>')
+    return (f'<section class="view view-projects"><div class="projects" data-projects data-layout="list">'
+            f'{toggle}{_proj_controls(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
             f'<th>{sort_btn("name", "Project")}</th><th>Phase</th><th>{sort_btn("open", "Open")}</th>'
             f'<th>Done</th><th>Runs/wk</th><th>{sort_btn("touched", "Last touched")}</th>'
             f'<th>What it is</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-            f'</div></section>')
+            f'{_proj_board(a)}</div></section>')
 
 
 def _p_projects(s):
