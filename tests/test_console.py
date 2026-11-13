@@ -3886,6 +3886,45 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertIn('data-open-project="ideaa"', html)
         self.assertRegex(html, r'<tr class="prow"[^>]*data-open-project="ideaa"')
 
+    def test_desktop_board(self):
+        html = page.app(self.s, "desktop", view="projects")
+        self.assertIn('data-proj-layout="list"', html)
+        self.assertIn('data-proj-layout="board"', html)
+        self.assertIn('data-layout="list"', html)        # server default; JS applies the stored choice
+        cols = re.findall(r'<div class="pcol pcol-(\w+)( early)?" data-board-phase="\w+">', html)
+        self.assertEqual([c[0] for c in cols],
+                         ["idea", "prototype", "onboarded", "building", "steady"])
+        self.assertEqual([bool(c[1]) for c in cols], [True, True, True, False, False])
+        board = html[html.index('class="pboard"'):html.index('class="pstrip"')]
+        self.assertEqual(board.count("<span class=\"tag mono\">early</span>"), 3)
+        for key in ("ideaa", "protob", "onbc", "buildd", "steadye"):
+            self.assertIn(f'<button class="pcard" data-open-project="{key}">', board)
+        # A card sits in its own phase's column.
+        steady = board[board.index('data-board-phase="steady"'):]
+        self.assertIn('data-open-project="steadye"', steady)
+        self.assertNotIn('data-open-project="buildd"', steady)
+        # Line 3: managed counts, or unmanaged commits and sessions.
+        self.assertIn("1 open · 4 done · 2 runs/wk · ", board)
+        self.assertIn("no git · 3 Claude sessions · ", board)
+        self.assertIn('<span class="worktag mono">work</span>', board)
+        self.assertIn('<span class="l2 t-mut">about ideaa</span>', board)
+
+    def test_board_counts_commits_and_card_opens_overlay(self):
+        self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": [
+            {"key": "gitty", "name": "gitty", "managed": False, "project": None, "work": False,
+             "path": "/p/gitty", "phase": "prototype", "first_seen": iso(SAT_NOON),
+             "last_touched": iso(SAT_NOON), "sessions": 0, "commits": 12, "desc": "",
+             "open": None, "done": None, "runs7": None}]}))
+        s = state.build(self.cfg, self.led)
+        html = page.app(s, "desktop", view="projects", overlays={"project": "gitty"})
+        self.assertIn("12 commits · 0 Claude sessions · ", html)
+        self.assertIn('data-project-detail="gitty"', html)
+
+    def test_phone_has_no_board(self):
+        html = page.app(self.s, "phone", tab="browse")
+        self.assertNotIn("data-proj-layout", html)
+        self.assertNotIn('class="pboard"', html)
+
     def test_phone_browse(self):
         html = page.app(self.s, "phone", tab="browse")
         self.assertIn("ideaa", html)

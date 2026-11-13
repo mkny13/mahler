@@ -423,8 +423,18 @@
       f = "early";
     }
     var sort = projGet("sort", "phase");
+    var layout = projGet("layout", "list");
+    if (layout !== "board") { layout = "list"; }
     for (var i = 0; i < roots.length; i++) {
       var root_ = roots[i];
+      // List | Board (mahler#1534): only the desktop view renders the switch; the phone keeps the list.
+      if (root_.querySelector("[data-proj-layout]")) {
+        root_.setAttribute("data-layout", layout);
+        var lays = root_.querySelectorAll("[data-proj-layout]");
+        for (var l = 0; l < lays.length; l++) {
+          lays[l].classList.toggle("on", lays[l].getAttribute("data-proj-layout") === layout);
+        }
+      }
       var rows = Array.prototype.slice.call(root_.querySelectorAll("[data-phase][data-name]"));
       if (sort !== "phase" && rows.length) {
         var key = function (r) {
@@ -948,6 +958,7 @@
       return;
     }
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
+    if (el.hasAttribute("data-proj-layout")) { projSet("layout", el.getAttribute("data-proj-layout")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-filter")) { projSet("filter", el.getAttribute("data-proj-filter")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-phase")) { projSet("filter", "phase:" + el.getAttribute("data-proj-phase")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-sort")) {
