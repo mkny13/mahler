@@ -16,7 +16,7 @@ import sys
 import signal
 import time
 
-from . import backup, capacity, config, digest, failures, janitor, notify, platform_audit, practices_audit
+from . import atlas, backup, capacity, config, digest, failures, janitor, notify, platform_audit, practices_audit
 from .console import outbox
 from .gh import project_client, GHError
 from .ledger import iso
@@ -218,6 +218,7 @@ def tick(ctx):
         except Exception as e:
             ctx.say(f"mahler: ledger backup failed — {e}")
     run_pass(ctx, "digest.maybe_send", lambda: digest.maybe_send(ctx))                  # informational: also runs while paused
+    run_pass(ctx, "atlas.maybe_scan", lambda: atlas.maybe_scan(ctx), budget=30)   # mahler#1532: hourly, also while paused
     run_pass(ctx, "janitor.maybe_run", lambda: janitor.maybe_run(ctx))                  # daily sweep (mahler#7): also while paused
     run_pass(ctx, "watchdog", lambda: watchdog(ctx), reap=False)
     return ctx.lines

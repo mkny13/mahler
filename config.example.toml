@@ -50,6 +50,16 @@ gui_idle_minutes = 15
 # "" disables it. Per-project override allowed.
 gui_window = "00:00-06:00, Mon-Fri 11:30-13:30"
 
+# Project inventory (`mahler atlas scan|show`, cached hourly by the tick).
+# Only direct child folders of scan_roots are read; session history and managed
+# projects add to them. Folders outside the roots are never touched.
+# [atlas]
+# scan_roots = ["~/scripts", "/Volumes/ExtSSD160/scripts"]
+# ignore = ["node_modules", "~/scripts/old"]   # folder names, or paths (with "/") and their subtrees
+# [atlas.phase]    # owner overrides: idea|prototype|onboarded|building|steady; a path beats a name
+# "~/scripts/meal-tracker" = "idea"
+# petdle = "prototype"
+
 [ntfy]
 topic = ""                      # optional: set an unguessable topic and subscribe in ntfy
 # topic_high = "mahler-hi"      # optional: high-priority-only topic (priority="high" pings go here AND to topic)

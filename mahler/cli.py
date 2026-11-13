@@ -1322,6 +1322,36 @@ def cmd_capacity(a, cfg, led):
     return 0
 
 
+def _atlas_print(projects, scanned_at=None, stale=False):
+    from . import atlas
+    if scanned_at:
+        print(f"{'stale cache, ' if stale else ''}scanned {scanned_at}: "
+              f"{sum(p['managed'] for p in projects)} managed, "
+              f"{sum(not p['managed'] for p in projects)} unmanaged")
+    print(atlas.format_table(projects))
+
+
+def cmd_atlas(a, cfg, led):
+    from . import atlas
+    if a.atlas_cmd == "show":
+        hit = atlas._cached(led)
+        if not hit:
+            print("no atlas cache yet — run `mahler atlas scan`")
+            return 0
+        _atlas_print(hit[1], hit[0])
+        return 0
+    try:
+        projects = atlas.scan(cfg, led, led.now())
+    except Exception as e:
+        print(f"mahler atlas: scan failed — {e}", file=sys.stderr)
+        hit = atlas._cached(led)
+        if hit:
+            _atlas_print(hit[1], hit[0], stale=True)
+        return 1
+    _atlas_print(projects, iso(led.now()))
+    return 0
+
+
 def build_parser(cfg=None):
     ap = argparse.ArgumentParser(prog="mahler", description="conducts coding agents")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1441,6 +1471,11 @@ def build_parser(cfg=None):
     s.add_argument("project")
     s.add_argument("duration", choices=("1h", "1d", "1w", "off"))
     s.set_defaults(fn=cmd_prioritize)
+
+    s = sub.add_parser("atlas", help="inventory of every project, managed or not (mahler#1532)")
+    s.add_argument("atlas_cmd", choices=("scan", "show"),
+                   help="scan: refresh now; show: print the cached table")
+    s.set_defaults(fn=cmd_atlas)
 
     sub.add_parser("pause", help="start nothing new").set_defaults(fn=cmd_pause)
     s = sub.add_parser("resume", help="resume the daemon, or one project's post-merge checks")
