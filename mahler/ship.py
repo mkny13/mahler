@@ -2850,7 +2850,8 @@ def _ci_cancelled(ctx, project, item, pr, view, required=None):
     held = rec.get("held") or {}
     reason = (f"PR #{pr}: CI was cancelled before it could report, and "
               f"{len(reruns)} conductor rerun(s) did not help. This is not a code "
-              "failure: check runner availability or Actions billing/spending limits")
+              "failure: check that the workflow's runs-on label is still a supported image "
+              "(GitHub retires old macOS/Ubuntu labels), runner availability, or Actions billing")
     rec["held"] = {"since": held.get("since") or iso(led.now()),
                    "checks": int(held.get("checks") or 0) + (1 if held else 0)}
     led.set_kv(key, json.dumps(rec))

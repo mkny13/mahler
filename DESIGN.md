@@ -1432,7 +1432,7 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   Terminal red after the rerun starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
 - **Cancelled is not red** (mahler#1530). When every relevant bad check is `CANCELLED`
-  (a runner that never came, an Actions outage or billing stop), there is no code to fix,
+  (a retired `runs-on` image such as macos-14 after 2026-11-02, a runner that never came, an Actions outage or billing stop), there is no code to fix,
   so no fix run starts and no attempt is charged. The conductor reruns those Actions runs
   itself (`ship._ci_cancelled`, full `rerun`), `CANCELLED_RERUN_LIMIT` (2) times per head,
   reserved before each POST. Then it waits (D52, cause `ci_cancelled`); each wake allows one
