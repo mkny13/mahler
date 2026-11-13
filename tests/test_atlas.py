@@ -49,7 +49,8 @@ class Base(unittest.TestCase):
         p = os.path.join(root or self.root, name)
         os.makedirs(p, exist_ok=True)
         for f in files:
-            open(os.path.join(p, f), "w").write("x")
+            with open(os.path.join(p, f), "w") as _fh:
+                _fh.write("x")
         return p
 
     def session(self, cwd, n=1, sub="proj", lines=None):
@@ -156,7 +157,8 @@ class DiscoveryTests(Base):
         outside = os.path.join(os.path.dirname(self.root), "elsewhere")
         os.makedirs(outside)
         for i in "abc":
-            open(os.path.join(outside, i), "w").write("x")
+            with open(os.path.join(outside, i), "w") as _fh:
+                _fh.write("x")
         os.symlink(outside, os.path.join(self.root, "esc"))
         real_ls = os.scandir
         def badls(p=".", *a, **k):
@@ -205,7 +207,8 @@ class DiscoveryTests(Base):
 
     def test_desc_and_dates(self):
         p = self.folder("d", ["x.py"])
-        open(os.path.join(p, "README.md"), "w").write("# Title\n\nA tiny tool. It does more.\n")
+        with open(os.path.join(p, "README.md"), "w") as _fh:
+            _fh.write("# Title\n\nA tiny tool. It does more.\n")
         self.session(p)
         os.utime(os.path.join(self.hist, "proj", "s0.jsonl"), (1700000000, 1700000000))
         r = self.scan()["d"]
