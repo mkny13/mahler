@@ -19,6 +19,7 @@
   var openBug = null;           // the ref whose bug sheet is open (mahler#250)
   var openRelease = null;       // the project whose release preview is open (mahler#359)
   var openCapture = false;
+  var openProject = null;       // the atlas key whose Projects detail is open (mahler#1533)
   var suppressKeep = [];        // data-keep keys to drop on the next restore (mahler#251)
   var errorToastTimer = null;   // timer for auto-dismissing error toast
   var settingsDirty = false;    // never poll-refresh an unsaved settings form
@@ -39,6 +40,7 @@
       "&tab=" + encodeURIComponent(root.getAttribute("data-tab")) +
       "&run=" + encodeURIComponent(openRun || "") + "&revert=" + encodeURIComponent(openRevert || "") +
       "&bug=" + encodeURIComponent(openBug || "") + "&release=" + encodeURIComponent(openRelease || "") +
+      "&project_detail=" + encodeURIComponent(openProject || "") +
       "&capture=" + (openCapture ? "1" : "");
   }
   layoutMedia.addEventListener("change", function () {
@@ -257,6 +259,15 @@
       }
     }
     if (!relShown) { openRelease = null; }
+    var pds = app.querySelectorAll("[data-project-detail]");
+    var pdShown = false;
+    for (var pd = 0; pd < pds.length; pd++) {
+      var pdOn = pds[pd].getAttribute("data-project-detail") === openProject;
+      pds[pd].classList.toggle("show", pdOn);
+      pdShown = pdShown || pdOn;
+    }
+    if (!pdShown) { openProject = null; }
+    applyProjects();
     
     var wraps = app.querySelectorAll(".attach-wrap");
     for (var w = 0; w < wraps.length; w++) {
@@ -318,7 +329,7 @@
     root.setAttribute("data-tab", tab || "now");
     store("session", "mahler.view", root.getAttribute("data-view"));
     store("session", "mahler.tab", root.getAttribute("data-tab"));
-    openRun = openRevert = openBug = openRelease = null;
+    openRun = openRevert = openBug = openRelease = openProject = null;
     openCapture = false;
     var url = new URL(window.location.href);
     url.search = "";
@@ -383,6 +394,65 @@
     for (var i = 0; i < notes.length; i++) {
       if (failed) { notes[i].textContent = notes[i].getAttribute("data-stale-note").replace("{time}", at); }
       notes[i].hidden = !failed;
+    }
+  }
+
+  // Projects view (mahler#1533): filter and sort run client-side over server-rendered rows.
+  var PROJ_FILTERS = ["early", "unmanaged", "active", "work", "all"];
+  var PROJ_PHASES = ["idea", "prototype", "onboarded", "building", "steady"];
+  function projGet(key, dflt) {
+    try { return localStorage.getItem("mahler.projects." + key) || dflt; } catch (err) { return dflt; }
+  }
+  function projSet(key, value) {
+    try { localStorage.setItem("mahler.projects." + key, value); } catch (err) { /* ignore */ }
+  }
+  function projMatch(row, f) {
+    var ph = row.getAttribute("data-phase");
+    if (f.indexOf("phase:") === 0) { return ph === f.slice(6); }
+    if (f === "early") { return ph === "idea" || ph === "prototype" || ph === "onboarded"; }
+    if (f === "unmanaged") { return row.getAttribute("data-managed") === "false"; }
+    if (f === "active") { return ph === "building" || ph === "steady"; }
+    if (f === "work") { return row.getAttribute("data-work") === "true"; }
+    return true;
+  }
+  function applyProjects() {
+    var roots = app.querySelectorAll("[data-projects]");
+    if (!roots.length) { return; }
+    var f = projGet("filter", "early");
+    if (PROJ_FILTERS.indexOf(f) === -1 && !(f.indexOf("phase:") === 0 && PROJ_PHASES.indexOf(f.slice(6)) !== -1)) {
+      f = "early";
+    }
+    var sort = projGet("sort", "phase");
+    for (var i = 0; i < roots.length; i++) {
+      var root_ = roots[i];
+      var rows = Array.prototype.slice.call(root_.querySelectorAll("[data-phase][data-name]"));
+      if (sort !== "phase" && rows.length) {
+        var key = function (r) {
+          return sort === "name" ? r.getAttribute("data-name") :
+            sort === "open" ? Number(r.getAttribute("data-open")) :
+            (r.getAttribute("data-touched") || "");   // ISO stamps sort as text; empty (never) sorts first
+        };
+        rows.sort(function (a, b) {
+          var x = key(a), y = key(b);
+          var c = x < y ? -1 : x > y ? 1 : 0;
+          return sort === "open" ? -c : c;
+        });
+        var parent = rows[0].parentNode;
+        rows.forEach(function (r) { parent.appendChild(r); });
+      }
+      rows.forEach(function (r) { r.hidden = !projMatch(r, f); });
+      var pills = root_.querySelectorAll("[data-proj-filter]");
+      for (var p = 0; p < pills.length; p++) {
+        pills[p].classList.toggle("on", pills[p].getAttribute("data-proj-filter") === f);
+      }
+      var strip = root_.querySelectorAll("[data-proj-phase]");
+      for (var q = 0; q < strip.length; q++) {
+        strip[q].classList.toggle("on", "phase:" + strip[q].getAttribute("data-proj-phase") === f);
+      }
+      var sorts = root_.querySelectorAll("[data-proj-sort]");
+      for (var t = 0; t < sorts.length; t++) {
+        sorts[t].classList.toggle("on", sorts[t].getAttribute("data-proj-sort") === sort);
+      }
     }
   }
 
@@ -878,6 +948,15 @@
       return;
     }
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
+    if (el.hasAttribute("data-proj-filter")) { projSet("filter", el.getAttribute("data-proj-filter")); applyProjects(); return; }
+    if (el.hasAttribute("data-proj-phase")) { projSet("filter", "phase:" + el.getAttribute("data-proj-phase")); applyProjects(); return; }
+    if (el.hasAttribute("data-proj-sort")) {
+      var ps = el.getAttribute("data-proj-sort");
+      projSet("sort", projGet("sort", "phase") === ps ? "phase" : ps);   // a second click returns to phase order
+      applyProjects(); return;
+    }
+    if (el.hasAttribute("data-open-project")) { openProject = el.getAttribute("data-open-project"); refresh(true); return; }
+    if (el.hasAttribute("data-close-project")) { openProject = null; apply(); return; }
     if (el.hasAttribute("data-open-run")) { openRun = el.getAttribute("data-open-run"); refresh(true); return; }
     if (el.hasAttribute("data-close-run")) { openRun = null; apply(); return; }
     if (el.hasAttribute("data-open-capture")) {
@@ -1080,6 +1159,7 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && openRevert) { openRevert = null; apply(); }
     if (ev.key === "Escape" && openBug) { openBug = null; apply(); }
+    if (ev.key === "Escape" && openProject) { openProject = null; apply(); }
     if (ev.key === "Escape" && openRun) { openRun = null; apply(); }
     if (ev.key === "Escape" && openCapture) { openCapture = false; apply(); }
     if (ev.key === "Escape" && openRelease) { openRelease = null; apply(); }

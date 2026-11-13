@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import api_credits, ci_blockers, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
+from .. import api_credits, atlas, ci_blockers, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -160,6 +160,7 @@ def build(cfg, led, stats_range="week", section=None, project_scope=None):
         "digest": digest,
         "banners": _banners(cfg, led, paused, quota, hot, now),
         "projects": project_names,
+        "projects_atlas": _projects(cfg, led, now),
         "capture": _capture(cfg, led, project_names, now),
         "settings": config.settings(cfg),
     }
@@ -1095,6 +1096,48 @@ def _backlog(cfg, led, projects):
             "items": rows,
         })
     return out
+
+
+PROJECT_PHASES = ("idea", "prototype", "onboarded", "building", "steady")
+PROJECTS_EARLY = PROJECT_PHASES[:3]
+PROJECTS_EMPTY = "No scan yet. It runs hourly, or run `mahler atlas scan`."
+
+
+def _projects(cfg, led, now):
+    """The Projects view (mahler#1533): the cached atlas scan, early phases first.
+    Reads the cache only; a missing or corrupt cache is the empty state."""
+    empty = {"rows": [], "counts": {p: 0 for p in PROJECT_PHASES}, "early": 0,
+             "scanned_at": None, "empty": True, "message": PROJECTS_EMPTY}
+    try:
+        hit = atlas._cached(led)
+        if not hit or not hit[1]:
+            return empty
+        scanned_at, recs = hit
+        order = {p: i for i, p in enumerate(PROJECT_PHASES)}
+        recs = sorted(recs, key=lambda r: ((order.get(r.get("phase"), len(order))),
+                                           -(parse(r.get("last_touched")).timestamp()
+                                             if r.get("last_touched") else 0)))
+        enabled = {p["name"] for p in config.enabled_projects(cfg)}
+        rows, counts = [], {p: 0 for p in PROJECT_PHASES}
+        for r in recs:
+            row = dict(r)
+            touched = parse(r["last_touched"]) if r.get("last_touched") else None
+            age = (now - touched).days if touched else None
+            row["fresh"] = ("old" if age is None or age > 30 else
+                            "green" if age <= 7 else "amber")
+            row["last_touched_txt"] = ("never" if age is None else
+                                       "today" if age < 1 else f"{age}d ago")
+            if r.get("managed") and r.get("project") in enabled:
+                row["items"] = [i for i in _backlog(cfg, led, [{"name": r["project"]}])[0]["items"]
+                                if i["ref"]]
+            if row.get("phase") in counts:
+                counts[row["phase"]] += 1
+            rows.append(row)
+        return {"rows": rows, "counts": counts,
+                "early": sum(counts[p] for p in PROJECTS_EARLY),
+                "scanned_at": scanned_at, "empty": False, "message": ""}
+    except Exception:
+        return empty
 
 
 def _graph(items):

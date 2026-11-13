@@ -291,10 +291,13 @@ class _Handler(BaseHTTPRequestHandler):
                 if path == "/":
                     out, ctype = page.document(s, **selected), "text/html; charset=utf-8"
                 elif path == "/fragment":
-                    out, ctype = page.app(s, **selected, overlays={
+                    overlays = {
                         key: (query.get(key) or [""])[0]
                         for key in ("run", "revert", "bug", "capture", "release")
-                    }), "text/html; charset=utf-8"
+                    }
+                    # `project` already means the scope, so the Projects detail has its own key
+                    overlays["project"] = (query.get("project_detail") or [""])[0]
+                    out, ctype = page.app(s, **selected, overlays=overlays), "text/html; charset=utf-8"
                 else:
                     out, ctype = json.dumps(s, default=_json_default), "application/json"
         except Exception:

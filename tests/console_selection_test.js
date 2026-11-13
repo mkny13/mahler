@@ -23,7 +23,7 @@ const context = vm.createContext({
   window: browserWindow,
   store() {}, load() { return null; }, markSeen() {},
   settingsDirty: false, errorToastTimer: null, suppressKeep: [],
-  openRun: null, openRevert: null, openBug: null, openRelease: null, openCapture: false,
+  openRun: null, openRevert: null, openBug: null, openRelease: null, openProject: null, openCapture: false,
   apply() { applied++; }, noteRevision() { revisionNotes++; },
   app: {
     busy: false,

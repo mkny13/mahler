@@ -3848,3 +3848,60 @@ class DiscussionBrowserTests(unittest.TestCase):
 
             finally:
                 server.shutdown(); server.server_close(); thread.join()
+
+
+class ProjectsPageTests(unittest.TestCase):
+    """Console Projects view (mahler#1533)."""
+
+    def setUp(self):
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        d = lambda n: iso(SAT_NOON - timedelta(days=n))
+
+        def rec(key, phase, days, **kw):
+            r = {"key": key, "name": key, "managed": False, "project": None, "work": False,
+                 "path": "/p/" + key, "phase": phase, "first_seen": d(40), "last_touched": d(days),
+                 "sessions": 3, "commits": None, "desc": "about " + key,
+                 "open": None, "done": None, "runs7": None}
+            r.update(kw)
+            return r
+        self.led.upsert_item("mahler", 5, title="Open thing", state="ready")
+        self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": [
+            rec("ideaa", "idea", 1), rec("protob", "prototype", 3, work=True),
+            rec("onbc", "onboarded", 9, managed=True, project="mahler", open=1, done=0, runs7=0),
+            rec("buildd", "building", 2, managed=True, project="mahler", open=1, done=4, runs7=2),
+            rec("steadye", "steady", 50, managed=True, project="mahler", open=0, done=9, runs7=0)]}))
+        self.s = state.build(self.cfg, self.led)
+
+    def test_desktop(self):
+        html = page.app(self.s, "desktop", view="projects")
+        for label in ("Idea", "Prototype", "Onboarded", "Building", "Steady"):
+            self.assertIn(label, html)
+        self.assertRegex(html, r'data-go="projects"><span>Projects</span><span class="mono t-\w+">3</span>')
+        self.assertLess(html.index('data-go="backlog"'), html.index('data-go="projects"'))
+        self.assertIn('data-phase="idea"', html)
+        self.assertIn("–", html)
+        for pill in ("Early", "Not in Mahler", "Building + steady", "Work", "All"):
+            self.assertIn(pill, html)
+        self.assertIn('data-open-project="ideaa"', html)
+
+    def test_phone_browse(self):
+        html = page.app(self.s, "phone", tab="browse")
+        self.assertIn("ideaa", html)
+        self.assertIn("pproj", html)
+        self.assertIn("–", html)
+
+    def test_overlays(self):
+        unmanaged = page.app(self.s, "desktop", view="projects", overlays={"project": "protob"})
+        self.assertIn('data-project-detail="protob"', unmanaged)
+        self.assertNotIn('data-project-detail="ideaa"', unmanaged)
+        managed = page.app(self.s, "desktop", view="projects", overlays={"project": "buildd"})
+        self.assertIn('data-project-detail="buildd"', managed)
+        self.assertIn("Open thing", managed)
+        self.assertIn("last ~30 days", managed)
+
+    def test_empty(self):
+        led = make_led()
+        self.addCleanup(led.close)
+        html = page.app(state.build(self.cfg, led), "desktop", view="projects")
+        self.assertIn("No scan yet. It runs hourly, or run `mahler atlas scan`.", html)
