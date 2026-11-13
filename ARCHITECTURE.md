@@ -14,7 +14,7 @@ is not part of this architecture.
 
 ## Components
 
-Mahler is a macOS, single-operator service written in Python 3.12 with the standard
+Mahler is a macOS, single-operator service written in Python 3.14 with the standard
 library only. It shells out to `git`, `gh` and the agent CLIs.
 
 | Component | Where | Role |

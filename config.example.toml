@@ -199,7 +199,7 @@ screenshot_path = []              # inherited operator absolute executable direc
 # client_id = "work-laptop"        # stable and unique among Mahler machines
 # connect_timeout_seconds = 5
 # command = "~/.mahler/app/bin/mahler"
-# If non-interactive SSH does not put Python 3.12+ first on PATH:
+# If non-interactive SSH does not put Python 3.14+ first on PATH:
 # command = ["/opt/homebrew/bin/python3", "~/.mahler/app/bin/mahler"]
 
 # [projects.example.maintenance]
