@@ -1340,6 +1340,151 @@ class ShipTests(unittest.TestCase):
             self.ship()
             self.gh.rerun_failed_jobs.assert_called_once_with(10)
 
+    # mahler#1530: cancelled-only CI is rerun by the conductor, never charged.
+    def cancelled_setup(self, rollup=None):
+        self.led.upsert_item("x", 5, pr=88)
+        self.gh.rollup = rollup or [{
+            "name": "verify", "status": "COMPLETED", "conclusion": "CANCELLED",
+            "detailsUrl": "https://github.com/o/r/actions/runs/42/job/7"}]
+        self.gh.rerun_run = mock.Mock()
+        self.run42 = {"id": 42, "head_sha": "abc123", "run_attempt": 1,
+                      "status": "completed", "conclusion": "cancelled"}
+        self.gh.actions_run = mock.Mock(side_effect=lambda run_id: dict(self.run42))
+        return "ci-cancel:x#5:88:abc123"
+
+    def cancel_again(self):
+        """The requested rerun ran and was cancelled again."""
+        self.run42["run_attempt"] += 1
+
+    def test_cancelled_ci_reruns_without_fix_run_or_attempt(self):
+        key = self.cancelled_setup()
+        start = self.patch_start()
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+            self.gh.rerun_run.assert_called_once_with(42)
+            rec = json.loads(self.led.get_kv(key))
+            self.assertEqual(rec["reruns"][0]["runs"], [{"id": 42, "attempt": 1}])
+            self.assertEqual(self.item()["state"], "verifying")
+            self.ctx = scheduler.Ctx(self.cfg, self.led, dry_run=False)  # restart
+            self.ship()  # the new attempt has not shown up yet: no second POST
+            self.gh.rerun_run.assert_called_once_with(42)
+            self.cancel_again()
+            self.ship()
+            self.assertEqual(self.gh.rerun_run.call_count, 2)
+            self.cancel_again()
+            self.ship()  # budget spent: wait, never a fix run
+            self.assertEqual(self.gh.rerun_run.call_count, 2)
+            red.assert_not_called()
+        start.assert_not_called()
+        self.assertEqual((self.item()["attempts"], self.item()["esc_fails"]), (0, 0))
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "ci_cancelled")
+        self.assertIn("not a code failure", self.wait_record()["reason"])
+
+    def test_cancelled_ci_grace_elapsed_counts_the_rerun(self):
+        self.cancelled_setup()
+        self.ship()
+        self.led.clock = lambda: NOW + timedelta(minutes=ship.RERUN_ATTEMPT_GRACE_MINUTES)
+        self.ship()  # GitHub never showed a new attempt: the request still counts
+        self.assertEqual(self.gh.rerun_run.call_count, 2)
+
+    def test_cancelled_ci_wait_wakes_with_one_more_rerun_and_keeps_backstop(self):
+        key = self.cancelled_setup()
+        start = self.patch_start()
+        for _ in range(ship.CANCELLED_RERUN_LIMIT):
+            self.ship()
+            self.cancel_again()
+        self.ship()
+        first = self.wait_record()
+        self.assertEqual(first["checks"], 0)
+        expire_waits(self.led)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh):
+            waits.recheck(self.ctx, "x")
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertEqual(json.loads(self.led.get_kv(key))["limit"],
+                         ship.CANCELLED_RERUN_LIMIT + 1)
+        self.ship()
+        self.assertEqual(self.gh.rerun_run.call_count, ship.CANCELLED_RERUN_LIMIT + 1)
+        self.cancel_again()
+        self.ship()
+        again = self.wait_record()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(again["since"], first["since"])  # backstop clock not reset
+        self.assertEqual(again["checks"], 1)
+        start.assert_not_called()
+        self.assertEqual(self.item()["attempts"], 0)
+        self.led.clock = lambda: NOW + timedelta(
+            hours=self.ctx.policy("x")["wait_escalate_hours"] + 1)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(self.ctx, "ping"):
+            waits.recheck(self.ctx, "x")
+        self.assertEqual(self.item()["state"], "needs_you")
+
+    def test_new_head_gets_a_fresh_cancelled_budget(self):
+        self.cancelled_setup()
+        for _ in range(ship.CANCELLED_RERUN_LIMIT):
+            self.ship()
+            self.cancel_again()
+        self.ship()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.led.set_state("x", 5, "verifying")
+        self.gh.head_sha = self.run42["head_sha"] = "def456"
+        self.ship()
+        self.assertEqual(self.gh.rerun_run.call_count, ship.CANCELLED_RERUN_LIMIT + 1)
+        self.assertTrue(self.led.get_kv("ci-cancel:x#5:88:def456"))
+
+    def test_cancelled_plus_real_failure_still_starts_a_fix(self):
+        self.cancelled_setup(rollup=[
+            {"name": "verify", "conclusion": "CANCELLED",
+             "detailsUrl": "https://github.com/o/r/actions/runs/42/job/7"},
+            {"name": "lint", "conclusion": "FAILURE",
+             "detailsUrl": "https://github.com/o/r/actions/runs/43/job/8"}])
+        with mock.patch.object(ship, "_red_ci") as red:
+            self.ship()
+        red.assert_called_once()
+        self.gh.rerun_run.assert_not_called()
+
+    def test_cancelled_optional_check_does_not_matter_when_required_green(self):
+        self.gh.required_checks = {"verify"}
+        self.cancelled_setup(rollup=[
+            {"name": "verify", "conclusion": "SUCCESS"},
+            {"name": "extra", "conclusion": "CANCELLED",
+             "detailsUrl": "https://github.com/o/r/actions/runs/42/job/7"}])
+        with mock.patch.object(ship, "_review_gate") as gate:
+            self.ship()
+        gate.assert_called_once()
+        self.gh.rerun_run.assert_not_called()
+
+    def test_cancelled_external_check_waits_without_rerun_or_charge(self):
+        self.cancelled_setup(rollup=[{"context": "ci/external", "state": "CANCELLED"}])
+        start = self.patch_start()
+        self.ship()
+        self.gh.rerun_run.assert_not_called()
+        start.assert_not_called()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["cause"], "ci_cancelled")
+        self.assertEqual(self.item()["attempts"], 0)
+
+    def test_cancelled_rerun_refused_waits_and_does_not_repost(self):
+        self.cancelled_setup()
+        self.gh.rerun_run.side_effect = gh_module.GHError("gh api --method POST: HTTP 403")
+        with mock.patch.object(ship, "_red_ci") as red:
+            ping = self.ship()
+        red.assert_not_called()
+        self.gh.rerun_run.assert_called_once_with(42)
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertTrue(any("rerun refused" in c.args[0] for c in ping.call_args_list))
+
+    def test_cancelled_rerun_lost_response_is_not_replayed(self):
+        key = self.cancelled_setup()
+        self.gh.rerun_run.side_effect = gh_module.GHError("response lost")
+        self.ship()
+        self.gh.rerun_run.side_effect = None
+        self.ship()  # reserved before the POST: reconcile, never repeat
+        self.gh.rerun_run.assert_called_once_with(42)
+        self.assertEqual(len(json.loads(self.led.get_kv(key))["reruns"]), 1)
+        self.assertEqual(self.item()["state"], "verifying")
+
     def test_ci_rerun_stale_pending_green_keeps_review_gate(self):
         key = self.retry_setup()
         start = self.patch_start()

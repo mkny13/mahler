@@ -770,6 +770,10 @@ class GH:
     def rerun_failed_jobs(self, run_id):
         self._api_json("POST", f"actions/runs/{int(run_id)}/rerun-failed-jobs")
 
+    def rerun_run(self, run_id):
+        """Re-run a whole workflow run (a cancelled one, mahler#1530)."""
+        self._api_json("POST", f"actions/runs/{int(run_id)}/rerun")
+
     def ci_retry_runs(self, head, base, *, reported=False):
         """Select exact-head failures for the bounded retry, without a base baseline."""
         def runs(sha):
@@ -1539,6 +1543,48 @@ def failing_checks(rollup, required=None):
         if name and state in _BAD_CHECKS and (not required or name in required) and name not in names:
             names.append(name)
     return names
+
+
+_RUN_URL = re.compile(r"/actions/runs/(\d+)(?:/|$)")
+
+
+def cancelled_only(rollup, required=None):
+    """True when CI is red only because checks were cancelled (mahler#1530).
+
+    A cancelled check has no code cause to fix, so the conductor reruns it
+    instead of starting a fix run. Any other bad conclusion (failure,
+    timeout, startup failure, ...) among the relevant checks means False.
+    """
+    if checks_state(rollup, required=required) != "red":
+        return False
+    bad = []
+    for c in (rollup or []):
+        name, context = c.get("name"), c.get("context")
+        if required and not ((name and name in required) or (context and context in required)):
+            continue
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if state in _BAD_CHECKS:
+            bad.append(state)
+    return bool(bad) and all(s == "CANCELLED" for s in bad)
+
+
+def cancelled_run_ids(rollup, required=None):
+    """Actions run ids behind the relevant cancelled checks, in rollup order,
+    or None when any cancelled check is not an Actions run (nothing to rerun)."""
+    ids = []
+    for c in (rollup or []):
+        name, context = c.get("name"), c.get("context")
+        if required and not ((name and name in required) or (context and context in required)):
+            continue
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if state != "CANCELLED":
+            continue
+        m = _RUN_URL.search(c.get("detailsUrl") or "")
+        if not m:
+            return None
+        if int(m[1]) not in ids:
+            ids.append(int(m[1]))
+    return ids
 
 
 def non_required_failures(rollup, required=None):

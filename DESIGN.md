@@ -1431,6 +1431,16 @@ on mahler#8 (run 23) pushed working commits, then ended on "Now opening the PR:"
   attempt, bounded by the existing CI timeout. Green retains all review/merge gates.
   Terminal red after the rerun starts a `fix` run. `max_attempts` caps build and fix runs together, and escalation
   (D8) applies as before.
+- **Cancelled is not red** (mahler#1530). When every relevant bad check is `CANCELLED`
+  (a retired `runs-on` image such as macos-14 after 2026-11-02, a runner that never came, an Actions outage or billing stop), there is no code to fix,
+  so no fix run starts and no attempt is charged. The conductor reruns those Actions runs
+  itself (`ship._ci_cancelled`, full `rerun`), `CANCELLED_RERUN_LIMIT` (2) times per head,
+  reserved before each POST. Then it waits (D52, cause `ci_cancelled`); each wake allows one
+  more rerun, and the wait keeps its original `since` across re-holds, so the 72h backstop
+  still asks the owner. A cancelled check mixed with a real failure is ordinary red. It does
+  not push an empty commit or close/reopen the PR to get a fresh run: if reruns of the same
+  run keep getting cancelled, the cause is outside the repo, and those levers would only
+  reset review on a new head or spam the PR.
 - **No-change build DONE** (mahler#716, #717). A clean worktree with zero commits
   ahead of the freshly fetched configured base supplies evidence; missing worktrees
   and Git/snapshot failures do not. The first claim enters independent review without

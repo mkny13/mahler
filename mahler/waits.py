@@ -13,7 +13,7 @@ from datetime import timedelta
 from . import ci_blockers, no_change
 from .ledger import iso, parse
 
-CAUSES = ("ci_repo_wide", "ci_stalled", "merge_queue", "capacity", "github", "setup",
+CAUSES = ("ci_repo_wide", "ci_stalled", "ci_cancelled", "merge_queue", "capacity", "github", "setup",
           "worktree_conflict", "review_inconclusive", "review_nonconvergent", "launch", "other")
 RESUMES = ("verifying", "ready", "inbox")
 BACKOFF_MINUTES = (15, 30, 60, 120, 240, 360)   # capped at the last value
@@ -42,20 +42,24 @@ def clear(led, project, n):
     led.set_kv(key(project, n), "")
 
 
-def hold(led, project, n, cause, reason, *, resume, wake=None):
-    """Put an item into ``waiting``. Never pings."""
+def hold(led, project, n, cause, reason, *, resume, wake=None, since=None, checks=0):
+    """Put an item into ``waiting``. Never pings.
+
+    ``since``/``checks`` carry an earlier wait on the same cause forward, so a
+    wait that resumes and comes straight back keeps its backoff and still
+    reaches the ``wait_escalate_hours`` backstop (mahler#1530)."""
     if cause not in CAUSES:
         raise ValueError(f"unknown wait cause: {cause}")
     if resume not in RESUMES:
         raise ValueError(f"invalid wait resume state: {resume}")
     led.set_state(project, n, "waiting", f"waiting ({cause}): {reason}",
                   question=None, options="[]")
-    since = iso(led.now())
+    since = since or iso(led.now())
     led.set_kv(key(project, n), json.dumps({
         "cause": cause, "reason": reason, "resume": resume, "since": since,
         "bound_at": led.item(project, n)["state_changed_at"], "wake": wake,
-        "checks": 0,
-        "next_at": iso(led.now() + max(backoff(1), MIN_DELAY.get(cause, timedelta(0))))}))
+        "checks": checks,
+        "next_at": iso(led.now() + max(backoff(checks + 1), MIN_DELAY.get(cause, timedelta(0))))}))
     led.event("wait", project, n, {"cause": cause, "reason": reason})
 
 
@@ -76,6 +80,22 @@ def _wake_ci_stalled(ctx, project, item, record):
         for prefix in ("ci", "pr-lookup"):
             ctx.led.set_kv(f"{prefix}:{project}#{item['number']}:{item['pr']}", "")
     return True, "retrying with a fresh CI timer"
+
+
+def _wake_ci_cancelled(ctx, project, item, record):
+    """Retry after backoff with one more conductor rerun of the cancelled CI
+    for the same head (mahler#1530). A new head starts its own budget anyway."""
+    wake = record.get("wake") or {}
+    if item["pr"] and wake.get("sha"):
+        ckey = f"ci-cancel:{project}#{item['number']}:{item['pr']}:{wake['sha']}"
+        try:
+            rec = json.loads(ctx.led.get_kv(ckey) or "{}")
+        except ValueError:
+            rec = {}
+        if isinstance(rec, dict) and rec:
+            rec["limit"] = len(rec.get("reruns") or []) + 1
+            ctx.led.set_kv(ckey, json.dumps(rec))
+    return True, "retrying the cancelled CI once more"
 
 
 def _wake_merge_queue(ctx, project, item, record):
@@ -193,6 +213,7 @@ def _wake_review_inconclusive(ctx, project, item, record):
 WAKES = {cause: _wake_time for cause in CAUSES}
 WAKES["ci_repo_wide"] = _wake_ci_repo_wide
 WAKES["ci_stalled"] = _wake_ci_stalled
+WAKES["ci_cancelled"] = _wake_ci_cancelled
 WAKES["merge_queue"] = _wake_merge_queue
 WAKES["capacity"] = _wake_capacity
 WAKES["worktree_conflict"] = _wake_worktree_conflict

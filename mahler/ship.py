@@ -74,6 +74,9 @@ def ship(ctx, projects):
 UNOWNED_SCAN_MINUTES = 15
 _BOT_BRANCHES = ("dependabot/", "renovate/")
 RERUN_ATTEMPT_GRACE_MINUTES = 5
+# Conductor reruns of cancelled-only CI per PR head before it waits (mahler#1530).
+# Each wake from that wait allows one more.
+CANCELLED_RERUN_LIMIT = 2
 _PERMANENT_RERUN_ERRORS = re.compile(r"\b(403|404|422)\b")
 
 
@@ -1053,6 +1056,8 @@ def _watch_pr(ctx, project, item, pr):
     if _stale_red_behind_base(ctx, project, item, pr, view, req):
         return
     if _ci_rerun(ctx, project, item, pr, view, req):
+        return
+    if _ci_cancelled(ctx, project, item, pr, view, req):
         return
     if not _ship_lease(ctx, project, item):
         return
@@ -2758,6 +2763,104 @@ def _ci_rerun(ctx, project, item, pr, view, required=None):
         _ci_pending(ctx, project, item, pr, view, reason=f"CI rerun lookup/request uncertain: {exc}")
         return True
     _ci_pending(ctx, project, item, pr, view, reason="waiting for failed-job rerun attempt")
+    return True
+
+
+def _ci_cancelled(ctx, project, item, pr, view, required=None):
+    """Red CI whose only bad checks were cancelled (mahler#1530).
+
+    A cancelled check (a runner that never came, a concurrency cancel, an
+    Actions outage or billing stop) has no code cause, so a fix run cannot help
+    and must not spend an attempt. The conductor reruns the cancelled workflow
+    runs itself, ``CANCELLED_RERUN_LIMIT`` times per head, reserving each
+    request durably before the POST like ``_ci_rerun``. When the budget is
+    spent it waits (D52, cause ``ci_cancelled``) with no charge; each wake
+    allows one more rerun, and the usual backstop asks the owner after
+    ``wait_escalate_hours``. True when this tick is handled."""
+    if ctx.dry_run:
+        return False
+    rollup = view.get("statusCheckRollup")
+    if not gh_module.cancelled_only(rollup, required):
+        return False
+    led, n, sha = ctx.led, item["number"], view.get("headRefOid") or ""
+    key = f"ci-cancel:{project}#{n}:{pr}:{sha}"
+    rec = _kv_json(led, key)
+    if not rec:
+        rec = {"reruns": [], "since": iso(led.now())}
+    reruns = rec.setdefault("reruns", [])
+    gh = ctx.gh(project)
+    try:
+        last = reruns[-1] if reruns else None
+        if last and not last.get("settled"):
+            waiting = False
+            for run in last["runs"]:
+                observed = gh.actions_run(run["id"])
+                if (observed.get("run_attempt", 0) <= run["attempt"]
+                        or observed.get("status") != "completed"):
+                    waiting = True
+            try:
+                elapsed = led.now() - parse(last["requested_at"])
+            except Exception:
+                elapsed = timedelta(0)
+            if waiting and elapsed < timedelta(minutes=RERUN_ATTEMPT_GRACE_MINUTES):
+                _ci_pending(ctx, project, item, pr, view,
+                            reason="waiting for the rerun of cancelled CI")
+                return True
+            last["settled"] = True
+            led.set_kv(key, json.dumps(rec))
+        run_ids = gh_module.cancelled_run_ids(rollup, required)
+        limit = rec.get("limit", CANCELLED_RERUN_LIMIT)
+        if run_ids and len(reruns) < limit:
+            fresh = gh.pr_view(pr)
+            if (fresh.get("state") != "OPEN" or fresh.get("headRefOid") != sha
+                    or fresh.get("baseRefName") != view.get("baseRefName")
+                    or not _ship_lease(ctx, project, item)):
+                return True
+            runs = []
+            for run_id in run_ids:
+                observed = gh.actions_run(run_id)
+                if observed.get("head_sha") != sha:
+                    runs = []
+                    break
+                runs.append({"id": run_id, "attempt": observed.get("run_attempt", 0)})
+            if runs:
+                # Reserve before POST: a crash or lost response cannot repeat it.
+                reruns.append({"runs": runs, "requested_at": iso(led.now())})
+                led.set_kv(key, json.dumps(rec))
+                for run in runs:
+                    gh.rerun_run(run["id"])
+                led.event("ci_cancelled_rerun", project, n,
+                          {"pr": pr, "sha": sha, "runs": [r["id"] for r in runs],
+                           "rerun": len(reruns)})
+                _ci_pending(ctx, project, item, pr, view,
+                            reason=f"CI was cancelled; conductor rerun {len(reruns)} "
+                                   f"of {limit} (no attempt charged)")
+                return True
+    except (GHError, ValueError, TypeError, KeyError) as exc:
+        if isinstance(exc, GHError) and _PERMANENT_RERUN_ERRORS.search(str(exc)):
+            if re.search(r"\b403\b", str(exc)):
+                _notify_rerun_403(ctx, project)
+            rec["limit"] = len(reruns)        # no more POSTs for this head until a wake
+            led.set_kv(key, json.dumps(rec))
+        else:
+            _ci_pending(ctx, project, item, pr, view,
+                        reason=f"cancelled-CI rerun lookup/request uncertain: {exc}")
+            return True
+    # Nothing left to try for this head: wait without charging an attempt.
+    held = rec.get("held") or {}
+    reason = (f"PR #{pr}: CI was cancelled before it could report, and "
+              f"{len(reruns)} conductor rerun(s) did not help. This is not a code "
+              "failure: check that the workflow's runs-on label is still a supported image "
+              "(GitHub retires old macOS/Ubuntu labels), runner availability, or Actions billing")
+    rec["held"] = {"since": held.get("since") or iso(led.now()),
+                   "checks": int(held.get("checks") or 0) + (1 if held else 0)}
+    led.set_kv(key, json.dumps(rec))
+    waits.hold(led, project, n, "ci_cancelled", reason, resume="verifying",
+               wake={"pr": pr, "sha": sha}, since=rec["held"]["since"],
+               checks=rec["held"]["checks"])
+    led.release(project, n, holder=CONDUCTOR)
+    ctx.say(f"{project}#{n}: PR #{pr} — CI keeps getting cancelled; waiting without "
+            "charging an attempt")
     return True
 
 
