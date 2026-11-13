@@ -3884,6 +3884,7 @@ class ProjectsPageTests(unittest.TestCase):
         for pill in ("Early", "Not in Mahler", "Building + steady", "Work", "All"):
             self.assertIn(pill, html)
         self.assertIn('data-open-project="ideaa"', html)
+        self.assertRegex(html, r'<tr class="prow"[^>]*data-open-project="ideaa"')
 
     def test_phone_browse(self):
         html = page.app(self.s, "phone", tab="browse")
@@ -3899,6 +3900,7 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertIn('data-project-detail="buildd"', managed)
         self.assertIn("Open thing", managed)
         self.assertIn("last ~30 days", managed)
+        self.assertIn('href="https://github.com/mkny13/mahler"', managed)
 
     def test_empty(self):
         led = make_led()

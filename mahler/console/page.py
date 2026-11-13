@@ -1230,7 +1230,7 @@ def _d_projects(s):
     for r in a["rows"]:
         work = ' <span class="worktag mono">work</span>' if r["work"] else ""
         rows.append(
-            f'<tr class="prow" {_proj_attrs(r)}>'
+            f'<tr class="prow" {_proj_attrs(r)} data-open-project="{e(r["key"])}">'
             f'<td class="pname">{_proj_dot(r)}<button class="nm" data-open-project="{e(r["key"])}">'
             f'{e(r["name"])}</button>{work}</td>'
             f'<td>{_proj_chip(r)}</td>'
@@ -1274,6 +1274,10 @@ def _project_overlays(s):
                  ("First seen", e((r["first_seen"] or "–")[:10])),
                  ("Last touched", e(r["last_touched_txt"])),
                  ("Claude Code sessions (last ~30 days)", e(r["sessions"]))]
+        if r.get("repo"):
+            repo_url = f'https://github.com/{e(r["repo"])}'
+            facts.append(("Repository", f'<a href="{repo_url}" target="_blank" rel="noopener">'
+                                         f'{e(r["repo"])} ↗</a>'))
         if r["managed"]:
             facts += [("Open", e(_proj_num(r["open"]))), ("Done", e(_proj_num(r["done"]))),
                       ("Runs this week", e(_proj_num(r["runs7"])))]

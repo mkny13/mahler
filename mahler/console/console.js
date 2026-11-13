@@ -846,7 +846,7 @@
   });
 
   document.addEventListener("click", function (ev) {
-    var el = ev.target.closest("button, a");
+    var el = ev.target.closest("button, a, [data-open-project]");
     if (!el || !app.contains(el)) { return; }
     if (el.hasAttribute("data-theme-cycle")) {
       var cur = root.getAttribute("data-theme") || "auto";

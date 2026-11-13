@@ -1130,6 +1130,8 @@ def _projects(cfg, led, now):
             if r.get("managed") and r.get("project") in enabled:
                 row["items"] = [i for i in _backlog(cfg, led, [{"name": r["project"]}])[0]["items"]
                                 if i["ref"]]
+            row["repo"] = (config.project_policy(cfg, r["project"]).get("repo")
+                           if r.get("managed") and r.get("project") else None)
             if row.get("phase") in counts:
                 counts[row["phase"]] += 1
             rows.append(row)
