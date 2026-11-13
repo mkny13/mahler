@@ -524,6 +524,27 @@ How the design maps onto Mahler. The decision and its reasons are DESIGN.md D27.
 The code is `mahler/console/` (state, page, actions, CSS, JS), served by
 `mahler/serve.py`.
 
+### Atlas: project inventory cache (mahler#1532)
+
+`mahler/atlas.py` keeps an inventory of every project, managed or not, for the
+Projects view. Sources are enabled configured projects, the direct child folders
+of `[atlas] scan_roots` (default `~/scripts`, `/Volumes/ExtSSD160/scripts`), and
+Claude Code session files (`~/.claude/projects/*/*.jsonl`, first 50 lines, for
+`cwd`). `[atlas] ignore` (names, or paths with `/`) filters discoveries, never
+managed projects; `[atlas.phase]` overrides a phase, a path beating a name.
+Folders outside the roots and managed paths are never touched (no stat, list,
+resolve or git): they are recorded from session data alone, so an iCloud folder
+cannot hang a scan. Symlinks inside the roots are resolved and merged; an
+escaping link is not followed. Phases: managed = `onboarded` (no items ever),
+`building` (open items or a run in 7 days), else `steady`; unmanaged = `idea`
+(no git and under three non-doc files, or session-only) else `prototype`.
+The whole scan has an 8 s budget (scoped SIGALRM, restoring any enclosing timer);
+a timeout keeps the previous cache. The result is `{scanned_at, projects}` in kv
+`atlas:scan`; the tick refreshes it at most once an hour (`atlas:last_attempt`
+throttles failures too, and paused ticks still run it; dry-run ticks do not).
+`mahler atlas scan` forces a refresh; `mahler atlas show` reads the cache only.
+Claude Code deletes sessions after about 30 days, so `sessions` counts recent work only.
+
 ### Shipment contract (owner, 2026-10-06)
 
 The historical manual queue accumulated 277 pending changes versus 5 verdicts,

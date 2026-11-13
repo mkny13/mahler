@@ -64,7 +64,7 @@ class Base(unittest.TestCase):
         return {r["name"]: r for r in atlas.scan(self.cfg, self.led, NOW, **kw)}
 
     def managed(self, name="mg", path=None, **extra):
-        self.cfg["projects"][name] = {"repo": f"o/{name}", "path": path or self.folder(name), **extra}
+        self.cfg["projects"][name] = {"enabled": True, "repo": f"o/{name}", "path": path or self.folder(name), **extra}
 
 
 class PhaseTests(Base):
@@ -176,7 +176,7 @@ class DiscoveryTests(Base):
 
     def test_worktree_root_excluded(self):
         wt = os.path.join(self.home, "wts")
-        self.cfg["projects"]["m"] = {"repo": "o/m", "path": self.folder("m"), "worktree_root": wt}
+        self.cfg["projects"]["m"] = {"enabled": True, "repo": "o/m", "path": self.folder("m"), "worktree_root": wt}
         self.session(os.path.join(wt, "m", "1-run2"))
         self.assertEqual([r["name"] for r in atlas.scan(self.cfg, self.led, NOW)], ["m"])
 
