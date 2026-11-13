@@ -1306,9 +1306,9 @@ are best-effort and never gate finalization or prompt construction.
 
 - **Hub:** an always-on Mac. The canonical installation is the Mac mini; D24 adds remote lease
   coordination for an explicitly shared project without replicating the scheduler database.
-- **Language:** Python 3.12+, like thread and dispatch. Dependencies would be pinned with `uv`;
-  so far none are needed (the console is standard library, D27), and the MCP SDK is the
-  likely first.
+- **Language:** Python 3.14+, the version the Mac mini runs and CI tests. Dependencies would
+  be pinned with `uv`; so far none are needed (the console is standard library, D27), and
+  the MCP SDK is the likely first.
 - **Components:**
   - web: server-rendered HTML with minimal JavaScript, phone-friendly — standard
     library, not the FastAPI + HTMX first planned here (D27)

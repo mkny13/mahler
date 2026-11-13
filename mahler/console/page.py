@@ -16,7 +16,7 @@ with open(os.path.join(HERE, "console.js"), encoding="utf-8") as _fh:
     JS = _fh.read()
 
 VIEWS = (("now", "Now"), ("needs", "Needs you"), ("test", "What changed"),
-         ("capture", "Capture"), ("backlog", "Backlog"), ("releases", "Releases"),
+         ("capture", "Capture"), ("backlog", "Backlog"), ("projects", "Projects"), ("releases", "Releases"),
          ("capacity", "Capacity"), ("stats", "Stats"), ("models", MODELS_LABEL), ("history", "Event stream"),
          ("settings", "Settings"))
 PROJECT_VIEWS = (("overview", "Overview"), ("needs", "Needs you"),
@@ -114,11 +114,13 @@ def app(s, layout="desktop", view=None, tab=None, overlays=None):
         ("revert", "events", "id", _revert_overlays),
         ("bug", "uat", "ref", _bug_overlays),
         ("release", "releases", "project", _release_preview_overlays),
+        ("project", "projects_atlas", "key", _project_overlays),
     ):
         if overlays.get(name):
             subset = dict(s)
-            subset[collection] = [row for row in s[collection]
-                                  if str(row[key]) == overlays[name]]
+            rows = s[collection]["rows"] if collection == "projects_atlas" else s[collection]
+            rows = [row for row in rows if str(row[key]) == overlays[name]]
+            subset[collection] = dict(s[collection], rows=rows) if collection == "projects_atlas" else rows
             out += render(subset)
     if overlays.get("capture") == "1":
         out += _capture_overlay(s)
@@ -963,6 +965,7 @@ def _desktop(s, view):
         "test": ("", "mut"),
         "capture": ("", "mut"),
         "backlog": (str(s["backlog_total"]), "mut"),
+        "projects": (str(s["projects_atlas"]["early"]) if s["projects_atlas"]["early"] else "", "mut"),
         "releases": (str(s["releases_suggested"]) if s.get("releases_suggested") else "", "acc"),
         "capacity": ("", "mut"),
         "stats": ("", "mut"),
@@ -1176,6 +1179,123 @@ def _d_test(s):
 def _d_capture(s):
     return (f'<section class="view view-capture"><div class="cap">'
             f'{_composer(s, 4, "Save to backlog")}</div></section>')
+
+
+PHASE_LABELS = (("idea", "Idea"), ("prototype", "Prototype"), ("onboarded", "Onboarded"),
+                ("building", "Building"), ("steady", "Steady"))
+PROJECT_FILTERS = (("early", "Early"), ("unmanaged", "Not in Mahler"),
+                   ("active", "Building + steady"), ("work", "Work"), ("all", "All"))
+
+
+def _proj_attrs(r):
+    return (f'data-phase="{e(r["phase"])}" data-managed="{str(bool(r["managed"])).lower()}" '
+            f'data-work="{str(bool(r["work"])).lower()}" data-touched="{e(r["last_touched"] or "")}" '
+            f'data-open="{-1 if r["open"] is None else r["open"]}" data-name="{e(r["name"].casefold())}"')
+
+
+def _proj_num(v):
+    return "–" if v is None else str(v)
+
+
+def _proj_controls(a):
+    strip = "".join(
+        f'<button class="pstrip-i{" early" if k in ("idea", "prototype", "onboarded") else ""}" '
+        f'data-proj-phase="{k}"><span class="n mono">{a["counts"][k]}</span>'
+        f'<span class="l">{label}</span>'
+        f'{"<span class=\"tag mono\">early</span>" if k in ("idea", "prototype", "onboarded") else ""}'
+        f'</button>' for k, label in PHASE_LABELS)
+    pills = "".join(f'<button class="proj-pill" data-proj-filter="{k}">{e(label)}</button>'
+                    for k, label in PROJECT_FILTERS)
+    return f'<div class="pstrip">{strip}</div><div class="proj-pills">{pills}</div>'
+
+
+def _proj_empty(a):
+    return f'<div class="t-mut proj-empty">{e(a["message"])}</div>'
+
+
+def _proj_dot(r):
+    return f'<span class="fdot fd-{r["fresh"]}" title="{e(r["last_touched_txt"])}"></span>'
+
+
+def _proj_chip(r):
+    return f'<span class="phchip ph-{e(r["phase"])}">{e(r["phase"])}</span>'
+
+
+def _d_projects(s):
+    a = s["projects_atlas"]
+    if a["empty"]:
+        return f'<section class="view view-projects">{_proj_empty(a)}</section>'
+    sort_btn = lambda k, label: f'<button class="proj-sort" data-proj-sort="{k}">{label}</button>'
+    rows = []
+    for r in a["rows"]:
+        work = ' <span class="worktag mono">work</span>' if r["work"] else ""
+        rows.append(
+            f'<tr class="prow" {_proj_attrs(r)} data-open-project="{e(r["key"])}">'
+            f'<td class="pname">{_proj_dot(r)}<button class="nm" data-open-project="{e(r["key"])}">'
+            f'{e(r["name"])}</button>{work}</td>'
+            f'<td>{_proj_chip(r)}</td>'
+            f'<td class="num mono">{_proj_num(r["open"])}</td>'
+            f'<td class="num mono">{_proj_num(r["done"])}</td>'
+            f'<td class="num mono">{_proj_num(r["runs7"])}</td>'
+            f'<td class="mono t-mut">{e(r["last_touched_txt"])}</td>'
+            f'<td class="pdesc t-mut">{e(r["desc"])}</td></tr>')
+    return (f'<section class="view view-projects"><div class="projects" data-projects>'
+            f'{_proj_controls(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
+            f'<th>{sort_btn("name", "Project")}</th><th>Phase</th><th>{sort_btn("open", "Open")}</th>'
+            f'<th>Done</th><th>Runs/wk</th><th>{sort_btn("touched", "Last touched")}</th>'
+            f'<th>What it is</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+            f'</div></section>')
+
+
+def _p_projects(s):
+    a = s["projects_atlas"]
+    if a["empty"]:
+        return f'<div class="psect"><span class="lbl">Projects</span>{_proj_empty(a)}</div>'
+    rows = []
+    for r in a["rows"]:
+        meta = (f'{_proj_num(r["open"])} open · {_proj_num(r["done"])} done · '
+                if r["managed"] else "– · ")
+        rows.append(
+            f'<button class="pproj" {_proj_attrs(r)} data-open-project="{e(r["key"])}">'
+            f'<span class="l1">{_proj_dot(r)}<span class="nm">{e(r["name"])}</span>'
+            f'{_proj_chip(r)}</span>'
+            f'<span class="l2 mono t-mut">{meta}{e(r["last_touched_txt"])}</span>'
+            f'<span class="l2 t-mut">{e(r["desc"])}</span></button>')
+    return (f'<div class="psect projects" data-projects style="gap:10px"><span class="lbl">'
+            f'Projects · {a["early"]} early</span>{_proj_controls(a)}'
+            f'<div class="plist">{"".join(rows)}</div></div>')
+
+
+def _project_overlays(s):
+    out = []
+    for r in s["projects_atlas"]["rows"]:
+        where = e(r["path"]) if r.get("path") else "–"
+        facts = [("Phase", e(r["phase"])), ("Path", f'<span class="mono">{where}</span>'),
+                 ("First seen", e((r["first_seen"] or "–")[:10])),
+                 ("Last touched", e(r["last_touched_txt"])),
+                 ("Claude Code sessions (last ~30 days)", e(r["sessions"]))]
+        if r.get("repo"):
+            repo_url = f'https://github.com/{e(r["repo"])}'
+            facts.append(("Repository", f'<a href="{repo_url}" target="_blank" rel="noopener">'
+                                         f'{e(r["repo"])} ↗</a>'))
+        if r["managed"]:
+            facts += [("Open", e(_proj_num(r["open"]))), ("Done", e(_proj_num(r["done"]))),
+                      ("Runs this week", e(_proj_num(r["runs7"])))]
+        dl = "".join(f'<div class="kv"><span class="lbl">{k}</span><span>{v}</span></div>'
+                     for k, v in facts)
+        items = ""
+        if r.get("items"):
+            items = _backlog_groups({"backlog": [{"project": r["project"], "items": r["items"]}]},
+                                    phone=False)
+            items = items.replace('class="grp"', 'class="grp open"', 1)
+            items = f'<span class="lbl">Open items</span>{items}'
+        out.append(f'<div class="ov projectov" data-project-detail="{e(r["key"])}">'
+                   f'<div class="box" role="dialog" aria-modal="true">'
+                   f'<div class="top"><button class="back" data-close-project>← Projects</button>'
+                   f'<span class="ref mono">{e(r["name"])}</span></div>'
+                   f'<div class="inner"><h2>{e(r["name"])} {_proj_chip(r)}</h2>'
+                   f'<p class="t-mut">{e(r["desc"])}</p>{dl}{items}</div></div></div>')
+    return "".join(out)
 
 
 def _d_backlog(s):
@@ -1879,7 +1999,7 @@ def _p_triage(s):
 
 
 def _p_browse(s):
-    out = ['<section class="tabv tabv-browse"><div class="pad">',
+    out = ['<section class="tabv tabv-browse"><div class="pad">', _p_projects(s),
            '<div class="psect"><span class="lbl">Quota · worst window</span>']
     styles = []
     for q in s["quota"]:

@@ -3,6 +3,7 @@ import console_snapshot
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from mahler import config
 from mahler.console import actions, page, state
@@ -1008,3 +1009,75 @@ class WaitingStateTests(unittest.TestCase):
             with self.assertRaises(actions.ActionError):
                 actions.answer(cfg, led, {**body, "text": text})
             self.assertEqual(outbox.answer(ctx, row, {"text": text})[0], "skipped")
+
+
+def _atlas_rec(key, phase, touched, **kw):
+    rec = {"key": key, "name": key, "managed": False, "project": None, "work": False,
+           "path": "/p/" + key, "phase": phase, "first_seen": "2026-09-01T00:00:00Z",
+           "last_touched": touched, "sessions": 0, "commits": None, "desc": "d " + key,
+           "open": None, "done": None, "runs7": None}
+    rec.update(kw)
+    return rec
+
+
+class ProjectsAtlasStateTests(unittest.TestCase):
+    """Console Projects view (mahler#1533): a read-only view over the atlas cache."""
+
+    def setUp(self):
+        self.now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+        self.led = Ledger(':memory:', clock=lambda: self.now)
+        self.addCleanup(self.led.close)
+        import copy
+        user = {"projects": {"mg": {"enabled": True, "repo": "o/mg", "path": "/x"}}}
+        self.cfg = config.resolve_platforms(
+            config._merge(copy.deepcopy(config.DEFAULTS), user))
+
+    def seed(self, recs):
+        self.led.set_kv("atlas:scan", json.dumps(
+            {"scanned_at": iso(self.now), "projects": recs}))
+
+    def test_rows_counts_and_order(self):
+        d = lambda n: iso(self.now - timedelta(days=n))
+        self.led.upsert_item("mg", 7, title="open one", state="ready")
+        self.seed([
+            _atlas_rec("steady1", "steady", d(1), managed=True, project="mg", open=0, done=3, runs7=0),
+            _atlas_rec("idea-old", "idea", d(60)),
+            _atlas_rec("idea-new", "idea", d(2), work=True),
+            _atlas_rec("proto", "prototype", d(20)),
+            _atlas_rec("onb", "onboarded", d(8), managed=True, project="mg", open=1, done=0, runs7=0),
+            _atlas_rec("build", "building", None, managed=True, project="mg", open=1, done=1, runs7=2),
+        ])
+        out = state._projects(self.cfg, self.led, self.now)
+        self.assertFalse(out["empty"])
+        self.assertEqual([r["key"] for r in out["rows"]],
+                         ["idea-new", "idea-old", "proto", "onb", "build", "steady1"])
+        self.assertEqual(out["counts"], {"idea": 2, "prototype": 1, "onboarded": 1,
+                                         "building": 1, "steady": 1})
+        self.assertEqual(out["early"], 4)
+        by = {r["key"]: r for r in out["rows"]}
+        self.assertEqual(by["idea-new"]["fresh"], "green")
+        self.assertEqual(by["proto"]["fresh"], "amber")
+        self.assertEqual(by["idea-old"]["fresh"], "old")
+        self.assertEqual(by["build"]["fresh"], "old")
+        self.assertTrue(by["idea-new"]["work"])
+        self.assertEqual([i["number"] for i in by["onb"]["items"]], [7])
+        self.assertNotIn("items", by["idea-old"])
+        self.assertTrue(out["scanned_at"])
+
+    def test_no_cache_is_empty(self):
+        out = state._projects(self.cfg, self.led, self.now)
+        self.assertTrue(out["empty"])
+        self.assertEqual(out["message"],
+                         "No scan yet. It runs hourly, or run `mahler atlas scan`.")
+        self.assertEqual(out["early"], 0)
+
+    def test_corrupt_cache_is_empty(self):
+        self.led.set_kv("atlas:scan", "{not json")
+        self.assertTrue(state._projects(self.cfg, self.led, self.now)["empty"])
+
+    def test_never_scans(self):
+        from mahler import atlas
+        self.seed([_atlas_rec("a", "idea", None)])
+        with mock.patch.object(atlas, "scan", side_effect=AssertionError("scan")):
+            out = state.build(self.cfg, self.led)
+        self.assertEqual(out["projects_atlas"]["early"], 1)
