@@ -10,6 +10,7 @@ model left the platform is held rather than spend credits.
 
 import json
 import math
+import time
 import urllib.request
 from datetime import datetime, timedelta
 
@@ -21,6 +22,9 @@ FETCHED_KEY = "cline:free_models_at"
 GOOD_KEY = "cline:free_last_good_model"
 REJECTED_KEY = "cline:free_rejected"
 VALIDATED_KEY = "cline:free_validated"
+UNUSABLE_KEY = "cline:free_unusable_until"
+UNUSABLE_MINUTES = 10      # after a probe round finds nothing, don't probe again for this long
+PROBE_BUDGET_SECONDS = 100  # total probe time per choose(); the tick watchdog is 300s (mahler#1529)
 
 
 def managed(pconf):
@@ -75,6 +79,17 @@ def refresh(cfg, led, pconf, opener=None):
         led.set_kv(FETCHED_KEY, led.now().isoformat())
 
 
+def unusable_until(led):
+    """When a failed probe round stops blocking `cline-free`, or None. While it
+    is set, choose() launches nothing and the router routes elsewhere, so a
+    backlog isn't probed item by item through a 300s tick (mahler#1529)."""
+    try:
+        until = datetime.fromisoformat(led.get_kv(UNUSABLE_KEY) or "")
+    except ValueError:
+        return None
+    return until if until > led.now() else None
+
+
 def candidates(led, pconf):
     """Free models not rejected, from the cached list. With no list ever read,
     the last known good model, then the configured default."""
@@ -95,6 +110,8 @@ def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=Fal
     without billing: True validates it, False rejects it, None (couldn't tell)
     skips it this time. A listed price of 0 proves nothing (mahler#1507)."""
     pconf = cfg["platforms"][name]
+    if unusable_until(led):
+        return None
     if refresh_list:
         refresh(cfg, led, pconf, opener=opener)
     pool = candidates(led, pconf)
@@ -113,10 +130,13 @@ def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=Fal
         cps = r["cost_per_success"]
         return (order[r["status"]], cps if cps is not None else math.inf, 0)
     validated = _json(led, VALIDATED_KEY, {})
+    started = time.monotonic()
     for model in sorted(pool, key=lambda m: (key(m), pool.index(m))):
         # The published list can stay unchanged while a model starts billing.
         # Validate immediately before every launch; this timestamp is evidence,
         # not a trust cache (mahler#1507).
+        if time.monotonic() - started >= PROBE_BUDGET_SECONDS:
+            break
         verdict = probe(pconf, model) if probe else None
         if verdict is False:
             reject(led, model)
@@ -125,7 +145,10 @@ def choose(cfg, led, role="build", size="s", name="cline-free", refresh_list=Fal
         validated[model] = led.now().isoformat()
         led.set_kv(VALIDATED_KEY, json.dumps(validated))
         led.set_kv(GOOD_KEY, model)
+        led.set_kv(UNUSABLE_KEY, None)
         return model
+    if probe:
+        led.set_kv(UNUSABLE_KEY, (led.now() + timedelta(minutes=UNUSABLE_MINUTES)).isoformat())
     return None
 
 
