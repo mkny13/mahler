@@ -37,6 +37,21 @@ def route_role(role):
     return "plan" if role == "design" else role
 
 
+GH_WRITE_ROLES = ("sort", "plan")
+
+
+def gh_writes(pconf):
+    """Whether a platform's runs hold a GitHub write identity (mahler#1547).
+
+    Copilot runs keep only their own `copilot login` (runner.keep_copilot_login),
+    so by default they cannot `gh issue edit`. A platform may declare
+    `gh_writes = true/false` to override the per-kind default."""
+    declared = pconf.get("gh_writes")
+    if declared is not None:
+        return bool(declared)
+    return pconf.get("kind") != "copilot"
+
+
 def cost_class(pconf):
     """Whether a platform spends scarce personal quota (DESIGN D33).
 
@@ -746,6 +761,9 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
         if pconf.get("approval") and name != pin:
             reasons.append(f"{name}: requires owner approval via a platform pin")
             continue
+        if role in GH_WRITE_ROLES and not gh_writes(pconf):
+            reasons.append(f"{name}: its runs have no GitHub write access (cannot edit issues for {role})")
+            continue
         held = project_hold(led, project, name)
         if held:
             reasons.append(f"{name}: on hold for {project} until {held.astimezone():%H:%M} "
@@ -836,6 +854,8 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
             why.append("route")
         if platform_slot(cfg, name) in excluded_slots:
             why.append("excluded")
+        if role in GH_WRITE_ROLES and not gh_writes(pconf):
+            why.append("no_gh_writes")
         if name in busy and "unavailable" not in why:
             why.append("slots_busy")
         is_pin = pin == name
