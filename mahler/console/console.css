@@ -892,3 +892,30 @@ details.explain li { margin-bottom: 5px; }
 .projectov .kv .lbl { min-width: 200px; }
 .projects [hidden] { display: none !important; }
 .ptable .nm { font-weight: 600; color: var(--acc); }
+
+/* Projects Board layout (mahler#1534): same rows, one column per phase. Desktop only. */
+.proj-layouts { margin-bottom: 10px; }
+.proj-layouts button.on { background: var(--surf); color: var(--ink); }
+.projects[data-layout="list"] .pboard-wrap { display: none; }
+.projects[data-layout="board"] .pstrip, .projects[data-layout="board"] .proj-pills,
+.projects[data-layout="board"] .ptable-wrap { display: none; }
+.pboard-wrap { overflow-x: auto; }
+.pboard { display: grid; grid-template-columns: repeat(5, minmax(200px, 1fr)); gap: 10px; min-width: 1040px; }
+.pcol { display: flex; flex-direction: column; gap: 8px; padding: 8px; border-radius: 6px; min-width: 0; }
+.pcol.early { background: var(--surf); }
+.pcol-h { display: flex; align-items: baseline; gap: 6px; padding-bottom: 6px; border-bottom: 2px solid var(--line); }
+.pcol-h .nm { font-weight: 600; font-size: 13px; }
+.pcol-h .tag { margin-left: auto; font-size: 9.5px; color: var(--idea); text-transform: uppercase; }
+.pcol-idea .pcol-h { border-bottom-color: var(--idea); }
+.pcol-prototype .pcol-h { border-bottom-color: var(--warn); }
+.pcol-onboarded .pcol-h, .pcol-building .pcol-h { border-bottom-color: var(--acc); }
+.pcol-steady .pcol-h { border-bottom-color: var(--good); }
+.pcol-b { display: flex; flex-direction: column; gap: 8px; }
+.pcard { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; cursor: pointer;
+         border: 1px solid var(--line); border-radius: 6px; padding: 10px; background: var(--bg); }
+.pcard:hover { border-color: var(--acc); }
+.pcard .l1 { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pcard .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcard .l2 { font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+             overflow: hidden; }
+.pcard .l3 { font-size: 11px; }

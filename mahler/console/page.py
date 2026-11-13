@@ -1239,12 +1239,59 @@ def _d_projects(s):
             f'<td class="num mono">{_proj_num(r["runs7"])}</td>'
             f'<td class="mono t-mut">{e(r["last_touched_txt"])}</td>'
             f'<td class="pdesc t-mut">{e(r["desc"])}</td></tr>')
-    return (f'<section class="view view-projects"><div class="projects" data-projects>'
+    return (f'<section class="view view-projects"><div class="projects" data-projects data-layout="list">'
+            f'{_proj_layout_toggle()}{_proj_board(a)}'
             f'{_proj_controls(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
             f'<th>{sort_btn("name", "Project")}</th><th>Phase</th><th>{sort_btn("open", "Open")}</th>'
             f'<th>Done</th><th>Runs/wk</th><th>{sort_btn("touched", "Last touched")}</th>'
             f'<th>What it is</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
             f'</div></section>')
+
+
+PROJECT_LAYOUTS = (("list", "List"), ("board", "Board"))
+
+
+def _proj_layout_toggle():
+    """List | Board switch (mahler#1534). Desktop only; the phone keeps the list."""
+    btns = "".join(f'<button data-proj-layout="{k}">{label}</button>'
+                   for k, label in PROJECT_LAYOUTS)
+    return f'<div class="viewtog proj-layouts" role="group" aria-label="Layout">{btns}</div>'
+
+
+def _proj_card_meta(r):
+    if r["managed"]:
+        parts = [f'{_proj_num(r["open"])} open', f'{_proj_num(r["done"])} done',
+                 f'{_proj_num(r["runs7"])} runs/wk']
+    else:
+        commits = r.get("commits")
+        parts = ["no git" if commits is None else f"{commits} commits",
+                 f'{r.get("sessions") or 0} Claude sessions']
+    return " · ".join(parts + [r["last_touched_txt"]])
+
+
+def _proj_board(a):
+    """The Board layout (mahler#1534): one column per phase over the same rows as the
+    list, early columns shaded. Cards open the same detail overlay as list rows."""
+    cols = []
+    for k, label in PHASE_LABELS:
+        early = k in ("idea", "prototype", "onboarded")
+        cards = []
+        for r in a["rows"]:
+            if r["phase"] != k:
+                continue
+            work = ' <span class="worktag mono">work</span>' if r["work"] else ""
+            cards.append(
+                f'<button class="pcard" data-open-project="{e(r["key"])}">'
+                f'<span class="l1">{_proj_dot(r)}<span class="nm">{e(r["name"])}</span>{work}</span>'
+                f'<span class="l2 t-mut">{e(r["desc"])}</span>'
+                f'<span class="l3 mono t-mut">{e(_proj_card_meta(r))}</span></button>')
+        tag = '<span class="tag mono">early</span>' if early else ""
+        cols.append(
+            f'<div class="pcol pcol-{k}{" early" if early else ""}" data-board-phase="{k}">'
+            f'<div class="pcol-h"><span class="nm">{label}</span>'
+            f'<span class="n mono t-mut">{a["counts"][k]}</span>{tag}</div>'
+            f'<div class="pcol-b">{"".join(cards)}</div></div>')
+    return f'<div class="pboard-wrap"><div class="pboard">{"".join(cols)}</div></div>'
 
 
 def _p_projects(s):

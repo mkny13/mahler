@@ -572,6 +572,25 @@ Backlog on desktop; the rail count is the number of early projects.
 - **Empty state:** "No scan yet. It runs hourly, or run `mahler atlas scan`." (no cache, or a
   corrupt one).
 
+#### Board layout (mahler#1534)
+
+A **List | Board** switch at the top of the desktop Projects view shows the same rows a second
+way. The choice lives in localStorage (`mahler.projects.layout`, default List). The phone keeps
+the list and has no switch.
+
+- **Columns:** five equal CSS-grid columns in phase order (Idea, Prototype, Onboarded, Building,
+  Steady). Each is headed by the phase name, its count and a 2px rule in the phase colour (the
+  same colours as the phase chips). The first three columns get a `--surf` background and an
+  "early" label. Within a column, cards keep the list's default order (most recently touched first).
+- **Cards:** 1px `--line` border, 6px radius, 10px padding, no shadow. Line 1 is the freshness
+  dot, the name and the `work` tag. Line 2 is the description, clamped to two lines in `--mut`.
+  Line 3 is 11px mono `--mut`: managed projects show "N open · N done · N runs/wk · last touched",
+  unmanaged ones "N commits (or no git) · N Claude sessions · last touched".
+- **Behaviour:** clicking a card opens the same detail overlay as a list row. The board scrolls
+  sideways inside its own `overflow-x: auto` wrapper, never the page. In Board mode the phase strip
+  and filter pills are hidden, because the columns already split and count by phase; the board
+  always shows every project.
+
 ### Shipment contract (owner, 2026-10-06)
 
 The historical manual queue accumulated 277 pending changes versus 5 verdicts,
