@@ -3900,6 +3900,12 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertIn("not in Mahler", board)
         self.assertNotIn("data-phase=", board)  # cards stay out of the list's filter
 
+    def test_incubator_mode_suppresses_board_layout(self):
+        self.assertIn('.projects[data-mode="incubator"] .pboard { display: none; }', page.CSS)
+        self.assertIn('.projects[data-mode="list"][data-layout="board"] .pboard { display: grid;',
+                      page.CSS)
+        self.assertNotIn('.projects[data-layout="board"] .pboard { display: grid;', page.CSS)
+
     def test_board_not_on_phone(self):
         self.assertNotIn("pboard", page.app(self.s, "phone", tab="browse"))
 

@@ -921,7 +921,8 @@ details.explain li { margin-bottom: 5px; }
 @media (min-width: 760px) {
   .proj-layout { display: flex; }
   .projects[data-layout="board"] .ptable-wrap { display: none; }
-  .projects[data-layout="board"] .pboard { display: grid; grid-template-columns: repeat(5, minmax(220px, 1fr));
+  .projects[data-mode="list"][data-layout="board"] .pboard { display: grid;
+    grid-template-columns: repeat(5, minmax(220px, 1fr));
     gap: 10px; overflow-x: auto; align-items: start; }
 }
 .pcol { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
