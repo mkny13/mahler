@@ -1019,7 +1019,8 @@ class AtlasConfigTests(unittest.TestCase):
     def test_defaults(self):
         cfg = config.load(Path(tempfile.gettempdir()) / "mahler-no-such.toml")
         self.assertEqual(config.atlas_policy(cfg), {
-            "scan_roots": ["~/scripts", "/Volumes/ExtSSD160/scripts"], "ignore": [], "phase": {}})
+            "scan_roots": ["~/scripts", "/Volumes/ExtSSD160/scripts"], "ignore": [], "phase": {},
+        "intake_project": ""})
 
     def test_validation(self):
         for bad in ({"scan_roots": "x"}, {"ignore": [1]}, {"phase": {"a": "weird"}},
