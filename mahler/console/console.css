@@ -890,6 +890,11 @@ details.explain li { margin-bottom: 5px; }
 .projects[data-mode="incubator"] .pstrip, .projects[data-mode="incubator"] .proj-pills,
 .projects[data-mode="incubator"] .ptable-wrap, .projects[data-mode="incubator"] .plist,
 .projects[data-mode="incubator"] .proj-layout, .projects[data-mode="incubator"] .pboard { display: none; }
+.pstates { display: none; }
+.projects[data-filter="parked"] .pstates { display: block; }
+.projects[data-filter="parked"] .pinc, .projects[data-filter="parked"] .ptable-wrap,
+.projects[data-filter="parked"] .plist, .projects[data-filter="parked"] .pboard,
+.projects[data-filter="parked"] .pstrip { display: none; }
 .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 10px; }
 .pcard { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line);
          border-radius: 6px; background: var(--bg); }
@@ -900,9 +905,9 @@ details.explain li { margin-bottom: 5px; }
 .rung { font-size: 10.5px; padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--mut); }
 .rung.cur { background: var(--accq); border-color: var(--acc); color: var(--acc); font-weight: 600; }
 .nstep { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
-.pactions { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
-.proj-act { align-self: flex-start; border: 1px dashed var(--line); border-radius: 4px; padding: 3px 8px;
-            color: var(--mut); opacity: .6; cursor: not-allowed; }
+.pactions { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; }
+.proj-act { border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; min-height: 32px; }
+.proj-act:disabled { opacity: .6; cursor: not-allowed; }
 .proj-empty { padding: 12px 0; }
 .projectov { background: rgba(10, 12, 14, .45); align-items: center; justify-content: center; }
 .projectov .box { background: var(--bg); border: 1px solid var(--line); max-width: 760px; width: 100%;

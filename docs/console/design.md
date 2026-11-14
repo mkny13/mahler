@@ -575,9 +575,22 @@ Backlog on desktop; the rail count is the number of early projects.
   onboarded records as cards (same on desktop and phone), ordered by phase, then oldest
   `last_touched` first (never touched sorts first). A card has the name with freshness dot,
   phase chip, the ladder idea → prototype → onboarded → first ship with the current rung
-  marked, description, last-touched age, the next step, and a disabled action area that says
-  actions are not available yet. Next steps are fixed copy in `state.PROJECT_NEXT_STEPS`, no
+  marked, description, last-touched age, the next step, and the Park / Archive actions (below). Next steps are fixed copy in `state.PROJECT_NEXT_STEPS`, no
   model: idea → `file_issue`, prototype → `onboard`, onboarded → `file_first_issue`.
+- **Park, Archive, Restore (mahler#1537):** owner-only workflow state, kept in one versioned
+  ledger KV document (`atlas:states`, `{"v": 1, "states": {key: {state, at}}}`) keyed by the
+  stable Atlas record key. It never writes `[atlas]`, folders, git or GitHub, and it is backed
+  up with the ledger. `POST /api/atlas_state {key, state: park|archive|restore}` accepts only a
+  key in the current cached scan, queues the change for 60 seconds, and replaces any older
+  pending change for that key. The card shows "Parking… / Archiving… / Restoring…" with Undo
+  (`atlas_state_undo {id}`), which works only while the action is still pending. The tick
+  rechecks the key against the latest cache, applies it, and emits a `project_state` event; a
+  repeat is skipped as "already …", a vanished key is skipped, a failed write is a failed
+  outbox action. Visibility: **parked** records leave the Incubator but stay in the List and
+  board and in phase counts; **archived** records leave the List, board, Incubator, counts and
+  the nav badge. The `Parked & archived` filter shows both as cards with a Restore button.
+  Restore removes the override, so the record returns to wherever its Atlas phase puts it.
+  Archive asks for confirmation (`data-confirm`). Same controls on desktop and phone.
 - **Empty state:** "No scan yet. It runs hourly, or run `mahler atlas scan`." (no cache, or a
   corrupt one).
 

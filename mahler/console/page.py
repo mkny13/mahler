@@ -1184,12 +1184,13 @@ def _d_capture(s):
 PHASE_LABELS = (("idea", "Idea"), ("prototype", "Prototype"), ("onboarded", "Onboarded"),
                 ("building", "Building"), ("steady", "Steady"))
 PROJECT_FILTERS = (("early", "Early"), ("unmanaged", "Not in Mahler"),
-                   ("active", "Building + steady"), ("work", "Work"), ("all", "All"))
+                   ("active", "Building + steady"), ("work", "Work"), ("all", "All"),
+                   ("parked", "Parked & archived"))
 
 
 def _proj_attrs(r):
     return (f'data-phase="{e(r["phase"])}" data-managed="{str(bool(r["managed"])).lower()}" '
-            f'data-work="{str(bool(r["work"])).lower()}" data-touched="{e(r["last_touched"] or "")}" '
+            f'data-work="{str(bool(r["work"])).lower()}" data-owner="{e(r["owner_state"])}" data-touched="{e(r["last_touched"] or "")}" '
             f'data-open="{-1 if r["open"] is None else r["open"]}" data-name="{e(r["name"].casefold())}"')
 
 
@@ -1219,6 +1220,42 @@ INCUBATOR_LADDER = (("idea", "Idea"), ("prototype", "Prototype"), ("onboarded", 
                     ("ship", "First ship"))
 
 
+PENDING_COPY = {"park": "Parking", "archive": "Archiving", "restore": "Restoring"}
+HELD_COPY = {"parked": "Parked: out of the Incubator, still in the project list.",
+             "archived": "Archived: hidden from the list and Incubator. Restore brings it back."}
+ARCHIVE_CONFIRM = ("Archive this project? It leaves the list and the Incubator. Nothing on disk "
+                   "changes, and you can restore it from Parked & archived.")
+
+
+def _proj_actions(r):
+    """Park/Archive on active cards, Restore on held ones; a queued change
+    shows its pending result with Undo until the tick applies it."""
+    pend = r.get("pending_state")
+    if pend:
+        return (f'<div class="pactions" data-pending-state="{e(pend["verb"])}">'
+                f'<span class="t-mut">{PENDING_COPY[pend["verb"]]}… applies in about a minute.</span>'
+                f'<button class="link" data-act="atlas_state_undo" data-id="{pend["id"]}">Undo</button></div>')
+    key = f'data-key="{e(r["key"])}"'
+    if r["owner_state"]:
+        return (f'<div class="pactions"><span class="t-mut">{HELD_COPY[r["owner_state"]]}</span>'
+                f'<button class="proj-act" data-act="atlas_state" {key} data-state="restore">Restore</button></div>')
+    return (f'<div class="pactions"><button class="proj-act" data-act="atlas_state" {key} data-state="park">Park</button>'
+            f'<button class="proj-act" data-act="atlas_state" {key} data-state="archive" '
+            f'data-confirm="{e(ARCHIVE_CONFIRM)}">Archive</button></div>')
+
+
+def _proj_held(a):
+    """Parked and archived records, shown only under the `Parked & archived` filter."""
+    if not a["held"]:
+        return '<div class="pstates"><div class="t-mut proj-empty">Nothing parked or archived.</div></div>'
+    cards = "".join(
+        f'<article class="pcard" data-held-key="{e(r["key"])}" data-owner="{e(r["owner_state"])}">'
+        f'<div class="l1">{_proj_dot(r)}<span class="nm">{e(r["name"])}</span>{_proj_chip(r)}'
+        f'<span class="phchip">{e(r["owner_state"])}</span></div>'
+        f'<p class="pdesc t-mut">{e(r["desc"])}</p>{_proj_actions(r)}</article>' for r in a["held"])
+    return f'<div class="pstates"><div class="pcards">{cards}</div></div>'
+
+
 def _proj_cards(a):
     if not a["incubator"]:
         return '<div class="pinc"><div class="t-mut proj-empty">No early projects.</div></div>'
@@ -1237,9 +1274,7 @@ def _proj_cards(a):
             f'<div class="l2 mono t-mut">Last touched {e(r["last_touched_txt"])}</div>'
             f'<div class="nstep" data-next-step="{e(step["kind"])}"><span class="lbl">Next step</span>'
             f'<span>{e(step["text"])}</span></div>'
-            f'<div class="pactions"><button class="proj-act" disabled '
-            f'title="Actions arrive in a later release">Actions unavailable</button>'
-            f'<span class="t-mut">Actions are not available yet.</span></div></article>')
+            f'{_proj_actions(r)}</article>')
     return f'<div class="pinc"><div class="pcards">{"".join(cards)}</div></div>'
 
 
@@ -1261,7 +1296,7 @@ def _proj_board(a):
         early = k in ("idea", "prototype", "onboarded")
         cards = []
         for r in a["rows"]:
-            if r["phase"] != k:
+            if r["phase"] != k or r["owner_state"] == "archived":
                 continue
             meta = (f'{_proj_num(r["open"])} open · {_proj_num(r["done"])} done · '
                     f'{_proj_num(r["runs7"])} runs' if r["managed"]
@@ -1298,7 +1333,7 @@ def _d_projects(s):
     toggle = ('<div class="proj-layout"><button data-proj-layout="list">List</button>'
               '<button data-proj-layout="board">Board</button></div>')
     return (f'<section class="view view-projects"><div class="projects" data-projects data-mode="list" data-layout="list">'
-            f'{_proj_modes()}{toggle}{_proj_controls(a)}{_proj_cards(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
+            f'{_proj_modes()}{toggle}{_proj_controls(a)}{_proj_cards(a)}{_proj_held(a)}<div class="ptable-wrap"><table class="ptable"><thead><tr>'
             f'<th>{sort_btn("name", "Project")}</th><th>Phase</th><th>{sort_btn("open", "Open")}</th>'
             f'<th>Done</th><th>Runs/wk</th><th>{sort_btn("touched", "Last touched")}</th>'
             f'<th>What it is</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
@@ -1320,7 +1355,7 @@ def _p_projects(s):
             f'<span class="l2 mono t-mut">{meta}{e(r["last_touched_txt"])}</span>'
             f'<span class="l2 t-mut">{e(r["desc"])}</span></button>')
     return (f'<div class="psect projects" data-projects data-mode="list" style="gap:10px"><span class="lbl">'
-            f'Projects · {a["early"]} early</span>{_proj_modes()}{_proj_controls(a)}{_proj_cards(a)}'
+            f'Projects · {a["early"]} early</span>{_proj_modes()}{_proj_controls(a)}{_proj_cards(a)}{_proj_held(a)}'
             f'<div class="plist">{"".join(rows)}</div></div>')
 
 
