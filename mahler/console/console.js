@@ -432,9 +432,13 @@
         lays[l].classList.toggle("on", lays[l].getAttribute("data-proj-layout") === layout);
       }
       var rows = Array.prototype.slice.call(root_.querySelectorAll("[data-phase][data-name]"));
-      if (sort !== "phase" && rows.length) {
+      rows.forEach(function (r, n) {
+        if (!r.hasAttribute("data-order")) { r.setAttribute("data-order", String(n)); }   // server (phase) order
+      });
+      if (rows.length) {
         var key = function (r) {
-          return sort === "name" ? r.getAttribute("data-name") :
+          return sort === "phase" ? Number(r.getAttribute("data-order")) :
+            sort === "name" ? r.getAttribute("data-name") :
             sort === "open" ? Number(r.getAttribute("data-open")) :
             (r.getAttribute("data-touched") || "");   // ISO stamps sort as text; empty (never) sorts first
         };
