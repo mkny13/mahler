@@ -1100,13 +1100,18 @@ def _backlog(cfg, led, projects):
 
 PROJECT_PHASES = ("idea", "prototype", "onboarded", "building", "steady")
 PROJECTS_EARLY = PROJECT_PHASES[:3]
+PROJECT_NEXT_STEPS = {
+    "idea": ("file_issue", "File the first issue to turn the idea into a plan."),
+    "prototype": ("onboard", "Onboard it to Mahler so agents can work its backlog."),
+    "onboarded": ("file_first_issue", "File its first issue so Mahler can ship something."),
+}
 PROJECTS_EMPTY = "No scan yet. It runs hourly, or run `mahler atlas scan`."
 
 
 def _projects(cfg, led, now):
     """The Projects view (mahler#1533): the cached atlas scan, early phases first.
     Reads the cache only; a missing or corrupt cache is the empty state."""
-    empty = {"rows": [], "counts": {p: 0 for p in PROJECT_PHASES}, "early": 0,
+    empty = {"rows": [], "incubator": [], "counts": {p: 0 for p in PROJECT_PHASES}, "early": 0,
              "scanned_at": None, "empty": True, "message": PROJECTS_EMPTY}
     try:
         hit = atlas._cached(led)
@@ -1135,7 +1140,15 @@ def _projects(cfg, led, now):
             if row.get("phase") in counts:
                 counts[row["phase"]] += 1
             rows.append(row)
-        return {"rows": rows, "counts": counts,
+        incubator = []
+        for row in rows:
+            if row.get("phase") not in PROJECT_NEXT_STEPS:
+                continue
+            kind, copy = PROJECT_NEXT_STEPS[row["phase"]]
+            incubator.append(dict(row, next_step={"kind": kind, "text": copy}))
+        incubator.sort(key=lambda r: (PROJECTS_EARLY.index(r["phase"]),
+                                      parse(r["last_touched"]).timestamp() if r.get("last_touched") else 0))
+        return {"rows": rows, "incubator": incubator, "counts": counts,
                 "early": sum(counts[p] for p in PROJECTS_EARLY),
                 "scanned_at": scanned_at, "empty": False, "message": ""}
     except Exception:

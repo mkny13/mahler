@@ -569,6 +569,15 @@ Backlog on desktop; the rail count is the number of early projects.
   seen, last touched, Claude Code sessions "last ~30 days", and for managed projects the
   open/done/runs counts and open items). It is requested as `project_detail=<key>`, because
   `project` already means the scope.
+- **Incubator mode (mahler#1536):** a List / Incubator switch sits above the controls. List is
+  the default; the choice is saved in localStorage (`mahler.projects.mode`, guarded reads and
+  writes, anything but `incubator` means List). Incubator shows only idea, prototype and
+  onboarded records as cards (same on desktop and phone), ordered by phase, then oldest
+  `last_touched` first (never touched sorts first). A card has the name with freshness dot,
+  phase chip, the ladder idea → prototype → onboarded → first ship with the current rung
+  marked, description, last-touched age, the next step, and a disabled action area that says
+  actions are not available yet. Next steps are fixed copy in `state.PROJECT_NEXT_STEPS`, no
+  model: idea → `file_issue`, prototype → `onboard`, onboarded → `file_first_issue`.
 - **Empty state:** "No scan yet. It runs hourly, or run `mahler atlas scan`." (no cache, or a
   corrupt one).
 

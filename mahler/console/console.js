@@ -423,10 +423,17 @@
       f = "early";
     }
     var sort = projGet("sort", "phase");
+    var mode = projGet("mode", "list");
+    if (mode !== "list" && mode !== "incubator") { mode = "list"; }
     var layout = projGet("layout", "list") === "board" ? "board" : "list";
     for (var i = 0; i < roots.length; i++) {
       var root_ = roots[i];
+      root_.setAttribute("data-mode", mode);
       root_.setAttribute("data-layout", layout);
+      var modeBtns = root_.querySelectorAll("[data-proj-mode]");
+      for (var m = 0; m < modeBtns.length; m++) {
+        modeBtns[m].classList.toggle("on", modeBtns[m].getAttribute("data-proj-mode") === mode);
+      }
       var lays = root_.querySelectorAll("[data-proj-layout]");
       for (var l = 0; l < lays.length; l++) {
         lays[l].classList.toggle("on", lays[l].getAttribute("data-proj-layout") === layout);
@@ -958,6 +965,7 @@
       return;
     }
     if (el.hasAttribute("data-close-bug")) { openBug = null; apply(); return; }
+    if (el.hasAttribute("data-proj-mode")) { projSet("mode", el.getAttribute("data-proj-mode")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-layout")) { projSet("layout", el.getAttribute("data-proj-layout")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-filter")) { projSet("filter", el.getAttribute("data-proj-filter")); applyProjects(); return; }
     if (el.hasAttribute("data-proj-phase")) { projSet("filter", "phase:" + el.getAttribute("data-proj-phase")); applyProjects(); return; }
