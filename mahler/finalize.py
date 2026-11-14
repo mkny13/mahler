@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from datetime import timedelta
 
 from . import ci_blockers, cline_free, config, desktop, failures, no_change, platforms, prompt, review, router, runner, waits
@@ -79,6 +80,7 @@ class Ending:
         self.project, self.number = run["project"], run["number"]
         self.saved, self.keep_worktree, self.closed = None, False, False
         self.no_work_base = None
+        self.push_failed = False    # snapshot push failed: the work is only in the kept worktree
         self.stale = False          # lease revoked or replaced: leave the item alone
         self.after_commit = []
         self.verify_green = False
@@ -817,7 +819,10 @@ def _ended_done(e):
         no_change.begin(e)
         return True
     if not (e.saved or e.item["branch"]):
+        if e.push_failed:
+            return _push_failed_done(e)
         return _retry(e)                        # DONE, but nothing to ship
+    e.led.set_kv(f"push_failures:{e.project}#{e.number}", None)
     e.set_state("verifying", "build done — the conductor ships it",
                 summary=e.rest or e.item["title"])
     e.ping(f"Build finished — {e.project} #{e.number}",
@@ -998,6 +1003,35 @@ def _record_run_usage(ctx, run, kind, log):
                 led.record_usage(peer, w, 100.0, until)
 
 
+SNAPSHOT_TRIES = 3              # a transient push failure should not cost the finished work
+SNAPSHOT_RETRY_DELAY = 3        # seconds between snapshot push tries
+MAX_PUSH_FAILURES = 3           # consecutive DONE runs whose push failed, before asking the owner
+
+
+def _push_failed_done(e):
+    """A DONE run whose snapshot push failed is not a failed attempt: the work
+    exists, only the conductor's push did not land. Requeue without spending an
+    attempt (bounded), and ping; park for the owner if it keeps failing."""
+    key = f"push_failures:{e.project}#{e.number}"
+    n = int(e.led.get_kv(key) or 0) + 1
+    e.led.set_kv(key, str(n))
+    where = e.run["worktree"]
+    if n >= MAX_PUSH_FAILURES:
+        e.led.set_kv(key, None)
+        question = (f"Run {e.run['id']} finished but its work could not be pushed {n} times; "
+                    f"the commits are in the kept worktree {where}")
+        e.set_state("needs_you", question, question=question, options=json.dumps([]))
+        e.ping(f"Push keeps failing — {e.project} #{e.number}", question,
+               priority="high", tags="warning", console=True)
+        return True
+    e.set_state("ready", f"DONE but the snapshot push failed ({n}/{MAX_PUSH_FAILURES}) — "
+                         f"retrying, no attempt spent")
+    e.ping(f"Push failed — {e.project} #{e.number}",
+           f"{e.run['platform']} ended DONE but the push failed; work kept at {where}",
+           priority="default", tags="warning")
+    return True
+
+
 def _save_work(e):
     """Whatever the run left becomes a pushed ref and a handoff comment (D9) —
     unless its own merge already closed the issue, in which case it is done.
@@ -1016,13 +1050,18 @@ def _save_work(e):
             return
     if not e.run["worktree"]:
         return
-    try:
-        e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
-                                  e.pol.get("base", "main"),
-                                  env=config.run_env(ctx.cfg, config.gh_account_of(e.pol)))
-    except runner.GitError as err:
-        e.keep_worktree = True
-        ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
+    for attempt in range(SNAPSHOT_TRIES):
+        try:
+            e.saved = runner.snapshot(e.pol["path"], e.run["worktree"], e.run["id"], e.number,
+                                      e.pol.get("base", "main"),
+                                      env=config.run_env(ctx.cfg, config.gh_account_of(e.pol)))
+            e.keep_worktree = e.push_failed = False
+            break
+        except runner.GitError as err:
+            e.keep_worktree = e.push_failed = True
+            ctx.say(f"{e.project}#{e.number}: snapshot failed, keeping worktree — {err}")
+            if attempt + 1 < SNAPSHOT_TRIES:
+                time.sleep(SNAPSHOT_RETRY_DELAY)
     if (not e.saved and not e.keep_worktree and not e.stale
             and e.run["role"] == "build" and e.verb == "DONE"
             and e.reason in (None, "quota")):
