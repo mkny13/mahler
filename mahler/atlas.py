@@ -281,6 +281,44 @@ def load(led):
     return hit[1] if hit else []
 
 
+# ---------- owner workflow state (mahler#1537) ----------
+
+STATE_KEY = "atlas:states"
+OWNER_STATES = ("parked", "archived")
+
+
+def states(led):
+    """{record key: {"state": parked|archived, "at": iso}} from the versioned
+    ledger KV document. Anything malformed reads as no overrides."""
+    try:
+        doc = json.loads(led.get_kv(STATE_KEY) or "")
+        raw = doc["states"] if doc.get("v") == 1 else {}
+        return {k: {"state": v["state"], "at": v.get("at")} for k, v in raw.items()
+                if isinstance(k, str) and isinstance(v, dict) and v.get("state") in OWNER_STATES}
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return {}
+
+
+def set_state(led, key, state, at):
+    """Set `key` to parked/archived, or clear it with None. Returns whether
+    anything changed. Writes only the ledger KV document."""
+    if state is not None and state not in OWNER_STATES:
+        raise ValueError(f"unknown owner state: {state!r}")
+    cur = states(led)
+    if (cur.get(key) or {}).get("state") == state:
+        return False
+    if state is None:
+        cur.pop(key)
+    else:
+        cur[key] = {"state": state, "at": at}
+    led.set_kv(STATE_KEY, json.dumps({"v": 1, "states": cur}, sort_keys=True))
+    return True
+
+
+def has_key(led, key):
+    return any(p.get("key") == key for p in load(led))
+
+
 # ---------- scan ----------
 
 def _new(key, name, path, **kw):

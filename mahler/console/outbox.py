@@ -4,6 +4,7 @@ import json
 
 from .. import config, redact, watchdog
 from ..gh import parse_command
+from ..ledger import iso
 
 
 def capture_title(text, limit=80):
@@ -187,7 +188,23 @@ def cut_release(ctx, row, payload):
     return "done", f"{status} {url}".strip()
 
 
-HANDLERS = {'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
+def atlas_state(ctx, row, payload):
+    """Park, archive or restore one Atlas record. Writes only the ledger KV
+    document: never a folder, git or GitHub (mahler#1537)."""
+    from .. import atlas
+    key, verb = payload["key"], payload["state"]
+    target = {"park": "parked", "archive": "archived", "restore": None}[verb]
+    if not atlas.has_key(ctx.led, key):
+        return "skipped", "the project is no longer in the latest scan"
+    now = iso(ctx.led.now())
+    if not atlas.set_state(ctx.led, key, target, now):
+        return "skipped", f"already {target or 'active'}"
+    ctx.led.event("project_state", None, None, {"key": key, "state": target or "active",
+                                                "via": "console"})
+    return "done", target or "active"
+
+
+HANDLERS = {'atlas_state': atlas_state, 'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
             'uat_fail': uat_fail, 'cut_release': cut_release}
 
 

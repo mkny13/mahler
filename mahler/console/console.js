@@ -398,7 +398,7 @@
   }
 
   // Projects view (mahler#1533): filter and sort run client-side over server-rendered rows.
-  var PROJ_FILTERS = ["early", "unmanaged", "active", "work", "all"];
+  var PROJ_FILTERS = ["early", "unmanaged", "active", "work", "all", "parked"];
   var PROJ_PHASES = ["idea", "prototype", "onboarded", "building", "steady"];
   function projGet(key, dflt) {
     try { return localStorage.getItem("mahler.projects." + key) || dflt; } catch (err) { return dflt; }
@@ -408,6 +408,9 @@
   }
   function projMatch(row, f) {
     var ph = row.getAttribute("data-phase");
+    var owner = row.getAttribute("data-owner") || "";
+    if (f === "parked") { return owner !== ""; }
+    if (owner === "archived") { return false; }
     if (f.indexOf("phase:") === 0) { return ph === f.slice(6); }
     if (f === "early") { return ph === "idea" || ph === "prototype" || ph === "onboarded"; }
     if (f === "unmanaged") { return row.getAttribute("data-managed") === "false"; }
@@ -430,6 +433,7 @@
       var root_ = roots[i];
       root_.setAttribute("data-mode", mode);
       root_.setAttribute("data-layout", layout);
+      root_.setAttribute("data-filter", f);
       var modeBtns = root_.querySelectorAll("[data-proj-mode]");
       for (var m = 0; m < modeBtns.length; m++) {
         modeBtns[m].classList.toggle("on", modeBtns[m].getAttribute("data-proj-mode") === mode);
@@ -803,6 +807,10 @@
         notes: notesPre ? notesPre.textContent : null
       };
     }
+    if (act === "atlas_state") {
+      return { key: el.getAttribute("data-key"), state: el.getAttribute("data-state") };
+    }
+    if (act === "atlas_state_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
       var input = el.parentElement.querySelector("input");
@@ -1018,6 +1026,7 @@
     if (el.hasAttribute("data-act")) {
       var act = el.getAttribute("data-act");
       var verdict = act === "uat_fail";
+      if (el.hasAttribute("data-confirm") && !window.confirm(el.getAttribute("data-confirm"))) { return; }
       var payload = payloadFor(el, act);
       if (act === "priority_boost_start" && el.hasAttribute("data-active-project")) {
         payload.active_project = el.getAttribute("data-active-project");

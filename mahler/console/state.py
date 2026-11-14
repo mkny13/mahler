@@ -1111,7 +1111,7 @@ PROJECTS_EMPTY = "No scan yet. It runs hourly, or run `mahler atlas scan`."
 def _projects(cfg, led, now):
     """The Projects view (mahler#1533): the cached atlas scan, early phases first.
     Reads the cache only; a missing or corrupt cache is the empty state."""
-    empty = {"rows": [], "incubator": [], "counts": {p: 0 for p in PROJECT_PHASES}, "early": 0,
+    empty = {"rows": [], "incubator": [], "held": [], "counts": {p: 0 for p in PROJECT_PHASES}, "early": 0,
              "scanned_at": None, "empty": True, "message": PROJECTS_EMPTY}
     try:
         hit = atlas._cached(led)
@@ -1124,6 +1124,12 @@ def _projects(cfg, led, now):
                                              if r.get("last_touched") else 0)))
         enabled = {p["name"] for p in config.enabled_projects(cfg)}
         rows, counts = [], {p: 0 for p in PROJECT_PHASES}
+        owner = atlas.states(led)
+        queued = {}
+        for a in led.pending_actions("atlas_state"):
+            pl = json.loads(a["payload"])
+            queued[pl["key"]] = {"id": a["id"], "verb": pl["state"]}
+        early = 0
         for r in recs:
             row = dict(r)
             touched = parse(r["last_touched"]) if r.get("last_touched") else None
@@ -1137,19 +1143,24 @@ def _projects(cfg, led, now):
                                 if i["ref"]]
             row["repo"] = (config.project_policy(cfg, r["project"]).get("repo")
                            if r.get("managed") and r.get("project") else None)
-            if row.get("phase") in counts:
+            row["owner_state"] = (owner.get(r.get("key")) or {}).get("state") or ""
+            row["pending_state"] = queued.get(r.get("key"))
+            if row["owner_state"] != "archived" and row.get("phase") in counts:
                 counts[row["phase"]] += 1
+                if row["owner_state"] != "parked" and row["phase"] in PROJECTS_EARLY:
+                    early += 1
             rows.append(row)
         incubator = []
         for row in rows:
-            if row.get("phase") not in PROJECT_NEXT_STEPS:
+            if row.get("phase") not in PROJECT_NEXT_STEPS or row["owner_state"]:
                 continue
             kind, copy = PROJECT_NEXT_STEPS[row["phase"]]
             incubator.append(dict(row, next_step={"kind": kind, "text": copy}))
         incubator.sort(key=lambda r: (PROJECTS_EARLY.index(r["phase"]),
                                       parse(r["last_touched"]).timestamp() if r.get("last_touched") else 0))
         return {"rows": rows, "incubator": incubator, "counts": counts,
-                "early": sum(counts[p] for p in PROJECTS_EARLY),
+                "early": early,
+                "held": [r for r in rows if r["owner_state"]],
                 "scanned_at": scanned_at, "empty": False, "message": ""}
     except Exception:
         return empty
