@@ -141,3 +141,8 @@ class BrowserSelectionTests(unittest.TestCase):
         result = subprocess.run(["node", "tests/console_selection_test.js"],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class RailActiveViewCSSTests(unittest.TestCase):
+    def test_projects_rail_entry_has_active_treatment(self):
+        self.assertIn(':root[data-view="projects"] .rail-i[data-go="projects"]', page.CSS)
