@@ -1318,7 +1318,7 @@ _UNSUPPORTED_LOCKFILE = re.compile(r"unsupported dependency lockfile change: (\S
 
 def vetting_reason(pr, detail, kind="gate"):
     """The persisted wait reason: the cause plus one concrete action (mahler#1561)."""
-    if kind == "evidence":
+    if kind == "evidence" and not detail:
         return (f"PR #{pr}: review blocked because conductor dependency-vetting gate evidence "
                 "was missing or disputed. Check gate evidence for this head, then resume shipping. "
                 "Mahler regenerates the evidence and requests a fresh review automatically.")

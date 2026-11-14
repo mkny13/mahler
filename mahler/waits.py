@@ -258,6 +258,14 @@ def _wake_dependency_vetting(ctx, project, item, record):
                           question=None, options="[]")
             record["reason"] = reason
             record["bound_at"] = led.item(project, n)["state_changed_at"]
+            if detail:
+                key = f"dependency-vetting-cause:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+                if not led.get_kv(key):
+                    try:
+                        gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
+                    except Exception:  # noqa: BLE001 — the wait record is what matters
+                        pass
+                    led.set_kv(key, "commented")
         return False, f"gate still failing: {detail}"
     if kind == "evidence":
         led.set_kv(f"review:{project}#{n}", None)

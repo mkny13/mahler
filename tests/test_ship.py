@@ -3795,6 +3795,43 @@ class ShipTests(unittest.TestCase):
             self.ship()
         self.assertEqual(self.item()["state"], "verifying")
 
+    def test_evidence_wait_failing_on_lockfile_keeps_cause_and_escalates_once(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        text = ("lacks required evidence from the conductor's dependency-vetting gate. "
+                "The conductor has not posted gate evidence")
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "start"):
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), text)
+        self.assertEqual(self.wait_record()["wake"]["kind"], "evidence")
+        base = len(self.gh.comments)
+        bad = ({}, {"pnpm-lock.yaml": "lockfileVersion: 9\n"})
+        pings = 0
+        with mock.patch.object(self.gh, "dependency_files", return_value=bad), \
+                mock.patch.object(ship.dependency_vetting, "changed_dependencies", return_value=True), \
+                mock.patch.object(ship.dependency_vetting, "vet", side_effect=ship.dependency_vetting.VettingError(
+                    "unsupported dependency lockfile change: pnpm-lock.yaml")):
+            pings += self._tick(minutes=15).call_count
+            self.assertEqual(self.item()["state"], "waiting")
+            since = self.wait_record()["since"]
+            for _ in range(2):
+                pings += self._tick(hours=1).call_count
+            rec = self.wait_record()
+            for want in ("pnpm-lock.yaml", "Revert that dependency/lockfile update together",
+                         "add vetted support"):
+                self.assertIn(want, rec["reason"])
+                self.assertIn(want, waits._last_state_reason(self.led, "x", 5))
+            self.assertEqual(len(self.gh.comments) - base, 1)
+            self.assertIn("pnpm-lock.yaml", self.gh.comments[-1])
+            self.assertEqual(rec["since"], since)
+            self.t += timedelta(hours=self.ctx.policy("x")["wait_escalate_hours"] + 1)
+            pings += self.ship().call_count
+        item = self.item()
+        self.assertEqual(item["state"], "needs_you")
+        self.assertIn("pnpm-lock.yaml", item["question"])
+        self.assertIn("Revert that dependency/lockfile update together", item["question"])
+        self.assertEqual(pings, 1)
+
     def test_vetting_wait_persistent_failure_escalates_once_keeping_since(self):
         self._clock()
         self.led.upsert_item("x", 5, pr=88)
