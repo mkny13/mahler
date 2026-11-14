@@ -83,6 +83,7 @@ a { color: var(--acc); text-decoration: none; }
 :root[data-view="test"] .rail-i[data-go="test"],
 :root[data-view="capture"] .rail-i[data-go="capture"],
 :root[data-view="backlog"] .rail-i[data-go="backlog"],
+:root[data-view="projects"] .rail-i[data-go="projects"],
 :root[data-view="releases"] .rail-i[data-go="releases"],
 :root[data-view="capacity"] .rail-i[data-go="capacity"],
 :root[data-view="stats"] .rail-i[data-go="stats"],
