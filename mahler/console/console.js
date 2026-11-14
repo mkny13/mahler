@@ -810,6 +810,13 @@
     if (act === "atlas_state") {
       return { key: el.getAttribute("data-key"), state: el.getAttribute("data-state") };
     }
+    if (act === "atlas_issue") {
+      var box = el.closest(".pissue");
+      return { key: el.getAttribute("data-key"), kind: el.getAttribute("data-kind"),
+        title: box.querySelector(".pissue-title").value, body: box.querySelector(".pissue-body").value,
+        client_id: "ai-" + Date.now() + "-" + Math.random().toString(36).slice(2) };
+    }
+    if (act === "atlas_issue_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "atlas_state_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {

@@ -4117,3 +4117,205 @@ class AtlasStateTests(unittest.TestCase):
         self.assertIn('act === "atlas_state"', js)
         self.assertIn('"parked"]', js)
         self.assertIn("data-confirm", js)
+
+
+class AtlasIssueTests(unittest.TestCase):
+    """Incubator issue actions (mahler#1538)."""
+
+    def setUp(self):
+        from mahler import atlas
+        from mahler.console import outbox
+        self.atlas, self.outbox = atlas, outbox
+        user = {"atlas": {"intake_project": "ideas"},
+                "projects": {"mahler": {"enabled": True, "repo": "mkny13/mahler", "path": "/x/m"},
+                             "ideas": {"enabled": True, "repo": "me/ideas", "path": "/x/i",
+                                       "scope": "label", "scope_label": "scope:ideas"},
+                             "off": {"enabled": False, "repo": "me/off", "path": "/x/o"}}}
+        self.cfg = config.resolve_platforms(config._merge(config.DEFAULTS, user))
+        self.led = make_led()
+        self.addCleanup(self.led.close)
+        d = iso(SAT_NOON - timedelta(days=1))
+        def rec(key, phase, **kw):
+            return {"key": key, "name": key, "managed": False, "project": None, "work": False,
+                    "path": "/p/" + key, "phase": phase, "first_seen": d, "last_touched": d,
+                    "sessions": 1, "commits": None, "desc": "about " + key,
+                    "open": None, "done": None, "runs7": None, **kw}
+        self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": [
+            rec("ideaa", "idea"), rec("protob", "prototype"),
+            rec("onb", "onboarded", managed=True, project="mahler"),
+            rec("onoff", "onboarded", managed=True, project="off")]}))
+        self.clients = {}
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        def gh(project):
+            if project not in self.clients:
+                c = mock.Mock()
+                c.issue_by_marker.return_value = None
+                c.create_issue.return_value = f"https://github.com/{project}/issues/77"
+                self.clients[project] = c
+            return self.clients[project]
+        p = mock.patch.object(scheduler.Ctx, "gh", side_effect=gh)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def file(self, key, kind, **kw):
+        body = {"key": key, "kind": kind, "title": "T", "body": "B", **kw}
+        return actions.run(self.cfg, self.led, "atlas_issue", body)
+
+    def drain(self):
+        self.led.con.execute("UPDATE console_actions SET due_at=? WHERE status='pending'", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+
+    def last(self):
+        return self.led.q("SELECT * FROM console_actions ORDER BY id")[-1]
+
+    def test_config_validation(self):
+        base = {"projects": {"a": {"enabled": True, "repo": "o/a", "path": "/a"},
+                             "b": {"enabled": False, "repo": "o/b", "path": "/b"}}}
+        for bad in ("b", "nope", 5):
+            with self.assertRaises(ValueError):
+                config.atlas_policy(config._merge(config.DEFAULTS, dict(base, atlas={"intake_project": bad})))
+        self.assertEqual(config.atlas_policy(config._merge(config.DEFAULTS, base))["intake_project"], "")
+        self.assertEqual(config.atlas_policy(config._merge(
+            config.DEFAULTS, dict(base, atlas={"intake_project": "a"})))["intake_project"], "a")
+
+    def test_three_mappings_and_labels(self):
+        self.file("ideaa", "file_issue")
+        self.file("protob", "onboard", body="checklist")
+        self.file("onb", "file_first_issue")
+        self.assertEqual([r["project"] for r in self.led.q("SELECT project FROM console_actions ORDER BY id")],
+                         ["ideas", "ideas", "mahler"])
+        self.drain()
+        self.assertEqual(self.clients["ideas"].create_issue.call_count, 2)
+        self.assertEqual(self.clients["mahler"].create_issue.call_count, 1)
+        self.assertEqual(self.clients["ideas"].create_issue.call_args[0][2],
+                         ["scope:ideas", "type:feature", "p2", "mahler:inbox"])
+        self.assertEqual(self.clients["mahler"].create_issue.call_args[0][2],
+                         ["type:feature", "p2", "mahler:inbox"])
+        row = self.last()
+        self.assertEqual(row["status"], "done")
+        self.assertIn("/issues/77", row["result"])
+        ev = self.led.q1("SELECT * FROM events WHERE kind='atlas_issue' ORDER BY id DESC")
+        self.assertEqual((ev["project"], ev["number"]), ("mahler", 77))
+
+    def test_wrong_kind_for_phase_and_bad_input(self):
+        for key, kind in (("ideaa", "onboard"), ("protob", "file_issue"), ("ideaa", "file_first_issue"),
+                          ("onoff", "file_first_issue"), ("gone", "file_issue"), ("ideaa", "x")):
+            with self.assertRaises(actions.ActionError):
+                self.file(key, kind)
+        for kw in ({"title": ""}, {"title": "a\nb"}, {"body": 5}, {"client_id": ""}):
+            with self.assertRaises(actions.ActionError):
+                self.file("ideaa", "file_issue", **kw)
+        self.assertEqual(self.led.q("SELECT 1 FROM console_actions"), [])
+
+    def test_target_cannot_be_chosen_by_request(self):
+        self.file("ideaa", "file_issue", project="mahler", target="mahler")
+        self.assertEqual(self.last()["project"], "ideas")
+
+    def test_missing_intake_disables_and_rejects(self):
+        self.cfg["atlas"]["intake_project"] = ""
+        with self.assertRaises(actions.ActionError) as cm:
+            self.file("ideaa", "file_issue")
+        self.assertIn("intake_project", str(cm.exception))
+        s = state.build(self.cfg, self.led)
+        html = page.app(s, "desktop", view="projects")
+        self.assertRegex(html, r'<button class="proj-act" disabled data-issue-kind="file_issue"')
+        self.assertRegex(html, r'disabled data-issue-kind="onboard"')
+        self.assertIn("intake_project", html)
+        self.assertIn('data-act="atlas_issue" data-key="onb" data-kind="file_first_issue"', html)
+
+    def test_templates_and_composer_render(self):
+        html = page.app(state.build(self.cfg, self.led), "desktop", view="projects")
+        self.assertIn("Onboard protob to Mahler", html)
+        for topic in ("repository visibility", "git repository and GitHub remote",
+                      "project to Mahler config", "first product issue"):
+            self.assertIn(topic, html)
+        self.assertIn("`/p/protob`", html)
+        self.assertIn("Source: Atlas idea `ideaa`", html)
+        self.assertIn("Files in ideas.", html)
+        self.assertIn("Files in mahler.", html)
+        phone = page.app(state.build(self.cfg, self.led), "phone", tab="browse")
+        self.assertIn('class="pissue-title"', phone)
+
+    def test_pending_undo_and_cancel(self):
+        id = self.file("ideaa", "file_issue")["id"]
+        self.outbox.drain(self.ctx)
+        self.assertEqual(self.clients, {})
+        html = page.app(state.build(self.cfg, self.led), "desktop", view="projects")
+        self.assertIn(f'data-act="atlas_issue_undo" data-id="{id}"', html)
+        actions.run(self.cfg, self.led, "atlas_issue_undo", {"id": id})
+        self.drain()
+        self.assertEqual(self.clients, {})
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, "atlas_issue_undo", {"id": id})
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, "atlas_issue_undo", {"id": "x"})
+
+    def test_client_id_dedup_pending_and_done(self):
+        a = self.file("ideaa", "file_issue", client_id="c1")
+        b = self.file("ideaa", "file_issue", client_id="c1")
+        self.assertTrue(b["deduplicated"])
+        self.assertEqual(a["id"], b["id"])
+        self.drain()
+        self.assertTrue(self.file("ideaa", "file_issue", client_id="c1")["deduplicated"])
+        self.assertEqual(self.clients["ideas"].create_issue.call_count, 1)
+
+    def test_marker_prevents_duplicate_create(self):
+        self.file("ideaa", "file_issue", client_id="c9")
+        self.clients["ideas"] = mock.Mock()
+        self.clients["ideas"].issue_by_marker.return_value = "https://github.com/me/ideas/issues/5"
+        self.drain()
+        self.clients["ideas"].create_issue.assert_not_called()
+        self.assertIn("#5", self.last()["result"])
+
+    def test_stale_checks_in_tick(self):
+        def scan(projects):
+            self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": projects}))
+        orig = json.loads(self.led.get_kv("atlas:scan"))["projects"]
+        cases = []
+        for key, kind, mutate in (
+                ("ideaa", "file_issue", lambda ps: [p for p in ps if p["key"] != "ideaa"]),
+                ("ideaa", "file_issue", lambda ps: [dict(p, phase="prototype") if p["key"] == "ideaa" else p for p in ps]),
+                ("onb", "file_first_issue", lambda ps: [dict(p, project="off") if p["key"] == "onb" else p for p in ps]),
+                ("onb", "file_first_issue", lambda ps: [dict(p, managed=False) if p["key"] == "onb" else p for p in ps])):
+            self.led.con.execute("DELETE FROM console_actions")
+            scan(orig)
+            self.file(key, kind)
+            scan(mutate(orig))
+            self.drain()
+            self.assertEqual(self.last()["status"], "skipped", (key, kind))
+        self.assertEqual(self.clients, {})
+
+    def test_disabled_target_and_intake_change_in_tick(self):
+        self.file("ideaa", "file_issue")
+        self.cfg["projects"]["ideas"]["enabled"] = False
+        self.drain()
+        self.assertEqual(self.last()["status"], "skipped")
+        self.cfg["projects"]["ideas"]["enabled"] = True
+        self.led.con.execute("DELETE FROM console_actions")
+        self.file("ideaa", "file_issue")
+        self.cfg["atlas"]["intake_project"] = "mahler"
+        self.drain()
+        self.assertEqual(self.last()["status"], "skipped")
+        self.assertEqual(self.clients, {})
+
+    def test_parked_in_tick_is_skipped(self):
+        self.file("ideaa", "file_issue")
+        self.atlas.set_state(self.led, "ideaa", "parked", iso(SAT_NOON))
+        self.drain()
+        self.assertEqual(self.last()["status"], "skipped")
+
+    def test_github_failure_stays_visible(self):
+        self.file("ideaa", "file_issue")
+        bad = mock.Mock()
+        bad.issue_by_marker.return_value = None
+        bad.create_issue.side_effect = RuntimeError("gh exploded")
+        self.clients["ideas"] = bad
+        self.drain()
+        self.assertEqual(self.last()["status"], "failed")
+        self.assertIn("gh exploded", self.last()["result"])
+        self.assertTrue(self.led.q1("SELECT 1 FROM events WHERE kind='console_action_failed'"))
+
+    def test_js_wiring(self):
+        js = (Path(page.__file__).parent / "console.js").read_text()
+        self.assertIn('act === "atlas_issue"', js)
+        self.assertIn('act === "atlas_issue_undo"', js)

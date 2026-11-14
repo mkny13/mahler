@@ -56,6 +56,8 @@ gui_window = "00:00-06:00, Mon-Fri 11:30-13:30"
 # [atlas]
 # scan_roots = ["~/scripts", "/Volumes/ExtSSD160/scripts"]
 # ignore = ["node_modules", "~/scripts/old"]   # folder names, or paths (with "/") and their subtrees
+# intake_project = "ideas"   # optional: an enabled Mahler project (e.g. a managed ideas repository)
+#                            # that receives the Incubator's "File as issue" and "Onboard to Mahler" issues
 # [atlas.phase]    # owner overrides: idea|prototype|onboarded|building|steady; a path beats a name
 # "~/scripts/meal-tracker" = "idea"
 # petdle = "prototype"

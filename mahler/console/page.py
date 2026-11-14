@@ -1244,6 +1244,26 @@ def _proj_actions(r):
             f'data-confirm="{e(ARCHIVE_CONFIRM)}">Archive</button></div>')
 
 
+def _proj_issue(r):
+    """The server-rendered composer: review/edit, then queue for 60 seconds with Undo."""
+    c, pend = r["composer"], r.get("pending_issue")
+    if pend:
+        return (f'<div class="pissue" data-pending-issue="{e(pend["target"])}">'
+                f'<span class="t-mut">Filing “{e(pend["title"])}” in {e(pend["target"])}… in about a minute.</span>'
+                f'<button class="link" data-act="atlas_issue_undo" data-id="{pend["id"]}">Undo</button></div>')
+    if c["disabled"]:
+        return (f'<div class="pissue"><button class="proj-act" disabled data-issue-kind="{e(c["kind"])}" '
+                f'title="{e(c["disabled"])}">{e(c["label"])}</button>'
+                f'<span class="t-mut">{e(c["disabled"])}</span></div>')
+    return (f'<details class="pissue" data-issue-kind="{e(c["kind"])}" data-key="{e(r["key"])}">'
+            f'<summary class="proj-act">{e(c["label"])}</summary>'
+            f'<div class="t-mut">Files in {e(c["target"])}. Review and edit first.</div>'
+            f'<input class="pissue-title" maxlength="200" value="{e(c["title"])}" aria-label="Issue title">'
+            f'<textarea class="pissue-body" rows="8" maxlength="8000" aria-label="Issue body">{e(c["body"])}</textarea>'
+            f'<button class="proj-act" data-act="atlas_issue" data-key="{e(r["key"])}" '
+            f'data-kind="{e(c["kind"])}">{e(c["label"])}</button></details>')
+
+
 def _proj_held(a):
     """Parked and archived records, shown only under the `Parked & archived` filter."""
     if not a["held"]:
@@ -1274,7 +1294,7 @@ def _proj_cards(a):
             f'<div class="l2 mono t-mut">Last touched {e(r["last_touched_txt"])}</div>'
             f'<div class="nstep" data-next-step="{e(step["kind"])}"><span class="lbl">Next step</span>'
             f'<span>{e(step["text"])}</span></div>'
-            f'{_proj_actions(r)}</article>')
+            f'{_proj_issue(r)}{_proj_actions(r)}</article>')
     return f'<div class="pinc"><div class="pcards">{"".join(cards)}</div></div>'
 
 

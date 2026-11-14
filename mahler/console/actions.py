@@ -425,6 +425,58 @@ def atlas_state_undo(cfg, led, body):
         led.event("console_atlas_state_cancelled", None, None, {"id": id})
 
 
+ATLAS_ISSUE_KINDS = ("file_issue", "onboard", "file_first_issue")
+
+
+def atlas_issue(cfg, led, body):
+    """Queue an Incubator issue (mahler#1538). The target comes from config and the
+    cached record, never from the request; the tick rechecks everything."""
+    from .. import atlas
+    from .state import issue_target
+    key, kind, title, text = (body.get(k) for k in ("key", "kind", "title", "body"))
+    if not isinstance(key, str) or not key or len(key) > 1024:
+        raise ActionError("key must be a project key")
+    if kind not in ATLAS_ISSUE_KINDS:
+        raise ActionError("kind must be file_issue, onboard or file_first_issue")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= 200 or "\n" in title:
+        raise ActionError("title must be 1-200 characters on one line")
+    if not isinstance(text, str) or len(text) > 8000:
+        raise ActionError("body must be at most 8000 characters")
+    client_id = body.get("client_id")
+    if client_id is not None and (not isinstance(client_id, str)
+                                  or not 1 <= len(client_id) <= 200):
+        raise ActionError("client_id must be 1-200 characters")
+    with led._tx():
+        rec = next((p for p in atlas.load(led) if p.get("key") == key), None)
+        if rec is None:
+            raise ActionError("that project is not in the latest scan")
+        target, reason = issue_target(cfg, rec, kind)
+        if target is None:
+            raise ActionError(reason)
+        payload = {"key": key, "kind": kind, "phase": rec["phase"], "target": target,
+                   "title": title.strip(), "body": text.strip()}
+        if client_id is not None:
+            payload["client_id"] = client_id
+            for row in led.pending_actions("atlas_issue") + led.q(
+                    "SELECT * FROM console_actions WHERE kind='atlas_issue' AND status='done'"):
+                if json.loads(row["payload"]).get("client_id") == client_id:
+                    return {"id": row["id"], "deduplicated": True}
+        id = led.queue_action("atlas_issue", target, None, payload, delay_seconds=60)
+        led.event("console_atlas_issue_queued", target, None, {"id": id, "key": key, "kind": kind})
+    return {"id": id}
+
+
+def atlas_issue_undo(cfg, led, body):
+    id = body.get("id")
+    if type(id) is not int or id <= 0:
+        raise ActionError("id must be a positive action id")
+    with led._tx():
+        row = led.q1("SELECT * FROM console_actions WHERE id=? AND kind='atlas_issue'", (id,))
+        if row is None or not led.cancel_action(id):
+            raise ActionError("already filed")
+        led.event("console_atlas_issue_cancelled", row["project"], None, {"id": id})
+
+
 # ---------- Shipment failure reports ----------
 
 def _uat_target(cfg, led, body):
@@ -684,7 +736,7 @@ def resume_post_merge(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (chat, pause, resume, end_session, peak_override, peak_restore,
-                                   clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run, atlas_state, atlas_state_undo,
+                                   clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run, atlas_state, atlas_state_undo, atlas_issue, atlas_issue_undo,
                                    capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log, set_max_parallel,
                                    pause_project, resume_project, resume_post_merge,
