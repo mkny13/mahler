@@ -13,7 +13,7 @@ import re
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from .. import api_credits, atlas, ci_blockers, config, digest as daily_digest, model_availability, presence, review, router, screenshots, warmup
+from .. import api_credits, atlas, ci_blockers, config, digest as daily_digest, model_availability, presence, review, router, screenshots, waits, warmup
 from ..gh import dependency_ref, dependency_target
 from ..ledger import iso, parse, row_get
 from . import outbox
@@ -1864,6 +1864,27 @@ def _settling_hold_reasons(settling, now):
     return out
 
 
+def _vetting_upstream(cfg, led, project, n):
+    """Why an upstream item sits in a dependency-vetting wait, with its next step
+    (mahler#1561); "" when it is not in one."""
+    rec = waits.load(led, project, n)
+    item = led.item(project, n)
+    if not rec or rec.get("cause") != "dependency_vetting" or not item or item["state"] != "waiting":
+        return ""
+    text = str(rec.get("reason") or "").strip()
+    nxt = parse(rec.get("next_at"))
+    since = parse(rec.get("since"))
+    if nxt:
+        text += f" Next retry {_hhmm(nxt)}."
+    try:
+        hours = config.project_policy(cfg, project)["wait_escalate_hours"]
+    except Exception:  # noqa: BLE001 — diagnostics must not break the page
+        hours = None
+    if since and hours:
+        text += f" Escalates to Retry now / park at {_hhmm(since + timedelta(hours=hours))}."
+    return text
+
+
 def _dependency_hold_reasons(cfg, deps, pending, led=None):
     def label(dep, project):
         ref = dependency_ref(dep, project)
@@ -1871,6 +1892,8 @@ def _dependency_hold_reasons(cfg, deps, pending, led=None):
         item = led.item(*target) if led and target else None
         if item is not None and item['state'] in ci_blockers.PARKED_STATES:
             ref += f" ({item['state']})"
+        elif item is not None and led and (why := _vetting_upstream(cfg, led, *target)):
+            ref += f" (waiting on dependency vetting: {why})"
         return ref
 
     out = []
@@ -2468,6 +2491,9 @@ def _blocked_overview_rows(cfg, led, project, items, s, now):
             seen.add(n)
             dep_ref = deps[0] if deps else parent
             reason = f"waits on #{dep_ref}" if dep_ref else "waits on dependency"
+            why = _vetting_upstream(cfg, led, project, dep_ref) if dep_ref else ""
+            if why:
+                reason += f" (dependency vetting: {why})"
             rows.append({
                 "ref": _ref(project, n),
                 "number": n,

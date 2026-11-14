@@ -574,7 +574,17 @@ class GH:
         args = ["issue", "create", "-R", self.repo, "--title", title, "--body-file", "-"]
         for l in labels:
             args += ["--label", l]
-        url = self._gh(*args, input=body).strip()
+        try:
+            url = self._gh(*args, input=body).strip()
+        except GHRateLimit:
+            raise
+        except GHError as exc:
+            # A freshly onboarded repo has none of Mahler's labels (mahler#1531).
+            if not (labels and re.search(r"label.*not found|not found.*label|could not add label",
+                                         str(exc), re.I)):
+                raise
+            self.ensure_labels()
+            url = self._gh(*args, input=body).strip()
         for marker in re.findall(r"<!-- mahler:[^>]+-->", body):
             self._markers[marker] = url
         self._parent_inventory = None
@@ -1038,6 +1048,9 @@ class GH:
         if not isinstance(base, str) or not base:
             raise GHError("dependency vetting: missing PR target branch")
         self._git(path, "check-ref-format", f"refs/heads/{base}")
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin", head)
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin",
+                  f"+refs/heads/{base}:refs/remotes/origin/{base}")
         target = self._git(path, "rev-parse", "--verify",
                            f"refs/remotes/origin/{base}^{{commit}}")
         self._git(path, "rev-parse", "--verify", f"{head}^{{commit}}")

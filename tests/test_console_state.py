@@ -854,6 +854,40 @@ class ProjectOverviewStateTests(unittest.TestCase):
         self.assertEqual(blocked[3]["reason"], "parked · CI red twice")
         self.assertEqual(blocked[3]["tone"], "bad")
 
+    def _vetting_wait(self, project, n, pr=88):
+        from mahler import waits
+        self.led.upsert_item(project, n, title="Upstream", state="verifying", pr=pr)
+        waits.hold(self.led, project, n, "dependency_vetting",
+                   f"PR #{pr} dependency vetting blocked: unsupported dependency lockfile change: "
+                   "pnpm-lock.yaml. Fix path: revert that dependency/lockfile update together",
+                   resume="verifying", wake={"pr": pr, "kind": "gate"})
+
+    def test_blocked_row_names_upstream_vetting_cause(self):
+        self._vetting_wait("groundwork", 1)
+        self.led.upsert_item("groundwork", 2, title="Dependent", state="ready",
+                             depends=json.dumps([1]))
+        s = state.build(self.cfg, self.led, project_scope="groundwork")
+        blocked = {r["number"]: r for r in s["overview"]["blocked_rows"]}
+        self.assertIn("waits on #1", blocked[2]["reason"])
+        self.assertIn("dependency vetting", blocked[2]["reason"])
+        self.assertIn("pnpm-lock.yaml", blocked[2]["reason"])
+        self.assertIn("Next retry", blocked[2]["reason"])
+        self.assertIn("Escalates to Retry now / park", blocked[2]["reason"])
+
+    def test_dependency_hold_text_names_upstream_cause_same_and_cross_project(self):
+        self._vetting_wait("groundwork", 1)
+        names = [p for p in self.cfg["projects"] if p != "groundwork"]
+        other = names[0]
+        self._vetting_wait(other, 7)
+        cross = {"repo": self.cfg["projects"][other]["repo"], "number": 7}
+        deps = [{"project": "groundwork", "number": 2, "on": [1]},
+                {"project": "groundwork", "number": 3, "on": [cross]}]
+        out = state._dependency_hold_reasons(self.cfg, deps, {}, self.led)
+        self.assertIn("groundwork#1 (waiting on dependency vetting:", out[0]["text"])
+        self.assertIn("pnpm-lock.yaml", out[0]["text"])
+        self.assertIn("#7 (waiting on dependency vetting:", out[1]["text"])
+        self.assertIn("Next retry", out[1]["text"])
+
 
 class ProjectHeaderControlsTests(unittest.TestCase):
     def setUp(self):

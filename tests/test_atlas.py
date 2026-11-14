@@ -260,7 +260,8 @@ class CacheTests(Base):
         self.assertEqual(atlas.load(self.led)[0]["first_seen"], iso(NOW))
 
     def test_malformed_cache_loads_empty(self):
-        for bad in ("nope", "[]", '{"projects": 3}'):
+        for bad in ("nope", "[]", '{"projects": 3}',
+                    '{"scanned_at":"x","projects":[{}]}'):
             self.led.set_kv("atlas:scan", bad)
             self.assertEqual(atlas.load(self.led), [])
 

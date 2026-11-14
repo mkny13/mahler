@@ -259,12 +259,16 @@ def _inspect(path, clock):
 
 # ---------- cache ----------
 
+_CACHE_FIELDS = ("name", "managed", "work", "phase", "sessions", "commits", "last_touched", "path")
+
+
 def _cached(led):
     """(scanned_at, projects) from the cache, or None when absent or malformed."""
     try:
         raw = json.loads(led.get_kv(CACHE_KEY) or "")
         projects = raw["projects"]
-        if isinstance(projects, list) and all(isinstance(p, dict) for p in projects):
+        if isinstance(projects, list) and all(isinstance(p, dict) and all(f in p for f in _CACHE_FIELDS)
+                                          for p in projects):
             return raw.get("scanned_at"), projects
     except (ValueError, TypeError, KeyError, AttributeError):
         pass

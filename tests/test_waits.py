@@ -45,6 +45,39 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(rec["bound_at"], item["state_changed_at"])
         self.assertEqual(self.pings, [])
 
+    def test_dependency_vetting_is_a_known_cause_with_carry_forward(self):
+        self.assertIn("dependency_vetting", waits.CAUSES)
+        since, checks = waits.vetting_carry(self.led, "p", 1, 9, "gate")
+        self.assertEqual((since, checks), (iso(T0), 0))
+        waits.save_vetting_carry(self.led, "p", 1, 9, "gate", iso(T0), 3)
+        self.advance(hours=2)
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 9, "gate"), (iso(T0), 3))
+        self.advance(hours=13)          # manual retries cannot reset the wait age
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 9, "gate"), (iso(T0), 3))
+
+    def test_dependency_vetting_failed_wake_updates_reason_and_carry(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        self.ctx.gh = lambda project: gh
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "gate", "sha": "abc"})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "gate", iso(T0), 0)
+        self.advance(minutes=15)
+        detail = "unsupported dependency lockfile change: pnpm-lock.yaml"
+        with mock.patch("mahler.ship._vet_gate", return_value=detail):
+            waits.recheck(self.ctx, "p")
+
+        record = self.record()
+        self.assertEqual(record["checks"], 1)
+        self.assertIn("pnpm-lock.yaml", record["reason"])
+        self.assertIn("Revert that dependency/lockfile update together", record["reason"])
+        self.assertIn("pnpm-lock.yaml", waits._last_state_reason(self.led, "p", 1))
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "gate"),
+                         (iso(T0), 1))
+        self.advance(hours=13)
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "gate"),
+                         (iso(T0), 1))
+
     def test_unknown_cause_raises(self):
         with self.assertRaises(ValueError):
             waits.hold(self.led, "p", 1, "bogus", "x", resume="ready")
