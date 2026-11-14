@@ -216,14 +216,12 @@ def vetting_carry_key(project, n, pr, kind):
 
 
 def vetting_carry(led, project, n, pr, kind):
-    """(since, checks) of a recent vetting wait on this PR, so a wait that resumes and
-    fails again keeps its age and backoff; a fresh one starts at (now, 0)."""
+    """(since, checks) of a vetting wait on this PR, retained through manual retries."""
     try:
         rec = json.loads(led.get_kv(vetting_carry_key(project, n, pr, kind)) or "null")
     except ValueError:
         rec = None
-    last = parse(rec.get("last")) if isinstance(rec, dict) else None
-    if last and led.now() - last < timedelta(hours=12) and parse(rec.get("since")):
+    if isinstance(rec, dict) and parse(rec.get("since")):
         return rec["since"], int(rec.get("checks") or 0)
     return iso(led.now()), 0
 
@@ -254,6 +252,12 @@ def _wake_dependency_vetting(ctx, project, item, record):
         return True, "PR is no longer open"
     detail = ship._vet_gate(ctx, project, item, pr, gh, view)
     if detail is not None:
+        reason = ship.vetting_reason(pr, detail, kind)
+        if reason != record.get("reason"):
+            led.set_state(project, n, "waiting", f"waiting (dependency_vetting): {reason}",
+                          question=None, options="[]")
+            record["reason"] = reason
+            record["bound_at"] = led.item(project, n)["state_changed_at"]
         return False, f"gate still failing: {detail}"
     if kind == "evidence":
         led.set_kv(f"review:{project}#{n}", None)
@@ -314,6 +318,12 @@ def _recheck_item(ctx, project, item):
         return
     record["checks"] = int(record.get("checks") or 0) + 1
     record["next_at"] = iso(now + backoff(record["checks"] + 1))
+    if cause == "dependency_vetting":
+        wake = record.get("wake") or {}
+        pr = item["pr"] or wake.get("pr")
+        if pr:
+            save_vetting_carry(led, project, n, pr, wake.get("kind") or "gate",
+                               record["since"], record["checks"])
     led.set_kv(key(project, n), json.dumps(record))
 
 

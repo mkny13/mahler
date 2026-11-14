@@ -3831,6 +3831,25 @@ class ShipTests(unittest.TestCase):
         rec = self.wait_record()
         self.assertEqual(rec["since"], since)
 
+    def test_vetting_wait_age_and_checks_survive_late_retry_now(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88)
+        fail = mock.patch.object(self.gh, "dependency_files", side_effect=ship.GHError("boom"))
+        with fail:
+            self.ship()
+            since = self.wait_record()["since"]
+            expire_waits(self.led)
+            self._tick(minutes=15)
+            self.assertEqual(self.wait_record()["checks"], 1)
+
+            self.t += timedelta(hours=13)
+            sync.resume_item(self.led, "x", 5, "retry now")
+            self.ship()
+
+        record = self.wait_record()
+        self.assertEqual(record["since"], since)
+        self.assertEqual(record["checks"], 1)
+
     def test_evidence_only_review_failure_gets_fresh_review_on_unchanged_head(self):
         self._clock()
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
