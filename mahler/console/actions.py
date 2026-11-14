@@ -390,6 +390,41 @@ def revert(cfg, led, body):
     return {"id": id}
 
 
+# ---------- Atlas project states (mahler#1537) ----------
+
+ATLAS_STATES = ("park", "archive", "restore")
+
+
+def atlas_state(cfg, led, body):
+    from .. import atlas
+    key, verb = body.get("key"), body.get("state")
+    if not isinstance(key, str) or not key or len(key) > 1024:
+        raise ActionError("key must be a project key")
+    if verb not in ATLAS_STATES:
+        raise ActionError("state must be park, archive or restore")
+    with led._tx():
+        if not atlas.has_key(led, key):
+            raise ActionError("that project is not in the latest scan")
+        for action in led.pending_actions("atlas_state"):
+            if json.loads(action["payload"]).get("key") == key:
+                led.cancel_action(action["id"])      # the newest request wins
+        id = led.queue_action("atlas_state", None, None, {"key": key, "state": verb},
+                              delay_seconds=60)
+        led.event("console_atlas_state_queued", None, None, {"id": id, "key": key, "state": verb})
+    return {"id": id}
+
+
+def atlas_state_undo(cfg, led, body):
+    id = body.get("id")
+    if type(id) is not int or id <= 0:
+        raise ActionError("id must be a positive action id")
+    with led._tx():
+        row = led.q1("SELECT * FROM console_actions WHERE id=? AND kind='atlas_state'", (id,))
+        if row is None or not led.cancel_action(id):
+            raise ActionError("already applied")
+        led.event("console_atlas_state_cancelled", None, None, {"id": id})
+
+
 # ---------- Shipment failure reports ----------
 
 def _uat_target(cfg, led, body):
@@ -649,7 +684,7 @@ def resume_post_merge(cfg, led, body):
 
 
 ACTIONS = {f.__name__: f for f in (chat, pause, resume, end_session, peak_override, peak_restore,
-                                   clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run,
+                                   clear_backoff, unhold, digest_seen, brief_seen, answer, answer_undo, stop_run, atlas_state, atlas_state_undo,
                                    capture, revert, uat_fail, attach, cut_release,
                                    save_settings, client_log, set_max_parallel,
                                    pause_project, resume_project, resume_post_merge,

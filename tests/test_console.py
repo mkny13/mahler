@@ -3973,3 +3973,147 @@ class ProjectsPageTests(unittest.TestCase):
         self.assertEqual(s["projects_atlas"]["incubator"], [])
         html = page.app(s, "desktop", view="projects")
         self.assertIn("No scan yet. It runs hourly, or run `mahler atlas scan`.", html)
+
+
+class AtlasStateTests(unittest.TestCase):
+    """Park, Archive, Restore (mahler#1537): ledger KV only, through the outbox."""
+
+    def setUp(self):
+        from mahler import atlas
+        from mahler.console import outbox
+        self.atlas, self.outbox = atlas, outbox
+        self.cfg, self.led = make_cfg(), make_led()
+        self.addCleanup(self.led.close)
+        d = iso(SAT_NOON - timedelta(days=1))
+        def rec(key, phase):
+            return {"key": key, "name": key, "managed": False, "project": None, "work": False,
+                    "path": "/p/" + key, "phase": phase, "first_seen": d, "last_touched": d,
+                    "sessions": 1, "commits": None, "desc": "about " + key,
+                    "open": None, "done": None, "runs7": None}
+        self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": [
+            rec("ideaa", "idea"), rec("protob", "prototype"), rec("buildd", "building")]}))
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+
+    def act(self, key, verb):
+        return actions.run(self.cfg, self.led, "atlas_state", {"key": key, "state": verb})["id"]
+
+    def build(self):
+        return state.build(self.cfg, self.led)["projects_atlas"]
+
+    def test_rejects_malformed_and_stale(self):
+        for body in ({}, {"key": "ideaa"}, {"key": "ideaa", "state": "delete"},
+                     {"key": 5, "state": "park"}, {"key": "gone", "state": "park"}):
+            with self.assertRaises(actions.ActionError):
+                actions.run(self.cfg, self.led, "atlas_state", body)
+        self.assertEqual(self.led.pending_actions("atlas_state"), [])
+        self.assertIsNone(self.led.get_kv("atlas:states"))
+
+    def test_waits_then_applies_and_projects(self):
+        id = self.act("ideaa", "park")
+        self.outbox.drain(self.ctx)                      # not due yet
+        self.assertEqual(self.atlas.states(self.led), {})
+        a = self.build()
+        self.assertEqual(a["rows"][0]["pending_state"]["id"], id)
+        for layout, kw in (("desktop", {"view": "projects"}), ("phone", {"tab": "browse"})):
+            html = page.app(state.build(self.cfg, self.led), layout, **kw)
+            self.assertIn("Parking…", html)
+            self.assertIn(f'data-act="atlas_state_undo" data-id="{id}"', html)
+        self.led.con.execute("UPDATE console_actions SET due_at=?", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+        self.assertEqual(self.atlas.states(self.led)["ideaa"]["state"], "parked")
+        a = self.build()
+        self.assertEqual([r["key"] for r in a["incubator"]], ["protob"])
+        self.assertEqual([r["key"] for r in a["held"]], ["ideaa"])
+        self.assertIn("ideaa", [r["key"] for r in a["rows"]])
+        self.assertEqual(a["early"], 1)
+        ev = self.led.q1("SELECT * FROM events WHERE kind='project_state'")
+        self.assertEqual(json.loads(ev["detail"])["state"], "parked")
+
+    def apply(self, key, verb):
+        self.act(key, verb)
+        self.led.con.execute("UPDATE console_actions SET due_at=? WHERE status='pending'", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+
+    def test_archive_restore_and_filter_both_layouts(self):
+        self.apply("protob", "archive")
+        a = self.build()
+        self.assertEqual([r["key"] for r in a["incubator"]], ["ideaa"])
+        self.assertEqual(a["counts"]["prototype"], 0)
+        for layout, kw in (("desktop", {"view": "projects"}), ("phone", {"tab": "browse"})):
+            html = page.app(state.build(self.cfg, self.led), layout, **kw)
+            self.assertIn('data-proj-filter="parked">Parked &amp; archived', html)
+            self.assertIn('data-held-key="protob"', html)
+            self.assertIn('data-state="restore"', html)
+            self.assertIn('data-state="archive"', html)
+            self.assertIn("data-confirm=", html)
+            self.assertRegex(html, r'data-phase="prototype"[^>]*data-owner="archived"')
+        self.apply("protob", "restore")
+        self.assertEqual(self.atlas.states(self.led), {})
+        a = self.build()
+        self.assertEqual([r["key"] for r in a["incubator"]], ["ideaa", "protob"])
+        self.assertEqual(a["held"], [])
+
+    def test_undo_cancels_only_pending(self):
+        id = self.act("ideaa", "park")
+        actions.run(self.cfg, self.led, "atlas_state_undo", {"id": id})
+        self.led.con.execute("UPDATE console_actions SET due_at=?", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+        self.assertEqual(self.atlas.states(self.led), {})
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, "atlas_state_undo", {"id": id})
+        id2 = self.act("ideaa", "park")
+        self.led.con.execute("UPDATE console_actions SET due_at=?", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, "atlas_state_undo", {"id": id2})
+        with self.assertRaises(actions.ActionError):
+            actions.run(self.cfg, self.led, "atlas_state_undo", {"id": "x"})
+
+    def test_repeated_is_idempotent(self):
+        self.apply("ideaa", "park")
+        before = self.led.get_kv("atlas:states")
+        self.apply("ideaa", "park")
+        self.assertEqual(self.led.get_kv("atlas:states"), before)
+        row = self.led.q("SELECT * FROM console_actions ORDER BY id")[-1]
+        self.assertEqual(row["status"], "skipped")
+        self.assertEqual(len(self.led.q("SELECT 1 FROM events WHERE kind='project_state'")), 1)
+
+    def test_stale_key_in_tick_is_skipped(self):
+        self.act("ideaa", "park")
+        self.led.set_kv("atlas:scan", json.dumps({"scanned_at": iso(SAT_NOON), "projects": []}))
+        self.led.con.execute("UPDATE console_actions SET due_at=?", (iso(SAT_NOON),))
+        self.outbox.drain(self.ctx)
+        row = self.led.q1("SELECT * FROM console_actions")
+        self.assertEqual(row["status"], "skipped")
+        self.assertEqual(self.atlas.states(self.led), {})
+
+    def test_failed_write_stays_visible(self):
+        self.act("ideaa", "park")
+        self.led.con.execute("UPDATE console_actions SET due_at=?", (iso(SAT_NOON),))
+        with mock.patch.object(self.atlas, "set_state", side_effect=OSError("disk full")):
+            self.outbox.drain(self.ctx)
+        row = self.led.q1("SELECT * FROM console_actions")
+        self.assertEqual(row["status"], "failed")
+        self.assertIn("disk full", row["result"])
+        self.assertTrue(self.led.q1("SELECT 1 FROM events WHERE kind='console_action_failed'"))
+
+    def test_never_touches_filesystem_git_or_github(self):
+        import subprocess
+        from mahler import gh
+        with mock.patch.object(subprocess, "run", side_effect=AssertionError("subprocess")), \
+                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("popen")), \
+                mock.patch.object(gh, "GitHub", side_effect=AssertionError("github"), create=True), \
+                mock.patch.object(scheduler.Ctx, "gh", side_effect=AssertionError("gh")), \
+                mock.patch("os.rename", side_effect=AssertionError("fs")), \
+                mock.patch("shutil.move", side_effect=AssertionError("fs")), \
+                mock.patch("shutil.rmtree", side_effect=AssertionError("fs")):
+            for verb in ("park", "archive", "restore"):
+                self.apply("ideaa", verb)
+        self.assertEqual(self.atlas.states(self.led), {})
+        self.assertEqual(len(self.led.q("SELECT 1 FROM console_actions WHERE status='done'")), 3)
+
+    def test_js_wiring(self):
+        js = (Path(page.__file__).parent / "console.js").read_text()
+        self.assertIn('act === "atlas_state"', js)
+        self.assertIn('"parked"]', js)
+        self.assertIn("data-confirm", js)
