@@ -4691,7 +4691,7 @@ class FreshnessAdapterTests(unittest.TestCase):
             head = commit("package.json", '{"dependencies":{"a":"2"}}\n', "pr")
             git(seed, "push", "origin", "topic")
             gh = gh_module.GH("test/repo")
-            with self.assertRaises(gh_module.GHError):
+            with self.assertRaises(subprocess.CalledProcessError):
                 git(consumer, "rev-parse", "--verify", f"{head}^{{commit}}")
             before, after = gh.dependency_files(consumer, "main", head)
             self.assertIn('"a":"1"', before["package.json"])
