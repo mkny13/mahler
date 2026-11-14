@@ -238,6 +238,19 @@ class LaunchHealthTests(unittest.TestCase):
         self.assertEqual(self.led.item('a', 1)['state'], 'parked')
         self.assertIn('Launch failed', self.ctx.ping.call_args_list[-1].args[0])
 
+    def test_pr_stage_launch_failures_wait_with_backoff_before_parking(self):
+        self.prep.side_effect = runner.GitError('Permission denied (publickey)')
+        self.led.set_state('a', 1, 'verifying', 'pr open')
+        gaps = []
+        for _ in range(2):
+            self.assertFalse(tick.start(self.ctx, 'a', self.led.item('a', 1), 'fix', 'claude'))
+            self.assertEqual(self.led.item('a', 1)['state'], 'waiting')
+            wait = self.state('wait:a#1')
+            self.assertEqual((wait['cause'], wait['resume']), ('launch', 'verifying'))
+            gaps.append((launch_health.parse(wait['next_at']) - self.now).total_seconds() / 60)
+            self.led.set_state('a', 1, 'verifying', 'wait over')
+        self.assertEqual(gaps, [15, 30])
+
     def test_different_failure_resets_item_count_and_success_clears_it(self):
         self.prep.side_effect = runner.GitError('boom one')
         self.start()

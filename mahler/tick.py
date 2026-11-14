@@ -819,10 +819,10 @@ def _item_launch_backoff(ctx, project, n, item, error):
         ctx.ping(f"Launch failed — {project} #{n}", reason, project=project, number=n,
                  tags="warning")
         return
-    if cur["state"] not in ("ready", "waiting"):
-        return              # PR-stage launches stay with the ship pass until they park
+    # PR-stage launches (verifying/working) wait too, and resume where they were.
+    resume = "verifying" if cur["state"] == "verifying" or cur["state"] == "working" and cur["pr"] else "ready"
     waits.hold(led, project, n, "launch", f"launch failed ({count}/{LAUNCH_FAIL_LIMIT}): "
-               f"{str(error)[:200]}", resume="ready")
+               f"{str(error)[:200]}", resume=resume)
     wait = waits.load(led, project, n)       # exponential: 15 min, then 30 min, ...
     wait["checks"] = count - 1
     wait["next_at"] = iso(led.now() + waits.backoff(count))

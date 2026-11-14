@@ -1687,7 +1687,9 @@ class ShipTests(unittest.TestCase):
         self.gh.rollup = [{"state": "FAILURE"}]
         self.gh.head_sha = "red1"
         self.ship()
+        self.led.set_state("x", 5, "verifying", "launch wait over")   # failed launches now wait
         self.ship()
+        self.led.set_state("x", 5, "verifying", "launch wait over")
         self.gh.head_sha = "red2"          # the fix pushed, CI failed again
         p3 = self.ship()
         reds = [c for c in p3.call_args_list if c[0][0] == "CI red — x #5"]
