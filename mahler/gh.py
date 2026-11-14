@@ -1048,6 +1048,9 @@ class GH:
         if not isinstance(base, str) or not base:
             raise GHError("dependency vetting: missing PR target branch")
         self._git(path, "check-ref-format", f"refs/heads/{base}")
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin", head)
+        self._git(path, "fetch", "--quiet", "--no-tags", "origin",
+                  f"+refs/heads/{base}:refs/remotes/origin/{base}")
         target = self._git(path, "rev-parse", "--verify",
                            f"refs/remotes/origin/{base}^{{commit}}")
         self._git(path, "rev-parse", "--verify", f"{head}^{{commit}}")

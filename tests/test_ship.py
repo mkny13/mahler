@@ -4657,6 +4657,53 @@ class FreshnessAdapterTests(unittest.TestCase):
             self.assertTrue(gh.base_in_head(repo, "main", source_only_head))
             self.assertEqual(gh.dependency_files(repo, "main", source_only_head), ({}, {}))
 
+    def test_dependency_files_fetches_remote_only_head_and_stale_target(self):
+        with tempfile.TemporaryDirectory() as d:
+            origin, seed, consumer = (os.path.join(d, n) for n in ("o.git", "seed", "c"))
+
+            def git(repo, *args):
+                return subprocess.run(["git", "-C", repo, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            subprocess.run(["git", "init", "--bare", "-b", "main", origin],
+                           check=True, capture_output=True)
+            subprocess.run(["git", "init", "-b", "main", seed], check=True,
+                           capture_output=True)
+            git(seed, "config", "user.name", "T")
+            git(seed, "config", "user.email", "t@example.com")
+            git(seed, "remote", "add", "origin", origin)
+
+            def commit(name, text, msg):
+                with open(os.path.join(seed, name), "w") as f:
+                    f.write(text)
+                git(seed, "add", "-A")
+                git(seed, "commit", "-m", msg)
+                return git(seed, "rev-parse", "HEAD")
+
+            commit("README.md", "x\n", "base")
+            git(seed, "push", "origin", "main")
+            subprocess.run(["git", "clone", origin, consumer], check=True,
+                           capture_output=True)
+            consumer_head = git(consumer, "rev-parse", "HEAD")
+            commit("package.json", '{"dependencies":{"a":"1"}}\n', "target moves")
+            git(seed, "push", "origin", "main")
+            git(seed, "checkout", "-b", "topic")
+            head = commit("package.json", '{"dependencies":{"a":"2"}}\n', "pr")
+            git(seed, "push", "origin", "topic")
+            gh = gh_module.GH("test/repo")
+            with self.assertRaises(gh_module.GHError):
+                git(consumer, "rev-parse", "--verify", f"{head}^{{commit}}")
+            before, after = gh.dependency_files(consumer, "main", head)
+            self.assertIn('"a":"1"', before["package.json"])
+            self.assertIn('"a":"2"', after["package.json"])
+            self.assertEqual(git(consumer, "rev-parse", "HEAD"), consumer_head)
+            for bad in ("zz", "0" * 40):
+                with self.assertRaises(gh_module.GHError):
+                    gh.dependency_files(consumer, "main", bad)
+            git(consumer, "remote", "set-url", "origin", os.path.join(d, "missing.git"))
+            with self.assertRaises(gh_module.GHError):
+                gh.dependency_files(consumer, "main", head)
+
     def test_real_origin_drift_and_replacement_head(self):
         with tempfile.TemporaryDirectory() as d:
             repo, origin = os.path.join(d, "repo"), os.path.join(d, "origin.git")
