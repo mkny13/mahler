@@ -78,6 +78,30 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "gate"),
                          (iso(T0), 1))
 
+    def test_dependency_vetting_evidence_kind_failed_wake_keeps_concrete_cause(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        comments = []
+        gh.comment = lambda n, body: comments.append((n, body))
+        self.ctx.gh = lambda project: gh
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "evidence", "sha": "abc"})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "evidence", iso(T0), 0)
+        detail = "unsupported dependency lockfile change: pnpm-lock.yaml"
+        for _ in range(2):
+            self.advance(minutes=15 if not comments else 60)
+            with mock.patch("mahler.ship._vet_gate", return_value=detail):
+                waits.recheck(self.ctx, "p")
+        record = self.record()
+        for text in (record["reason"], waits._last_state_reason(self.led, "p", 1)):
+            for want in ("pnpm-lock.yaml", "PR #88", "Revert that dependency/lockfile update together",
+                         "add vetted support"):
+                self.assertIn(want, text)
+        self.assertEqual(len(comments), 1)
+        self.assertTrue(comments[0][1].startswith("<!-- mahler:agent -->\n"))
+        self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "evidence"), (iso(T0), 2))
+        self.assertIn("missing or disputed", ship.vetting_reason(88, "", kind="evidence"))
+
     def test_unknown_cause_raises(self):
         with self.assertRaises(ValueError):
             waits.hold(self.led, "p", 1, "bogus", "x", resume="ready")
