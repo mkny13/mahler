@@ -130,6 +130,84 @@ async function finish(promise, html) {
   assert(!requests.at(-1).url.includes("&project="));
   await finish(toAll, "needs");
 
+  // Projects view (mahler#1533): client-side filter, sort, restore-on-refresh and row-click delegation.
+  const storage = {};
+  context.localStorage = {getItem: k => storage[k] ?? null, setItem: (k, v) => { storage[k] = v; }};
+  const mkEl = attributes => {
+    const classes = new Set();
+    return {attributes, hidden: false, classes, classList: {
+      toggle: (name, on) => on ? classes.add(name) : classes.delete(name)},
+      getAttribute: k => attributes[k] ?? null, hasAttribute: k => k in attributes,
+      setAttribute(k, v) { attributes[k] = v; }};
+  };
+  const row = (name, phase, extra) => mkEl({"data-phase": phase, "data-name": name, ...extra});
+  const rows = [
+    row("bravo", "building", {"data-open": "2", "data-touched": "2026-01-02", "data-managed": "true", "data-work": "true"}),
+    row("alpha", "idea", {"data-open": "9", "data-touched": "", "data-managed": "false", "data-work": "false"}),
+    row("charlie", "steady", {"data-open": "5", "data-touched": "2026-03-01", "data-managed": "true", "data-work": "false"})];
+  const parent = {appendChild(r) { rows.splice(rows.indexOf(r), 1); rows.push(r); }};
+  rows.forEach(r => { r.parentNode = parent; });
+  const pill = mkEl({"data-proj-filter": "active"}), allPill = mkEl({"data-proj-filter": "all"});
+  const phasePill = mkEl({"data-proj-phase": "idea"});
+  const sortName = mkEl({"data-proj-sort": "name"}), sortOpen = mkEl({"data-proj-sort": "open"});
+  const boardBtn = mkEl({"data-proj-layout": "board"});
+  const projRoot = mkEl({"data-projects": ""});
+  projRoot.querySelectorAll = sel =>
+    sel === "[data-phase][data-name]" ? rows.slice() :
+    sel === "[data-proj-filter]" ? [pill, allPill] :
+    sel === "[data-proj-phase]" ? [phasePill] :
+    sel === "[data-proj-sort]" ? [sortName, sortOpen] :
+    sel === "[data-proj-layout]" ? [boardBtn] : [];
+  const appSelect = context.app.querySelectorAll;
+  context.app.querySelectorAll = sel => sel === "[data-projects]" ? [projRoot] : appSelect(sel);
+  vm.runInContext(slice("  var PROJ_FILTERS", "  function refresh(force)"), context);
+  const visible = () => rows.filter(r => !r.hidden).map(r => r.getAttribute("data-name"));
+  const order = () => rows.map(r => r.getAttribute("data-name"));
+  context.applyProjects();
+  assert.deepEqual(visible(), ["alpha"], "default filter is early-phase projects");
+  assert(allPill.classes.size === 0 && !pill.classes.has("on"));
+  // Click handler, captured from production source.
+  let clickHandler;
+  context.document.addEventListener = (type, fn) => { if (type === "click") { clickHandler = fn; } };
+  context.document.addEventListener("click", () => {});
+  const handlerSrc = source.slice(source.indexOf('  document.addEventListener("click", function (ev) {\n    var el = ev.target.closest("button, a, [data-open-project]")'));
+  const end = handlerSrc.indexOf("\n  });\n") + 7;
+  vm.runInContext(handlerSrc.slice(0, end), Object.assign(context, {
+    THEMES: ["auto"], app: Object.assign(context.app, {contains: () => true})}));
+  const click = el => clickHandler({target: {closest: () => el}});
+  click(pill);
+  assert.deepEqual(visible(), ["bravo", "charlie"], "active filter shows building/steady");
+  assert(pill.classes.has("on") && !allPill.classes.has("on"));
+  click(allPill);
+  assert.deepEqual(visible(), ["bravo", "alpha", "charlie"]);
+  click(phasePill);
+  assert.deepEqual(visible(), ["alpha"], "phase strip filters to that phase");
+  assert(phasePill.classes.has("on"));
+  click(allPill);
+  click(sortName);
+  assert.deepEqual(order(), ["alpha", "bravo", "charlie"], "sort by name");
+  click(sortOpen);
+  assert.deepEqual(order(), ["alpha", "charlie", "bravo"], "sort by open count, most first");
+  click(sortOpen);
+  assert(!sortOpen.classes.has("on") && storage["mahler.projects.sort"] === "phase", "second click returns to phase order");
+  click(boardBtn);
+  assert.equal(projRoot.getAttribute("data-layout"), "board");
+  // Refresh restoration: the stored choice is reapplied after the server swaps in fresh rows.
+  click(pill);
+  rows.forEach(r => { r.hidden = false; });
+  context.applyProjects();
+  assert.deepEqual(visible().sort(), ["bravo", "charlie"], "stored filter is restored after refresh");
+  // Row-click delegation: a non-button row element opens the detail through a forced refresh.
+  const rowEl = mkEl({"data-open-project": "mahler"});
+  const reqs = requests.length;
+  click(rowEl);
+  assert.equal(context.openProject, "mahler");
+  assert.equal(requests.length, reqs + 1);
+  assert(requests.at(-1).url.includes("project_detail=mahler"));
+  await finish(Promise.resolve(), "overview");
+  click(mkEl({"data-close-project": ""}));
+  assert.equal(context.openProject, null);
+
   // Telemetry excludes short tasks and works without the optional heap API.
   let callback, reports = [];
   context.PerformanceObserver = function (cb) {
