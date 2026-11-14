@@ -826,6 +826,10 @@ def _ship_project(ctx, project):
         waits.migrate_legacy(ctx, project)
     except Exception as e:                      # noqa: BLE001 — never break the pass
         ctx.say(f"{project}: wait migration failed — {e}")
+    try:
+        waits.migrate_vetting_parks(ctx, project)
+    except Exception as e:                      # noqa: BLE001 — never break the pass
+        ctx.say(f"{project}: vetting-park migration failed — {e}")
     migrate_capacity_waits(ctx, project)
     recover_capacity_waits(ctx, project)
     try:
@@ -1231,6 +1235,16 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
 
 def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
     """Hold an agent PR merge when changed direct dependencies lack safe evidence."""
+    detail = _vet_gate(ctx, project, item, pr, gh, view)
+    if detail is None:
+        return True
+    _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail)
+    return False
+
+
+def _vet_gate(ctx, project, item, pr, gh, view):
+    """Run the dependency-vetting gate: None when it passes (evidence recorded),
+    else the failure detail. Never parks or holds, so waits can re-run it."""
     n = item["number"]
     sha = view.get("headRefOid") or ""
     evidence_key = f"dependency-vetting-evidence:{project}#{n}:{pr}:{sha}"
@@ -1244,18 +1258,16 @@ def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
                     "clean": True,
                     "findings": [],
                 }))
-            return True
+            return None
         findings, blocked = dependency_vetting.vet(before, after)
     except (GHError, dependency_vetting.VettingError, KeyError, ValueError) as exc:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting failed; merge held: {exc}")
-        _park_dependency_vetting(ctx, project, item, pr, gh, view, str(exc))
-        return False
+        return str(exc)
     for finding in findings:
         ctx.say(f"{project}#{n}: PR #{pr} — {finding.report()}")
     if blocked:
         ctx.say(f"{project}#{n}: PR #{pr} — dependency vetting blocked merge: {blocked}")
-        _park_dependency_vetting(ctx, project, item, pr, gh, view, blocked)
-        return False
+        return str(blocked)
 
     serialized_findings = [
         {
@@ -1298,19 +1310,48 @@ def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
             )
             gh.comment(pr, comment_body)
             ctx.led.set_kv(comment_key, "1")
-    return True
+    return None
 
 
-def _park_dependency_vetting(ctx, project, item, pr, gh, view, detail):
+_UNSUPPORTED_LOCKFILE = re.compile(r"unsupported dependency lockfile change: (\S+)")
+
+
+def vetting_reason(pr, detail, kind="gate"):
+    """The persisted wait reason: the cause plus one concrete action (mahler#1561)."""
+    if kind == "evidence":
+        return (f"PR #{pr}: review blocked because conductor dependency-vetting gate evidence "
+                "was missing or disputed. Check gate evidence for this head, then resume shipping. "
+                "Mahler regenerates the evidence and requests a fresh review automatically.")
+    m = _UNSUPPORTED_LOCKFILE.search(detail or "")
+    if m:
+        return (f"PR #{pr} dependency vetting blocked: {detail}. Fix path: PR #{pr} changes "
+                f"unsupported lockfile {m.group(1)}. Revert that dependency/lockfile update "
+                "together, or add vetted support for the format to the conductor, then push "
+                "the corrected head. The format is never accepted automatically.")
+    return (f"PR #{pr} dependency vetting blocked: {detail}. "
+            "Provide resolvable exact dependency pins and publication/advisory evidence, "
+            "or replace the blocked dependency, then resume shipping. "
+            "Mahler re-runs the gate automatically.")
+
+
+def _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, *, kind="gate",
+                             comment_key=None):
+    """Hold a PR in a bounded D52 wait instead of a permanent park. The original
+    since/check count carry across resumes so the escalation timeout cannot restart."""
     n, led = item["number"], ctx.led
-    reason = (f"PR #{pr} dependency vetting blocked: {detail}. "
-              "Provide resolvable exact dependency pins and publication/advisory evidence, "
-              "or replace the blocked dependency, then resume shipping.")
-    key = f"dependency-vetting:{project}#{n}:{pr}:{view.get('headRefOid', '')}"
+    sha = view.get("headRefOid") or ""
+    reason = vetting_reason(pr, detail, kind)
+    key = comment_key or f"dependency-vetting:{project}#{n}:{pr}:{sha}"
     if not led.get_kv(key):
-        gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
+        try:
+            gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
+        except Exception:                       # noqa: BLE001 — the wait is what matters
+            pass
         led.set_kv(key, "commented")
-    led.set_state(project, n, "parked", reason)
+    since, checks = waits.vetting_carry(led, project, n, pr, kind)
+    waits.hold(led, project, n, "dependency_vetting", reason, resume="verifying",
+               wake={"pr": pr, "kind": kind, "sha": sha}, since=since, checks=checks)
+    waits.save_vetting_carry(led, project, n, pr, kind, since, checks)
     led.release(project, n, holder=CONDUCTOR)
 
 
@@ -2443,18 +2484,11 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
         ctx.say(f"{project}#{n}: PR #{pr} — review fix still in progress")
         return
     if not base_conflict and not design_plan and _all_missing_gate_evidence(findings, led=led, project=project, number=n):
-        reason = (f"PR #{pr}: review blocked because conductor dependency-vetting gate evidence "
-                  "was missing or disputed. Check gate evidence for this head, then resume shipping.")
-        ctx.say(f"{project}#{n}: {reason}")
-        key = f"review-missing-gate-evidence:{project}#{n}:{pr}:{sha}"
-        if not led.get_kv(key):
-            try:
-                ctx.gh(project).comment(pr, "<!-- mahler:agent -->\n" + reason)
-            except Exception:
-                pass
-            led.set_kv(key, "commented")
-        led.set_state(project, n, "parked", reason)
-        led.release(project, n, holder=CONDUCTOR)
+        ctx.say(f"{project}#{n}: PR #{pr}: review blocked because conductor dependency-vetting "
+                "gate evidence was missing or disputed")
+        _hold_dependency_vetting(
+            ctx, project, item, pr, ctx.gh(project), view, "", kind="evidence",
+            comment_key=f"review-missing-gate-evidence:{project}#{n}:{pr}:{sha}")
         return
     dup_key = f"reviewdup:{project}#{n}"
     if (not base_conflict and _kv_json(led, dup_key).get("sha") != sha

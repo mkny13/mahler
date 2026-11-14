@@ -3540,7 +3540,7 @@ class ShipTests(unittest.TestCase):
                 mock.patch.object(ship, "_start_review_run") as review_start, \
                 mock.patch.object(ship, "_review_triggered_fix") as fix:
             self.ship()
-            self.assertEqual(self.item()["state"], "parked")
+            self.assertEqual(self.item()["state"], "waiting")
             self.assertEqual(len(self.gh.comments), 1)
             self.assertIn("dependency vetting", self.gh.comments[0])
             self.assertIn("1.+", self.gh.comments[0])
@@ -3706,7 +3706,7 @@ class ShipTests(unittest.TestCase):
             ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
         mock_start.assert_not_called()
         mock_fix.assert_not_called()
-        self.assertEqual(self.item()["state"], "parked")
+        self.assertEqual(self.item()["state"], "waiting")
         self.assertIn("dependency vetting blocked", self.last_event())
         self.assertIsNone(self.led.lease("x", 5))
         comment_count = len(self.gh.comments)
@@ -3733,9 +3733,200 @@ class ShipTests(unittest.TestCase):
                 mock.patch.object(ship, "start") as mock_start:
             ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), finding_text)
             mock_start.assert_not_called()
-        self.assertEqual(self.item()["state"], "parked")
+        self.assertEqual(self.item()["state"], "waiting")
         self.assertIn("missing or disputed", self.last_event())
         self.assertIsNone(self.led.lease("x", 5))
+
+    # ---- mahler#1561: vetting parks become bounded waits ----
+
+    def _clock(self):
+        self.t = NOW
+        self.led.clock = lambda: self.t
+
+    def _tick(self, **delta):
+        self.t += timedelta(**delta)
+        return self.ship()
+
+    def test_vetting_gate_failure_waits_then_recovers_on_same_head(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        self.led.claim("x", 5, ship.CONDUCTOR, "auto", 60, capacity=False)
+        with mock.patch.object(self.gh, "dependency_files",
+                               side_effect=ship.GHError("fatal: Needed a single revision")):
+            self.ship()
+            self.assertEqual(self.item()["state"], "waiting")
+            rec = self.wait_record()
+            self.assertEqual(rec["cause"], "dependency_vetting")
+            self.assertEqual((rec["resume"], rec["wake"]["pr"]), ("verifying", 88))
+            self.assertIsNone(self.led.lease("x", 5))
+            self._tick(minutes=5)                      # not due: nothing happens
+            self.assertEqual(self.item()["state"], "waiting")
+            self._tick(minutes=15)                     # due, still failing
+            self.assertEqual(self.item()["state"], "waiting")
+            self.assertEqual(self.wait_record()["checks"], 1)
+            self.assertEqual(self.gh.merged, [])
+        self.assertEqual(len(self.gh.comments), 1)
+        self.t += timedelta(minutes=60)                # repaired: same head, gate passes
+        with mock.patch.object(ship, "_review_gate"):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.led.get_kv("wait:x#5"))
+        self.assertEqual(len(self.gh.comments), 1)
+
+    def test_unsupported_lockfile_names_path_and_recovers_on_corrected_head(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        bad = ({}, {"pnpm-lock.yaml": "lockfileVersion: 9\n"})
+        with mock.patch.object(self.gh, "dependency_files", return_value=bad), \
+                mock.patch.object(ship.dependency_vetting, "changed_dependencies", return_value=True), \
+                mock.patch.object(ship.dependency_vetting, "vet", side_effect=ship.dependency_vetting.VettingError(
+                    "unsupported dependency lockfile change: pnpm-lock.yaml")):
+            self.ship()
+            reason = self.wait_record()["reason"]
+            self.assertIn("pnpm-lock.yaml", reason)
+            self.assertIn("PR #88", reason)
+            self.assertIn("Revert that dependency/lockfile update together", reason)
+            self.assertIn("add vetted support", reason)
+            self._tick(minutes=15)
+            self.assertEqual(self.item()["state"], "waiting")
+        self.gh.head_sha = "def456"                   # corrected head
+        self.t += timedelta(hours=1)
+        with mock.patch.object(ship, "_review_gate"):
+            self.ship()
+        self.assertEqual(self.item()["state"], "verifying")
+
+    def test_vetting_wait_persistent_failure_escalates_once_keeping_since(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88)
+        with mock.patch.object(self.gh, "dependency_files", side_effect=ship.GHError("boom")):
+            self.ship()
+            since = self.wait_record()["since"]
+            pings = 0
+            for _ in range(60):
+                ping = self._tick(hours=2)
+                pings += ping.call_count
+                if self.item()["state"] != "waiting":
+                    break
+                self.assertEqual(self.wait_record()["since"], since)
+        item = self.item()
+        self.assertEqual(item["state"], "needs_you")
+        self.assertIn("PR #88", item["question"])
+        self.assertIn("boom", item["question"])
+        self.assertIn("retry now", item["options"])
+        self.assertEqual(pings, 1)
+        self._tick(hours=6)
+        self.assertEqual(self.item()["state"], "needs_you")
+        self.assertEqual(len(self.gh.comments), 1)
+
+    def test_vetting_wait_age_survives_resume_and_fail_again(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88)
+        fail = mock.patch.object(self.gh, "dependency_files", side_effect=ship.GHError("boom"))
+        with fail:
+            self.ship()
+            since = self.wait_record()["since"]
+            self.t += timedelta(hours=1)
+            self.led.set_state("x", 5, "verifying", "manual resume")   # resumed, fails again
+            self.ship()
+        rec = self.wait_record()
+        self.assertEqual(rec["since"], since)
+
+    def test_vetting_wait_age_and_checks_survive_late_retry_now(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88)
+        fail = mock.patch.object(self.gh, "dependency_files", side_effect=ship.GHError("boom"))
+        with fail:
+            self.ship()
+            since = self.wait_record()["since"]
+            expire_waits(self.led)
+            self._tick(minutes=15)
+            self.assertEqual(self.wait_record()["checks"], 1)
+
+            self.t += timedelta(hours=13)
+            sync.resume_item(self.led, "x", 5, "retry now")
+            self.ship()
+
+        record = self.wait_record()
+        self.assertEqual(record["since"], since)
+        self.assertEqual(record["checks"], 1)
+
+    def test_evidence_only_review_failure_gets_fresh_review_on_unchanged_head(self):
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        text = ("lacks required evidence from the conductor's dependency-vetting gate. "
+                "The conductor has not posted gate evidence")
+        self.led.set_kv("review:x#5", json.dumps(
+            {"sha": self.gh.head_sha, "pr": 88, "verdict": "fail", "findings": text}))
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "start") as fix:
+            ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), text)
+            fix.assert_not_called()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertEqual(self.wait_record()["wake"]["kind"], "evidence")
+        self.t += timedelta(minutes=15)
+        self.ship()                                    # wake: gate re-run, stale review dropped
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertIsNone(self.led.get_kv("review:x#5"))
+        evidence = json.loads(self.led.get_kv(f"dependency-vetting-evidence:x#5:88:{self.gh.head_sha}"))
+        self.assertTrue(evidence["clean"])
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_start_review_run") as review_start:
+            ship._review_gate(self.ctx, "x", self.item(), 88, self.gh.pr_view(88))
+        review_start.assert_called_once()
+
+    def _park_legacy(self, n, reason, pr=88):
+        self.led.upsert_item("x", n, pr=pr, state="verifying", labels=json.dumps(["size:m"]))
+        self.led.set_state("x", n, "parked", reason)
+
+    LEGACY_GATE = ("PR #88 dependency vetting blocked: unsupported dependency lockfile change: "
+                   "pnpm-lock.yaml. Provide resolvable exact dependency pins and publication/advisory "
+                   "evidence, or replace the blocked dependency, then resume shipping.")
+    LEGACY_EVIDENCE = ("PR #88: review blocked because conductor dependency-vetting gate evidence "
+                       "was missing or disputed. Check gate evidence for this head, then resume shipping.")
+
+    def test_migration_recovers_both_legacy_shapes_despite_old_marker_and_is_idempotent(self):
+        self.led.set_kv("waits-migrated:x", "1")
+        self._park_legacy(5, self.LEGACY_GATE)
+        self._park_legacy(6, self.LEGACY_EVIDENCE)
+        self.led.set_state("x", 6, "parked", self.LEGACY_EVIDENCE)
+        self.led.upsert_item("x", 6, pr=88)
+        self.ship()
+        for n, kind in ((5, "gate"), (6, "evidence")):
+            self.assertEqual(self.item(n)["state"], "waiting")
+            self.assertEqual(self.wait_record(n)["wake"]["kind"], kind)
+        self.assertIn("pnpm-lock.yaml", self.wait_record(5)["reason"])
+        self.assertEqual(self.led.q1("SELECT COUNT(*) c FROM events WHERE kind='wait' AND number=5")["c"], 1)
+        self.ship()
+        self.assertEqual(self.led.q1("SELECT COUNT(*) c FROM events WHERE kind='wait' AND number=5")["c"], 1)
+
+    def test_migration_leaves_manual_unrelated_closed_active_and_human_alone(self):
+        self._park_legacy(5, "parked by owner: waiting for a vendor")
+        self._park_legacy(6, "PR #88 failed for some other reason")
+        self._park_legacy(7, self.LEGACY_GATE, pr=89)    # reason names a different PR
+        self._park_legacy(8, self.LEGACY_GATE)           # human lease
+        self.led.claim("x", 8, "human", "session", 30)
+        self._park_legacy(9, self.LEGACY_GATE)           # active run
+        self.led.create_run(project="x", number=9, role="fix", platform="p", status="running",
+                            epoch=1)
+        self.ship()
+        for n in (5, 6, 7, 8, 9):
+            self.assertEqual(self.item(n)["state"], "parked", n)
+        self._park_legacy(10, self.LEGACY_GATE)
+        self.led.set_kv("waits-vetting-migrated:v1:x", "")
+        self.gh.view_state = "CLOSED"
+        self.ship()
+        self.assertEqual(self.item(10)["state"], "parked")
+
+    def test_migration_retries_after_pr_lookup_failure(self):
+        self._park_legacy(5, self.LEGACY_GATE)
+        self.gh.fail_view = {88}
+        self.ship()
+        self.assertEqual(self.item()["state"], "parked")
+        self.assertFalse(self.led.get_kv("waits-vetting-migrated:v1:x"))
+        self.gh.fail_view = set()
+        self.ship()
+        self.assertEqual(self.item()["state"], "waiting")
+        self.assertTrue(self.led.get_kv("waits-vetting-migrated:v1:x"))
 
     def test_review_with_code_defects_still_launches_fix(self):
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
@@ -3820,7 +4011,7 @@ class ShipTests(unittest.TestCase):
                 mock.patch.object(ship, "start") as mock_start:
             ship._review_triggered_fix(self.ctx, "x", self.item(), 88, self.gh.pr_view(88), "")
             mock_start.assert_not_called()
-        self.assertEqual(self.item()["state"], "parked")
+        self.assertEqual(self.item()["state"], "waiting")
         self.assertIn("missing or disputed", self.last_event())
         self.assertIsNone(self.led.lease("x", 5))
 

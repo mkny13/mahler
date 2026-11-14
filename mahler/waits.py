@@ -14,7 +14,8 @@ from . import ci_blockers, no_change
 from .ledger import iso, parse
 
 CAUSES = ("ci_repo_wide", "ci_stalled", "ci_cancelled", "merge_queue", "capacity", "github", "setup",
-          "worktree_conflict", "review_inconclusive", "review_nonconvergent", "launch", "other")
+          "worktree_conflict", "review_inconclusive", "review_nonconvergent", "launch",
+          "dependency_vetting", "other")
 RESUMES = ("verifying", "ready", "inbox")
 BACKOFF_MINUTES = (15, 30, 60, 120, 240, 360)   # capped at the last value
 # A cause whose first retry must not come sooner than this (mahler#1261).
@@ -210,6 +211,61 @@ def _wake_review_inconclusive(ctx, project, item, record):
     return True, "retrying review with a fresh inconclusive count"
 
 
+def vetting_carry_key(project, n, pr, kind):
+    return f"dep-vet-carry:{project}#{n}:{pr}:{kind}"
+
+
+def vetting_carry(led, project, n, pr, kind):
+    """(since, checks) of a vetting wait on this PR, retained through manual retries."""
+    try:
+        rec = json.loads(led.get_kv(vetting_carry_key(project, n, pr, kind)) or "null")
+    except ValueError:
+        rec = None
+    if isinstance(rec, dict) and parse(rec.get("since")):
+        return rec["since"], int(rec.get("checks") or 0)
+    return iso(led.now()), 0
+
+
+def save_vetting_carry(led, project, n, pr, kind, since, checks):
+    led.set_kv(vetting_carry_key(project, n, pr, kind), json.dumps(
+        {"since": since, "checks": checks, "last": iso(led.now())}))
+
+
+def _wake_dependency_vetting(ctx, project, item, record):
+    """Re-run the gate against the PR's current head (fetching it again). Missing
+    conductor evidence never launches a build or fix: a passing gate resumes
+    shipping, and an evidence-only review failure is dropped so a fresh review runs."""
+    from . import ship
+
+    led, n = ctx.led, item["number"]
+    wake = record.get("wake") or {}
+    pr = item["pr"] or wake.get("pr")
+    kind = wake.get("kind") or "gate"
+    if not pr:
+        return True, "no PR to vet"
+    gh = ctx.gh(project)
+    try:
+        view = gh.pr_view(pr)
+    except Exception as exc:  # noqa: BLE001 — a lookup failure is not a pass
+        return False, f"PR lookup failed: {exc}"
+    if view.get("state") not in (None, "OPEN"):
+        return True, "PR is no longer open"
+    detail = ship._vet_gate(ctx, project, item, pr, gh, view)
+    if detail is not None:
+        reason = ship.vetting_reason(pr, detail, kind)
+        if reason != record.get("reason"):
+            led.set_state(project, n, "waiting", f"waiting (dependency_vetting): {reason}",
+                          question=None, options="[]")
+            record["reason"] = reason
+            record["bound_at"] = led.item(project, n)["state_changed_at"]
+        return False, f"gate still failing: {detail}"
+    if kind == "evidence":
+        led.set_kv(f"review:{project}#{n}", None)
+    save_vetting_carry(led, project, n, pr, kind, record["since"],
+                       int(record.get("checks") or 0) + 1)
+    return True, "gate evidence regenerated for the current head"
+
+
 WAKES = {cause: _wake_time for cause in CAUSES}
 WAKES["ci_repo_wide"] = _wake_ci_repo_wide
 WAKES["ci_stalled"] = _wake_ci_stalled
@@ -218,6 +274,7 @@ WAKES["merge_queue"] = _wake_merge_queue
 WAKES["capacity"] = _wake_capacity
 WAKES["worktree_conflict"] = _wake_worktree_conflict
 WAKES["review_inconclusive"] = _wake_review_inconclusive
+WAKES["dependency_vetting"] = _wake_dependency_vetting
 
 
 def _fresh_record(led, item):
@@ -261,6 +318,12 @@ def _recheck_item(ctx, project, item):
         return
     record["checks"] = int(record.get("checks") or 0) + 1
     record["next_at"] = iso(now + backoff(record["checks"] + 1))
+    if cause == "dependency_vetting":
+        wake = record.get("wake") or {}
+        pr = item["pr"] or wake.get("pr")
+        if pr:
+            save_vetting_carry(led, project, n, pr, wake.get("kind") or "gate",
+                               record["since"], record["checks"])
     led.set_kv(key(project, n), json.dumps(record))
 
 
@@ -379,6 +442,67 @@ def migrate_legacy(ctx, project):
             ctx.say(f"{project}#{n}: stranded {item['state']} → waiting ({cause})")
         except Exception as exc:  # noqa: BLE001 — one item must not stop the migration
             ctx.say(f"{project}#{n}: wait migration skipped — {exc}")
+    if not skipped:
+        led.set_kv(gate, "1")
+    return moved
+
+
+# ---------- recover vetting parks made before they became waits (mahler#1561) ----------
+
+VETTING_MIGRATION_VERSION = 1
+_VETTING_PARKS = (
+    (re.compile(r"PR #(\d+) dependency vetting blocked: (.*)\. Provide resolvable exact "
+                r"dependency pins and publication/advisory evidence, or replace the blocked "
+                r"dependency, then resume shipping\.", re.DOTALL), "gate"),
+    (re.compile(r"PR #(\d+): review blocked because conductor dependency-vetting gate evidence "
+                r"was missing or disputed\. Check gate evidence for this head, then resume "
+                r"shipping\."), "evidence"),
+)
+
+
+def migrate_vetting_parks(ctx, project):
+    """Move conductor-made vetting parks into ``waiting``. Its own versioned marker, so
+    the D52 migration's marker does not suppress it. Owner parks, other reasons, closed
+    PRs, active runs and human leases are left alone; lookup failures retry next tick."""
+    from .ledger import CONDUCTOR
+    from .ship import vetting_reason
+
+    led = ctx.led
+    gate = f"waits-vetting-migrated:v{VETTING_MIGRATION_VERSION}:{project}"
+    if ctx.dry_run or led.get_kv(gate):
+        return 0
+    moved, skipped = 0, False
+    active = led.active_runs()
+    for item in led.items(project, ["parked"]):
+        n = item["number"]
+        try:
+            reason = _last_state_reason(led, project, n)
+            match = kind = None
+            for pattern, k in _VETTING_PARKS:
+                match = pattern.fullmatch(reason or "")
+                if match:
+                    kind = k
+                    break
+            if not match or not item["pr"] or int(match.group(1)) != item["pr"]:
+                continue
+            if any(r["project"] == project and r["number"] == n for r in active):
+                continue
+            lease = led.lease(project, n)
+            if lease and not (lease["holder"] == CONDUCTOR or lease["holder"].endswith("/conductor")):
+                continue
+            view = ctx.gh(project).pr_view(item["pr"])
+            if view.get("state") not in (None, "OPEN"):
+                continue
+            detail = match.group(2) if kind == "gate" else ""
+            hold(led, project, n, "dependency_vetting", vetting_reason(item["pr"], detail, kind),
+                 resume="verifying",
+                 wake={"pr": item["pr"], "kind": kind, "sha": view.get("headRefOid") or ""})
+            led.release(project, n, holder=CONDUCTOR)
+            moved += 1
+            ctx.say(f"{project}#{n}: vetting park → waiting (dependency_vetting)")
+        except Exception as exc:  # noqa: BLE001 — retry this item on a later tick
+            skipped = True
+            ctx.say(f"{project}#{n}: vetting-park migration skipped — {exc}")
     if not skipped:
         led.set_kv(gate, "1")
     return moved
