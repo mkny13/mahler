@@ -3956,7 +3956,7 @@ class ProjectsPageTests(unittest.TestCase):
             self.assertEqual(html.count('aria-current="step"'), 3)
             self.assertIn("about ideaa", html)
             self.assertIn("Last touched 1d ago", html)
-            self.assertIn("not available", html)
+            self.assertIn(">Park</button>", html)
             self.assertIn('data-mode="list"', html)
             self.assertNotIn('data-mode="incubator"', html)
             self.assertEqual(html.count("data-proj-mode="), 2)
