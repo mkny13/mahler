@@ -204,7 +204,45 @@ def atlas_state(ctx, row, payload):
     return "done", target or "active"
 
 
-HANDLERS = {'atlas_state': atlas_state, 'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
+def atlas_issue(ctx, row, payload):
+    """File one Incubator issue through the target project's own client. Never
+    touches a folder, git or repository creation (mahler#1538)."""
+    from .. import atlas
+    from .state import issue_target
+    target = payload["target"]
+    if target not in {p["name"] for p in config.enabled_projects(ctx.cfg)}:
+        return "skipped", "the target project is disabled"
+    rec = next((p for p in atlas.load(ctx.led) if p.get("key") == payload["key"]), None)
+    if rec is None:
+        return "skipped", "the project is no longer in the latest scan"
+    if rec["phase"] != payload["phase"]:
+        return "skipped", f"the project moved from {payload['phase']} to {rec['phase']}"
+    if atlas.states(ctx.led).get(payload["key"]):
+        return "skipped", "the project is parked or archived"
+    now_target, reason = issue_target(ctx.cfg, rec, payload["kind"])
+    if now_target != target:
+        return "skipped", reason or "the target changed"
+    pol = config.project_policy(ctx.cfg, target)
+    labels = []
+    if pol.get("scope") == "label":
+        labels.append(pol["scope_label"])
+    labels += ["type:feature", "p2", "mahler:inbox"]
+    body = payload["body"]
+    gh = ctx.gh(target)
+    marker = f"<!-- mahler:atlas-issue:{payload.get('client_id') or row['id']} -->"
+    url = gh.issue_by_marker(marker)
+    if not url:
+        url = gh.create_issue(payload["title"], f"{body}\n\n{marker}".strip(), labels)
+    try:
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+    except ValueError:
+        raise ValueError(f"gh issue create: no issue number in {url[:200]!r}")
+    ctx.led.event("atlas_issue", target, number,
+                  {"via": "console", "key": payload["key"], "kind": payload["kind"], "url": url})
+    return "done", f"{url} (#{number})"
+
+
+HANDLERS = {'atlas_issue': atlas_issue, 'atlas_state': atlas_state, 'answer': answer, 'stop_run': stop_run, 'capture': capture, 'revert': revert,
             'uat_fail': uat_fail, 'cut_release': cut_release}
 
 

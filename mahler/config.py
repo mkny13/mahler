@@ -226,7 +226,7 @@ DEFAULTS = {
     # project inventory (mahler#1532): direct children of scan_roots, plus
     # Claude Code session history and managed projects; cached by the tick
     "atlas": {"scan_roots": ["~/scripts", "/Volumes/ExtSSD160/scripts"],
-              "ignore": [], "phase": {}},
+              "ignore": [], "phase": {}, "intake_project": ""},
     # daily janitor (mahler#7, DESIGN D12): prune worktrees of ended runs and
     # old mahler/snapshot|abandoned branches; once-only via the ledger kv table
     "janitor": {"retention_days": 14, "worktree_grace_hours": 24},
@@ -865,6 +865,11 @@ def atlas_policy(cfg):
         if (not isinstance(v, list)
                 or any(not isinstance(x, str) or not x.strip() for x in v)):
             raise ValueError(f"atlas.{key} must be a list of non-empty strings")
+    intake = out["intake_project"]
+    if not isinstance(intake, str):
+        raise ValueError("atlas.intake_project must be a string")
+    if intake.strip() and intake not in {p["name"] for p in enabled_projects(cfg)}:
+        raise ValueError(f"atlas.intake_project {intake!r} must name an enabled project")
     if not isinstance(out["phase"], dict):
         raise ValueError("atlas.phase must be a table")
     for k, v in out["phase"].items():

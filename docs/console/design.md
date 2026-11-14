@@ -591,6 +591,23 @@ Backlog on desktop; the rail count is the number of early projects.
   the nav badge. The `Parked & archived` filter shows both as cards with a Restore button.
   Restore removes the override, so the record returns to wherever its Atlas phase puts it.
   Archive asks for confirmation (`data-confirm`). Same controls on desktop and phone.
+- **Incubator issues (mahler#1538):** each card's next step opens a server-rendered composer
+  (title and body, editable) that queues `POST /api/atlas_issue {key, kind, title, body,
+  client_id}` for 60 seconds, with a pending line and Undo (`atlas_issue_undo {id}`). Targets
+  are never taken from the request: `File as issue` (idea) and `Onboard to Mahler`
+  (prototype) go to `[atlas] intake_project`, an optional enabled Mahler project (for example a
+  managed ideas repository; validated at load, nothing hard-coded). Without it both buttons are
+  disabled with the reason. `File first issue` (onboarded) goes to the card's own enabled
+  managed project, with a blank title and body. Templates (`state.issue_template`) use only
+  Atlas fields: the idea carries its description and source key; the prototype is titled
+  `Onboard <name> to Mahler` with path/repo, description and a checklist (repository
+  visibility, git/GitHub, project config, first product issue). **Onboarding** here means that
+  request issue only: the action never runs git, creates a repository, or touches the folder.
+  The tick rechecks key, expected phase, parked/archived state, enabled target and target
+  mapping, then creates the issue through the target project's own GitHub client with its scope
+  label (when configured) plus `type:feature`, `p2`, `mahler:inbox`. A `client_id` (and a body
+  marker) makes repeats idempotent. The outbox result holds the issue URL and number; an
+  `atlas_issue` event is recorded on the target project; failures stay visible as failed actions.
 - **Empty state:** "No scan yet. It runs hourly, or run `mahler atlas scan`." (no cache, or a
   corrupt one).
 
