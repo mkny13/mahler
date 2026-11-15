@@ -68,6 +68,56 @@ class DependencyVettingTests(unittest.TestCase):
 
         return open_request, calls
 
+    def test_transitive_npm_lock_changes_are_vetted(self):
+        for lockname in ("package-lock.json", "npm-shrinkwrap.json"):
+            for location in ("node_modules/safe-package",
+                             "node_modules/parent/node_modules/safe-package"):
+                for old_version in (None, "1.2.2"):
+                    with self.subTest(lock=lockname, location=location, old=old_version):
+                        def files(version):
+                            packages = {location: {"version": version}} if version else {}
+                            return {"sync/package.json": '{"dependencies": {}}',
+                                    "sync/" + lockname: json.dumps({"packages": packages})}
+                        opener, calls = self.opener()
+                        findings, blocked = vetting.vet(
+                            files(old_version), files("1.2.3"), now=NOW, opener=opener)
+                        self.assertIsNone(blocked)
+                        self.assertEqual(len(findings), 1)
+                        self.assertIn("Publisher", findings[0].report())
+                        self.assertEqual(len(calls), 2)
+
+    def test_transitive_npm_metadata_drops_are_ignored(self):
+        before = {"package-lock.json": json.dumps({"packages": {
+            "node_modules/undici": {"version": "7.30.2", "libc": ["glibc"],
+                                    "cpu": ["x64"], "os": ["linux"], "integrity": "old"}}})}
+        after = {"package-lock.json": json.dumps({"packages": {
+            "node_modules/undici": {"version": "7.30.2"}}})}
+        self.assertEqual(vetting.changed_dependencies(before, after), [])
+
+    def test_transitive_python_lock_changes_are_vetted(self):
+        for lockname in ("uv.lock", "poetry.lock"):
+            with self.subTest(lock=lockname):
+                after = {lockname: '[[package]]\nname = "requests"\nversion = "2.31.0"\n'}
+                before = {lockname: after[lockname].replace("2.31.0", "2.30.0")}
+                opener, calls = self.opener()
+                findings, blocked = vetting.vet(before, after, now=NOW, opener=opener)
+                self.assertIsNone(blocked)
+                self.assertEqual(len(findings), 1)
+                self.assertIn("Publisher", findings[0].report())
+                self.assertEqual(len(calls), 2)
+
+    def test_transitive_custom_registry_is_refused(self):
+        for files in (
+            {"package-lock.json": json.dumps({"packages": {"node_modules/pkg": {
+                "version": "1.2.3", "resolved": "https://other.test/pkg.tgz"}}})},
+            {"uv.lock": '[[package]]\nname = "pkg"\nversion = "1.2.3"\n'
+                        'source = { registry = "https://other.test/simple" }\n'},
+        ):
+            opener = mock.Mock()
+            with self.assertRaises(vetting.VettingError):
+                vetting.vet({}, files, opener=opener)
+            opener.assert_not_called()
+
     def test_npm_addition_uses_exact_lock_resolution_and_reports_metadata(self):
         opener, calls = self.opener()
         findings, blocked = vetting.vet({}, npm_files(), now=NOW, opener=opener)

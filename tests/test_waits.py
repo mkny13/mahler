@@ -102,6 +102,58 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "evidence"), (iso(T0), 2))
         self.assertIn("missing or disputed", ship.vetting_reason(88, "", kind="evidence"))
 
+    def test_identical_evidence_rechecks_once_then_escalates(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = mock.Mock()
+        view = {"state": "OPEN", "headRefOid": "abc", "baseRefName": "main"}
+        gh.pr_view.return_value = view
+        gh.dependency_files.return_value = ({}, {})
+        self.ctx.gh = lambda project: gh
+        evidence_key = "dependency-vetting-evidence:p#1:88:abc"
+        self.led.set_kv(evidence_key, json.dumps(
+            {"sha": "abc", "clean": True, "findings": []}))
+        self.led.set_kv("review:p#1", "failed review")
+        ship._hold_dependency_vetting(self.ctx, "p", self.led.item("p", 1),
+                                      88, gh, view, "", kind="evidence")
+        self.advance(minutes=15)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "waiting")
+        self.assertEqual(self.led.get_kv("review:p#1"), "failed review")
+        self.advance(minutes=30)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(self.led.item("p", 1)["state"], "needs_you")
+        self.assertIn("identical evidence", self.led.item("p", 1)["question"])
+        self.assertIn("abc", self.led.item("p", 1)["question"])
+        self.assertFalse(waits.load(self.led, "p", 1))
+        self.assertEqual(len(self.pings), 1)
+        waits.recheck(self.ctx, "p")
+        self.assertEqual(len(self.pings), 1)
+
+    def test_evidence_wait_resumes_when_evidence_or_head_changes(self):
+        for new_sha in ("abc", "def"):
+            with self.subTest(sha=new_sha):
+                self.led.upsert_item("p", 1, pr=88)
+                gh = mock.Mock()
+                view = {"state": "OPEN", "headRefOid": "abc", "baseRefName": "main"}
+                self.ctx.gh = lambda project: gh
+                self.led.set_kv("dependency-vetting-evidence:p#1:88:abc",
+                                json.dumps({"sha": "abc", "clean": True, "findings": []}))
+                ship._hold_dependency_vetting(self.ctx, "p", self.led.item("p", 1),
+                                              88, gh, view, "", kind="evidence")
+                self.led.set_kv("review:p#1", "failed review")
+                gh.pr_view.return_value = {**view, "headRefOid": new_sha}
+                def regenerate(*args):
+                    evidence = {"sha": new_sha, "clean": True, "findings": []}
+                    if new_sha == "abc":
+                        evidence = {**evidence, "clean": False, "findings": [{"name": "undici"}]}
+                    self.led.set_kv("dependency-vetting-evidence:p#1:88:" + new_sha,
+                                    json.dumps(evidence))
+                self.advance(hours=1)
+                with mock.patch("mahler.ship._vet_gate", side_effect=regenerate):
+                    waits.recheck(self.ctx, "p")
+                self.assertEqual(self.led.item("p", 1)["state"], "verifying")
+                self.assertFalse(self.led.get_kv("review:p#1"))
+
     def test_dependency_vetting_comment_failure_retries_on_same_cause(self):
         self.led.upsert_item("p", 1, pr=88)
         gh = SiteGH()

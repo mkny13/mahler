@@ -231,6 +231,15 @@ def save_vetting_carry(led, project, n, pr, kind, since, checks):
         {"since": since, "checks": checks, "last": iso(led.now())}))
 
 
+def vetting_evidence(led, project, n, pr, sha):
+    """Compare structured evidence, independent of JSON formatting."""
+    try:
+        return json.loads(led.get_kv(
+            f"dependency-vetting-evidence:{project}#{n}:{pr}:{sha}") or "null")
+    except ValueError:
+        return None
+
+
 def _wake_dependency_vetting(ctx, project, item, record):
     """Re-run the gate against the PR's current head (fetching it again). Missing
     conductor evidence never launches a build or fix: a passing gate resumes
@@ -250,6 +259,8 @@ def _wake_dependency_vetting(ctx, project, item, record):
         return False, f"PR lookup failed: {exc}"
     if view.get("state") not in (None, "OPEN"):
         return True, "PR is no longer open"
+    sha = view.get("headRefOid") or ""
+    previous = wake.get("evidence", vetting_evidence(led, project, n, pr, sha))
     detail = ship._vet_gate(ctx, project, item, pr, gh, view)
     if detail is not None:
         reason = ship.vetting_reason(pr, detail, kind)
@@ -273,6 +284,20 @@ def _wake_dependency_vetting(ctx, project, item, record):
                     led.set_kv(key, "commented")
         return False, f"gate still failing: {detail}"
     if kind == "evidence":
+        current = vetting_evidence(led, project, n, pr, sha)
+        if sha and sha == wake.get("sha") and current == previous:
+            reason = (f"PR #{pr}: review blocked on missing or disputed gate evidence on "
+                      f"head {sha}, but gate recheck produced identical evidence. "
+                      "Correct the conductor evidence or push a corrected head, then retry.")
+            if int(record.get("checks") or 0) >= 1:
+                led.set_state(project, n, "needs_you", "dependency-vetting evidence did not change",
+                              question=reason, options=json.dumps(["retry now", "park"]))
+                clear(led, project, n)
+                ctx.ping(f"{project}#{n} dependency evidence unchanged", reason,
+                         project=project, number=n)
+            else:
+                record["wake"] = {**wake, "evidence": current}
+            return False, reason
         led.set_kv(f"review:{project}#{n}", None)
     save_vetting_carry(led, project, n, pr, kind, record["since"],
                        int(record.get("checks") or 0) + 1)
@@ -324,6 +349,8 @@ def _recheck_item(ctx, project, item):
     if next_at and now < next_at:
         return
     met, detail = WAKES.get(cause, _wake_time)(ctx, project, item, record)
+    if led.item(project, n)["state"] != "waiting":
+        return
     if met:
         led.set_state(project, n, record["resume"], f"wait over ({cause}): {detail}")
         clear(led, project, n)
