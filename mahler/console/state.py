@@ -1105,6 +1105,59 @@ PROJECT_NEXT_STEPS = {
     "prototype": ("onboard", "Onboard it to Mahler so agents can work its backlog."),
     "onboarded": ("file_first_issue", "File its first issue so Mahler can ship something."),
 }
+ISSUE_ACTIONS = {"file_issue": "File as issue", "onboard": "Onboard to Mahler",
+                 "file_first_issue": "File first issue"}
+NO_INTAKE = "Set [atlas] intake_project in config.toml to an enabled project to use this."
+
+
+def issue_target(cfg, rec, kind):
+    """(target project, None) or (None, why not) for an Incubator issue kind."""
+    enabled = {p["name"] for p in config.enabled_projects(cfg)}
+    if kind in ("file_issue", "onboard"):
+        intake = config.atlas_policy(cfg).get("intake_project", "").strip()
+        if not intake:
+            return None, NO_INTAKE
+        if intake not in enabled:
+            return None, f"The intake project {intake} is not enabled."
+        want = {"file_issue": "idea", "onboard": "prototype"}[kind]
+        return (intake, None) if rec.get("phase") == want else (None, f"That is not {'an' if want == 'idea' else 'a'} {want}.")
+    if kind == "file_first_issue":
+        proj = rec.get("project")
+        if rec.get("phase") != "onboarded" or not rec.get("managed") or not proj:
+            return None, "That is not an onboarded project."
+        if proj not in enabled:
+            return None, f"{proj} is not enabled."
+        return proj, None
+    return None, "Unknown action."
+
+
+def issue_template(rec, kind, repo=None):
+    """Finite title/body templates from trusted Atlas fields only."""
+    name, desc = rec.get("name", ""), (rec.get("desc") or "").strip()
+    if kind == "file_issue":
+        body = [desc or "(no description)", "", f"Source: Atlas idea `{rec.get('key', '')}`"]
+        return name, "\n".join(body)
+    if kind == "onboard":
+        lines = [f"Path: `{rec.get('path', '')}`"]
+        if repo:
+            lines.append(f"Repo: {repo}")
+        lines += ["", desc or "(no description)", "", "Checklist:",
+                  "- [ ] Decide repository visibility (public or private)",
+                  "- [ ] Establish or identify the git repository and GitHub remote",
+                  "- [ ] Add the project to Mahler config",
+                  "- [ ] File the first product issue", "",
+                  "This is a request only; filing it changes nothing on disk or in GitHub."]
+        return f"Onboard {name} to Mahler", "\n".join(lines)
+    return "", ""
+
+
+def _composer(cfg, rec, kind):
+    target, reason = issue_target(cfg, rec, kind)
+    title, body = issue_template(rec, kind, rec.get("repo"))
+    return {"kind": kind, "label": ISSUE_ACTIONS[kind], "target": target,
+            "disabled": reason, "title": title, "body": body}
+
+
 PROJECTS_EMPTY = "No scan yet. It runs hourly, or run `mahler atlas scan`."
 
 
@@ -1129,6 +1182,11 @@ def _projects(cfg, led, now):
         for a in led.pending_actions("atlas_state"):
             pl = json.loads(a["payload"])
             queued[pl["key"]] = {"id": a["id"], "verb": pl["state"]}
+        queued_issue = {}
+        for a in led.pending_actions("atlas_issue"):
+            pl = json.loads(a["payload"])
+            queued_issue[pl["key"]] = {"id": a["id"], "target": pl["target"],
+                                       "title": pl["title"], "kind": pl["kind"]}
         early = 0
         for r in recs:
             row = dict(r)
@@ -1155,7 +1213,9 @@ def _projects(cfg, led, now):
             if row.get("phase") not in PROJECT_NEXT_STEPS or row["owner_state"]:
                 continue
             kind, copy = PROJECT_NEXT_STEPS[row["phase"]]
-            incubator.append(dict(row, next_step={"kind": kind, "text": copy}))
+            incubator.append(dict(row, next_step={"kind": kind, "text": copy},
+                                  composer=_composer(cfg, row, kind),
+                                  pending_issue=queued_issue.get(row["key"])))
         incubator.sort(key=lambda r: (PROJECTS_EARLY.index(r["phase"]),
                                       parse(r["last_touched"]).timestamp() if r.get("last_touched") else 0))
         return {"rows": rows, "incubator": incubator, "counts": counts,

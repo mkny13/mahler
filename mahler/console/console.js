@@ -521,6 +521,7 @@
       }
       saveSettingsDraft();
       app.innerHTML = html;
+      discardPendingIssueIds(app, keep);
       var form = app.querySelector("[data-settings-form]");
       if (form && settingsDirty && settingsDraft) { form.replaceWith(settingsDraft); }
       lastFragment = html;
@@ -760,6 +761,14 @@
     return li;
   }
 
+  function discardPendingIssueIds(container, keep) {
+    var pending = container.querySelectorAll("[data-pending-issue][data-key][data-kind]");
+    for (var i = 0; i < pending.length; i++) {
+      delete keep["atlas_issue:" + pending[i].getAttribute("data-key") + ":" +
+        pending[i].getAttribute("data-kind")];
+    }
+  }
+
   function markSeen() {
     var c = counts();
     if (c.digest) { post("digest_seen", { upto: c.digest_upto }); }
@@ -810,6 +819,25 @@
     if (act === "atlas_state") {
       return { key: el.getAttribute("data-key"), state: el.getAttribute("data-state") };
     }
+    if (act === "atlas_issue") {
+      var box = el.closest(".pissue");
+      var key = el.getAttribute("data-key");
+      var kind = el.getAttribute("data-kind");
+      var title = box.querySelector(".pissue-title").value;
+      var text = box.querySelector(".pissue-body").value;
+      var clientInput = box.querySelector(".pissue-client");
+      var fingerprint = JSON.stringify([key, kind, title, text]);
+      var saved;
+      try { saved = JSON.parse(clientInput.value); } catch (ignore) { saved = null; }
+      var clientId = Array.isArray(saved) && saved[0] === fingerprint &&
+        typeof saved[1] === "string" ? saved[1] : "";
+      if (!clientId) {
+        clientId = "ai-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+      }
+      clientInput.value = JSON.stringify([fingerprint, clientId]);
+      return { key: key, kind: kind, title: title, body: text, client_id: clientId };
+    }
+    if (act === "atlas_issue_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "atlas_state_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer_undo") { return { id: Number(el.getAttribute("data-id")) }; }
     if (act === "answer") {
