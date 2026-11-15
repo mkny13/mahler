@@ -262,14 +262,57 @@ def _inspect(path, clock):
 _CACHE_FIELDS = ("name", "managed", "work", "phase", "sessions", "commits", "last_touched", "path")
 
 
+def _valid_project(p):
+    if not isinstance(p, dict) or not all(f in p for f in _CACHE_FIELDS):
+        return False
+    if not isinstance(p["name"], str):
+        return False
+    if not isinstance(p["managed"], bool):
+        return False
+    if not isinstance(p["work"], bool):
+        return False
+    if not isinstance(p["phase"], str):
+        return False
+    sessions = p["sessions"]
+    if type(sessions) is not int or sessions < 0:
+        return False
+    commits = p["commits"]
+    if commits is not None and (type(commits) is not int or commits < 0):
+        return False
+    last_touched = p["last_touched"]
+    if last_touched is not None and not isinstance(last_touched, str):
+        return False
+    path = p["path"]
+    if path is not None and not isinstance(path, str):
+        return False
+    if "key" in p and not isinstance(p["key"], str):
+        return False
+    if "project" in p and p["project"] is not None and not isinstance(p["project"], str):
+        return False
+    if "first_seen" in p and not isinstance(p["first_seen"], str):
+        return False
+    if "desc" in p and not isinstance(p["desc"], str):
+        return False
+    for count_field in ("open", "done", "runs7"):
+        if count_field in p:
+            val = p[count_field]
+            if val is not None and (type(val) is not int or val < 0):
+                return False
+    return True
+
+
 def _cached(led):
     """(scanned_at, projects) from the cache, or None when absent or malformed."""
     try:
         raw = json.loads(led.get_kv(CACHE_KEY) or "")
-        projects = raw["projects"]
-        if isinstance(projects, list) and all(isinstance(p, dict) and all(f in p for f in _CACHE_FIELDS)
-                                          for p in projects):
-            return raw.get("scanned_at"), projects
+        if not isinstance(raw, dict):
+            return None
+        scanned_at = raw.get("scanned_at")
+        if scanned_at is not None and not isinstance(scanned_at, str):
+            return None
+        projects = raw.get("projects")
+        if isinstance(projects, list) and all(_valid_project(p) for p in projects):
+            return scanned_at, projects
     except (ValueError, TypeError, KeyError, AttributeError):
         pass
     return None
@@ -543,10 +586,13 @@ def maybe_scan(ctx):
 def format_table(projects):
     rows = [("NAME", "FLAGS", "PHASE", "SESS", "COMMITS", "LAST TOUCHED", "PATH")]
     for p in projects:
-        rows.append((p["name"], ("M" if p["managed"] else "-") + ("W" if p["work"] else "-"),
-                     p["phase"], str(p["sessions"]),
-                     "-" if p["commits"] is None else str(p["commits"]),
-                     (p["last_touched"] or "-")[:10], p["path"] or "-"))
+        rows.append((str(p.get("name") if p.get("name") is not None else "-"),
+                     ("M" if p.get("managed") else "-") + ("W" if p.get("work") else "-"),
+                     str(p.get("phase") if p.get("phase") is not None else "-"),
+                     str(p.get("sessions") if p.get("sessions") is not None else 0),
+                     "-" if p.get("commits") is None else str(p.get("commits")),
+                     str(p.get("last_touched") or "-")[:10],
+                     str(p.get("path") if p.get("path") is not None else "-")))
     w = [max(len(r[i]) for r in rows) for i in range(6)]
     return "\n".join("  ".join(c.ljust(w[i]) if i < 6 else c for i, c in enumerate(r)).rstrip()
                      for r in rows)
