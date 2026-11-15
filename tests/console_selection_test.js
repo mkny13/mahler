@@ -7,6 +7,7 @@ const slice = (a, b) => source.slice(source.indexOf(a), source.indexOf(b));
 let attrs = {"data-view": "capture", "data-tab": "now", "data-project-scope": "",
   "data-all-view": "needs", "data-all-tab": "triage"}, inputs = [], form = null;
 let requests = [], swaps = 0, applied = 0, revisionNotes = 0, resize;
+let pendingIssues = [];
 const browserWindow = {
   matchMedia: () => media, scrollTo() {}, console, location: {href: "http://localhost/"}
 };
@@ -14,7 +15,9 @@ browserWindow.history = {pushState(state, title, url) {
   browserWindow.location.href = new URL(url, browserWindow.location.href).href;
 }};
 const staleNotes = [{hidden: true, textContent: "", getAttribute: () => "Couldn't refresh · showing {time}"}];
-const input = value => ({value, getAttribute: () => "draft", hasAttribute: () => true});
+const input = (value, keep = "draft") => ({value,
+  getAttribute: k => k === "data-keep" ? keep : "draft",
+  hasAttribute: k => k === "data-keep"});
 const media = {matches: false, addEventListener: (event, callback) => { resize = callback; }};
 const context = vm.createContext({
   TextEncoder, URL, console, setTimeout, clearTimeout,
@@ -29,11 +32,14 @@ const context = vm.createContext({
     busy: false,
     setAttribute(k) { if (k === "aria-busy") { this.busy = true; } },
     removeAttribute(k) { if (k === "aria-busy") { this.busy = false; } },
-    querySelectorAll: sel => sel === "[data-stale-note]" ? staleNotes : inputs,
+    querySelectorAll: sel => sel === "[data-stale-note]" ? staleNotes :
+      sel === "[data-pending-issue][data-key][data-kind]" ? pendingIssues : inputs,
     querySelector: () => form,
     set innerHTML(html) {
       swaps++;
-      inputs = html === "capture" ? [input("")] : [];
+      inputs = html === "capture" ? [input("")] :
+        html === "issue" ? [input("server draft", "atlas_issue:project-x:onboarding")] : [];
+      pendingIssues = html === "issue" ? [{getAttribute: k => ({"data-key": "project-x", "data-kind": "onboarding"})[k]}] : [];
       form = html === "settings" ? {replaceWith(old) { form = old; }} : null;
     }
   },
@@ -68,6 +74,12 @@ async function finish(promise, html) {
   const before = swaps;
   await finish(context.refresh(), "capture");
   assert.equal(swaps, before, "identical poll does not churn DOM");
+
+  // A server-rendered pending issue owns its client id; do not restore a stale id
+  // from the old fragment when refresh replaces the issue form.
+  inputs = [input("old draft", "atlas_issue:project-x:onboarding")];
+  await finish(context.refresh(true), "issue");
+  assert.equal(inputs[0].value, "server draft", "pending issue refresh drops the old client draft");
 
   await finish(context.setView("settings"), "settings");
   form.edited = true;
