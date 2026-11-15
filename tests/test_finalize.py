@@ -2304,6 +2304,24 @@ class RunTests(unittest.TestCase):
         self.assertEqual(item["attempts"], 1)
         self.assertNotIn(router.HOLD, self.led.usage("cline-free"))
 
+    def test_sort_waiting_does_not_increment_attempts_or_fail(self):
+        from mahler import waits
+        self.led.upsert_item("x", 5, state="working", attempts=2, esc_tier=0, sorted_at=None)
+        self.run["role"] = "sort"
+        self.led.update_run(self.run_id, role="sort")
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: waiting Conductor must write comments\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(item["attempts"], 2)
+        wait_rec = waits.load(self.led, "x", 5)
+        self.assertIsNotNone(wait_rec)
+        self.assertEqual(wait_rec["cause"], "other")
+        self.assertEqual(wait_rec["resume"], "inbox")
+        self.assertIn("Conductor must write comments", wait_rec["reason"])
+
+
 
 class ResumeNudgeTests(unittest.TestCase):
     """Free builder resume tests (mahler#426): shared env, stdin redirection,
