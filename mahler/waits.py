@@ -258,13 +258,18 @@ def _wake_dependency_vetting(ctx, project, item, record):
                           question=None, options="[]")
             record["reason"] = reason
             record["bound_at"] = led.item(project, n)["state_changed_at"]
-            if detail:
-                key = f"dependency-vetting-cause:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
-                if not led.get_kv(key):
-                    try:
-                        gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
-                    except Exception:  # noqa: BLE001 — the wait record is what matters
-                        pass
+        if detail:
+            key = f"dependency-vetting-cause:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+            # The initial hold uses the legacy per-head marker. Treat that
+            # successful delivery as satisfying this wake's deduplication too;
+            # otherwise the first recheck would duplicate the hold comment.
+            initial_key = f"dependency-vetting:{project}#{n}:{pr}:{view.get('headRefOid') or ''}"
+            if not led.get_kv(key) and not led.get_kv(initial_key):
+                try:
+                    gh.comment(pr, "<!-- mahler:agent -->\n" + reason)
+                except Exception:  # noqa: BLE001 — the wait record is what matters
+                    pass
+                else:
                     led.set_kv(key, "commented")
         return False, f"gate still failing: {detail}"
     if kind == "evidence":
