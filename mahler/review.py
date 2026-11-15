@@ -234,7 +234,7 @@ def dependency_vetting_context(ctx, project, item, pr, sha):
                           f"source {f.get('source', '')}; advisories {advisories}")
             lines.append(f"- {report}\n")
         return "".join(lines)
-    return header + "No direct dependency changes detected.\n"
+    return header + "No dependency changes detected.\n"
 
 
 def same_findings(before, current):

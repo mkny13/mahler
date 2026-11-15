@@ -542,8 +542,63 @@ def _catalog_dependencies(text, path):
     return pins
 
 
+def _lock_packages(path, text):
+    """Index registry candidates by installation location (npm) or pin (Python)."""
+    basename = path.rsplit("/", 1)[-1]
+    entries = {}
+    if basename in ("package-lock.json", "npm-shrinkwrap.json"):
+        data = _json(text, path)
+        if isinstance(data.get("packages"), dict):
+            for location, package in data["packages"].items():
+                if "node_modules/" in location:
+                    name = location.rsplit("node_modules/", 1)[1]
+                    entries[location] = ("npm", name, package)
+        else:
+            def visit(packages, prefix=""):
+                for name, package in packages.items():
+                    location = prefix + "node_modules/" + name
+                    entries[location] = ("npm", name, package)
+                    visit(package.get("dependencies", {}), location + "/")
+            visit(data.get("dependencies", {}))
+    elif basename in ("uv.lock", "poetry.lock"):
+        for package in tomllib.loads(text).get("package", []):
+            name, version = package.get("name"), package.get("version")
+            if not isinstance(name, str) or not isinstance(version, str):
+                raise VettingError(f"unresolved package version in {path}")
+            # uv records the project itself alongside its registry dependencies.
+            if package.get("source") in ({"editable": "."}, {"virtual": "."}):
+                continue
+            entries[(_canonical(name), version)] = ("pypi", name, package)
+    return entries
+
+
+def _changed_lock_dependencies(before, after):
+    changed = []
+    for path, text in after.items():
+        if before.get(path) == text:
+            continue
+        old = _lock_packages(path, before[path]) if path in before else {}
+        for location, (ecosystem, name, package) in _lock_packages(path, text).items():
+            version = package.get("version")
+            previous = old.get(location)
+            source_fields = ("resolved", "link", "name") if ecosystem == "npm" else ("source",)
+            if (previous and previous[2].get("version") == version
+                    and all(previous[2].get(k) == package.get(k) for k in source_fields)):
+                continue
+            if ecosystem == "npm":
+                _npm_source(package, name, path)
+            elif package.get("source") and package["source"] != {"registry": "https://pypi.org/simple"}:
+                raise VettingError(f"non-registry Python resolution for {name} in {path}")
+            if not isinstance(version, str) or not version:
+                raise VettingError(f"unresolved package version in {path}")
+            dep = Dependency(ecosystem, name, version, version)
+            if dep not in changed:
+                changed.append(dep)
+    return changed
+
+
 def _changed_project_dependencies(before, after):
-    """Return only added or changed direct dependencies, without network access."""
+    """Return added or changed manifest and lock dependencies without network access."""
     for path in set(before) | set(after):
         basename = path.rsplit("/", 1)[-1]
         unsupported = (basename in _UNSUPPORTED_LOCKS
@@ -627,7 +682,11 @@ def _changed_project_dependencies(before, after):
                     f"lockfile version {version} does not satisfy {key[0]} "
                     f"dependency {name} declaration {declaration}")
             changed.append(dependency)
-    return sorted(changed, key=lambda dep: (dep.ecosystem, _canonical(dep.name)))
+    for dep in _changed_lock_dependencies(before, after):
+        if not any((d.ecosystem, _canonical(d.name), d.version) ==
+                   (dep.ecosystem, _canonical(dep.name), dep.version) for d in changed):
+            changed.append(dep)
+    return sorted(changed, key=lambda dep: (dep.ecosystem, _canonical(dep.name), dep.version or ""))
 
 
 def changed_dependencies(before, after):

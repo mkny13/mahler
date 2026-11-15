@@ -1234,7 +1234,7 @@ def _merge_queued(ctx, project, item, pr, view, required=None):
 
 
 def _vet_pr_dependencies(ctx, project, item, pr, gh, view):
-    """Hold an agent PR merge when changed direct dependencies lack safe evidence."""
+    """Hold an agent PR merge when changed dependencies lack safe evidence."""
     detail = _vet_gate(ctx, project, item, pr, gh, view)
     if detail is None:
         return True
@@ -1349,8 +1349,11 @@ def _hold_dependency_vetting(ctx, project, item, pr, gh, view, detail, *, kind="
             pass
         led.set_kv(key, "commented")
     since, checks = waits.vetting_carry(led, project, n, pr, kind)
+    wake = {"pr": pr, "kind": kind, "sha": sha}
+    if kind == "evidence":
+        wake["evidence"] = waits.vetting_evidence(led, project, n, pr, sha)
     waits.hold(led, project, n, "dependency_vetting", reason, resume="verifying",
-               wake={"pr": pr, "kind": kind, "sha": sha}, since=since, checks=checks)
+               wake=wake, since=since, checks=checks)
     waits.save_vetting_carry(led, project, n, pr, kind, since, checks)
     led.release(project, n, holder=CONDUCTOR)
 

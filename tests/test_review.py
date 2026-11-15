@@ -604,5 +604,5 @@ class TestDependencyGateReviewContext(unittest.TestCase):
         )
         context = review.start_context(self.ctx, "x", item, 88, sha)
         self.assertIn(f"Dependency-vetting gate evidence (head {sha}):", context)
-        self.assertIn("No direct dependency changes detected.", context)
+        self.assertIn("No dependency changes detected.", context)
 
