@@ -54,7 +54,7 @@ _RELEVANT = re.compile(
     r"gradle\.lockfile|gradle/dependency-locks/[^/]+\.lockfile|pnpm-lock\.yaml|yarn\.lock|Pipfile|Pipfile\.lock)$"
 )
 _UNSUPPORTED_LOCKS = {
-    "pnpm-lock.yaml", "yarn.lock", "Pipfile", "Pipfile.lock",
+    "yarn.lock", "Pipfile", "Pipfile.lock",
     "setup.py", "setup.cfg",
 }
 _GRADLE_MANIFESTS = {
@@ -208,6 +208,100 @@ def _npm_source(package, name, path):
         raise VettingError(f"non-registry npm resolution for {name} in {path}")
 
 
+def _pnpm_scalar(value, path):
+    value = value.strip()
+    if value.startswith('"'):
+        value = _json(value, path)
+    elif value.startswith("'") and value.endswith("'"):
+        value = value[1:-1].replace("''", "'")
+    if not isinstance(value, str) or not value or value[0] in "&*!>|[{":
+        raise VettingError(f"unsupported pnpm scalar in {path}")
+    return value
+
+
+def _pnpm_mapping(text, path):
+    """Read one block mapping level, leaving irrelevant YAML subtrees opaque.
+
+    This deliberately supports pnpm's emitted mapping subset, not general YAML:
+    aliases, merges, duplicate keys and unfamiliar relevant syntax fail closed.
+    """
+    if text.strip() == "{}":
+        return {}
+    lines = [line for line in text.splitlines()
+             if line.strip() and not line.lstrip().startswith("#")]
+    if not lines:
+        return {}
+    indent = len(lines[0]) - len(lines[0].lstrip(" "))
+    result = {}
+    key = None
+    for line in lines:
+        depth = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:depth + 1] or depth < indent:
+            raise VettingError(f"unsupported pnpm indentation in {path}")
+        if depth > indent:
+            if key is None or inline:
+                raise VettingError(f"ambiguous pnpm mapping in {path}")
+            result[key] += line + "\n"
+            continue
+        match = re.fullmatch(r"(.+?):(?: +(.*))?", line[indent:])
+        if not match:
+            raise VettingError(f"unsupported pnpm mapping in {path}")
+        key = _pnpm_scalar(match[1], path)
+        if key == "<<" or key in result:
+            raise VettingError(f"ambiguous pnpm mapping key in {path}")
+        inline = bool(match[2])
+        result[key] = match[2] or ""
+    return result
+
+
+def _pnpm_packages(text, path):
+    data = _pnpm_mapping(text, path)
+    schema = _pnpm_scalar(data.get("lockfileVersion", ""), path)
+    if schema not in ("6.0", "9.0"):
+        raise VettingError(f"unsupported pnpm lock schema in {path}")
+    groups = ("dependencies", "devDependencies", "optionalDependencies")
+    if "importers" in data:
+        importers = _pnpm_mapping(data["importers"], path)
+        if set(importers) != {"."} or any(group in data for group in groups):
+            raise VettingError(f"workspace dependency resolution is ambiguous in {path}")
+        root = _pnpm_mapping(importers["."], path)
+    elif schema == "6.0":
+        root = data
+    else:
+        raise VettingError(f"missing pnpm importers in {path}")
+    packages = _pnpm_mapping(data.get("packages", ""), path)
+    entries = {}
+    for group in groups:
+        for name, raw in _pnpm_mapping(root.get(group, ""), path).items():
+            entry = _pnpm_mapping(raw, path)
+            resolved = _pnpm_scalar(entry.get("version", ""), path)
+            match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:\([^\s]+\))*", resolved)
+            if not match:
+                raise VettingError(f"non-registry or unresolved pnpm dependency {name} in {path}")
+            version = match[1]
+            spec = _pnpm_scalar(entry.get("specifier", ""), path)
+            if not _npm_range_matches(spec, version):
+                raise VettingError(f"stale pnpm resolution for {name} in {path}")
+            package_key = ("/" + name + "@" + resolved if schema == "6.0"
+                           else name + "@" + version)
+            package = _pnpm_mapping(packages.get(package_key, ""), path)
+            raw_resolution = package.get("resolution", "").strip()
+            if raw_resolution.startswith("{") and raw_resolution.endswith("}"):
+                raw_resolution = "\n".join(part.strip() for part in raw_resolution[1:-1].split(","))
+            resolution = {key: _pnpm_scalar(value, path) for key, value in
+                          _pnpm_mapping(raw_resolution, path).items()}
+            if (not resolution or set(resolution) - {"integrity", "tarball"}
+                    or ("integrity" in resolution and not re.fullmatch(
+                        r"sha(?:1|256|384|512)-[A-Za-z0-9+/=]+", resolution["integrity"]))):
+                raise VettingError(f"non-registry or missing pnpm resolution for {name} in {path}")
+            candidate = {"version": version, "resolved": resolution.get("tarball")}
+            _npm_source(candidate, name, path)
+            if name in entries and entries[name][2] != candidate:
+                raise VettingError(f"ambiguous pnpm resolution for {name} in {path}")
+            entries[name] = ("npm", name, candidate)
+    return entries
+
+
 def _npm_versions(files, direct):
     versions = {}
 
@@ -220,6 +314,10 @@ def _npm_versions(files, direct):
         versions[key] = version
 
     for path, text in files.items():
+        if path.rsplit("/", 1)[-1] == "pnpm-lock.yaml":
+            for _, name, package in _pnpm_packages(text, path).values():
+                add(name, package["version"], path)
+            continue
         if path.rsplit("/", 1)[-1] not in ("package-lock.json", "npm-shrinkwrap.json"):
             continue
         data = _json(text, path)
@@ -546,6 +644,8 @@ def _lock_packages(path, text):
     """Index registry candidates by installation location (npm) or pin (Python)."""
     basename = path.rsplit("/", 1)[-1]
     entries = {}
+    if basename == "pnpm-lock.yaml":
+        return _pnpm_packages(text, path)
     if basename in ("package-lock.json", "npm-shrinkwrap.json"):
         data = _json(text, path)
         if isinstance(data.get("packages"), dict):

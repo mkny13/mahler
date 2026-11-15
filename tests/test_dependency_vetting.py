@@ -383,9 +383,94 @@ class DependencyVettingTests(unittest.TestCase):
 
     def test_unsupported_lockfile_change_is_ambiguous(self):
         with self.assertRaisesRegex(vetting.VettingError, "unsupported dependency lockfile"):
-            vetting.changed_dependencies({}, {"pnpm-lock.yaml": "lockfileVersion: 9"})
+            vetting.changed_dependencies({}, {"yarn.lock": "# yarn lockfile v1"})
 
 
+
+
+def pnpm_files(version="4.0.0", *, schema="9.0", group="dependencies",
+               suffix="", resolution="{integrity: sha512-test}"):
+    """Reduced pnpm diff modeled on the admitted groundwork#413 bump."""
+    key = ("/" if schema == "6.0" else "") + "web-push@" + version
+    return {
+        "package.json": json.dumps({group: {"web-push": "^" + version}}),
+        "pnpm-lock.yaml": (
+            f"lockfileVersion: '{schema}'\n\nsettings:\n  autoInstallPeers: true\n"
+            f"\nimporters:\n  .:\n    {group}:\n      web-push:\n"
+            f"        specifier: ^{version}\n        version: {version}{suffix}\n"
+            f"\npackages:\n  {key}{suffix if schema == '6.0' else ''}:\n"
+            f"    resolution: {resolution}\n    engines: {{node: '>= 16'}}\n"
+            "\nsnapshots: {}\n"),
+    }
+
+
+class PnpmTests(unittest.TestCase):
+    def test_addition_bump_and_peer_suffix(self):
+        for schema in ("6.0", "9.0"):
+            for group in ("dependencies", "devDependencies", "optionalDependencies"):
+                for suffix in ("", "(supports-color@7.2.0)"):
+                    with self.subTest(schema=schema, group=group, suffix=suffix):
+                        after = pnpm_files(schema=schema, group=group, suffix=suffix)
+                        for before in ({}, pnpm_files("3.6.7", schema=schema, group=group)):
+                            deps = vetting.changed_dependencies(before, after)
+                            self.assertEqual([(d.name, d.version) for d in deps],
+                                             [("web-push", "4.0.0")])
+                        self.assertEqual(vetting.changed_dependencies(after, after), [])
+
+    def test_v6_root_dependencies(self):
+        files = pnpm_files(schema="6.0")
+        text = files["pnpm-lock.yaml"].replace("importers:\n  .:\n", "")
+        files["pnpm-lock.yaml"] = "\n".join(
+            line[4:] if line.startswith("    ") and not line.startswith("    resolution:")
+            and not line.startswith("    engines:") else line for line in text.splitlines())
+        self.assertEqual(vetting.changed_dependencies({}, files)[0].version, "4.0.0")
+
+    def test_registry_and_osv_pipeline(self):
+        for recent, vulnerable in ((False, False), (True, False), (False, True)):
+            calls = []
+            def opener(request, timeout):
+                calls.append(request.full_url)
+                if request.full_url == "https://registry.npmjs.org/web-push":
+                    date = "2026-10-19T00:00:00Z" if recent else "2020-01-01T00:00:00Z"
+                    return Response({"versions": {"4.0.0": {"version": "4.0.0"}},
+                                     "time": {"created": date, "4.0.0": date}})
+                self.assertEqual(json.loads(request.data)["version"], "4.0.0")
+                return Response({"vulns": [{"id": "OSV-test", "database_specific": {
+                    "severity": "HIGH"}}]} if vulnerable else {})
+            findings, reason = vetting.vet(pnpm_files("3.6.7"), pnpm_files(),
+                                          now=NOW, opener=opener)
+            self.assertEqual(bool(reason), recent or vulnerable)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(len(calls), 2)
+
+    def test_sources_and_ambiguous_layouts_fail_before_network(self):
+        cases = []
+        for source in ("https://other.test/pkg.tgz", "git+https://github.com/a/b",
+                       "link:../pkg", "file:../pkg", "workspace:*"):
+            cases.append(pnpm_files(resolution="{tarball: " + source + "}"))
+            files = pnpm_files()
+            files["pnpm-lock.yaml"] = files["pnpm-lock.yaml"].replace(
+                "version: 4.0.0", "version: " + source)
+            cases.append(files)
+        for old, new in (("  .:", "  .: {}\n  other:"),
+                         ("{integrity: sha512-test}", "{}"),
+                         ("lockfileVersion: '9.0'", "lockfileVersion: '5.4'"),
+                         ("        version: 4.0.0", "        version: 4.0.0\n        version: 3.6.7")):
+            files = pnpm_files()
+            files["pnpm-lock.yaml"] = files["pnpm-lock.yaml"].replace(old, new)
+            cases.append(files)
+        for files in cases:
+            with self.subTest(lock=files["pnpm-lock.yaml"]):
+                opener = mock.Mock()
+                with self.assertRaises(vetting.VettingError):
+                    vetting.vet({}, files, opener=opener)
+                opener.assert_not_called()
+
+    def test_standard_tarball_and_lock_only_bump(self):
+        after = pnpm_files(resolution="{tarball: https://registry.npmjs.org/web-push/-/web-push-4.0.0.tgz}")
+        before = pnpm_files("3.6.7")
+        del before["package.json"], after["package.json"]
+        self.assertEqual(vetting.changed_dependencies(before, after)[0].version, "4.0.0")
 
 
 def swift_files(version="1.2.3", schema=3):
