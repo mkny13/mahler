@@ -261,9 +261,20 @@ class CacheTests(Base):
 
     def test_malformed_cache_loads_empty(self):
         for bad in ("nope", "[]", '{"projects": 3}',
-                    '{"scanned_at":"x","projects":[{}]}'):
+                    '{"scanned_at":"x","projects":[{}]}',
+                    '{"scanned_at":"x","projects":[{"name": null, "managed": false, "work": false, "phase": "idea", "sessions": 0, "commits": null, "last_touched": null, "path": ""}]}',
+                    '{"scanned_at":"x","projects":[{"name": "p", "managed": "not-bool", "work": false, "phase": "idea", "sessions": 0, "commits": null, "last_touched": null, "path": ""}]}',
+                    '{"scanned_at":"x","projects":[{"name": "p", "managed": false, "work": false, "phase": "idea", "sessions": 0, "commits": null, "last_touched": 123, "path": ""}]}',
+                    '{"scanned_at":"x","projects":[{"name": "p", "managed": false, "work": false, "phase": "idea", "sessions": -1, "commits": null, "last_touched": null, "path": ""}]}',
+                    '{"scanned_at":"x","projects":[{"name": "p", "managed": false, "work": false, "phase": "idea", "sessions": "three", "commits": null, "last_touched": null, "path": ""}]}',
+                    '{"scanned_at":"x","projects":[{"name": "p", "managed": false, "work": false, "phase": "idea", "sessions": 0, "commits": "bad", "last_touched": null, "path": ""}]}',
+                    '{"scanned_at":123,"projects":[]}'):
             self.led.set_kv("atlas:scan", bad)
             self.assertEqual(atlas.load(self.led), [])
+
+    def test_format_table_handles_malformed_records(self):
+        self.assertIn("NAME", atlas.format_table([{}]))
+        self.assertIn("NAME", atlas.format_table([{"name": None, "last_touched": 123}]))
 
     def test_deadline_interrupts_stalled_source_and_keeps_cache(self):
         self.folder("a")
@@ -347,6 +358,12 @@ class CliTests(Base):
             rc, out, err = self.run_cli("scan")
         self.assertEqual(rc, 1)
         self.assertIn("too slow", err); self.assertIn("stale", out + err); self.assertIn("zed", out)
+
+    def test_show_with_malformed_cache_treated_as_empty(self):
+        self.led.set_kv("atlas:scan", '{"scanned_at":"x","projects":[{}]}')
+        rc, out, _ = self.run_cli("show")
+        self.assertEqual(rc, 0)
+        self.assertIn("no atlas cache", out)
 
 
 if __name__ == "__main__":
