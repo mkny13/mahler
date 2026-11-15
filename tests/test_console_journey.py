@@ -42,20 +42,30 @@ class JourneySeedTests(unittest.TestCase):
                            "Retry batch", "data-project-scope-switcher", "Dependencies"):
                 self.assertIn(marker, page)
             self.assertNotIn("Mahler item should not leak", page)
+            self.assertTrue((home / "mahler.db").exists())
+            config = (home / "config.toml").read_text()
+            self.assertEqual(re.findall(r"^\[projects\.(\w+)\]", config, re.M), ["groundwork", "mahler"])
+            self.assertIn("total = 8", config)
         finally:
             proc.send_signal(signal.SIGINT)
             out, err = proc.communicate(timeout=20)
             proc.stdout.close()
             proc.stderr.close()
         self.assertEqual(proc.returncode, 0, err)
-        self.assertTrue((home / "mahler.db").exists())
-        config = (home / "config.toml").read_text()
-        self.assertEqual(re.findall(r"^\[projects\.(\w+)\]", config, re.M), ["groundwork", "mahler"])
-        self.assertIn("total = 8", config)
-        # A live daemon writes to the real ~/.mahler, so assert isolation by what the
-        # seed reports and creates, not by diffing that directory.
+        self.assertFalse(home.exists())
         self.assertNotIn(REAL_STATE, out + err)
-        self.assertTrue({"config.toml", "mahler.db"} <= {p.name for p in home.iterdir()})
+
+    def test_seed_preserves_nonfixture_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            existing = home / "keep.txt"
+            existing.write_text("existing data")
+            proc = subprocess.run([sys.executable, str(JOURNEY / "seed.py"), "--home", str(home)],
+                env=dict(os.environ, MAHLER_HOME=str(home)), capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("nonempty", proc.stderr)
+            self.assertEqual(existing.read_text(), "existing data")
+            self.assertEqual(list(home.iterdir()), [existing])
 
     def test_seed_refuses_when_mahler_home_differs(self):
         home = Path(tempfile.mkdtemp())
