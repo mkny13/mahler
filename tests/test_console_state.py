@@ -76,6 +76,8 @@ class ModelsTests(unittest.TestCase):
         if not shutil.which('node'):
             self.skipTest('Node is needed for browser regression')
         script = page.JS[page.JS.index('  var lastFragment'):page.JS.index('  // refresh() swaps')]
+        script += page.JS[page.JS.index('  function discardPendingIssueIds(container, keep) {'):
+                          page.JS.index('  function markSeen()')]
         script += r'''
 const assert = require('assert');
 let swaps = 0, applies = 0, revisions = 0, html = 'first';
