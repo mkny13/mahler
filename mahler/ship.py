@@ -2596,7 +2596,8 @@ def _review_triggered_fix(ctx, project, item, pr, view, findings, *, base_confli
             return
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
-            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier,
+            item=item)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — review failed, no platform for a fix run — "
                 f"{'; '.join(reasons)}")
@@ -3011,7 +3012,8 @@ def _red_ci(ctx, project, item, pr, view):
             return
         platform, reasons = router.pick_for_project(
             cfg, led, pol, "fix", item["pin"], busy, size=size,
-            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier)
+            scorecard_rows=getattr(ctx, "scorecard_rows", None), burst_lines=ctx.burst_lines, min_tier=effective_min_tier,
+            item=item)
     if not platform:
         ctx.say(f"{project}#{n}: PR #{pr} — CI red, no platform for a fix run — "
                 f"{'; '.join(reasons)}")

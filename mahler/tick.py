@@ -696,7 +696,7 @@ def _route(ctx, p, role, it, st):
         platform, reasons = router.pick_for_project(
             cfg, led, p, routing_role, pin, st["busy"], size=effective_size,
             scorecard_rows=getattr(ctx, "scorecard_rows", None),
-            burst_lines=st["burst_lines"], min_tier=effective_min_tier)
+            burst_lines=st["burst_lines"], min_tier=effective_min_tier, item=it)
     _observe(ctx, p, role, it, *(() if platform else ("no_platform",)),
              diag=_diagnose(ctx, p, role, it, st), effective_size=effective_size,
              required_tier=effective_min_tier)

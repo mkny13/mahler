@@ -418,7 +418,31 @@ def _sorted_split(e):
     return True
 
 
-SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you}
+def _ended_waiting(e):
+    """The agent ended with STATUS: waiting (DESIGN D52, mahler#1548).
+
+    Hold the item in a waiting state with the agent's reason instead of
+    spending an attempt budget or failing the item.
+    """
+    from . import waits
+    resume = "ready" if e.item["sorted_at"] else "inbox"
+    if e.run["role"] in ("build", "fix"):
+        resume = "verifying" if e.run["role"] == "fix" and e.item["pr"] else "ready"
+    elif e.run["role"] == "review":
+        resume = "verifying"
+    reason = e.rest or "agent waiting"
+    refund = _fix_charge_refund(e)
+    if refund:
+        e.led.upsert_item(e.project, e.number, **refund)
+    prev = waits.load(e.led, e.project, e.number) or {}
+    since = prev.get("since") if prev.get("cause") == "other" else None
+    checks = (int(prev.get("checks") or 0) + 1) if prev.get("cause") == "other" else 0
+    waits.hold(e.led, e.project, e.number, "other", reason, resume=resume,
+               since=since, checks=checks)
+    return True
+
+
+SORT_OUTCOMES = {"READY": _sorted_ready, "SPLIT": _sorted_split, "NEEDS-YOU": _needs_you, "WAITING": _ended_waiting}
 
 
 # ---------- plan-only design outcomes ----------
@@ -889,6 +913,7 @@ ENDINGS = (
     (lambda e: e.verb == "NEEDS-YOU", _needs_you),
     (lambda e: e.verb == "DONE" and e.reason in (None, "quota"), _ended_done),
     (lambda e: e.verb == "YIELDED", _ended_preempted),
+    (lambda e: e.verb == "WAITING", _ended_waiting),
     (lambda e: e.reason == "parked", _ended_parked),
     (lambda e: e.reason == "preempted", _ended_preempted),
     (lambda e: e.reason in (*CAPACITY_STOPS, "lost-lease", "handoff"), _ended_out_of_reach),
@@ -1258,7 +1283,7 @@ def finalize(ctx, run):
                                          or (not run["pid"] and not run["worktree"])) else None)
     outcome = ("setup failed" if setup_failed
                else verb or (f"exit {code}" if code else "no status line"))
-    if verb == "BLOCKED" and rest and not setup_failed:
+    if verb in ("BLOCKED", "WAITING") and rest and not setup_failed:
         outcome = f"{verb} {rest}"
     if cline_model_billed:
         if not ctx.dry_run:
