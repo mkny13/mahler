@@ -3146,3 +3146,9 @@ and gave up onto the owner. Those now use a separate `waiting` state (label
   cycle parks as `needs_you` and pings, so a mis-tagged real owner question still arrives.
   A no-change claim's `owner_question` follows the same rule; a disallowed one becomes a
   "Needs a human to check" line in the evidence comment instead of a park.
+- **Agent WAITING status and retry exclusion (mahler#1548).** A run ending with
+  `STATUS: waiting` does not charge an attempt or move the item to failed; it is
+  held in `waiting` with cause `other` and the agent's reason, resuming into `inbox`
+  or `ready`. On retry/escalation after a failed attempt for the same role on platform P,
+  P is excluded from the next attempt's candidates if another route can serve it,
+  falling back to P only when nothing else can.
