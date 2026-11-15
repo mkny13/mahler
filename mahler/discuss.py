@@ -243,17 +243,23 @@ class Supervisor:
             while not self.stop.is_set():
                 try:
                     env = dict(config.discussion_env(), MAHLER_DISCUSSION_PROCESS_FILE=self.db + '.discussion-process')
-                    self.child = subprocess.Popen([sys.executable, '-m', 'mahler.discuss', '--db', self.db, '--config', config.CONFIG_PATH],
+                    self.child = subprocess.Popen([sys.executable, '-m', 'mahler.discuss', '--db', self.db, '--config', config.CONFIG_PATH,
+                        '--parent-pid', str(os.getpid())],
                         cwd=config.REPO_ROOT, env=env, start_new_session=True)
                     led.set_kv('discussion:worker', 'Running')
                     while self.child.poll() is None and not self.stop.wait(.2):
                         pass
                     if self.stop.is_set():
-                        self.child.terminate()
+                        try:
+                            os.killpg(self.child.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                         try:
                             self.child.wait(timeout=5)
                         except subprocess.TimeoutExpired:
                             stop_process(self.child)
+                        # A worker may exit before other members of its group.
+                        stop_process(self.child)
                         self.clean_engine()
                         stopped = threading.Event()
                         stopped.set()
@@ -295,15 +301,21 @@ class Supervisor:
 
 
 def main():
+    global PARENT_PID
     parser = argparse.ArgumentParser()
     parser.add_argument('--db', default=config.DB_PATH)
     parser.add_argument('--mcp', nargs=3)
+    parser.add_argument('--parent-pid', type=int)
     parser.add_argument('--config', default=config.CONFIG_PATH)
     args = parser.parse_args()
     if args.mcp:
         from .mcp import serve_discussion
         with closing(Ledger(args.db)) as led:
             serve_discussion(config.load(args.config), led, args.mcp[0], int(args.mcp[1]), args.mcp[2])
+        return
+    if args.parent_pid is not None:
+        PARENT_PID = args.parent_pid
+    if os.getppid() != PARENT_PID:
         return
     # Raising through run_engine's finally reaps the engine/tool group on shutdown.
     def shutdown(signum, frame):

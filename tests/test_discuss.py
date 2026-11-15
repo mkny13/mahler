@@ -249,3 +249,82 @@ class DiscussionTests(unittest.TestCase):
         finally:
             supervisor.close()
         self.assertEqual(json.loads(self.led.chat_turn(turn['id'])['result'])['error']['code'], 'worker_lost')
+
+
+class HelperLifecycleTests(unittest.TestCase):
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(.05)
+        self.fail('helper lifecycle condition did not become true')
+
+    @staticmethod
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def test_seed_signals_remove_worker_and_fixture(self):
+        root = Path(__file__).resolve().parents[1]
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGKILL):
+            with self.subTest(signal=sig), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory) / 'fixture'
+                env = dict(os.environ, MAHLER_HOME=str(home))
+                worker_pid = None
+                with tempfile.TemporaryFile() as log:
+                    seed = subprocess.Popen([sys.executable, str(root / 'examples/console_journey/seed.py'),
+                        '--home', str(home)], cwd=root, env=env, stdout=log, stderr=log,
+                        start_new_session=True)
+                    try:
+                        def worker_ready():
+                            nonlocal worker_pid
+                            output = subprocess.check_output(['ps', '-axo', 'pid=,ppid=,command='], text=True)
+                            for line in output.splitlines():
+                                fields = line.split(None, 2)
+                                if len(fields) == 3 and fields[1] == str(seed.pid) and 'mahler.discuss' in fields[2]:
+                                    worker_pid = int(fields[0])
+                            return worker_pid is not None and (home / 'mahler.db.discussion.lock').exists()
+                        self.wait_for(worker_ready)
+                        seed.send_signal(sig)
+                        self.assertEqual(seed.wait(timeout=10), -sig if sig == signal.SIGKILL else 0)
+                        self.wait_for(lambda: not self.alive(worker_pid))
+                        if sig != signal.SIGKILL:
+                            self.assertFalse(home.exists(), 'fixture database and home must be removed')
+                    finally:
+                        if seed.poll() is None:
+                            discuss.stop_process(seed)
+                        if worker_pid is not None and self.alive(worker_pid):
+                            os.killpg(worker_pid, signal.SIGKILL)
+
+    def test_worker_rejects_parent_lost_before_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = subprocess.Popen([sys.executable, '-c', 'pass'])
+            parent.wait(timeout=5)
+            db = str(Path(directory) / 'mahler.db')
+            child = subprocess.Popen([sys.executable, '-m', 'mahler.discuss', '--db', db,
+                '--parent-pid', str(parent.pid)], env=dict(os.environ, MAHLER_HOME=directory),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                self.assertEqual(child.wait(timeout=5), 0)
+                self.assertFalse(Path(db + '.discussion.lock').exists())
+            finally:
+                if child.poll() is None:
+                    discuss.stop_process(child)
+
+    def test_supervisor_signals_worker_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = str(Path(directory) / 'mahler.db')
+            with closing(Ledger(db)):
+                pass
+            supervisor = discuss.Supervisor(db, max_retries=1)
+            with patch('mahler.discuss.os.killpg', wraps=os.killpg) as killpg:
+                supervisor.start()
+                try:
+                    self.wait_for(lambda: Path(db + '.discussion.lock').exists())
+                finally:
+                    supervisor.close()
+                killpg.assert_any_call(supervisor.child.pid, signal.SIGTERM)

@@ -12,9 +12,12 @@ Prints `CONSOLE_URL=http://127.0.0.1:<port>/` once the database is seeded.
 """
 
 import argparse
+import atexit
 import json
 import os
 import socket
+import signal
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -126,7 +129,23 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=0)
     a = ap.parse_args(argv)
     sys.path.insert(0, str(ROOT))
-    cfg, led = seed(a.home)
+    home = Path(a.home).resolve()
+    if home != Path(os.environ.get("MAHLER_HOME", "")).resolve():
+        raise SystemExit("refusing to seed: MAHLER_HOME differs from --home")
+    # Only take ownership of a fresh fixture directory (run.sh opens seed.log).
+    if home.exists() and any(p.name != "seed.log" for p in home.iterdir()):
+        raise SystemExit("refusing to seed a nonempty fixture directory")
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+
+    def shutdown(signum, frame):
+        # Ignore repeated signals while serve's finally reaps the detached worker.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    cfg, led = seed(home)
     port = a.port or _free_port()
     from mahler import serve
     print(f"CONSOLE_URL=http://127.0.0.1:{port}/", flush=True)
