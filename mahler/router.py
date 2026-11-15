@@ -905,7 +905,8 @@ def last_failed_platform(led, project, item, role):
     """
     if not item or not project:
         return None
-    number = item["number"] if isinstance(item, dict) or hasattr(item, "__getitem__") else getattr(item, "number", None)
+    from .ledger import row_get
+    number = row_get(item, "number")
     if not number:
         return None
     roles = retry_roles_for(role)
@@ -978,7 +979,8 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
     on platform P, P is excluded if another route can serve it, falling back to P
     only when nothing else can (mahler#1548).
     """
-    proj = (pol.get("name") if pol else None) or (item.get("project") if isinstance(item, dict) or hasattr(item, "__getitem__") else None)
+    from .ledger import row_get
+    proj = (pol.get("name") if pol else None) or row_get(item, "project")
     failed_p = last_failed_platform(led, proj, item, role) if item is not None and led is not None else None
     if (failed_p and failed_p != pin
             and platform_slot(cfg, failed_p) not in {platform_slot(cfg, x) for x in exclude}):
