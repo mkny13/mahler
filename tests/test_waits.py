@@ -102,6 +102,38 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(waits.vetting_carry(self.led, "p", 1, 88, "evidence"), (iso(T0), 2))
         self.assertIn("missing or disputed", ship.vetting_reason(88, "", kind="evidence"))
 
+    def test_dependency_vetting_comment_failure_retries_on_same_cause(self):
+        self.led.upsert_item("p", 1, pr=88)
+        gh = SiteGH()
+        comments = []
+
+        def comment(number, body):
+            comments.append((number, body))
+            if len(comments) == 1:
+                raise RuntimeError("transient GitHub failure")
+
+        gh.comment = comment
+        self.ctx.gh = lambda project: gh
+        self.hold("dependency_vetting", since=iso(T0),
+                  wake={"pr": 88, "kind": "gate", "sha": "abc"})
+        waits.save_vetting_carry(self.led, "p", 1, 88, "gate", iso(T0), 0)
+        detail = "unsupported dependency lockfile change: pnpm-lock.yaml"
+        key = "dependency-vetting-cause:p#1:88:abc"
+
+        for _ in range(2):
+            self.advance(minutes=15 if not comments else 60)
+            with mock.patch("mahler.ship._vet_gate", return_value=detail):
+                waits.recheck(self.ctx, "p")
+            record = self.record()
+            self.assertIn("pnpm-lock.yaml", record["reason"])
+            self.assertIn("pnpm-lock.yaml", waits._last_state_reason(self.led, "p", 1))
+            if len(comments) == 1:
+                self.assertIsNone(self.led.get_kv(key))
+
+        self.assertEqual(len(comments), 2)
+        self.assertEqual(self.led.get_kv(key), "commented")
+        self.assertEqual(self.record()["checks"], 2)
+
     def test_unknown_cause_raises(self):
         with self.assertRaises(ValueError):
             waits.hold(self.led, "p", 1, "bogus", "x", resume="ready")
