@@ -692,7 +692,7 @@ def pick_reason(cfg, rows, role, size, name):
 def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
          account=DEFAULT_ACCOUNT, min_tier=0, accounts=None, candidate_order=None,
          exclude=(), explore=False, scorecard_rows=None, routing_mode=None,
-         project=None):
+         project=None, exclude_reason=None):
     """First platform in routing order with headroom. -> (name|None, reasons).
 
     During an active burst (burst_lines from burst_status), build routing puts
@@ -752,7 +752,7 @@ def pick(cfg, led, role, pin=None, busy=(), size=None, burst_lines=None,
     excluded_slots = {platform_slot(cfg, name) for name in exclude}
     for name in cand:
         if name in busy or platform_slot(cfg, name) in excluded_slots:
-            reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded (same platform as the builder)")
+            reasons.append(f"{name}: busy" if name in busy else f"{name}: excluded ({exclude_reason or 'same platform as the builder'})")
             continue
         pconf = cfg["platforms"][name]
         if not pconf.get("enabled"):
@@ -891,15 +891,43 @@ def diagnose(cfg, led, pol, role, pin=None, busy=(), size=None, burst_lines=None
     return out
 
 
-def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
-                      burst_lines=None, min_tier=0, exclude=(), scorecard_rows=None):
-    """Route within a project's declared accounts (DESIGN D26).
+def retry_roles_for(role):
+    run_role = "sort" if role == "plan" else role
+    return ("build", "fix") if run_role in ("build", "fix") else (run_role,)
 
-    Default ("order"): tries each account in turn, spending the first with
-    headroom — reasons pool across the misses. "equal": merges every
-    account's candidates round-robin. "priority": follows the project's own
-    routing table as one exact cross-account order.
+
+def last_failed_platform(led, project, item, role):
+    """Platform of the previous failed attempt for the same role, or None.
+
+    When the previous attempt for the same role failed on platform P, P is
+    excluded from the next attempt's candidates if another route can serve it,
+    falling back to P only when nothing else can (mahler#1548).
     """
+    if not item or not project:
+        return None
+    number = item["number"] if isinstance(item, dict) or hasattr(item, "__getitem__") else getattr(item, "number", None)
+    if not number:
+        return None
+    roles = retry_roles_for(role)
+    from .finalize import NO_ATTEMPT
+    runs = led.q("SELECT * FROM runs WHERE project=? AND number=? AND role IN (" +
+                 ",".join("?" for _ in roles) + ") ORDER BY id DESC LIMIT 5",
+                 (project, number, *roles))
+    for r in runs:
+        if r["status"] != "ended":
+            continue
+        if r["stop_reason"] in NO_ATTEMPT:
+            continue
+        outcome = (r["outcome"] or "").split(" ", 1)[0].upper()
+        if outcome in ("READY", "SPLIT", "DONE", "MERGED", "REVIEW-PASS", "REVIEW-FAIL", "WAITING"):
+            continue
+        return r["platform"]
+    return None
+
+
+def _pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
+                      burst_lines=None, min_tier=0, exclude=(), scorecard_rows=None,
+                      exclude_reason=None):
     role = route_role(role)
     accts = accounts_of(pol)
     mode = account_mode_of(pol)
@@ -913,26 +941,58 @@ def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
             order = [n for account in accts for n in candidates(cfg, role, pin, account=account)]
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
                     min_tier=min_tier, accounts=accts, candidate_order=order,
-                    exclude=exclude, scorecard_rows=scorecard_rows, routing_mode="measured", project=pol.get("name"))
+                    exclude=exclude, scorecard_rows=scorecard_rows, routing_mode="measured",
+                    project=pol.get("name"), exclude_reason=exclude_reason)
     if mode == "equal":
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
                     min_tier=min_tier, accounts=accts, exclude=exclude, routing_mode="list",
-                    project=pol.get("name"))
+                    project=pol.get("name"), exclude_reason=exclude_reason)
     if mode == "priority":
         order = candidates_for_priority(
             cfg, role, accts, pol.get("routing") or {}, pin, burst_lines)
         return pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
-                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude, routing_mode="list",
-                    project=pol.get("name"))
+                    min_tier=min_tier, accounts=accts, candidate_order=order, exclude=exclude,
+                    routing_mode="list", project=pol.get("name"), exclude_reason=exclude_reason)
     reasons = []
     for account in accts:
         platform, why = pick(cfg, led, role, pin, busy, size=size, burst_lines=burst_lines,
                              account=account, min_tier=min_tier, exclude=exclude, routing_mode="list",
-                    project=pol.get("name"))
+                             project=pol.get("name"), exclude_reason=exclude_reason)
         reasons += why
         if platform:
             return platform, reasons
     return None, reasons
+
+
+def pick_for_project(cfg, led, pol, role, pin=None, busy=(), size=None,
+                      burst_lines=None, min_tier=0, exclude=(), scorecard_rows=None,
+                      *, item=None, exclude_reason=None):
+    """Route within a project's declared accounts (DESIGN D26).
+
+    Default ("order"): tries each account in turn, spending the first with
+    headroom — reasons pool across the misses. "equal": merges every
+    account's candidates round-robin. "priority": follows the project's own
+    routing table as one exact cross-account order.
+
+    When ``item`` is provided and the previous attempt for the same role failed
+    on platform P, P is excluded if another route can serve it, falling back to P
+    only when nothing else can (mahler#1548).
+    """
+    proj = (pol.get("name") if pol else None) or (item.get("project") if isinstance(item, dict) or hasattr(item, "__getitem__") else None)
+    failed_p = last_failed_platform(led, proj, item, role) if item is not None and led is not None else None
+    if (failed_p and failed_p != pin
+            and platform_slot(cfg, failed_p) not in {platform_slot(cfg, x) for x in exclude}):
+        platform, reasons = _pick_for_project(
+            cfg, led, pol, role, pin=pin, busy=busy, size=size,
+            burst_lines=burst_lines, min_tier=min_tier,
+            exclude=set(exclude) | {failed_p}, scorecard_rows=scorecard_rows,
+            exclude_reason="previous attempt failed on this platform")
+        if platform:
+            return platform, reasons
+    return _pick_for_project(
+        cfg, led, pol, role, pin=pin, busy=busy, size=size,
+        burst_lines=burst_lines, min_tier=min_tier, exclude=exclude,
+        scorecard_rows=scorecard_rows, exclude_reason=exclude_reason)
 
 
 def preferred_for_project(cfg, led, pol, role, preferred, pin=None, busy=(),
@@ -1158,6 +1218,9 @@ def explore_for_project(cfg, led, pol, item, role, busy=(), size=None,
             if row["platform"] == name and row["effort"] == effort
             for attempt in row["attempts"])
         if resolved >= scorecard.policy(cfg)["min_attempts"]:
+            continue
+        failed_p = last_failed_platform(led, project, item, role)
+        if failed_p and platform_slot(cfg, name) == platform_slot(cfg, failed_p):
             continue
         candidate, _ = pick(cfg, led, role, busy=busy, size=size,
                             burst_lines=burst_lines, min_tier=min_tier,

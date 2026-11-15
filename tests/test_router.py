@@ -99,8 +99,8 @@ class FailedSortRoutingTests(unittest.TestCase):
         now = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
         cfg = copy.deepcopy(config.DEFAULTS)
         cfg['routing']['sort'] = ['platform_a', 'platform_b']
-        cfg['platforms']['platform_a'] = {'kind': 'claude', 'enabled': True, 'account': 'default', 'gh_writes': True}
-        cfg['platforms']['platform_b'] = {'kind': 'claude', 'enabled': True, 'account': 'default', 'gh_writes': True}
+        cfg['platforms']['platform_a'] = {'kind': 'claude', 'enabled': True, 'account': 'personal', 'gh_writes': True}
+        cfg['platforms']['platform_b'] = {'kind': 'claude', 'enabled': True, 'account': 'personal', 'gh_writes': True}
         pol = config.project_policy(cfg, 'x')
         led = Ledger(':memory:', clock=lambda: now)
         self.addCleanup(led.close)
@@ -115,7 +115,7 @@ class FailedSortRoutingTests(unittest.TestCase):
 
             # Simulate a failed sort run on platform_a
             led.create_run(project='x', number=1, role='sort', platform='platform_a',
-                           status='ended', outcome='no status line', exit_code=1)
+                           status='ended', outcome='no status line', exit_code=1, epoch=1)
             item = led.upsert_item('x', 1, state='inbox', attempts=1)
 
             # When platform_b is available, routes to platform_b
@@ -125,4 +125,25 @@ class FailedSortRoutingTests(unittest.TestCase):
             # When platform_a is the sole available route, falls back to platform_a
             chosen, _ = router.pick_for_project(cfg, led, pol, 'sort', busy={'platform_b'}, item=item)
             self.assertEqual(chosen, 'platform_a')
+
+    def test_pinned_platform_stays_on_pin_even_after_failure(self):
+        now = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
+        cfg = copy.deepcopy(config.DEFAULTS)
+        cfg['routing']['sort'] = ['platform_a', 'platform_b']
+        cfg['platforms']['platform_a'] = {'kind': 'claude', 'enabled': True, 'account': 'personal', 'gh_writes': True}
+        cfg['platforms']['platform_b'] = {'kind': 'claude', 'enabled': True, 'account': 'personal', 'gh_writes': True}
+        pol = config.project_policy(cfg, 'x')
+        led = Ledger(':memory:', clock=lambda: now)
+        self.addCleanup(led.close)
+        for window in ('5h', 'weekly'):
+            led.record_usage('platform_a', window, 10, iso(now + timedelta(days=3)))
+            led.record_usage('platform_b', window, 10, iso(now + timedelta(days=3)))
+
+        item = led.upsert_item('x', 1, state='inbox', attempts=1, pin='platform_a')
+        led.create_run(project='x', number=1, role='sort', platform='platform_a',
+                       status='ended', outcome='no status line', exit_code=1, epoch=1)
+        with mock.patch.object(platforms, 'available', return_value=True):
+            chosen, _ = router.pick_for_project(cfg, led, pol, 'sort', pin=item['pin'], item=item)
+            self.assertEqual(chosen, 'platform_a')
+
 

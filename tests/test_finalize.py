@@ -2321,6 +2321,35 @@ class RunTests(unittest.TestCase):
         self.assertEqual(wait_rec["resume"], "inbox")
         self.assertIn("Conductor must write comments", wait_rec["reason"])
 
+    def test_sort_waiting_consecutive_runs_carries_backoff_and_since(self):
+        from mahler import waits
+        self.led.upsert_item("x", 5, state="working", attempts=0, esc_tier=0, sorted_at=None)
+        self.run["role"] = "sort"
+        self.led.update_run(self.run_id, role="sort")
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: waiting First wait\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "waiting")
+        rec1 = waits.load(self.led, "x", 5)
+        self.assertEqual(rec1["checks"], 0)
+        since1 = rec1["since"]
+
+        # Run again and end waiting a second time
+        self.run_id = self.led.create_run(project="x", number=5, role="sort",
+                                          platform="cline-free", epoch=2, status="running")
+        self.run.update(id=self.run_id, epoch=2)
+        with open(self.log, "w") as fh:
+            fh.write("STATUS: waiting Second wait\n")
+        self.finalize()
+        item = self.led.item("x", 5)
+        self.assertEqual(item["state"], "waiting")
+        self.assertEqual(item["attempts"], 0)
+        rec2 = waits.load(self.led, "x", 5)
+        self.assertEqual(rec2["since"], since1)
+        self.assertEqual(rec2["checks"], 1)
+
+
 
 
 class ResumeNudgeTests(unittest.TestCase):

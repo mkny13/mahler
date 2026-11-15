@@ -37,7 +37,7 @@ def _exclusion(run):
         return run['stop_reason']
     if outcome.split(' ', 1)[0] == 'MERGED':
         return 'agent merged'
-    if outcome.split(' ', 1)[0] in {'BLOCKED', 'NEEDS-YOU'}:
+    if outcome.split(' ', 1)[0] in {'BLOCKED', 'NEEDS-YOU', 'WAITING'}:
         return outcome.split(' ', 1)[0]
     return None
 
