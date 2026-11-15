@@ -44,7 +44,8 @@ const context = vm.createContext({
   }
 });
 vm.runInContext(slice("  var layoutMedia", "  var mermaidPromise") +
-  slice("  function setView", "  // refresh() swaps"), context);
+  slice("  function setView", "  // refresh() swaps") +
+  slice("  function discardPendingIssueIds(container, keep) {", "  function markSeen()"), context);
 async function finish(promise, html) {
   requests.at(-1).finish(html);
   await promise;

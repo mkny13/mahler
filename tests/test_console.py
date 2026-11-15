@@ -4233,6 +4233,7 @@ class AtlasIssueTests(unittest.TestCase):
         self.assertIn("Source: Atlas idea `ideaa`", html)
         self.assertIn("Files in ideas.", html)
         self.assertIn("Files in mahler.", html)
+        self.assertIn('data-keep="atlas_issue:ideaa:file_issue"', html)
         phone = page.app(state.build(self.cfg, self.led), "phone", tab="browse")
         self.assertIn('class="pissue-title"', phone)
 
@@ -4242,6 +4243,7 @@ class AtlasIssueTests(unittest.TestCase):
         self.assertEqual(self.clients, {})
         html = page.app(state.build(self.cfg, self.led), "desktop", view="projects")
         self.assertIn(f'data-act="atlas_issue_undo" data-id="{id}"', html)
+        self.assertIn('data-pending-issue="ideas" data-key="ideaa" data-kind="file_issue"', html)
         actions.run(self.cfg, self.led, "atlas_issue_undo", {"id": id})
         self.drain()
         self.assertEqual(self.clients, {})
@@ -4319,3 +4321,12 @@ class AtlasIssueTests(unittest.TestCase):
         js = (Path(page.__file__).parent / "console.js").read_text()
         self.assertIn('act === "atlas_issue"', js)
         self.assertIn('act === "atlas_issue_undo"', js)
+
+    def test_browser_retry_reuses_client_id(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("Node needed for browser regression")
+        result = subprocess.run(["node", "tests/console_atlas_issue_test.js"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)

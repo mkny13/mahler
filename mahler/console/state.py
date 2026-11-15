@@ -1185,7 +1185,8 @@ def _projects(cfg, led, now):
         queued_issue = {}
         for a in led.pending_actions("atlas_issue"):
             pl = json.loads(a["payload"])
-            queued_issue[pl["key"]] = {"id": a["id"], "target": pl["target"], "title": pl["title"]}
+            queued_issue[pl["key"]] = {"id": a["id"], "target": pl["target"],
+                                       "title": pl["title"], "kind": pl["kind"]}
         early = 0
         for r in recs:
             row = dict(r)

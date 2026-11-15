@@ -1248,7 +1248,8 @@ def _proj_issue(r):
     """The server-rendered composer: review/edit, then queue for 60 seconds with Undo."""
     c, pend = r["composer"], r.get("pending_issue")
     if pend:
-        return (f'<div class="pissue" data-pending-issue="{e(pend["target"])}">'
+        return (f'<div class="pissue" data-pending-issue="{e(pend["target"])}" '
+                f'data-key="{e(r["key"])}" data-kind="{e(pend["kind"])}">'
                 f'<span class="t-mut">Filing “{e(pend["title"])}” in {e(pend["target"])}… in about a minute.</span>'
                 f'<button class="link" data-act="atlas_issue_undo" data-id="{pend["id"]}">Undo</button></div>')
     if c["disabled"]:
@@ -1258,6 +1259,7 @@ def _proj_issue(r):
     return (f'<details class="pissue" data-issue-kind="{e(c["kind"])}" data-key="{e(r["key"])}">'
             f'<summary class="proj-act">{e(c["label"])}</summary>'
             f'<div class="t-mut">Files in {e(c["target"])}. Review and edit first.</div>'
+            f'<input class="pissue-client" type="hidden" data-keep="atlas_issue:{e(r["key"])}:{e(c["kind"])}">'
             f'<input class="pissue-title" maxlength="200" value="{e(c["title"])}" aria-label="Issue title">'
             f'<textarea class="pissue-body" rows="8" maxlength="8000" aria-label="Issue body">{e(c["body"])}</textarea>'
             f'<button class="proj-act" data-act="atlas_issue" data-key="{e(r["key"])}" '
