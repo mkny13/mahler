@@ -64,6 +64,8 @@ class LaunchCapacityTests(unittest.TestCase):
                 self.schedule_pin(ctx)
                 led.now = lambda: NOW + timedelta(hours=4)
                 self.schedule_pin(ctx)
+                self.assertIsNotNone(led.get_kv("pin-blocked:a#1:claude"))
+                self.assertIsNotNone(led.get_kv("pin-blocked-alerted:a#1:claude"))
                 if recovery == "available":
                     ctx.cfg["platforms"]["claude"]["enabled"] = True
                 else:
