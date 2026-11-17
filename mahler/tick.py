@@ -731,6 +731,71 @@ def _account_start(cfg, platform, name, area, item_files, st):
     st["busy"] |= tier_budget_busy(cfg, st["tiers"])
 
 
+def _observe_pin_block(ctx, p, it, st):
+    """Persist hard pin waits independently of available launch slots (D25)."""
+    if ctx.dry_run:
+        return
+    led, name, n, pin = ctx.led, p["name"], it["number"], it["pin"]
+    reason = None
+    pc = ctx.cfg["platforms"].get(pin) if pin else None
+    if pin:
+        if pc is None:
+            reason = "platform is not configured"
+        elif not pc.get("enabled", True):
+            reason = "platform is disabled"
+        elif config.account_of(pc) not in config.accounts_of(p):
+            reason = (f"platform account {config.account_of(pc)} is not allowed "
+                      "by this project's account policy")
+        else:
+            state, detail = router.usage_state(led, pin, pc, st["burst_lines"])
+            if state in ("hard", "no_credit", "blocked"):
+                reason = f"{state}: {detail}"
+
+    prefix = f"pin-blocked:{name}#{n}:"
+    alert_prefix = f"pin-blocked-alerted:{name}#{n}:"
+    # Remove the previous pin's episode, or all tracking on recovery/removal.
+    for base in (prefix, alert_prefix):
+        led.con.execute(
+            "DELETE FROM kv WHERE substr(key, 1, ?) = ? AND key != ?",
+            (len(base), base, base + pin if reason else ""))
+    if not reason:
+        return
+    key, alert_key = prefix + pin, alert_prefix + pin
+    since = led.get_kv(key)
+    if not since:
+        since = iso(led.now())
+        led.set_kv(key, since)
+    if led.now() - parse(since) < timedelta(hours=4):
+        return
+    delivered = json.loads(led.get_kv(alert_key) or "{}")
+    message = (
+        f"{name}#{n} has waited at least 4 hours for pinned platform {pin}: {reason}. "
+        "Resolve the refusal (for API credits, confirm an active grant with "
+        f"`mahler grant`; for disabled platforms, enable the platform; for quotas, "
+        f"wait for recovery), or remove the `platform:{pin}` label to allow "
+        "normal routing within the project's allowed accounts. The pin is unchanged.")
+    # Include the episode so a later, distinct block can get its own comment.
+    marker = f"<!-- mahler:pin-blocked:{pin}:{since} -->"
+    if not delivered.get("comment"):
+        try:
+            gh = ctx.gh(name)
+            if not gh.find_comment(n, marker):
+                gh.comment(n, "<!-- mahler:agent -->\n<!-- mahler:pin-blocked -->\n"
+                           + marker + "\n" + message)
+            delivered["comment"] = True
+            led.set_kv(alert_key, json.dumps(delivered))
+        except Exception as e:  # notification failure must not break scheduling
+            ctx.say(f"{name}#{n}: pinned-platform comment failed — {e}")
+    if not delivered.get("ping"):
+        try:
+            ctx.ping(f"Pinned platform blocked — {name} #{n}", message,
+                     project=name, number=n, priority="high", tags="warning")
+            delivered["ping"] = True
+            led.set_kv(alert_key, json.dumps(delivered))
+        except Exception as e:
+            ctx.say(f"{name}#{n}: pinned-platform ping failed — {e}")
+
+
 def schedule(ctx, projects):
     """Hand out run slots across every project at once (mahler#9).
 
@@ -747,6 +812,8 @@ def schedule(ctx, projects):
     st = _init_schedule_state(ctx, projects)
     work = _candidates(ctx, projects)
     _order_candidates(ctx, work, st, projects)
+    for p, _role, it in work:
+        _observe_pin_block(ctx, p, it, st)
 
     st["said"] = set()       # projects already told they're at capacity
     candidates = list(work)
