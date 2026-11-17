@@ -11,6 +11,98 @@ from tests.test_schedule import NOW, item, mk_cfg, proj, seed
 
 
 class LaunchCapacityTests(unittest.TestCase):
+    def pinned_context(self, state="ready", total=2):
+        led = Ledger(":memory:", clock=lambda: NOW)
+        self.addCleanup(led.close)
+        cfg = mk_cfg({"a": proj(max_parallel=2)}, total=total)
+        cfg["platforms"]["claude"]["metered"] = False
+        ctx = scheduler.Ctx(cfg, led)
+        ctx.ping = mock.Mock()
+        gh = mock.Mock()
+        gh.find_comment.return_value = None
+        ctx.gh = mock.Mock(return_value=gh)
+        item(led, "a", 1, state=state)
+        led.upsert_item("a", 1, pin="claude")
+        return ctx, led, gh
+
+    def schedule_pin(self, ctx):
+        with mock.patch.object(platforms, "available", return_value=True), \
+                mock.patch("mahler.tick.start", return_value=False) as start:
+            tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+        return start
+
+    def test_pinned_hard_blocked_platform_alerts_and_comments_after_threshold(self):
+        for state in ("ready", "inbox"):
+            with self.subTest(state=state):
+                ctx, led, gh = self.pinned_context(state)
+                reason = "no confirmed grant covers now — spending refused (DESIGN D41)"
+                with mock.patch("mahler.router.usage_state", return_value=("hard", reason)):
+                    self.schedule_pin(ctx).assert_not_called()
+                    self.assertEqual(led.get_kv("pin-blocked:a#1:claude"), iso(NOW))
+                    led.now = lambda: NOW + timedelta(hours=4) - timedelta(seconds=1)
+                    self.schedule_pin(ctx)
+                    gh.comment.assert_not_called()
+                    ctx.ping.assert_not_called()
+                    led.now = lambda: NOW + timedelta(hours=4)
+                    self.schedule_pin(ctx).assert_not_called()
+                    self.schedule_pin(ctx)
+                gh.comment.assert_called_once()
+                body = gh.comment.call_args.args[1]
+                for expected in ("<!-- mahler:agent -->", "<!-- mahler:pin-blocked -->",
+                                 "claude", reason, "mahler grant", "platform:claude"):
+                    self.assertIn(expected, body)
+                ctx.ping.assert_called_once()
+                self.assertEqual(ctx.ping.call_args.kwargs["priority"], "high")
+                self.assertIsNotNone(led.get_kv("pin-blocked-alerted:a#1:claude"))
+                self.assertEqual(led.item("a", 1)["pin"], "claude")
+
+    def test_pinned_block_cleanup_on_recovery_removal_or_change(self):
+        for recovery in ("available", "removed", "changed"):
+            with self.subTest(recovery=recovery):
+                ctx, led, gh = self.pinned_context()
+                ctx.cfg["platforms"]["claude"]["enabled"] = False
+                self.schedule_pin(ctx)
+                led.now = lambda: NOW + timedelta(hours=4)
+                self.schedule_pin(ctx)
+                if recovery == "available":
+                    ctx.cfg["platforms"]["claude"]["enabled"] = True
+                else:
+                    led.upsert_item("a", 1, pin=None if recovery == "removed" else "agy-claude")
+                    ctx.cfg["platforms"]["agy-claude"]["metered"] = False
+                self.schedule_pin(ctx).assert_called_once()
+                self.assertIsNone(led.get_kv("pin-blocked:a#1:claude"))
+                self.assertIsNone(led.get_kv("pin-blocked-alerted:a#1:claude"))
+
+    def test_pinned_refusals_observed_without_slots_and_account_never_crossed(self):
+        for refusal in ("disabled", "account", "no_credit", "blocked"):
+            with self.subTest(refusal=refusal):
+                ctx, led, gh = self.pinned_context(total=0)
+                if refusal == "disabled":
+                    ctx.cfg["platforms"]["claude"]["enabled"] = False
+                elif refusal == "account":
+                    ctx.cfg["platforms"]["claude"]["account"] = "work"
+                with mock.patch("mahler.router.usage_state", return_value=(
+                        refusal if refusal in ("no_credit", "blocked") else "ok", "refused")):
+                    self.schedule_pin(ctx)
+                    self.assertIsNotNone(led.get_kv("pin-blocked:a#1:claude"))
+                    led.now = lambda: NOW + timedelta(hours=4)
+                    ctx.cfg["concurrency"]["total"] = 2
+                    self.schedule_pin(ctx).assert_not_called()
+                gh.comment.assert_called_once()
+                ctx.ping.assert_called_once()
+
+    def test_soft_wait_and_dry_run_do_not_record_or_alert(self):
+        for dry_run, state in ((False, "soft"), (False, "stale"), (True, "hard")):
+            ctx, led, gh = self.pinned_context()
+            ctx.dry_run = dry_run
+            with mock.patch("mahler.router.usage_state", return_value=(state, "wait")):
+                self.schedule_pin(ctx)
+                led.now = lambda: NOW + timedelta(hours=5)
+                self.schedule_pin(ctx)
+            self.assertIsNone(led.get_kv("pin-blocked:a#1:claude"))
+            gh.comment.assert_not_called()
+            ctx.ping.assert_not_called()
+
     def test_resume_fix_gets_new_run_lease_and_current_rendered_prompt(self):
         led = Ledger(":memory:", clock=lambda: NOW)
         self.addCleanup(led.close)
