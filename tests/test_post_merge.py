@@ -92,7 +92,7 @@ class PostMergeTests(unittest.TestCase):
         self.workflow_setup()
         self.gh.workflow_runs_for_commit.return_value = [
             self.workflow(head_branch="feature"), self.workflow(head_sha="b" * 40),
-            self.workflow(event="pull_request")]
+            self.workflow(event="pull_request"), self.workflow(event="workflow_dispatch")]
         self.tick()
         self.gh.create_issue.assert_not_called()
         self.now += timedelta(days=15)

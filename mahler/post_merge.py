@@ -158,7 +158,7 @@ def _watch_workflows(ctx, name, policy):
             latest = {}
             for run in ctx.gh(name).workflow_runs_for_commit(row["sha"]):
                 if (run.get("head_sha") != row["sha"] or run.get("head_branch") != branch
-                        or run.get("event") in {"pull_request", "pull_request_target"}):
+                        or run.get("event") != "push"):
                     continue
                 identity = run.get("workflow_id") or run.get("name")
                 order = (int(run["id"]), int(run.get("run_attempt") or 1))
