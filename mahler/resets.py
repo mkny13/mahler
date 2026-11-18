@@ -23,6 +23,10 @@ state or calls the consume RPC, so a diagnostic tick can never spend a real
 reset. Every spend pings ntfy with the login and the new
 weekly reset time, and every credit about to expire unspent is pinged once so
 Mike can still spend it by hand.
+
+Claude logins (mahler#1598) follow the same two rules: their banked grants come
+from the `cedar_ember` part of the OAuth usage read and are spent through
+Anthropic's `reset_rate_limits` endpoint; see `_spend_claude` and DESIGN D35.
 """
 
 import json

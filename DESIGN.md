@@ -2351,6 +2351,37 @@ consumes a banked credit through the app-server RPC
 - The pass is silent-safe: one broken login or failed call never blocks the
   others or the tick; nothing is spent on stale readings (fail closed).
 
+**Claude logins (mahler#1598, 2026-11-18).** Claude now banks reset grants
+too, so the same pass covers each Claude subscription login (one per account
+and quota group; API-credit platforms, D41, are excluded) with rules (a) and
+(b) unchanged:
+
+- Reading: the zero-token `GET /api/oauth/usage?cedar_ember=1` read
+  (`platforms.oauth_usage`) also parses `cedar_ember`. Only an `eligible`
+  object whose every grant validates counts; anything missing, null or
+  malformed means no credits. A grant counts when `usable_now` is true,
+  `paused` is not, and `resets_left > 0`. The count and expiries (never grant
+  ids) are kept under `claude:quota:<platform>` across the login's peers.
+- Spending: `POST /api/organizations/<org>/reset_rate_limits` with
+  `{"program": "cedar_ember", "grant_id", "request_id"}` (as t3code's
+  `claudeResetCredits.ts` sends it), the login's own OAuth token and the
+  `oauthAccount.organizationUuid` from its own `.claude.json`. Only the
+  earliest-expiring grant the same-tick targeting read shows usable *with* an
+  `ends_at` is spent — mirroring Codex's "known expiry" proof. Only `reset`
+  counts as spent; `already_used`, `not_limited`, `cooldown`, `ineligible`,
+  `unavailable`, HTTP 429 and 401/403 end the attempt without a retry loop.
+  The endpoint is undocumented and may change without notice: an unknown
+  answer is never a spend.
+- The attempt key is `reset:attempt:claude:<account>` — namespaced because a
+  personal login has both a Codex and a Claude credit, and one shared key
+  would let each kind's attempt clobber the other's 30-minute back-off. A
+  retry on the same grant reuses its `request_id`; a fresh one is minted after
+  a successful `reset`, since one grant can hold several resets.
+- D25: the token comes from the login's own credentials source
+  (`usage.claude_oauth_source`) and the org id from its own config dir; a work
+  account with neither never falls back to the personal keychain or
+  `~/.claude.json`. The Capacity row shows the banked count and countdown.
+
 ### D36 — Learn each login's best warm-up time, data only (mahler#536)
 
 Decided 2026-09-28 (mahler#536). The warm-up nudges (D34) fire at a fixed
