@@ -278,21 +278,89 @@ class PostMergeTests(unittest.TestCase):
                         self.tick()
                     self.assertEqual(launch.call_args.kwargs["env"]["MAHLER_ARTIFACT_REF"], artifact)
 
-    def test_mahler_live_proof_is_its_smoke(self):
+    def mahler_smoke(self, live):
         self.cfg["projects"]["p"]["post_merge"].update(
             deploy_strategy="watch", live_strategy="mahler", live_command="")
         self.tick()
-        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + SHA):
+        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + live):
             self.tick()
         self.assertEqual(self.row()["phase"], "smoke")
-        with mock.patch.object(post_merge.subprocess, "Popen") as launch:
+
+    def restart(self):
+        self.led.close()
+        self.led = Ledger(str(self.root / "ledger.db"), clock=lambda: self.now)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+
+    def test_mahler_live_proof_reports_identity_and_delivers_once_after_restart(self):
+        for live, identity in ((SHA, "exact"), ("b" * 40, "descendant")):
+            with self.subTest(identity=identity):
+                self.led.con.execute("DELETE FROM post_merge_checks")
+                self.register()
+                self.mahler_smoke(live)
+                self.restart()
+                with mock.patch("mahler.launch_health.exact_live",
+                                return_value="mahler:" + live) as observe,                      mock.patch.object(post_merge.subprocess, "Popen") as launch:
+                    self.tick()
+                observe.assert_called_once_with(SHA, timeout=5, env=None)
+                launch.assert_not_called()
+                row = self.row()
+                self.assertEqual(row["status"], "PASS")
+                self.assertEqual(row["live_sha"], SHA)
+                self.assertEqual(row["artifact_ref"], "mahler:" + live)
+                self.assertEqual(row["summary"],
+                                 f"{identity.title()} live identity PASS (mahler self-host)")
+                report = Path(row["evidence_ref"])
+                self.assertEqual(report.read_bytes(),
+                    f"Tag: {row['tag']}\nMerge: {SHA}\nLive: {live}\n"
+                    f"Identity: {identity}\nSmoke: PASS\n".encode())
+                self.led.add_uat("p", 1, 4, SHA, "test", "verify")
+                self.restart()
+                self.tick()
+                self.restart()
+                self.tick()
+                self.assertEqual(len(list(self.root.rglob("report.md"))), 1)
+                self.gh.comment_create.assert_called_once_with(
+                    1, "Smoke: PASS report=" + report.as_uri())
+                self.assertEqual(len(self.led.q(
+                    "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'")), 1)
+
+    @mock.patch("mahler.notify.send")
+    def test_mahler_smoke_reobserves_until_original_deadline(self, ping):
+        self.mahler_smoke(SHA)
+        deadline = self.row()["deadline_at"]
+        from mahler.ledger import parse
+        self.now = parse(deadline) - timedelta(seconds=4)
+        with mock.patch("mahler.launch_health.exact_live") as observe,              mock.patch.object(post_merge.subprocess, "Popen") as launch:
+            for result in (None, "mahler:" + "b" * 40, RuntimeError("private output")):
+                observe.side_effect = result if isinstance(result, Exception) else None
+                observe.return_value = result
+                self.restart()
+                self.tick()
+                observe.assert_called_with(SHA, timeout=2, env=None)
+                row = self.row()
+                self.assertEqual((row["status"], row["phase"]), ("pending", "smoke"))
+                self.assertEqual(row["summary"], "exact live identity not yet verified")
+                self.assertEqual(row["deadline_at"], deadline)
+                self.assertFalse(row["evidence_ref"])
+                self.assertFalse(list(self.root.rglob("report.md")))
+            self.now = parse(deadline)
             self.tick()
-        launch.assert_not_called()
-        row = self.row()
-        self.assertEqual(row["status"], "PASS")
-        self.assertEqual(Path(row["evidence_ref"]).read_text(),
-                         f"Tag: {row['tag']}\nSmoke: PASS\n")
-        self.gh.create_issue.assert_not_called()
+            self.assertEqual(self.row()["failure_code"], "timeout")
+            launch.assert_not_called()
+        self.assertFalse(self.led.q(
+            "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'"))
+
+    def test_mahler_smoke_observation_cannot_pass_after_deadline(self):
+        self.mahler_smoke(SHA)
+        from mahler.ledger import parse
+        def observe(*args, **kwargs):
+            self.now = parse(self.row()["deadline_at"])
+            return "mahler:" + SHA
+        with mock.patch("mahler.launch_health.exact_live", side_effect=observe):
+            self.tick()
+        self.assertEqual(self.row()["failure_code"], "timeout")
+        self.assertFalse(list(self.root.rglob("report.md")))
 
     def test_provider_errors_retry_until_original_deadline_and_isolate_projects(self):
         self.cfg["projects"]["p"]["post_merge"].update(
