@@ -45,6 +45,105 @@ class PostMergeTests(unittest.TestCase):
     def register(self, sha=SHA):
         post_merge.register(self.ctx, "p", 1, {"state": "MERGED", "mergeCommit": {"oid": sha}})
 
+    def workflow_setup(self):
+        self.cfg["projects"]["p"].pop("post_merge", None)
+        self.led.con.execute("DELETE FROM post_merge_checks")
+        self.gh.default_branch_settings.return_value = {"default_branch": "main"}
+        self.gh.pr_for_commit.return_value = None
+        self.gh.workflow_runs_for_commit.return_value = []
+        self.register()
+
+    def workflow(self, **changes):
+        return dict({"id": 10, "workflow_id": 7, "name": "Deploy sync backend",
+                     "head_sha": SHA, "head_branch": "main", "event": "push",
+                     "status": "completed", "conclusion": "failure", "run_attempt": 1,
+                     "html_url": "https://github.com/x/y/actions/runs/10"}, **changes)
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_default_branch_workflow_failure_noticed_without_post_merge_config(self, ping):
+        self.workflow_setup()
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
+        self.tick()
+        self.tick()
+        self.assertIsNone(self.row())
+        self.gh.create_issue.assert_called_once()
+        title, body, labels = self.gh.create_issue.call_args.args
+        self.assertIn("<!-- mahler:post-merge-failure", body)
+        self.assertIn("Deploy sync backend", body)
+        self.assertIn("https://github.com/x/y/actions/runs/10", body)
+        self.assertIn("type:bug", labels)
+        self.assertIn("p1", labels)
+        ping.assert_called_once()
+        self.assertEqual(ping.call_args.kwargs["priority"], "high")
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_green_rerun_or_active_attempt_suppresses_failure(self, ping):
+        self.workflow_setup()
+        for newer in (self.workflow(run_attempt=2, conclusion="success"),
+                      self.workflow(id=11, conclusion="success"),
+                      self.workflow(run_attempt=2, status="in_progress", conclusion=None)):
+            self.gh.workflow_runs_for_commit.return_value = [newer, self.workflow()]
+            self.tick()
+        self.gh.create_issue.assert_not_called()
+        ping.assert_not_called()
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_scope_and_observation_window(self, ping):
+        self.workflow_setup()
+        self.gh.workflow_runs_for_commit.return_value = [
+            self.workflow(head_branch="feature"), self.workflow(head_sha="b" * 40),
+            self.workflow(event="pull_request"), self.workflow(event="workflow_dispatch")]
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        self.now += timedelta(days=15)
+        self.gh.workflow_runs_for_commit.reset_mock()
+        self.tick()
+        self.gh.workflow_runs_for_commit.assert_not_called()
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_recovery_reuse_and_restart(self, ping):
+        self.workflow_setup()
+        self.led.con.execute("DELETE FROM kv WHERE key LIKE 'workflow-watch:%'")
+        self.led.add_uat("p", 1, 4, SHA, "shipped", "verify", shipped_at=iso(NOW))
+        self.gh.issue_by_marker.return_value = "https://github.com/x/y/issues/99"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(conclusion="timed_out")]
+        self.tick()
+        self.led.close()
+        self.led = Ledger(str(self.root / "ledger.db"), clock=lambda: self.now)
+        self.ctx = scheduler.Ctx(self.cfg, self.led)
+        self.ctx.gh = mock.Mock(return_value=self.gh)
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        ping.assert_called_once()
+        events = self.led.q("SELECT * FROM events WHERE kind='post_merge_failed'")
+        self.assertEqual(len(events), 1)
+        self.assertIn("Deploy sync backend", events[0]["detail"])
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_watch_survives_phased_check_pause(self, ping):
+        self.gh.default_branch_settings.return_value = {"default_branch": "main"}
+        self.gh.pr_for_commit.return_value = None
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(conclusion="startup_failure")]
+        self.led.set_kv("post_merge_paused:p", "1")
+        self.tick()
+        self.gh.create_issue.assert_called_once()
+        ping.assert_called_once()
+
+    @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_provider_failure_retries_and_disabled_project_is_quiet(self, ping):
+        self.workflow_setup()
+        self.gh.workflow_runs_for_commit.side_effect = RuntimeError("offline")
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        self.gh.workflow_runs_for_commit.side_effect = None
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow()]
+        self.cfg["projects"]["p"]["enabled"] = False
+        self.tick()
+        self.gh.create_issue.assert_not_called()
+        self.cfg["projects"]["p"]["enabled"] = True
+        self.tick()
+        ping.assert_called_once()
+
     def row(self, sha=SHA):
         return self.led.post_merge_check("p", 1, sha)
 

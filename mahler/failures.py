@@ -213,7 +213,7 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
                 ctx.led.set_kv(bug_key, str(bug))
 
     check = ctx.led.post_merge_check(project, number, merge_sha)
-    diagnostic = row_get(check, "summary", "") if check else ""
+    diagnostic = row_get(check, "summary", "") if check else (redact(output or "")[:16384])
     title = f"Post-merge {phase} fail: {project}#{number}"
     labels = ["type:bug", "p1"]
     if policy.get("scope") == "label":

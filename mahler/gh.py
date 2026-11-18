@@ -784,6 +784,21 @@ class GH:
         """Re-run a whole workflow run (a cancelled one, mahler#1530)."""
         self._api_json("POST", f"actions/runs/{int(run_id)}/rerun")
 
+    def workflow_runs_for_commit(self, sha):
+        """All attempts' current run state, using this project's credentials."""
+        rows = []
+        for page in range(1, 11):
+            data = self._api_json(
+                "GET", "actions/runs?head_sha=" + quote(sha, safe="")
+                + f"&per_page=100&page={page}")
+            batch = data["workflow_runs"]
+            rows.extend(batch)
+            if len(rows) >= data["total_count"]:
+                return rows
+            if not batch:
+                break
+        raise GHError("incomplete workflow run lookup")
+
     def ci_retry_runs(self, head, base, *, reported=False):
         """Select exact-head failures for the bounded retry, without a base baseline."""
         def runs(sha):
