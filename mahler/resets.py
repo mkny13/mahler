@@ -75,24 +75,30 @@ def _ready_work_routed(ctx, projects, account, group_names):
     return False
 
 
-def _ping_expiring(ctx, account, expiry, weekly_pct):
+def _ping_expiring(ctx, account, expiry, weekly_pct, kind="codex"):
     """A banked reset will expire and the rule did not spend it — say so once."""
     led = ctx.led
-    flag = f"notified:reset-expiring:{account}:{iso(expiry)}"
+    label, where = ("Codex", "ChatGPT") if kind == "codex" else ("Claude", "Claude")
+    # Codex keeps its original flag; Claude's is namespaced so a personal
+    # login's two kinds never share one (mahler#1598).
+    flag = (f"notified:reset-expiring:{account}:{iso(expiry)}" if kind == "codex"
+            else f"notified:reset-expiring:{kind}:{account}:{iso(expiry)}")
     if led.get_kv(flag):
         return
     if ctx.dry_run:
-        ctx.say(f"codex ({account}): banked reset expiring {iso(expiry)} — would ping")
+        ctx.say(f"{kind} ({account}): banked reset expiring {iso(expiry)} — would ping")
         return
     led.set_kv(flag, iso(led.now()))
-    led.event("reset_expiring", detail={"account": account, "expires": iso(expiry),
-                                        "weekly_pct": weekly_pct})
-    ctx.ping(f"Codex ({account}): banked reset expiring unused",
-             f"A banked reset on the {account} Codex login expires "
+    detail = {"account": account, "expires": iso(expiry), "weekly_pct": weekly_pct}
+    if kind != "codex":
+        detail["kind"] = kind
+    led.event("reset_expiring", detail=detail)
+    ctx.ping(f"{label} ({account}): banked reset expiring unused",
+             f"A banked reset on the {account} {label} login expires "
              f"{router.fmt_countdown(expiry - led.now())} from now and the spend "
              f"rule did not fire (weekly at {weekly_pct:.0f}%). Spend it in "
-             "ChatGPT if you want it.", priority="default", tags="warning,hourglass")
-    ctx.say(f"codex ({account}): banked reset expiring {iso(expiry)} — pinged")
+             f"{where} if you want it.", priority="default", tags="warning,hourglass")
+    ctx.say(f"{kind} ({account}): banked reset expiring {iso(expiry)} — pinged")
 
 
 def _record_usage(ctx, name, account, samples):
@@ -172,8 +178,104 @@ def _spend(ctx, name, pconf, account, rule):
             f"weekly resets {weekly_reset or 'unknown'}")
 
 
+def _claude_logins(cfg):
+    """One representative platform per Claude subscription login:
+    (account, quota_group). API-credit platforms (D41) bank no resets."""
+    seen, order = set(), []
+    for name, pc in cfg["platforms"].items():
+        if (pc.get("kind") != "claude" or not pc.get("enabled", True)
+                or pc.get("api_credits")):
+            continue
+        key = (config.account_of(pc), pc.get("quota_group", name))
+        if key not in seen:
+            seen.add(key)
+            order.append(name)
+    return [(name, cfg["platforms"][name]) for name in order]
+
+
+CLAUDE_NOT_SPENT = {"already_used", "not_limited", "cooldown", "ineligible",
+                    "unavailable", "rateLimited", "signedOut"}
+
+
+def _spend_claude(ctx, name, pconf, account, rule):
+    """Target the earliest-expiring usable banked grant and spend one reset.
+
+    Fails closed: only a grant this same read shows usable now, not paused,
+    with resets left and a known expiry is ever targeted (mahler#1598)."""
+    led, cfg = ctx.led, ctx.cfg
+    source = usage.claude_oauth_source(cfg, pconf)
+    token = platforms.claude_oauth_token(**source) if source else None
+    if not token:
+        ctx.say(f"claude ({account}): no usable login — not spending")
+        return
+    org = platforms.claude_organization_uuid(account, cfg)
+    if not org:
+        ctx.say(f"claude ({account}): no organization id in the login's config — not spending")
+        return
+    fresh = platforms.oauth_usage(**source, keep_ids=True)
+    if not isinstance(fresh, platforms.ClaudeUsage):
+        ctx.say(f"claude ({account}): couldn't read banked resets — not spending")
+        return
+    rows = [g for g in fresh.metadata.get("credit_rows", [])
+            if g.get("usable_now") is True and g.get("paused") is not True
+            and type(g.get("resets_left")) is int and g["resets_left"] > 0
+            and (exp := router._ts(g.get("expires_at"))) and exp > led.now()]
+    if not rows:
+        ctx.say(f"claude ({account}): no usable banked grant with a known expiry — not spending")
+        return
+    rows.sort(key=lambda g: router._ts(g["expires_at"]))
+    grant = rows[0]
+    # Namespaced by kind: a personal login has both a Codex and a Claude
+    # credit, and a shared key would let each clobber the other's back-off.
+    attempt_key = f"reset:attempt:claude:{account}"
+    try:
+        stored = json.loads(led.get_kv(attempt_key) or "null")
+    except ValueError:
+        stored = None
+    if (isinstance(stored, dict) and stored.get("credit_id") == grant["id"]
+            and (t := parse(stored.get("at"))) and led.now() - t < RETRY_AFTER):
+        return                      # same attempt already in flight or just ended
+    if ctx.dry_run:
+        ctx.say(f"claude ({account}): dry-run — would spend a banked reset from grant "
+                f"{grant['id']} (rule {rule}, expires {grant['expires_at']})")
+        return
+    # A retry on the same grant reuses its request id, so a call whose answer
+    # was lost cannot spend twice; a grant with resets left after a spend
+    # gets a fresh id for its next one.
+    if (not isinstance(stored, dict) or stored.get("credit_id") != grant["id"]
+            or stored.get("outcome") == "reset" or not stored.get("key")):
+        stored = {"credit_id": grant["id"], "key": str(uuid.uuid4())}
+    stored = {"credit_id": stored["credit_id"], "key": stored["key"], "at": iso(led.now())}
+    led.set_kv(attempt_key, json.dumps(stored))
+    outcome = platforms.consume_claude_credit(token, org, grant["id"], stored["key"])
+    stored["outcome"] = outcome
+    led.set_kv(attempt_key, json.dumps(stored))
+    if outcome != "reset":
+        ctx.say(f"claude ({account}): banked reset not spent ({outcome or 'call failed'})")
+        return
+    samples = platforms.oauth_usage(**source)      # free read: the new window state
+    weekly_reset = next((r for w, _, r in samples if w == "weekly"), None)
+    if samples:
+        usage.record_claude_usage(ctx, samples, platform=name)
+        led.set_kv(f"probe:oauth:{name}", iso(led.now()))
+    flag = f"notified:reset-spent:claude:{account}:{stored['key']}"
+    if not led.get_kv(flag):
+        led.set_kv(flag, iso(led.now()))
+        led.event("reset_spent", detail={
+            "account": account, "kind": "claude", "rule": rule, "credit": grant["id"],
+            "expires": grant["expires_at"], "weekly_reset": weekly_reset})
+        resets_txt = iso(router._ts(weekly_reset)) if router._ts(weekly_reset) else "unknown"
+        ctx.ping(f"Claude ({account}): banked reset spent",
+                 f"Spent a banked reset on the {account} Claude login (rule {rule}). "
+                 f"The weekly window now resets {resets_txt}.",
+                 priority="default", tags="hourglass")
+    ctx.say(f"claude ({account}): banked reset spent (rule {rule}); "
+            f"weekly resets {weekly_reset or 'unknown'}")
+
+
 def spend_banked(ctx, projects):
-    """The tick pass: decide per Codex login whether a banked reset is due.
+    """The tick pass: decide per Codex and Claude login whether a banked
+    reset is due.
 
     Exception-safe per login: one broken login never blocks the others, and a
     broken pass never blocks the tick."""
@@ -182,14 +284,19 @@ def spend_banked(ctx, projects):
             _handle_login(ctx, projects, name, pconf)
         except Exception as e:       # noqa: BLE001 — one login must not break the tick
             ctx.say(f"codex reset pass failed for {name} — {e}")
+    for name, pconf in _claude_logins(ctx.cfg):
+        try:
+            _handle_login(ctx, projects, name, pconf, kind="claude")
+        except Exception as e:       # noqa: BLE001 — one login must not break the tick
+            ctx.say(f"claude reset pass failed for {name} — {e}")
 
 
-def _handle_login(ctx, projects, name, pconf):
+def _handle_login(ctx, projects, name, pconf, kind="codex"):
     led, cfg, now = ctx.led, ctx.cfg, ctx.led.now()
     account = config.account_of(pconf)
     group = {peer for peer in usage.quota_peers(cfg, name)
              if config.account_of(cfg["platforms"][peer]) == account}
-    quota = router.codex_quota(led, name, pconf)
+    quota = (router.codex_quota if kind == "codex" else router.claude_quota)(led, name, pconf)
     if not quota:
         return
     sampled = router._ts(quota.get("sampled_at"))
@@ -211,6 +318,7 @@ def _handle_login(ctx, projects, name, pconf):
     rule_b = (expiry <= now + EXPIRY_WINDOW and weekly_pct >= MIN_WEEKLY_PCT
               and weekly_reset and weekly_reset >= expiry)
     if rule_a or rule_b:
-        _spend(ctx, name, pconf, account, "a" if rule_a else "b")
+        spend = _spend if kind == "codex" else _spend_claude
+        spend(ctx, name, pconf, account, "a" if rule_a else "b")
     elif expiry <= now + EXPIRY_WINDOW:
-        _ping_expiring(ctx, account, expiry, weekly_pct)
+        _ping_expiring(ctx, account, expiry, weekly_pct, kind=kind)
