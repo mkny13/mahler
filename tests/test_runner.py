@@ -1287,3 +1287,40 @@ class FetchOriginSshFallbackTests(unittest.TestCase):
         self.URL = "https://github.com/o/r.git"
         calls, err = self.run_fetch([self.DENIED])
         self.assertIs(err, self.DENIED)
+
+class DetachedRunTests(unittest.TestCase):
+    def test_detached_child_after_leader_exit_is_reaped(self):
+        import sys
+        import signal
+        import time
+        import uuid
+        marker = str(uuid.uuid4().int)
+        with tempfile.TemporaryDirectory() as tmp:
+            ready = Path(tmp) / "ready"
+            child_code = ("import signal,time,pathlib; "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)")
+            leader_code = ("import subprocess,sys; "
+                           f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}], "
+                           "start_new_session=True, stdout=subprocess.DEVNULL, "
+                           "stderr=subprocess.DEVNULL); print(p.pid)")
+            result = subprocess.run([sys.executable, "-c", leader_code],
+                                    env=dict(os.environ, MAHLER_RUN_ID=marker),
+                                    capture_output=True, text=True, check=True)
+            pid = int(result.stdout)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(ready.exists())
+                self.assertIn(pid, [p["pid"] for p in runner.find_run_processes(marker)])
+                runner.reap_run(marker, grace_seconds=.05)
+                deadline = time.monotonic() + 5
+                while runner.find_run_processes(marker) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(runner.find_run_processes(marker), [])
+            finally:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass

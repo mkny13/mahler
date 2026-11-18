@@ -82,6 +82,10 @@ def _maybe_run(ctx):
                       f" ({size / 1e9:.1f} GB)")
     except Exception as e:                       # noqa: BLE001 — pruning is best-effort
         _say(ctx, f"run folder pruning failed (continuing) — {e}")
+    try:
+        reap_orphan_processes(ctx)
+    except Exception as e:
+        _say(ctx, f"orphan process cleanup failed (continuing) — {e}")
     for pol in config.enabled_projects(ctx.cfg):
         if not os.path.isdir(pol["path"]):       # same reachability rule as the tick
             continue
@@ -472,3 +476,15 @@ def _say(ctx, what):
         ctx.say(f"janitor: {what[len('would '):]}")
     else:
         ctx.say(f"janitor: {what}")
+
+
+def reap_orphan_processes(ctx):
+    """Backstop for detached helpers left by finished runs or a daemon crash."""
+    markers = sorted({p["run_id"] for p in runner.find_run_processes(ppid=1)})
+    for marker in markers:
+        run = ctx.led.run(int(marker))
+        if run is not None and run["status"] != "ended":
+            continue
+        _say(ctx, f"{'would reap' if ctx.dry_run else 'reaping'} orphan processes for run {marker}")
+        if not ctx.dry_run:
+            runner.reap_run(marker, ppid=1)
