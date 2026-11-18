@@ -75,8 +75,9 @@ class GhWritesTests(unittest.TestCase):
                 chosen, reasons = router.pick_for_project(cfg, led, pol, role)
                 self.assertEqual(chosen, 'agy-gemini', role)
                 self.assertTrue(any('no GitHub write' in r for r in reasons))
-            chosen, _ = router.pick_for_project(cfg, led, pol, 'build', size='s')
-            self.assertEqual(chosen, 'copilot')
+            for role in ('build', 'fix'):
+                chosen, _ = router.pick_for_project(cfg, led, pol, role, size='s')
+                self.assertEqual(chosen, 'copilot', role)
 
     def test_only_copilot_holds_with_reason(self):
         cfg, led, pol = self._setup(['copilot'])
@@ -145,5 +146,4 @@ class FailedSortRoutingTests(unittest.TestCase):
         with mock.patch.object(platforms, 'available', return_value=True):
             chosen, _ = router.pick_for_project(cfg, led, pol, 'sort', pin=item['pin'], item=item)
             self.assertEqual(chosen, 'platform_a')
-
 
