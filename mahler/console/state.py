@@ -1827,6 +1827,7 @@ BLOCKER_LABELS = {
     "busy": "busy", "over": "past the line", "peak": "peak hours",
     "size": "too small", "tier": "below required tier",
     "stale": "no fresh reading", "account": "wrong account", "other": "unavailable",
+    "no_gh_writes": "no GitHub write access",
 }
 
 

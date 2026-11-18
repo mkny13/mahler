@@ -1145,6 +1145,8 @@ def reason_groups(reasons):
             kind = "stale"
         elif "account" in detail:
             kind = "account"
+        elif "no GitHub write access" in detail:
+            kind = "no_gh_writes"
         else:
             kind = "other"
         names = groups.setdefault(kind, [])

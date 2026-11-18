@@ -85,6 +85,37 @@ def seed_burst(led, claude_pct=(85, 85), free_pct=(10, 10)):
         led.record_usage(name, "weekly", free_pct[1], later6)
 
 
+class GitHubWriteRoutingTests(unittest.TestCase):
+    def test_sort_without_write_identity_never_starts(self):
+        for route in ('sort', 'plan', 'fallback', 'pin'):
+            with self.subTest(route=route):
+                ctx, led = mk_ctx({'a': proj()})
+                self.addCleanup(led.close)
+                ctx.dry_run = False
+                ctx.cfg['routing']['sort'] = [] if route == 'fallback' else ['copilot']
+                ctx.cfg['routing']['plan'] = ['copilot']
+                ctx.cfg['routing']['build'] = ['copilot']
+                led.record_usage('copilot', 'monthly', 10, iso(NOW + timedelta(days=3)))
+                item(led, 'a', 1, state='inbox', age_minutes=60)
+                if route == 'plan':
+                    led.upsert_item('a', 1, labels=json.dumps(['type:goal']))
+                elif route == 'pin':
+                    led.upsert_item('a', 1, pin='copilot')
+                with mock.patch.object(platforms, 'available', return_value=True), \
+                        mock.patch.object(tick, 'start') as start:
+                    tick.schedule(ctx, list(config.enabled_projects(ctx.cfg)))
+                start.assert_not_called()
+                self.assertEqual(led.con.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
+                self.assertEqual(led.item('a', 1)['state'], 'inbox')
+                hold = next(h for h in ctx.holds if h['kind'] == 'no_platform')
+                self.assertEqual(hold['role'], 'plan' if route == 'plan' else 'sort')
+                from mahler.console import state
+                reason = state._route_hold_reason(
+                    ctx.cfg, hold['role'], 'm', [hold],
+                    {'a': [led.item('a', 1)]}, NOW, led)
+                self.assertIn('no GitHub write access', reason['text'])
+
+
 class DependencyTests(unittest.TestCase):
     def setup_dependencies(self, body, extra=None):
         projects = {"a": proj(repo="mkny13/mahler"),
