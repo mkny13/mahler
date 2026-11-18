@@ -56,3 +56,34 @@ arguments to the checked-out Couch Tour command if needed.
 `enabled = false` is intentional. The exact-SHA lookup and smoke report are
 only eligible to run after the operator enables the contract; no live-proof or
 production activation is part of this document.
+
+## Console status (mahler#748)
+
+The "What changed" console shows each shipment's durable `post_merge_checks` row as
+**Deploying** (phase, elapsed of timeout), **Live** (exact version live, smoke passed;
+artifact link only when it is an http(s) URL) or **Deploy failed** (reason such as
+"timed out" plus the single linked remediation bug). A deploy that never shows up before
+the deadline is a failure, never a pass. There is no pass/UAT control; the optional Fail
+button stays. Summaries, evidence paths and command output never reach the browser.
+Tests: `tests/test_console_uat.py` (`PostMergeStatusTests`).
+
+## Live proofs (recorded 2026-10-28)
+
+| Date | Project | Issue/PR | Merge SHA | Evidence reference | Result |
+|------|---------|----------|-----------|--------------------|--------|
+| 2026-10-28 | mahler (`launch_ok` + version health) | mahler#1281 | `da2ab9edaf998cccc65c43b77ee5448d0a27cf76` | check tag `mahler:da2ab9ed…`, phase `smoke`, "Exact live identity PASS (mahler self-host)" | PASS |
+| 2026-11-17 | groundwork (exact-SHA Production check + smoke, owner choice mahler#1038) | groundwork#438 | `83a70594bc246e76b698958d54fd1be050eda900` | check tag `83a70594…`, phase `smoke`, "Exact live identity and smoke PASS", local report under `post-merge/…/smoke/report.md` | PASS |
+
+Both live proofs pass with real merge SHAs (groundwork also passed #437, #432, #428, #426 once #1272 landed), so D11 and the ROADMAP item are marked enforced.
+
+## Seven managed projects
+
+| Project | Strategy | Disposition |
+|---------|----------|-------------|
+| `mahler` | `live_strategy = "mahler"` | Enabled; one passing live proof above |
+| `groundwork` | GitHub exact-SHA + `smoke` | Enabled; passing live proof above |
+| `phish-in` (couch-tour) | GitHub exact-SHA `Preview` + smoke report (couch-tour#357) | Feasible; not the proof project; own contract follow-up #1273 |
+| `sit-stand-walk` | none | No automatic check: local script/app with no deployed artifact |
+| `google-chat-nav` | none | No automatic check: browser extension shipped by hand, no deploy to observe |
+| `movebreak` | none | No automatic check: macOS app, GUI-only smoke is screen-locked (D11, D40) |
+| `hockey` | none | No automatic check: no deploy target configured in Mahler |

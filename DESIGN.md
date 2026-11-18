@@ -1068,9 +1068,12 @@ are best-effort and never gate finalization or prompt construction.
 - **Trust but verify** (made concrete by D18 and D10). An agent's "done" is a claim.
   Confirmed merges enter `shipped`; accepted post-merge evidence moves them to `done`.
   As shipped, the conductor's gates are green CI and, for qualifying items, the
-  independent review below; `verify.full`, `preview`, `smoke` and deploy confirmation
-  are declared in `project.toml` but not yet enforced by the conductor. The eventual
-  feedback loop combines those signals with optional smoke results.
+  independent review below, then the post-merge check (mahler#740-#748): deploy/live
+  identity plus configured smoke, bounded by a timeout that counts as failure, never
+  a pass. The console's "What changed" shows deploying / live / deploy failed from the
+  durable check row, with no pass control; a failure links its single remediation bug
+  (D11 enforced, live proofs in `docs/post-merge-validation.md`). Projects without a
+  feasible contract complete after 14 quiet days.
   On failure, Mahler feeds the failing log tail (generalised from
   `ci-wait.sh`) back to the live run. If the run has ended, it starts a fix run from the
   handoff. Attempts are capped.
