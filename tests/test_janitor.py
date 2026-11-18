@@ -41,6 +41,7 @@ def write(path, text):
 
 class Base(unittest.TestCase):
     def setUp(self):
+        self.enterContext(mock.patch.object(runner, "find_run_processes", return_value=[]))
         self.tmp = tempfile.TemporaryDirectory()
         t = self.tmp.name
         self.remote = os.path.join(t, "remote.git")
