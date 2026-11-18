@@ -2967,7 +2967,10 @@ def _red_ci(ctx, project, item, pr, view):
                            f"CI red on PR #{pr}, but the same check fails on the base "
                            "branch: the failure is repo-wide")
             if not ci_blockers.active(led, project):
-                detect_ci_blocker(ctx, project)
+                try:
+                    detect_ci_blocker(ctx, project)
+                except Exception as e:          # noqa: BLE001 — the hold already stands
+                    ctx.say(f"{project}: CI blocker detection failed — {e}")
             return
 
         cur_fails = row_get(item, "esc_fails", 0)
