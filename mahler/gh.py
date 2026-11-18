@@ -1210,11 +1210,24 @@ class GH:
         runs = json.loads(self._gh("api", f"repos/{self.repo}/commits/{sha}/check-runs?per_page=100"))
         status = json.loads(self._gh("api", f"repos/{self.repo}/commits/{sha}/status"))
         rollup = [{"name": r.get("name"), "status": (r.get("status") or "").upper(),
-                   "conclusion": (r.get("conclusion") or "").upper()}
+                   "conclusion": (r.get("conclusion") or "").upper(),
+                   "detailsUrl": r.get("details_url") or r.get("html_url") or ""}
                   for r in runs.get("check_runs", [])]
         rollup += [{"context": c.get("context"), "state": (c.get("state") or "").upper()}
                    for c in status.get("statuses", [])]
         return rollup
+
+    def failed_step(self, details_url):
+        """Name of the first failed step of the Actions job behind a check's
+        detailsUrl, or None when it isn't an Actions job or no step failed."""
+        m = _JOB_URL.search(details_url or "")
+        if not m:
+            return None
+        job = self._api_json("GET", f"actions/jobs/{int(m[1])}")
+        for step in job.get("steps") or []:
+            if (step.get("conclusion") or "").lower() in _BAD_STEPS:
+                return step.get("name") or None
+        return None
 
     def get_release(self, tag):
         """Information about a GitHub release for `tag`, or None if not found."""
@@ -1559,6 +1572,19 @@ def failing_checks(rollup, required=None):
 
 
 _RUN_URL = re.compile(r"/actions/runs/(\d+)(?:/|$)")
+_JOB_URL = re.compile(r"/actions/runs/\d+/job/(\d+)(?:[/?#]|$)")
+_BAD_STEPS = {"failure", "timed_out", "cancelled", "startup_failure"}
+
+
+def failing_check_urls(rollup, required=None):
+    """{failed check name: its detailsUrl} (only required checks when given)."""
+    urls = {}
+    for c in (rollup or []):
+        name = c.get("name") or c.get("context")
+        state = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+        if name and state in _BAD_CHECKS and (not required or name in required):
+            urls.setdefault(name, c.get("detailsUrl") or c.get("targetUrl") or "")
+    return urls
 
 
 def cancelled_only(rollup, required=None):
