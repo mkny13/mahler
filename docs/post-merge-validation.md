@@ -72,18 +72,16 @@ Tests: `tests/test_console_uat.py` (`PostMergeStatusTests`).
 | Date | Project | Issue/PR | Merge SHA | Evidence reference | Result |
 |------|---------|----------|-----------|--------------------|--------|
 | 2026-10-28 | mahler (`launch_ok` + version health) | mahler#1281 | `da2ab9edaf998cccc65c43b77ee5448d0a27cf76` | check tag `mahler:da2ab9ed…`, phase `smoke`, "Exact live identity PASS (mahler self-host)" | PASS |
-| _pending_ | groundwork (exact-SHA preview + smoke, owner choice mahler#1038) | | | | Not passed: every groundwork Production check recorded 2026-10-28 (e.g. #305-#314, #325) ended `FAIL` with `timeout` in the `live` phase; #328 still pending |
+| 2026-11-17 | groundwork (exact-SHA Production check + smoke, owner choice mahler#1038) | groundwork#438 | `83a70594bc246e76b698958d54fd1be050eda900` | check tag `83a70594…`, phase `smoke`, "Exact live identity and smoke PASS", local report under `post-merge/…/smoke/report.md` | PASS |
 
-D11 stays "declared, not enforced" and the ROADMAP item stays open until the groundwork
-row passes with a real merge SHA. The timeouts show the Production-only exact-SHA gap
-(follow-up #1272) is still open; a timeout is a failure here, not a pass.
+Both live proofs pass with real merge SHAs (groundwork also passed #437, #432, #428, #426 once #1272 landed), so D11 and the ROADMAP item are marked enforced.
 
 ## Seven managed projects
 
 | Project | Strategy | Disposition |
 |---------|----------|-------------|
 | `mahler` | `live_strategy = "mahler"` | Enabled; one passing live proof above |
-| `groundwork` | GitHub exact-SHA + `smoke` | Feasible; live proof blocked on Production-only exact-SHA check (#1272) |
+| `groundwork` | GitHub exact-SHA + `smoke` | Enabled; passing live proof above |
 | `phish-in` (couch-tour) | GitHub exact-SHA `Preview` + smoke report (couch-tour#357) | Feasible; not the proof project; own contract follow-up #1273 |
 | `sit-stand-walk` | none | No automatic check: local script/app with no deployed artifact |
 | `google-chat-nav` | none | No automatic check: browser extension shipped by hand, no deploy to observe |
