@@ -335,6 +335,7 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
     inside the argv (issue titles, agent output) is data, never shell
     (mahler#74). When `stdin_path` is given, stdin is redirected from that
     file (< <quoted path>). -> the pid of the /bin/sh that owns the process group."""
+    _record_process_root(cwd, env)
     stdin_redir = f" < {shlex.quote(stdin_path)}" if stdin_path else ""
     shell = (f"{shlex.join(argv)}{stdin_redir} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
@@ -342,6 +343,25 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
                             start_new_session=True, stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return proc.pid
+
+
+def _record_process_root(cwd, env):
+    """Persist the private worktree provenance used by Darwin process cleanup."""
+    if not env:
+        return
+    marker, runs_dir = env.get("MAHLER_RUN_ID"), env.get("MAHLER_RUNS_DIR")
+    if not marker or not runs_dir or not re.fullmatch(r"[0-9]+", marker):
+        return
+    root = os.path.realpath(cwd)
+    if not re.fullmatch(r"[0-9]+-run" + re.escape(marker), os.path.basename(root)):
+        return
+    run_dir = os.path.join(runs_dir, marker)
+    if not os.path.isdir(run_dir):
+        raise RuntimeError("run directory missing before process launch")
+    path = os.path.join(run_dir, "process-root")
+    with open(path, "w") as fh:
+        fh.write(root + "\n")
+    os.chmod(path, 0o600)
 
 
 def keep_copilot_login(env, base_env, run_dir):
@@ -661,9 +681,79 @@ def _process_snapshot():
     return rows
 
 
+def _run_process_roots(run_id=None):
+    """Read only roots whose private run directory and basename agree."""
+    if run_id is not None:
+        marker = str(run_id)
+        paths = [Path(config.RUNS_DIR) / marker / "process-root"]
+    else:
+        paths = Path(config.RUNS_DIR).glob("[0-9]*/process-root")
+    roots = {}
+    for path in paths:
+        try:
+            marker = path.parent.name
+            root = os.path.realpath(path.read_text().strip())
+            if (not re.fullmatch(r"[0-9]+", marker)
+                    or not re.fullmatch(r"[0-9]+-run" + re.escape(marker),
+                                        os.path.basename(root))):
+                continue
+            roots[marker] = root
+        except OSError:
+            continue
+    return roots
+
+
+def _darwin_process_cwds():
+    """Return same-host process CWDs without exposing them to logs."""
+    result = subprocess.run(["/usr/sbin/lsof", "-d", "cwd", "-Fpn"],
+                            capture_output=True, text=True, timeout=10,
+                            env=dict(os.environ, LC_ALL="C"))
+    if result.returncode:
+        raise RuntimeError("process cwd inspection failed")
+    found = {}
+    pid = None
+    is_cwd = False
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                pid = int(line[1:])
+            except ValueError:
+                pid = None
+            is_cwd = False
+        elif line == "fcwd":
+            is_cwd = True
+        elif line.startswith("n") and pid is not None and is_cwd:
+            path = line[1:].removesuffix(" (deleted)")
+            found[pid] = os.path.realpath(path)
+            is_cwd = False
+    return found
+
+
+def _mark_darwin_worktree_processes(rows, run_id=None):
+    """Recover markers hidden by native Darwin executables from run CWDs."""
+    roots = _run_process_roots(run_id)
+    if not roots:
+        return
+    for pid, cwd in _darwin_process_cwds().items():
+        row = rows.get(pid)
+        if not row or row.get("run_id"):
+            continue
+        matches = []
+        for marker, root in roots.items():
+            try:
+                if os.path.commonpath((cwd, root)) == root:
+                    matches.append(marker)
+            except ValueError:
+                continue
+        if len(matches) == 1:
+            row["run_id"] = matches[0]
+
+
 def find_run_processes(run_id=None, ppid=None):
     """Find same-user marked processes, excluding ancestors and host services."""
     rows = _process_snapshot()
+    if not sys.platform.startswith("linux"):
+        _mark_darwin_worktree_processes(rows, run_id)
     protected = {1, os.getpid(), os.getppid()}
     parent = os.getppid()
     while parent in rows:
