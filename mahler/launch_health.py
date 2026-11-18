@@ -16,10 +16,15 @@ CANARY_INTERVAL = timedelta(minutes=30)
 
 
 def exact_live(sha, *, timeout=5, env=None):
-    """Observe the installed clone, never the task checkout or known_good alone.
+    """Return mahler:<proven-sha> only for a healthy, launch-proven installed HEAD.
 
-    The daemon pins to a known-good commit and advances in jumps, so a merge is live
-    once the launch-proven installed HEAD equals it or descends from it."""
+    Observe $MAHLER_HOME/app, never the task checkout or known_good alone.
+    launch_ok and the installed HEAD must agree on one full lowercase SHA,
+    which must equal the requested merge SHA or contain it (git merge-base
+    --is-ancestor exits zero). The installed bin/mahler version must exit zero,
+    with launch_ok unchanged afterwards. Descendants count because the daemon
+    pins a known-good commit and advances in jumps.
+    """
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         return None
     home = Path(config.STATE)

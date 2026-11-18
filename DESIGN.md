@@ -954,10 +954,17 @@ are best-effort and never gate finalization or prompt construction.
   command. Activation and live proof remain tracked in #1038.
 - **Exact built-in live detectors (mahler#746).** `live_strategy = "mahler"`
   or `"github"` requires an empty `live_command`; command mode remains available.
-  The Mahler detector requires the full merge SHA in both `launch_ok` and the
-  installed `$MAHLER_HOME/app` HEAD, then exit zero from that installation's
-  `bin/mahler version`, rechecking the marker afterwards. `known_good`
-  alone proves nothing. It returns `mahler:<full-sha>` as the artifact reference.
+  The Mahler detector requires `launch_ok` and the installed `$MAHLER_HOME/app`
+  HEAD to agree on one full SHA that equals or contains the requested merge SHA
+  (`git merge-base --is-ancestor <merge> <proven>` exits zero), then exit zero
+  from that installation's `bin/mahler version`, with the marker unchanged
+  afterwards. `known_good` alone proves nothing. It returns
+  `mahler:<proven-sha>` as the artifact reference; `live_sha` remains the
+  requested merge SHA. The smoke tick repeats this bounded observation and
+  requires the same artifact before PASS, retrying only until the original
+  deadline. The retained report names `Tag:`, `Merge:`, `Live:`,
+  `Identity: exact|descendant` and `Smoke: PASS`, making descendant acceptance
+  auditable; the PASS summary distinguishes exact from descendant identity.
   - GitHub uses the project's existing repository/account client and an exact
     configured environment. `prod`/`production` names (case-insensitive) do not
     constrain `production_environment`: Vercel reports false even for Production.
