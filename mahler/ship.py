@@ -757,6 +757,22 @@ def _same_step_on_prs(gh, check, red_by_pr, rollups, required):
     return any(c >= 2 for c in counts.values())
 
 
+def _base_step_shared(gh, check, base_url, red_by_pr, rollups, required):
+    """A base-red `check` is a repo-wide blocker unless an open PR red on it fails
+    a different, known step (mahler#1593): that PR's failure is its own, and a
+    blocker would hold it instead of letting it enter the normal fix flow."""
+    base_step = _failed_step(gh, base_url)
+    if base_step is None:
+        return True
+    for pr, names in red_by_pr.items():
+        if check in names:
+            url = gh_module.failing_check_urls(rollups.get(pr), required).get(check)
+            step = _failed_step(gh, url)
+            if step is not None and step.casefold() != base_step.casefold():
+                return False
+    return True
+
+
 def detect_ci_blocker(ctx, project):
     """Record a project CI hold from observable failures: one required check red
     on >=2 open PRs, or red on the base branch (mahler#1240)."""
@@ -783,8 +799,12 @@ def detect_ci_blocker(ctx, project):
                                  gh_module.failing_checks(view.get("statusCheckRollup"), required))
                 heads[str(pr)] = sha
                 rollups[pr] = view.get("statusCheckRollup")
+        base_urls = gh_module.failing_check_urls(base_rollup, required)
         found = [c for c in ci_blockers.repo_wide_checks(red_by_pr, base_red)
-                 if c in base_red or _same_step_on_prs(gh, c, red_by_pr, rollups, required)]
+                 if _same_step_on_prs(gh, c, red_by_pr, rollups, required)
+                 or (c in base_red
+                     and _base_step_shared(gh, c, base_urls.get(c), red_by_pr, rollups,
+                                           required))]
         if not found:
             return
         check = found[0]

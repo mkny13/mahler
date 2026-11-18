@@ -205,6 +205,31 @@ class RepoWideStepTests(unittest.TestCase):
         self.assertEqual(item['esc_fails'], 1)
         self.assertTrue(self.led.get_kv('red:x#434:435:head1'))
 
+    def test_base_red_on_different_step_does_not_block_in_normal_tick_order(self):
+        """detect_ci_blocker runs before the PR is shipped: a base failure in another
+        step of the same job is not the PR's failure and must not block the project."""
+        self.base_red()
+        self.steps[self.BASE_JOB] = 'Run tests'
+        self.gh.pr_view.return_value = self.view()
+        ship.detect_ci_blocker(self.ctx, 'x')
+        self.assertIsNone(ci_blockers.active(self.led, 'x'))
+        self.red_ci(attempts=0)
+        item = self.item()
+        self.assertNotEqual(item['state'], 'waiting')
+        self.assertEqual(item['esc_fails'], 1)
+
+    def test_base_red_on_same_step_still_blocks_in_normal_tick_order(self):
+        self.base_red()
+        self.gh.pr_view.return_value = self.view()
+        ship.detect_ci_blocker(self.ctx, 'x')
+        self.assertEqual(ci_blockers.active(self.led, 'x')['source'], 'base')
+
+    def test_base_red_with_no_red_pr_still_blocks(self):
+        self.base_red()
+        self.led.upsert_item('x', 434, state='ready', pr=None)
+        ship.detect_ci_blocker(self.ctx, 'x')
+        self.assertEqual(ci_blockers.active(self.led, 'x')['source'], 'base')
+
     def fail_on_own(self, sha='head1'):
         """Exhaust attempts while base is green: the item parks in failed."""
         self.red_ci(attempts=2, sha=sha)
