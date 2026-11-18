@@ -292,38 +292,43 @@ class PostMergeTests(unittest.TestCase):
         self.ctx = scheduler.Ctx(self.cfg, self.led)
         self.ctx.gh = mock.Mock(return_value=self.gh)
 
-    def test_mahler_live_proof_reports_identity_and_delivers_once_after_restart(self):
-        for live, identity in ((SHA, "exact"), ("b" * 40, "descendant")):
-            with self.subTest(identity=identity):
-                self.led.con.execute("DELETE FROM post_merge_checks")
-                self.register()
-                self.mahler_smoke(live)
-                self.restart()
-                with mock.patch("mahler.launch_health.exact_live",
-                                return_value="mahler:" + live) as observe,                      mock.patch.object(post_merge.subprocess, "Popen") as launch:
-                    self.tick()
-                observe.assert_called_once_with(SHA, timeout=5, env=None)
-                launch.assert_not_called()
-                row = self.row()
-                self.assertEqual(row["status"], "PASS")
-                self.assertEqual(row["live_sha"], SHA)
-                self.assertEqual(row["artifact_ref"], "mahler:" + live)
-                self.assertEqual(row["summary"],
-                                 f"{identity.title()} live identity PASS (mahler self-host)")
-                report = Path(row["evidence_ref"])
-                self.assertEqual(report.read_bytes(),
-                    f"Tag: {row['tag']}\nMerge: {SHA}\nLive: {live}\n"
-                    f"Identity: {identity}\nSmoke: PASS\n".encode())
-                self.led.add_uat("p", 1, 4, SHA, "test", "verify")
-                self.restart()
-                self.tick()
-                self.restart()
-                self.tick()
-                self.assertEqual(len(list(self.root.rglob("report.md"))), 1)
-                self.gh.comment_create.assert_called_once_with(
-                    1, "Smoke: PASS report=" + report.as_uri())
-                self.assertEqual(len(self.led.q(
-                    "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'")), 1)
+    def test_mahler_exact_report_and_single_delivery_after_restart(self):
+        self.assert_mahler_report_and_delivery(SHA, "exact")
+
+    def test_mahler_descendant_report_and_single_delivery_after_restart(self):
+        self.assert_mahler_report_and_delivery("b" * 40, "descendant")
+
+    def assert_mahler_report_and_delivery(self, live, identity):
+        self.mahler_smoke(live)
+        self.restart()
+        with (
+            mock.patch("mahler.launch_health.exact_live",
+                       return_value="mahler:" + live) as observe,
+            mock.patch.object(post_merge.subprocess, "Popen") as launch,
+        ):
+            self.tick()
+        observe.assert_called_once_with(SHA, timeout=5, env=None)
+        launch.assert_not_called()
+        row = self.row()
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(row["live_sha"], SHA)
+        self.assertEqual(row["artifact_ref"], "mahler:" + live)
+        self.assertEqual(row["summary"],
+                         f"{identity.title()} live identity PASS (mahler self-host)")
+        report = Path(row["evidence_ref"])
+        self.assertEqual(report.read_bytes(),
+            f"Tag: {row['tag']}\nMerge: {SHA}\nLive: {live}\n"
+            f"Identity: {identity}\nSmoke: PASS\n".encode())
+        self.led.add_uat("p", 1, 4, SHA, "test", "verify")
+        self.restart()
+        self.tick()
+        self.restart()
+        self.tick()
+        self.assertEqual(len(list(self.root.rglob("report.md"))), 1)
+        self.gh.comment_create.assert_called_once_with(
+            1, "Smoke: PASS report=" + report.as_uri())
+        self.assertEqual(len(self.led.q(
+            "SELECT * FROM kv WHERE key LIKE 'post-merge-evidence:%'")), 1)
 
     @mock.patch("mahler.notify.send")
     def test_mahler_smoke_reobserves_until_original_deadline(self, ping):
@@ -331,7 +336,10 @@ class PostMergeTests(unittest.TestCase):
         deadline = self.row()["deadline_at"]
         from mahler.ledger import parse
         self.now = parse(deadline) - timedelta(seconds=4)
-        with mock.patch("mahler.launch_health.exact_live") as observe,              mock.patch.object(post_merge.subprocess, "Popen") as launch:
+        with (
+            mock.patch("mahler.launch_health.exact_live") as observe,
+            mock.patch.object(post_merge.subprocess, "Popen") as launch,
+        ):
             for result in (None, "mahler:" + "b" * 40, RuntimeError("private output")):
                 observe.side_effect = result if isinstance(result, Exception) else None
                 observe.return_value = result
