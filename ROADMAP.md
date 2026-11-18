@@ -176,7 +176,7 @@ project: Mahler itself.
 - Claude session hooks
 - the Cline backend
 - the thread sensor
-- automated post-merge evidence and optional failure capture
+- automated post-merge evidence and optional failure capture (done, mahler#748)
 - backups
 - the statusline sidecar
 - groundwork onboarding
