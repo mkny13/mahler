@@ -393,7 +393,7 @@ class ReapTests(unittest.TestCase):
     def test_dead_shell_still_gets_its_group_killed_before_finalize(self):
         ctx = ctx_for()
         order = []
-        run = {"pid": 4242, "project": "x"}
+        run = {"id": 987654321, "pid": 4242, "project": "x"}
         with mock.patch.object(ctx.led, "active_runs", return_value=[run]), \
                 mock.patch.object(runner, "alive", return_value=False), \
                 mock.patch.object(runner, "kill", side_effect=lambda p: order.append(("kill", p))), \
@@ -657,3 +657,17 @@ class YieldGraceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+class DetachedCleanupTests(unittest.TestCase):
+    def test_exit_reaps_marker_before_finalizing(self):
+        ctx = ctx_for()
+        self.addCleanup(ctx.led.close)
+        run = dict(id=876543210, pid=4242, project="x", number=1)
+        order = []
+        with mock.patch.object(runner, "alive", return_value=False), \
+                mock.patch.object(runner, "kill"), \
+                mock.patch.object(runner, "reap_run", create=True,
+                                  side_effect=lambda rid: order.append(rid)), \
+                mock.patch.object(watchdog, "finalize",
+                                  side_effect=lambda *a: order.append("finalize")):
+            watchdog._watch_one(ctx, run, NOW)
+        self.assertEqual(order, [run["id"], "finalize"])

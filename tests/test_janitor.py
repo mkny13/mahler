@@ -682,3 +682,27 @@ class BehaviorTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OrphanProcessTests(unittest.TestCase):
+    def test_only_finished_or_unknown_runs_are_reaped_and_dry_run_reports(self):
+        from types import SimpleNamespace
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        active = led.create_run(project="t", number=1, role="build", platform="x", epoch=1)
+        ended = led.create_run(project="t", number=2, role="build", platform="x", epoch=1)
+        led.update_run(ended, status="ended")
+        ctx = SimpleNamespace(led=led, dry_run=False, say=mock.Mock())
+        processes = [dict(pid=10000+i, run_id=str(rid), ppid=1)
+                     for i, rid in enumerate((active, ended, 999999))]
+        with mock.patch.object(runner, "find_run_processes", create=True,
+                               return_value=processes) as find, \
+                mock.patch.object(runner, "reap_run", create=True) as reap:
+            janitor.reap_orphan_processes(ctx)
+            find.assert_called_once_with(ppid=1)
+            self.assertEqual(reap.call_args_list,
+                             [mock.call(str(ended), ppid=1), mock.call("999999", ppid=1)])
+            reap.reset_mock()
+            ctx.dry_run = True
+            janitor.reap_orphan_processes(ctx)
+            reap.assert_not_called()
+            self.assertTrue(ctx.say.called)
