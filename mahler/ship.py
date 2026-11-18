@@ -741,6 +741,38 @@ def refresh_ci_blocker(ctx, project):
     return blocker
 
 
+def _same_step_on_prs(gh, check, red_by_pr, rollups, required):
+    """>=2 PRs fail `check` in the same step, or with a step that can't be read
+    (mahler#1593): two PRs failing different steps of one job are their own failures."""
+    steps = []
+    for pr, names in red_by_pr.items():
+        if check in names:
+            url = gh_module.failing_check_urls(rollups.get(pr), required).get(check)
+            steps.append(_failed_step(gh, url))
+    if any(s is None for s in steps):
+        return len(steps) >= 2
+    counts = {}
+    for s in steps:
+        counts[s.casefold()] = counts.get(s.casefold(), 0) + 1
+    return any(c >= 2 for c in counts.values())
+
+
+def _base_step_shared(gh, check, base_url, red_by_pr, rollups, required):
+    """A base-red `check` is a repo-wide blocker unless an open PR red on it fails
+    a different, known step (mahler#1593): that PR's failure is its own, and a
+    blocker would hold it instead of letting it enter the normal fix flow."""
+    base_step = _failed_step(gh, base_url)
+    if base_step is None:
+        return True
+    for pr, names in red_by_pr.items():
+        if check in names:
+            url = gh_module.failing_check_urls(rollups.get(pr), required).get(check)
+            step = _failed_step(gh, url)
+            if step is not None and step.casefold() != base_step.casefold():
+                return False
+    return True
+
+
 def detect_ci_blocker(ctx, project):
     """Record a project CI hold from observable failures: one required check red
     on >=2 open PRs, or red on the base branch (mahler#1240)."""
@@ -757,7 +789,7 @@ def detect_ci_blocker(ctx, project):
         required = _required_checks(ctx, project, base)
         base_red = gh_module.failing_checks(base_rollup, required)
         stale = json.loads(led.get_kv(f"ci_blocker_stale:{project}") or "{}")
-        red_by_pr, heads = {}, {}
+        red_by_pr, heads, rollups = {}, {}, {}
         for pr in prs:
             view = gh.pr_view(pr)
             if view.get("state") == "OPEN":
@@ -766,7 +798,13 @@ def detect_ci_blocker(ctx, project):
                 red_by_pr[pr] = ([] if sha and stale.get(str(pr)) == sha else
                                  gh_module.failing_checks(view.get("statusCheckRollup"), required))
                 heads[str(pr)] = sha
-        found = ci_blockers.repo_wide_checks(red_by_pr, base_red)
+                rollups[pr] = view.get("statusCheckRollup")
+        base_urls = gh_module.failing_check_urls(base_rollup, required)
+        found = [c for c in ci_blockers.repo_wide_checks(red_by_pr, base_red)
+                 if _same_step_on_prs(gh, c, red_by_pr, rollups, required)
+                 or (c in base_red
+                     and _base_step_shared(gh, c, base_urls.get(c), red_by_pr, rollups,
+                                           required))]
         if not found:
             return
         check = found[0]
@@ -820,6 +858,10 @@ def _ship_project(ctx, project):
     if not ctx.dry_run:
         refresh_ci_blocker(ctx, project)
         detect_ci_blocker(ctx, project)
+        try:
+            requeue_ci_failed(ctx, project)
+        except Exception as e:                  # noqa: BLE001 — never break the pass
+            ctx.say(f"{project}: ci_failed re-queue failed — {e}")
     unstick(ctx, project)
     no_change.recover_legacy(ctx, project)
     try:
@@ -2938,6 +2980,19 @@ def _red_ci(ctx, project, item, pr, view):
         led.set_kv(f"{key}:before", json.dumps({k: item[k] for k in ("attempts", "esc_tier", "esc_fails")}))
         led.set_kv(key, iso(led.now()))
 
+        # Red on the same job and step as the base branch is not this PR's
+        # failure: hold on any attempt, before charging or escalating (mahler#1593).
+        if not explore_failure and repo_wide_red(ctx, project, view):
+            hold_repo_wide(ctx, project, n, pr, key,
+                           f"CI red on PR #{pr}, but the same check fails on the base "
+                           "branch: the failure is repo-wide")
+            if not ci_blockers.active(led, project):
+                try:
+                    detect_ci_blocker(ctx, project)
+                except Exception as e:          # noqa: BLE001 — the hold already stands
+                    ctx.say(f"{project}: CI blocker detection failed — {e}")
+            return
+
         cur_fails = row_get(item, "esc_fails", 0)
         new_fails = cur_fails + (0 if explore_failure else 1)
         new_tier = cur_tier
@@ -2953,16 +3008,11 @@ def _red_ci(ctx, project, item, pr, view):
             led.event("escalated", project, n, {"tier_from": cur_tier, "tier_to": new_tier,
                       "platform": last_platform, "reason": "red CI"})
 
-        if not explore_failure and attempts >= pol["max_attempts"] and repo_wide_red(
-                ctx, project, view):
-            hold_repo_wide(ctx, project, n, pr, key,
-                           f"CI red on PR #{pr} after {attempts} attempts, but the failure "
-                           "is repo-wide")
-            return
         if not explore_failure and attempts >= pol["max_attempts"]:
             led.set_state(project, n, "failed",
                           f"CI still red on PR #{pr} after {attempts} attempts",
                           attempts=attempts, esc_tier=new_tier, esc_fails=new_fails)
+            _record_ci_failed(ctx, project, n, pr, view)
             failures.report(ctx, project, n, "ci_failed", run=last, branch=head)
             ctx.ping(f"Stuck — {project} #{n}",
                      f"CI stayed red ({attempts} attempts). Comment `/mahler go` to retry.",
@@ -3043,7 +3093,8 @@ def _red_ci(ctx, project, item, pr, view):
 
 def repo_wide_red(ctx, project, view):
     """True when a red PR's failure is not its own (mahler#1261): a project CI hold is
-    active, or a check failing on the PR also fails on the base branch's latest run."""
+    active, or a check failing on the PR also fails on the base branch's latest run,
+    in the same failing step when both steps are known (mahler#1593)."""
     led = ctx.led
     if ci_blockers.active(led, project):
         return True
@@ -3053,12 +3104,122 @@ def repo_wide_red(ctx, project, view):
         if not hasattr(gh, "base_checks"):
             return False
         required = _required_checks(ctx, project, base)
-        base_red = gh_module.failing_checks(gh.base_checks(base), required)
-        failing = gh_module.failing_checks(view.get("statusCheckRollup"), required)
+        return bool(shared_failures(gh, view.get("statusCheckRollup"),
+                                    gh.base_checks(base), required))
     except (GHError, ValueError, TypeError, AttributeError) as exc:
         ctx.say(f"{project}: repo-wide CI check failed — {exc}")
         return False
-    return bool(set(failing) & set(ci_blockers.repo_wide_checks({}, base_red)))
+
+
+def _failed_step(gh, url):
+    """The failing step behind a check's detailsUrl; None when unknown."""
+    if not url or not hasattr(gh, "failed_step"):
+        return None
+    try:
+        step = gh.failed_step(url)
+    except (GHError, ValueError, TypeError, KeyError):
+        return None
+    return step if isinstance(step, str) and step else None
+
+
+def shared_failures(gh, rollup, other, required=None):
+    """Checks failing in both rollups on the same job and step (mahler#1593).
+
+    Steps are compared only when both are known (Actions jobs); a check whose
+    step can't be read on either side matches by job name, as before."""
+    mine = gh_module.failing_check_urls(rollup, required)
+    theirs = gh_module.failing_check_urls(other, required)
+    shared = []
+    for name in mine:
+        if name not in theirs:
+            continue
+        a, b = _failed_step(gh, mine[name]), _failed_step(gh, theirs[name])
+        if a is None or b is None or a.casefold() == b.casefold():
+            shared.append(name)
+    return shared
+
+
+def _record_ci_failed(ctx, project, n, pr, view):
+    """Remember what a `ci_failed` park saw, so the item can be re-queued once
+    if its failing check later passes on a newer base commit (mahler#1593)."""
+    led = ctx.led
+    base = view.get("baseRefName") or ctx.policy(project).get("base", "main")
+    base_sha = None
+    try:
+        gh = ctx.gh(project)
+        required = _required_checks(ctx, project, base)
+        if hasattr(gh, "branch_sha"):
+            base_sha = gh.branch_sha(base)
+    except (GHError, ValueError, TypeError, AttributeError, KeyError):
+        required = set()
+    checks = gh_module.failing_checks(view.get("statusCheckRollup"), required or None)
+    led.set_kv(f"ci_failed:{project}#{n}", json.dumps({
+        "pr": pr, "sha": view.get("headRefOid") or "", "base": base,
+        "base_sha": base_sha if isinstance(base_sha, str) else None, "checks": checks,
+        "changed_at": led.item(project, n)["state_changed_at"]}))
+
+
+_PASSING = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+
+
+def requeue_ci_failed(ctx, project):
+    """Re-queue an item parked with `ci_failed` once its failing checks pass on a
+    newer base commit: the red was likely repo-wide (a dependency advisory, a
+    broken base), and its dependents otherwise wait forever (mahler#1593).
+    Fires at most once per failed PR head."""
+    led = ctx.led
+    if getattr(ctx, "dry_run", False):
+        return 0
+    seen, changed = {}, 0
+    for item in led.items(project, ["failed"]):
+        n = item["number"]
+        try:
+            rec = json.loads(led.get_kv(f"ci_failed:{project}#{n}") or "null")
+        except ValueError:
+            rec = None
+        if not isinstance(rec, dict) or rec.get("changed_at") != item["state_changed_at"]:
+            continue                        # failed for another reason since
+        marker = f"ci_failed_auto_retried:{project}#{n}:{rec.get('sha') or ''}"
+        if led.get_kv(marker):
+            continue
+        base = rec.get("base") or ctx.policy(project).get("base", "main")
+        try:
+            if base not in seen:
+                gh = ctx.gh(project)
+                seen[base] = (gh.branch_sha(base), gh.base_checks(base),
+                              _required_checks(ctx, project, base))
+            base_sha, rollup, required = seen[base]
+        except (GHError, ValueError, TypeError, AttributeError, KeyError) as exc:
+            ctx.say(f"{project}#{n}: base check lookup for ci_failed re-queue failed — {exc}")
+            return changed
+        if not isinstance(base_sha, str) or not base_sha or base_sha == rec.get("base_sha"):
+            continue                        # no newer base evidence yet
+        checks = rec.get("checks") or []
+        if checks:
+            states = {}
+            for c in rollup or []:
+                name = c.get("name") or c.get("context")
+                states.setdefault(name, []).append(
+                    (c.get("conclusion") or c.get("state") or c.get("status") or "").upper())
+            green = all(states.get(name) and all(s in _PASSING for s in states[name])
+                        for name in checks)
+        else:
+            green = checks_state(rollup, required=required or None) == "green"
+        if not green:
+            continue
+        with led._tx():
+            from .sync import resume_item       # sync imports ship
+            led.set_kv(marker, iso(led.now()))
+            led.set_kv(f"ci_failed:{project}#{n}", None)
+            red = f"red:{project}#{n}:{rec.get('pr')}:{rec.get('sha') or ''}"
+            for suffix in ("", ":before", ":charged"):   # count the head's next red afresh
+                led.set_kv(f"{red}{suffix}", None)
+            resume_item(led, project, n, why="CI check passed on base branch")
+            led.event("ci_failed_requeued", project, n,
+                      {"pr": rec.get("pr"), "sha": rec.get("sha"), "base_sha": base_sha})
+        ctx.say(f"{project}#{n}: failing CI check now passes on {base} — re-queued once")
+        changed += 1
+    return changed
 
 
 def hold_repo_wide(ctx, project, n, pr, key, reason):
