@@ -106,6 +106,7 @@ def register(ctx, project, number, view):
         return
     try:
         from .ledger import row_get
+        _register_workflows(ctx, project, number, view)
         item = ctx.led.item(project, number)
         if (ctx.led.get_kv(f"is-post-merge-bug:{project}:{number}") == "1"
                 or (item and ("<!-- mahler:post-merge-failure" in (row_get(item, "issue_body", "") or "")
@@ -115,6 +116,65 @@ def register(ctx, project, number, view):
         ctx.led.create_post_merge_check(project, number, sha, ctx.policy(project), tag=sha)
     except Exception:
         ctx.say(f"{project}#{number}: post-merge registration unavailable")
+
+
+
+def _register_workflows(ctx, project, number, view):
+    from .ledger import iso
+    sha = (view.get("mergeCommit") or {}).get("oid") or ""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        return
+    key = f"workflow-watch:{project}:{number}:{sha}"
+    if not ctx.led.get_kv(key):
+        ctx.led.set_kv(key, json.dumps({
+            "number": number, "sha": sha, "base": view.get("baseRefName"),
+            "since": view.get("mergedAt") or iso(ctx.led.now()),
+        }))
+
+
+def _watch_workflows(ctx, name, policy):
+    """Observe Actions independently of opt-in deploy/live/smoke commands."""
+    from datetime import timedelta
+    from . import failures
+    from .ledger import parse
+    # Recover shipments whose process stopped before register(), including those
+    # that already completed their separate automated-evidence journey.
+    for uat in ctx.led.q("SELECT * FROM uat WHERE project=?", (name,)):
+        _register_workflows(ctx, name, uat["number"], {
+            "mergeCommit": {"oid": uat["sha"]}, "mergedAt": uat["shipped_at"]})
+    prefix = f"workflow-watch:{name}:"
+    watches = ctx.led.q("SELECT key,value FROM kv WHERE substr(key,1,?)=?",
+                       (len(prefix), prefix))
+    branch = None
+    for watch in watches:
+        try:
+            row = json.loads(watch["value"])
+            if ctx.led.now() >= parse(row["since"]) + timedelta(days=14):
+                continue
+            if branch is None:
+                branch = ctx.gh(name).default_branch_settings()["default_branch"]
+            if row.get("base") and row["base"] != branch:
+                continue
+            latest = {}
+            for run in ctx.gh(name).workflow_runs_for_commit(row["sha"]):
+                if (run.get("head_sha") != row["sha"] or run.get("head_branch") != branch
+                        or run.get("event") in {"pull_request", "pull_request_target"}):
+                    continue
+                identity = run.get("workflow_id") or run.get("name")
+                order = (int(run["id"]), int(run.get("run_attempt") or 1))
+                if identity not in latest or order > latest[identity][0]:
+                    latest[identity] = (order, run)
+            failed = [run for _, run in latest.values()
+                      if run.get("status") == "completed"
+                      and run.get("conclusion") in {"failure", "timed_out", "startup_failure"}]
+            if failed:
+                output = "\n".join(
+                    f"{r.get('name')}: {r['conclusion']} — {r.get('html_url', '')}"
+                    for r in failed)
+                failures.report_post_merge(ctx, name, row["number"], row["sha"],
+                                           "workflow", "actions_failed", output=output, policy=policy)
+        except Exception:
+            ctx.say(f"{name}: post-merge workflow observation unavailable")
 
 
 def _launch(ctx, row, policy, directory, command):
@@ -396,6 +456,10 @@ def advance(ctx, projects):
     for project in projects:
         name = project["name"]
         try:
+            policy = ctx.policy(name)
+            if not policy.get("enabled"):
+                continue
+            _watch_workflows(ctx, name, policy)
             if ctx.led.get_kv(f"post_merge_paused:{name}") == "1":
                 if _reprobe(ctx, name):
                     resume(ctx, name, source="re_probe")
@@ -403,8 +467,7 @@ def advance(ctx, projects):
                     from .failures import deliver_post_merge_pause_alert
                     deliver_post_merge_pause_alert(ctx, name)
                     continue
-            policy = ctx.policy(name)
-            if not policy.get("enabled") or not policy["post_merge"]["enabled"]:
+            if not policy["post_merge"]["enabled"]:
                 continue
             # Recover registration after a crash following the shipped transaction.
             for uat in ctx.led.q("SELECT u.* FROM uat u JOIN items i USING(project,number) "

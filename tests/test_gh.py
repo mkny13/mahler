@@ -11,6 +11,18 @@ class TestGH(unittest.TestCase):
         self.gh = GH("mkny13/mahler")
         self.gh._gh = MagicMock()
 
+    def test_workflow_runs_for_commit_paginates_and_rejects_incomplete_results(self):
+        sha = "a" * 40
+        with patch.object(self.gh, "_api_json") as api:
+            api.side_effect = [{"total_count": 2, "workflow_runs": [{"id": 1}]},
+                               {"total_count": 2, "workflow_runs": [{"id": 2}]}]
+            self.assertEqual(self.gh.workflow_runs_for_commit(sha), [{"id": 1}, {"id": 2}])
+            self.assertIn("head_sha=" + sha, api.call_args.args[1])
+            self.assertIn("page=2", api.call_args.args[1])
+            api.side_effect = [{"total_count": 1, "workflow_runs": []}]
+            with self.assertRaises(GHError):
+                self.gh.workflow_runs_for_commit(sha)
+
     def test_pr_close_comments_with_agent_marker(self):
         self.gh.pr_close(7, "Superseded by #9")
         args = self.gh._gh.call_args.args
