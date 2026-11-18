@@ -256,15 +256,34 @@ def _observe_live(ctx, row, policy):
         _change(ctx, row, summary=reason)
 
 
-def _pass_on_live_proof(ctx, row):
-    """Mahler has no web artifact: the exact-live proof (`mahler:<sha>`) is its smoke."""
-    from . import config
+def _pass_on_live_proof(ctx, row, policy):
+    """Re-observe the pinned launch-proven artifact before retaining D10 evidence."""
+    from . import config, launch_health
+    from .ledger import parse
+    remaining = (parse(row["deadline_at"]) - ctx.led.now()).total_seconds()
+    artifact = None
+    try:
+        artifact = launch_health.exact_live(
+            row["merge_sha"], timeout=min(5, max(.01, remaining / 2)),
+            env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
+    except Exception:
+        pass  # Retry without retaining provider output.
+    if ctx.led.now() >= parse(row["deadline_at"]):
+        _fail(ctx, row, "timeout")
+        return
+    if not artifact or artifact != row["artifact_ref"]:
+        _change(ctx, row, summary="exact live identity not yet verified")
+        return
+    observed = artifact.removeprefix("mahler:")
+    identity = "exact" if observed == row["merge_sha"] else "descendant"
     directory = _directory(row)
     config.ensure_private_dir(directory.parent)
     directory.mkdir(mode=0o700, exist_ok=True)
     report = directory / "report.md"
-    report.write_text(f"Tag: {row['tag']}\nSmoke: PASS\n")
-    _change(ctx, row, status="PASS", summary="Exact live identity PASS (mahler self-host)",
+    report.write_text(f"Tag: {row['tag']}\nMerge: {row['merge_sha']}\n"
+                      f"Live: {observed}\nIdentity: {identity}\nSmoke: PASS\n")
+    _change(ctx, row, status="PASS",
+            summary=f"{identity.title()} live identity PASS (mahler self-host)",
             evidence_ref=str(report))
 
 
@@ -280,7 +299,7 @@ def _advance(ctx, row, policy):
         _observe_live(ctx, row, policy)
         return
     if row["phase"] == "smoke" and policy["post_merge"]["live_strategy"] == "mahler":
-        _pass_on_live_proof(ctx, row)
+        _pass_on_live_proof(ctx, row, policy)
         return
     command = (policy.get("smoke") if row["phase"] == "smoke"
                else policy["post_merge"][row["phase"] + "_command"])

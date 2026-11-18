@@ -86,17 +86,31 @@ class LaunchHealthTests(unittest.TestCase):
         merge, live = "a" * 40, "c" * 40
         home = Path(self.tmp.name)
         (home / "launch_ok").write_text(live)
-        for contains, expected in ((0, "mahler:" + live), (1, None), (128, None)):
+        for requested, contains, expected in ((live, None, "mahler:" + live),
+                                               (merge, 0, "mahler:" + live),
+                                               (merge, 1, None), (merge, 128, None)):
             with patch.object(launch_health.subprocess, "run") as run:
-                run.side_effect = [Mock(returncode=0, stdout=live), Mock(returncode=contains),
-                                   Mock(returncode=0)]
-                self.assertEqual(launch_health.exact_live(merge), expected)
-                self.assertEqual(run.call_args_list[1].args[0],
-                                 ["git", "merge-base", "--is-ancestor", merge, live])
+                run.side_effect = ([Mock(returncode=0, stdout=live)]
+                                   + ([Mock(returncode=contains)] if contains is not None else [])
+                                   + [Mock(returncode=0)])
+                self.assertEqual(launch_health.exact_live(requested), expected)
+                if contains is not None:
+                    self.assertEqual(run.call_args_list[1].args[0],
+                                     ["git", "merge-base", "--is-ancestor", merge, live])
         (home / "launch_ok").write_text(live)
         with patch.object(launch_health.subprocess, "run") as run:
             run.side_effect = [Mock(returncode=0, stdout="d" * 40)]
             self.assertIsNone(launch_health.exact_live(merge))
+
+    def test_exact_live_rejects_malformed_requested_and_marker_shas(self):
+        marker = Path(self.tmp.name) / "launch_ok"
+        for malformed in ("a" * 7, "g" * 40, "A" * 40, "a" * 64, ""):
+            with self.subTest(sha=malformed), patch.object(launch_health.subprocess, "run") as run:
+                marker.write_text("a" * 40)
+                self.assertIsNone(launch_health.exact_live(malformed))
+                marker.write_text(malformed)
+                self.assertIsNone(launch_health.exact_live("a" * 40))
+                run.assert_not_called()
 
     def start(self, project='a', number=1):
         return tick.start(self.ctx, project, self.led.item(project, number), 'build', 'claude')
