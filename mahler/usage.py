@@ -70,6 +70,12 @@ def record_claude_usage(ctx, samples, backoff_until=None, check_human=False,
     peers = quota_peers(ctx.cfg, platform)
     group = ctx.cfg["platforms"].get(platform, {}).get("quota_group", platform)
     for pname in peers:
+        if isinstance(samples, platforms.ClaudeUsage):
+            # banked reset grants (mahler#1598, D35); never the grant ids
+            ctx.led.set_kv(f"claude:quota:{pname}", json.dumps({
+                "reset_credits": samples.metadata.get("reset_credits", 0),
+                "credit_expiries": samples.metadata.get("credit_expiries", []),
+                "sampled_at": iso(ctx.led.now())}))
         prev_5h = ctx.led.usage(pname).get("5h", {}).get("used_pct")
         for w, pct, resets in samples:
             if check_human and w == "5h" and prev_5h is not None and pct > prev_5h:

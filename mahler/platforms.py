@@ -703,7 +703,23 @@ def _claude_oauth(keychain_service, credentials_file):
         return {}
 
 
-def oauth_usage(keychain_service="Claude Code-credentials", credentials_file=None):
+def claude_oauth_token(keychain_service="Claude Code-credentials", credentials_file=None):
+    """The login's current OAuth access token, or None when missing or expired.
+    Held only in memory by the caller; never logged or written (D25)."""
+    oauth = _claude_oauth(keychain_service, credentials_file)
+    token, expires = oauth.get("accessToken"), oauth.get("expiresAt")
+    if not isinstance(token, str) or not token:
+        return None
+    try:
+        if expires and expires / 1000 < datetime.now(timezone.utc).timestamp():
+            return None
+    except TypeError:
+        return None
+    return token
+
+
+def oauth_usage(keychain_service="Claude Code-credentials", credentials_file=None,
+                keep_ids=False):
     """Zero-token Claude reading — the same endpoint Claude Code's /usage and the
     Claude Usage menu-bar app use: GET api.anthropic.com/api/oauth/usage with
     Claude Code's own OAuth access token from the login keychain (or, for a
@@ -714,27 +730,173 @@ def oauth_usage(keychain_service="Claude Code-credentials", credentials_file=Non
     Anthropic, and never logged or written anywhere. Mahler never refreshes it
     (that would race Claude Code's own refresh); an expired token just means
     this source is skipped until Claude Code next refreshes it.
-    -> [(window, used_pct, resets_iso)] or [] if unavailable."""
+    The same body carries `cedar_ember`, the login's banked rate-limit reset
+    grants (mahler#1598, D35); keep_ids only for the transient read right
+    before spending one.
+    -> ClaudeUsage [(window, used_pct, resets_iso)] or [] if unavailable."""
     import urllib.error
     import urllib.request
-    oauth = _claude_oauth(keychain_service, credentials_file)
-    token, expires = oauth.get("accessToken"), oauth.get("expiresAt")
-    if not token or (expires and expires / 1000 < datetime.now(timezone.utc).timestamp()):
+    token = claude_oauth_token(keychain_service, credentials_file)
+    if not token:
         return []
-    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
-        "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "mahler"})
+    req = urllib.request.Request(
+        "https://api.anthropic.com/api/oauth/usage?cedar_ember=1", headers={
+            "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "mahler"})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             body = json.load(r)
     except (urllib.error.URLError, OSError, ValueError):
         return []
+    try:
+        return _claude_usage(body, keep_ids=keep_ids)
+    except (TypeError, ValueError, AttributeError, KeyError):
+        return []
+
+
+class ClaudeUsage(list):
+    """Claude routing samples plus banked reset-grant metadata (mahler#1598)."""
+
+    def __init__(self, samples, metadata):
+        super().__init__(samples)
+        self.metadata = metadata
+
+
+_GRANT_ID = re.compile(r"^[a-z0-9_-]{1,40}$")
+
+
+def _iso_or_none(value):
+    """ISO timestamp string -> normalized UTC ISO; None stays None; else raise."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid timestamp")
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _claude_grants(cedar):
+    """Validated cedar_ember grants, or [] when absent, ineligible or malformed.
+    Anything unexpected anywhere means "no credits" (fail closed)."""
+    if not isinstance(cedar, dict) or cedar.get("eligible") is not True:
+        return []
+    raw = cedar.get("grants")
+    if not isinstance(raw, list):
+        return []
+    grants = []
+    try:
+        for g in raw:
+            if not isinstance(g, dict):
+                raise ValueError("grant")
+            gid, left = g.get("id"), g.get("resets_left")
+            if not isinstance(gid, str) or not _GRANT_ID.match(gid):
+                raise ValueError("grant id")
+            if type(left) is not int or left < 0:
+                raise ValueError("resets_left")
+            for key in ("paused", "usable_now", "gives_back_weekly"):
+                if g.get(key) is not None and not isinstance(g[key], bool):
+                    raise ValueError(key)
+            if g.get("clears") is not None and not isinstance(g["clears"], list):
+                raise ValueError("clears")
+            grants.append({"id": gid, "resets_left": left,
+                           "expires_at": _iso_or_none(g.get("ends_at")),
+                           "usable_now": g.get("usable_now") is True,
+                           "paused": g.get("paused") is True})
+    except (ValueError, TypeError, OverflowError):
+        return []
+    return grants
+
+
+def _claude_usage(body, keep_ids=False):
     out = []
     for src, dst in (("five_hour", "5h"), ("seven_day", "weekly")):
         w = body.get(src) or {}
         if w.get("utilization") is not None:
             out.append((dst, float(w["utilization"]), w.get("resets_at")))
-    return out
+    usable = [g for g in _claude_grants(body.get("cedar_ember"))
+              if g["usable_now"] and not g["paused"] and g["resets_left"] > 0]
+    metadata = {
+        "reset_credits": sum(g["resets_left"] for g in usable),
+        # past expiries are dropped by the readers, against the ledger clock
+        "credit_expiries": sorted(g["expires_at"] for g in usable if g["expires_at"]),
+    }
+    if keep_ids:
+        # Transient, never persisted: grant ids let the reset-spend pass
+        # target one expiring banked grant (mahler#1598).
+        metadata["credit_rows"] = usable
+    return ClaudeUsage(out, metadata)
+
+
+_ORG_UUID = re.compile(r"^[0-9A-Fa-f-]{8,64}$")
+
+
+def claude_organization_uuid(account=None, cfg=None, env=None, home=None):
+    """oauthAccount.organizationUuid from the login's own `.claude.json` (D25).
+
+    A login kept in its own CLAUDE_CONFIG_DIR reads `<dir>/.claude.json`; the
+    machine's default (personal) login reads `~/.claude.json`. A non-default
+    account with no config dir of its own gets None — never the personal
+    file. -> the UUID string, or None."""
+    acct = account or "personal"
+    cdir = (env or {}).get("CLAUDE_CONFIG_DIR")
+    if not cdir and cfg is not None:
+        cdir = ((cfg.get("accounts", {}).get(acct) or {}).get("env") or {}).get(
+            "CLAUDE_CONFIG_DIR")
+    if cdir:
+        path = os.path.join(os.path.expanduser(str(cdir)), ".claude.json")
+    elif acct == "personal":
+        path = os.path.join(os.path.expanduser(str(home or "~")), ".claude.json")
+    else:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            org = (json.load(fh).get("oauthAccount") or {}).get("organizationUuid")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return org if isinstance(org, str) and _ORG_UUID.match(org) else None
+
+
+CLAUDE_RESET_RESULTS = {"reset", "already_used", "not_limited", "cooldown",
+                        "ineligible", "unavailable"}
+
+
+def consume_claude_credit(token, org_uuid, grant_id, request_id, timeout=15):
+    """Spend one banked Claude rate-limit reset (mahler#1598, D35).
+
+    POST /api/organizations/{org}/reset_rate_limits with body
+    {"program": "cedar_ember", "grant_id", "request_id"} (as t3code's
+    claudeResetCredits.ts sends it). An undocumented endpoint: anything
+    unexpected is not a spend. -> one of CLAUDE_RESET_RESULTS,
+    'rateLimited' (429), 'signedOut' (401/403), or None when the call failed.
+    """
+    import urllib.error
+    import urllib.request
+    if (not token or not isinstance(org_uuid, str) or not _ORG_UUID.match(org_uuid)
+            or not isinstance(grant_id, str) or not _GRANT_ID.match(grant_id)
+            or not request_id):
+        return None
+    req = urllib.request.Request(
+        f"https://api.anthropic.com/api/organizations/{org_uuid}/reset_rate_limits",
+        data=json.dumps({"program": "cedar_ember", "grant_id": grant_id,
+                         "request_id": request_id}).encode(),
+        method="POST", headers={
+            "Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20",
+            "Content-Type": "application/json", "User-Agent": "mahler"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.load(r)
+    except urllib.error.HTTPError as e:
+        e.close()
+        if e.code == 429:
+            return "rateLimited"
+        if e.code in (401, 403):
+            return "signedOut"
+        return None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    result = body.get("result") if isinstance(body, dict) else None
+    return result if result in CLAUDE_RESET_RESULTS else None
 
 
 class CodexUsage(list):

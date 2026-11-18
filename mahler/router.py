@@ -304,6 +304,35 @@ def is_metered(led, name, pconf):
     return True
 
 
+def claude_quota(led, name, pconf):
+    """The last banked-reset reading for a Claude login (mahler#1598)."""
+    if pconf.get("kind") != "claude":
+        return {}
+    try:
+        quota = json.loads(led.get_kv(f"claude:quota:{name}") or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return quota if isinstance(quota, dict) else {}
+
+
+def claude_detail(led, name, pconf):
+    """'2 banked resets (next expires 1d 0h)' for the Capacity row, or ''."""
+    quota = claude_quota(led, name, pconf)
+    count = quota.get("reset_credits")
+    if type(count) is not int or count <= 0:
+        return ""
+    now = led.now()
+    expiries = [e for e in (_ts(x) for x in quota.get("credit_expiries") or [])
+                if e and e > now]
+    text = f"{count} banked reset{'s' if count != 1 else ''}"
+    if expiries:
+        text += f" (next expires {fmt_countdown(min(expiries) - now)})"
+    sampled = _ts(quota.get("sampled_at"))
+    if not sampled or now - sampled >= timedelta(minutes=pconf.get("stale_minutes", 15)):
+        text += " · last reset reading is stale"
+    return text
+
+
 def codex_quota(led, name, pconf):
     if pconf.get("kind") != "codex":
         return {}

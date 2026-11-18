@@ -590,7 +590,7 @@ def _quota_row(cfg, led, peak, name, members, builders, active_by_platform):
                    tone="bad" if state == "hard" else "warn" if state == "soft" else "acc",
                    width=100 if state == "hard" else (worst["pct"] if worst else 0),
                    detail=" · ".join(parts), over=over)
-    codex = router.codex_detail(led, name, pconf)
+    codex = router.codex_detail(led, name, pconf) or router.claude_detail(led, name, pconf)
     if codex:
         row["detail"] += " · " + codex
     if pconf.get("api_credits") and pconf.get("credit_pool"):
