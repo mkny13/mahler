@@ -1324,3 +1324,67 @@ class DetachedRunTests(unittest.TestCase):
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+
+class RunProcessSafetyTests(unittest.TestCase):
+    def test_excludes_ancestors_services_other_users_and_unmarked(self):
+        def row(pid, **kw):
+            return dict(pid=pid, ppid=kw.get("ppid", 1), uid=kw.get("uid", os.getuid()),
+                        identity="start", command=kw.get("command", "python helper.py"),
+                        run_id=kw.get("run_id", "123"))
+        rows = {p["pid"]: p for p in [
+            row(1), row(os.getpid()), row(os.getppid(), ppid=900001),
+            row(900001), row(900002, command="python -m mahler serve"),
+            row(900003, command="/usr/local/bin/mahlerd"),
+            row(900004, uid=os.getuid()+1), row(900005, run_id=None),
+            row(900006, run_id="1234"), row(900007),
+            row(900008, command="/opt/bin/mahler-launcher"),
+            row(900009, command="python -m mahler tick"),
+        ]}
+        with mock.patch.object(runner, "_process_snapshot", return_value=rows):
+            self.assertEqual([p["pid"] for p in runner.find_run_processes(123)], [900007])
+            self.assertEqual(runner.find_run_processes(123, ppid=8), [])
+
+    def test_pid_reuse_never_gets_signalled(self):
+        original = dict(pid=900007, identity="old")
+        replacement = dict(pid=900007, identity="new")
+        with mock.patch.object(runner, "find_run_processes",
+                               side_effect=[[original], [replacement], []]), \
+                mock.patch.object(runner.os, "kill") as kill:
+            runner.reap_run(123, grace_seconds=0)
+        kill.assert_not_called()
+
+    def test_term_precedes_kill_even_with_zero_grace(self):
+        import signal
+        process = dict(pid=900007, identity="start")
+        with mock.patch.object(runner, "find_run_processes", return_value=[process]), \
+                mock.patch.object(runner.os, "kill") as kill:
+            runner.reap_run(123, grace_seconds=0)
+        self.assertEqual(kill.call_args_list,
+                         [mock.call(900007, signal.SIGTERM),
+                          mock.call(900007, signal.SIGKILL)])
+
+    def test_darwin_marker_in_argv_is_not_environment(self):
+        prefix = "900007 1 501 Wed Nov 18 13:00:00 2026 "
+        command = "python helper.py MAHLER_RUN_ID=123"
+        plain = prefix + command + "\n"
+        expanded = prefix + command + " HOME=/tmp MAHLER_RUN_ID=456 PATH=/bin\n"
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch.object(runner.subprocess, "run", side_effect=[
+                    SimpleNamespace(returncode=0, stdout=plain),
+                    SimpleNamespace(returncode=0, stdout=expanded)]):
+            self.assertEqual(runner._process_snapshot()[900007]["run_id"], "456")
+
+    def test_linux_reads_nul_environment_and_start_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "900007"
+            path.mkdir()
+            (path / "stat").write_text("900007 (name with ) parens) S 1 " +
+                                      " ".join(["0"] * 17) + " 999 0")
+            (path / "environ").write_bytes(b"OTHER=MAHLER_RUN_ID=456\0MAHLER_RUN_ID=123\0")
+            (path / "cmdline").write_bytes(b"python\0helper.py\0")
+            with mock.patch.object(runner.sys, "platform", "linux"), \
+                    mock.patch.object(runner.Path, "glob", return_value=[path]):
+                row = runner._process_snapshot()[900007]
+            self.assertEqual(row["run_id"], "123")
+            self.assertEqual(row["identity"], "999")
+            self.assertEqual(row["ppid"], 1)
