@@ -741,6 +741,22 @@ def refresh_ci_blocker(ctx, project):
     return blocker
 
 
+def _same_step_on_prs(gh, check, red_by_pr, rollups, required):
+    """>=2 PRs fail `check` in the same step, or with a step that can't be read
+    (mahler#1593): two PRs failing different steps of one job are their own failures."""
+    steps = []
+    for pr, names in red_by_pr.items():
+        if check in names:
+            url = gh_module.failing_check_urls(rollups.get(pr), required).get(check)
+            steps.append(_failed_step(gh, url))
+    if any(s is None for s in steps):
+        return len(steps) >= 2
+    counts = {}
+    for s in steps:
+        counts[s.casefold()] = counts.get(s.casefold(), 0) + 1
+    return any(c >= 2 for c in counts.values())
+
+
 def detect_ci_blocker(ctx, project):
     """Record a project CI hold from observable failures: one required check red
     on >=2 open PRs, or red on the base branch (mahler#1240)."""
@@ -757,7 +773,7 @@ def detect_ci_blocker(ctx, project):
         required = _required_checks(ctx, project, base)
         base_red = gh_module.failing_checks(base_rollup, required)
         stale = json.loads(led.get_kv(f"ci_blocker_stale:{project}") or "{}")
-        red_by_pr, heads = {}, {}
+        red_by_pr, heads, rollups = {}, {}, {}
         for pr in prs:
             view = gh.pr_view(pr)
             if view.get("state") == "OPEN":
@@ -766,7 +782,9 @@ def detect_ci_blocker(ctx, project):
                 red_by_pr[pr] = ([] if sha and stale.get(str(pr)) == sha else
                                  gh_module.failing_checks(view.get("statusCheckRollup"), required))
                 heads[str(pr)] = sha
-        found = ci_blockers.repo_wide_checks(red_by_pr, base_red)
+                rollups[pr] = view.get("statusCheckRollup")
+        found = [c for c in ci_blockers.repo_wide_checks(red_by_pr, base_red)
+                 if c in base_red or _same_step_on_prs(gh, c, red_by_pr, rollups, required)]
         if not found:
             return
         check = found[0]

@@ -210,6 +210,23 @@ class RepoWideStepTests(unittest.TestCase):
         self.red_ci(attempts=2, sha=sha)
         self.assertEqual(self.item()['state'], 'failed')
 
+    def test_detect_needs_two_prs_red_on_the_same_step(self):
+        other = 'https://github.com/x/y/actions/runs/3/job/33'
+        self.led.upsert_item('x', 437, state='verifying', pr=438, title='Other')
+        for step, expected in (('Run tests', False), ('pnpm audit --audit-level high', True)):
+            with self.subTest(step=step):
+                self.led.set_kv('ci_blocker:x', None)
+                self.steps[other] = step
+
+                def view(pr):
+                    v = self.view()
+                    if pr == 438:
+                        v['statusCheckRollup'][0]['detailsUrl'] = other
+                    return v
+                self.gh.pr_view.side_effect = view
+                ship.detect_ci_blocker(self.ctx, 'x')
+                self.assertEqual(ci_blockers.active(self.led, 'x') is not None, expected)
+
     def test_ci_failed_item_requeued_once_when_base_green(self):
         self.fail_on_own()
         ship.requeue_ci_failed(self.ctx, 'x')        # base unchanged: no new evidence
