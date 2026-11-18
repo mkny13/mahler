@@ -16,6 +16,13 @@ from mahler.ledger import Ledger, iso
 NOW = datetime(2026, 9, 12, 12, 0, tzinfo=timezone.utc)
 
 
+
+def setUpModule():
+    # Synthetic ledger ids must never select real host processes.
+    unittest.enterModuleContext(mock.patch.object(runner, "find_run_processes",
+                                                 return_value=[]))
+
+
 def read(path):
     with open(path) as fh:
         return fh.read().strip()
@@ -671,3 +678,32 @@ class DetachedCleanupTests(unittest.TestCase):
                                   side_effect=lambda *a: order.append("finalize")):
             watchdog._watch_one(ctx, run, NOW)
         self.assertEqual(order, [run["id"], "finalize"])
+
+    def test_incomplete_and_stopping_runs_reap_and_dry_run_does_not(self):
+        ctx = ctx_for()
+        self.addCleanup(ctx.led.close)
+        for incomplete in (False, True):
+            for dry in (False, True):
+                with self.subTest(incomplete=incomplete, dry=dry):
+                    ctx.dry_run = dry
+                    run = dict(id=876543210, pid=4242, project="x", number=1,
+                               status="stopping", log_path=None if incomplete else "log",
+                               status_path="exit", started_at=iso(NOW-timedelta(hours=1)))
+                    with mock.patch.object(runner, "alive", return_value=True), \
+                            mock.patch.object(runner, "kill") as kill, \
+                            mock.patch.object(runner, "reap_run") as reap, \
+                            mock.patch.object(watchdog, "finalize"):
+                        watchdog._watch_one(ctx, run, NOW)
+                    self.assertEqual(reap.call_count, 0 if dry else 1)
+                    self.assertEqual(kill.call_count, 0 if dry else 1)
+
+    def test_timeout_stop_reaps_marker(self):
+        ctx = ctx_for()
+        self.addCleanup(ctx.led.close)
+        run = dict(id=876543210, pid=4242, project="x", number=1)
+        with mock.patch.object(ctx.led, "update_run"), \
+                mock.patch.object(runner, "terminate") as terminate, \
+                mock.patch.object(runner, "reap_run") as reap:
+            watchdog.stop(ctx, run, "timeout")
+        terminate.assert_called_once_with(4242)
+        reap.assert_called_once_with(run["id"])
