@@ -820,12 +820,15 @@ class GH:
                   and r.get("conclusion") in {"failure", "timed_out"}]
         selected = []
         for run in failed:
-            if (not run.get("workflow_id") or not run.get("run_attempt")
-                    or sum(r.get("workflow_id") == run["workflow_id"] for r in head_runs) != 1):
+            # A workflow may run more than once on one SHA (push and PR events,
+            # for example). The failed-jobs endpoint targets a run ID, not a
+            # workflow or job name; those names need not be unique. Only an
+            # ambiguous run identity prevents this bounded retry.
+            if (not run.get("id") or not run.get("run_attempt")
+                    or sum(r.get("id") == run["id"] for r in head_runs) != 1):
                 continue
             failed_jobs = [j for j in jobs(run) if j.get("conclusion") in {"failure", "timed_out"}]
-            names = [j.get("name") for j in failed_jobs]
-            if not names or not all(names) or len(set(names)) != len(names):
+            if not failed_jobs:
                 continue
             selected.append({"id": run["id"], "attempt": run["run_attempt"]})
         return selected

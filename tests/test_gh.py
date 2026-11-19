@@ -206,10 +206,6 @@ class TestGH(unittest.TestCase):
                 if case == "pending":
                     rows[0]["status"] = "in_progress"
                 jobs = [{"name": "checks", "conclusion": "failure"}]
-                if case == "duplicate-job":
-                    jobs.append(dict(jobs[0]))
-                if case == "unnamed-job":
-                    jobs[0]["name"] = ""
                 if case == "no-failed-job":
                     jobs[0]["conclusion"] = "success"
                 replies = [
