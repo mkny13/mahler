@@ -12,6 +12,8 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 from . import cline_free, config, github_pat, lessons as lessons_mod, platforms, redact, router
@@ -333,12 +335,86 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
     inside the argv (issue titles, agent output) is data, never shell
     (mahler#74). When `stdin_path` is given, stdin is redirected from that
     file (< <quoted path>). -> the pid of the /bin/sh that owns the process group."""
+    tracker = None
+    gate = None
+    if sys.platform == "darwin" and env:
+        marker = env.get("MAHLER_RUN_ID")
+        runs_dir = env.get("MAHLER_RUNS_DIR")
+        if marker and runs_dir and re.fullmatch(r"[0-9]+", marker):
+            run_dir = Path(runs_dir) / marker
+            # An unrelated subprocess can inherit MAHLER_* from an agent that
+            # happens to be testing Mahler. Only the status file Mahler placed
+            # in this run directory authorizes tracker/marker creation.
+            if (run_dir.is_dir()
+                    and Path(status_path).resolve().parent == run_dir.resolve()):
+                gate = run_dir / "process-tracker-gate"
+                ready = run_dir / "process-tracker-ready"
+                for path in (gate, ready):
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                quoted_gate = shlex.quote(str(gate))
+                quoted_ready = shlex.quote(str(ready))
+                quoted_status = shlex.quote(status_path)
+                prefix = (f"i=0; while [ ! -e {quoted_gate} ] && [ $i -lt 500 ]; do "
+                          "sleep .01; i=$((i + 1)); done; "
+                          f"if [ ! -e {quoted_gate} ]; then echo 98 > {quoted_status}; exit 98; fi; "
+                          f"/bin/rm -f {quoted_gate} {quoted_ready}; " + prefix)
     stdin_redir = f" < {shlex.quote(stdin_path)}" if stdin_path else ""
     shell = (f"{shlex.join(argv)}{stdin_redir} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
-    proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
-                            start_new_session=True, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    marker_stream = None
+    pass_fds = ()
+    if gate is not None:
+        # Darwin intentionally hides another process's environment, including
+        # through KERN_PROCARGS2. Keep the run marker open as an additional,
+        # kernel-visible ownership token. fd 0 survives Python's default
+        # close_fds behaviour; the extra fd survives ordinary shell
+        # backgrounding, which redirects fd 0 to /dev/null.
+        marker_path = gate.with_name("process-marker")
+        marker_flags = os.O_RDONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        marker_fd = os.open(marker_path, marker_flags, 0o600)
+        os.fchmod(marker_fd, 0o600)
+        marker_stream = os.fdopen(marker_fd, "rb")
+        pass_fds = (marker_fd,)
+    try:
+        proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
+                                start_new_session=True,
+                                stdin=marker_stream or subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                pass_fds=pass_fds)
+    finally:
+        if marker_stream is not None:
+            marker_stream.close()
+    if gate is not None:
+        ready = gate.with_name("process-tracker-ready")
+        tracker_env = {
+            "LC_ALL": "C",
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+            "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+        }
+        code = ("from mahler.runner import _track_run_processes; "
+                "import sys; _track_run_processes(sys.argv[1], int(sys.argv[2]), "
+                "sys.argv[3], sys.argv[4])")
+        try:
+            tracker = subprocess.Popen(
+                [sys.executable, "-c", code, env["MAHLER_RUN_ID"], str(proc.pid),
+                 str(_ownership_path(env["MAHLER_RUN_ID"], env["MAHLER_RUNS_DIR"])),
+                 str(ready)],
+                env=tracker_env, start_new_session=True, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + 3
+            while not ready.exists() and tracker.poll() is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            if not ready.exists():
+                raise RuntimeError("run process tracker did not start")
+            gate.touch(mode=0o600)
+        except Exception:
+            signal_group(proc.pid, signal.SIGKILL)
+            if tracker is not None and tracker.poll() is None:
+                tracker.kill()
+            raise
     return proc.pid
 
 
@@ -596,6 +672,357 @@ def terminate(pid):
 
 def kill(pid):
     signal_group(pid, signal.SIGKILL)
+
+
+OWNERSHIP_FILE = "process-ownership.json"
+
+
+def _ownership_path(run_id, runs_dir=None):
+    marker = str(run_id)
+    if not re.fullmatch(r"[0-9]+", marker):
+        raise ValueError("run id must be numeric")
+    return Path(runs_dir or config.RUNS_DIR) / marker / OWNERSHIP_FILE
+
+
+def _read_ownership(run_id=None):
+    """Read tracker records as data. Invalid or partial files own nothing."""
+    if run_id is None:
+        paths = Path(config.RUNS_DIR).glob(f"[0-9]*/{OWNERSHIP_FILE}")
+    else:
+        try:
+            paths = [_ownership_path(run_id)]
+        except ValueError:
+            return {}
+    found = {}
+    for path in paths:
+        try:
+            marker = path.parent.name
+            data = json.loads(path.read_text())
+            if (not isinstance(data, dict)
+                    or not re.fullmatch(r"[0-9]+", marker)
+                    or data.get("run_id") != marker
+                    or not isinstance(data.get("processes"), list)):
+                continue
+            records = []
+            for item in data["processes"]:
+                if (not isinstance(item, dict)
+                        or not isinstance(item.get("pid"), int)
+                        or not isinstance(item.get("uid"), int)
+                        or not isinstance(item.get("identity"), str)
+                        or not item["identity"]):
+                    continue
+                records.append({"pid": item["pid"], "uid": item["uid"],
+                                "identity": item["identity"]})
+            found[marker] = records
+        except (OSError, ValueError, TypeError):
+            continue
+    return found
+
+
+def _write_ownership(path, run_id, records):
+    """Atomically persist PID identities without commands or environments."""
+    path = Path(path)
+    marker = str(run_id)
+    if path.parent.name != marker or path.name != OWNERSHIP_FILE:
+        raise ValueError("ownership path does not match run id")
+    payload = {
+        "run_id": marker,
+        "processes": sorted(records.values(), key=lambda item: item["pid"]),
+    }
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+            fh.write("\n")
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _descendants(rows, leader_pid):
+    children = {}
+    for row in rows.values():
+        children.setdefault(row["ppid"], []).append(row["pid"])
+    found = set()
+    pending = [leader_pid]
+    while pending:
+        parent = pending.pop()
+        for child in children.get(parent, ()):
+            if child not in found:
+                found.add(child)
+                pending.append(child)
+    return found
+
+
+def _track_run_processes(run_id, leader_pid, ownership_path, ready_path):
+    """Darwin launch sidecar: remember descendants while ancestry still exists."""
+    marker = str(run_id)
+    path = Path(ownership_path)
+    ready = Path(ready_path)
+    records = {}
+    leader_identity = None
+    started = time.monotonic()
+    while True:
+        try:
+            rows = _ps_process_listing()
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            if time.monotonic() - started > 5:
+                return
+            time.sleep(.1)
+            continue
+        leader = rows.get(leader_pid)
+        if leader_identity is None:
+            if leader is None:
+                if time.monotonic() - started > 5:
+                    return
+                time.sleep(.01)
+                continue
+            leader_identity = leader["identity"]
+            try:
+                ready.touch(mode=0o600)
+            except OSError:
+                return
+        elif leader is None or leader["identity"] != leader_identity:
+            return
+        changed = False
+        for pid in _descendants(rows, leader_pid):
+            row = rows.get(pid)
+            if row is None or row["uid"] != os.getuid():
+                continue
+            record = {"pid": pid, "uid": row["uid"], "identity": row["identity"]}
+            if records.get(pid) != record:
+                records[pid] = record
+                changed = True
+        if changed:
+            try:
+                _write_ownership(path, marker, records)
+            except (OSError, ValueError):
+                return
+        time.sleep(.1)
+
+
+def _merge_recorded_ownership(rows, run_id=None):
+    """Attach durable ownership only after current UID/start identity validation."""
+    claims = {}
+    for marker, records in _read_ownership(run_id).items():
+        for record in records:
+            row = rows.get(record["pid"])
+            if (row is None or row["uid"] != record["uid"]
+                    or row["identity"] != record["identity"]):
+                continue
+            claims.setdefault(record["pid"], set()).add(marker)
+    for pid, markers in claims.items():
+        if len(markers) != 1:
+            continue
+        marker = next(iter(markers))
+        observed = rows[pid].get("run_id")
+        if observed is None:
+            rows[pid]["run_id"] = marker
+
+
+def _merge_open_marker_ownership(rows, run_id=None):
+    """Attach Darwin ownership proved by a process's open per-run marker.
+
+    ``ps`` and KERN_PROCARGS2 omit native-process environments on current
+    macOS. An inherited open file is still kernel state, remains observable
+    after setsid/reparenting, and cannot accidentally claim an unrelated
+    process merely because it uses the same worktree.
+    """
+    if run_id is None:
+        paths = Path(config.RUNS_DIR).glob("[0-9]*/process-marker")
+    else:
+        marker = str(run_id)
+        if not re.fullmatch(r"[0-9]+", marker):
+            return
+        paths = [Path(config.RUNS_DIR) / marker / "process-marker"]
+    claims = {}
+    for path in paths:
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            marker = path.parent.name
+            result = subprocess.run(
+                ["/usr/sbin/lsof", "-Fn", "--", str(path)],
+                capture_output=True, text=True, timeout=10,
+                env=dict(os.environ, LC_ALL="C"))
+            if result.returncode not in (0, 1):
+                continue
+            for line in result.stdout.splitlines():
+                if not line.startswith("p"):
+                    continue
+                try:
+                    pid = int(line[1:])
+                except ValueError:
+                    continue
+                if pid in rows and rows[pid]["uid"] == os.getuid():
+                    claims.setdefault(pid, set()).add(marker)
+        except (OSError, subprocess.SubprocessError):
+            continue
+    for pid, markers in claims.items():
+        if len(markers) == 1 and rows[pid].get("run_id") is None:
+            rows[pid]["run_id"] = next(iter(markers))
+
+
+def _compact_ownership(run_id, rows=None):
+    """Drop exited/reused PIDs; remove the file once no identities remain."""
+    try:
+        path = _ownership_path(run_id)
+        records = _read_ownership(run_id).get(str(run_id), [])
+        rows = _process_snapshot() if rows is None else rows
+        live = {record["pid"]: record for record in records
+                if record["pid"] in rows
+                and rows[record["pid"]]["uid"] == record["uid"]
+                and rows[record["pid"]]["identity"] == record["identity"]}
+        if live:
+            _write_ownership(path, run_id, live)
+        else:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
+        pass
+
+
+def _ps_process_listing(environment=False):
+    """Darwin/BSD process metadata; callers must never log the command field."""
+    args = ["ps", "-axo", "pid=,ppid=,uid=,lstart=,command=", "-ww"]
+    if environment:
+        args.append("-E")
+    result = subprocess.run(args, capture_output=True, text=True, timeout=10,
+                            env=dict(os.environ, LC_ALL="C"))
+    if result.returncode:
+        raise RuntimeError("process inspection failed")
+    parsed = {}
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 8)
+        if len(parts) != 9:
+            continue
+        try:
+            pid, parent, uid = map(int, parts[:3])
+        except ValueError:
+            continue
+        parsed[pid] = dict(pid=pid, ppid=parent, uid=uid,
+                           identity=" ".join(parts[3:8]), command=parts[8])
+    return parsed
+
+
+def _process_snapshot():
+    """Private process metadata; never log ps output (it can contain secrets)."""
+    rows = {}
+    if sys.platform.startswith("linux"):
+        for path in Path("/proc").glob("[0-9]*"):
+            try:
+                stat = (path / "stat").read_text().rsplit(")", 1)[1].split()
+                if stat[0] == "Z":
+                    continue
+                env = (path / "environ").read_bytes().split(b"\0")
+                markers = [v[len(b"MAHLER_RUN_ID="):].decode("ascii") for v in env
+                           if v.startswith(b"MAHLER_RUN_ID=")]
+                rows[int(path.name)] = dict(
+                    pid=int(path.name), ppid=int(stat[1]), uid=path.stat().st_uid,
+                    identity=stat[19],
+                    command=(path / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+                        "utf-8", errors="replace"),
+                    run_id=markers[0] if len(markers) == 1 else None)
+            except (OSError, ValueError, UnicodeError, IndexError):
+                continue
+        return rows
+
+    rows = _ps_process_listing()
+    expanded = _ps_process_listing(True)
+    for pid, row in rows.items():
+        other = expanded.get(pid)
+        row["run_id"] = None
+        # Strip the independently read command before looking for environment
+        # entries: a marker mentioned in argv is not a run's environment.
+        prefix = row["command"] + " "
+        if (other and other["identity"] == row["identity"]
+                and other["command"].startswith(prefix)):
+            env = other["command"][len(prefix):]
+            markers = re.findall(r"(?:^|\s)MAHLER_RUN_ID=([0-9]+)(?=\s|$)", env)
+            if len(markers) == 1:
+                row["run_id"] = markers[0]
+    return rows
+
+
+def find_run_processes(run_id=None, ppid=None):
+    """Find same-user marked processes, excluding ancestors and host services."""
+    rows = _process_snapshot()
+    if not sys.platform.startswith("linux"):
+        _merge_recorded_ownership(rows, run_id)
+        _merge_open_marker_ownership(rows, run_id)
+    protected = {1, os.getpid(), os.getppid()}
+    parent = os.getppid()
+    while parent in rows:
+        parent = rows[parent]["ppid"]
+        if parent in protected:
+            break
+        protected.add(parent)
+    found = []
+    for pid, row in rows.items():
+        marker = row.get("run_id")
+        if (pid in protected or row["uid"] != os.getuid()
+                or not marker or not re.fullmatch(r"[0-9]+", marker)
+                or (run_id is not None and marker != str(run_id))
+                or (ppid is not None and row["ppid"] != ppid)):
+            continue
+        # Protect host entry points even if launched with an inherited marker.
+        command = row["command"]
+        if re.search(r"(?:^|[/\s])(?:mahlerd|mahler-launcher)(?:\s|$)", command):
+            continue
+        if re.search(r"(?:^|[/\s])mahler(?:\.py|\.__main__)?\s+(?:serve|daemon|tick)(?:\s|$)",
+                     command):
+            continue
+        found.append(row)
+    return found
+
+
+def reap_run(run_id, grace_seconds=2.0, *, ppid=None):
+    """TERM marked run processes, then KILL survivors after a bounded grace.
+
+    Re-read ownership and start identity before every signal. No unmarked
+    process is signalled here; watchdog retains its existing group cleanup.
+    ppid restricts the janitor backstop to orphans.
+    """
+    try:
+        targets = {p["pid"]: p for p in find_run_processes(run_id, ppid)}
+    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
+        return
+    if not targets:
+        _compact_ownership(run_id)
+        return
+    deadline = None
+    termed = set()
+    while True:
+        try:
+            current = find_run_processes(run_id, ppid)
+        except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
+            return
+        expired = deadline is not None and time.monotonic() >= deadline
+        for process in current:
+            key = (process["pid"], process["identity"])
+            original = targets.setdefault(process["pid"], process)
+            if original["identity"] != process["identity"]:
+                continue
+            sig = signal.SIGKILL if expired and key in termed else signal.SIGTERM
+            if sig == signal.SIGTERM and key in termed:
+                continue
+            try:
+                os.kill(process["pid"], sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+            termed.add(key)
+        if expired or not current:
+            _compact_ownership(run_id)
+            return
+        if deadline is None:
+            deadline = time.monotonic() + max(0, grace_seconds)
+        time.sleep(min(.05, max(0, deadline - time.monotonic())))
 
 
 def exit_code(run):

@@ -43,17 +43,22 @@ def _watch_one(ctx, run, now):
             return
         if not ctx.dry_run:
             runner.kill(run["pid"])
+            runner.reap_run(run["id"])
         finalize(ctx, run)
         return
     if not runner.alive(run["pid"]):
         # The shell is gone, but a child can outlive it: a SIGTERM that lands
         # while the agent is blocked in a syscall is only acted on later, if
         # at all (mahler#12). Nothing of a run may outlive the run.
-        runner.kill(run["pid"])
+        if not ctx.dry_run:
+            runner.kill(run["pid"])
+            runner.reap_run(run["id"])
         finalize(ctx, run)
         return
     if run["status"] == "stopping":
-        runner.kill(run["pid"])                  # asked nicely last tick
+        if not ctx.dry_run:
+            runner.kill(run["pid"])              # asked nicely last tick
+            runner.reap_run(run["id"])
         return
     holder = f"run:{run['id']}"
     still_ours = led.heartbeat(run["project"], run["number"], holder, run["epoch"],
@@ -162,6 +167,7 @@ def stop(ctx, run, reason):
         return
     ctx.led.update_run(run["id"], status="stopping", stop_reason=reason)
     runner.terminate(run["pid"])
+    runner.reap_run(run["id"])
 
 
 def request_stop(ctx, run, reason):

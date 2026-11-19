@@ -2,9 +2,13 @@
 
 import os
 import shlex
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
+import warnings
 from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
@@ -388,6 +392,7 @@ class PlatformLaunchTests(unittest.TestCase):
                 return real_popen(args, **kwargs)
 
             with mock.patch.object(config, "RUNS_DIR", runs), \
+                    mock.patch.object(runner.sys, "platform", "linux"), \
                     mock.patch.object(runner.platforms, "argv_for",
                                       return_value=["/usr/bin/true"]) as argv_for, \
                     mock.patch.object(runner.subprocess, "Popen",
@@ -733,6 +738,7 @@ class ShellSanitizationTests(unittest.TestCase):
             )
             evil = "ok'; rm -rf / #$(cat /etc/passwd) `id` \"quote\" \\eol"
             with mock.patch.object(config, "RUNS_DIR", os.path.join(d, "runs")), \
+                    mock.patch.object(runner.sys, "platform", "linux"), \
                     mock.patch.object(runner, "git"), \
                     mock.patch.object(runner, "remote_has", return_value=False), \
                     mock.patch.object(runner, "fence_hooks", return_value="/tmp/hooks"), \
@@ -1166,6 +1172,71 @@ class SpawnStdinTests(unittest.TestCase):
         shell = popen.call_args.args[0][2]
         self.assertNotIn("<", shell)
 
+    def test_ambient_run_marker_does_not_claim_an_unrelated_subprocess(self):
+        with tempfile.TemporaryDirectory() as temp:
+            os.makedirs(os.path.join(temp, "runs", "42"))
+            env = dict(os.environ, MAHLER_RUN_ID="42",
+                       MAHLER_RUNS_DIR=os.path.join(temp, "runs"))
+            with mock.patch.object(runner.sys, "platform", "darwin"), \
+                    mock.patch("subprocess.Popen",
+                               return_value=SimpleNamespace(pid=123)) as popen:
+                runner.spawn(["/bin/cmd"], "/cwd", "/log",
+                             os.path.join(temp, "unrelated", "exit"), env=env)
+        self.assertEqual(popen.call_count, 1)
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+
+class DetachedProcessReapingTests(unittest.TestCase):
+    def test_fast_exit_reaps_detached_native_helper(self):
+        """A native helper must not escape between its fork and the next poll."""
+        with tempfile.TemporaryDirectory() as temp:
+            run_id = "91597001"
+            run_dir = os.path.join(temp, run_id)
+            os.makedirs(run_dir)
+            helper_path = os.path.join(run_dir, "helper.pid")
+            log_path = os.path.join(run_dir, "agent.log")
+            status_path = os.path.join(run_dir, "exit")
+            code = (
+                "import os, subprocess; "
+                f"p=subprocess.Popen(['/usr/bin/tail','-f','/dev/null'], "
+                "start_new_session=True, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL); "
+                f"open({helper_path!r}, 'w').write(str(p.pid))"
+            )
+            env = dict(os.environ, MAHLER_RUN_ID=run_id, MAHLER_RUNS_DIR=temp)
+            helper_pid = None
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", ResourceWarning)
+                    runner.spawn([sys.executable, "-c", code], temp, log_path,
+                                 status_path, env=env)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not os.path.exists(status_path):
+                    time.sleep(0.01)
+                self.assertTrue(os.path.exists(status_path), "run wrapper did not finish")
+                helper_pid = int(Path(helper_path).read_text())
+                with mock.patch.object(config, "RUNS_DIR", temp):
+                    matches = [process for process in runner.find_run_processes(run_id)
+                               if process["pid"] == helper_pid]
+                    self.assertIn(
+                        helper_pid,
+                        [process["pid"] for process in matches],
+                        "detached native helper lost its inherited ownership marker",
+                    )
+                    self.assertEqual(matches[0]["ppid"], 1)
+                    runner.reap_run(run_id, grace_seconds=0.05)
+                deadline = time.monotonic() + 5
+                while runner.alive(helper_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(runner.alive(helper_pid),
+                                 "detached native helper survived the run")
+            finally:
+                if helper_pid and runner.alive(helper_pid):
+                    try:
+                        os.kill(helper_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -1287,3 +1358,244 @@ class FetchOriginSshFallbackTests(unittest.TestCase):
         self.URL = "https://github.com/o/r.git"
         calls, err = self.run_fetch([self.DENIED])
         self.assertIs(err, self.DENIED)
+
+class DetachedRunTests(unittest.TestCase):
+    def test_detached_native_child_after_leader_exit_is_reaped_on_darwin(self):
+        import signal
+        import sys
+        import time
+        import uuid
+        import warnings
+        if sys.platform != "darwin":
+            self.skipTest("Darwin native executables can hide inherited environment")
+        marker = str(uuid.uuid4().int)
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            run_dir = runs_dir / marker
+            worktree = Path(tmp) / "project" / f"1-run{marker}"
+            run_dir.mkdir(parents=True)
+            worktree.mkdir(parents=True)
+            pid_path = run_dir / "pid"
+            release_path = run_dir / "release"
+            log_path = run_dir / "agent.log"
+            status_path = run_dir / "exit"
+            child_code = ("import os,pathlib,subprocess,time\n"
+                          "p=subprocess.Popen(['/usr/bin/tail','-f','/dev/null'], "
+                          "start_new_session=True, stdout=subprocess.DEVNULL, "
+                          "stderr=subprocess.DEVNULL)\n"
+                          f"pathlib.Path({str(pid_path)!r}).write_text(str(p.pid))\n"
+                          f"release=pathlib.Path({str(release_path)!r})\n"
+                          "while not release.exists():\n    time.sleep(.01)\n"
+                          "os._exit(0)\n")
+            env = dict(os.environ, MAHLER_RUN_ID=marker,
+                       MAHLER_RUNS_DIR=str(runs_dir))
+            with mock.patch.object(config, "RUNS_DIR", str(runs_dir)), \
+                    warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                leader = runner.spawn([sys.executable, "-c", child_code], str(worktree),
+                                      str(log_path), str(status_path), env=env)
+            pid = None
+            try:
+                deadline = time.monotonic() + 5
+                while not pid_path.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(pid_path.exists())
+                pid = int(pid_path.read_text())
+                with mock.patch.object(config, "RUNS_DIR", str(runs_dir)):
+                    while (pid not in [p["pid"] for p in runner.find_run_processes(marker)]
+                           and time.monotonic() < deadline):
+                        time.sleep(.02)
+                    self.assertIn(pid, [p["pid"] for p in runner.find_run_processes(marker)])
+                release_path.touch()
+                while not status_path.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(status_path.exists())
+                os.waitpid(leader, 0)
+                self.assertFalse(runner.alive(leader))
+                with mock.patch.object(config, "RUNS_DIR", str(runs_dir)):
+                    found = runner.find_run_processes(marker)
+                    self.assertIn(pid, [p["pid"] for p in found])
+                    self.assertEqual(next(p for p in found if p["pid"] == pid)["ppid"], 1)
+                    runner.reap_run(marker, grace_seconds=.05)
+                deadline = time.monotonic() + 5
+                while runner.alive(pid) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertFalse(runner.alive(pid))
+            finally:
+                release_path.touch(exist_ok=True)
+                try:
+                    os.killpg(leader, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(leader, 0)
+                except ChildProcessError:
+                    pass
+                if pid is not None:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    def test_detached_child_after_leader_exit_is_reaped(self):
+        import sys
+        import signal
+        import time
+        import uuid
+        marker = str(uuid.uuid4().int)
+        with tempfile.TemporaryDirectory() as tmp:
+            ready = Path(tmp) / "ready"
+            child_code = ("import signal,time,pathlib; "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)")
+            leader_code = ("import subprocess,sys; "
+                           f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}], "
+                           "start_new_session=True, stdout=subprocess.DEVNULL, "
+                           "stderr=subprocess.DEVNULL); print(p.pid)")
+            result = subprocess.run([sys.executable, "-c", leader_code],
+                                    env=dict(os.environ, MAHLER_RUN_ID=marker),
+                                    capture_output=True, text=True, check=True)
+            pid = int(result.stdout)
+            try:
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(ready.exists())
+                self.assertIn(pid, [p["pid"] for p in runner.find_run_processes(marker)])
+                runner.reap_run(marker, grace_seconds=.05)
+                deadline = time.monotonic() + 5
+                while runner.find_run_processes(marker) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(runner.find_run_processes(marker), [])
+            finally:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+class RunProcessSafetyTests(unittest.TestCase):
+    def test_darwin_ownership_records_require_matching_uid_and_start_identity(self):
+        marker = "123"
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / marker
+            run_dir.mkdir()
+            path = run_dir / runner.OWNERSHIP_FILE
+            records = {
+                900007: dict(pid=900007, uid=os.getuid(), identity="start-a"),
+                900008: dict(pid=900008, uid=os.getuid(), identity="old-start"),
+                900009: dict(pid=900009, uid=os.getuid() + 1, identity="start-c"),
+            }
+            runner._write_ownership(path, marker, records)
+            rows = {
+                900007: dict(pid=900007, ppid=1, uid=os.getuid(), identity="start-a",
+                             command="/usr/bin/tail -f /dev/null", run_id=None),
+                900008: dict(pid=900008, ppid=1, uid=os.getuid(), identity="new-start",
+                             command="/usr/bin/tail -f /dev/null", run_id=None),
+                900009: dict(pid=900009, ppid=1, uid=os.getuid(), identity="start-c",
+                             command="/usr/bin/tail -f /dev/null", run_id=None),
+                900010: dict(pid=900010, ppid=1, uid=os.getuid(), identity="start-d",
+                             command="/usr/bin/tail -f /dev/null", run_id=None),
+            }
+            with mock.patch.object(config, "RUNS_DIR", tmp), \
+                    mock.patch.object(runner.sys, "platform", "darwin"), \
+                    mock.patch.object(runner, "_process_snapshot", return_value=rows):
+                self.assertEqual([p["pid"] for p in runner.find_run_processes(marker)],
+                                 [900007])
+
+    def test_darwin_unmarked_process_in_run_worktree_is_not_owned_by_run(self):
+        import signal
+        import sys
+        import uuid
+        if sys.platform != "darwin":
+            self.skipTest("Darwin-specific worktree ownership regression")
+        marker = str(uuid.uuid4().int)
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = Path(tmp) / "runs"
+            run_dir = runs_dir / marker
+            worktree = Path(tmp) / "project" / f"1-run{marker}"
+            run_dir.mkdir(parents=True)
+            worktree.mkdir(parents=True)
+            # Reproduce the stale provenance file created by the unsafe
+            # implementation; CWD is not evidence that this process belongs
+            # to the run.
+            (run_dir / "process-root").write_text(str(worktree) + "\n")
+            env = dict(os.environ)
+            env.pop("MAHLER_RUN_ID", None)
+            process = subprocess.Popen(
+                ["/usr/bin/tail", "-f", "/dev/null"], cwd=worktree, env=env,
+                start_new_session=True, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            try:
+                with mock.patch.object(config, "RUNS_DIR", str(runs_dir)):
+                    self.assertNotIn(
+                        process.pid,
+                        [p["pid"] for p in runner.find_run_processes(marker)])
+            finally:
+                try:
+                    os.kill(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+
+    def test_excludes_ancestors_services_other_users_and_unmarked(self):
+        def row(pid, **kw):
+            return dict(pid=pid, ppid=kw.get("ppid", 1), uid=kw.get("uid", os.getuid()),
+                        identity="start", command=kw.get("command", "python helper.py"),
+                        run_id=kw.get("run_id", "123"))
+        rows = {p["pid"]: p for p in [
+            row(1), row(os.getpid()), row(os.getppid(), ppid=900001),
+            row(900001), row(900002, command="python -m mahler serve"),
+            row(900003, command="/usr/local/bin/mahlerd"),
+            row(900004, uid=os.getuid()+1), row(900005, run_id=None),
+            row(900006, run_id="1234"), row(900007),
+            row(900008, command="/opt/bin/mahler-launcher"),
+            row(900009, command="python -m mahler tick"),
+        ]}
+        with mock.patch.object(runner, "_process_snapshot", return_value=rows):
+            self.assertEqual([p["pid"] for p in runner.find_run_processes(123)], [900007])
+            self.assertEqual(runner.find_run_processes(123, ppid=8), [])
+
+    def test_pid_reuse_never_gets_signalled(self):
+        original = dict(pid=900007, identity="old")
+        replacement = dict(pid=900007, identity="new")
+        with mock.patch.object(runner, "find_run_processes",
+                               side_effect=[[original], [replacement], []]), \
+                mock.patch.object(runner.os, "kill") as kill:
+            runner.reap_run(123, grace_seconds=0)
+        kill.assert_not_called()
+
+    def test_term_precedes_kill_even_with_zero_grace(self):
+        import signal
+        process = dict(pid=900007, identity="start")
+        with mock.patch.object(runner, "find_run_processes", return_value=[process]), \
+                mock.patch.object(runner.os, "kill") as kill:
+            runner.reap_run(123, grace_seconds=0)
+        self.assertEqual(kill.call_args_list,
+                         [mock.call(900007, signal.SIGTERM),
+                          mock.call(900007, signal.SIGKILL)])
+
+    def test_darwin_marker_in_argv_is_not_environment(self):
+        prefix = "900007 1 501 Wed Nov 18 13:00:00 2026 "
+        command = "python helper.py MAHLER_RUN_ID=123"
+        plain = prefix + command + "\n"
+        expanded = prefix + command + " HOME=/tmp MAHLER_RUN_ID=456 PATH=/bin\n"
+        with mock.patch.object(runner.sys, "platform", "darwin"), \
+                mock.patch.object(runner.subprocess, "run", side_effect=[
+                    SimpleNamespace(returncode=0, stdout=plain),
+                    SimpleNamespace(returncode=0, stdout=expanded)]):
+            self.assertEqual(runner._process_snapshot()[900007]["run_id"], "456")
+
+    def test_linux_reads_nul_environment_and_start_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "900007"
+            path.mkdir()
+            (path / "stat").write_text("900007 (name with ) parens) S 1 " +
+                                      " ".join(["0"] * 17) + " 999 0")
+            (path / "environ").write_bytes(b"OTHER=MAHLER_RUN_ID=456\0MAHLER_RUN_ID=123\0")
+            (path / "cmdline").write_bytes(b"python\0helper.py\0")
+            with mock.patch.object(runner.sys, "platform", "linux"), \
+                    mock.patch.object(runner.Path, "glob", return_value=[path]):
+                row = runner._process_snapshot()[900007]
+            self.assertEqual(row["run_id"], "123")
+            self.assertEqual(row["identity"], "999")
+            self.assertEqual(row["ppid"], 1)
