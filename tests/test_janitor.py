@@ -680,11 +680,65 @@ class BehaviorTests(Base):
         self.assertTrue(any("serve log rotation failed" in line and "read-only" in line
                             for line in self.ctx.lines))
 
+    def test_orphans_are_reaped_before_run_directories_are_pruned(self):
+        order = []
+        with mock.patch.object(janitor, "rotate_serve_log", return_value=None), \
+                mock.patch.object(janitor, "reap_orphan_processes",
+                                  side_effect=lambda _ctx: order.append("reap")), \
+                mock.patch.object(janitor, "prune_run_dirs",
+                                  side_effect=lambda _ctx: (order.append("prune") or (0, 0))), \
+                mock.patch.object(janitor, "sweep"):
+            janitor.maybe_run(self.ctx)
+        self.assertEqual(order, ["reap", "prune"])
 
-if __name__ == "__main__":
-    unittest.main()
 
 class OrphanProcessTests(unittest.TestCase):
+    def test_recorded_native_orphans_preserve_active_reused_and_unrecorded_processes(self):
+        from types import SimpleNamespace
+        led = Ledger(":memory:")
+        self.addCleanup(led.close)
+        active = led.create_run(project="t", number=1, role="build", platform="x", epoch=1)
+        ended = led.create_run(project="t", number=2, role="build", platform="x", epoch=1)
+        led.update_run(ended, status="ended")
+        with tempfile.TemporaryDirectory() as tmp:
+            for marker, records in {
+                str(active): {910001: dict(pid=910001, uid=os.getuid(), identity="active")},
+                str(ended): {
+                    910002: dict(pid=910002, uid=os.getuid(), identity="ended"),
+                    910003: dict(pid=910003, uid=os.getuid(), identity="old-pid"),
+                },
+            }.items():
+                run_dir = os.path.join(tmp, marker)
+                os.makedirs(run_dir)
+                runner._write_ownership(os.path.join(run_dir, runner.OWNERSHIP_FILE),
+                                        marker, records)
+            rows = {
+                910001: dict(pid=910001, ppid=1, uid=os.getuid(), identity="active",
+                             command="/usr/bin/tail", run_id=None),
+                910002: dict(pid=910002, ppid=1, uid=os.getuid(), identity="ended",
+                             command="/usr/bin/tail", run_id=None),
+                910003: dict(pid=910003, ppid=1, uid=os.getuid(), identity="new-pid",
+                             command="/usr/bin/tail", run_id=None),
+                910004: dict(pid=910004, ppid=1, uid=os.getuid(), identity="unrecorded",
+                             command="/usr/bin/tail", run_id=None),
+            }
+            ctx = SimpleNamespace(led=led, dry_run=False, say=mock.Mock())
+            with mock.patch.object(config, "RUNS_DIR", tmp), \
+                    mock.patch.object(runner.sys, "platform", "darwin"), \
+                    mock.patch.object(runner, "_process_snapshot", return_value=rows), \
+                    mock.patch.object(runner, "reap_run") as reap:
+                self.assertEqual(
+                    [p["pid"] for p in runner.find_run_processes(ppid=1)],
+                    [910001, 910002])
+                janitor.reap_orphan_processes(ctx)
+                reap.assert_called_once_with(str(ended), ppid=1)
+                reap.reset_mock()
+                ctx.dry_run = True
+                janitor.reap_orphan_processes(ctx)
+                reap.assert_not_called()
+                self.assertTrue(any("would reap" in call.args[0]
+                                    for call in ctx.say.call_args_list))
+
     def test_only_finished_or_unknown_runs_are_reaped_and_dry_run_reports(self):
         from types import SimpleNamespace
         led = Ledger(":memory:")
@@ -707,3 +761,7 @@ class OrphanProcessTests(unittest.TestCase):
             janitor.reap_orphan_processes(ctx)
             reap.assert_not_called()
             self.assertTrue(ctx.say.called)
+
+
+if __name__ == "__main__":
+    unittest.main()
