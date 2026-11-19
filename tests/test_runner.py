@@ -1172,6 +1172,19 @@ class SpawnStdinTests(unittest.TestCase):
         shell = popen.call_args.args[0][2]
         self.assertNotIn("<", shell)
 
+    def test_ambient_run_marker_does_not_claim_an_unrelated_subprocess(self):
+        with tempfile.TemporaryDirectory() as temp:
+            os.makedirs(os.path.join(temp, "runs", "42"))
+            env = dict(os.environ, MAHLER_RUN_ID="42",
+                       MAHLER_RUNS_DIR=os.path.join(temp, "runs"))
+            with mock.patch.object(runner.sys, "platform", "darwin"), \
+                    mock.patch("subprocess.Popen",
+                               return_value=SimpleNamespace(pid=123)) as popen:
+                runner.spawn(["/bin/cmd"], "/cwd", "/log",
+                             os.path.join(temp, "unrelated", "exit"), env=env)
+        self.assertEqual(popen.call_count, 1)
+        self.assertIs(popen.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
 
 class DetachedProcessReapingTests(unittest.TestCase):
     def test_fast_exit_reaps_detached_native_helper(self):

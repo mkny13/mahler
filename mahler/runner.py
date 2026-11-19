@@ -342,7 +342,11 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
         runs_dir = env.get("MAHLER_RUNS_DIR")
         if marker and runs_dir and re.fullmatch(r"[0-9]+", marker):
             run_dir = Path(runs_dir) / marker
-            if run_dir.is_dir():
+            # An unrelated subprocess can inherit MAHLER_* from an agent that
+            # happens to be testing Mahler. Only the status file Mahler placed
+            # in this run directory authorizes tracker/marker creation.
+            if (run_dir.is_dir()
+                    and Path(status_path).resolve().parent == run_dir.resolve()):
                 gate = run_dir / "process-tracker-gate"
                 ready = run_dir / "process-tracker-ready"
                 for path in (gate, ready):
