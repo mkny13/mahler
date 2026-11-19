@@ -14,7 +14,7 @@ import unittest
 from datetime import datetime, time as dtime, timedelta, timezone
 from unittest import mock
 
-from mahler import model_availability, config, desktop, failures, finalize, no_change, prompt, router, runner, scheduler, sync, tick
+from mahler import model_availability, config, desktop, failures, finalize, no_change, prompt, router, runner, scheduler, ship, sync, tick
 from mahler import gh as gh_module
 from mahler.ledger import Ledger, RoutedLedger, iso, remote_lease_operation
 from tests.test_platforms import provider_error_events
@@ -139,6 +139,37 @@ class RunTests(unittest.TestCase):
                           self.led.item("x", 5)["esc_fails"]), ("verifying", 0, 0))
         self.assertEqual(json.loads(self.led.get_kv(key))["fix_run"], self.run_id)
         self.finalize()
+        self.assertEqual(self.led.item("x", 5)["attempts"], 0)
+
+    def test_ci_retry_real_selector_with_sibling_workflow_hands_off_to_rerun(self):
+        key = self.ci_retry_fixture()
+        client = gh_module.GH("x/y")
+        failed = {"id": 10, "head_sha": self.gh.head, "workflow_id": 8,
+                  "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+        view = {"state": "OPEN", "headRefOid": self.gh.head, "baseRefName": "main",
+                "statusCheckRollup": [{"name": "checks", "conclusion": "FAILURE"}]}
+        self.gh.pr_view = mock.Mock(return_value=view)
+        self.gh.ci_retry_runs = client.ci_retry_runs
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value=failed)
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?"):
+                return {"total_count": 2, "workflow_runs": [
+                    failed, {**failed, "id": 11, "conclusion": "success"}]}
+            return {"total_count": 1, "jobs": [{"name": "checks", "conclusion": "failure"}]}
+        with mock.patch.object(client, "_api_json", side_effect=reply), \
+                mock.patch.object(runner, "git", side_effect=_clean_git(self.gh.head)):
+            self.finalize()
+        self.assertEqual((self.led.item("x", 5)["state"],
+                          self.led.item("x", 5)["attempts"]), ("verifying", 0))
+        self.assertEqual(json.loads(self.led.get_kv(key))["fix_run"], self.run_id)
+        with mock.patch.object(self.ctx, "gh", return_value=self.gh), \
+                mock.patch.object(ship, "_ship_lease", return_value=True), \
+                mock.patch.object(ship, "_ci_pending"):
+            for _ in range(2):
+                self.assertTrue(ship._ci_rerun(self.ctx, "x", self.led.item("x", 5),
+                                               88, view, {"checks"}))
+        self.gh.rerun_failed_jobs.assert_called_once_with(10)
         self.assertEqual(self.led.item("x", 5)["attempts"], 0)
 
     def test_ci_retry_rejects_changed_dirty_generic_interrupted_or_spent(self):
