@@ -173,22 +173,39 @@ class TestGH(unittest.TestCase):
             self.gh.rerun_failed_jobs(10)
             api.assert_called_once_with("POST", "actions/runs/10/rerun-failed-jobs")
 
+    def test_ci_retry_multiple_runs_of_workflow_and_repeated_job_names(self):
+        failed = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
+                  "status": "completed", "conclusion": "failure", "event": "pull_request"}
+        for sibling_conclusion in ("success", "failure"):
+            for reported in (False, True):
+                with self.subTest(sibling=sibling_conclusion, reported=reported):
+                    rows = [failed, {**failed, "id": 11, "event": "push",
+                                     "conclusion": sibling_conclusion}]
+                    def reply(method, path, payload=None):
+                        if path.startswith("actions/runs?"):
+                            return {"total_count": len(rows), "workflow_runs": rows}
+                        return {"total_count": 2, "jobs": [
+                            {"name": "tests", "conclusion": "failure"},
+                            {"name": "tests", "conclusion": "failure"}]}
+                    with patch.object(self.gh, "_api_json", side_effect=reply):
+                        expected = [{"id": 10, "attempt": 1}]
+                        if sibling_conclusion == "failure":
+                            expected.append({"id": 11, "attempt": 1})
+                        self.assertEqual(self.gh.ci_retry_runs("head", "main",
+                                                             reported=reported), expected)
+
     def test_ci_retry_rejects_incomplete_or_ambiguous_head_evidence(self):
         head = {"id": 10, "head_sha": "head", "workflow_id": 8, "run_attempt": 1,
                 "status": "completed", "conclusion": "failure"}
         for case in ("missing", "ambiguous", "pagination", "job-pagination",
-                     "duplicate-job", "unnamed-job", "no-failed-job", "pending"):
+                     "no-failed-job", "pending"):
             with self.subTest(case=case):
                 rows = [] if case == "missing" else [dict(head)]
                 if case == "ambiguous":
-                    rows.append({**head, "id": 11})
+                    rows.append(dict(head))
                 if case == "pending":
                     rows[0]["status"] = "in_progress"
                 jobs = [{"name": "checks", "conclusion": "failure"}]
-                if case == "duplicate-job":
-                    jobs.append(dict(jobs[0]))
-                if case == "unnamed-job":
-                    jobs[0]["name"] = ""
                 if case == "no-failed-job":
                     jobs[0]["conclusion"] = "success"
                 replies = [

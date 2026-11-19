@@ -1340,6 +1340,33 @@ class ShipTests(unittest.TestCase):
             self.ship()
             self.gh.rerun_failed_jobs.assert_called_once_with(10)
 
+    def test_unchanged_head_at_attempt_limit_reruns_with_sibling_workflow(self):
+        # A no-change build (or /mahler go) returns the same red head to shipping.
+        self.led.upsert_item("x", 5, pr=88, attempts=2)
+        self.led.create_run(project="x", number=5, role="build", platform="claude",
+                            epoch=1, status="done", outcome="DONE no change")
+        self.gh.required_checks = {"checks"}
+        self.gh.rollup = [{"name": "checks", "conclusion": "FAILURE",
+                          "detailsUrl": "https://github.com/o/r/actions/runs/10/job/100"}]
+        client = gh_module.GH("o/r")
+        failed = {"id": 10, "head_sha": "abc123", "workflow_id": 8,
+                  "run_attempt": 1, "status": "completed", "conclusion": "failure"}
+        def reply(method, path, payload=None):
+            if path.startswith("actions/runs?"):
+                return {"total_count": 2, "workflow_runs": [
+                    failed, {**failed, "id": 11, "conclusion": "success"}]}
+            return {"total_count": 1, "jobs": [{"name": "checks", "conclusion": "failure"}]}
+        self.gh.ci_retry_runs = client.ci_retry_runs
+        self.gh.rerun_failed_jobs = mock.Mock()
+        self.gh.actions_run = mock.Mock(return_value=failed)
+        start = self.patch_start()
+        with mock.patch.object(client, "_api_json", side_effect=reply):
+            self.ship()
+            self.ship()  # The old red observation cannot spend another attempt.
+        self.gh.rerun_failed_jobs.assert_called_once_with(10)
+        self.assertEqual((self.item()["state"], self.item()["attempts"]), ("verifying", 2))
+        start.assert_not_called()
+
     # mahler#1530: cancelled-only CI is rerun by the conductor, never charged.
     def cancelled_setup(self, rollup=None):
         self.led.upsert_item("x", 5, pr=88)
