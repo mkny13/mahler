@@ -205,6 +205,7 @@ class ClineNudgeTests(unittest.TestCase):
     """Cline resume-once: end with no STATUS and finishReason==completed → nudge."""
 
     def setUp(self):
+        self.enterContext(mock.patch.object(runner.sys, "platform", "linux"))
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = tmp.name
