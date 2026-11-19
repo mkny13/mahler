@@ -360,9 +360,29 @@ def spawn(argv, cwd, log_path, status_path, env=None, append=False, prefix="", s
     stdin_redir = f" < {shlex.quote(stdin_path)}" if stdin_path else ""
     shell = (f"{shlex.join(argv)}{stdin_redir} {'>>' if append else '>'} {shlex.quote(log_path)} 2>&1; "
              f"echo $? > {shlex.quote(status_path)}")
-    proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
-                            start_new_session=True, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    marker_stream = None
+    pass_fds = ()
+    if gate is not None:
+        # Darwin intentionally hides another process's environment, including
+        # through KERN_PROCARGS2. Keep the run marker open as an additional,
+        # kernel-visible ownership token. fd 0 survives Python's default
+        # close_fds behaviour; the extra fd survives ordinary shell
+        # backgrounding, which redirects fd 0 to /dev/null.
+        marker_path = gate.with_name("process-marker")
+        marker_flags = os.O_RDONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        marker_fd = os.open(marker_path, marker_flags, 0o600)
+        os.fchmod(marker_fd, 0o600)
+        marker_stream = os.fdopen(marker_fd, "rb")
+        pass_fds = (marker_fd,)
+    try:
+        proc = subprocess.Popen(["/bin/sh", "-c", prefix + shell], cwd=cwd, env=env,
+                                start_new_session=True,
+                                stdin=marker_stream or subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                pass_fds=pass_fds)
+    finally:
+        if marker_stream is not None:
+            marker_stream.close()
     if gate is not None:
         ready = gate.with_name("process-tracker-ready")
         tracker_env = {
@@ -800,6 +820,49 @@ def _merge_recorded_ownership(rows, run_id=None):
             rows[pid]["run_id"] = marker
 
 
+def _merge_open_marker_ownership(rows, run_id=None):
+    """Attach Darwin ownership proved by a process's open per-run marker.
+
+    ``ps`` and KERN_PROCARGS2 omit native-process environments on current
+    macOS. An inherited open file is still kernel state, remains observable
+    after setsid/reparenting, and cannot accidentally claim an unrelated
+    process merely because it uses the same worktree.
+    """
+    if run_id is None:
+        paths = Path(config.RUNS_DIR).glob("[0-9]*/process-marker")
+    else:
+        marker = str(run_id)
+        if not re.fullmatch(r"[0-9]+", marker):
+            return
+        paths = [Path(config.RUNS_DIR) / marker / "process-marker"]
+    claims = {}
+    for path in paths:
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            marker = path.parent.name
+            result = subprocess.run(
+                ["/usr/sbin/lsof", "-Fn", "--", str(path)],
+                capture_output=True, text=True, timeout=10,
+                env=dict(os.environ, LC_ALL="C"))
+            if result.returncode not in (0, 1):
+                continue
+            for line in result.stdout.splitlines():
+                if not line.startswith("p"):
+                    continue
+                try:
+                    pid = int(line[1:])
+                except ValueError:
+                    continue
+                if pid in rows and rows[pid]["uid"] == os.getuid():
+                    claims.setdefault(pid, set()).add(marker)
+        except (OSError, subprocess.SubprocessError):
+            continue
+    for pid, markers in claims.items():
+        if len(markers) == 1 and rows[pid].get("run_id") is None:
+            rows[pid]["run_id"] = next(iter(markers))
+
+
 def _compact_ownership(run_id, rows=None):
     """Drop exited/reused PIDs; remove the file once no identities remain."""
     try:
@@ -819,6 +882,7 @@ def _compact_ownership(run_id, rows=None):
                 pass
     except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
         pass
+
 
 def _ps_process_listing(environment=False):
     """Darwin/BSD process metadata; callers must never log the command field."""
@@ -887,6 +951,7 @@ def find_run_processes(run_id=None, ppid=None):
     rows = _process_snapshot()
     if not sys.platform.startswith("linux"):
         _merge_recorded_ownership(rows, run_id)
+        _merge_open_marker_ownership(rows, run_id)
     protected = {1, os.getpid(), os.getppid()}
     parent = os.getppid()
     while parent in rows:
@@ -954,6 +1019,7 @@ def reap_run(run_id, grace_seconds=2.0, *, ppid=None):
         if deadline is None:
             deadline = time.monotonic() + max(0, grace_seconds)
         time.sleep(min(.05, max(0, deadline - time.monotonic())))
+
 
 def exit_code(run):
     try:

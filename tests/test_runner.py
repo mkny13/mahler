@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
@@ -1192,13 +1193,28 @@ class DetachedProcessReapingTests(unittest.TestCase):
             env = dict(os.environ, MAHLER_RUN_ID=run_id, MAHLER_RUNS_DIR=temp)
             helper_pid = None
             try:
-                runner.spawn([sys.executable, "-c", code], temp, log_path,
-                             status_path, env=env)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", ResourceWarning)
+                    runner.spawn([sys.executable, "-c", code], temp, log_path,
+                                 status_path, env=env)
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline and not os.path.exists(status_path):
                     time.sleep(0.01)
                 self.assertTrue(os.path.exists(status_path), "run wrapper did not finish")
                 helper_pid = int(Path(helper_path).read_text())
+                with mock.patch.object(config, "RUNS_DIR", temp):
+                    matches = [process for process in runner.find_run_processes(run_id)
+                               if process["pid"] == helper_pid]
+                    self.assertIn(
+                        helper_pid,
+                        [process["pid"] for process in matches],
+                        "detached native helper lost its inherited ownership marker",
+                    )
+                    self.assertEqual(matches[0]["ppid"], 1)
+                    runner.reap_run(run_id, grace_seconds=0.05)
+                deadline = time.monotonic() + 5
+                while runner.alive(helper_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
                 self.assertFalse(runner.alive(helper_pid),
                                  "detached native helper survived the run")
             finally:
