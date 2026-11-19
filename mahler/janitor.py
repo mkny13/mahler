@@ -76,16 +76,16 @@ def _maybe_run(ctx):
         except Exception as e:                   # noqa: BLE001 — rotation is best-effort
             _say(ctx, f"serve log rotation failed (continuing) — {e}")
     try:
+        reap_orphan_processes(ctx)
+    except Exception as e:
+        _say(ctx, f"orphan process cleanup failed (continuing) — {e}")
+    try:
         count, size = prune_run_dirs(ctx)
         if count:
             _say(ctx, f"{'would remove' if ctx.dry_run else 'removed'} {count} run folders"
                       f" ({size / 1e9:.1f} GB)")
     except Exception as e:                       # noqa: BLE001 — pruning is best-effort
         _say(ctx, f"run folder pruning failed (continuing) — {e}")
-    try:
-        reap_orphan_processes(ctx)
-    except Exception as e:
-        _say(ctx, f"orphan process cleanup failed (continuing) — {e}")
     for pol in config.enabled_projects(ctx.cfg):
         if not os.path.isdir(pol["path"]):       # same reachability rule as the tick
             continue
