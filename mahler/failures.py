@@ -174,8 +174,26 @@ def backfill(ctx, projects):
                 ctx.say(f"{name}#{item['number']}: failure backfill failed — {err}")
 
 
+def workflow_key(project, workflow, failure_code="actions_failed"):
+    identity = workflow.get("workflow_id") or workflow["name"]
+    return f"open-post-merge-bug:{project}:workflow:{identity}:{failure_code}"
+
+
+def tracks_workflow(item, workflow, branch):
+    """Match explicit run evidence or a named default-branch failure, not a mention."""
+    text = "\n".join(str(row_get(item, k, "") or "")
+                     for k in ("title", "issue_body", "question"))
+    url = workflow.get("html_url")
+    if url and url in text:
+        return True
+    name = workflow.get("name")
+    return bool(name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", text, re.I)
+                and re.search(r"\b" + re.escape(branch) + r"\b", text, re.I)
+                and re.search(r"\b(fail(?:s|ed|ure|ing)?|red|timed.out|blocked)\b", text, re.I))
+
+
 def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
-                      pr=None, output=None, policy=None):
+                      pr=None, output=None, policy=None, workflow=None, branch="main"):
     """File a linked p1 bug and send durable notification for post-merge failure."""
     if ctx.dry_run:
         return None
@@ -195,6 +213,11 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
 
     bug_key = f"post-merge-bug:{project}:{number}:{merge_sha}"
     marker = f"<!-- mahler:post-merge-failure project={project} number={number} sha={merge_sha} -->"
+    if workflow:
+        identity = str(workflow.get("workflow_id") or workflow["name"])
+        suffix = ":workflow:" + identity
+        bug_key += suffix
+        marker = marker.removesuffix(" -->") + f" workflow={identity} -->"
     bug = None
     saved = ctx.led.get_kv(bug_key)
     if saved:
@@ -220,17 +243,21 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
         labels.append(policy["scope_label"])
 
     open_key = f"open-post-merge-bug:{project}:{phase}:{failure_code}"
+    if workflow:
+        open_key = workflow_key(project, workflow, failure_code)
     repeated = False
     if bug is None:
         candidate = ctx.led.get_kv(open_key)
+        if candidate and ctx.gh(project).issue_state(int(candidate)) != "OPEN":
+            candidate = None
         if not candidate:
-            # Adopt reports created before cross-merge deduplication existed.
             for item in ctx.led.items(project):
                 body = row_get(item, "issue_body", "") or ""
-                if ("<!-- mahler:post-merge-failure" in body
-                        and f"- **Failed phase:** `{phase}`" in body
-                        and f"- **Failure code:** `{failure_code}`" in body
-                        and ctx.gh(project).issue_state(item["number"]) == "OPEN"):
+                matches = (tracks_workflow(item, workflow, branch) if workflow else
+                           "<!-- mahler:post-merge-failure" in body
+                           and f"- **Failed phase:** `{phase}`" in body
+                           and f"- **Failure code:** `{failure_code}`" in body)
+                if matches and ctx.gh(project).issue_state(item["number"]) == "OPEN":
                     candidate = str(item["number"])
                     break
         # Lookup failures propagate: uncertainty must never create a duplicate.
@@ -256,6 +283,8 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
             f"- **Failed phase:** `{phase}`",
             f"- **Failure code:** `{failure_code}`",
         ]
+        if workflow:
+            lines.append(f"- **Workflow:** {workflow['name']} on {branch}")
         if diagnostic:
             lines.append(f"- **Diagnostic:** {diagnostic}")
         if tail:
@@ -287,6 +316,8 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     _post_merge_streak(ctx, project, number, merge_sha, phase, failure_code, bug, pr, diagnostic)
 
     ping_key = f"post-merge-ping:{project}:{number}:{merge_sha}"
+    if workflow:
+        ping_key += suffix
     if not repeated and not ctx.led.get_kv(ping_key):
         from . import notify
         click = ctx.url(project, bug) if hasattr(ctx, "url") else None

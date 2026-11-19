@@ -146,6 +146,8 @@ def _watch_workflows(ctx, name, policy):
     watches = ctx.led.q("SELECT key,value FROM kv WHERE substr(key,1,?)=?",
                        (len(prefix), prefix))
     branch = None
+    observed = {}
+    complete = True
     for watch in watches:
         try:
             row = json.loads(watch["value"])
@@ -164,17 +166,56 @@ def _watch_workflows(ctx, name, policy):
                 order = (int(run["id"]), int(run.get("run_attempt") or 1))
                 if identity not in latest or order > latest[identity][0]:
                     latest[identity] = (order, run)
-            failed = [run for _, run in latest.values()
-                      if run.get("status") == "completed"
-                      and run.get("conclusion") in {"failure", "timed_out", "startup_failure"}]
-            if failed:
-                output = "\n".join(
-                    f"{r.get('name')}: {r['conclusion']} — {r.get('html_url', '')}"
-                    for r in failed)
+            for identity, (order, run) in latest.items():
+                if identity not in observed or order > observed[identity][0]:
+                    observed[identity] = (order, run, row)
+        except Exception:
+            complete = False
+            ctx.say(f"{name}: post-merge workflow observation unavailable")
+    for _, run, row in observed.values():
+        try:
+            if run.get("status") != "completed":
+                continue
+            if run.get("conclusion") in {"failure", "timed_out", "startup_failure"}:
+                output = f"{run.get('name')}: {run['conclusion']} — {run.get('html_url', '')}"
                 failures.report_post_merge(ctx, name, row["number"], row["sha"],
-                                           "workflow", "actions_failed", output=output, policy=policy)
+                                           "workflow", "actions_failed", output=output,
+                                           policy=policy, workflow=run, branch=branch)
+            elif complete and run.get("conclusion") == "success":
+                _recover_workflow(ctx, name, branch, run)
         except Exception:
             ctx.say(f"{name}: post-merge workflow observation unavailable")
+
+
+def _recover_workflow(ctx, name, branch, run):
+    from . import failures
+    key = failures.workflow_key(name, run)
+    linked = ctx.led.get_kv(key)
+    for item in ctx.led.items(name, states=["needs_you"]):
+        number = item["number"]
+        if (str(number) != linked
+                and not failures.tracks_workflow(item, run, branch)):
+            continue
+        gh = ctx.gh(name)
+        if gh.issue_state(number) != "OPEN":
+            continue
+        marker = (f"<!-- mahler:workflow-recovered run={run['id']} "
+                  f"attempt={run.get('run_attempt', 1)} -->")
+        if not any(marker in c.get("body", "") for c in gh.issue_comments(number)):
+            gh.comment_create(number,
+                f"<!-- mahler:agent -->\n{marker}\n"
+                f"Workflow **{run['name']}** on `{branch}` completed with success.\n\n"
+                f"Run: {run['id']} — {run.get('html_url', '')}\n"
+                f"SHA: `{run['head_sha']}`\n\n"
+                "Returning to inbox for sort to re-check the resolved workflow blocker.")
+        with ctx.led._tx():
+            ctx.led.set_state(name, number, "inbox",
+                              why=f"workflow {run['name']} on {branch} is green",
+                              sorted_at=None, question=None)
+            ctx.led.event("workflow_recovered", name, number,
+                          {"workflow": run['name'], "run": run['id'],
+                           "sha": run['head_sha'], "url": run.get('html_url', '')})
+    ctx.led.set_kv(key, "")
 
 
 def _launch(ctx, row, policy, directory, command):
