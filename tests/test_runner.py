@@ -2,8 +2,11 @@
 
 import os
 import shlex
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -1165,6 +1168,43 @@ class SpawnStdinTests(unittest.TestCase):
         self.assertEqual(pid, 123)
         shell = popen.call_args.args[0][2]
         self.assertNotIn("<", shell)
+
+
+class DetachedProcessReapingTests(unittest.TestCase):
+    def test_fast_exit_reaps_detached_native_helper(self):
+        """A native helper must not escape between its fork and the next poll."""
+        with tempfile.TemporaryDirectory() as temp:
+            run_id = "91597001"
+            run_dir = os.path.join(temp, run_id)
+            os.makedirs(run_dir)
+            helper_path = os.path.join(run_dir, "helper.pid")
+            log_path = os.path.join(run_dir, "agent.log")
+            status_path = os.path.join(run_dir, "exit")
+            code = (
+                "import os, subprocess; "
+                f"p=subprocess.Popen(['/usr/bin/tail','-f','/dev/null'], "
+                "start_new_session=True, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL); "
+                f"open({helper_path!r}, 'w').write(str(p.pid))"
+            )
+            env = dict(os.environ, MAHLER_RUN_ID=run_id, MAHLER_RUNS_DIR=temp)
+            helper_pid = None
+            try:
+                runner.spawn([sys.executable, "-c", code], temp, log_path,
+                             status_path, env=env)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not os.path.exists(status_path):
+                    time.sleep(0.01)
+                self.assertTrue(os.path.exists(status_path), "run wrapper did not finish")
+                helper_pid = int(Path(helper_path).read_text())
+                self.assertFalse(runner.alive(helper_pid),
+                                 "detached native helper survived the run")
+            finally:
+                if helper_pid and runner.alive(helper_pid):
+                    try:
+                        os.kill(helper_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
 
 if __name__ == "__main__":
