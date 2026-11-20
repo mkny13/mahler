@@ -1584,7 +1584,10 @@ def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
         return False
     ctx.say(f"{project}#{n}: no STATUS line but {ahead} commit(s) ahead — starting verify")
     timeout = pol.get("verify_timeout", 300)
-    record = {"deadline": led.now().timestamp() + timeout}
+    record = {"deadline": led.now().timestamp() + timeout,
+              "status": dict(run).get("status"),
+              "yield_at": dict(run).get("yield_at"),
+              "stop_reason": run["stop_reason"]}
     # Reserve before launching. An interrupted launch is failed, never retried.
     led.set_kv(key, json.dumps(record))
     try:

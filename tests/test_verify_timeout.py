@@ -61,6 +61,7 @@ class VerifyTimeoutConfigTests(unittest.TestCase):
         ctx.led.now.return_value.timestamp.return_value = 1000
         run = {
             "id": 1,
+            "stop_reason": None,
             "project": "proj",
             "number": 42,
             "worktree": "/tmp/nonexistent-wt",

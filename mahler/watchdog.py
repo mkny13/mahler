@@ -39,10 +39,12 @@ def _watch_one(ctx, run, now):
             return
         ours = led.heartbeat(run["project"], run["number"], f"run:{run['id']}",
                              run["epoch"], pol["auto_lease_minutes"])
-        if not ours or run["yield_at"] or run["status"] == "stopping":
+        record = json.loads(led.get_kv(f"fallback_verify:{run['id']}"))
+        if (not ours or run["yield_at"] != record.get("yield_at")
+                or run["stop_reason"] != record.get("stop_reason")
+                or run["status"] == "stopping" and record.get("status") != "stopping"):
             cancel_fallback_verify(ctx, run)
         else:
-            record = json.loads(led.get_kv(f"fallback_verify:{run['id']}"))
             result = runner.poll_verify_in_worktree(record)
             if result is None and now.timestamp() < record["deadline"]:
                 return
