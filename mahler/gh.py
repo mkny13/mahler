@@ -115,6 +115,24 @@ def _gh(*args, input=None, timeout=90, env=None):
     return r.stdout
 
 
+_LABEL_MISSING_RE = re.compile(
+    r"label.*not found|not found.*label|could not add label|'[^']+'\s*not found|\"[^\"]+\"\s*not found",
+    re.I,
+)
+
+
+def _is_missing_label_error(exc, label=None):
+    msg = str(exc)
+    if _LABEL_MISSING_RE.search(msg):
+        return True
+    if label and (
+        f"{label} not found" in msg.lower()
+        or f"{label}: not found" in msg.lower()
+    ):
+        return True
+    return False
+
+
 def _git(path, *args, env=None):
     """Git in a project checkout, for the pushes the conductor owns (D18).
     Goes through the same credential setup as the run's own pushes."""
@@ -492,12 +510,17 @@ class GH:
         for l in drop:
             args += ["--remove-label", l]
         if want and want not in current_labels:
-            if state == "shipped":  # Existing projects predate this lifecycle label.
-                self._gh("label", "create", want, "-R", self.repo,
-                         "--color", LABEL_COLORS[want], "--force")
             args += ["--add-label", want]
         if len(args) > 5:
-            self._gh(*args)
+            try:
+                self._gh(*args)
+            except GHRateLimit:
+                raise
+            except GHError as exc:
+                if not (want and want not in current_labels and _is_missing_label_error(exc, want)):
+                    raise
+                self.ensure_label(want)
+                self._gh(*args)
 
     def set_pin_labels(self, number, want, current_labels):
         """`platform:*` labels are the pin's store of record (mahler#20): sync()
@@ -537,17 +560,20 @@ class GH:
         else:
             raise ValueError(f"Unsupported dependency bot: {bot}")
 
+    def ensure_label(self, name, color=None):
+        if color is None:
+            color = LABEL_COLORS.get(name, "ededed")
+        self._gh("label", "create", name, "-R", self.repo, "--color", color, "--force")
+
     def ensure_labels(self):
         for name, color in LABEL_COLORS.items():
-            self._gh("label", "create", name, "-R", self.repo, "--color", color, "--force")
+            self.ensure_label(name, color)
 
     def ensure_pass_label(self, pass_name):
-        label = f"pass:{pass_name}"
-        self._gh("label", "create", label, "-R", self.repo, "--color", PIN_COLOR, "--force")
+        self.ensure_label(f"pass:{pass_name}", PIN_COLOR)
 
     def ensure_area_label(self, area_name):
-        label = f"area:{area_name}"
-        self._gh("label", "create", label, "-R", self.repo, "--color", AREA_COLOR, "--force")
+        self.ensure_label(f"area:{area_name}", AREA_COLOR)
 
     def issue_by_marker(self, marker):
         """Exact body match in bounded search, with a recent index-lag fallback."""

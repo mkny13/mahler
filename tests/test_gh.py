@@ -455,9 +455,26 @@ class TestGH(unittest.TestCase):
         query = self.gh._gh.call_args_list[0].args[-1]
         self.assertIn(f"sha={sha}&environment=Preview&per_page=20", query)
 
+    def test_ensure_label_canonical_and_default_colors(self):
+        self.gh.ensure_label("mahler:waiting")
+        self.gh._gh.assert_called_once_with("label", "create", "mahler:waiting", "-R",
+                                           "mkny13/mahler", "--color", "fbca04", "--force")
+        self.gh._gh.reset_mock()
+        self.gh.ensure_label("custom:label")
+        self.gh._gh.assert_called_once_with("label", "create", "custom:label", "-R",
+                                           "mkny13/mahler", "--color", "ededed", "--force")
+        self.gh._gh.reset_mock()
+        self.gh.ensure_label("custom:label", color="123456")
+        self.gh._gh.assert_called_once_with("label", "create", "custom:label", "-R",
+                                           "mkny13/mahler", "--color", "123456", "--force")
+
     def test_shipped_label_replaces_closed_issue_state_and_exists_on_old_repos(self):
-        self.gh._gh.return_value = json.dumps({"labels": [
-            {"name": "mahler:verifying"}, {"name": "type:feature"}]})
+        self.gh._gh.side_effect = [
+            json.dumps({"labels": [{"name": "mahler:verifying"}, {"name": "type:feature"}]}),
+            GHError("failed to update https://github.com/mkny13/mahler/issues/123: 'mahler:shipped' not found"),
+            "",
+            "",
+        ]
         labels = self.gh.issue_labels(123)
         self.gh.set_state_label(123, "shipped", labels)
         self.assertEqual(labels, ["mahler:verifying", "type:feature"])
@@ -466,6 +483,82 @@ class TestGH(unittest.TestCase):
         self.gh._gh.assert_called_with("issue", "edit", "123", "-R", "mkny13/mahler",
                                       "--remove-label", "mahler:verifying",
                                       "--add-label", "mahler:shipped")
+
+    def test_set_state_label_existing_label_skips_creation(self):
+        # When label already exists, issue edit succeeds directly without label create.
+        self.gh.set_state_label(123, "waiting", ["mahler:working"])
+        self.gh._gh.assert_called_once_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                            "--remove-label", "mahler:working",
+                                            "--add-label", "mahler:waiting")
+        self.gh._gh.reset_mock()
+        self.gh.set_state_label(123, "shipped", ["mahler:verifying"])
+        self.gh._gh.assert_called_once_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                            "--remove-label", "mahler:verifying",
+                                            "--add-label", "mahler:shipped")
+
+    def test_set_state_label_missing_label_creates_and_retries(self):
+        # Couch-tour missing mahler:waiting scenario (phish-in#842)
+        err_msg = "gh issue edit 842: failed to update https://github.com/mkny13/couch-tour/issues/842: 'mahler:waiting' not found"
+        self.gh._gh.side_effect = [GHError(err_msg), "", ""]
+        self.gh.set_state_label(842, "waiting", ["mahler:working"])
+        self.assertEqual(self.gh._gh.call_args_list, [
+            (("issue", "edit", "842", "-R", "mkny13/mahler",
+              "--remove-label", "mahler:working",
+              "--add-label", "mahler:waiting"),),
+            (("label", "create", "mahler:waiting", "-R", "mkny13/mahler",
+              "--color", "fbca04", "--force"),),
+            (("issue", "edit", "842", "-R", "mkny13/mahler",
+              "--remove-label", "mahler:working",
+              "--add-label", "mahler:waiting"),),
+        ])
+
+    def test_set_state_label_non_missing_label_error_raises_without_retry(self):
+        self.gh._gh.side_effect = GHError("network connection refused")
+        with self.assertRaises(GHError):
+            self.gh.set_state_label(123, "waiting", ["mahler:working"])
+        self.gh._gh.assert_called_once_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                            "--remove-label", "mahler:working",
+                                            "--add-label", "mahler:waiting")
+
+        self.gh._gh.reset_mock()
+        self.gh._gh.side_effect = GHRateLimit()
+        with self.assertRaises(GHRateLimit):
+            self.gh.set_state_label(123, "waiting", ["mahler:working"])
+        self.gh._gh.assert_called_once_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                            "--remove-label", "mahler:working",
+                                            "--add-label", "mahler:waiting")
+
+    def test_set_state_label_retry_failure_propagates(self):
+        err_msg = "'mahler:waiting' not found"
+        self.gh._gh.side_effect = [GHError(err_msg), "", GHError("secondary failure on retry")]
+        with self.assertRaisesRegex(GHError, "secondary failure on retry"):
+            self.gh.set_state_label(842, "waiting", ["mahler:working"])
+        self.assertEqual(self.gh._gh.call_count, 3)
+
+    def test_set_state_label_missing_parent_label_creates_canonical_color(self):
+        self.gh._gh.side_effect = [GHError("could not add label: mahler:parent"), "", ""]
+        self.gh.set_state_label(456, "parent", [])
+        self.assertEqual(self.gh._gh.call_args_list, [
+            (("issue", "edit", "456", "-R", "mkny13/mahler", "--add-label", "mahler:parent"),),
+            (("label", "create", "mahler:parent", "-R", "mkny13/mahler", "--color", "5319e7", "--force"),),
+            (("issue", "edit", "456", "-R", "mkny13/mahler", "--add-label", "mahler:parent"),),
+        ])
+
+    def test_set_state_label_drop_only_error_does_not_create_or_retry(self):
+        # Removing a label without adding a new one
+        self.gh._gh.side_effect = GHError("error removing label")
+        with self.assertRaises(GHError):
+            self.gh.set_state_label(123, "working", ["mahler:working", "mahler:waiting"])
+        self.gh._gh.assert_called_once_with("issue", "edit", "123", "-R", "mkny13/mahler",
+                                            "--remove-label", "mahler:waiting")
+
+    def test_ensure_labels_creates_all_canonical_labels(self):
+        from mahler.gh import LABEL_COLORS
+        self.gh.ensure_labels()
+        self.assertEqual(self.gh._gh.call_count, len(LABEL_COLORS))
+        for name, color in LABEL_COLORS.items():
+            self.gh._gh.assert_any_call("label", "create", name, "-R", "mkny13/mahler",
+                                       "--color", color, "--force")
 
     def test_refresh_mergeability_scoped_get_and_errors(self):
         from mahler.gh import GHError
