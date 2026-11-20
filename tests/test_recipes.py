@@ -283,7 +283,7 @@ class RecipePushProhibitionTests(unittest.TestCase):
     all pushes are owned by the conductor (D18). Agents commit locally."""
 
     def test_build_and_fix_never_instruct_push(self):
-        for role in ("build", "fix"):
+        for role in ("build", "fix", "review"):
             with self.subTest(role=role):
                 rendered = prompt.render(
                     role, number=1144, repo="mkny13/mahler",
@@ -301,7 +301,7 @@ class RecipePushProhibitionTests(unittest.TestCase):
                     self.assertNotIn(bad_phrase, rendered)
 
     def test_build_and_fix_instruct_local_commits(self):
-        for role in ("build", "fix"):
+        for role in ("build", "fix", "review"):
             with self.subTest(role=role):
                 rendered = prompt.render(
                     role, number=1144, repo="mkny13/mahler",
@@ -788,7 +788,7 @@ class TestSensitivityRecipeTests(unittest.TestCase):
         self.assertNotIn("You cannot run the tests from here", normal_normalized)
 
     def test_build_and_fix_prompt_failing_first_and_sensitive_abuse_tests(self):
-        for role in ("build", "fix"):
+        for role in ("build", "fix", "review"):
             text = " ".join(prompt.render(
                 role, number=1, repo="example/project", title="t",
                 worktree="/tmp/w", branch="b", base="main", verify="verify",
@@ -1143,7 +1143,7 @@ class LessonReportRecipeTests(unittest.TestCase):
     def test_build_and_fix_describe_optional_lessons_line(self):
         common = dict(number=1, repo="e/p", title="t", worktree="/tmp/w", rules="r",
                       sizing="", scope_rules="", verify="v", base="main", whats_new="")
-        for role in ("build", "fix"):
+        for role in ("build", "fix", "review"):
             text = prompt.render(role, **common)
             self.assertIn("`LESSONS: lesson-<name>, lesson-<name>`", text)
 
@@ -1162,7 +1162,7 @@ class GitHubClaimRecipeTests(unittest.TestCase):
 
 class DependencyRecipeTests(unittest.TestCase):
     def test_build_and_fix_require_dependency_rationale(self):
-        for role in ("build", "fix"):
+        for role in ("build", "fix", "review"):
             text = " ".join(prompt.render(role).split())
             for requirement in (
                 "Do not add dependencies outside the issue's requirements without first explaining",
@@ -1233,10 +1233,22 @@ class NeedsYouCategoryTests(unittest.TestCase):
         prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
         with patch.object(prompt, "ci_handoff", return_value=""), \
              patch.object(prompt, "pr_ci_toolchain_handoff", return_value=""):
-            for role in ("build", "fix"):
+            for role in ("build", "fix", "review"):
                 self.assertNotIn("The previous run asked", prompt.build(ctx, "a", item, role, "claude", prep))
             led.set_kv("decide-yourself:a#2", json.dumps({"question": "May I file a follow-up?", "cycle": ""}))
-            for role in ("build", "fix"):
+            for role in ("build", "fix", "review"):
                 out = prompt.build(ctx, "a", item, role, "claude", prep)
                 self.assertIn("The previous run asked: May I file a follow-up?", out)
                 self.assertIn("Decide it yourself", out)
+                if role == "review":
+                    self.assertIn("REVIEW-PASS or REVIEW-FAIL", out)
+
+    def test_review_recipe_permission_fallback_and_owner_categories(self):
+        from pathlib import Path
+        text = " ".join((Path(__file__).resolve().parents[1] / "recipes/review.md").read_text().split())
+        for category in ("product", "money", "credentials", "data-policy", "irreversible"):
+            self.assertIn(f"`{category}`", text)
+        for fragment in ("STATUS: NEEDS-YOU [<category>]", "workflow_dispatch", "actions:write",
+                         "documented fallback", "linked follow-up issue", "non-blocking",
+                         "sent back to you to decide"):
+            self.assertIn(fragment, text)
