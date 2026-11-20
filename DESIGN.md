@@ -3176,17 +3176,23 @@ and gave up onto the owner. Those now use a separate `waiting` state (label
   with "Retry now or park?" and one ping. `/mahler go` and `/mahler park` work on a
   waiting item and clear the record.
 - The console groups `waiting` with in-progress work and does not count it as needs-you.
-- **Owner-only categories (mahler#1263).** A sort/build/fix `STATUS: NEEDS-YOU` must start
+- **Owner-only categories (mahler#1263).** A sort/build/fix/review `STATUS: NEEDS-YOU` must start
   with `[<category>]`, one of `product`, `money`, `credentials`, `data-policy`,
   `irreversible` (`finalize.OWNER_CATEGORIES`, parsed by `parse_needs_you_category`; the tag
   is stripped before the question is stored). Anything else (scope, process, access the
   conductor holds, "please verify") is not an owner decision. The first such question per
-  attempt cycle puts the item back to `ready`/`inbox` with no attempt charge and no ping, and
-  the next build/fix prompt carries "The previous run asked: …, decide it yourself"
+  attempt cycle puts the item back to `ready`/`inbox` (or `verifying` for review) with no attempt charge and no ping, and
+  the next build/fix/review prompt carries "The previous run asked: …, decide it yourself"
   (`decide-yourself:<project>#<n>` kv, cleared when a run ends DONE). A second one in the same
   cycle parks as `needs_you` and pings, so a mis-tagged real owner question still arrives.
   A no-change claim's `owner_question` follows the same rule; a disallowed one becomes a
   "Needs a human to check" line in the evidence comment instead of a park.
+- **Permission-gated review evidence (mahler#1611).** Reviewers cannot block on live
+  checks requiring capabilities agents lack (such as `workflow_dispatch` / `actions:write`,
+  repo settings or admin actions) when a documented fallback is met or a linked follow-up
+  covers live verification. Record the missing coverage honestly as a non-blocking note or
+  follow-up; deciding whether that fallback satisfies the admitted criteria is technical,
+  not an owner question. Review retry prompts require REVIEW-PASS or REVIEW-FAIL.
 - **Agent WAITING status and retry exclusion (mahler#1548).** A run ending with
   `STATUS: waiting` does not charge an attempt or move the item to failed; it is
   held in `waiting` with cause `other` and the agent's reason, resuming into `inbox`

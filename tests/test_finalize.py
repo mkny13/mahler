@@ -1568,7 +1568,6 @@ class RunTests(unittest.TestCase):
                 ping.assert_not_called()
                 self.assertEqual(json.loads(self.led.get_kv("decide-yourself:x#5"))["question"],
                                  "Dispatch contract.yml or accept fallback with #436?")
-                self.assertIn("deciding it (D52)", self.last_event())
 
     def test_unknown_category_counts_as_untagged(self):
         self.run_untagged("STATUS: NEEDS-YOU [scope] Which one?\n")

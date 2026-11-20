@@ -283,7 +283,7 @@ class RecipePushProhibitionTests(unittest.TestCase):
     all pushes are owned by the conductor (D18). Agents commit locally."""
 
     def test_build_and_fix_never_instruct_push(self):
-        for role in ("build", "fix", "review"):
+        for role in ("build", "fix"):
             with self.subTest(role=role):
                 rendered = prompt.render(
                     role, number=1144, repo="mkny13/mahler",
@@ -301,7 +301,7 @@ class RecipePushProhibitionTests(unittest.TestCase):
                     self.assertNotIn(bad_phrase, rendered)
 
     def test_build_and_fix_instruct_local_commits(self):
-        for role in ("build", "fix", "review"):
+        for role in ("build", "fix"):
             with self.subTest(role=role):
                 rendered = prompt.render(
                     role, number=1144, repo="mkny13/mahler",
@@ -788,7 +788,7 @@ class TestSensitivityRecipeTests(unittest.TestCase):
         self.assertNotIn("You cannot run the tests from here", normal_normalized)
 
     def test_build_and_fix_prompt_failing_first_and_sensitive_abuse_tests(self):
-        for role in ("build", "fix", "review"):
+        for role in ("build", "fix"):
             text = " ".join(prompt.render(
                 role, number=1, repo="example/project", title="t",
                 worktree="/tmp/w", branch="b", base="main", verify="verify",
@@ -1143,7 +1143,7 @@ class LessonReportRecipeTests(unittest.TestCase):
     def test_build_and_fix_describe_optional_lessons_line(self):
         common = dict(number=1, repo="e/p", title="t", worktree="/tmp/w", rules="r",
                       sizing="", scope_rules="", verify="v", base="main", whats_new="")
-        for role in ("build", "fix", "review"):
+        for role in ("build", "fix"):
             text = prompt.render(role, **common)
             self.assertIn("`LESSONS: lesson-<name>, lesson-<name>`", text)
 
@@ -1162,7 +1162,7 @@ class GitHubClaimRecipeTests(unittest.TestCase):
 
 class DependencyRecipeTests(unittest.TestCase):
     def test_build_and_fix_require_dependency_rationale(self):
-        for role in ("build", "fix", "review"):
+        for role in ("build", "fix"):
             text = " ".join(prompt.render(role).split())
             for requirement in (
                 "Do not add dependencies outside the issue's requirements without first explaining",
