@@ -1,5 +1,8 @@
 # Audit: #1054 completion criteria (repo lesson candidates)
 
+Latest verification: see **Re-verification at `dbde249` (#1066)** below. Earlier
+SHA-specific findings and gate results are retained as historical evidence.
+
 - Audited source SHA: `de45d181a4135bf2e772bacc709041bba1d74ca5` (main, 2026-10-14; contains all four child merges plus review follow-ups #1067-#1069), Python 3.14.
 - Method: read D44 in `DESIGN.md`, merged `mahler/lessons.py`, `runner.py`, `prompt.py`, `finalize.py`, `ledger.py`, `platforms.py`, `tick.py` and the tests below; ran every cited selector individually, then the four gates. Only in-memory ledgers/temp dirs; no `~/.mahler` touched. A test counts only if it asserts the behaviour.
 - Verdicts: SUPPORTED, COVERAGE GAP, DEFECT.
@@ -79,3 +82,37 @@ result were captured from the same run; reproduce with
 ## Combined criterion-4 verdict
 
 All four parts SUPPORTED at `401bcdc`. Criterion 4 may be ticked. (Superseded earlier verdict: snapshot DEFECT at `a874503`, fixed by #1076/PR #1078.)
+
+
+## Re-verification at `dbde249` (#1066)
+
+Audited source: `dbde249fd68560bf2377826a581ded962c62c27c`, 2026-11-20.
+This is a documentation-only verification of the sole remaining admitted criterion,
+criterion 4. No behavior change or new failing-first test is needed. The existing
+negative integration tests exercise the previously missing behavior.
+
+Used the existing audit and admitted owner reports as prior evidence; did not read
+live daemon state or fetch issue comments. Historical merge times and CI results
+above are retained evidence, not newly queried GitHub results. Locally,
+`git merge-base --is-ancestor <merge-sha> HEAD` exits 0 for all four child merges,
+#1074 and #1078. No GitHub writes were attempted: the conductor owns checklist
+updates, comments and any follow-up filing.
+
+D44 still names exactly nine kinds: `codex`, `copilot`, `agy`, `kilo`, `cline`,
+`vibe`, `claude`, `agent-sdk`, `kiro`. Its heading now starts at DESIGN.md line
+2829; the compatibility subsection and matrix are at lines 2851–2867.
+
+| Criterion-4 part | Current verdict | Assertions and source |
+|---|---|---|
+| 14-day stale / 30-day archive | SUPPORTED | `lessons.classify` and `last_used`; `tests.test_lessons.CurationTests.test_boundaries_13_14_29_30` asserts active at 13, stale at 14 and 29, archive-eligible at 30. Archiving remains a proposed PR operation, not an automatic filesystem mutation. |
+| Never deletes | SUPPORTED | `tests.test_lessons.NeverDeletesLessonsTests.test_lessons_module_deletes_only_in_worktree_suppression` and `tests.test_lessons.NeverDeletesLessonsTests.test_other_modules_with_deletions_never_name_lesson_paths` enforce the source-level no-deletion boundary. `tests.test_consolidation_gate.GateTest.test_intact_archive_passes` performs an actual committed directory move and accepts preserved content; `tests.test_consolidation_gate.GateTest.test_delete_without_snapshot_fails` rejects removal without preservation. Scope: transient launch suppression is allowed; consolidation may remove the active copy while retaining verbatim snapshot content. The older archive-instruction test alone is not behavioral evidence. |
+| Snapshot before consolidation | SUPPORTED | `.github/workflows/ci.yml` invokes `consolidation_gate.main` → `run` → `lessons.check_consolidation` against committed base/head trees. `tests.test_consolidation_gate.GateTest.test_rewrite_without_snapshot_fails` asserts exit 1; `tests.test_consolidation_gate.GateTest.test_rewrite_with_snapshot_passes` asserts exit 0 with the old bytes preserved. `tests.test_consolidation_gate.WorkflowContractTest.test_gate_is_in_test_job_with_explicit_event_refs` asserts executable wiring for PR, merge-group and main push. The other 14 gate tests also pass individually, including missing/non-verbatim, split-timestamp, historical, untracked, dirty and symlink evidence rejection and invalid-ref failure. |
+| Deduplicated evidence-backed D20 proposals | SUPPORTED | `lessons.gate_proposals`, `durable_key`, `_new_events`; `tests.test_lessons.PromotionTests.test_threshold_files_one_proposal_and_rerun_reuses` asserts a single project-scoped key and reuse; `tests.test_lessons.PromotionTests.test_below_threshold_and_single_issue_and_old_and_gated` rejects insufficient or ineligible evidence; `tests.test_lessons.PromotionTests.test_closed_proposal_needs_three_new_events` rejects two new events and accepts three. |
+
+All 57 distinct fully qualified selectors cited by this report (expanding its
+historical abbreviated snapshot and gate selectors) were executed separately as
+`python3 -m unittest <selector>`: each exited 0 and reported OK. This includes all
+17 consolidation integration/workflow tests and the previously mapped tests for
+criteria 1–3. Tests use temporary repositories and isolated ledgers.
+
+Current repository gates: results recorded below after completion.
