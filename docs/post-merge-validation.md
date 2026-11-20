@@ -70,8 +70,8 @@ Tests: `tests/test_console_uat.py` (`PostMergeStatusTests`).
 ## Parent #740 evidence (#1605)
 
 The #748 merge `c70a0d88fe4dbbc5e93f573d995244357009bc40` is recorded as
-successful CI and after the #741 audit commit
-`b6ae20e1fccaf91973c1b049552f4d74371deb51` (the merge-base check passed).
+successful CI and after #741 audit commit `b6ae20e1fccaf91973c1b049552f4d74371deb51`
+(the merge-base check passed).
 The phone and desktop Deploying, Live and Deploy failed states are covered by
 `tests/test_console_uat.py::PostMergeStatusTests`.
 
