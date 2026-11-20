@@ -4,7 +4,7 @@ from contextlib import closing
 from pathlib import Path
 import unittest
 from unittest.mock import patch, MagicMock
-from mahler.gh import GH, GHError, GHRateLimit, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
+from mahler.gh import GH, GHError, GHRateLimit, is_missing_issue_error, project_client, pr_body, HELP_FOOTER, AGENT_NOTE
 
 class TestGH(unittest.TestCase):
     def setUp(self):
@@ -39,6 +39,49 @@ class TestGH(unittest.TestCase):
         client = GH("mkny13/mahler", app=app)
         self.assertEqual(client.app_login(), "app/project-conductor")
         app.app_login.assert_called_once_with()
+
+    def test_is_missing_issue_error(self):
+        self.assertTrue(is_missing_issue_error(GHError(
+            "GraphQL: Could not resolve to an issue or pull request with the number of 343. (repository.issue)"
+        )))
+        self.assertTrue(is_missing_issue_error(GHError("Could not resolve to an issue")))
+        self.assertTrue(is_missing_issue_error(GHError("gh issue view 1: Not Found (HTTP 404)")))
+        self.assertFalse(is_missing_issue_error(GHError("offline")))
+        self.assertFalse(is_missing_issue_error(GHError("'mahler:waiting' not found")))
+        self.assertFalse(is_missing_issue_error(GHRateLimit(12345)))
+
+    def test_issue_relocation_transferred(self):
+        self.gh._gh.return_value = json.dumps({
+            "number": 295,
+            "url": "https://api.github.com/repos/mkny13/couch-tour/issues/295",
+            "html_url": "https://github.com/mkny13/couch-tour/issues/295",
+            "repository_url": "https://api.github.com/repos/mkny13/couch-tour",
+        })
+        reloc = self.gh.issue_relocation(343)
+        self.assertEqual(reloc, {
+            "number": 295,
+            "url": "https://api.github.com/repos/mkny13/couch-tour/issues/295",
+            "html_url": "https://github.com/mkny13/couch-tour/issues/295",
+            "repository_url": "https://api.github.com/repos/mkny13/couch-tour",
+        })
+
+    def test_issue_relocation_same_repo_returns_none(self):
+        self.gh._gh.return_value = json.dumps({
+            "number": 10,
+            "url": "https://api.github.com/repos/mkny13/mahler/issues/10",
+            "html_url": "https://github.com/mkny13/mahler/issues/10",
+            "repository_url": "https://api.github.com/repos/mkny13/mahler",
+        })
+        self.assertIsNone(self.gh.issue_relocation(10))
+
+    def test_issue_relocation_not_found_returns_none(self):
+        self.gh._gh.side_effect = GHError("gh api: Not Found (HTTP 404)")
+        self.assertIsNone(self.gh.issue_relocation(999999))
+
+    def test_issue_relocation_transient_error_raises(self):
+        self.gh._gh.side_effect = GHError("gh api: Connection reset by peer")
+        with self.assertRaises(GHError):
+            self.gh.issue_relocation(10)
 
     def test_parent_inventory_paginates_and_excludes_prs(self):
         self.gh._gh.side_effect = [json.dumps([{"number": n} for n in range(100)]),

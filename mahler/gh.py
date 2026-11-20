@@ -133,6 +133,22 @@ def _is_missing_label_error(exc, label=None):
     return False
 
 
+_MISSING_ISSUE_RE = re.compile(
+    r"Could not resolve to an issue|"
+    r"GraphQL:\s*Could not resolve to an issue or pull request|"
+    r"\bissue\s+view\b.*(?:not found|404)|"
+    r"(?:issue|pull request)\s*#?\d*\s*(?:not found|does not exist)",
+    re.I,
+)
+
+
+def is_missing_issue_error(exc):
+    if _is_missing_label_error(exc):
+        return False
+    msg = str(exc or "")
+    return bool(_MISSING_ISSUE_RE.search(msg))
+
+
 def _git(path, *args, env=None):
     """Git in a project checkout, for the pushes the conductor owns (D18).
     Goes through the same credential setup as the run's own pushes."""
@@ -383,6 +399,38 @@ class GH:
     def issue_state(self, number):
         out = self._gh("issue", "view", str(number), "-R", self.repo, "--json", "state")
         return json.loads(out)["state"]          # OPEN | CLOSED
+
+    def issue_relocation(self, number):
+        """Check REST API for an issue's transferred destination or deletion.
+
+        If the issue was transferred to another repository, GitHub REST API
+        follows the redirect and returns the issue from the new repository.
+        If it was deleted or never existed, GitHub returns 404.
+        """
+        try:
+            out = self._gh("api", f"repos/{self.repo}/issues/{number}")
+            data = json.loads(out)
+            if not isinstance(data, dict):
+                return None
+            repo_url = data.get("repository_url", "")
+            expected_repo_url = f"https://api.github.com/repos/{self.repo}".lower()
+            html_url = data.get("html_url", "")
+            if (repo_url and repo_url.lower() != expected_repo_url) or (
+                html_url and f"/{self.repo}/issues/" not in html_url
+            ):
+                return {
+                    "url": data.get("url"),
+                    "html_url": html_url,
+                    "repository_url": repo_url,
+                    "number": data.get("number"),
+                }
+            return None
+        except GHError as exc:
+            if "HTTP 404" in str(exc) or "Not Found" in str(exc):
+                return None
+            raise
+        except (json.JSONDecodeError, ValueError):
+            return None
 
     def _parent_pages(self, endpoint):
         """Bounded, exhaustive REST reads; truncation is never an empty relation."""

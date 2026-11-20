@@ -12,7 +12,7 @@ import uuid
 from datetime import timedelta
 
 from . import ci_blockers, config, no_change, releases, waits
-from .gh import (GHError, AGENT_MARK, AGENT_NOTE, LABEL_STATES, STATE_LABELS, depends_of,
+from .gh import (GHError, is_missing_issue_error, AGENT_MARK, AGENT_NOTE, LABEL_STATES, STATE_LABELS, depends_of,
                  dependency_ref, dependency_target, files_of, has_sections,
                  label_names, parse_command, part_of, pin_of, priority_of, trusted_actor,
                  completion_evidence)
@@ -560,7 +560,27 @@ def mirror_done(ctx, project, number):
         ctx.led.set_kv(f"done-labels:{project}:{number}", item["state_changed_at"] or "legacy")
         ctx._labels.pop((project, number), None)
     except GHError as exc:
-        ctx.say(f"{project}#{number}: completion label update failed — {exc}")
+        if is_missing_issue_error(exc):
+            relocation = None
+            try:
+                if hasattr(gh, "issue_relocation"):
+                    relocation = gh.issue_relocation(number)
+            except Exception:
+                relocation = None
+            item = ctx.led.upsert_item(project, number, mirror=None)
+            ctx.led.set_kv(f"done-labels:{project}:{number}", item["state_changed_at"] or "legacy")
+            loc = (relocation.get("html_url") or relocation.get("url")) if relocation else None
+            detail = {"reason": "transferred", "location": loc, "relocation": loc} if loc else {"reason": "missing"}
+            if loc and isinstance(relocation, dict):
+                detail.update({k: v for k, v in relocation.items() if k not in detail})
+            ctx.led.event("item_retired", project, number, detail)
+            ctx._labels.pop((project, number), None)
+            if loc:
+                ctx.say(f"{project}#{number}: retired — issue transferred to {loc}")
+            else:
+                ctx.say(f"{project}#{number}: retired — issue no longer exists in repository")
+        else:
+            ctx.say(f"{project}#{number}: completion label update failed — {exc}")
 
 
 def _bootstrap_release_baseline(ctx, project, gh):
