@@ -713,7 +713,7 @@ class FallbackVerificationTests(unittest.TestCase):
     """Real verifier processes must not monopolize the watchdog pass (#1617)."""
 
     def setUp(self):
-        from test_verify_fallback import VerifyFallbackTests
+        from tests.test_verify_fallback import VerifyFallbackTests
         fixture = VerifyFallbackTests()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)

@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 import unittest
 from datetime import datetime, time as dtime, timedelta, timezone
@@ -410,7 +411,12 @@ class RunTests(unittest.TestCase):
             stream.write("agent stopped")
         with mock.patch.object(runner, "commits_ahead", return_value=1), \
                 mock.patch.object(runner, "exit_code", return_value=1):
+            self.addCleanup(finalize.cancel_fallback_verify, self.ctx, self.run)
             self.finalize()
+            deadline = time.monotonic() + 3
+            while self.led.get_kv(f"fallback_verify:{self.run['id']}") and time.monotonic() < deadline:
+                time.sleep(.02)
+                self.finalize()
         body = self.gh.comments[-1]
         self.assertIn("class=verify_failed", body)
         self.assertIn("verification assertion failed", body)
