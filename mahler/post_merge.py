@@ -509,6 +509,25 @@ def _reprobe(ctx, name):
     return bool(artifact)
 
 
+def _recover_live(ctx, row, policy):
+    """A late exact self-host proof permits one new live/smoke observation window."""
+    if row["phase"] != "live" or policy["post_merge"]["live_strategy"] != "mahler":
+        return False
+    key = f"post-merge-live-reopened:{row['project']}:{row['number']}:{row['merge_sha']}"
+    if ctx.led.get_kv(key):
+        return False
+    from . import config, launch_health
+    try:
+        artifact = launch_health.exact_live(
+            row["merge_sha"], timeout=5,
+            env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
+    except Exception:
+        return False
+    if artifact != "mahler:" + row["merge_sha"]:
+        return False
+    return ctx.led.reopen_post_merge_live(row["project"], row["number"], row["merge_sha"])
+
+
 def advance(ctx, projects):
     """One launch/poll per check, isolated per project and per check."""
     if ctx.dry_run:
@@ -541,7 +560,8 @@ def advance(ctx, projects):
                     if row["status"] == "PASS":
                         _deliver(ctx, row)
                     elif row["status"] == "FAIL":
-                        _remediate(ctx, row, policy)
+                        if not _recover_live(ctx, row, policy):
+                            _remediate(ctx, row, policy)
                     else:
                         _advance(ctx, row, policy)
                 except Exception:

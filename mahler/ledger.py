@@ -768,6 +768,32 @@ class Ledger:
              redact(tag), redact(artifact_ref)))
         return self.post_merge_check(project, number, merge_sha)
 
+    def reopen_post_merge_live(self, project, number, merge_sha):
+        """Reopen a failed live observation once, after the caller verifies live proof.
+
+        Preserve the original timeout budget and audit the terminal record. The
+        marker and row transition commit together, including across restarts.
+        """
+        key = f"post-merge-live-reopened:{project}:{number}:{merge_sha}"
+        with self._tx():
+            row = self.post_merge_check(project, number, merge_sha)
+            if (not row or row["status"] != "FAIL" or row["phase"] != "live"
+                    or self.get_kv(key)):
+                return False
+            now = self.now()
+            budget = parse(row["deadline_at"]) - parse(row["created_at"])
+            self.con.execute(
+                "UPDATE post_merge_checks SET status='pending',updated_at=?,"
+                "phase_started_at=?,deadline_at=?,finished_at=NULL,live_sha='',"
+                "artifact_ref='',summary='',evidence_ref='',failure_code='' "
+                "WHERE project=? AND number=? AND merge_sha=?",
+                (iso(now), iso(now), iso(now + budget), project, number, merge_sha))
+            self.set_kv(key, iso(now))
+            self.event("post_merge_live_reopened", project, number,
+                       {"merge_sha": merge_sha, "previous": dict(row),
+                        "deadline_at": iso(now + budget)})
+            return True
+
     def update_post_merge_check(self, project, number, merge_sha, *, expected_phase,
                                 phase, status="pending", live_sha=None,
                                 artifact_ref=None, summary="", evidence_ref="",
