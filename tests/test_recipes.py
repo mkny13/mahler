@@ -1233,10 +1233,22 @@ class NeedsYouCategoryTests(unittest.TestCase):
         prep = {"worktree": "/tmp", "branch": "b", "replayed": False, "kept": None}
         with patch.object(prompt, "ci_handoff", return_value=""), \
              patch.object(prompt, "pr_ci_toolchain_handoff", return_value=""):
-            for role in ("build", "fix"):
+            for role in ("build", "fix", "review"):
                 self.assertNotIn("The previous run asked", prompt.build(ctx, "a", item, role, "claude", prep))
             led.set_kv("decide-yourself:a#2", json.dumps({"question": "May I file a follow-up?", "cycle": ""}))
-            for role in ("build", "fix"):
+            for role in ("build", "fix", "review"):
                 out = prompt.build(ctx, "a", item, role, "claude", prep)
                 self.assertIn("The previous run asked: May I file a follow-up?", out)
                 self.assertIn("Decide it yourself", out)
+                if role == "review":
+                    self.assertIn("REVIEW-PASS or REVIEW-FAIL", out)
+
+    def test_review_recipe_permission_fallback_and_owner_categories(self):
+        from pathlib import Path
+        text = " ".join((Path(__file__).resolve().parents[1] / "recipes/review.md").read_text().split())
+        for category in ("product", "money", "credentials", "data-policy", "irreversible"):
+            self.assertIn(f"`{category}`", text)
+        for fragment in ("STATUS: NEEDS-YOU [<category>]", "workflow_dispatch", "actions:write",
+                         "documented fallback", "linked follow-up issue", "non-blocking",
+                         "sent back to you to decide"):
+            self.assertIn(fragment, text)

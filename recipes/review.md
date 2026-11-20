@@ -117,6 +117,12 @@ is refused. Missing such a test is a blocking finding.
    reference; a diff that satisfies it in a way you would not have chosen passes.
    PR-description content alone is never blocking. Required evidence such as audit output
    belongs in the repository or CI; a PR-description-only evidence request is a follow-up.
+   Evidence requiring capabilities agents lack — `workflow_dispatch` (`actions:write`),
+   repo settings/secrets changes, or admin actions — is non-blocking when a documented fallback
+   is met or a linked follow-up issue covers live verification. Cite the permission limitation,
+   fallback evidence or follow-up, and remaining coverage as a note or follow-up. Never demand
+   a workflow run ID that this identity cannot produce or ask the owner to dispatch it versus
+   accept the fallback; that is your technical decision.
    This does not demote demonstrated code, security, or actual acceptance failures.
 2a. **Lesson checklist.** For changed `.agents/skills/lesson-*/SKILL.md` files, check
     the `incident-log` advisory warning and ask for a rewrite when the body reads like an
@@ -226,7 +232,10 @@ is refused. Missing such a test is a blocking finding.
     Example: `STATUS: REVIEW-PASS {"findings":[{"severity":"follow-up","category":"testing","location":"app.py:42","scenario":"The retry path has no regression test","consequence":"A later change could silently remove retries"}]}`
     No findings: `STATUS: REVIEW-PASS {"findings":[]}`. Keep JSON on one line.
 11. Stop only for a decision genuinely only the owner can make, and end with
-    `STATUS: NEEDS-YOU <question>`.
+    `STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]`.
+    Categories are `product`, `money`, `credentials`, `data-policy`, `irreversible`
+    (DESIGN D13/D52). Untagged or non-owner questions are sent back to you to decide.
+    Missing permission-gated evidence covered by rule 2 is not an owner decision.
 12. Never force-push, delete repos or releases, run destructive SQL against real data, edit
     files in the workspace, or print secrets.
 13. **GUI-driving work goes through the desktop gate** (D40). Only if a check needs XCUITest
@@ -245,4 +254,4 @@ end. This keeps them visible on the PR even if you time out mid-review.
 End your final message with exactly one of these lines:
 STATUS: REVIEW-PASS {"findings": [...]}
 STATUS: REVIEW-FAIL {"findings": [...]}
-STATUS: NEEDS-YOU <the question, on one line>
+STATUS: NEEDS-YOU [<category>] <the question, on one line> [OPTIONS: <choice> | <choice>]

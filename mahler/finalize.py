@@ -124,10 +124,10 @@ def _decide_key(project, number):
 
 def _needs_you(e):
     """The agent asked a question only the owner can answer (DESIGN D13). A
-    sort/build/fix question must declare an owner-only category; without one it
+    sort/build/fix/review question must declare an owner-only category; without one it
     goes back to the agent once per attempt cycle, to decide itself (D52)."""
     category, rest = parse_needs_you_category(e.rest)
-    if e.run["role"] in ("sort", "build", "fix"):
+    if e.run["role"] in ("sort", "build", "fix", "review"):
         if category in OWNER_CATEGORIES:
             e.rest = rest
         else:
@@ -140,7 +140,9 @@ def _needs_you(e):
                 prior = {}
             if prior.get("cycle") != cycle:
                 e.led.set_kv(key, json.dumps({"question": question, "cycle": cycle}))
-                e.set_state("ready" if e.item["sorted_at"] else "inbox",
+                resume = "verifying" if e.run["role"] == "review" else (
+                    "ready" if e.item["sorted_at"] else "inbox")
+                e.set_state(resume,
                             "agent asked a non-owner question — deciding it (D52)")
                 return True
             e.rest = rest

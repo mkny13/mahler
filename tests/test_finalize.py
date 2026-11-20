@@ -1552,6 +1552,23 @@ class RunTests(unittest.TestCase):
         self.assertEqual(json.loads(self.led.get_kv("decide-yourself:x#5"))["question"],
                          "May I file a follow-up?")
 
+    def test_review_non_owner_question_returns_to_verifying(self):
+        self.run["role"] = "review"
+        self.led.update_run(self.run_id, role="review")
+        self.led.upsert_item("x", 5, state="verifying", pr=88)
+        for tag in ("", "[scope] "):
+            with self.subTest(tag=tag):
+                self.led.set_kv("attempt_cycle:x#5", tag)
+                ping = self.run_untagged(
+                    "STATUS: NEEDS-YOU " + tag +
+                    "Dispatch contract.yml or accept fallback with #436?\n")
+                item = self.led.item("x", 5)
+                self.assertEqual(item["state"], "verifying")
+                self.assertEqual(item["attempts"], 0)
+                ping.assert_not_called()
+                self.assertEqual(json.loads(self.led.get_kv("decide-yourself:x#5"))["question"],
+                                 "Dispatch contract.yml or accept fallback with #436?")
+
     def test_unknown_category_counts_as_untagged(self):
         self.run_untagged("STATUS: NEEDS-YOU [scope] Which one?\n")
         self.assertEqual(self.led.item("x", 5)["state"], "ready")
