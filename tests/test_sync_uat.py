@@ -65,6 +65,9 @@ class FakeGH:
     def issue_state(self, number):
         return self.state
 
+    def issue_relocation(self, number):
+        return None
+
     def pr_view(self, number):
         if self.fail_pr_view:
             raise gh_module.GHError("github down")
@@ -239,6 +242,77 @@ class ClosedOnGitHubUATTests(unittest.TestCase):
             self.sync()
             second = {c.args[0] for c in fetch.call_args_list}
             self.assertTrue(second - first)
+
+    def test_done_cleanup_transferred_or_missing_issue_retires_once(self):
+        self.led.upsert_item("x", 343, state="done", mirror="mahler:inbox")
+        self.led.upsert_item("x", 999, state="done", mirror="mahler:inbox")
+
+        def fake_issue_labels(number):
+            if number == 343:
+                raise gh_module.GHError(
+                    "GraphQL: Could not resolve to an issue or pull request with the number of 343. (repository.issue)"
+                )
+            if number == 999:
+                raise gh_module.GHError("offline")
+            return []
+
+        relocation_info = {
+            "html_url": "https://github.com/mkny13/couch-tour/issues/295",
+            "url": "https://api.github.com/repos/mkny13/couch-tour/issues/295",
+        }
+        self.gh.issue_relocation = mock.Mock(return_value=relocation_info)
+
+        with mock.patch.object(self.gh, "issue_labels", side_effect=fake_issue_labels) as fetch:
+            self.sync()
+
+            item_343 = self.led.item("x", 343)
+            self.assertIsNone(item_343["mirror"])
+            self.assertEqual(
+                self.led.get_kv("done-labels:x:343"),
+                item_343["state_changed_at"] or "legacy",
+            )
+            events = self.led.q("SELECT * FROM events WHERE project='x' AND number=343 AND kind='item_retired'")
+            self.assertEqual(len(events), 1)
+            event_detail = json.loads(events[0]["detail"])
+            self.assertEqual(event_detail.get("reason"), "transferred")
+            self.assertEqual(event_detail.get("location"), relocation_info["html_url"])
+
+            item_999 = self.led.item("x", 999)
+            self.assertEqual(item_999["mirror"], "mahler:inbox")
+            self.assertIsNone(self.led.get_kv("done-labels:x:999"))
+            self.assertEqual(
+                len(self.led.q("SELECT * FROM events WHERE project='x' AND number=999 AND kind='item_retired'")),
+                0,
+            )
+
+            fetch.reset_mock()
+            self.sync()
+
+            called_numbers = [c.args[0] for c in fetch.call_args_list]
+            self.assertNotIn(343, called_numbers)
+            self.assertIn(999, called_numbers)
+
+    def test_done_cleanup_missing_deleted_issue_retires_without_relocation(self):
+        self.led.upsert_item("x", 346, state="done", mirror="mahler:inbox")
+        with mock.patch.object(
+            self.gh,
+            "issue_labels",
+            side_effect=gh_module.GHError("Could not resolve to an issue"),
+        ) as fetch:
+            self.gh.issue_relocation = mock.Mock(return_value=None)
+            self.sync()
+
+            item_346 = self.led.item("x", 346)
+            self.assertIsNone(item_346["mirror"])
+            self.assertIsNotNone(self.led.get_kv("done-labels:x:346"))
+            events = self.led.q("SELECT * FROM events WHERE project='x' AND number=346 AND kind='item_retired'")
+            self.assertEqual(len(events), 1)
+            event_detail = json.loads(events[0]["detail"])
+            self.assertEqual(event_detail.get("reason"), "missing")
+
+            fetch.reset_mock()
+            self.sync()
+            self.assertEqual(fetch.call_count, 0)
 
     def test_closed_without_a_pr_never_looks_one_up(self):
         self.led.upsert_item("x", 5, pr=None)
