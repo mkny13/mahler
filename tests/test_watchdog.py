@@ -782,6 +782,8 @@ class FallbackVerificationTests(unittest.TestCase):
         self.assertEqual(self.led.item("x", 5)["state"], "verifying")
         self.assertEqual(self.led.get_kv("unconfirmed:x#5"), "1")
         self.assertIsNone(self.led.get_kv(f"verify_failed:{self.f.run_id}"))
+        self.assertEqual(
+            len([c for c in self.f.gh.comments if "mahler:agent handoff" in c]), 1)
 
     def test_original_timeout_stop_still_allows_successful_fallback(self):
         self.f.cfg["projects"]["x"].update(verify="sleep .05; exit 0", verify_timeout=2)

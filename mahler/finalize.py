@@ -1331,7 +1331,13 @@ def finalize(ctx, run):
 
     # Snapshot pushes and handoff comments can take long enough for an
     # interactive claim to replace us. Do them before taking the write lock.
-    if run["role"] not in ("sort", "review", "design"):
+    # A fallback verification re-entry already saved this work before the
+    # verifier started. Keep that snapshot and handoff idempotent across ticks.
+    fallback_record = json.loads(led.get_kv(f"fallback_verify:{run['id']}") or "null")
+    fallback_started = fallback_record is not None
+    if fallback_started:
+        ending.saved = fallback_record.get("saved")
+    if run["role"] not in ("sort", "review", "design") and not fallback_started:
         _save_work(ending)
 
     # Prepare slow work without holding SQLite's single writer lock. The
@@ -1589,7 +1595,8 @@ def _try_verify_fallback(ctx, run, pol, saved, item, log=None, code=0):
     record = {"deadline": led.now().timestamp() + timeout,
               "status": dict(run).get("status"),
               "yield_at": dict(run).get("yield_at"),
-              "stop_reason": run["stop_reason"]}
+              "stop_reason": run["stop_reason"],
+              "saved": saved}
     # Reserve before launching. An interrupted launch is failed, never retried.
     led.set_kv(key, json.dumps(record))
     try:
