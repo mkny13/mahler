@@ -161,6 +161,35 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83")
 
     @mock.patch("mahler.notify.send", return_value=True)
+    def test_workflow_failure_migrates_legacy_open_bug_key(self, ping):
+        self.workflow_setup()
+        old_body = (
+            f"<!-- mahler:post-merge-failure project=p number=1 sha={SHA} -->\n"
+            "**Post-merge workflow check failed** for #1 (p#1).\n\n"
+            "- **Failed phase:** `workflow`\n"
+            "- **Failure code:** `actions_failed`\n"
+            "- **Diagnostic:** Deploy sync backend: failure")
+        self.led.upsert_item("p", 83, title="Post-merge workflow fail: p#1",
+                             issue_body=old_body)
+        self.led.set_kv("open-post-merge-bug:p:workflow:actions_failed", "83")
+        self.gh.issue_state.return_value = "OPEN"
+        self.gh.workflow_runs_for_commit.return_value = [self.workflow(
+            id=11, html_url="https://github.com/x/y/actions/runs/11")]
+
+        self.tick()
+
+        self.gh.create_issue.assert_not_called()
+        self.gh.comment_create.assert_called_once()
+        self.assertEqual(self.gh.comment_create.call_args.args[0], 83)
+        self.assertIn("/actions/runs/11", self.gh.comment_create.call_args.args[1])
+        self.assertEqual(
+            self.led.get_kv("open-post-merge-bug:p:workflow:7:actions_failed"), "83"
+        )
+        self.assertFalse(
+            self.led.get_kv("open-post-merge-bug:p:workflow:actions_failed")
+        )
+
+    @mock.patch("mahler.notify.send", return_value=True)
     def test_workflow_failure_matches_reordered_issue_title_and_recovers(self, ping):
         self.workflow_setup()
         self.led.upsert_item(

@@ -248,14 +248,22 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     if policy.get("scope") == "label":
         labels.append(policy["scope_label"])
 
-    open_key = f"open-post-merge-bug:{project}:{phase}:{failure_code}"
+    legacy_open_key = f"open-post-merge-bug:{project}:{phase}:{failure_code}"
+    open_key = legacy_open_key
     if workflow:
         open_key = workflow_key(project, workflow, failure_code)
     repeated = False
+    migrated_legacy_key = False
     if bug is None:
         candidate = ctx.led.get_kv(open_key)
         if candidate and ctx.gh(project).issue_state(int(candidate)) != "OPEN":
             candidate = None
+        if not candidate and workflow:
+            candidate = ctx.led.get_kv(legacy_open_key)
+            if candidate and ctx.gh(project).issue_state(int(candidate)) == "OPEN":
+                migrated_legacy_key = True
+            else:
+                candidate = None
         if not candidate:
             for item in ctx.led.items(project):
                 body = row_get(item, "issue_body", "") or ""
@@ -316,6 +324,8 @@ def report_post_merge(ctx, project, number, merge_sha, phase, failure_code, *,
     # Replaying an old exact-check report must not replace a newer open bug.
     if not saved or not ctx.led.get_kv(open_key):
         ctx.led.set_kv(open_key, str(bug))
+    if migrated_legacy_key:
+        ctx.led.set_kv(legacy_open_key, "")
     ctx.led.set_kv(f"is-post-merge-bug:{project}:{bug}", "1")
     if ctx.led.item(project, bug) is None:
         ctx.led.upsert_item(project, bug, title=title, priority=1, labels=json.dumps(labels))
