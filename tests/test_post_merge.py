@@ -473,6 +473,57 @@ class PostMergeTests(unittest.TestCase):
                         self.tick()
                     self.assertEqual(launch.call_args.kwargs["env"]["MAHLER_ARTIFACT_REF"], artifact)
 
+    def failed_mahler_live(self):
+        self.cfg["projects"]["p"]["post_merge"].update(
+            deploy_strategy="watch", live_strategy="mahler", live_command="")
+        self.tick()
+        self.led.update_post_merge_check(
+            "p", 1, SHA, expected_phase="live", phase="live",
+            status="FAIL", failure_code="timeout", summary="late launch")
+        self.now += timedelta(days=1)
+
+    def test_failed_live_recovers_once_through_normal_smoke_after_restart(self):
+        self.failed_mahler_live()
+        old_deadline = self.row()["deadline_at"]
+        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + SHA):
+            self.tick()
+            self.assertEqual((self.row()["status"], self.row()["phase"]), ("pending", "live"))
+            self.assertGreater(self.row()["deadline_at"], old_deadline)
+            self.restart()
+            self.tick()
+            self.assertEqual(self.row()["phase"], "smoke")
+            self.tick()
+            self.assertEqual(self.row()["status"], "PASS")
+            self.tick()
+        self.assertTrue(Path(self.row()["evidence_ref"]).is_file())
+        self.assertEqual(len(self.led.q(
+            "SELECT * FROM events WHERE kind='post_merge_live_reopened'")), 1)
+
+    def test_failed_live_without_exact_proof_keeps_remediation(self):
+        self.failed_mahler_live()
+        original = dict(self.row())
+        with mock.patch.object(post_merge, "_remediate") as remediate:
+            for result in (None, "mahler:" + "b" * 40, RuntimeError("unavailable")):
+                with mock.patch("mahler.launch_health.exact_live",
+                                side_effect=[result]):
+                    self.tick()
+                self.assertEqual(dict(self.row()), original)
+            self.assertEqual(remediate.call_count, 3)
+
+    def test_recovered_live_cannot_reopen_after_second_timeout(self):
+        self.failed_mahler_live()
+        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + SHA):
+            self.tick()
+            self.assertEqual(self.row()["status"], "pending")
+            self.now += timedelta(days=1)
+            with mock.patch.object(post_merge, "_remediate"):
+                self.tick()
+                self.restart()
+                self.tick()
+        self.assertEqual(self.row()["status"], "FAIL")
+        self.assertEqual(len(self.led.q(
+            "SELECT * FROM events WHERE kind='post_merge_live_reopened'")), 1)
+
     def mahler_smoke(self, live):
         self.cfg["projects"]["p"]["post_merge"].update(
             deploy_strategy="watch", live_strategy="mahler", live_command="")
