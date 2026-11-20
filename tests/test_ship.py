@@ -6698,6 +6698,122 @@ class DependencyPRTests(unittest.TestCase):
         self.assertIn('Fix the failing checks', body)
         self.assertNotIn(11, [c.args[0] for c in self.gh.pr_merge.call_args_list])
 
+    def test_grouped_workflow_only_dependabot_fixture_classified_github_actions(self):
+        body = (
+            "Bumps the minor-and-patch group with 2 updates in the / directory: "
+            "[actions/checkout](https://github.com/actions/checkout) and [actions/setup-node](https://github.com/actions/setup-node).\n\n"
+            "Updates `actions/checkout` from 4.1.1 to 4.2.0\n"
+            "Updates `actions/setup-node` from 4.0.1 to 4.0.2\n\n"
+            "| Package | From | To |\n| --- | --- | --- |\n"
+            "| [actions/checkout](https://github.com/actions/checkout) | `4.1.1` | `4.2.0` |\n"
+            "| [actions/setup-node](https://github.com/actions/setup-node) | `4.0.1` | `4.0.2` |\n"
+        )
+        actions_view = dict(
+            self.views[10],
+            headRefName='dependabot/github_actions/minor-and-patch-c1b827e',
+            body=body,
+            files=[{'path': '.github/workflows/ci.yml'}],
+        )
+        npm_view = dict(
+            self.views[10],
+            headRefName='dependabot/npm_and_yarn/minor-and-patch',
+            body=self.GROUPED_TABLE,
+            files=[{'path': 'package.json'}, {'path': 'package-lock.json'}],
+        )
+        self.assertEqual(
+            ship._dependency_update(actions_view),
+            {'classification': 'github-actions', 'dependencies': ['actions/checkout', 'actions/setup-node']}
+        )
+        self.assertEqual(
+            ship._dependency_update(npm_view)['classification'],
+            'major'
+        )
+        minor_npm = self.GROUPED_TABLE.replace('4.0.1', '3.23.0')
+        self.assertEqual(
+            ship._dependency_update(dict(npm_view, body=minor_npm))['classification'],
+            'minor'
+        )
+
+    def test_grouped_red_actions_pr_stale_base_rebases_then_current_base_tracks(self):
+        body = (
+            "Bumps the minor-and-patch group with 2 updates in the / directory: "
+            "[actions/checkout](https://github.com/actions/checkout) and [actions/setup-node](https://github.com/actions/setup-node).\n\n"
+            "Updates `actions/checkout` from 4.1.1 to 4.2.0\n"
+            "Updates `actions/setup-node` from 4.0.1 to 4.0.2\n\n"
+            "| Package | From | To |\n| --- | --- | --- |\n"
+            "| [actions/checkout](https://github.com/actions/checkout) | `4.1.1` | `4.2.0` |\n"
+            "| [actions/setup-node](https://github.com/actions/setup-node) | `4.0.1` | `4.0.2` |\n"
+        )
+        self.views[10].update(
+            headRefName='dependabot/github_actions/minor-and-patch-c1b827e',
+            body=body,
+            files=[{'path': '.github/workflows/ci.yml'}],
+            statusCheckRollup=[{'state': 'FAILURE'}],
+        )
+        # 1. On stale base: requests rebase once, no issue, no merge
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once_with(10, 'dependabot')
+        sha = self.views[10]['headRefOid']
+        self.assertIsNotNone(self.led.get_kv(f"dependency-rebase:x:10:{sha}"))
+        self.assertIsNone(self.led.get_kv('dependency-issue:x:10'))
+        self.gh.create_issue.assert_not_called()
+        self.gh.pr_merge.assert_not_called()
+
+        # 2. On current base (after rebase): creates issue once
+        self.gh.base_in_head.return_value = True
+        self.run_pass()
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        title, issue_body, _ = self.gh.create_issue.call_args.args
+        self.assertIn("Fix failing GitHub Actions update", title)
+        self.assertIn("Fix the failing checks on", issue_body)
+        self.assertEqual(self.led.get_kv('dependency-issue:x:10'), 'https://github.com/x/y/issues/123')
+        self.assertIsNotNone(self.led.get_kv('dependency-identity:x:10'))
+        self.gh.pr_merge.assert_not_called()
+
+    def test_red_minor_npm_pr_stale_base_requests_rebase_once(self):
+        self.add(10, before='1.2.3', after='1.3.0', bot='dependabot')
+        self.views[10]['statusCheckRollup'] = [{'state': 'FAILURE'}]
+        self.gh.base_in_head.return_value = False
+        self.run_pass()
+        self.run_pass()
+        self.gh.request_dependency_rebase.assert_called_once_with(10, 'dependabot')
+        sha = self.views[10]['headRefOid']
+        self.assertIsNotNone(self.led.get_kv(f"dependency-rebase:x:10:{sha}"))
+        self.assertIsNone(self.led.get_kv('dependency-issue:x:10'))
+        self.gh.create_issue.assert_not_called()
+        self.gh.pr_merge.assert_not_called()
+
+    def test_red_minor_bot_pr_current_base_creates_issue_once_and_dedups(self):
+        self.add(10, before='1.2.3', after='1.3.0', bot='dependabot')
+        self.views[10]['statusCheckRollup'] = [{'state': 'FAILURE'}]
+        self.gh.base_in_head.return_value = True
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        title, body, labels = self.gh.create_issue.call_args.args
+        self.assertIn("Fix failing dependency update", title)
+        self.assertIn("Fix the failing checks on", body)
+        self.assertIn("/pull/10", body)
+        self.assertEqual(self.led.get_kv('dependency-issue:x:10'), 'https://github.com/x/y/issues/123')
+        self.assertIsNotNone(self.led.get_kv('dependency-identity:x:10'))
+        self.gh.pr_merge.assert_not_called()
+
+        # Repeated pass with same head: no duplicate issue, ping, or rebase
+        with mock.patch.object(self.ctx, 'ping') as ping:
+            self.run_pass()
+            ping.assert_not_called()
+        self.gh.create_issue.assert_called_once()
+        self.gh.request_dependency_rebase.assert_not_called()
+
+        # Head changes but same update identity: no duplicate issue
+        self.views[10]['headRefOid'] = 'c' * 40
+        self.run_pass()
+        self.gh.create_issue.assert_called_once()
+        self.gh.request_dependency_rebase.assert_not_called()
+        self.gh.pr_merge.assert_not_called()
+
     def test_major_dedup_and_scope(self):
         self.cfg['projects']['x'].update(scope='label', scope_label='custom')
         self.add(10, after='2.0.0')

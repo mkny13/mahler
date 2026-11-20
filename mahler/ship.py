@@ -225,11 +225,11 @@ def _dependency_update_full(view, with_versions):
                 return None
         else:
             dep, before, after = match.groups()
-            if branch.startswith("dependabot/github_actions/") and actions_only:
-                return _with(
-                    {"classification": "github-actions", "dependencies": [dep]},
-                    with_versions, [[dep, before, after]])
             updates.append((dep, before, after, None))
+        if branch.startswith("dependabot/github_actions/") and actions_only:
+            return _with(
+                {"classification": "github-actions", "dependencies": [u[0] for u in updates]},
+                with_versions, [[u[0], u[1], u[2]] for u in updates])
     else:
         # The first markdown table is Renovate's complete package/update table.
         table = re.search(r"(?m)^\| Package \|[^\n]*\n\|[- :|]+\n((?:\|[^\n]+\n?)+)", body)
@@ -458,6 +458,7 @@ def _dependency_prs(ctx, project):
                         f"failed; deferring: {exc}")
                 continue
             identity = _dependency_identity(view)
+            is_red = checks_state(view.get("statusCheckRollup"), required=req) == "red"
             if led.get_kv(issue_key):
                 stored = led.get_kv(identity_key)
                 if stored == identity:
@@ -466,16 +467,12 @@ def _dependency_prs(ctx, project):
                     # Marker predates identity tracking: the original update is unknown.
                     # Keep suppressing only while the PR still needs an issue; a
                     # now-adoptable update (e.g. rewritten to a patch) is reclassified.
-                    if (update["classification"] == "major" or (
-                            update["classification"] == "github-actions"
-                            and checks_state(view.get("statusCheckRollup"), required=req) == "red")):
+                    if update["classification"] == "major" or is_red:
                         led.set_kv(identity_key, identity)
                         continue
                 # Dependabot rewrote this PR to a different update: reclassify it.
                 led.set_kv(issue_key, None)
-            red_action = (update["classification"] == "github-actions"
-                          and checks_state(view.get("statusCheckRollup"), required=req) == "red")
-            if update["classification"] == "major" or red_action:
+            if update["classification"] == "major":
                 issue = gh.issue_by_marker(marker)
                 if not issue:
                     labels = ["type:chore", "size:m", "p2"]
@@ -483,11 +480,40 @@ def _dependency_prs(ctx, project):
                         labels.append(pol["scope_label"])
                     url = view["url"]
                     issue = gh.create_issue(
-                        (f"Fix failing GitHub Actions update: {view['title']}" if red_action
-                         else f"Check major dependency update: {view['title']}"),
+                        f"Check major dependency update: {view['title']}",
                         f"{marker}\n\n## Problem / goal\n"
-                        + ("Fix the failing checks on" if red_action else "Validate and adopt")
-                        + f" {url}.\n\n"
+                        f"Validate and adopt {url}.\n\n"
+                        "## Done when\n- Inspect the dependency migration requirements and resolve breakage.\n"
+                        "- Apply the update, run the project's full verification, and ship through independent review.\n"
+                        f"- Supersede or close the original bot PR {url} after shipping.\n\n"
+                        "## Needs a human to check\nNothing\n", labels)
+                led.set_kv(issue_key, issue)
+                led.set_kv(identity_key, identity)
+                continue
+            if is_red:
+                sha = view.get("headRefOid")
+                base_ref = view.get("baseRefName")
+                if not sha or not base_ref:
+                    continue
+                ancestry = gh.base_in_head(pol["path"], base_ref, sha)
+                if ancestry is False:
+                    _request_dependency_rebase(ctx, project, gh, {**view, "number": n})
+                    continue
+                if ancestry is not True:
+                    continue
+                issue = gh.issue_by_marker(marker)
+                if not issue:
+                    labels = ["type:chore", "size:m", "p2"]
+                    if pol.get("scope") == "label":
+                        labels.append(pol["scope_label"])
+                    url = view["url"]
+                    title = (f"Fix failing GitHub Actions update: {view['title']}"
+                             if update["classification"] == "github-actions"
+                             else f"Fix failing dependency update: {view['title']}")
+                    issue = gh.create_issue(
+                        title,
+                        f"{marker}\n\n## Problem / goal\n"
+                        f"Fix the failing checks on {url}.\n\n"
                         "## Done when\n- Inspect the dependency migration requirements and resolve breakage.\n"
                         "- Apply the update, run the project's full verification, and ship through independent review.\n"
                         f"- Supersede or close the original bot PR {url} after shipping.\n\n"
