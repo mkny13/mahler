@@ -707,3 +707,122 @@ class DetachedCleanupTests(unittest.TestCase):
             watchdog.stop(ctx, run, "timeout")
         terminate.assert_called_once_with(4242)
         reap.assert_called_once_with(run["id"])
+
+
+class FallbackVerificationTests(unittest.TestCase):
+    """Real verifier processes must not monopolize the watchdog pass (#1617)."""
+
+    def setUp(self):
+        from test_verify_fallback import VerifyFallbackTests
+        fixture = VerifyFallbackTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.f = fixture
+        self.ctx, self.led = fixture.ctx, fixture.led
+        fixture._write_log_no_status()
+        self.led.update_run(fixture.run_id, pid=99999999,
+                            log_path=fixture.log, status_path=fixture.run["status_path"],
+                            worktree=fixture.run["worktree"], branch=fixture.run["branch"])
+        self.enterContext(mock.patch.object(self.ctx, "gh", return_value=fixture.gh))
+        self.enterContext(mock.patch.object(self.ctx, "ping"))
+        self.enterContext(mock.patch.object(runner, "snapshot", return_value={
+            "ref": "mahler/5-x", "sha": "abc", "ahead": 1, "stat": None}))
+        self.enterContext(mock.patch.object(runner, "commits_ahead", return_value=1))
+        self.enterContext(mock.patch.object(runner, "remove_worktree"))
+        self.enterContext(mock.patch.object(runner, "reap_run"))
+        self.addCleanup(finalize.cancel_fallback_verify, self.ctx, fixture.run)
+
+    def tick(self):
+        completed = []
+        def action():
+            watchdog.watchdog(self.ctx)
+            completed.append(True)
+        scheduler.run_pass(self.ctx, "watchdog", action, budget=.5, reap=False)
+        self.assertEqual(completed, [True], "watchdog exhausted its pass budget")
+
+    def finish(self):
+        deadline = time.monotonic() + 3
+        while self.led.run(self.f.run_id)["status"] != "ended" and time.monotonic() < deadline:
+            time.sleep(.02)
+            self.tick()
+        self.assertEqual(self.led.run(self.f.run_id)["status"], "ended")
+
+    def test_timeout_does_not_block_other_project_and_never_restarts(self):
+        self.f.cfg["projects"]["x"].update(verify="sleep 30", verify_timeout=.15)
+        self.f.cfg["projects"]["y"] = {"path": self.f.tmp, "repo": "y/z"}
+        self.led.upsert_item("y", 6, state="working", sorted_at=iso(NOW))
+        second = self.led.create_run(project="y", number=6, role="build",
+                                     platform="agy-claude", epoch=1, status="running")
+        self.led.claim("y", 6, f"run:{second}", "auto", 30, run_id=second)
+        log = os.path.join(self.f.tmp, "second.log")
+        with open(log, "w") as stream:
+            stream.write(json.dumps({"event": "result", "result": {
+                "status": "SUCCESS", "response": "STATUS: DONE finished"}}))
+        self.led.update_run(second, pid=99999998, log_path=log,
+                            status_path=log + ".exit", worktree=self.f.run["worktree"])
+        with mock.patch.object(runner, "start_verify_in_worktree",
+                               wraps=runner.start_verify_in_worktree) as start:
+            self.tick()
+            self.assertEqual(self.led.run(second)["status"], "ended")
+            self.assertEqual(self.led.item("y", 6)["state"], "verifying")
+            self.assertEqual(self.led.item("x", 5)["state"], "working")
+            self.finish()
+            self.tick()
+            start.assert_called_once()
+        self.assertEqual(self.led.get_kv(f"verify_failed:{self.f.run_id}"), "1")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+        self.assertEqual(self.led.item("x", 5)["state"], "ready")
+        self.assertIsNone(self.led.get_kv(f"fallback_verify:{self.f.run_id}"))
+        self.assertFalse(runner._verify_children)
+
+    def test_success_across_ticks(self):
+        self.f.cfg["projects"]["x"].update(verify="exit 0", verify_timeout=2)
+        self.tick()
+        self.finish()
+        self.assertEqual(self.led.item("x", 5)["state"], "verifying")
+        self.assertEqual(self.led.get_kv("unconfirmed:x#5"), "1")
+        self.assertIsNone(self.led.get_kv(f"verify_failed:{self.f.run_id}"))
+
+    def test_nonzero_across_ticks(self):
+        self.f.cfg["projects"]["x"].update(verify="exit 7", verify_timeout=2)
+        self.tick()
+        self.finish()
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+        self.assertEqual(self.led.get_kv(f"verify_failed:{self.f.run_id}"), "1")
+
+    def test_watchdog_deadline_kills_verifier(self):
+        self.f.cfg["projects"]["x"].update(verify="sleep 30", verify_timeout=60)
+        self.tick()
+        key = f"fallback_verify:{self.f.run_id}"
+        record = json.loads(self.led.get_kv(key))
+        record["deadline"] = NOW.timestamp() - 1
+        self.led.set_kv(key, json.dumps(record))
+        self.tick()
+        self.assertFalse(runner.alive(record["pid"]))
+        self.assertEqual(self.led.run(self.f.run_id)["status"], "ended")
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+
+    def test_stop_cleans_verifier(self):
+        self.f.cfg["projects"]["x"].update(verify="sleep 30", verify_timeout=60)
+        self.tick()
+        record = json.loads(self.led.get_kv(f"fallback_verify:{self.f.run_id}"))
+        watchdog.stop(self.ctx, self.led.run(self.f.run_id), "parked")
+        self.tick()
+        self.assertFalse(runner.alive(record["pid"]))
+        self.assertEqual(self.led.item("x", 5)["state"], "parked")
+        self.assertEqual(self.led.run(self.f.run_id)["status"], "ended")
+
+    def test_interrupted_launch_is_failed_once(self):
+        self.f.cfg["projects"]["x"].update(verify="sleep 30", verify_timeout=60)
+        with mock.patch.object(runner, "start_verify_in_worktree",
+                               side_effect=scheduler.PassBudgetExceeded) as start:
+            self.tick_after_interruption(start)
+        self.assertEqual(self.led.item("x", 5)["attempts"], 1)
+
+    def tick_after_interruption(self, start):
+        scheduler.run_pass(self.ctx, "watchdog", lambda: watchdog.watchdog(self.ctx),
+                           budget=.5, reap=False)
+        self.tick()
+        self.tick()
+        start.assert_called_once()
+        self.assertEqual(self.led.run(self.f.run_id)["status"], "ended")

@@ -5,7 +5,7 @@ Ensures that:
    distinct from `verify_timeout_minutes` (CI pending timeout).
 2. Per-project overrides for `verify_timeout` are honored by `project_policy`.
 3. `finalize._try_verify_fallback` passes the configured `verify_timeout`
-   to `runner.verify_in_worktree` rather than a hardcoded 120s.
+   to `runner.start_verify_in_worktree` rather than a hardcoded 120s.
 4. Direct callers of `runner.verify_in_worktree` keep a default fallback timeout of 120s.
 """
 
@@ -57,6 +57,8 @@ class VerifyTimeoutConfigTests(unittest.TestCase):
     def test_try_verify_fallback_applies_configured_timeout(self):
         ctx = mock.Mock()
         ctx.led = mock.Mock()
+        ctx.led.get_kv.return_value = None
+        ctx.led.now.return_value.timestamp.return_value = 1000
         run = {
             "id": 1,
             "project": "proj",
@@ -74,9 +76,9 @@ class VerifyTimeoutConfigTests(unittest.TestCase):
             "verify_timeout": 500,
         }
         with mock.patch.object(runner, "commits_ahead", return_value=1), \
-                mock.patch.object(runner, "verify_in_worktree", return_value=True) as mock_verify:
+                mock.patch.object(runner, "start_verify_in_worktree", return_value={"pid": None}) as mock_verify:
             ok = finalize._try_verify_fallback(ctx, run, pol_custom, saved, item)
-            self.assertTrue(ok)
+            self.assertIsNone(ok)
             mock_verify.assert_called_once()
             self.assertEqual(mock_verify.call_args.kwargs.get("timeout"), 500)
 
@@ -85,9 +87,9 @@ class VerifyTimeoutConfigTests(unittest.TestCase):
         cfg["projects"]["proj"] = {"repo": "org/proj", "verify": "pytest"}
         pol_default = config.project_policy(cfg, "proj")
         with mock.patch.object(runner, "commits_ahead", return_value=1), \
-                mock.patch.object(runner, "verify_in_worktree", return_value=True) as mock_verify:
+                mock.patch.object(runner, "start_verify_in_worktree", return_value={"pid": None}) as mock_verify:
             ok = finalize._try_verify_fallback(ctx, run, pol_default, saved, item)
-            self.assertTrue(ok)
+            self.assertIsNone(ok)
             mock_verify.assert_called_once()
             self.assertEqual(mock_verify.call_args.kwargs.get("timeout"), 300)
 

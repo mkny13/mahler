@@ -1167,3 +1167,72 @@ def verify_in_worktree(wt, verify_cmd, timeout=120, output_path=None):
         except OSError:
             pass
     return ok
+
+
+# Retain Popen handles until polled so long-lived daemon children are reaped.
+_verify_children = {}
+
+
+def start_verify_in_worktree(wt, verify_cmd, timeout=300, output_path=None):
+    """Start an independently bounded verifier; return durable polling metadata.
+
+    The supervisor shares a fresh process group with the command. It publishes
+    its result atomically before killing the whole group, including descendants.
+    Its timeout still applies if the conductor exits between ticks.
+    """
+    status_path = output_path + ".exit"
+    Path(status_path).unlink(missing_ok=True)
+    script = """
+import os, signal, subprocess, sys
+from pathlib import Path
+command, timeout, result = sys.argv[1:]
+try:
+    code = subprocess.call(command, shell=True, timeout=float(timeout))
+except subprocess.TimeoutExpired:
+    code = 124
+except Exception:
+    code = 125
+try:
+    path = Path(result)
+    path.with_suffix('.tmp').write_text(str(code))
+    os.replace(path.with_suffix('.tmp'), path)
+finally:
+    os.killpg(os.getpgrp(), signal.SIGKILL)
+"""
+    proc = None
+    try:
+        with open(output_path, "w") as output:
+            proc = subprocess.Popen([sys.executable, "-c", script, verify_cmd,
+                                     str(timeout), status_path], cwd=wt,
+                                    start_new_session=True, stdin=subprocess.DEVNULL,
+                                    stdout=output, stderr=subprocess.STDOUT)
+        _verify_children[proc.pid] = proc
+        return {"pid": proc.pid, "status_path": status_path}
+    except BaseException:
+        if proc is not None:
+            kill(proc.pid)
+            proc.wait()
+        raise
+
+
+def stop_verify_in_worktree(record):
+    """Kill the verifier's group and reap our child, without a grace-period wait."""
+    pid = record.get("pid")
+    kill(pid)
+    proc = _verify_children.pop(pid, None)
+    if proc is not None:
+        proc.wait(timeout=5)
+
+
+def poll_verify_in_worktree(record):
+    """None while running; otherwise success/failure, including lost supervisors."""
+    pid = record.get("pid")
+    proc = _verify_children.get(pid)
+    if proc is not None:
+        proc.poll()
+    try:
+        code = int(Path(record["status_path"]).read_text().strip())
+    except (OSError, ValueError, KeyError):
+        return None if pid and alive(pid) else False
+    stop_verify_in_worktree(record)
+    return code == 0

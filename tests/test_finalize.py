@@ -2005,7 +2005,7 @@ class RunTests(unittest.TestCase):
                     return True if phase == "verify" else ""
 
                 target, name = {
-                    "verify": (runner, "verify_in_worktree"),
+                    "verify": (finalize, "_try_verify_fallback"),
                     "review_body": (self.gh, "issue_body"),
                     "review_comment": (finalize, "_post_review_comment"),
                     "setup_comment": (finalize, "_setup_failed_comment"),
