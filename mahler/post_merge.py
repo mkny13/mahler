@@ -523,7 +523,7 @@ def _recover_live(ctx, row, policy):
             env=config.run_env(ctx.cfg, config.gh_account_of(policy)))
     except Exception:
         return False
-    if artifact != "mahler:" + row["merge_sha"]:
+    if not artifact:
         return False
     return ctx.led.reopen_post_merge_live(row["project"], row["number"], row["merge_sha"])
 

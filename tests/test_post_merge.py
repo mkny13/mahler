@@ -499,11 +499,29 @@ class PostMergeTests(unittest.TestCase):
         self.assertEqual(len(self.led.q(
             "SELECT * FROM events WHERE kind='post_merge_live_reopened'")), 1)
 
+    def test_failed_live_recovers_when_proven_head_contains_merge(self):
+        self.failed_mahler_live()
+        live = "b" * 40
+        with mock.patch("mahler.launch_health.exact_live", return_value="mahler:" + live):
+            self.tick()
+            self.assertEqual((self.row()["status"], self.row()["phase"]), ("pending", "live"))
+            self.tick()
+            self.assertEqual((self.row()["phase"], self.row()["artifact_ref"]),
+                             ("smoke", "mahler:" + live))
+            self.tick()
+            self.assertEqual(self.row()["status"], "PASS")
+            self.assertEqual(self.row()["summary"], "Descendant live identity PASS (mahler self-host)")
+            self.tick()
+        self.assertIn(f"Live: {live}\nIdentity: descendant\n",
+                      Path(self.row()["evidence_ref"]).read_text())
+        self.assertEqual(len(self.led.q(
+            "SELECT * FROM events WHERE kind='post_merge_live_reopened'")), 1)
+
     def test_failed_live_without_exact_proof_keeps_remediation(self):
         self.failed_mahler_live()
         original = dict(self.row())
         with mock.patch.object(post_merge, "_remediate") as remediate:
-            for result in (None, "mahler:" + "b" * 40, RuntimeError("unavailable")):
+            for result in (None, "", RuntimeError("unavailable")):
                 with mock.patch("mahler.launch_health.exact_live",
                                 side_effect=[result]):
                     self.tick()
