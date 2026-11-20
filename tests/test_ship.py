@@ -3800,6 +3800,34 @@ class ShipTests(unittest.TestCase):
         self.assertFalse(self.led.get_kv("wait:x#5"))
         self.assertEqual(len(self.gh.comments), 1)
 
+    def test_registry_timeout_has_two_attempts_and_bounded_wait_then_recovers(self):
+        from tests.test_dependency_vetting import MavenRepositoryTests
+        files, clean, _, _ = MavenRepositoryTests().fixture()
+        self._clock()
+        self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
+        attempts = []
+        def offline(request, timeout):
+            attempts.append(request.full_url)
+            raise TimeoutError("registry timed out")
+        with mock.patch.object(self.gh, "dependency_files", return_value=({}, files)), \
+                mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=offline):
+            self.ship()
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(self.wait_record()["cause"], "dependency_vetting")
+            self.assertEqual(self.gh.merged, [])
+            self._tick(minutes=5)
+            self.assertEqual(len(attempts), 2)
+            self._tick(minutes=15)
+            self.assertEqual(len(attempts), 4)
+            self.assertEqual(self.wait_record()["checks"], 1)
+            self.assertEqual(self.gh.merged, [])
+        with mock.patch.object(self.gh, "dependency_files", return_value=({}, files)), \
+                mock.patch.object(ship.dependency_vetting, "urlopen", side_effect=clean), \
+                mock.patch.object(ship, "_review_gate"):
+            self._tick(hours=1)
+        self.assertEqual(self.item()["state"], "verifying")
+        self.assertFalse(self.led.get_kv("wait:x#5"))
+
     def test_unsupported_lockfile_names_path_and_recovers_on_corrected_head(self):
         self._clock()
         self.led.upsert_item("x", 5, pr=88, labels=json.dumps(["size:m"]))
