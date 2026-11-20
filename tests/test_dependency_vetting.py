@@ -503,7 +503,7 @@ class SwiftGradleTests(unittest.TestCase):
 
         def open_request(request, timeout):
             url = request.full_url
-            if url.startswith("https://dl.google.com/"):
+            if url.endswith("maven-metadata.xml") or url.startswith("https://dl.google.com/"):
                 raise HTTPError(url, 404, "not found", None, None)
             if broken and broken in url:
                 raise URLError("offline")
@@ -821,6 +821,8 @@ class GradleCatalogTests(unittest.TestCase):
     def google_opener(self, *, bad=None, vulnerable=False):
         def opener(request, timeout):
             url = request.full_url
+            if url.startswith(("https://repo1.maven.org/", "https://plugins.gradle.org/")):
+                raise HTTPError(url, 404, "not found", None, None)
             if "search.maven.org" in url:
                 return Response({"response": {"numFound": 0, "docs": []}})
             if url.endswith("maven-metadata.xml"):

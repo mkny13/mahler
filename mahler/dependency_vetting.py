@@ -808,6 +808,19 @@ def changed_dependencies(before, after):
         raise VettingError(f"ambiguous dependency evidence: {exc}") from None
 
 
+def _registry_request(request, opener, read):
+    """Retry transport failures once, including failures while reading the body."""
+    for attempt in range(2):
+        try:
+            with (opener or urlopen)(request, timeout=20) as response:
+                return read(response)
+        except HTTPError:
+            raise
+        except (URLError, TimeoutError, OSError):
+            if attempt:
+                raise
+
+
 def _request_json(url, *, data=None, opener=None):
     opener = opener or urlopen
     headers = {"Accept": "application/json", "User-Agent": "Mahler dependency vetting"}
@@ -815,8 +828,8 @@ def _request_json(url, *, data=None, opener=None):
         headers["Content-Type"] = "application/json"
     request = Request(url, data=data, headers=headers)
     try:
-        with opener(request, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
+        return _registry_request(
+            request, opener, lambda response: json.loads(response.read().decode("utf-8")))
     except HTTPError as exc:
         if exc.code == 404:
             exc.close()
@@ -903,8 +916,8 @@ def _request_text(url, opener):
     opener = opener or urlopen
     request = Request(url, headers={"User-Agent": "Mahler dependency vetting"})
     try:
-        with opener(request, timeout=20) as response:
-            return response.read(_POM_LIMIT + 1).decode("utf-8")
+        return _registry_request(
+            request, opener, lambda response: response.read(_POM_LIMIT + 1).decode("utf-8"))
     except HTTPError as exc:
         code = exc.code
         exc.close()
@@ -1019,9 +1032,62 @@ def _maven_first_publication(group, artifact, dep, opener):
             stamps.append(datetime.fromtimestamp(stamp / 1000, timezone.utc))
         except (ValueError, OverflowError, OSError):
             raise VettingError(f"invalid Maven artifact history: {dep.name}@{dep.version}") from None
-    if sum(1 for doc in docs if doc.get("v") == dep.version) != 1:
+    matches = sum(1 for doc in docs if doc.get("v") == dep.version)
+    if matches == 0:
+        return None
+    if matches != 1:
         raise VettingError(f"missing Maven artifact metadata: {dep.name}@{dep.version}")
     return min(stamps)
+
+
+_MAVEN_REPOSITORIES = (
+    ("Maven Central", "https://repo1.maven.org/maven2/"),
+    ("Gradle Plugin Portal", "https://plugins.gradle.org/m2/"),
+)
+
+
+def _repository_publication(group, artifact, dep, opener, repository, base):
+    """Conservative age evidence from the exact version's repository POM.
+
+    The repository's version list must corroborate the coordinate. lastUpdated
+    dates the index, so only the selected POM's Last-Modified is used for age.
+    A 404 or absent version allows the next repository; corrupt evidence blocks.
+    """
+    base += group.replace(".", "/") + f"/{artifact}/"
+    text = _request_text(base + "maven-metadata.xml", opener)
+    if text is None:
+        return None
+    if not text or len(text) > _POM_LIMIT or "<!DOCTYPE" in text or "<!ENTITY" in text:
+        raise VettingError(f"invalid {repository} artifact history: {dep.name}")
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        raise VettingError(f"invalid {repository} artifact history: {dep.name}") from None
+    versions = [v.text for v in root.findall("versioning/versions/version")]
+    if (root.tag != "metadata" or root.findtext("groupId") != group
+            or root.findtext("artifactId") != artifact or not versions or len(versions) > 1000
+            or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", v)
+                   for v in versions) or len(set(versions)) != len(versions)):
+        raise VettingError(f"invalid {repository} artifact history: {dep.name}@{dep.version}")
+    if dep.version not in versions:
+        return None
+    url = base + f"{dep.version}/{artifact}-{dep.version}.pom"
+    return _pom_publication(url, dep, dep.version, opener, repository)
+
+
+def _pom_publication(url, dep, version, opener, repository):
+    request = Request(url, method="HEAD", headers={"User-Agent": "Mahler dependency vetting"})
+    try:
+        modified = _registry_request(
+            request, opener, lambda response: response.headers.get("Last-Modified", ""))
+        date = parsedate_to_datetime(modified)
+        if date.tzinfo is None:
+            raise ValueError("timezone missing")
+        return date.astimezone(timezone.utc)
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
+        if isinstance(exc, HTTPError):
+            exc.close()
+        raise VettingError(f"missing {repository} publication date: {dep.name}@{version}") from None
 
 
 _GOOGLE_MAVEN = "https://dl.google.com/dl/android/maven2/"
@@ -1051,17 +1117,7 @@ def _google_first_publication(group, artifact, dep, opener):
     dates = []
     for version in versions:
         url = base + f"{version}/{artifact}-{version}.pom"
-        request = Request(url, method="HEAD", headers={"User-Agent": "Mahler dependency vetting"})
-        try:
-            with (opener or urlopen)(request, timeout=20) as response:
-                date = parsedate_to_datetime(response.headers.get("Last-Modified", ""))
-                if date.tzinfo is None:
-                    raise ValueError("timezone missing")
-                dates.append(date.astimezone(timezone.utc))
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, TypeError) as exc:
-            if isinstance(exc, HTTPError):
-                exc.close()
-            raise VettingError(f"missing Google Maven publication date: {dep.name}@{version}") from None
+        dates.append(_pom_publication(url, dep, version, opener, "Google Maven"))
     return min(dates)
 
 
@@ -1090,7 +1146,12 @@ def _resolved_metadata(dep, opener):
     else:
         group, artifact = dep.name.split(":")
         published = _maven_first_publication(group, artifact, dep, opener)
-        repository, base = "Maven Central", "https://repo1.maven.org/maven2/"
+        repository, base = _MAVEN_REPOSITORIES[0]
+        if published is None:
+            for repository, base in _MAVEN_REPOSITORIES:
+                published = _repository_publication(group, artifact, dep, opener, repository, base)
+                if published is not None:
+                    break
         if published is None:
             published = _google_first_publication(group, artifact, dep, opener)
             repository, base = "Google Maven", _GOOGLE_MAVEN
